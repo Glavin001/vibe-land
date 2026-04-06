@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use nalgebra::{point, vector, Isometry3, Point3, UnitQuaternion, Vector3};
+use nalgebra::{vector, Isometry3, Vector3};
+use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::pipeline::QueryPipeline;
 use rapier3d::prelude::*;
 
 use crate::protocol::{InputCmd, BTN_BACK, BTN_CROUCH, BTN_FORWARD, BTN_JUMP, BTN_LEFT, BTN_RIGHT, BTN_SPRINT};
@@ -66,18 +68,10 @@ pub struct PhysicsArena {
     pub config: MoveConfig,
     pub players: HashMap<u32, PlayerMotorState>,
 
-    // Rapier world data. RigidBodySet is mostly empty in this foundation because players and
-    // blocks are represented as colliders and scene queries. That keeps reconciliation simpler.
     pub rigid_bodies: RigidBodySet,
     pub colliders: ColliderSet,
-    pub island_manager: IslandManager,
-    pub broad_phase: BroadPhaseBvh,
-    pub narrow_phase: NarrowPhase,
-    pub impulse_joints: ImpulseJointSet,
-    pub multibody_joints: MultibodyJointSet,
-    pub ccd_solver: CCDSolver,
+    pub query_pipeline: QueryPipeline,
     pub integration_parameters: IntegrationParameters,
-    pub physics_pipeline: PhysicsPipeline,
 
     controller: KinematicCharacterController,
     next_spawn_index: u32,
@@ -101,14 +95,8 @@ impl PhysicsArena {
             players: HashMap::new(),
             rigid_bodies: RigidBodySet::new(),
             colliders: ColliderSet::new(),
-            island_manager: IslandManager::new(),
-            broad_phase: BroadPhaseBvh::new(),
-            narrow_phase: NarrowPhase::new(),
-            impulse_joints: ImpulseJointSet::new(),
-            multibody_joints: MultibodyJointSet::new(),
-            ccd_solver: CCDSolver::new(),
+            query_pipeline: QueryPipeline::new(),
             integration_parameters: IntegrationParameters::default(),
-            physics_pipeline: PhysicsPipeline::new(),
             controller,
             next_spawn_index: 0,
         };
@@ -152,12 +140,7 @@ impl PhysicsArena {
 
     pub fn remove_player(&mut self, player_id: u32) {
         if let Some(player) = self.players.remove(&player_id) {
-            self.colliders.remove(
-                player.collider,
-                &mut self.island_manager,
-                &mut self.rigid_bodies,
-                true,
-            );
+            self.colliders.remove(player.collider, &mut IslandManager::new(), &mut self.rigid_bodies, true);
         }
     }
 
@@ -171,12 +154,7 @@ impl PhysicsArena {
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
-        self.colliders.remove(
-            handle,
-            &mut self.island_manager,
-            &mut self.rigid_bodies,
-            true,
-        );
+        self.colliders.remove(handle, &mut IslandManager::new(), &mut self.rigid_bodies, true);
     }
 
     pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
@@ -237,23 +215,18 @@ impl PhysicsArena {
         let character_shape = collider.shape();
         let character_pos = Isometry3::translation(state.position.x, state.position.y, state.position.z);
 
-        // NOTE: The exact query-pipeline constructor has minor version differences across Rapier
-        // releases. This is the right design even if your chosen Rapier patch version wants tiny
-        // signature adjustments.
+        self.query_pipeline.update(&self.colliders);
         let filter = QueryFilter::default().exclude_collider(state.collider);
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
 
         let corrected = self.controller.move_shape(
             dt,
-            &query_pipeline,
+            &self.rigid_bodies,
+            &self.colliders,
+            &self.query_pipeline,
             character_shape,
             &character_pos,
             desired_translation,
+            filter,
             |_| {},
         );
 
@@ -293,27 +266,25 @@ impl PhysicsArena {
     }
 
     pub fn cast_static_world_ray(
-        &self,
+        &mut self,
         origin: [f32; 3],
         dir: [f32; 3],
         max_toi: f32,
         exclude_player: Option<u32>,
     ) -> Option<f32> {
-        let ray = Ray::new(point![origin[0], origin[1], origin[2]], vector![dir[0], dir[1], dir[2]]);
+        let ray = Ray::new(
+            nalgebra::point![origin[0], origin[1], origin[2]],
+            vector![dir[0], dir[1], dir[2]],
+        );
         let mut filter = QueryFilter::default();
         if let Some(player_id) = exclude_player {
             if let Some(player) = self.players.get(&player_id) {
                 filter = filter.exclude_collider(player.collider);
             }
         }
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
-        query_pipeline
-            .cast_ray(&self.colliders, &ray, max_toi, true, filter)
+        self.query_pipeline.update(&self.colliders);
+        self.query_pipeline
+            .cast_ray(&self.rigid_bodies, &self.colliders, &ray, max_toi, true, filter)
             .map(|(_handle, toi)| toi)
     }
 }

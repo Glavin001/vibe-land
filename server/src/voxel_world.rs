@@ -99,40 +99,46 @@ impl VoxelWorld {
             y: cmd.chunk[1] as i32,
             z: cmd.chunk[2] as i32,
         };
-        let chunk = self.chunks.entry(key).or_default();
-        if chunk.version != cmd.expected_version {
-            return Err(format!(
-                "chunk version mismatch: expected {}, actual {}",
-                cmd.expected_version, chunk.version
-            ));
+
+        {
+            let chunk = self.chunks.entry(key).or_default();
+            if chunk.version != cmd.expected_version {
+                return Err(format!(
+                    "chunk version mismatch: expected {}, actual {}",
+                    cmd.expected_version, chunk.version
+                ));
+            }
+
+            let idx = pack_local_index(cmd.local[0], cmd.local[1], cmd.local[2]);
+            match cmd.op {
+                BLOCK_ADD => {
+                    chunk.blocks.insert(idx, cmd.material);
+                }
+                BLOCK_REMOVE => {
+                    chunk.blocks.remove(&idx);
+                }
+                other => return Err(format!("unsupported block op {other}")),
+            }
+
+            chunk.version += 1;
+            let net_edit = BlockEditNet {
+                x: cmd.local[0],
+                y: cmd.local[1],
+                z: cmd.local[2],
+                op: cmd.op,
+                material: cmd.material,
+            };
+            chunk.dirty_edits.push(net_edit);
         }
 
-        let idx = pack_local_index(cmd.local[0], cmd.local[1], cmd.local[2]);
-        match cmd.op {
-            BLOCK_ADD => {
-                chunk.blocks.insert(idx, cmd.material);
-            }
-            BLOCK_REMOVE => {
-                chunk.blocks.remove(&idx);
-            }
-            other => return Err(format!("unsupported block op {other}")),
-        }
-
-        chunk.version += 1;
-        let net_edit = BlockEditNet {
-            x: cmd.local[0],
-            y: cmd.local[1],
-            z: cmd.local[2],
-            op: cmd.op,
-            material: cmd.material,
-        };
-        chunk.dirty_edits.push(net_edit);
         self.rebuild_chunk_colliders(arena, key)?;
 
+        let chunk = self.chunks.get(&key).unwrap();
+        let last_edit = chunk.dirty_edits.last().copied().unwrap();
         Ok(ChunkDiffPacket {
             chunk: [key.x as i16, key.y as i16, key.z as i16],
             version: chunk.version,
-            edits: vec![net_edit],
+            edits: vec![last_edit],
         })
     }
 
