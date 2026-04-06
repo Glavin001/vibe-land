@@ -2,10 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { GameSocket } from '../net/gameSocket';
 import { SnapshotInterpolator } from '../net/interpolation';
 import {
-  encodeInputPacket,
   netStateToMeters,
   type InputCmd,
-  type NetPlayerState,
   type ServerPacket,
 } from '../net/protocol';
 
@@ -18,14 +16,12 @@ export type RemotePlayer = {
 };
 
 export type ConnectionState = {
-  socket: GameSocket;
+  socket: GameSocket | null;
   playerId: number;
   interpolator: SnapshotInterpolator;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   localPosition: [number, number, number];
-  localYaw: number;
-  localPitch: number;
 };
 
 export function useGameConnection(
@@ -33,15 +29,18 @@ export function useGameConnection(
   onDisconnect: () => void,
 ) {
   const stateRef = useRef<ConnectionState>({
-    socket: null!,
+    socket: null,
     playerId: 0,
     interpolator: new SnapshotInterpolator(),
     latestServerTick: 0,
     remotePlayers: new Map(),
     localPosition: [0, 2, 0],
-    localYaw: 0,
-    localPitch: 0,
   });
+
+  const onWelcomeRef = useRef(onWelcome);
+  onWelcomeRef.current = onWelcome;
+  const onDisconnectRef = useRef(onDisconnect);
+  onDisconnectRef.current = onDisconnect;
 
   const [ready, setReady] = useState(false);
 
@@ -49,13 +48,15 @@ export function useGameConnection(
     const state = stateRef.current;
     state.interpolator = new SnapshotInterpolator();
     state.remotePlayers = new Map();
+    state.playerId = 0;
 
     const socket = new GameSocket({
       onPacket: (packet: ServerPacket) => {
         switch (packet.type) {
           case 'welcome':
             state.playerId = packet.playerId;
-            onWelcome(packet.playerId);
+            console.log('[game] Welcome! playerId =', packet.playerId);
+            onWelcomeRef.current(packet.playerId);
             setReady(true);
             break;
           case 'snapshot': {
@@ -67,33 +68,27 @@ export function useGameConnection(
                 const m = netStateToMeters(ps);
                 state.localPosition = m.position;
               } else {
+                const m = netStateToMeters(ps);
                 state.interpolator.push(ps.id, {
                   serverTick: packet.serverTick,
                   receivedAtMs: performance.now(),
-                  position: netStateToMeters(ps).position,
-                  velocity: netStateToMeters(ps).velocity,
-                  yaw: netStateToMeters(ps).yaw,
-                  pitch: netStateToMeters(ps).pitch,
+                  position: m.position,
+                  velocity: m.velocity,
+                  yaw: m.yaw,
+                  pitch: m.pitch,
                   hp: ps.hp,
                   flags: ps.flags,
                 });
-              }
-            }
-            // Update remote players from interpolator
-            for (const id of knownIds) {
-              if (id === state.playerId) continue;
-              const pose = state.interpolator.sample(id, state.latestServerTick - 2);
-              if (pose) {
-                state.remotePlayers.set(id, {
-                  id,
-                  position: pose.position,
-                  yaw: pose.yaw,
-                  pitch: pose.pitch,
-                  hp: pose.hp,
+                state.remotePlayers.set(ps.id, {
+                  id: ps.id,
+                  position: m.position,
+                  yaw: m.yaw,
+                  pitch: m.pitch,
+                  hp: ps.hp,
                 });
               }
             }
-            // Remove players no longer in snapshot
+            // Remove disconnected players
             for (const id of state.remotePlayers.keys()) {
               if (!knownIds.has(id)) {
                 state.remotePlayers.delete(id);
@@ -107,7 +102,7 @@ export function useGameConnection(
         }
       },
       onClose: () => {
-        onDisconnect();
+        onDisconnectRef.current();
       },
     });
 
@@ -115,13 +110,15 @@ export function useGameConnection(
     const identity = 'player-' + Math.random().toString(36).slice(2, 8);
     const token = 'mvp-token';
     const wsUrl = `ws://${window.location.hostname}:${window.location.port || '3000'}/ws/${matchId}?identity=${identity}&token=${token}`;
+    console.log('[game] Connecting to', wsUrl);
     socket.connect(wsUrl);
     state.socket = socket;
 
     return () => {
       socket.disconnect();
+      state.socket = null;
     };
-  }, [onWelcome, onDisconnect]);
+  }, []);
 
   const sendInput = useCallback((cmd: InputCmd) => {
     const state = stateRef.current;

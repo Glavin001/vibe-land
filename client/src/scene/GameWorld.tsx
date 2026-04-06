@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGameConnection, type RemotePlayer } from './useGameConnection';
@@ -27,8 +27,9 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const seqRef = useRef(1);
-  const remotePlayersRef = useRef<Map<number, THREE.Group>>(new Map());
-  const sceneGroupRef = useRef<THREE.Group>(null);
+  const remoteGroupRef = useRef<THREE.Group>(null);
+  const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const logTimer = useRef(0);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.code);
@@ -52,10 +53,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     };
   }, [gl]);
 
-  const groundGeom = useMemo(() => new THREE.PlaneGeometry(200, 200), []);
-  const groundMat = useMemo(() => new THREE.MeshStandardMaterial({ color: 0x333333 }), []);
-
-  useFrame((_rootState, delta) => {
+  useFrame(() => {
     if (!ready) return;
     const state = stateRef.current;
     const keys = keysRef.current;
@@ -73,7 +71,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     const input = buildInputFromButtons(seq, clientTick, buttons, yawRef.current, pitchRef.current);
     sendInput(input);
 
-    // Camera follows local player position from server
+    // Camera follows server-authoritative local position
     const pos = state.localPosition;
     const eyeHeight = 1.6;
     const yaw = yawRef.current;
@@ -85,67 +83,84 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     const lookZ = pos[2] + Math.cos(yaw) * Math.cos(pitch);
     camera.lookAt(lookX, lookY, lookZ);
 
-    // Update remote player meshes
-    const group = sceneGroupRef.current;
-    if (!group) return;
-
-    const currentRemote = new Map<number, RemotePlayer>(state.remotePlayers);
-
-    // Remove stale meshes
-    for (const [id, mesh] of remotePlayersRef.current) {
-      if (!currentRemote.has(id)) {
-        group.remove(mesh);
-        remotePlayersRef.current.delete(id);
-      }
+    // Debug logging
+    logTimer.current++;
+    if (logTimer.current % 120 === 0) {
+      console.log('[game] local pos:', pos, 'remotePlayers:', state.remotePlayers.size, 'tick:', state.latestServerTick);
     }
 
-    // Add/update remote players
+    // Update remote player meshes
+    const group = remoteGroupRef.current;
+    if (!group) return;
+
+    const currentRemote = state.remotePlayers;
+    const activeIds = new Set<number>();
+
     for (const [id, rp] of currentRemote) {
-      let playerGroup = remotePlayersRef.current.get(id);
+      activeIds.add(id);
+      let playerGroup = remoteMeshes.current.get(id);
       if (!playerGroup) {
         playerGroup = createPlayerMesh(id);
         group.add(playerGroup);
-        remotePlayersRef.current.set(id, playerGroup);
+        remoteMeshes.current.set(id, playerGroup);
+        console.log('[game] Created mesh for remote player', id);
       }
       playerGroup.position.set(rp.position[0], rp.position[1], rp.position[2]);
       playerGroup.rotation.y = rp.yaw;
     }
+
+    // Remove stale
+    for (const [id, mesh] of remoteMeshes.current) {
+      if (!activeIds.has(id)) {
+        group.remove(mesh);
+        remoteMeshes.current.delete(id);
+        console.log('[game] Removed mesh for remote player', id);
+      }
+    }
   });
 
   return (
-    <group ref={sceneGroupRef}>
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[20, 30, 10]} intensity={1} castShadow />
+    <>
+      <ambientLight intensity={0.6} />
+      <directionalLight position={[20, 30, 10]} intensity={1} />
       <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
 
-      {/* Ground plane */}
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.5, 0]} receiveShadow geometry={groundGeom} material={groundMat} />
+      {/* Ground floor - 16x16 block area matching server demo world */}
+      <mesh rotation-x={-Math.PI / 2} position={[0, 0.5, 0]}>
+        <planeGeometry args={[16, 16]} />
+        <meshStandardMaterial color={0x556655} />
+      </mesh>
 
-      {/* Some block pillars matching server demo world */}
-      <VoxelFloor />
-      <Pillar x={2.5} z={2.5} height={3} />
-      <Pillar x={3.5} z={2.5} height={2} />
+      {/* Pillar blocks */}
+      <BoxBlock x={2.5} y={1.5} z={2.5} h={1} color={0x887766} />
+      <BoxBlock x={2.5} y={2.5} z={2.5} h={1} color={0x887766} />
+      <BoxBlock x={2.5} y={3.5} z={2.5} h={1} color={0x887766} />
+      <BoxBlock x={3.5} y={1.5} z={2.5} h={1} color={0x887766} />
+      <BoxBlock x={3.5} y={2.5} z={2.5} h={1} color={0x887766} />
+
+      {/* Grid lines for spatial reference */}
+      <gridHelper args={[32, 32, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
+
+      {/* Remote player group */}
+      <group ref={remoteGroupRef} />
 
       {/* Crosshair */}
-      <Crosshair />
-    </group>
+      <CrosshairHUD />
+    </>
   );
 }
 
-function VoxelFloor() {
-  const geom = useMemo(() => new THREE.BoxGeometry(16, 1, 16), []);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: 0x556655 }), []);
-  return <mesh geometry={geom} material={mat} position={[0, 0, 0]} receiveShadow />;
+function BoxBlock({ x, y, z, h, color }: { x: number; y: number; z: number; h: number; color: number }) {
+  return (
+    <mesh position={[x, y, z]}>
+      <boxGeometry args={[1, h, 1]} />
+      <meshStandardMaterial color={color} />
+    </mesh>
+  );
 }
 
-function Pillar({ x, z, height }: { x: number; z: number; height: number }) {
-  const geom = useMemo(() => new THREE.BoxGeometry(1, height, 1), [height]);
-  const mat = useMemo(() => new THREE.MeshStandardMaterial({ color: 0x887766 }), []);
-  return <mesh geometry={geom} material={mat} position={[x, 0.5 + height / 2, z]} castShadow />;
-}
-
-function Crosshair() {
-  return null; // HUD crosshair is CSS-based below
+function CrosshairHUD() {
+  return null;
 }
 
 function createPlayerMesh(id: number): THREE.Group {
@@ -154,40 +169,42 @@ function createPlayerMesh(id: number): THREE.Group {
 
   // Body capsule
   const bodyGeom = new THREE.CapsuleGeometry(0.35, 0.9, 8, 12);
-  const bodyMat = new THREE.MeshStandardMaterial({ color });
+  const bodyMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 });
   const body = new THREE.Mesh(bodyGeom, bodyMat);
   body.position.y = 0;
   group.add(body);
 
-  // Head sphere
-  const headGeom = new THREE.SphereGeometry(0.2, 12, 8);
+  // Head
+  const headGeom = new THREE.SphereGeometry(0.22, 12, 8);
   const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
   const head = new THREE.Mesh(headGeom, headMat);
-  head.position.y = 0.7;
+  head.position.y = 0.75;
   group.add(head);
 
-  // Direction indicator (nose)
-  const noseGeom = new THREE.ConeGeometry(0.08, 0.2, 6);
+  // Direction indicator
+  const noseGeom = new THREE.ConeGeometry(0.1, 0.25, 6);
   const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
   const nose = new THREE.Mesh(noseGeom, noseMat);
   nose.rotation.x = -Math.PI / 2;
-  nose.position.set(0, 0.7, 0.25);
+  nose.position.set(0, 0.75, 0.3);
   group.add(nose);
 
   // Player ID label
   const canvas = document.createElement('canvas');
   canvas.width = 128;
-  canvas.height = 32;
+  canvas.height = 48;
   const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 128, 48);
   ctx.fillStyle = '#fff';
-  ctx.font = '20px monospace';
+  ctx.font = 'bold 28px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(`P${id}`, 64, 24);
+  ctx.fillText(`P${id}`, 64, 34);
   const texture = new THREE.CanvasTexture(canvas);
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
-  sprite.scale.set(1.0, 0.25, 1);
-  sprite.position.y = 1.2;
+  sprite.scale.set(1.2, 0.45, 1);
+  sprite.position.y = 1.4;
   group.add(sprite);
 
   return group;
