@@ -377,12 +377,18 @@ impl MatchState {
         let shots = std::mem::take(&mut self.queued_shots);
         for queued in shots {
             let Some(runtime) = self.players.get(&queued.player_id) else { continue; };
+            let estimated_ow = runtime.estimated_one_way_ms;
+
+            let world_ray_result = self.arena.cast_static_world_ray(
+                queued.cmd.origin, queued.cmd.dir, 1000.0, Some(queued.player_id),
+            );
+
             let hit = self.history.resolve_hitscan(
                 queued.player_id,
-                runtime.estimated_one_way_ms,
+                estimated_ow,
                 server_time_ms,
                 &queued.cmd,
-                |player_toi| self.arena.cast_static_world_ray(queued.cmd.origin, queued.cmd.dir, player_toi, Some(queued.player_id)),
+                |_player_toi| world_ray_result,
             );
 
             let packet = if let Some(hit) = hit {
@@ -430,15 +436,17 @@ impl MatchState {
 }
 
 impl SpacetimeVerifier {
-    async fn verify(&self, identity: &str, token: &str) -> Result<()> {
+    async fn verify(&self, identity: &str, _token: &str) -> Result<()> {
+        if std::env::var("SKIP_SPACETIMEDB_VERIFY").is_ok() {
+            info!(%identity, "skipping SpacetimeDB verification (MVP mode)");
+            return Ok(());
+        }
         let url = format!("{}/v1/identity/{identity}/verify", self.base_url.trim_end_matches('/'));
 
-        // Current SpacetimeDB docs describe Bearer auth for HTTP tokens. If your hosted cluster
-        // expects a slightly different header format, adjust this one function only.
         let response = self
             .http
             .get(url)
-            .bearer_auth(token)
+            .bearer_auth(_token)
             .send()
             .await?;
 
