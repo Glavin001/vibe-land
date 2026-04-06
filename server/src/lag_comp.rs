@@ -3,10 +3,11 @@ use std::collections::{HashMap, VecDeque};
 #[derive(Clone, Copy, Debug)]
 pub struct HistoricalCapsule {
     pub server_tick: u32,
-    pub server_time_us: u64,
+    pub server_time_ms: u32,
     pub center: [f32; 3],
     pub radius: f32,
     pub half_segment: f32,
+    pub alive: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -23,14 +24,14 @@ pub struct HitResult {
 }
 
 pub struct LagCompHistory {
-    max_age_us: u64,
+    max_age_ms: u32,
     per_player: HashMap<u32, VecDeque<HistoricalCapsule>>,
 }
 
 impl LagCompHistory {
-    pub fn new(max_age_us: u64) -> Self {
+    pub fn new(max_age_ms: u32) -> Self {
         Self {
-            max_age_us,
+            max_age_ms,
             per_player: HashMap::new(),
         }
     }
@@ -39,7 +40,7 @@ impl LagCompHistory {
         let queue = self.per_player.entry(player_id).or_default();
         queue.push_back(snapshot);
         while let Some(front) = queue.front() {
-            if snapshot.server_time_us.saturating_sub(front.server_time_us) > self.max_age_us {
+            if snapshot.server_time_ms.saturating_sub(front.server_time_ms) > self.max_age_ms {
                 queue.pop_front();
             } else {
                 break;
@@ -56,24 +57,24 @@ impl LagCompHistory {
         shooter_id: u32,
         origin: [f32; 3],
         dir: [f32; 3],
-        estimated_one_way_us: u64,
-        server_time_us: u64,
-        client_interp_us: u64,
+        estimated_one_way_ms: u32,
+        server_time_ms: u32,
+        client_interp_ms: u32,
         world_toi: Option<f32>,
     ) -> Option<HitResult> {
         let mut dir = dir;
         normalize_in_place(&mut dir);
 
-        let rewind_time_us = server_time_us
-            .saturating_sub(estimated_one_way_us)
-            .saturating_sub(client_interp_us);
+        let rewind_time_ms = server_time_ms
+            .saturating_sub(estimated_one_way_ms)
+            .saturating_sub(client_interp_ms);
 
         let mut best: Option<HitResult> = None;
         for (&victim_id, history) in &self.per_player {
             if victim_id == shooter_id {
                 continue;
             }
-            let Some(capsule) = sample_capsule(history, rewind_time_us) else {
+            let Some(capsule) = sample_capsule(history, rewind_time_ms) else {
                 continue;
             };
             if let Some(toi) = ray_capsule_intersection(origin, dir, capsule.center, capsule.half_segment, capsule.radius) {
@@ -96,7 +97,7 @@ impl LagCompHistory {
     }
 }
 
-fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_us: u64) -> Option<InterpolatedCapsule> {
+fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_ms: u32) -> Option<InterpolatedCapsule> {
     if queue.is_empty() {
         return None;
     }
@@ -111,16 +112,16 @@ fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_us: u64) -> O
 
     let mut prev = queue.front().copied()?;
     for &next in queue.iter().skip(1) {
-        if target_time_us <= next.server_time_us {
-            if next.server_time_us == prev.server_time_us {
+        if target_time_ms <= next.server_time_ms {
+            if next.server_time_ms == prev.server_time_ms {
                 return Some(InterpolatedCapsule {
                     center: next.center,
                     radius: next.radius,
                     half_segment: next.half_segment,
                 });
             }
-            let span = (next.server_time_us - prev.server_time_us) as f32;
-            let t = ((target_time_us.saturating_sub(prev.server_time_us)) as f32 / span).clamp(0.0, 1.0);
+            let span = (next.server_time_ms - prev.server_time_ms) as f32;
+            let t = ((target_time_ms.saturating_sub(prev.server_time_ms)) as f32 / span).clamp(0.0, 1.0);
             return Some(InterpolatedCapsule {
                 center: lerp3(prev.center, next.center, t),
                 radius: prev.radius + (next.radius - prev.radius) * t,

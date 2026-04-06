@@ -32,7 +32,7 @@ use crate::{
     movement::{MoveConfig, PhysicsArena},
     protocol::{
         decode_client_packet, encode_server_packet, make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        SnapshotPacket, WelcomePacket,
+        SnapshotPacket, ShotResultPacket, WelcomePacket,
     },
     voxel_world::{VoxelWorld, CHUNK_SIZE},
 };
@@ -272,7 +272,8 @@ impl MatchState {
                     player_id: conn.player_id,
                     sim_hz: SIM_HZ,
                     snapshot_hz: SNAPSHOT_HZ,
-                    chunk_size: CHUNK_SIZE as u8,
+                    server_time_us: 0,
+                    interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
                 });
                 let _ = conn.tx.send(encode_server_packet(&welcome));
 
@@ -379,33 +380,41 @@ impl MatchState {
             let Some(runtime) = self.players.get(&queued.player_id) else { continue; };
             let estimated_ow = runtime.estimated_one_way_ms;
 
+            // Use the shooter's current eye position as origin
+            let origin = match self.arena.snapshot_player(queued.player_id) {
+                Some((pos, _, _, _, _, _)) => [pos[0], pos[1] + 0.8, pos[2]], // eye height offset
+                None => continue,
+            };
+
             let world_ray_result = self.arena.cast_static_world_ray(
-                queued.cmd.origin, queued.cmd.dir, 1000.0, Some(queued.player_id),
+                origin, queued.cmd.dir, 1000.0, Some(queued.player_id),
             );
 
             let hit = self.history.resolve_hitscan(
                 queued.player_id,
+                origin,
+                queued.cmd.dir,
                 estimated_ow,
                 server_time_ms,
-                &queued.cmd,
-                |_player_toi| world_ray_result,
+                queued.cmd.client_interp_ms as u32,
+                world_ray_result,
             );
 
             let packet = if let Some(hit) = hit {
                 if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
-                    state.hp = state.hp.saturating_sub(hit.damage as u8);
+                    state.hp = state.hp.saturating_sub(25);
                 }
-                ServerPacket::ShotResult(crate::protocol::ShotResultPacket {
+                ServerPacket::ShotResult(ShotResultPacket {
                     shot_id: queued.cmd.shot_id,
+                    weapon: queued.cmd.weapon,
                     hit_player_id: hit.victim_id,
-                    damage: hit.damage,
                     confirmed: true,
                 })
             } else {
-                ServerPacket::ShotResult(crate::protocol::ShotResultPacket {
+                ServerPacket::ShotResult(ShotResultPacket {
                     shot_id: queued.cmd.shot_id,
+                    weapon: queued.cmd.weapon,
                     hit_player_id: 0,
-                    damage: 0,
                     confirmed: false,
                 })
             };
@@ -417,18 +426,21 @@ impl MatchState {
     }
 
     fn broadcast_snapshot(&self) {
+        let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         let mut states = Vec::with_capacity(self.players.len());
         for &player_id in self.players.keys() {
-            if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
-                states.push(make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags));
+            if let Some((pos, vel, yaw, pitch, _hp, flags)) = self.arena.snapshot_player(player_id) {
+                states.push(make_net_player_state(player_id, pos, vel, yaw, pitch, flags));
             }
         }
 
         for runtime in self.players.values() {
             let packet = ServerPacket::Snapshot(SnapshotPacket {
+                server_time_us,
                 server_tick: self.server_tick,
                 ack_input_seq: runtime.last_ack_input_seq,
                 player_states: states.clone(),
+                projectile_states: Vec::new(),
             });
             let _ = runtime.tx.send(encode_server_packet(&packet));
         }

@@ -13,6 +13,8 @@ export const BTN_RIGHT = 1 << 3;
 export const BTN_JUMP = 1 << 4;
 export const BTN_CROUCH = 1 << 5;
 export const BTN_SPRINT = 1 << 6;
+export const BTN_SECONDARY_FIRE = 1 << 7;
+export const BTN_RELOAD = 1 << 8;
 
 export const FLAG_ON_GROUND = 1 << 0;
 
@@ -94,6 +96,20 @@ export type ShotResultPacket = {
 
 export type ServerReliablePacket = WelcomePacket | ShotResultPacket;
 export type ServerDatagramPacket = SnapshotPacket;
+
+export type ServerPingPacket = { type: 'serverPing'; value: number };
+export type PongPacket = { type: 'pong'; value: number };
+export type ServerPacket = WelcomePacket | SnapshotPacket | ShotResultPacket | ServerPingPacket | PongPacket;
+
+export type InputCmd = InputFrame;
+
+export type BlockEditCmd = {
+  chunk: [number, number, number];
+  expectedVersion: number;
+  local: [number, number, number];
+  op: number;
+  material: number;
+};
 
 export type PlayerStateMeters = {
   position: [number, number, number];
@@ -426,3 +442,58 @@ export function bytesFromHex(hex: string): Uint8Array {
 export function stringFromBytes(bytes: Uint8Array): string {
   return TEXT_DECODER.decode(bytes);
 }
+
+const PKT_PING = 110;
+const PKT_PONG = 111;
+const PKT_BLOCK_EDIT = 4;
+
+export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket {
+  const bytes = toBytes(data);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const kind = view.getUint8(0);
+
+  switch (kind) {
+    case PKT_WELCOME:
+    case PKT_SHOT_RESULT:
+      return decodeServerReliablePacket(data);
+    case PKT_SNAPSHOT:
+      return decodeServerDatagramPacket(data);
+    case PKT_PING:
+      return { type: 'serverPing', value: view.getUint32(1, true) };
+    case PKT_PONG:
+      return { type: 'pong', value: view.getUint32(1, true) };
+    default:
+      throw new Error(`unknown server packet kind: ${kind}`);
+  }
+}
+
+export function encodeInputPacket(cmd: InputCmd): Uint8Array {
+  return encodeInputBundle([cmd]);
+}
+
+export function encodeBlockEditPacket(cmd: BlockEditCmd): Uint8Array {
+  const out = new Uint8Array(1 + 6 + 4 + 3 + 1 + 2);
+  const view = new DataView(out.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_BLOCK_EDIT);
+  view.setInt16(o, cmd.chunk[0], true); o += 2;
+  view.setInt16(o, cmd.chunk[1], true); o += 2;
+  view.setInt16(o, cmd.chunk[2], true); o += 2;
+  view.setUint32(o, cmd.expectedVersion, true); o += 4;
+  view.setUint8(o++, cmd.local[0]);
+  view.setUint8(o++, cmd.local[1]);
+  view.setUint8(o++, cmd.local[2]);
+  view.setUint8(o++, cmd.op);
+  view.setUint16(o, cmd.material, true);
+  return out;
+}
+
+export function encodePingPacket(nonce: number): Uint8Array {
+  const out = new Uint8Array(5);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_PING);
+  view.setUint32(1, nonce >>> 0, true);
+  return out;
+}
+
+export const netStateToMeters = netPlayerStateToMeters;

@@ -211,6 +211,67 @@ function lerpVec3(a: [number, number, number], b: [number, number, number], t: n
   ];
 }
 
+export type SnapshotSample = {
+  serverTick: number;
+  receivedAtMs: number;
+  position: [number, number, number];
+  velocity: [number, number, number];
+  yaw: number;
+  pitch: number;
+  hp: number;
+  flags: number;
+};
+
+export class SnapshotInterpolator {
+  private readonly byEntity = new Map<number, SnapshotSample[]>();
+  private readonly maxSamples: number;
+
+  constructor(maxSamples = 32) {
+    this.maxSamples = maxSamples;
+  }
+
+  push(entityId: number, sample: SnapshotSample): void {
+    const queue = this.byEntity.get(entityId) ?? [];
+    queue.push(sample);
+    while (queue.length > this.maxSamples) {
+      queue.shift();
+    }
+    this.byEntity.set(entityId, queue);
+  }
+
+  remove(entityId: number): void {
+    this.byEntity.delete(entityId);
+  }
+
+  sample(entityId: number, renderTimeMs: number): SnapshotSample | null {
+    const queue = this.byEntity.get(entityId);
+    if (!queue || queue.length === 0) return null;
+    if (queue.length === 1) return { ...queue[0] };
+
+    for (let i = 1; i < queue.length; i++) {
+      const prev = queue[i - 1];
+      const next = queue[i];
+      if (renderTimeMs <= next.receivedAtMs) {
+        const alpha = clamp01(
+          (renderTimeMs - prev.receivedAtMs) / (next.receivedAtMs - prev.receivedAtMs || 1),
+        );
+        return {
+          serverTick: alpha < 0.5 ? prev.serverTick : next.serverTick,
+          receivedAtMs: renderTimeMs,
+          position: lerpVec3(prev.position, next.position, alpha),
+          velocity: lerpVec3(prev.velocity, next.velocity, alpha),
+          yaw: lerpAngle(prev.yaw, next.yaw, alpha),
+          pitch: lerpAngle(prev.pitch, next.pitch, alpha),
+          hp: alpha < 0.5 ? prev.hp : next.hp,
+          flags: alpha < 0.5 ? prev.flags : next.flags,
+        };
+      }
+    }
+
+    return { ...queue[queue.length - 1] };
+  }
+}
+
 function lerpAngle(a: number, b: number, t: number): number {
   let delta = b - a;
   while (delta > Math.PI) delta -= Math.PI * 2;

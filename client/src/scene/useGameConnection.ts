@@ -76,7 +76,7 @@ export function useGameConnection(
                   velocity: m.velocity,
                   yaw: m.yaw,
                   pitch: m.pitch,
-                  hp: ps.hp,
+                  hp: 100,
                   flags: ps.flags,
                 });
                 state.remotePlayers.set(ps.id, {
@@ -84,7 +84,7 @@ export function useGameConnection(
                   position: m.position,
                   yaw: m.yaw,
                   pitch: m.pitch,
-                  hp: ps.hp,
+                  hp: 100,
                 });
               }
             }

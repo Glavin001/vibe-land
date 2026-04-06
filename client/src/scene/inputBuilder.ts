@@ -10,7 +10,7 @@ import {
 
 export function buildInputFromButtons(
   seq: number,
-  clientTick: number,
+  _clientTick: number,
   buttons: number,
   yaw: number,
   pitch: number,
@@ -20,7 +20,6 @@ export function buildInputFromButtons(
 
   return {
     seq,
-    clientTick,
     buttons: buttons & ~(BTN_SECONDARY_FIRE | BTN_RELOAD),
     moveX,
     moveY,

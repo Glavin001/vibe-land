@@ -22,6 +22,14 @@ pub const FLAG_ON_GROUND: u16 = 1 << 0;
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
 
+pub const BLOCK_ADD: u8 = 1;
+pub const BLOCK_REMOVE: u8 = 2;
+
+pub const PKT_CHUNK_FULL: u8 = 104;
+pub const PKT_CHUNK_DIFF: u8 = 105;
+pub const PKT_PING: u8 = 110;
+pub const PKT_PONG: u8 = 111;
+
 #[derive(Clone, Debug)]
 pub struct ClientHello {
     pub match_id: String,
@@ -44,6 +52,69 @@ pub struct FireCmd {
     pub weapon: u8,
     pub client_interp_ms: u16,
     pub dir: [f32; 3],
+}
+
+/// Server-side representation of the latest input for a player.
+/// Same layout as InputFrame.
+pub type InputCmd = InputFrame;
+
+#[derive(Clone, Debug)]
+pub struct BlockCell {
+    pub x: u8,
+    pub y: u8,
+    pub z: u8,
+    pub material: u16,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BlockEditNet {
+    pub x: u8,
+    pub y: u8,
+    pub z: u8,
+    pub op: u8,
+    pub material: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockEditCmd {
+    pub chunk: [i16; 3],
+    pub expected_version: u32,
+    pub local: [u8; 3],
+    pub op: u8,
+    pub material: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkFullPacket {
+    pub chunk: [i16; 3],
+    pub version: u32,
+    pub blocks: Vec<BlockCell>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChunkDiffPacket {
+    pub chunk: [i16; 3],
+    pub version: u32,
+    pub edits: Vec<BlockEditNet>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ClientPacket {
+    Input(InputCmd),
+    Fire(FireCmd),
+    BlockEdit(BlockEditCmd),
+    Ping(u32),
+}
+
+#[derive(Clone, Debug)]
+pub enum ServerPacket {
+    Welcome(WelcomePacket),
+    Snapshot(SnapshotPacket),
+    ShotResult(ShotResultPacket),
+    ChunkFull(ChunkFullPacket),
+    ChunkDiff(ChunkDiffPacket),
+    Ping(u32),
+    Pong(u32),
 }
 
 #[derive(Clone, Debug)]
@@ -299,4 +370,162 @@ pub fn i16_to_angle(encoded: i16) -> f32 {
 
 pub fn snorm16_to_f32(value: i16) -> f32 {
     (value as f32 / 32767.0).clamp(-1.0, 1.0)
+}
+
+const PKT_BLOCK_EDIT: u8 = 4;
+
+pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
+    ensure!(!bytes.is_empty(), "empty client packet");
+    let mut buf = bytes;
+    let kind = buf.get_u8();
+    Ok(match kind {
+        PKT_INPUT_BUNDLE => {
+            ensure!(buf.remaining() >= 1, "short input bundle header");
+            let count = buf.get_u8() as usize;
+            ensure!(count > 0, "input bundle cannot be empty");
+            ensure!(buf.remaining() >= count * 10, "short input bundle payload");
+            let mut last = InputFrame::default();
+            for _ in 0..count {
+                last = InputFrame {
+                    seq: buf.get_u16_le(),
+                    buttons: buf.get_u16_le(),
+                    move_x: buf.get_i8(),
+                    move_y: buf.get_i8(),
+                    yaw: i16_to_angle(buf.get_i16_le()),
+                    pitch: i16_to_angle(buf.get_i16_le()),
+                };
+            }
+            ClientPacket::Input(last)
+        }
+        PKT_FIRE => {
+            ensure!(buf.remaining() >= 15, "short fire packet");
+            let seq = buf.get_u16_le();
+            let shot_id = buf.get_u32_le();
+            let weapon = buf.get_u8();
+            let client_interp_ms = buf.get_u16_le();
+            let dir = [
+                snorm16_to_f32(buf.get_i16_le()),
+                snorm16_to_f32(buf.get_i16_le()),
+                snorm16_to_f32(buf.get_i16_le()),
+            ];
+            ClientPacket::Fire(FireCmd {
+                seq,
+                shot_id,
+                weapon,
+                client_interp_ms,
+                dir,
+            })
+        }
+        PKT_BLOCK_EDIT => {
+            ensure!(buf.remaining() >= 14, "short block edit packet");
+            let chunk = [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()];
+            let expected_version = buf.get_u32_le();
+            let local = [buf.get_u8(), buf.get_u8(), buf.get_u8()];
+            let op = buf.get_u8();
+            let material = buf.get_u16_le();
+            ClientPacket::BlockEdit(BlockEditCmd {
+                chunk,
+                expected_version,
+                local,
+                op,
+                material,
+            })
+        }
+        PKT_PING => {
+            ensure!(buf.remaining() >= 4, "short ping packet");
+            ClientPacket::Ping(buf.get_u32_le())
+        }
+        other => bail!("unknown client packet kind {other}"),
+    })
+}
+
+pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
+    let mut out = BytesMut::with_capacity(2048);
+    match packet {
+        ServerPacket::Welcome(pkt) => {
+            out.put_u8(PKT_WELCOME);
+            out.put_u32_le(pkt.player_id);
+            out.put_u16_le(pkt.sim_hz);
+            out.put_u16_le(pkt.snapshot_hz);
+            out.put_u64_le(pkt.server_time_us);
+            out.put_u16_le(pkt.interpolation_delay_ms);
+        }
+        ServerPacket::Snapshot(pkt) => {
+            out.put_u8(PKT_SNAPSHOT);
+            out.put_u64_le(pkt.server_time_us);
+            out.put_u32_le(pkt.server_tick);
+            out.put_u16_le(pkt.ack_input_seq);
+            out.put_u16_le(pkt.player_states.len() as u16);
+            out.put_u16_le(pkt.projectile_states.len() as u16);
+            for p in &pkt.player_states {
+                out.put_u32_le(p.id);
+                out.put_i32_le(p.px_mm);
+                out.put_i32_le(p.py_mm);
+                out.put_i32_le(p.pz_mm);
+                out.put_i16_le(p.vx_cms);
+                out.put_i16_le(p.vy_cms);
+                out.put_i16_le(p.vz_cms);
+                out.put_i16_le(p.yaw_i16);
+                out.put_i16_le(p.pitch_i16);
+                out.put_u16_le(p.flags);
+            }
+            for p in &pkt.projectile_states {
+                out.put_u32_le(p.id);
+                out.put_u32_le(p.owner_id);
+                out.put_u32_le(p.source_shot_id);
+                out.put_u8(p.kind);
+                out.put_i32_le(p.px_mm);
+                out.put_i32_le(p.py_mm);
+                out.put_i32_le(p.pz_mm);
+                out.put_i16_le(p.vx_cms);
+                out.put_i16_le(p.vy_cms);
+                out.put_i16_le(p.vz_cms);
+            }
+        }
+        ServerPacket::ShotResult(pkt) => {
+            out.put_u8(PKT_SHOT_RESULT);
+            out.put_u32_le(pkt.shot_id);
+            out.put_u8(pkt.weapon);
+            out.put_u8(pkt.confirmed as u8);
+            out.put_u32_le(pkt.hit_player_id);
+        }
+        ServerPacket::ChunkFull(pkt) => {
+            out.put_u8(PKT_CHUNK_FULL);
+            out.put_i16_le(pkt.chunk[0]);
+            out.put_i16_le(pkt.chunk[1]);
+            out.put_i16_le(pkt.chunk[2]);
+            out.put_u32_le(pkt.version);
+            out.put_u16_le(pkt.blocks.len() as u16);
+            for b in &pkt.blocks {
+                out.put_u8(b.x);
+                out.put_u8(b.y);
+                out.put_u8(b.z);
+                out.put_u16_le(b.material);
+            }
+        }
+        ServerPacket::ChunkDiff(pkt) => {
+            out.put_u8(PKT_CHUNK_DIFF);
+            out.put_i16_le(pkt.chunk[0]);
+            out.put_i16_le(pkt.chunk[1]);
+            out.put_i16_le(pkt.chunk[2]);
+            out.put_u32_le(pkt.version);
+            out.put_u8(pkt.edits.len() as u8);
+            for e in &pkt.edits {
+                out.put_u8(e.x);
+                out.put_u8(e.y);
+                out.put_u8(e.z);
+                out.put_u8(e.op);
+                out.put_u16_le(e.material);
+            }
+        }
+        ServerPacket::Ping(v) => {
+            out.put_u8(PKT_PING);
+            out.put_u32_le(*v);
+        }
+        ServerPacket::Pong(v) => {
+            out.put_u8(PKT_PONG);
+            out.put_u32_le(*v);
+        }
+    }
+    out.to_vec()
 }
