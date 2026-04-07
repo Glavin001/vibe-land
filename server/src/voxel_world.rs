@@ -241,3 +241,299 @@ fn mod_floor(a: i32, b: i32) -> i32 {
     let r = a % b;
     if r < 0 { r + b } else { r }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{BLOCK_ADD, BLOCK_REMOVE, BlockEditCmd};
+    use crate::movement::MoveConfig;
+
+    fn make_arena() -> PhysicsArena {
+        PhysicsArena::new(MoveConfig::default())
+    }
+
+    // ── div_floor / mod_floor ──────────────────────
+
+    #[test]
+    fn div_floor_positive() {
+        assert_eq!(div_floor(17, 16), 1);
+        assert_eq!(div_floor(16, 16), 1);
+        assert_eq!(div_floor(15, 16), 0);
+        assert_eq!(div_floor(0, 16), 0);
+    }
+
+    #[test]
+    fn div_floor_negative() {
+        assert_eq!(div_floor(-1, 16), -1);
+        assert_eq!(div_floor(-16, 16), -1);
+        assert_eq!(div_floor(-17, 16), -2);
+        assert_eq!(div_floor(-32, 16), -2);
+        assert_eq!(div_floor(-33, 16), -3);
+    }
+
+    #[test]
+    fn mod_floor_positive() {
+        assert_eq!(mod_floor(0, 16), 0);
+        assert_eq!(mod_floor(1, 16), 1);
+        assert_eq!(mod_floor(15, 16), 15);
+        assert_eq!(mod_floor(16, 16), 0);
+        assert_eq!(mod_floor(17, 16), 1);
+    }
+
+    #[test]
+    fn mod_floor_negative() {
+        assert_eq!(mod_floor(-1, 16), 15);
+        assert_eq!(mod_floor(-16, 16), 0);
+        assert_eq!(mod_floor(-17, 16), 15);
+        assert_eq!(mod_floor(-15, 16), 1);
+    }
+
+    // ── pack / unpack local index ──────────────────
+
+    #[test]
+    fn pack_unpack_roundtrip_origin() {
+        let packed = pack_local_index(0, 0, 0);
+        assert_eq!(unpack_local_index(packed), [0, 0, 0]);
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip_max() {
+        let packed = pack_local_index(15, 15, 15);
+        assert_eq!(unpack_local_index(packed), [15, 15, 15]);
+    }
+
+    #[test]
+    fn pack_unpack_roundtrip_mixed() {
+        let packed = pack_local_index(7, 8, 9);
+        assert_eq!(unpack_local_index(packed), [7, 8, 9]);
+    }
+
+    // ── world_to_chunk_and_local ───────────────────
+
+    #[test]
+    fn world_to_chunk_and_local_positive() {
+        let (key, local) = world_to_chunk_and_local(5, 3, 7);
+        assert_eq!(key, ChunkKey { x: 0, y: 0, z: 0 });
+        assert_eq!(local, [5, 3, 7]);
+    }
+
+    #[test]
+    fn world_to_chunk_and_local_at_chunk_boundary_16() {
+        let (key, local) = world_to_chunk_and_local(16, 0, 0);
+        assert_eq!(key, ChunkKey { x: 1, y: 0, z: 0 });
+        assert_eq!(local, [0, 0, 0]);
+    }
+
+    #[test]
+    fn world_to_chunk_and_local_at_zero() {
+        let (key, local) = world_to_chunk_and_local(0, 0, 0);
+        assert_eq!(key, ChunkKey { x: 0, y: 0, z: 0 });
+        assert_eq!(local, [0, 0, 0]);
+    }
+
+    #[test]
+    fn world_to_chunk_and_local_negative_minus_one() {
+        let (key, local) = world_to_chunk_and_local(-1, -1, -1);
+        assert_eq!(key, ChunkKey { x: -1, y: -1, z: -1 });
+        assert_eq!(local, [15, 15, 15]);
+    }
+
+    #[test]
+    fn world_to_chunk_and_local_negative_minus_16() {
+        let (key, local) = world_to_chunk_and_local(-16, 0, 0);
+        assert_eq!(key, ChunkKey { x: -1, y: 0, z: 0 });
+        assert_eq!(local, [0, 0, 0]);
+    }
+
+    #[test]
+    fn world_to_chunk_and_local_negative_minus_17() {
+        let (key, local) = world_to_chunk_and_local(-17, 0, 0);
+        assert_eq!(key, ChunkKey { x: -2, y: 0, z: 0 });
+        assert_eq!(local, [15, 0, 0]);
+    }
+
+    // ── chunk_local_to_world_center ────────────────
+
+    #[test]
+    fn chunk_local_to_world_center_origin_chunk() {
+        let center = chunk_local_to_world_center(
+            ChunkKey { x: 0, y: 0, z: 0 },
+            [0, 0, 0],
+        );
+        assert!((center.x - 0.5).abs() < 1e-5);
+        assert!((center.y - 0.5).abs() < 1e-5);
+        assert!((center.z - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn chunk_local_to_world_center_offset_chunk() {
+        let center = chunk_local_to_world_center(
+            ChunkKey { x: 1, y: 0, z: -1 },
+            [3, 5, 7],
+        );
+        // world x = 1*16 + 3 + 0.5 = 19.5
+        assert!((center.x - 19.5).abs() < 1e-5);
+        // world y = 0*16 + 5 + 0.5 = 5.5
+        assert!((center.y - 5.5).abs() < 1e-5);
+        // world z = -1*16 + 7 + 0.5 = -8.5
+        assert!((center.z - (-8.5)).abs() < 1e-5);
+    }
+
+    // ── apply_edit ─────────────────────────────────
+
+    #[test]
+    fn apply_edit_version_mismatch() {
+        let mut world = VoxelWorld::new();
+        let mut arena = make_arena();
+
+        // Insert a block to create chunk at (0,0,0) with version 1
+        let (key, local) = world_to_chunk_and_local(0, 0, 0);
+        let chunk = world.chunks.entry(key).or_default();
+        chunk.blocks.insert(pack_local_index(local[0], local[1], local[2]), 1);
+        chunk.version = 1;
+
+        let cmd = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 99, // wrong version
+            local: [1, 1, 1],
+            op: BLOCK_ADD,
+            material: 2,
+        };
+
+        let result = world.apply_edit(&mut arena, &cmd);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("version mismatch"));
+    }
+
+    #[test]
+    fn apply_edit_add_block_succeeds() {
+        let mut world = VoxelWorld::new();
+        let mut arena = make_arena();
+
+        let cmd = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 0, // default version for new chunk
+            local: [3, 4, 5],
+            op: BLOCK_ADD,
+            material: 7,
+        };
+
+        let result = world.apply_edit(&mut arena, &cmd);
+        assert!(result.is_ok());
+
+        let diff = result.unwrap();
+        assert_eq!(diff.chunk, [0, 0, 0]);
+        assert_eq!(diff.version, 1);
+        assert_eq!(diff.edits.len(), 1);
+        assert_eq!(diff.edits[0].op, BLOCK_ADD);
+        assert_eq!(diff.edits[0].material, 7);
+
+        // Verify block is stored
+        let key = ChunkKey { x: 0, y: 0, z: 0 };
+        let idx = pack_local_index(3, 4, 5);
+        assert_eq!(world.chunks[&key].blocks[&idx], 7);
+    }
+
+    #[test]
+    fn apply_edit_remove_block() {
+        let mut world = VoxelWorld::new();
+        let mut arena = make_arena();
+
+        // First add a block
+        let add_cmd = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 0,
+            local: [3, 4, 5],
+            op: BLOCK_ADD,
+            material: 7,
+        };
+        world.apply_edit(&mut arena, &add_cmd).unwrap();
+
+        // Now remove it
+        let remove_cmd = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 1, // version was bumped by the add
+            local: [3, 4, 5],
+            op: BLOCK_REMOVE,
+            material: 0,
+        };
+        let result = world.apply_edit(&mut arena, &remove_cmd);
+        assert!(result.is_ok());
+
+        let key = ChunkKey { x: 0, y: 0, z: 0 };
+        let idx = pack_local_index(3, 4, 5);
+        assert!(!world.chunks[&key].blocks.contains_key(&idx));
+    }
+
+    // ── take_dirty_chunk_diffs ─────────────────────
+
+    #[test]
+    fn take_dirty_chunk_diffs_returns_and_clears() {
+        let mut world = VoxelWorld::new();
+        let mut arena = make_arena();
+
+        let cmd = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 0,
+            local: [1, 2, 3],
+            op: BLOCK_ADD,
+            material: 5,
+        };
+        world.apply_edit(&mut arena, &cmd).unwrap();
+
+        let diffs = world.take_dirty_chunk_diffs();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].edits.len(), 1);
+        assert_eq!(diffs[0].edits[0].x, 1);
+        assert_eq!(diffs[0].edits[0].y, 2);
+        assert_eq!(diffs[0].edits[0].z, 3);
+
+        // Second call should be empty
+        let diffs2 = world.take_dirty_chunk_diffs();
+        assert!(diffs2.is_empty());
+    }
+
+    // ── chunk_full_packet ──────────────────────────
+
+    #[test]
+    fn chunk_full_packet_returns_correct_blocks() {
+        let mut world = VoxelWorld::new();
+        let mut arena = make_arena();
+
+        // Add two blocks
+        let cmd1 = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 0,
+            local: [1, 2, 3],
+            op: BLOCK_ADD,
+            material: 10,
+        };
+        world.apply_edit(&mut arena, &cmd1).unwrap();
+
+        let cmd2 = BlockEditCmd {
+            chunk: [0, 0, 0],
+            expected_version: 1,
+            local: [4, 5, 6],
+            op: BLOCK_ADD,
+            material: 20,
+        };
+        world.apply_edit(&mut arena, &cmd2).unwrap();
+
+        let packet = world.chunk_full_packet(ChunkKey { x: 0, y: 0, z: 0 }).unwrap();
+        assert_eq!(packet.chunk, [0, 0, 0]);
+        assert_eq!(packet.version, 2);
+        assert_eq!(packet.blocks.len(), 2);
+
+        // Check both blocks are present (order may vary)
+        let has_block_1 = packet.blocks.iter().any(|b| b.x == 1 && b.y == 2 && b.z == 3 && b.material == 10);
+        let has_block_2 = packet.blocks.iter().any(|b| b.x == 4 && b.y == 5 && b.z == 6 && b.material == 20);
+        assert!(has_block_1, "first block missing");
+        assert!(has_block_2, "second block missing");
+    }
+
+    #[test]
+    fn chunk_full_packet_missing_chunk_returns_none() {
+        let world = VoxelWorld::new();
+        assert!(world.chunk_full_packet(ChunkKey { x: 99, y: 99, z: 99 }).is_none());
+    }
+}
