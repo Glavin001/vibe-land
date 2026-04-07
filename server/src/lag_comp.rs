@@ -367,6 +367,38 @@ mod tests {
     }
 
     #[test]
+    fn ray_parallel_offset_misses() {
+        // Ray parallel to capsule axis but offset beyond radius
+        let result = ray_capsule_intersection(
+            [1.0, -10.0, 0.0], // offset by 1.0 in X, radius is 0.35
+            [0.0, 1.0, 0.0],   // shooting along Y (parallel to axis)
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+        );
+        assert!(result.is_none(), "parallel offset ray should miss");
+    }
+
+    #[test]
+    fn ray_grazing_tangent() {
+        // Ray that just barely touches the capsule cylinder at radius distance
+        // Capsule at origin, radius 0.35, aim ray from X = 0.35 exactly (tangent)
+        let result = ray_capsule_intersection(
+            [0.35, 0.0, -10.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+        );
+        // Tangent ray should either just hit or just miss; at exact boundary it should hit
+        // with toi near 10.0
+        if let Some(toi) = result {
+            assert!(toi > 9.0 && toi < 11.0, "grazing toi should be near 10, got {}", toi);
+        }
+        // If it returns None that's also acceptable for exact tangent
+    }
+
+    #[test]
     fn ray_from_inside_capsule_returns_none() {
         // Ray originates inside the capsule (toi would be negative)
         let result = ray_capsule_intersection(

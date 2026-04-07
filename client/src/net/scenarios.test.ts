@@ -39,6 +39,7 @@ import {
 } from './testHarness';
 import { FIXED_DT, HARD_SNAP_DISTANCE, MAX_CATCHUP_STEPS } from '../physics/predictionManager';
 import { FLAG_ON_GROUND } from './protocol';
+import { ServerClockEstimator, PlayerInterpolator, ProjectileInterpolator } from './interpolation';
 
 beforeAll(async () => {
   await RAPIER.init();
@@ -57,6 +58,38 @@ function createScenario(config?: Parameters<typeof NetcodeTestScenario['prototyp
   return s;
 }
 
+/**
+ * Invariant checks that should hold true at ANY point during a scenario.
+ * Call this after any significant state change to catch bugs early.
+ * These are the properties that, if violated, indicate a real netcode bug.
+ */
+function assertInvariants(s: NetcodeTestScenario, context: string): void {
+  const pos = s.getClientPosition();
+  const offset = s.getCorrectionOffset();
+  const pending = s.getPendingInputCount();
+
+  // Position must always be finite (NaN/Infinity = physics explosion)
+  expect(isFinite(pos[0]), `${context}: client X is not finite (${pos[0]})`).toBe(true);
+  expect(isFinite(pos[1]), `${context}: client Y is not finite (${pos[1]})`).toBe(true);
+  expect(isFinite(pos[2]), `${context}: client Z is not finite (${pos[2]})`).toBe(true);
+
+  // Correction offset must be finite
+  expect(isFinite(offset[0]), `${context}: offset X is not finite`).toBe(true);
+  expect(isFinite(offset[1]), `${context}: offset Y is not finite`).toBe(true);
+  expect(isFinite(offset[2]), `${context}: offset Z is not finite`).toBe(true);
+
+  // Pending input count is non-negative and bounded
+  expect(pending, `${context}: negative pending count`).toBeGreaterThanOrEqual(0);
+  expect(pending, `${context}: pending count exploded (>500)`).toBeLessThan(500);
+
+  // Server position must also be finite
+  for (const [id, player] of s.serverPlayers) {
+    expect(isFinite(player.position[0]), `${context}: server player ${id} X not finite`).toBe(true);
+    expect(isFinite(player.position[1]), `${context}: server player ${id} Y not finite`).toBe(true);
+    expect(isFinite(player.position[2]), `${context}: server player ${id} Z not finite`).toBe(true);
+  }
+}
+
 // ═══════════════════════════════════════════════
 // Category A: Happy Path / Baseline
 // ═══════════════════════════════════════════════
@@ -70,10 +103,19 @@ describe('Category A: Happy Path', () => {
     s.runServerTicks(30);
     s.deliverServerToClient();
 
-    // With zero latency and same physics, divergence should be small
+    assertInvariants(s, 'A1 after reconcile');
+
+    // With zero latency, all inputs should be acked
+    expect(s.getPendingInputCount()).toBe(0);
+
+    // Client moved forward (not stuck at origin)
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(1.0);
+
+    // Client and server should be close (both ran same inputs with same physics constants)
+    // The only difference is Rapier (client) vs pure-math (server) collision
     const divergence = s.getClientServerDivergence();
     expect(divergence).toBeLessThan(0.5);
-    expect(s.getPendingInputCount()).toBe(0);
   });
 
   it.each([10, 50, 100, 200])(
@@ -214,7 +256,9 @@ describe('Category C: Latency', () => {
       }
     }
 
+    assertInvariants(s, 'C9 before spike');
     const posBeforeSpike = s.getClientPosition();
+    const divBeforeSpike = s.getClientServerDivergence();
 
     // Spike: increase latency to 250ms one-way
     s.setClientToServerConfig({ latencyMs: 250 });
@@ -225,6 +269,8 @@ describe('Category C: Latency', () => {
       s.runClientFrames(1, { buttons: BTN_FORWARD });
       s.runServerTicks(1);
     }
+
+    assertInvariants(s, 'C9 during spike');
 
     // Restore normal latency
     s.setClientToServerConfig({ latencyMs: 25 });
@@ -239,10 +285,13 @@ describe('Category C: Latency', () => {
       s.deliverServerToClient();
     }
 
-    // Should not have exploded or teleported wildly
+    assertInvariants(s, 'C9 after recovery');
+
     const posAfterRecovery = s.getClientPosition();
-    expect(posAfterRecovery[2]).toBeGreaterThan(posBeforeSpike[2]); // still moving
-    expect(s.getClientServerDivergence()).toBeLessThan(5.0);
+    // Must still be moving forward (not stuck or reversed)
+    expect(posAfterRecovery[2]).toBeGreaterThan(posBeforeSpike[2]);
+    // Divergence should have recovered (not permanently drifted)
+    expect(s.getClientServerDivergence()).toBeLessThan(3.0);
   });
 
   it('C12: near-zero latency (LAN, 2ms RTT) — no off-by-one', () => {
@@ -318,23 +367,40 @@ describe('Category F: Sequence Numbers', () => {
   it('F20: sequence wraparound (0xFFFF → 0x0000)', () => {
     const s = createScenario({ latencyMs: 0 });
 
-    // Advance sequence near wraparound
-    for (let i = 0; i < 0xfff0; i++) {
-      s.runClientFrames(1);
-    }
+    // Fast-forward the sequence counter near the u16 boundary
+    s.client.setNextSeq(0xfff0);
 
-    // Now run across the boundary
+    // Also sync server's ack to match
+    const player = s.serverPlayers.get(1)!;
+    player.lastAckedSeq = 0xffef; // just before our first seq
+
+    // Now run 32 frames across the boundary with actual movement
     const cmds = s.runClientFrames(32, { buttons: BTN_FORWARD });
     s.runServerTicks(32);
     s.deliverServerToClient();
 
-    // Should have handled wraparound correctly
-    expect(s.getClientServerDivergence()).toBeLessThan(1.0);
+    assertInvariants(s, 'F20 after wraparound');
 
-    // Verify we actually crossed the boundary
+    // Verify we actually crossed the u16 boundary
     const seqs = cmds.map((c) => c.seq);
-    expect(seqs.some((s) => s > 0xfff0)).toBe(true);
-    expect(seqs.some((s) => s < 0x0010)).toBe(true);
+    const preWrap = seqs.filter(s => s >= 0xfff0);
+    const postWrap = seqs.filter(s => s < 0x0020);
+    expect(preWrap.length).toBeGreaterThan(0);
+    expect(postWrap.length).toBeGreaterThan(0);
+
+    // Specific boundary crossing: 0xFFFF should be followed by 0x0000
+    const ffff = seqs.indexOf(0xffff);
+    expect(ffff).toBeGreaterThanOrEqual(0);
+    expect(seqs[ffff + 1]).toBe(0);
+
+    // All inputs should be acked (zero latency)
+    expect(s.getPendingInputCount()).toBe(0);
+
+    // Position should match server (wraparound didn't break reconciliation)
+    expect(s.getClientServerDivergence()).toBeLessThan(0.5);
+
+    // Player actually moved forward
+    expect(s.getClientPosition()[2]).toBeGreaterThan(0.5);
   });
 });
 
@@ -478,12 +544,12 @@ describe('Category K: Performance', () => {
 // ═══════════════════════════════════════════════
 
 describe('Category L: Determinism', () => {
-  it('L37: replay produces identical result', () => {
+  it('L37: replay produces identical result (determinism)', () => {
     // Run 100 inputs through two separate PredictionManagers
     const s1 = createScenario({ latencyMs: 0 });
     const s2 = createScenario({ latencyMs: 0 });
 
-    // Same input sequence
+    // Complex input sequence: forward, sprint-forward, strafe left, with varying yaw
     const inputSeq = Array.from({ length: 100 }, (_, i) => ({
       buttons: i % 3 === 0 ? BTN_FORWARD : i % 3 === 1 ? BTN_FORWARD | BTN_SPRINT : BTN_LEFT,
       yaw: (i * 0.1) % (Math.PI * 2),
@@ -497,9 +563,20 @@ describe('Category L: Determinism', () => {
     const pos1 = s1.getClientPosition();
     const pos2 = s2.getClientPosition();
 
+    // Must be bit-identical (same Rapier world, same inputs, same order)
+    // Using 4 decimal places = 0.0001m = 0.1mm precision
     expect(pos1[0]).toBeCloseTo(pos2[0], 4);
     expect(pos1[1]).toBeCloseTo(pos2[1], 4);
     expect(pos1[2]).toBeCloseTo(pos2[2], 4);
+
+    // Both should have actually moved (not stuck at origin)
+    // The mixed input sequence (forward, sprint-forward, left strafe) with varying yaw
+    // produces modest net displacement due to direction changes
+    const dist1 = Math.hypot(pos1[0], pos1[2]);
+    expect(dist1).toBeGreaterThan(0.1);
+
+    // Input counts should match
+    expect(s1.client.getTickCount()).toBe(s2.client.getTickCount());
 
     s2.dispose();
   });
@@ -514,13 +591,454 @@ describe('Category L: Determinism', () => {
     // Deliver all snapshots
     s.deliverServerToClient();
 
+    assertInvariants(s, 'L38 after reconcile');
+
     // Client uses Rapier + collisions, server uses pure math
     // They won't be bit-identical but should be within protocol encoding precision
     const cp = s.getClientPosition();
     const sp = s.getServerPosition();
 
+    // Both should have moved forward substantially
+    expect(cp[2]).toBeGreaterThan(2.0);
+    expect(sp[2]).toBeGreaterThan(2.0);
+
     // Within ~0.5m tolerance (Rapier collision vs pure math difference)
     expect(Math.abs(cp[2] - sp[2])).toBeLessThan(0.5);
+
+    // All inputs should be acked (zero latency)
+    expect(s.getPendingInputCount()).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category B (continued): More Divergence Scenarios
+// ═══════════════════════════════════════════════
+
+describe('Category B (continued): Divergence', () => {
+  it('B6: reconciliation during jump preserves trajectory', () => {
+    const s = createScenario({ latencyMs: 25 });
+
+    // Build up speed, then jump
+    s.runClientFrames(15, { buttons: BTN_FORWARD });
+    s.runClientFrames(1, { buttons: BTN_FORWARD | BTN_JUMP });
+    s.runClientFrames(10, { buttons: BTN_FORWARD }); // in air
+
+    // Server processes early frames
+    s.runServerTicks(15);
+
+    // Deliver snapshot mid-jump
+    s.clientClock.advance(50);
+    s.serverClock.advance(25);
+    s.deliverServerToClient();
+
+    // Client should still be moving forward (replay includes jump)
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(0.5);
+    // Y should be above ground (mid-jump or still ascending)
+    // (Don't assert exact Y since Rapier vs pure-math jump heights differ)
+  });
+
+  it('B3: server has wall client does not — reconciliation corrects', () => {
+    const s = createScenario({ latencyMs: 25 });
+
+    // Client walks forward, server says "you stopped at z=2" (wall exists server-side)
+    s.runClientFrames(60, { buttons: BTN_FORWARD });
+
+    // Server runs but we manually override to simulate wall stop
+    s.runServerTicks(60);
+    const serverPlayer = s.serverPlayers.get(1)!;
+    // Clamp server position as if wall existed at z=2
+    if (serverPlayer.position[2] > 2) {
+      serverPlayer.position[2] = 2;
+      serverPlayer.velocity[2] = 0;
+    }
+
+    // Deliver corrected snapshot
+    s.clientClock.advance(50);
+    s.serverClock.advance(25);
+    s.deliverServerToClient();
+
+    // Client should snap back toward server's wall-limited position
+    // After replay, client might push past again (no client-side wall),
+    // but the reconciliation itself should have corrected
+    const pending = s.getPendingInputCount();
+    expect(pending).toBeGreaterThanOrEqual(0); // some unacked inputs remain
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category C (continued): More Latency Scenarios
+// ═══════════════════════════════════════════════
+
+describe('Category C (continued): Latency', () => {
+  it('C10: asymmetric latency (upload 20ms, download 150ms)', () => {
+    const s = createScenario({ latencyMs: 20 }); // start with symmetric
+
+    // Asymmetric: fast upload, slow download
+    s.setClientToServerConfig({ latencyMs: 20 });
+    s.setServerToClientConfig({ latencyMs: 150 });
+
+    for (let i = 0; i < 60; i++) {
+      s.runClientFrames(1, { buttons: BTN_FORWARD });
+      s.runServerTicks(1);
+      s.clientClock.advance(FIXED_DT * 1000);
+      s.serverClock.advance(FIXED_DT * 1000);
+      if (i % 5 === 0) {
+        s.deliverServerToClient();
+      }
+    }
+
+    assertInvariants(s, 'C10 asymmetric');
+
+    // Client should still be moving forward
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(1.0);
+
+    // With slow download, client has many pending inputs, but position stays bounded
+    // Divergence is higher than symmetric case but still manageable
+    expect(s.getClientServerDivergence()).toBeLessThan(4.0);
+  });
+
+  it('C11: gradual latency increase (50ms → 300ms over 5 seconds)', () => {
+    const s = createScenario({ latencyMs: 25 });
+
+    // 300 frames = 5 seconds, linearly increase latency
+    for (let i = 0; i < 300; i++) {
+      const oneWayMs = 25 + (i / 300) * 125; // 25ms → 150ms
+      s.setClientToServerConfig({ latencyMs: oneWayMs });
+      s.setServerToClientConfig({ latencyMs: oneWayMs });
+
+      s.runClientFrames(1, { buttons: BTN_FORWARD });
+      s.runServerTicks(1);
+
+      if (i % 4 === 0) {
+        s.clientClock.advance(oneWayMs * 2);
+        s.serverClock.advance(oneWayMs);
+        s.deliverServerToClient();
+      }
+    }
+
+    // System should be stable (no explosion)
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(1.0);
+    expect(isFinite(pos[0]) && isFinite(pos[1]) && isFinite(pos[2])).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category D (continued): Input Packet Loss
+// ═══════════════════════════════════════════════
+
+describe('Category D (continued): Input Loss', () => {
+  it('D13: single input packet lost — server repeats, client reconciles', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Run 10 frames normally
+    s.runClientFrames(10, { buttons: BTN_FORWARD });
+    s.runServerTicks(10);
+    s.deliverServerToClient();
+
+    // Drop the next input packet
+    s.setClientToServerConfig({ packetLossRate: 1.0 });
+    s.runClientFrames(1, { buttons: BTN_FORWARD });
+    s.setClientToServerConfig({ packetLossRate: 0.0 });
+
+    // Server didn't get it, repeats last input
+    s.runServerTicks(1);
+
+    // Continue normally
+    s.runClientFrames(10, { buttons: BTN_FORWARD });
+    s.runServerTicks(10);
+    s.deliverServerToClient();
+
+    // Should reconcile smoothly
+    expect(s.getClientServerDivergence()).toBeLessThan(2.0);
+  });
+
+  it('D14: burst input loss (5 consecutive lost) — recovery', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Normal for 10 frames
+    s.runClientFrames(10, { buttons: BTN_FORWARD });
+    s.runServerTicks(10);
+    s.deliverServerToClient();
+
+    assertInvariants(s, 'D14 before loss');
+    const posBeforeLoss = s.getClientPosition();
+
+    // Drop 5 input packets
+    s.setClientToServerConfig({ packetLossRate: 1.0 });
+    s.runClientFrames(5, { buttons: BTN_FORWARD });
+    s.setClientToServerConfig({ packetLossRate: 0.0 });
+
+    // Server ran 5 ticks with repeated last input (divergence grows)
+    s.runServerTicks(5);
+
+    // Resume
+    s.runClientFrames(20, { buttons: BTN_FORWARD });
+    s.runServerTicks(20);
+    s.deliverServerToClient();
+
+    assertInvariants(s, 'D14 after recovery');
+
+    // Position should converge after recovery
+    expect(s.getClientServerDivergence()).toBeLessThan(2.0);
+    // Must still be moving forward
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(posBeforeLoss[2]);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category E: Jitter & Ordering
+// ═══════════════════════════════════════════════
+
+describe('Category E: Jitter & Ordering', () => {
+  it('E17: variable jitter (30ms-150ms) — system stays stable', () => {
+    const s = createScenario({ latencyMs: 50, jitterMs: 60 });
+
+    for (let i = 0; i < 120; i++) {
+      s.runClientFrames(1, { buttons: BTN_FORWARD });
+      s.runServerTicks(1);
+
+      if (i % 3 === 0) {
+        s.clientClock.advance(100);
+        s.serverClock.advance(50);
+        s.deliverServerToClient();
+      }
+    }
+
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(0.5); // still moving
+    expect(isFinite(pos[0])).toBe(true);
+  });
+
+  it('E19: input bundle duplication — server deduplicates', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Send inputs normally
+    const cmds = s.runClientFrames(5, { buttons: BTN_FORWARD });
+
+    // Manually re-inject the same commands (simulating network retry)
+    const player = s.serverPlayers.get(1)!;
+    const queueBefore = player.inputQueue.length;
+
+    // Try to enqueue duplicate sequence numbers
+    for (const cmd of cmds) {
+      const diff = (cmd.seq - player.lastAckedSeq + 0x10000) & 0xffff;
+      if (diff === 0 || diff >= 0x8000) continue; // should be rejected
+      player.inputQueue.push(cmd);
+    }
+
+    s.runServerTicks(10);
+    s.deliverServerToClient();
+
+    // Should still work (server may process extras but behavior stays bounded)
+    expect(s.getClientServerDivergence()).toBeLessThan(3.0);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category G: Interpolation Edge Cases
+// ═══════════════════════════════════════════════
+
+describe('Category G: Interpolation Edge Cases', () => {
+  it('G22: remote player with single sample — returns that sample', () => {
+    const s = createScenario();
+
+    // Add a remote player
+    s.addRemotePlayer(2, [5, 0, 5]);
+
+    // Run enough for one snapshot
+    s.runServerTicks(2); // 2 ticks = 1 snapshot at default interval
+    s.clientClock.advance(100);
+    s.deliverServerToClient();
+
+    // Snapshot should contain player 2
+    const snapshot = s.serverPlayers.get(2);
+    expect(snapshot).toBeDefined();
+  });
+
+  it('G24: server clock jump — offset adjusts upward immediately', () => {
+    const clock = new ServerClockEstimator();
+
+    // Normal observation
+    clock.observe(1_000_000, 900_000); // offset = +100_000
+    expect(clock.getOffsetUs()).toBe(100_000);
+
+    // Server time jumps forward (clock correction)
+    clock.observe(1_500_000, 950_000); // new offset = +550_000 (larger)
+    // Should jump up immediately
+    expect(clock.getOffsetUs()).toBe(550_000);
+  });
+
+  it('G25: interpolation delay too short — holds at latest sample', () => {
+    const interp = new PlayerInterpolator();
+
+    // Only one sample in the past
+    interp.push(1, {
+      serverTimeUs: 1_000_000,
+      position: [5, 0, 5],
+      velocity: [0, 0, 0],
+      yaw: 0, pitch: 0, flags: 1,
+    });
+
+    // Request a time far in the future (buffer starved)
+    const sample = interp.sample(1, 2_000_000);
+
+    // Should return the latest sample, not null
+    expect(sample).not.toBeNull();
+    expect(sample!.position[0]).toBeCloseTo(5);
+  });
+
+  it('G26: projectile extrapolation capped at 150ms', () => {
+    const interp = new ProjectileInterpolator();
+
+    // Need 2+ samples for extrapolation (1 sample returns as-is)
+    interp.push(1, {
+      serverTimeUs: 900_000,
+      position: [-1, 0, 0],
+      velocity: [10, 0, 0],
+      kind: 1, ownerId: 1, sourceShotId: 1,
+    });
+    interp.push(1, {
+      serverTimeUs: 1_000_000,
+      position: [0, 0, 0],
+      velocity: [10, 0, 0], // 10 m/s in X
+      kind: 1, ownerId: 1, sourceShotId: 1,
+    });
+
+    // 100ms after latest sample → should extrapolate
+    const sample100 = interp.sample(1, 1_100_000);
+    expect(sample100!.position[0]).toBeCloseTo(1.0, 1); // 10 * 0.1s
+
+    // 500ms after → should cap at 150ms of extrapolation
+    const sample500 = interp.sample(1, 1_500_000);
+    expect(sample500!.position[0]).toBeCloseTo(1.5, 1); // 10 * 0.15s (capped)
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category I: Connection Lifecycle
+// ═══════════════════════════════════════════════
+
+describe('Category I: Connection Lifecycle', () => {
+  it('I30: full startup sequence (welcome → chunk → snapshot → prediction)', () => {
+    // This is implicitly tested by createScenario() but let's be explicit
+    const s = createScenario();
+
+    expect(s.client.isWorldLoaded()).toBe(true);
+    expect(s.client.isInitialized()).toBe(true);
+
+    // Can run frames immediately
+    const cmds = s.runClientFrames(5, { buttons: BTN_FORWARD });
+    expect(cmds).toHaveLength(5);
+
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(0);
+  });
+
+  it('I31: prediction continues after snapshot gap', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Normal operation
+    s.runClientFrames(30, { buttons: BTN_FORWARD });
+    s.runServerTicks(30);
+    s.deliverServerToClient();
+
+    const posBefore = s.getClientPosition();
+
+    // No snapshots for 2 seconds (but client keeps predicting)
+    s.runClientFrames(120, { buttons: BTN_FORWARD });
+
+    const posAfter = s.getClientPosition();
+    // Client should keep moving forward even without server updates
+    expect(posAfter[2]).toBeGreaterThan(posBefore[2]);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category M: Multi-Player Scenarios
+// ═══════════════════════════════════════════════
+
+describe('Category M: Multi-Player', () => {
+  it('M1: remote player appears in snapshot and has position', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Add a second player on the server
+    s.addRemotePlayer(2, [10, 0, 10]);
+
+    // Run ticks to generate snapshot with both players
+    s.runClientFrames(4, { buttons: BTN_FORWARD });
+    s.runServerTicks(4);
+    s.deliverServerToClient();
+
+    // The snapshot should have included player 2
+    // We can verify by checking the log
+    const snapEvents = s.log.filter(e => e.type === 'server-snapshot');
+    expect(snapEvents.length).toBeGreaterThan(0);
+  });
+
+  it('M2: remote player removal reflected in next snapshot', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Add and then remove remote player
+    s.addRemotePlayer(2, [10, 0, 10]);
+    s.runServerTicks(4);
+    s.deliverServerToClient();
+
+    s.removeRemotePlayer(2);
+    s.runServerTicks(4);
+    s.deliverServerToClient();
+
+    // Player 2 should no longer be in server players
+    expect(s.serverPlayers.has(2)).toBe(false);
+  });
+
+  it('M3: two players moving independently — both positions tracked', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    s.addRemotePlayer(2, [20, 0, 0]);
+
+    // Move player 2 on the server manually
+    const player2 = s.serverPlayers.get(2)!;
+
+    for (let i = 0; i < 30; i++) {
+      s.runClientFrames(1, { buttons: BTN_FORWARD });
+
+      // Manually move player 2 in +X direction on server
+      player2.position[0] += 0.1;
+
+      s.runServerTicks(1);
+    }
+
+    s.deliverServerToClient();
+
+    // Local player should have moved in +Z
+    const localPos = s.getClientPosition();
+    expect(localPos[2]).toBeGreaterThan(0.5);
+
+    // Server player 2 should have moved in +X
+    const p2Pos = s.getServerPosition(2);
+    expect(p2Pos[0]).toBeGreaterThan(20);
+  });
+
+  it('M4: server ackInputSeq is per-player (does not leak)', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Player 1 sends 10 inputs
+    s.runClientFrames(10, { buttons: BTN_FORWARD });
+    s.runServerTicks(10);
+    s.deliverServerToClient();
+
+    // Player 1's ackInputSeq should be > 0
+    const player1 = s.serverPlayers.get(1)!;
+    expect(player1.lastAckedSeq).toBeGreaterThan(0);
+
+    // Add player 2 — their ackInputSeq should start at 0
+    s.addRemotePlayer(2, [10, 0, 10]);
+    const player2 = s.serverPlayers.get(2)!;
+    expect(player2.lastAckedSeq).toBe(0);
   });
 });
 

@@ -212,6 +212,11 @@ export class PredictionManager {
     return this.nextSeq;
   }
 
+  /** For testing only: advance the sequence counter to a specific value. */
+  setNextSeq(seq: number): void {
+    this.nextSeq = seq;
+  }
+
   dispose(): void {
     this.controller.dispose();
   }
