@@ -103,6 +103,7 @@ export class PredictedFpsController {
 
   setPosition(position: Vec3): void {
     this.body.setTranslation(position, true);
+    this.collider.setTranslation(position);
   }
 
   /** Remove inputs that the server has acknowledged. */
@@ -158,7 +159,7 @@ export class PredictedFpsController {
   }
 
   setFullState(position: Vec3, velocity: Vec3, yaw: number, pitch: number, onGround: boolean): void {
-    this.body.setTranslation(position, true);
+    this.setPosition(position);
     this.velocity = { ...velocity };
     this.yaw = yaw;
     this.pitch = pitch;
@@ -200,7 +201,7 @@ export class PredictedFpsController {
       y: current.y + corrected.y,
       z: current.z + corrected.z,
     };
-    this.body.setTranslation(next, true);
+    this.setPosition(next);
 
     const wantedDown = desiredTranslation.y <= 0;
     const yClipped = Math.abs(corrected.y - desiredTranslation.y) > 1e-4;
