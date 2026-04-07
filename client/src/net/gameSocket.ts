@@ -2,6 +2,7 @@ import {
   decodeServerPacket,
   encodeBlockEditPacket,
   encodeFirePacket,
+  encodeInputBundle,
   encodeInputPacket,
   encodePingPacket,
   type BlockEditCmd,
@@ -46,6 +47,17 @@ export class GameSocket {
 
   sendInput(cmd: InputCmd): void {
     this.sendRaw(encodeInputPacket(cmd));
+  }
+
+  sendInputs(cmds: InputCmd[]): void {
+    if (cmds.length === 0) {
+      return;
+    }
+    if (cmds.length === 1) {
+      this.sendInput(cmds[0]);
+      return;
+    }
+    this.sendRaw(encodeInputBundle(cmds));
   }
 
   sendFire(cmd: FireCmd): void {

@@ -13,7 +13,7 @@ export function App() {
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`Player #${id} — WASD move, mouse look, Space jump`);
+    setStatus(`Player #${id} — WASD move, mouse look, Space jump, left click remove, right click place, 1/2 switch block`);
   }, []);
 
   const handleDisconnect = useCallback(() => {
@@ -59,6 +59,43 @@ export function App() {
       >
         {status}
       </div>
+      {connected && (
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            width: 18,
+            height: 18,
+            transform: 'translate(-50%, -50%)',
+            pointerEvents: 'none',
+            zIndex: 6,
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: 0,
+              width: 2,
+              height: '100%',
+              transform: 'translateX(-50%)',
+              background: 'rgba(255,255,255,0.9)',
+            }}
+          />
+          <div
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: 0,
+              width: '100%',
+              height: 2,
+              transform: 'translateY(-50%)',
+              background: 'rgba(255,255,255,0.9)',
+            }}
+          />
+        </div>
+      )}
       {connected && (
         <GameScene
           onWelcome={handleWelcome}

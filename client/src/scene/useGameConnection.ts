@@ -1,131 +1,112 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { GameSocket } from '../net/gameSocket';
-import { SnapshotInterpolator } from '../net/interpolation';
-import {
-  netStateToMeters,
-  type InputCmd,
-  type ServerPacket,
+import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
+import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
+import type {
+  BlockEditCmd,
+  InputCmd,
+  NetPlayerState,
+  ServerPacket,
 } from '../net/protocol';
 
-export type RemotePlayer = {
-  id: number;
-  position: [number, number, number];
-  yaw: number;
-  pitch: number;
-  hp: number;
-};
+export type { RemotePlayer };
 
 export type ConnectionState = {
-  socket: GameSocket | null;
+  socket: unknown;
   playerId: number;
-  interpolator: SnapshotInterpolator;
+  remoteInterpolator: PlayerInterpolator;
+  serverClock: ServerClockEstimator;
+  interpolationDelayMs: number;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   localPosition: [number, number, number];
 };
 
+/**
+ * Thin React wrapper around NetcodeClient.
+ * Handles mount/unmount lifecycle only — all netcode logic lives
+ * in NetcodeClient which is framework-agnostic and fully testable.
+ */
 export function useGameConnection(
   onWelcome: (id: number) => void,
   onDisconnect: () => void,
+  onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
+  onServerPacket?: (packet: ServerPacket) => void,
 ) {
+  const clientRef = useRef<NetcodeClient | null>(null);
+
+  // Keep callbacks in refs so the NetcodeClient doesn't need to be recreated
+  const onWelcomeRef = useRef(onWelcome);
+  onWelcomeRef.current = onWelcome;
+  const onDisconnectRef = useRef(onDisconnect);
+  onDisconnectRef.current = onDisconnect;
+  const onLocalSnapshotRef = useRef(onLocalSnapshot);
+  onLocalSnapshotRef.current = onLocalSnapshot;
+  const onServerPacketRef = useRef(onServerPacket);
+  onServerPacketRef.current = onServerPacket;
+
+  // Expose ConnectionState-shaped ref for backward compat with GameWorld
   const stateRef = useRef<ConnectionState>({
     socket: null,
     playerId: 0,
-    interpolator: new SnapshotInterpolator(),
+    remoteInterpolator: new PlayerInterpolator(),
+    serverClock: new ServerClockEstimator(),
+    interpolationDelayMs: 100,
     latestServerTick: 0,
     remotePlayers: new Map(),
     localPosition: [0, 2, 0],
   });
 
-  const onWelcomeRef = useRef(onWelcome);
-  onWelcomeRef.current = onWelcome;
-  const onDisconnectRef = useRef(onDisconnect);
-  onDisconnectRef.current = onDisconnect;
-
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const state = stateRef.current;
-    state.interpolator = new SnapshotInterpolator();
-    state.remotePlayers = new Map();
-    state.playerId = 0;
-
-    const socket = new GameSocket({
-      onPacket: (packet: ServerPacket) => {
-        switch (packet.type) {
-          case 'welcome':
-            state.playerId = packet.playerId;
-            console.log('[game] Welcome! playerId =', packet.playerId);
-            onWelcomeRef.current(packet.playerId);
-            setReady(true);
-            break;
-          case 'snapshot': {
-            state.latestServerTick = packet.serverTick;
-            const knownIds = new Set<number>();
-            for (const ps of packet.playerStates) {
-              knownIds.add(ps.id);
-              if (ps.id === state.playerId) {
-                const m = netStateToMeters(ps);
-                state.localPosition = m.position;
-              } else {
-                const m = netStateToMeters(ps);
-                state.interpolator.push(ps.id, {
-                  serverTick: packet.serverTick,
-                  receivedAtMs: performance.now(),
-                  position: m.position,
-                  velocity: m.velocity,
-                  yaw: m.yaw,
-                  pitch: m.pitch,
-                  hp: ps.hp,
-                  flags: ps.flags,
-                });
-                state.remotePlayers.set(ps.id, {
-                  id: ps.id,
-                  position: m.position,
-                  yaw: m.yaw,
-                  pitch: m.pitch,
-                  hp: ps.hp,
-                });
-              }
-            }
-            // Remove disconnected players
-            for (const id of state.remotePlayers.keys()) {
-              if (!knownIds.has(id)) {
-                state.remotePlayers.delete(id);
-                state.interpolator.remove(id);
-              }
-            }
-            break;
-          }
-          default:
-            break;
-        }
+    const client = new NetcodeClient({
+      onWelcome: (id) => {
+        stateRef.current.playerId = id;
+        onWelcomeRef.current(id);
+        setReady(true);
       },
-      onClose: () => {
-        onDisconnectRef.current();
+      onDisconnect: () => onDisconnectRef.current(),
+      onLocalSnapshot: (ackInputSeq, state) => {
+        onLocalSnapshotRef.current?.(ackInputSeq, state);
+      },
+      onWorldPacket: (packet) => {
+        onServerPacketRef.current?.(packet);
+      },
+      onPacket: (packet) => {
+        onServerPacketRef.current?.(packet);
+        // Sync ConnectionState ref for GameWorld backward compat
+        stateRef.current.latestServerTick = client.latestServerTick;
+        stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
       },
     });
+
+    // Wire the ConnectionState ref to point at client internals
+    stateRef.current.remoteInterpolator = client.interpolator;
+    stateRef.current.serverClock = client.serverClock;
+    stateRef.current.remotePlayers = client.remotePlayers;
+
+    clientRef.current = client;
 
     const matchId = 'default';
     const identity = 'player-' + Math.random().toString(36).slice(2, 8);
     const token = 'mvp-token';
     const wsUrl = `ws://${window.location.hostname}:${window.location.port || '3000'}/ws/${matchId}?identity=${identity}&token=${token}`;
     console.log('[game] Connecting to', wsUrl);
-    socket.connect(wsUrl);
-    state.socket = socket;
+    client.connect(wsUrl);
 
     return () => {
-      socket.disconnect();
-      state.socket = null;
+      client.disconnect();
+      clientRef.current = null;
     };
   }, []);
 
-  const sendInput = useCallback((cmd: InputCmd) => {
-    const state = stateRef.current;
-    if (state.socket) {
-      state.socket.sendInput(cmd);
-    }
+  const sendInputs = useCallback((cmds: InputCmd[]) => {
+    clientRef.current?.sendInputs(cmds);
   }, []);
 
-  return { stateRef, ready, sendInput };
+  const sendBlockEdit = useCallback((cmd: BlockEditCmd) => {
+    clientRef.current?.sendBlockEdit(cmd);
+  }, []);
+
+  return { stateRef, ready, sendInputs, sendBlockEdit };
 }

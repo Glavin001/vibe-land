@@ -22,8 +22,7 @@
   "include": ["src"],
   "exclude": [
     "src/GameRuntime.ts",
-    "src/physics/predictedFpsController.ts",
-    "src/world/voxelWorld.ts",
-    "src/spacetime/connectSpacetime.ts"
+    "src/spacetime/connectSpacetime.ts",
+    "src/world/voxelWorld.ts"
   ]
 }

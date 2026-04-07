@@ -1,18 +1,12 @@
 import * as RAPIER from '@dimforge/rapier3d-compat';
 
 import {
-  BTN_BACK,
   BTN_CROUCH,
-  BTN_FORWARD,
   BTN_JUMP,
-  BTN_LEFT,
-  BTN_RELOAD,
-  BTN_RIGHT,
-  BTN_SECONDARY_FIRE,
   BTN_SPRINT,
-  InputCmd,
-  netStateToMeters,
+  type InputFrame,
   type NetPlayerState,
+  netPlayerStateToMeters,
 } from '../net/protocol';
 
 export type Vec3 = { x: number; y: number; z: number };
@@ -54,7 +48,7 @@ const DEFAULT_CONFIG: MovementConfig = {
   snapToGround: 0.2,
   maxSlopeRadians: 45 * Math.PI / 180,
   minSlideRadians: 30 * Math.PI / 180,
-  correctionDistance: 0.05,
+  correctionDistance: 0.15,
 };
 
 export type PredictedSnapshot = {
@@ -66,14 +60,14 @@ export class PredictedFpsController {
   readonly config: MovementConfig;
   readonly controller: RAPIER.KinematicCharacterController;
 
-  private pendingInputs: InputCmd[] = [];
+  private pendingInputs: InputFrame[] = [];
   private velocity: Vec3 = { x: 0, y: 0, z: 0 };
   private onGround = false;
   private yaw = 0;
   private pitch = 0;
 
   constructor(
-    private readonly world: RAPIER.World,
+    world: RAPIER.World,
     private readonly body: RAPIER.RigidBody,
     private readonly collider: RAPIER.Collider,
     config?: Partial<MovementConfig>,
@@ -84,13 +78,10 @@ export class PredictedFpsController {
     this.controller.setMinSlopeSlideAngle(this.config.minSlideRadians);
     this.controller.enableAutostep(this.config.maxStepHeight, this.config.minStepWidth, true);
     this.controller.enableSnapToGround(this.config.snapToGround);
-
-    const start = this.body.translation();
-    this.body.setTranslation(start, true);
   }
 
   dispose(): void {
-    (this.controller as any).free?.();
+    (this.controller as unknown as { free?: () => void }).free?.();
   }
 
   getPosition(): Vec3 {
@@ -110,43 +101,72 @@ export class PredictedFpsController {
     return this.onGround;
   }
 
-  predict(input: InputCmd, fixedDt: number): void {
+  setPosition(position: Vec3): void {
+    this.body.setTranslation(position, true);
+    this.collider.setTranslation(position);
+  }
+
+  /** Remove inputs that the server has acknowledged. */
+  clearAckedInputs(ackInputSeq: number): void {
+    this.pendingInputs = this.pendingInputs.filter(
+      (input) => seqIsNewer(input.seq, ackInputSeq),
+    );
+  }
+
+  getPendingCount(): number {
+    return this.pendingInputs.length;
+  }
+
+  predict(input: InputFrame, fixedDt: number): void {
     this.pendingInputs.push(input);
     this.simulateOne(input, fixedDt);
   }
 
-  reconcile(snapshot: PredictedSnapshot, fixedDt: number): void {
-    const authoritative = netStateToMeters(snapshot.state);
-    this.pendingInputs = this.pendingInputs.filter((cmd) => cmd.seq > snapshot.ackInputSeq);
+  reconcile(snapshot: PredictedSnapshot, fixedDt: number): { dx: number; dy: number; dz: number } | null {
+    const authoritative = netPlayerStateToMeters(snapshot.state);
+    this.pendingInputs = this.pendingInputs.filter((input) => seqIsNewer(input.seq, snapshot.ackInputSeq));
 
-    const current = this.body.translation();
-    const dx = current.x - authoritative.position[0];
-    const dy = current.y - authoritative.position[1];
-    const dz = current.z - authoritative.position[2];
-    const errorSq = dx * dx + dy * dy + dz * dz;
+    const before = this.body.translation();
+    const ex = before.x - authoritative.position[0];
+    const ey = before.y - authoritative.position[1];
+    const ez = before.z - authoritative.position[2];
+    const errorSq = ex * ex + ey * ey + ez * ez;
     if (errorSq <= this.config.correctionDistance * this.config.correctionDistance) {
-      return;
+      return null;
     }
 
-    this.body.setTranslation(
+    // Reset to server authoritative state
+    this.setFullState(
       { x: authoritative.position[0], y: authoritative.position[1], z: authoritative.position[2] },
-      true,
+      { x: authoritative.velocity[0], y: authoritative.velocity[1], z: authoritative.velocity[2] },
+      authoritative.yaw,
+      authoritative.pitch,
+      (authoritative.flags & 1) !== 0,
     );
-    this.velocity = {
-      x: authoritative.velocity[0],
-      y: authoritative.velocity[1],
-      z: authoritative.velocity[2],
-    };
-    this.yaw = authoritative.yaw;
-    this.pitch = authoritative.pitch;
-    this.onGround = (authoritative.flags & 1) !== 0;
 
-    for (const cmd of this.pendingInputs) {
-      this.simulateOne(cmd, fixedDt);
+    // Replay all unacked inputs
+    for (const input of this.pendingInputs) {
+      this.simulateOne(input, fixedDt);
     }
+
+    // Return position delta so caller can set visual offset
+    const after = this.body.translation();
+    return {
+      dx: after.x - before.x,
+      dy: after.y - before.y,
+      dz: after.z - before.z,
+    };
   }
 
-  simulateOne(input: InputCmd, dt: number): void {
+  setFullState(position: Vec3, velocity: Vec3, yaw: number, pitch: number, onGround: boolean): void {
+    this.setPosition(position);
+    this.velocity = { ...velocity };
+    this.yaw = yaw;
+    this.pitch = pitch;
+    this.onGround = onGround;
+  }
+
+  private simulateOne(input: InputFrame, dt: number): void {
     this.yaw = input.yaw;
     this.pitch = input.pitch;
 
@@ -160,11 +180,11 @@ export class PredictedFpsController {
     const accel = this.onGround ? this.config.groundAccel : this.config.airAccel;
     accelerate(this.velocity, wishDir, speed, accel, dt);
 
-    this.velocity.y -= this.config.gravity * dt;
     if (this.onGround && (input.buttons & BTN_JUMP) !== 0) {
       this.velocity.y = this.config.jumpSpeed;
       this.onGround = false;
     }
+    this.velocity.y -= this.config.gravity * dt;
 
     const desiredTranslation = {
       x: this.velocity.x * dt,
@@ -175,35 +195,24 @@ export class PredictedFpsController {
     this.controller.computeColliderMovement(this.collider, desiredTranslation);
     const corrected = this.controller.computedMovement();
 
-    const position = this.body.translation();
+    const current = this.body.translation();
     const next = {
-      x: position.x + corrected.x,
-      y: position.y + corrected.y,
-      z: position.z + corrected.z,
+      x: current.x + corrected.x,
+      y: current.y + corrected.y,
+      z: current.z + corrected.z,
     };
-
-    // For a local predicted controller against a static mirrored world, immediate translation
-    // keeps the feel responsive without requiring a full local world.step(). If you later add
-    // local dynamic props, switch this to setNextKinematicTranslation and step a parallel world.
-    this.body.setTranslation(next, true);
+    this.setPosition(next);
 
     const wantedDown = desiredTranslation.y <= 0;
     const yClipped = Math.abs(corrected.y - desiredTranslation.y) > 1e-4;
-    this.onGround = wantedDown && (yClipped || this.isNearGround());
+    const yStopped = Math.abs(corrected.y) < 0.001;
+    this.onGround = wantedDown && yClipped && yStopped;
     if (this.onGround && this.velocity.y < 0) {
       this.velocity.y = 0;
     }
 
     this.velocity.x = corrected.x / dt;
     this.velocity.z = corrected.z / dt;
-  }
-
-  private isNearGround(): boolean {
-    const p = this.body.translation();
-    const origin = { x: p.x, y: p.y, z: p.z };
-    const ray = new RAPIER.Ray(origin, { x: 0, y: -1, z: 0 });
-    const hit = this.world.castRay(ray, this.config.snapToGround + 0.05, true);
-    return !!hit;
   }
 
   private pickMoveSpeed(buttons: number): number {
@@ -213,28 +222,7 @@ export class PredictedFpsController {
   }
 }
 
-export function buildInputFromButtons(
-  seq: number,
-  clientTick: number,
-  buttons: number,
-  yaw: number,
-  pitch: number,
-): InputCmd {
-  const moveX = ((buttons & BTN_RIGHT) !== 0 ? 127 : 0) + ((buttons & BTN_LEFT) !== 0 ? -127 : 0);
-  const moveY = ((buttons & BTN_FORWARD) !== 0 ? 127 : 0) + ((buttons & BTN_BACK) !== 0 ? -127 : 0);
-
-  return {
-    seq,
-    clientTick,
-    buttons: buttons & ~(BTN_SECONDARY_FIRE | BTN_RELOAD),
-    moveX,
-    moveY,
-    yaw,
-    pitch,
-  };
-}
-
-function buildWishDir(input: InputCmd, yaw: number): Vec3 {
+function buildWishDir(input: InputFrame, yaw: number): Vec3 {
   const forward = { x: Math.sin(yaw), y: 0, z: Math.cos(yaw) };
   const right = { x: forward.z, y: 0, z: -forward.x };
   const mx = input.moveX / 127;
@@ -246,10 +234,12 @@ function buildWishDir(input: InputCmd, yaw: number): Vec3 {
   };
 }
 
-function normalizeXZ(v: Vec3): Vec3 {
-  const len = Math.hypot(v.x, v.z);
-  if (len <= 1e-6) return { x: 0, y: 0, z: 0 };
-  return { x: v.x / len, y: 0, z: v.z / len };
+function normalizeXZ(value: Vec3): Vec3 {
+  const length = Math.hypot(value.x, value.z);
+  if (length <= 1e-6) {
+    return { x: 0, y: 0, z: 0 };
+  }
+  return { x: value.x / length, y: 0, z: value.z / length };
 }
 
 function applyHorizontalFriction(velocity: Vec3, friction: number, dt: number, onGround: boolean): void {
@@ -270,4 +260,9 @@ function accelerate(velocity: Vec3, wishDir: Vec3, wishSpeed: number, accel: num
   const accelSpeed = Math.min(addSpeed, accel * wishSpeed * dt);
   velocity.x += wishDir.x * accelSpeed;
   velocity.z += wishDir.z * accelSpeed;
+}
+
+export function seqIsNewer(a: number, b: number): boolean {
+  const diff = (a - b + 0x10000) & 0xffff;
+  return diff !== 0 && diff < 0x8000;
 }

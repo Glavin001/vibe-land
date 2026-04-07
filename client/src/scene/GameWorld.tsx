@@ -1,9 +1,12 @@
 import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameConnection, type RemotePlayer } from './useGameConnection';
-import { buildInputFromButtons } from './inputBuilder';
+import { useGameConnection } from './useGameConnection';
+import { usePrediction } from '../physics/usePrediction';
 import {
+  aimDirectionFromAngles,
+  BLOCK_ADD,
+  BLOCK_REMOVE,
   BTN_FORWARD,
   BTN_BACK,
   BTN_LEFT,
@@ -20,19 +23,34 @@ type GameWorldProps = {
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
 export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
-  const { stateRef, ready, sendInput } = useGameConnection(onWelcome, onDisconnect);
+  const prediction = usePrediction();
+  const { stateRef, ready, sendInputs, sendBlockEdit } = useGameConnection(
+    onWelcome,
+    onDisconnect,
+    prediction.ready ? prediction.reconcile : undefined,
+    (packet) => {
+      if (packet.type === 'chunkFull' || packet.type === 'chunkDiff') {
+        prediction.applyWorldPacket(packet);
+      }
+    },
+  );
   const { camera, gl } = useThree();
 
   const keysRef = useRef(new Set<string>());
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
-  const seqRef = useRef(1);
   const remoteGroupRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const logTimer = useRef(0);
+  const lastFrameTime = useRef(performance.now());
+  const selectedMaterialRef = useRef(2);
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.code);
+    const onKeyDown = (e: KeyboardEvent) => {
+      keysRef.current.add(e.code);
+      if (e.code === 'Digit1') selectedMaterialRef.current = 1;
+      if (e.code === 'Digit2') selectedMaterialRef.current = 2;
+    };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement !== gl.domElement) return;
@@ -42,16 +60,54 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
         Math.min(Math.PI / 2 - 0.01, pitchRef.current - e.movementY * 0.003),
       );
     };
+    const onMouseDown = (e: MouseEvent) => {
+      if (document.pointerLockElement !== gl.domElement) return;
+      if (e.button !== 0 && e.button !== 2) return;
+
+      const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
+      const hit = prediction.raycastBlocks(
+        [camera.position.x, camera.position.y, camera.position.z],
+        direction,
+        6,
+      );
+      if (!hit) return;
+
+      if (e.button === 0) {
+        if (prediction.getBlockMaterial(hit.removeCell) === 0) return;
+        const cmd = prediction.buildBlockEdit(hit.removeCell, BLOCK_REMOVE, 0);
+        if (cmd) {
+          sendBlockEdit(cmd);
+        }
+        e.preventDefault();
+        return;
+      }
+
+      if (prediction.getBlockMaterial(hit.placeCell) !== 0) return;
+      const cmd = prediction.buildBlockEdit(hit.placeCell, BLOCK_ADD, selectedMaterialRef.current);
+      if (cmd) {
+        sendBlockEdit(cmd);
+      }
+      e.preventDefault();
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      if (document.pointerLockElement === gl.domElement) {
+        e.preventDefault();
+      }
+    };
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('contextmenu', onContextMenu);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('contextmenu', onContextMenu);
     };
-  }, [gl]);
+  }, [camera, gl, prediction, sendBlockEdit]);
 
   useFrame(() => {
     if (!ready) return;
@@ -66,13 +122,17 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     if (keys.has('Space')) buttons |= BTN_JUMP;
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) buttons |= BTN_SPRINT;
 
-    const seq = (seqRef.current++ & 0xffff);
-    const clientTick = Math.floor(performance.now() / (1000 / 60));
-    const input = buildInputFromButtons(seq, clientTick, buttons, yawRef.current, pitchRef.current);
-    sendInput(input);
+    if (prediction.ready) {
+      const now = performance.now();
+      const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
+      lastFrameTime.current = now;
+      // Prediction owns seq counting, input building, and sending — all in lockstep
+      prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+    }
 
-    // Camera follows server-authoritative local position
-    const pos = state.localPosition;
+    // Camera follows interpolated predicted position (falls back to server-authoritative)
+    const predictedPos = prediction.getPosition();
+    const pos = predictedPos ?? state.localPosition;
     const eyeHeight = 1.6;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
@@ -95,6 +155,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
 
     const currentRemote = state.remotePlayers;
     const activeIds = new Set<number>();
+    const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
 
     for (const [id, rp] of currentRemote) {
       activeIds.add(id);
@@ -105,8 +166,11 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
         remoteMeshes.current.set(id, playerGroup);
         console.log('[game] Created mesh for remote player', id);
       }
-      playerGroup.position.set(rp.position[0], rp.position[1], rp.position[2]);
-      playerGroup.rotation.y = rp.yaw;
+      const sample = state.remoteInterpolator.sample(id, renderTimeUs);
+      const position = sample?.position ?? rp.position;
+      const yaw = sample?.yaw ?? rp.yaw;
+      playerGroup.position.set(position[0], position[1], position[2]);
+      playerGroup.rotation.y = yaw;
     }
 
     // Remove stale
@@ -125,18 +189,13 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       <directionalLight position={[20, 30, 10]} intensity={1} />
       <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
 
-      {/* Ground floor - 16x16 block area matching server demo world */}
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.5, 0]}>
-        <planeGeometry args={[16, 16]} />
-        <meshStandardMaterial color={0x556655} />
-      </mesh>
-
-      {/* Pillar blocks */}
-      <BoxBlock x={2.5} y={1.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={2.5} y={2.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={2.5} y={3.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={3.5} y={1.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={3.5} y={2.5} z={2.5} h={1} color={0x887766} />
+      {prediction.renderBlocks.map((block) => (
+        <WorldBlock
+          key={block.key}
+          position={block.position}
+          color={block.color}
+        />
+      ))}
 
       {/* Grid lines for spatial reference */}
       <gridHelper args={[32, 32, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
@@ -150,10 +209,16 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   );
 }
 
-function BoxBlock({ x, y, z, h, color }: { x: number; y: number; z: number; h: number; color: number }) {
+function WorldBlock({
+  position,
+  color,
+}: {
+  position: [number, number, number];
+  color: number;
+}) {
   return (
-    <mesh position={[x, y, z]}>
-      <boxGeometry args={[1, h, 1]} />
+    <mesh position={position}>
+      <boxGeometry args={[1, 1, 1]} />
       <meshStandardMaterial color={color} />
     </mesh>
   );

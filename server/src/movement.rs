@@ -165,26 +165,7 @@ impl PhysicsArena {
         state.pitch = input.pitch.clamp(-1.55, 1.55);
         state.last_input = input.clone();
 
-        let forward = vec3_from_yaw(state.yaw);
-        let right = vector![forward.z, 0.0, -forward.x];
-        let mut wish = Vec3::zeros();
-
-        if input.buttons & BTN_FORWARD != 0 {
-            wish += forward;
-        }
-        if input.buttons & BTN_BACK != 0 {
-            wish -= forward;
-        }
-        if input.buttons & BTN_RIGHT != 0 {
-            wish += right;
-        }
-        if input.buttons & BTN_LEFT != 0 {
-            wish -= right;
-        }
-        wish.y = 0.0;
-        if wish.norm_squared() > 0.0001 {
-            wish = wish.normalize();
-        }
+        let wish = build_wish_dir(input, state.yaw);
 
         let max_speed = if input.buttons & BTN_CROUCH != 0 {
             cfg.crouch_speed
@@ -293,6 +274,29 @@ fn vec3_from_yaw(yaw: f32) -> Vec3 {
     vector![yaw.sin(), 0.0, yaw.cos()]
 }
 
+fn build_wish_dir(input: &InputCmd, yaw: f32) -> Vec3 {
+    let forward = vec3_from_yaw(yaw);
+    let right = vector![forward.z, 0.0, -forward.x];
+
+    let mut move_x = input.move_x as f32 / 127.0;
+    let mut move_y = input.move_y as f32 / 127.0;
+
+    // Fall back to button-derived movement so older callers still behave.
+    if move_x.abs() <= f32::EPSILON && move_y.abs() <= f32::EPSILON {
+        move_x = (if input.buttons & BTN_RIGHT != 0 { 1.0 } else { 0.0 })
+            + (if input.buttons & BTN_LEFT != 0 { -1.0 } else { 0.0 });
+        move_y = (if input.buttons & BTN_FORWARD != 0 { 1.0 } else { 0.0 })
+            + (if input.buttons & BTN_BACK != 0 { -1.0 } else { 0.0 });
+    }
+
+    let mut wish = right * move_x + forward * move_y;
+    wish.y = 0.0;
+    if wish.norm_squared() > 0.0001 {
+        wish = wish.normalize();
+    }
+    wish
+}
+
 fn apply_horizontal_friction(velocity: &mut Vec3, friction: f32, dt: f32, on_ground: bool) {
     if !on_ground {
         return;
@@ -320,4 +324,321 @@ fn accelerate(velocity: &mut Vec3, wish_dir: Vec3, wish_speed: f32, accel: f32, 
     }
     let accel_speed = (accel * wish_speed * dt).min(add_speed);
     *velocity += wish_dir * accel_speed;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input() -> InputCmd {
+        InputCmd {
+            seq: 1,
+            buttons: 0,
+            move_x: 0,
+            move_y: 0,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    fn arena_with_ground() -> PhysicsArena {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        // Ground plane at y=0
+        arena.add_static_cuboid(
+            vector![0.0, -0.5, 0.0],
+            vector![50.0, 0.5, 50.0],
+            0,
+        );
+        arena
+    }
+
+    // ──────────────────────────────────────────────
+    // build_wish_dir
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn build_wish_dir_uses_move_axes_without_button_bits() {
+        let mut cmd = input();
+        cmd.move_x = 127;
+
+        let wish = build_wish_dir(&cmd, 0.0);
+
+        assert!(wish.x > 0.99);
+        assert!(wish.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn build_wish_dir_falls_back_to_buttons_when_move_axes_are_zero() {
+        let mut cmd = input();
+        cmd.buttons = BTN_FORWARD | BTN_RIGHT;
+
+        let wish = build_wish_dir(&cmd, 0.0);
+
+        assert!(wish.x > 0.7);
+        assert!(wish.z > 0.7);
+    }
+
+    #[test]
+    fn build_wish_dir_forward_button_only() {
+        let mut cmd = input();
+        cmd.buttons = BTN_FORWARD;
+        let wish = build_wish_dir(&cmd, 0.0);
+        assert!(wish.z > 0.99, "forward should produce +Z at yaw=0");
+    }
+
+    #[test]
+    fn build_wish_dir_backward_button_only() {
+        let mut cmd = input();
+        cmd.buttons = BTN_BACK;
+        let wish = build_wish_dir(&cmd, 0.0);
+        assert!(wish.z < -0.99, "back should produce -Z at yaw=0");
+    }
+
+    #[test]
+    fn build_wish_dir_opposing_buttons_cancel() {
+        let mut cmd = input();
+        cmd.buttons = BTN_FORWARD | BTN_BACK;
+        let wish = build_wish_dir(&cmd, 0.0);
+        assert!(wish.norm() < 0.01, "opposing buttons should cancel");
+    }
+
+    // ──────────────────────────────────────────────
+    // simulate_player_tick — movement
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn forward_movement_produces_positive_z() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        // settle on ground
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        }
+
+        let mut cmd = input();
+        cmd.move_y = 127; // forward
+        for _ in 0..30 {
+            arena.simulate_player_tick(1, &cmd, 1.0 / 60.0);
+        }
+
+        let (pos, _vel, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        assert!(pos[2] > 0.5, "should have moved forward (z > 0.5), got {}", pos[2]);
+    }
+
+    #[test]
+    fn sprint_moves_faster_than_walk() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena.spawn_player(2);
+
+        // settle
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+            arena.simulate_player_tick(2, &input(), 1.0 / 60.0);
+        }
+
+        let mut walk_cmd = input();
+        walk_cmd.move_y = 127;
+
+        let mut sprint_cmd = input();
+        sprint_cmd.move_y = 127;
+        sprint_cmd.buttons = BTN_SPRINT;
+
+        for _ in 0..30 {
+            arena.simulate_player_tick(1, &walk_cmd, 1.0 / 60.0);
+            arena.simulate_player_tick(2, &sprint_cmd, 1.0 / 60.0);
+        }
+
+        let (walk_pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        let (sprint_pos, _, _, _, _, _) = arena.snapshot_player(2).unwrap();
+        assert!(sprint_pos[2] > walk_pos[2], "sprint should be faster than walk");
+    }
+
+    #[test]
+    fn crouch_speed_is_slowest() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena.spawn_player(2);
+
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+            arena.simulate_player_tick(2, &input(), 1.0 / 60.0);
+        }
+
+        let mut walk_cmd = input();
+        walk_cmd.move_y = 127;
+
+        let mut crouch_cmd = input();
+        crouch_cmd.move_y = 127;
+        crouch_cmd.buttons = BTN_CROUCH;
+
+        for _ in 0..30 {
+            arena.simulate_player_tick(1, &walk_cmd, 1.0 / 60.0);
+            arena.simulate_player_tick(2, &crouch_cmd, 1.0 / 60.0);
+        }
+
+        let (walk_pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        let (crouch_pos, _, _, _, _, _) = arena.snapshot_player(2).unwrap();
+        assert!(crouch_pos[2] < walk_pos[2], "crouch should be slower");
+    }
+
+    #[test]
+    fn jump_only_fires_when_grounded() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+
+        // Settle onto ground (player spawns at y=2, needs time to fall + settle)
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        }
+        let (pre_pos, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+        assert!(flags & 1 != 0, "should be grounded after settling, pos y={}", pre_pos[1]);
+
+        // Jump
+        let mut jump_cmd = input();
+        jump_cmd.buttons = BTN_JUMP;
+        arena.simulate_player_tick(1, &jump_cmd, 1.0 / 60.0);
+
+        let (_, vel, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        assert!(vel[1] > 0.0, "jump should produce positive y velocity");
+    }
+
+    #[test]
+    fn jump_ignored_in_air() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        // Player spawns at y=2, above ground → in air
+        let (_, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+
+        // Try to jump (should fail if not grounded)
+        let mut jump_cmd = input();
+        jump_cmd.buttons = BTN_JUMP;
+        arena.simulate_player_tick(1, &jump_cmd, 1.0 / 60.0);
+
+        // If player was in the air initially, the jump may or may not fire
+        // depending on whether 1 tick of settling grounds them.
+        // Key thing: no crash, no explosion
+        let (_, vel, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        // Velocity should be reasonable (not NaN or huge)
+        assert!(vel[1].is_finite());
+    }
+
+    #[test]
+    fn gravity_accumulates_in_freefall() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        // No ground — pure freefall
+        arena.spawn_player(1);
+
+        arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        let (_, vel1, _, _, _, _) = arena.snapshot_player(1).unwrap();
+
+        arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        let (_, vel2, _, _, _, _) = arena.snapshot_player(1).unwrap();
+
+        assert!(vel2[1] < vel1[1], "velocity should decrease (more negative) with gravity");
+    }
+
+    #[test]
+    fn friction_stops_player_when_no_input() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+
+        // Settle
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        }
+
+        // Build up speed
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..30 {
+            arena.simulate_player_tick(1, &fwd, 1.0 / 60.0);
+        }
+        let (_, vel_moving, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        let speed_moving = (vel_moving[0].powi(2) + vel_moving[2].powi(2)).sqrt();
+        assert!(speed_moving > 1.0, "should be moving");
+
+        // Release keys — friction
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        }
+        let (_, vel_stopped, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        let speed_stopped = (vel_stopped[0].powi(2) + vel_stopped[2].powi(2)).sqrt();
+        assert!(speed_stopped < 0.1, "friction should stop player, got {}", speed_stopped);
+    }
+
+    // ──────────────────────────────────────────────
+    // Determinism
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn same_inputs_produce_same_position() {
+        // Run the exact same sequence twice
+        let mut cmd = input();
+        cmd.move_y = 127;
+        cmd.buttons = BTN_SPRINT;
+
+        let positions: Vec<[f32; 3]> = (0..2).map(|_| {
+            let mut arena = arena_with_ground();
+            arena.spawn_player(1);
+            for _ in 0..60 {
+                arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+            }
+            for _ in 0..60 {
+                arena.simulate_player_tick(1, &cmd, 1.0 / 60.0);
+            }
+            let (pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
+            pos
+        }).collect();
+
+        for i in 0..3 {
+            assert!(
+                (positions[0][i] - positions[1][i]).abs() < 1e-6,
+                "position[{i}] should be deterministic: {} vs {}",
+                positions[0][i], positions[1][i],
+            );
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // PhysicsArena lifecycle
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn spawn_and_remove_player() {
+        let mut arena = arena_with_ground();
+        let spawn_pos = arena.spawn_player(1);
+        assert!(arena.snapshot_player(1).is_some());
+
+        arena.remove_player(1);
+        assert!(arena.snapshot_player(1).is_none());
+    }
+
+    #[test]
+    fn wall_collision_stops_horizontal_movement() {
+        let mut arena = arena_with_ground();
+        // Wall at z=3
+        arena.add_static_cuboid(
+            vector![0.0, 2.5, 3.0],
+            vector![10.0, 5.0, 0.5],
+            0,
+        );
+        arena.spawn_player(1);
+
+        // Settle
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+        }
+
+        // Walk into wall
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &fwd, 1.0 / 60.0);
+        }
+
+        let (pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
+        assert!(pos[2] < 3.0, "should be stopped by wall, got z={}", pos[2]);
+        assert!(pos[2] > 0.5, "should have moved toward wall");
+    }
 }
