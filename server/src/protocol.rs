@@ -347,7 +347,8 @@ pub fn meters_to_cms_i16(value: f32) -> i16 {
 
 pub fn angle_to_i16(angle_rad: f32) -> i16 {
     let normalized = angle_rad.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
-    (normalized * 65535.0).round() as i16
+    let u16_val = (normalized * 65535.0).round() as u16;
+    u16_val as i16
 }
 
 pub fn i16_to_angle(encoded: i16) -> f32 {
@@ -431,7 +432,7 @@ fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputFrame>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_client_packet, ClientPacket, PKT_INPUT_BUNDLE};
+    use super::*;
 
     #[test]
     fn decode_client_packet_preserves_full_input_bundle() {
@@ -474,6 +475,216 @@ mod tests {
             }
             other => panic!("expected input bundle, got {other:?}"),
         }
+    }
+
+    // ──────────────────────────────────────────────
+    // encode/decode round-trip: Welcome
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn welcome_encode_decode_roundtrip() {
+        let packet = ServerPacket::Welcome(WelcomePacket {
+            player_id: 42,
+            sim_hz: 60,
+            snapshot_hz: 30,
+            server_time_us: 5_000_000,
+            interpolation_delay_ms: 100,
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_WELCOME);
+        // Verify the bytes decode back to expected values
+        let view = &encoded[1..];
+        let player_id = u32::from_le_bytes([view[0], view[1], view[2], view[3]]);
+        let sim_hz = u16::from_le_bytes([view[4], view[5]]);
+        assert_eq!(player_id, 42);
+        assert_eq!(sim_hz, 60);
+    }
+
+    // ──────────────────────────────────────────────
+    // encode/decode round-trip: Snapshot
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn snapshot_encode_preserves_player_state() {
+        let packet = ServerPacket::Snapshot(SnapshotPacket {
+            server_time_us: 1_000_000,
+            server_tick: 60,
+            ack_input_seq: 42,
+            player_states: vec![
+                NetPlayerState {
+                    id: 1,
+                    px_mm: 5000,
+                    py_mm: 1000,
+                    pz_mm: -3000,
+                    vx_cms: 100,
+                    vy_cms: -50,
+                    vz_cms: 200,
+                    yaw_i16: 1000,
+                    pitch_i16: -500,
+                    flags: 1,
+                },
+            ],
+            projectile_states: vec![],
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SNAPSHOT);
+
+        // Verify player count encoded correctly
+        let view = &encoded[1..];
+        // server_time (8) + server_tick (4) + ack_input_seq (2) = 14
+        let player_count = u16::from_le_bytes([view[14], view[15]]);
+        assert_eq!(player_count, 1);
+    }
+
+    #[test]
+    fn snapshot_encode_empty_no_players() {
+        let packet = ServerPacket::Snapshot(SnapshotPacket {
+            server_time_us: 0,
+            server_tick: 0,
+            ack_input_seq: 0,
+            player_states: vec![],
+            projectile_states: vec![],
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SNAPSHOT);
+        // Check player count = 0
+        let view = &encoded[1..];
+        let player_count = u16::from_le_bytes([view[14], view[15]]);
+        assert_eq!(player_count, 0);
+    }
+
+    // ──────────────────────────────────────────────
+    // encode/decode round-trip: ShotResult
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn shot_result_encode() {
+        let packet = ServerPacket::ShotResult(ShotResultPacket {
+            shot_id: 123,
+            weapon: 1,
+            confirmed: true,
+            hit_player_id: 5,
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SHOT_RESULT);
+        let shot_id = u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]);
+        assert_eq!(shot_id, 123);
+    }
+
+    // ──────────────────────────────────────────────
+    // Input bundle parsing: single frame
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn decode_single_input_frame() {
+        let bytes = [
+            PKT_INPUT_BUNDLE,
+            1,  // count
+            42, 0,  // seq
+            17, 0,  // buttons (BTN_FORWARD | BTN_JUMP)
+            127, 0,  // moveX, moveY
+            0, 0,  // yaw
+            0, 0,  // pitch
+        ];
+
+        let packet = decode_client_packet(&bytes).unwrap();
+        match packet {
+            ClientPacket::InputBundle(frames) => {
+                assert_eq!(frames.len(), 1);
+                assert_eq!(frames[0].seq, 42);
+                assert_eq!(frames[0].buttons, 17);
+                assert_eq!(frames[0].move_x, 127);
+            }
+            other => panic!("expected input bundle, got {other:?}"),
+        }
+    }
+
+    // ──────────────────────────────────────────────
+    // Unit conversion helpers
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn meters_to_mm_and_back() {
+        let original = 5.123_f32;
+        let mm = meters_to_mm(original);
+        let back = mm as f32 / 1000.0;
+        assert!((back - original).abs() < 0.001);
+    }
+
+    #[test]
+    fn angle_encode_decode_roundtrip() {
+        let original = 1.5_f32; // radians
+        let encoded = angle_to_i16(original);
+        let decoded = i16_to_angle(encoded);
+        assert!((decoded - original).abs() < 0.01, "got {} vs {}", decoded, original);
+    }
+
+    #[test]
+    fn angle_encode_negative() {
+        let original = -1.0_f32;
+        let encoded = angle_to_i16(original);
+        let decoded = i16_to_angle(encoded);
+        // -1.0 wraps to [0, 2PI) range. Check equivalence modulo TAU.
+        let expected_wrapped = original.rem_euclid(std::f32::consts::TAU);
+        assert!((decoded - expected_wrapped).abs() < 0.01, "got {} vs {}", decoded, expected_wrapped);
+    }
+
+    // ──────────────────────────────────────────────
+    // Chunk packets
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn chunk_full_encode() {
+        let packet = ServerPacket::ChunkFull(ChunkFullPacket {
+            chunk: [1, -2, 3],
+            version: 5,
+            blocks: vec![
+                BlockCell { x: 0, y: 0, z: 0, material: 1 },
+                BlockCell { x: 1, y: 2, z: 3, material: 2 },
+            ],
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_CHUNK_FULL);
+        // chunk x = 1 (i16 LE)
+        let chunk_x = i16::from_le_bytes([encoded[1], encoded[2]]);
+        assert_eq!(chunk_x, 1);
+        let chunk_y = i16::from_le_bytes([encoded[3], encoded[4]]);
+        assert_eq!(chunk_y, -2);
+    }
+
+    #[test]
+    fn chunk_diff_encode() {
+        let packet = ServerPacket::ChunkDiff(ChunkDiffPacket {
+            chunk: [0, 0, 0],
+            version: 2,
+            edits: vec![
+                BlockEditNet { x: 5, y: 10, z: 15, op: 1, material: 3 },
+            ],
+        });
+
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_CHUNK_DIFF);
+        // edit count
+        let edit_count = encoded[1 + 6 + 4]; // after type + chunk(6) + version(4)
+        assert_eq!(edit_count, 1);
+    }
+
+    // ──────────────────────────────────────────────
+    // Ping/Pong
+    // ──────────────────────────────────────────────
+
+    #[test]
+    fn ping_encode() {
+        let packet = ServerPacket::Ping(0xDEAD_BEEF);
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_PING);
+        let nonce = u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]);
+        assert_eq!(nonce, 0xDEAD_BEEF);
     }
 }
 

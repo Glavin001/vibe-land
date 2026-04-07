@@ -393,4 +393,295 @@ describe('PredictedFpsController', () => {
       ctrl.dispose();
     });
   });
+
+  // ──────────────────────────────────────────────
+  // Movement physics (expanded)
+  // ──────────────────────────────────────────────
+
+  describe('movement physics', () => {
+    it('crouch speed is slower than walk', () => {
+      const ctrlWalk = new PredictedFpsController(world, body, collider);
+      ctrlWalk.setPosition({ x: 0, y: 1, z: 0 });
+
+      const body2 = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
+      body2.setTranslation({ x: 100, y: 1, z: 0 }, true);
+      const collider2 = world.createCollider(RAPIER.ColliderDesc.capsule(0.45, 0.35), body2);
+      const ctrlCrouch = new PredictedFpsController(world, body2, collider2);
+
+      for (let i = 0; i < 30; i++) {
+        ctrlWalk.predict(makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveY: 127 }), FIXED_DT);
+        ctrlCrouch.predict(makeInput({ seq: i + 1, buttons: BTN_FORWARD | BTN_CROUCH, moveY: 127 }), FIXED_DT);
+      }
+
+      expect(ctrlCrouch.getPosition().z).toBeLessThan(ctrlWalk.getPosition().z);
+      ctrlWalk.dispose();
+      ctrlCrouch.dispose();
+    });
+
+    it('friction stops player when no input applied', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // Build up speed
+      for (let i = 0; i < 30; i++) {
+        ctrl.predict(makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveY: 127 }), FIXED_DT);
+      }
+      const movingSpeed = Math.hypot(ctrl.getVelocity().x, ctrl.getVelocity().z);
+      expect(movingSpeed).toBeGreaterThan(1);
+
+      // Release keys — friction should slow down
+      for (let i = 0; i < 120; i++) {
+        ctrl.predict(makeInput({ seq: 31 + i }), FIXED_DT);
+      }
+      const stoppedSpeed = Math.hypot(ctrl.getVelocity().x, ctrl.getVelocity().z);
+      expect(stoppedSpeed).toBeLessThan(0.1);
+      ctrl.dispose();
+    });
+
+    it('diagonal movement direction is correct (forward+right)', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      for (let i = 0; i < 30; i++) {
+        ctrl.predict(
+          makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveX: 127, moveY: 127, yaw: 0 }),
+          FIXED_DT,
+        );
+      }
+
+      const pos = ctrl.getPosition();
+      expect(pos.x).toBeGreaterThan(0.3); // moved right
+      expect(pos.z).toBeGreaterThan(0.3); // moved forward
+      ctrl.dispose();
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Gravity and jumping (expanded)
+  // ──────────────────────────────────────────────
+
+  describe('gravity and jumping', () => {
+    it('gravity accumulates velocity over frames in freefall', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 50, z: 0 }); // high up
+
+      ctrl.predict(makeInput({ seq: 1 }), FIXED_DT);
+      const v1 = ctrl.getVelocity().y;
+
+      ctrl.predict(makeInput({ seq: 2 }), FIXED_DT);
+      const v2 = ctrl.getVelocity().y;
+
+      expect(v2).toBeLessThan(v1); // velocity more negative
+      ctrl.dispose();
+    });
+
+    it('jump during airborne is ignored', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 50, z: 0 }); // high up, not grounded
+
+      ctrl.predict(makeInput({ seq: 1 }), FIXED_DT);
+      expect(ctrl.isGrounded()).toBe(false);
+
+      const posBefore = ctrl.getPosition().y;
+      ctrl.predict(makeInput({ seq: 2, buttons: BTN_JUMP }), FIXED_DT);
+      const velAfterJumpAttempt = ctrl.getVelocity().y;
+
+      // Should still be falling (no jump boost)
+      expect(velAfterJumpAttempt).toBeLessThan(0);
+      ctrl.dispose();
+    });
+
+    it('landing zeros vertical velocity', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 3, z: 0 }); // above ground
+
+      // Fall until grounded
+      for (let i = 0; i < 120; i++) {
+        ctrl.predict(makeInput({ seq: i + 1 }), FIXED_DT);
+        if (ctrl.isGrounded()) break;
+      }
+
+      expect(ctrl.isGrounded()).toBe(true);
+      expect(ctrl.getVelocity().y).toBeCloseTo(0, 1);
+      ctrl.dispose();
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Collision (expanded)
+  // ──────────────────────────────────────────────
+
+  describe('collision', () => {
+    it('wall collision stops horizontal movement', () => {
+      // Place a wall at z=3
+      const wallDesc = RAPIER.ColliderDesc.cuboid(10, 5, 0.5)
+        .setTranslation(0, 2.5, 3);
+      world.createCollider(wallDesc);
+      world.step(); // rebuild broadphase
+
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // Walk forward into wall
+      for (let i = 0; i < 120; i++) {
+        ctrl.predict(makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveY: 127, yaw: 0 }), FIXED_DT);
+      }
+
+      // Should be stopped by wall, z < 3
+      const pos = ctrl.getPosition();
+      expect(pos.z).toBeLessThan(3);
+      expect(pos.z).toBeGreaterThan(1); // moved but stopped
+      ctrl.dispose();
+    });
+  });
+
+  // ──────────────────────────────────────────────
+  // Reconciliation edge cases (expanded)
+  // ──────────────────────────────────────────────
+
+  describe('reconciliation edge cases', () => {
+    it('reconcile with zero unacked inputs (pure snap to server)', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // No predict calls → no pending inputs
+
+      const serverState = makeNetState({
+        position: [5, 1, 5],
+        flags: 1,
+      });
+
+      const delta = ctrl.reconcile({ ackInputSeq: 0, state: serverState }, FIXED_DT);
+      if (delta) {
+        const pos = ctrl.getPosition();
+        expect(pos.x).toBeCloseTo(5, 0);
+        expect(pos.z).toBeCloseTo(5, 0);
+      }
+      ctrl.dispose();
+    });
+
+    it('reconcile with many unacked inputs (long replay)', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // Predict 30 inputs
+      for (let i = 0; i < 30; i++) {
+        ctrl.predict(
+          makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveY: 127 }),
+          FIXED_DT,
+        );
+      }
+
+      // Server only acks 5 → 25 inputs replayed
+      const serverState = makeNetState({
+        position: [0, 1, 0.3],
+        flags: 1,
+      });
+      ctrl.reconcile({ ackInputSeq: 5, state: serverState }, FIXED_DT);
+
+      expect(ctrl.getPendingCount()).toBe(25);
+      expect(ctrl.getPosition().z).toBeGreaterThan(0.3);
+      ctrl.dispose();
+    });
+
+    it('reconcile near sequence wraparound boundary', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // Predict inputs starting at 0xFFFC
+      const startSeq = 0xfffc;
+      for (let i = 0; i < 8; i++) {
+        ctrl.predict(
+          makeInput({ seq: (startSeq + i) & 0xffff, buttons: BTN_FORWARD, moveY: 127 }),
+          FIXED_DT,
+        );
+      }
+      // Inputs: FFFC, FFFD, FFFE, FFFF, 0000, 0001, 0002, 0003
+      expect(ctrl.getPendingCount()).toBe(8);
+
+      // Server acks 0xFFFF → inputs 0000, 0001, 0002, 0003 should remain
+      const serverState = makeNetState({ position: [0, 1, 0.5], flags: 1 });
+      ctrl.reconcile({ ackInputSeq: 0xffff, state: serverState }, FIXED_DT);
+
+      expect(ctrl.getPendingCount()).toBe(4);
+      ctrl.dispose();
+    });
+
+    it('reconcile when server position matches predicted (no correction)', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 5, y: 1, z: 5 });
+
+      ctrl.predict(makeInput({ seq: 1 }), FIXED_DT);
+      const pos = ctrl.getPosition();
+
+      // Server matches exactly
+      const serverState = makeNetState({
+        position: [pos.x, pos.y, pos.z],
+        flags: 1,
+      });
+      const delta = ctrl.reconcile({ ackInputSeq: 1, state: serverState }, FIXED_DT);
+
+      // No correction needed (within deadzone)
+      expect(delta).toBeNull();
+      ctrl.dispose();
+    });
+
+    it('multiple reconciliations in sequence stay stable', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      for (let round = 0; round < 10; round++) {
+        // Predict 3 inputs each round
+        for (let i = 0; i < 3; i++) {
+          ctrl.predict(
+            makeInput({ seq: round * 3 + i + 1, buttons: BTN_FORWARD, moveY: 127 }),
+            FIXED_DT,
+          );
+        }
+
+        // Server acks everything so far
+        const ack = (round + 1) * 3;
+        const pos = ctrl.getPosition();
+        const serverState = makeNetState({
+          position: [pos.x, pos.y, pos.z],
+          flags: 1,
+        });
+        ctrl.reconcile({ ackInputSeq: ack, state: serverState }, FIXED_DT);
+      }
+
+      // Should have moved forward substantially
+      expect(ctrl.getPosition().z).toBeGreaterThan(1);
+      expect(ctrl.getPendingCount()).toBe(0);
+      ctrl.dispose();
+    });
+
+    it('reconcile after direction change replays with new direction', () => {
+      const ctrl = new PredictedFpsController(world, body, collider);
+      ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+      // 5 frames forward
+      for (let i = 0; i < 5; i++) {
+        ctrl.predict(
+          makeInput({ seq: i + 1, buttons: BTN_FORWARD, moveY: 127, yaw: 0 }),
+          FIXED_DT,
+        );
+      }
+      // 5 frames right (yaw = PI/2, so "forward" is now +X)
+      for (let i = 0; i < 5; i++) {
+        ctrl.predict(
+          makeInput({ seq: 6 + i, buttons: BTN_FORWARD, moveY: 127, yaw: Math.PI / 2 }),
+          FIXED_DT,
+        );
+      }
+
+      // Server acks first 5 (forward). Inputs 6-10 (rightward) replay.
+      const serverState = makeNetState({ position: [0, 1, 0.5], flags: 1 });
+      ctrl.reconcile({ ackInputSeq: 5, state: serverState }, FIXED_DT);
+
+      // After replay, should have moved in +X direction (not more +Z)
+      const pos = ctrl.getPosition();
+      expect(pos.x).toBeGreaterThan(0.1); // moved right during replay
+      ctrl.dispose();
+    });
+  });
 });
