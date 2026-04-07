@@ -25,6 +25,11 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     onWelcome,
     onDisconnect,
     prediction.ready ? prediction.reconcile : undefined,
+    (packet) => {
+      if (packet.type === 'chunkFull' || packet.type === 'chunkDiff') {
+        prediction.applyWorldPacket(packet);
+      }
+    },
   );
   const { camera, gl } = useThree();
 
@@ -138,18 +143,13 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       <directionalLight position={[20, 30, 10]} intensity={1} />
       <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
 
-      {/* Ground floor - 16x16 block area matching server demo world */}
-      <mesh rotation-x={-Math.PI / 2} position={[0, 0.5, 0]}>
-        <planeGeometry args={[16, 16]} />
-        <meshStandardMaterial color={0x556655} />
-      </mesh>
-
-      {/* Pillar blocks */}
-      <BoxBlock x={2.5} y={1.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={2.5} y={2.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={2.5} y={3.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={3.5} y={1.5} z={2.5} h={1} color={0x887766} />
-      <BoxBlock x={3.5} y={2.5} z={2.5} h={1} color={0x887766} />
+      {prediction.renderBlocks.map((block) => (
+        <WorldBlock
+          key={block.key}
+          position={block.position}
+          color={block.color}
+        />
+      ))}
 
       {/* Grid lines for spatial reference */}
       <gridHelper args={[32, 32, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
@@ -163,10 +163,16 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   );
 }
 
-function BoxBlock({ x, y, z, h, color }: { x: number; y: number; z: number; h: number; color: number }) {
+function WorldBlock({
+  position,
+  color,
+}: {
+  position: [number, number, number];
+  color: number;
+}) {
   return (
-    <mesh position={[x, y, z]}>
-      <boxGeometry args={[1, h, 1]} />
+    <mesh position={position}>
+      <boxGeometry args={[1, 1, 1]} />
       <meshStandardMaterial color={color} />
     </mesh>
   );

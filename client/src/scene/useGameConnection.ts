@@ -31,6 +31,7 @@ export function useGameConnection(
   onWelcome: (id: number) => void,
   onDisconnect: () => void,
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
+  onServerPacket?: (packet: ServerPacket) => void,
 ) {
   const stateRef = useRef<ConnectionState>({
     socket: null,
@@ -49,6 +50,8 @@ export function useGameConnection(
   onDisconnectRef.current = onDisconnect;
   const onLocalSnapshotRef = useRef(onLocalSnapshot);
   onLocalSnapshotRef.current = onLocalSnapshot;
+  const onServerPacketRef = useRef(onServerPacket);
+  onServerPacketRef.current = onServerPacket;
 
   const [ready, setReady] = useState(false);
 
@@ -116,6 +119,7 @@ export function useGameConnection(
           default:
             break;
         }
+        onServerPacketRef.current?.(packet);
       },
       onClose: () => {
         onDisconnectRef.current();

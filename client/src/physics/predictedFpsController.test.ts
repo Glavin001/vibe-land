@@ -163,6 +163,23 @@ describe('PredictedFpsController', () => {
     ctrl.dispose();
   });
 
+  it('predict uses move axes even without directional button bits', () => {
+    const ctrl = new PredictedFpsController(world, body, collider);
+    ctrl.setPosition({ x: 0, y: 1, z: 0 });
+
+    for (let i = 0; i < 30; i++) {
+      ctrl.predict(
+        makeInput({ seq: i + 1, moveX: 127, buttons: 0, yaw: 0 }),
+        FIXED_DT,
+      );
+    }
+
+    const pos = ctrl.getPosition();
+    expect(pos.x).toBeGreaterThan(0.5);
+    expect(Math.abs(pos.z)).toBeLessThan(0.2);
+    ctrl.dispose();
+  });
+
   it('sprint moves faster than walk', () => {
     const ctrlWalk = new PredictedFpsController(world, body, collider);
     ctrlWalk.setPosition({ x: 0, y: 1, z: 0 });

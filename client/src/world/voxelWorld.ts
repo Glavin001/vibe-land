@@ -13,6 +13,13 @@ export const CHUNK_SIZE = 16;
 
 export type ChunkKey = [number, number, number];
 
+export type RenderBlock = {
+  key: string;
+  position: [number, number, number];
+  material: number;
+  color: number;
+};
+
 type ChunkState = {
   key: ChunkKey;
   version: number;
@@ -27,6 +34,29 @@ export class ClientVoxelWorld {
 
   getChunkVersion(chunk: ChunkKey): number {
     return this.chunks.get(keyToString(chunk))?.version ?? 0;
+  }
+
+  hasChunks(): boolean {
+    return this.chunks.size > 0;
+  }
+
+  getRenderBlocks(): RenderBlock[] {
+    const blocks: RenderBlock[] = [];
+    for (const chunk of this.chunks.values()) {
+      const chunkId = keyToString(chunk.key);
+      for (const [idx, material] of chunk.blocks) {
+        if (material === 0) continue;
+        const [lx, ly, lz] = unpackLocalIndex(idx);
+        const center = chunkLocalToWorldCenter(chunk.key, [lx, ly, lz]);
+        blocks.push({
+          key: `${chunkId}:${idx}`,
+          position: [center.x, center.y, center.z],
+          material,
+          color: materialToColor(material),
+        });
+      }
+    }
+    return blocks;
   }
 
   applyFullChunk(packet: ChunkFullPacket): void {
@@ -72,10 +102,9 @@ export class ClientVoxelWorld {
     this.setChunk(chunk);
   }
 
-  buildEditRequest(worldX: number, worldY: number, worldZ: number, op: number, material: number, requestId: number): BlockEditCmd {
+  buildEditRequest(worldX: number, worldY: number, worldZ: number, op: number, material: number): BlockEditCmd {
     const { chunk, local } = worldToChunkAndLocal(worldX, worldY, worldZ);
     return {
-      requestId,
       chunk,
       local,
       op,
@@ -97,8 +126,7 @@ export class ClientVoxelWorld {
     if (existing) {
       for (const handle of existing.colliders) {
         try {
-          // Signature may vary slightly by Rapier JS version; adjust here if needed.
-          this.world.removeCollider(handle, true);
+          this.world.removeCollider(this.world.getCollider(handle), true);
         } catch {
           // noop
         }
@@ -117,6 +145,8 @@ export class ClientVoxelWorld {
     }
 
     this.chunks.set(id, chunk);
+    // Refresh Rapier's broad-phase/query state after collider rebuilds so KCC sees new chunks immediately.
+    this.world.step();
   }
 }
 
@@ -160,4 +190,15 @@ function divFloor(a: number, b: number): number {
 function modFloor(a: number, b: number): number {
   const r = a % b;
   return r < 0 ? r + b : r;
+}
+
+function materialToColor(material: number): number {
+  switch (material) {
+    case 1:
+      return 0x556655;
+    case 2:
+      return 0x887766;
+    default:
+      return 0x888888;
+  }
 }

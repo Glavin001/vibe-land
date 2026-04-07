@@ -5,6 +5,8 @@ export const PKT_FIRE = 3;
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;
 export const PKT_SHOT_RESULT = 103;
+export const PKT_CHUNK_FULL = 104;
+export const PKT_CHUNK_DIFF = 105;
 
 export const BTN_FORWARD = 1 << 0;
 export const BTN_BACK = 1 << 1;
@@ -17,6 +19,8 @@ export const BTN_SECONDARY_FIRE = 1 << 7;
 export const BTN_RELOAD = 1 << 8;
 
 export const FLAG_ON_GROUND = 1 << 0;
+export const BLOCK_ADD = 1;
+export const BLOCK_REMOVE = 2;
 
 export const WEAPON_HITSCAN = 1;
 export const WEAPON_ROCKET = 2;
@@ -99,7 +103,15 @@ export type ServerDatagramPacket = SnapshotPacket;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
 export type PongPacket = { type: 'pong'; value: number };
-export type ServerPacket = WelcomePacket | SnapshotPacket | ShotResultPacket | ServerPingPacket | PongPacket;
+export type ServerWorldPacket = ChunkFullPacket | ChunkDiffPacket;
+export type ServerPacket =
+  | WelcomePacket
+  | SnapshotPacket
+  | ShotResultPacket
+  | ChunkFullPacket
+  | ChunkDiffPacket
+  | ServerPingPacket
+  | PongPacket;
 
 export type InputCmd = InputFrame;
 
@@ -109,6 +121,35 @@ export type BlockEditCmd = {
   local: [number, number, number];
   op: number;
   material: number;
+};
+
+export type BlockCell = {
+  x: number;
+  y: number;
+  z: number;
+  material: number;
+};
+
+export type BlockEditNet = {
+  x: number;
+  y: number;
+  z: number;
+  op: number;
+  material: number;
+};
+
+export type ChunkFullPacket = {
+  type: 'chunkFull';
+  chunk: [number, number, number];
+  version: number;
+  blocks: BlockCell[];
+};
+
+export type ChunkDiffPacket = {
+  type: 'chunkDiff';
+  chunk: [number, number, number];
+  version: number;
+  edits: BlockEditNet[];
 };
 
 export type PlayerStateMeters = {
@@ -423,6 +464,74 @@ function getUint64(view: DataView, offset: number): number {
   return high * 2 ** 32 + low;
 }
 
+function decodeChunkFullPacket(data: ArrayBuffer | Uint8Array): ChunkFullPacket {
+  const bytes = toBytes(data);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let o = 1;
+  const chunk: [number, number, number] = [
+    view.getInt16(o, true),
+    view.getInt16(o + 2, true),
+    view.getInt16(o + 4, true),
+  ];
+  o += 6;
+  const version = view.getUint32(o, true);
+  o += 4;
+  const blockCount = view.getUint16(o, true);
+  o += 2;
+
+  const blocks: BlockCell[] = [];
+  for (let i = 0; i < blockCount; i += 1) {
+    blocks.push({
+      x: view.getUint8(o++),
+      y: view.getUint8(o++),
+      z: view.getUint8(o++),
+      material: view.getUint16(o, true),
+    });
+    o += 2;
+  }
+
+  return {
+    type: 'chunkFull',
+    chunk,
+    version,
+    blocks,
+  };
+}
+
+function decodeChunkDiffPacket(data: ArrayBuffer | Uint8Array): ChunkDiffPacket {
+  const bytes = toBytes(data);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let o = 1;
+  const chunk: [number, number, number] = [
+    view.getInt16(o, true),
+    view.getInt16(o + 2, true),
+    view.getInt16(o + 4, true),
+  ];
+  o += 6;
+  const version = view.getUint32(o, true);
+  o += 4;
+  const editCount = view.getUint8(o++);
+
+  const edits: BlockEditNet[] = [];
+  for (let i = 0; i < editCount; i += 1) {
+    edits.push({
+      x: view.getUint8(o++),
+      y: view.getUint8(o++),
+      z: view.getUint8(o++),
+      op: view.getUint8(o++),
+      material: view.getUint16(o, true),
+    });
+    o += 2;
+  }
+
+  return {
+    type: 'chunkDiff',
+    chunk,
+    version,
+    edits,
+  };
+}
+
 export function bytesFromHex(hex: string): Uint8Array {
   const normalized = hex.trim().replace(/^0x/, '').toLowerCase();
   if (normalized.length % 2 !== 0) {
@@ -458,6 +567,10 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return decodeServerReliablePacket(data);
     case PKT_SNAPSHOT:
       return decodeServerDatagramPacket(data);
+    case PKT_CHUNK_FULL:
+      return decodeChunkFullPacket(data);
+    case PKT_CHUNK_DIFF:
+      return decodeChunkDiffPacket(data);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

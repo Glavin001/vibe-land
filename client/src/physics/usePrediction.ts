@@ -1,9 +1,10 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { PredictedFpsController } from './predictedFpsController';
-import type { InputCmd, NetPlayerState } from '../net/protocol';
+import type { InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
+import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
 const FIXED_DT = 1 / 60;
 const MAX_CATCHUP_STEPS = 4;
@@ -18,19 +19,31 @@ type PredictionState = {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   controller: PredictedFpsController;
+  voxelWorld: ClientVoxelWorld;
   accumulator: number;
   prevPosition: [number, number, number];
   currPosition: [number, number, number];
-  // Visual offset SET (not accumulated) on each reconciliation, decays toward zero
   correctionOffset: [number, number, number];
   nextSeq: number;
   tickCount: number;
+  worldLoaded: boolean;
 };
+
+function applyWorldPacketToState(state: PredictionState, packet: ServerWorldPacket): void {
+  if (packet.type === 'chunkFull') {
+    state.voxelWorld.applyFullChunk(packet);
+  } else {
+    state.voxelWorld.applyChunkDiff(packet);
+  }
+  state.worldLoaded = state.voxelWorld.hasChunks();
+}
 
 export function usePrediction() {
   const stateRef = useRef<PredictionState | null>(null);
   const initializedRef = useRef(false);
+  const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
+  const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
 
   useEffect(() => {
     let disposed = false;
@@ -39,51 +52,49 @@ export function usePrediction() {
       if (disposed) return;
 
       const world = new RAPIER.World({ x: 0, y: -20, z: 0 });
+      const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
+      const collider = world.createCollider(RAPIER.ColliderDesc.capsule(0.45, 0.35), body);
+      const voxelWorld = new ClientVoxelWorld(world);
 
-      // Static ground plane (top surface at y=1.0)
-      const groundDesc = RAPIER.ColliderDesc.cuboid(50, 0.5, 50)
-        .setTranslation(0, 0.5, 0);
-      world.createCollider(groundDesc);
-
-      // Pillar blocks matching GameWorld.tsx hardcoded scene
-      const pillarBlocks: [number, number, number][] = [
-        [2.5, 1.5, 2.5],
-        [2.5, 2.5, 2.5],
-        [2.5, 3.5, 2.5],
-        [3.5, 1.5, 2.5],
-        [3.5, 2.5, 2.5],
-      ];
-      for (const [x, y, z] of pillarBlocks) {
-        const desc = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5)
-          .setTranslation(x, y, z);
-        world.createCollider(desc);
-      }
-
-      // Player capsule (kinematic)
-      const bodyDesc = RAPIER.RigidBodyDesc.kinematicPositionBased();
-      const body = world.createRigidBody(bodyDesc);
-      const colliderDesc = RAPIER.ColliderDesc.capsule(0.45, 0.35);
-      const collider = world.createCollider(colliderDesc, body);
-
-      // Initialize broadphase so computeColliderMovement detects collisions
+      // Initialize Rapier internals before the first prediction tick.
       world.step();
 
       const controller = new PredictedFpsController(world, body, collider);
-
-      stateRef.current = {
-        world, body, collider, controller,
+      const state: PredictionState = {
+        world,
+        body,
+        collider,
+        controller,
+        voxelWorld,
         accumulator: 0,
         prevPosition: [0, 0, 0],
         currPosition: [0, 0, 0],
         correctionOffset: [0, 0, 0],
         nextSeq: 1,
         tickCount: 0,
+        worldLoaded: false,
       };
+
+      stateRef.current = state;
+
+      const pendingPackets = pendingWorldPacketsRef.current.splice(0);
+      for (const packet of pendingPackets) {
+        try {
+          applyWorldPacketToState(state, packet);
+        } catch (error) {
+          console.warn('Failed to apply queued world packet on client', error);
+        }
+      }
+
+      setRenderBlocks(state.voxelWorld.getRenderBlocks());
       setReady(true);
     });
 
     return () => {
       disposed = true;
+      initializedRef.current = false;
+      setReady(false);
+      setRenderBlocks([]);
       const s = stateRef.current;
       if (s) {
         s.controller.dispose();
@@ -92,11 +103,21 @@ export function usePrediction() {
     };
   }, []);
 
-  /**
-   * Called every render frame. Accumulates time and runs 0-N fixed physics ticks.
-   * For each tick: builds an input, predicts locally, AND sends to server.
-   * Also decays the visual correction offset toward zero.
-   */
+  const applyWorldPacket = useCallback((packet: ServerWorldPacket) => {
+    const s = stateRef.current;
+    if (!s) {
+      pendingWorldPacketsRef.current.push(packet);
+      return;
+    }
+
+    try {
+      applyWorldPacketToState(s, packet);
+      setRenderBlocks(s.voxelWorld.getRenderBlocks());
+    } catch (error) {
+      console.warn('Chunk world update rejected on client', error);
+    }
+  }, []);
+
   const update = useCallback((
     frameDeltaSec: number,
     buttons: number,
@@ -105,18 +126,19 @@ export function usePrediction() {
     sendInputs: (cmds: InputCmd[]) => void,
   ): void => {
     const s = stateRef.current;
-    if (!s) return;
+    if (!s || !s.worldLoaded || !initializedRef.current) {
+      return;
+    }
 
     s.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
 
     let steps = 0;
     while (s.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
-      const seq = (s.nextSeq++ & 0xffff);
+      const seq = s.nextSeq++ & 0xffff;
       const clientTick = Math.floor(performance.now() / (1000 / 60));
       const input = buildInputFromButtons(seq, clientTick, buttons, yaw, pitch);
 
-      // Predict locally and send to server — same seq, same input
       s.controller.predict(input, FIXED_DT);
       pendingInputs.push(input);
 
@@ -124,7 +146,6 @@ export function usePrediction() {
       const p = s.controller.getPosition();
       s.currPosition = [p.x, p.y, p.z];
 
-      // Decay visual correction offset toward zero
       const decay = Math.exp(-VISUAL_SMOOTH_RATE * FIXED_DT);
       s.correctionOffset[0] *= decay;
       s.correctionOffset[1] *= decay;
@@ -135,7 +156,6 @@ export function usePrediction() {
       s.tickCount++;
     }
 
-    // Clamp accumulator to prevent runaway
     if (s.accumulator > FIXED_DT) {
       s.accumulator = FIXED_DT;
     }
@@ -145,17 +165,12 @@ export function usePrediction() {
     }
   }, []);
 
-  /**
-   * Replay-based reconciliation: resets physics to server state, replays unacked
-   * inputs, and SETs (not accumulates) the visual offset to the position delta.
-   */
   const reconcile = useCallback((ackInputSeq: number, playerState: NetPlayerState) => {
     const s = stateRef.current;
     if (!s) return;
 
     const m = netPlayerStateToMeters(playerState);
 
-    // First snapshot: teleport physics body to spawn position
     if (!initializedRef.current) {
       s.controller.setFullState(
         { x: m.position[0], y: m.position[1], z: m.position[2] },
@@ -171,7 +186,6 @@ export function usePrediction() {
       return;
     }
 
-    // Check for large error → hard teleport (respawn, major desync)
     const curr = s.controller.getPosition();
     const rawError = Math.hypot(
       m.position[0] - curr.x,
@@ -194,28 +208,22 @@ export function usePrediction() {
       return;
     }
 
-    // Controller handles: reset to server state, replay unacked inputs
     const delta = s.controller.reconcile(
       { ackInputSeq, state: playerState },
       FIXED_DT,
     );
 
     if (delta) {
-      // SET the visual offset (not accumulate) — bounded to single reconciliation delta
       s.correctionOffset = [-delta.dx, -delta.dy, -delta.dz];
-      // Update positions to match reconciled physics state
       const p = s.controller.getPosition();
       s.currPosition = [p.x, p.y, p.z];
       s.prevPosition = [...s.currPosition] as [number, number, number];
     }
   }, []);
 
-  /**
-   * Returns interpolated physics position + smooth correction offset.
-   */
   const getPosition = useCallback((): [number, number, number] | null => {
     const s = stateRef.current;
-    if (!s) return null;
+    if (!s || !initializedRef.current) return null;
 
     const alpha = s.accumulator / FIXED_DT;
     return [
@@ -225,5 +233,5 @@ export function usePrediction() {
     ];
   }, []);
 
-  return { ready, update, reconcile, getPosition };
+  return { ready, renderBlocks, update, reconcile, getPosition, applyWorldPacket };
 }

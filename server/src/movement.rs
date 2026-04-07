@@ -165,26 +165,7 @@ impl PhysicsArena {
         state.pitch = input.pitch.clamp(-1.55, 1.55);
         state.last_input = input.clone();
 
-        let forward = vec3_from_yaw(state.yaw);
-        let right = vector![forward.z, 0.0, -forward.x];
-        let mut wish = Vec3::zeros();
-
-        if input.buttons & BTN_FORWARD != 0 {
-            wish += forward;
-        }
-        if input.buttons & BTN_BACK != 0 {
-            wish -= forward;
-        }
-        if input.buttons & BTN_RIGHT != 0 {
-            wish += right;
-        }
-        if input.buttons & BTN_LEFT != 0 {
-            wish -= right;
-        }
-        wish.y = 0.0;
-        if wish.norm_squared() > 0.0001 {
-            wish = wish.normalize();
-        }
+        let wish = build_wish_dir(input, state.yaw);
 
         let max_speed = if input.buttons & BTN_CROUCH != 0 {
             cfg.crouch_speed
@@ -293,6 +274,29 @@ fn vec3_from_yaw(yaw: f32) -> Vec3 {
     vector![yaw.sin(), 0.0, yaw.cos()]
 }
 
+fn build_wish_dir(input: &InputCmd, yaw: f32) -> Vec3 {
+    let forward = vec3_from_yaw(yaw);
+    let right = vector![forward.z, 0.0, -forward.x];
+
+    let mut move_x = input.move_x as f32 / 127.0;
+    let mut move_y = input.move_y as f32 / 127.0;
+
+    // Fall back to button-derived movement so older callers still behave.
+    if move_x.abs() <= f32::EPSILON && move_y.abs() <= f32::EPSILON {
+        move_x = (if input.buttons & BTN_RIGHT != 0 { 1.0 } else { 0.0 })
+            + (if input.buttons & BTN_LEFT != 0 { -1.0 } else { 0.0 });
+        move_y = (if input.buttons & BTN_FORWARD != 0 { 1.0 } else { 0.0 })
+            + (if input.buttons & BTN_BACK != 0 { -1.0 } else { 0.0 });
+    }
+
+    let mut wish = right * move_x + forward * move_y;
+    wish.y = 0.0;
+    if wish.norm_squared() > 0.0001 {
+        wish = wish.normalize();
+    }
+    wish
+}
+
 fn apply_horizontal_friction(velocity: &mut Vec3, friction: f32, dt: f32, on_ground: bool) {
     if !on_ground {
         return;
@@ -320,4 +324,42 @@ fn accelerate(velocity: &mut Vec3, wish_dir: Vec3, wish_speed: f32, accel: f32, 
     }
     let accel_speed = (accel * wish_speed * dt).min(add_speed);
     *velocity += wish_dir * accel_speed;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input() -> InputCmd {
+        InputCmd {
+            seq: 1,
+            buttons: 0,
+            move_x: 0,
+            move_y: 0,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    #[test]
+    fn build_wish_dir_uses_move_axes_without_button_bits() {
+        let mut cmd = input();
+        cmd.move_x = 127;
+
+        let wish = build_wish_dir(&cmd, 0.0);
+
+        assert!(wish.x > 0.99);
+        assert!(wish.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn build_wish_dir_falls_back_to_buttons_when_move_axes_are_zero() {
+        let mut cmd = input();
+        cmd.buttons = BTN_FORWARD | BTN_RIGHT;
+
+        let wish = build_wish_dir(&cmd, 0.0);
+
+        assert!(wish.x > 0.7);
+        assert!(wish.z > 0.7);
+    }
 }
