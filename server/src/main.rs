@@ -5,12 +5,14 @@ mod voxel_world;
 
 use std::{
     collections::{HashMap, VecDeque},
+    fs::OpenOptions,
+    io::Write,
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -42,6 +44,36 @@ const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_PENDING_INPUTS: usize = 120;
+const DEBUG_LOG_PATH: &str = "/Users/glavin/Development/vibe-land/.cursor/debug-83ac5f.log";
+const DEBUG_SESSION_ID: &str = "83ac5f";
+
+fn now_timestamp_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+fn opt_u16_json(value: Option<u16>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn append_debug_log(hypothesis_id: &str, location: &str, message: &str, data: String) {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(DEBUG_LOG_PATH) {
+        let _ = writeln!(
+            file,
+            "{{\"sessionId\":\"{}\",\"runId\":\"cadence-pre\",\"hypothesisId\":\"{}\",\"location\":\"{}\",\"message\":\"{}\",\"data\":{},\"timestamp\":{}}}",
+            DEBUG_SESSION_ID,
+            hypothesis_id,
+            location,
+            message,
+            data,
+            now_timestamp_ms(),
+        );
+    }
+}
 
 #[derive(Clone)]
 struct SharedAppState {
@@ -106,6 +138,7 @@ struct MatchState {
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
     server_tick: u32,
+    last_cadence_log_at: Instant,
 }
 
 #[tokio::main]
@@ -236,6 +269,7 @@ async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchE
         players: HashMap::new(),
         queued_shots: Vec::new(),
         server_tick: 0,
+        last_cadence_log_at: Instant::now(),
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -370,6 +404,10 @@ impl MatchState {
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
             self.send_server_latency_pings();
         }
+
+        if self.server_tick % SIM_HZ as u32 == 0 {
+            self.log_cadence_summary();
+        }
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -377,6 +415,39 @@ impl MatchState {
             let nonce = ((self.server_tick & 0xffff) << 16) | (player_id & 0xffff);
             runtime.pending_server_ping = Some((nonce, Instant::now()));
             let _ = runtime.tx.send(encode_server_packet(&ServerPacket::Ping(nonce)));
+        }
+    }
+
+    fn log_cadence_summary(&mut self) {
+        let elapsed_ms = self.last_cadence_log_at.elapsed().as_millis();
+        self.last_cadence_log_at = Instant::now();
+
+        if let Some((&player_id, runtime)) = self.players.iter().next() {
+            append_debug_log(
+                "H28",
+                "server/src/main.rs:409",
+                "server cadence summary",
+                format!(
+                    "{{\"serverTick\":{},\"elapsedMs\":{},\"playerId\":{},\"pendingInputs\":{},\"lastAckInputSeq\":{},\"lastReceivedInputSeq\":{}}}",
+                    self.server_tick,
+                    elapsed_ms,
+                    player_id,
+                    runtime.pending_inputs.len(),
+                    runtime.last_ack_input_seq,
+                    opt_u16_json(runtime.last_received_input_seq),
+                ),
+            );
+        } else {
+            append_debug_log(
+                "H28",
+                "server/src/main.rs:422",
+                "server cadence summary",
+                format!(
+                    "{{\"serverTick\":{},\"elapsedMs\":{},\"players\":0}}",
+                    self.server_tick,
+                    elapsed_ms,
+                ),
+            );
         }
     }
 

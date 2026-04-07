@@ -30,6 +30,8 @@ type PredictionState = {
 export function usePrediction() {
   const stateRef = useRef<PredictionState | null>(null);
   const initializedRef = useRef(false);
+  const lastSendCadenceSeqRef = useRef(0);
+  const lastSendCadenceAtRef = useRef<number | null>(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -142,6 +144,18 @@ export function usePrediction() {
 
     if (pendingInputs.length > 0) {
       sendInputs(pendingInputs);
+      const lastSeq = pendingInputs[pendingInputs.length - 1].seq;
+      const now = performance.now();
+      if (lastSendCadenceAtRef.current === null) {
+        lastSendCadenceAtRef.current = now;
+        lastSendCadenceSeqRef.current = lastSeq;
+      } else if (lastSeq - lastSendCadenceSeqRef.current >= 60) {
+        // #region agent log
+        fetch('http://127.0.0.1:7573/ingest/57b4fbd5-6dde-4eb5-b85a-6674ac4543c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83ac5f'},body:JSON.stringify({sessionId:'83ac5f',runId:'cadence-pre',hypothesisId:'H26',location:'client/src/physics/usePrediction.ts:149',message:'client send cadence summary',data:{elapsedMs:now-lastSendCadenceAtRef.current,lastSeq,batchSize:pendingInputs.length,steps,frameDeltaSec,buttons,accumulator:s.accumulator},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        lastSendCadenceAtRef.current = now;
+        lastSendCadenceSeqRef.current = lastSeq;
+      }
     }
   }, []);
 
@@ -179,21 +193,6 @@ export function usePrediction() {
       m.position[2] - curr.z,
     );
 
-    if (rawError > HARD_SNAP_DISTANCE) {
-      s.controller.setFullState(
-        { x: m.position[0], y: m.position[1], z: m.position[2] },
-        { x: m.velocity[0], y: m.velocity[1], z: m.velocity[2] },
-        m.yaw,
-        m.pitch,
-        (m.flags & 1) !== 0,
-      );
-      const p = s.controller.getPosition();
-      s.currPosition = [p.x, p.y, p.z];
-      s.prevPosition = [...s.currPosition] as [number, number, number];
-      s.correctionOffset = [0, 0, 0];
-      return;
-    }
-
     // Controller handles: reset to server state, replay unacked inputs
     const delta = s.controller.reconcile(
       { ackInputSeq, state: playerState },
@@ -201,8 +200,27 @@ export function usePrediction() {
     );
 
     if (delta) {
-      // SET the visual offset (not accumulate) — bounded to single reconciliation delta
-      s.correctionOffset = [-delta.dx, -delta.dy, -delta.dz];
+      const pending = s.controller.getPendingDebugInfo();
+      const deltaMagnitude = Math.hypot(delta.dx, delta.dy, delta.dz);
+      if (rawError < 0.5 && deltaMagnitude > 1.0) {
+        // #region agent log
+        fetch('http://127.0.0.1:7573/ingest/57b4fbd5-6dde-4eb5-b85a-6674ac4543c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83ac5f'},body:JSON.stringify({sessionId:'83ac5f',runId:'replay-path-pre',hypothesisId:'H22',location:'client/src/physics/usePrediction.ts:221',message:'small reconcile error but large replay delta',data:{ackInputSeq,rawError,deltaMagnitude,delta,pendingCount:pending.count,firstPendingSeq:pending.firstSeq,lastPendingSeq:pending.lastSeq},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
+      if (rawError > HARD_SNAP_DISTANCE) {
+        // #region agent log
+        fetch('http://127.0.0.1:7573/ingest/57b4fbd5-6dde-4eb5-b85a-6674ac4543c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83ac5f'},body:JSON.stringify({sessionId:'83ac5f',runId:'post-fix',hypothesisId:'H24',location:'client/src/physics/usePrediction.ts:214',message:'pre-replay raw error exceeded hard snap threshold',data:{ackInputSeq,rawError,deltaMagnitude,pendingCount:pending.count,firstPendingSeq:pending.firstSeq,lastPendingSeq:pending.lastSeq},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+      }
+      if (deltaMagnitude > HARD_SNAP_DISTANCE) {
+        // #region agent log
+        fetch('http://127.0.0.1:7573/ingest/57b4fbd5-6dde-4eb5-b85a-6674ac4543c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83ac5f'},body:JSON.stringify({sessionId:'83ac5f',runId:'post-fix',hypothesisId:'H25',location:'client/src/physics/usePrediction.ts:218',message:'post-replay correction exceeded hard snap threshold',data:{ackInputSeq,rawError,deltaMagnitude,delta},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        s.correctionOffset = [0, 0, 0];
+      } else {
+        // SET the visual offset (not accumulate) — bounded to single reconciliation delta
+        s.correctionOffset = [-delta.dx, -delta.dy, -delta.dz];
+      }
       // Update positions to match reconciled physics state
       const p = s.controller.getPosition();
       s.currPosition = [p.x, p.y, p.z];

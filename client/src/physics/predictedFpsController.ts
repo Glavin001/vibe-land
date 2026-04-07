@@ -117,6 +117,20 @@ export class PredictedFpsController {
     return this.pendingInputs.length;
   }
 
+  getPendingDebugInfo(): { count: number; firstSeq: number | null; lastSeq: number | null } {
+    return {
+      count: this.pendingInputs.length,
+      firstSeq: this.pendingInputs[0]?.seq ?? null,
+      lastSeq: this.pendingInputs[this.pendingInputs.length - 1]?.seq ?? null,
+    };
+  }
+
+  clearPendingInputs(): number {
+    const count = this.pendingInputs.length;
+    this.pendingInputs = [];
+    return count;
+  }
+
   predict(input: InputFrame, fixedDt: number): void {
     this.pendingInputs.push(input);
     this.simulateOne(input, fixedDt);
@@ -224,7 +238,7 @@ export class PredictedFpsController {
 
 function buildWishDir(input: InputFrame, yaw: number): Vec3 {
   const forward = { x: Math.sin(yaw), y: 0, z: Math.cos(yaw) };
-  const right = { x: forward.z, y: 0, z: -forward.x };
+  const right = { x: -forward.z, y: 0, z: forward.x };
   const mx = input.moveX / 127;
   const my = input.moveY / 127;
   return {

@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGameConnection } from './useGameConnection';
@@ -15,11 +15,22 @@ import {
 type GameWorldProps = {
   onWelcome: (id: number) => void;
   onDisconnect: () => void;
+  inputButtonsRef: MutableRefObject<number>;
+  yawRef: MutableRefObject<number>;
+  pitchRef: MutableRefObject<number>;
+  applyLookDelta: (dx: number, dy: number) => void;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
-export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
+export function GameWorld({
+  onWelcome,
+  onDisconnect,
+  inputButtonsRef,
+  yawRef,
+  pitchRef,
+  applyLookDelta,
+}: GameWorldProps) {
   const prediction = usePrediction();
   const { stateRef, ready, sendInputs } = useGameConnection(
     onWelcome,
@@ -29,23 +40,18 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const { camera, gl } = useThree();
 
   const keysRef = useRef(new Set<string>());
-  const yawRef = useRef(0);
-  const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
+  const lastDebugButtonsRef = useRef<number | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.code);
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement !== gl.domElement) return;
-      yawRef.current -= e.movementX * 0.003;
-      pitchRef.current = Math.max(
-        -Math.PI / 2 + 0.01,
-        Math.min(Math.PI / 2 - 0.01, pitchRef.current - e.movementY * 0.003),
-      );
+      applyLookDelta(e.movementX, e.movementY);
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -56,20 +62,26 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       window.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('mousemove', onMouseMove);
     };
-  }, [gl]);
+  }, [applyLookDelta, gl]);
 
   useFrame(() => {
     if (!ready) return;
     const state = stateRef.current;
     const keys = keysRef.current;
 
-    let buttons = 0;
+    let buttons = inputButtonsRef.current;
     if (keys.has('KeyW') || keys.has('ArrowUp')) buttons |= BTN_FORWARD;
     if (keys.has('KeyS') || keys.has('ArrowDown')) buttons |= BTN_BACK;
     if (keys.has('KeyA') || keys.has('ArrowLeft')) buttons |= BTN_LEFT;
     if (keys.has('KeyD') || keys.has('ArrowRight')) buttons |= BTN_RIGHT;
     if (keys.has('Space')) buttons |= BTN_JUMP;
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) buttons |= BTN_SPRINT;
+
+    if (buttons !== 0 && lastDebugButtonsRef.current !== buttons) {
+      lastDebugButtonsRef.current = buttons;
+    } else if (buttons === 0) {
+      lastDebugButtonsRef.current = null;
+    }
 
     if (prediction.ready) {
       const now = performance.now();
@@ -138,9 +150,9 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       <directionalLight position={[20, 30, 10]} intensity={1} />
       <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
 
-      {/* Ground floor - 16x16 block area matching server demo world */}
+      {/* Ground floor - 64x64 block area matching server demo world */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.5, 0]}>
-        <planeGeometry args={[16, 16]} />
+        <planeGeometry args={[64, 64]} />
         <meshStandardMaterial color={0x556655} />
       </mesh>
 
@@ -152,7 +164,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       <BoxBlock x={3.5} y={2.5} z={2.5} h={1} color={0x887766} />
 
       {/* Grid lines for spatial reference */}
-      <gridHelper args={[32, 32, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
+      <gridHelper args={[64, 64, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />

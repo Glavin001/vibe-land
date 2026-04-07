@@ -166,7 +166,7 @@ impl PhysicsArena {
         state.last_input = input.clone();
 
         let forward = vec3_from_yaw(state.yaw);
-        let right = vector![forward.z, 0.0, -forward.x];
+        let right = vector![-forward.z, 0.0, forward.x];
         let mut wish = Vec3::zeros();
 
         if input.buttons & BTN_FORWARD != 0 {
@@ -185,7 +185,6 @@ impl PhysicsArena {
         if wish.norm_squared() > 0.0001 {
             wish = wish.normalize();
         }
-
         let max_speed = if input.buttons & BTN_CROUCH != 0 {
             cfg.crouch_speed
         } else if input.buttons & BTN_SPRINT != 0 {

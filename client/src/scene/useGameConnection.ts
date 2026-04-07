@@ -49,6 +49,13 @@ export function useGameConnection(
   onDisconnectRef.current = onDisconnect;
   const onLocalSnapshotRef = useRef(onLocalSnapshot);
   onLocalSnapshotRef.current = onLocalSnapshot;
+  const snapshotCadenceRef = useRef({
+    windowStartedAt: 0,
+    ackAtWindowStart: 0,
+    lastSnapshotAt: 0,
+    snapshots: 0,
+    maxGapMs: 0,
+  });
 
   const [ready, setReady] = useState(false);
 
@@ -78,6 +85,26 @@ export function useGameConnection(
             for (const ps of packet.playerStates) {
               knownIds.add(ps.id);
               if (ps.id === state.playerId) {
+                const now = performance.now();
+                const cadence = snapshotCadenceRef.current;
+                if (cadence.windowStartedAt === 0) {
+                  cadence.windowStartedAt = now;
+                  cadence.ackAtWindowStart = packet.ackInputSeq;
+                }
+                if (cadence.lastSnapshotAt !== 0) {
+                  cadence.maxGapMs = Math.max(cadence.maxGapMs, now - cadence.lastSnapshotAt);
+                }
+                cadence.lastSnapshotAt = now;
+                cadence.snapshots += 1;
+                if (packet.ackInputSeq > 0 && now - cadence.windowStartedAt >= 1000) {
+                  // #region agent log
+                  fetch('http://127.0.0.1:7573/ingest/57b4fbd5-6dde-4eb5-b85a-6674ac4543c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'83ac5f'},body:JSON.stringify({sessionId:'83ac5f',runId:'cadence-pre',hypothesisId:'H27',location:'client/src/scene/useGameConnection.ts:93',message:'client snapshot cadence summary',data:{elapsedMs:now-cadence.windowStartedAt,snapshots:cadence.snapshots,ackStart:cadence.ackAtWindowStart,ackEnd:packet.ackInputSeq,ackAdvance:packet.ackInputSeq-cadence.ackAtWindowStart,maxGapMs:cadence.maxGapMs,serverTick:packet.serverTick},timestamp:Date.now()})}).catch(()=>{});
+                  // #endregion
+                  cadence.windowStartedAt = now;
+                  cadence.ackAtWindowStart = packet.ackInputSeq;
+                  cadence.snapshots = 0;
+                  cadence.maxGapMs = 0;
+                }
                 if (onLocalSnapshotRef.current) {
                   onLocalSnapshotRef.current(packet.ackInputSeq, ps);
                 } else {

@@ -2,12 +2,30 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>vibe-land</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body, #root { width: 100%; height: 100%; overflow: hidden; }
-      body { background: #111; color: #fff; font-family: monospace; }
+      html {
+        width: 100%;
+        height: 100%;
+        /* Let the html element fill without overflow so iOS doesn't scroll */
+        overflow: hidden;
+      }
+      body, #root {
+        width: 100%;
+        /* Fallback → standard → dynamic viewport height (iOS 15.4+, handles Safari chrome) */
+        height: 100%;
+        height: 100vh;
+        height: 100dvh;
+        overflow: hidden;
+        background: #111;
+        color: #fff;
+        font-family: monospace;
+        overscroll-behavior: none;
+        /* Do NOT set touch-action: none here — it breaks iOS Safari's own viewport handling.
+           Individual elements that need it set it themselves. */
+      }
     </style>
   </head>
   <body>
