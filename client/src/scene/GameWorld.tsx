@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGameConnection, type RemotePlayer } from './useGameConnection';
-import { buildInputFromButtons } from './inputBuilder';
+import { usePrediction } from '../physics/usePrediction';
 import {
   BTN_FORWARD,
   BTN_BACK,
@@ -20,16 +20,21 @@ type GameWorldProps = {
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
 export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
-  const { stateRef, ready, sendInput } = useGameConnection(onWelcome, onDisconnect);
+  const prediction = usePrediction();
+  const { stateRef, ready, sendInput } = useGameConnection(
+    onWelcome,
+    onDisconnect,
+    prediction.ready ? prediction.reconcile : undefined,
+  );
   const { camera, gl } = useThree();
 
   const keysRef = useRef(new Set<string>());
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
-  const seqRef = useRef(1);
   const remoteGroupRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const logTimer = useRef(0);
+  const lastFrameTime = useRef(performance.now());
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.code);
@@ -66,13 +71,17 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     if (keys.has('Space')) buttons |= BTN_JUMP;
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) buttons |= BTN_SPRINT;
 
-    const seq = (seqRef.current++ & 0xffff);
-    const clientTick = Math.floor(performance.now() / (1000 / 60));
-    const input = buildInputFromButtons(seq, clientTick, buttons, yawRef.current, pitchRef.current);
-    sendInput(input);
+    if (prediction.ready) {
+      const now = performance.now();
+      const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
+      lastFrameTime.current = now;
+      // Prediction owns seq counting, input building, and sending — all in lockstep
+      prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInput);
+    }
 
-    // Camera follows server-authoritative local position
-    const pos = state.localPosition;
+    // Camera follows interpolated predicted position (falls back to server-authoritative)
+    const predictedPos = prediction.getPosition();
+    const pos = predictedPos ?? state.localPosition;
     const eyeHeight = 1.6;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;

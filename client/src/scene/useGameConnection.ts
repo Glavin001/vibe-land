@@ -4,6 +4,7 @@ import { SnapshotInterpolator } from '../net/interpolation';
 import {
   netStateToMeters,
   type InputCmd,
+  type NetPlayerState,
   type ServerPacket,
 } from '../net/protocol';
 
@@ -27,6 +28,7 @@ export type ConnectionState = {
 export function useGameConnection(
   onWelcome: (id: number) => void,
   onDisconnect: () => void,
+  onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
 ) {
   const stateRef = useRef<ConnectionState>({
     socket: null,
@@ -41,6 +43,8 @@ export function useGameConnection(
   onWelcomeRef.current = onWelcome;
   const onDisconnectRef = useRef(onDisconnect);
   onDisconnectRef.current = onDisconnect;
+  const onLocalSnapshotRef = useRef(onLocalSnapshot);
+  onLocalSnapshotRef.current = onLocalSnapshot;
 
   const [ready, setReady] = useState(false);
 
@@ -65,8 +69,12 @@ export function useGameConnection(
             for (const ps of packet.playerStates) {
               knownIds.add(ps.id);
               if (ps.id === state.playerId) {
-                const m = netStateToMeters(ps);
-                state.localPosition = m.position;
+                if (onLocalSnapshotRef.current) {
+                  onLocalSnapshotRef.current(packet.ackInputSeq, ps);
+                } else {
+                  const m = netStateToMeters(ps);
+                  state.localPosition = m.position;
+                }
               } else {
                 const m = netStateToMeters(ps);
                 state.interpolator.push(ps.id, {
