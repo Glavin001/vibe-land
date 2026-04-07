@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { GameSocket } from '../net/gameSocket';
-import { SnapshotInterpolator } from '../net/interpolation';
+import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import {
   netStateToMeters,
   type InputCmd,
@@ -19,7 +19,9 @@ export type RemotePlayer = {
 export type ConnectionState = {
   socket: GameSocket | null;
   playerId: number;
-  interpolator: SnapshotInterpolator;
+  remoteInterpolator: PlayerInterpolator;
+  serverClock: ServerClockEstimator;
+  interpolationDelayMs: number;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   localPosition: [number, number, number];
@@ -33,7 +35,9 @@ export function useGameConnection(
   const stateRef = useRef<ConnectionState>({
     socket: null,
     playerId: 0,
-    interpolator: new SnapshotInterpolator(),
+    remoteInterpolator: new PlayerInterpolator(),
+    serverClock: new ServerClockEstimator(),
+    interpolationDelayMs: 100,
     latestServerTick: 0,
     remotePlayers: new Map(),
     localPosition: [0, 2, 0],
@@ -50,7 +54,9 @@ export function useGameConnection(
 
   useEffect(() => {
     const state = stateRef.current;
-    state.interpolator = new SnapshotInterpolator();
+    state.remoteInterpolator = new PlayerInterpolator();
+    state.serverClock = new ServerClockEstimator();
+    state.interpolationDelayMs = 100;
     state.remotePlayers = new Map();
     state.playerId = 0;
 
@@ -59,12 +65,15 @@ export function useGameConnection(
         switch (packet.type) {
           case 'welcome':
             state.playerId = packet.playerId;
+            state.interpolationDelayMs = packet.interpolationDelayMs;
+            state.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
             console.log('[game] Welcome! playerId =', packet.playerId);
             onWelcomeRef.current(packet.playerId);
             setReady(true);
             break;
           case 'snapshot': {
             state.latestServerTick = packet.serverTick;
+            state.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
             const knownIds = new Set<number>();
             for (const ps of packet.playerStates) {
               knownIds.add(ps.id);
@@ -77,14 +86,12 @@ export function useGameConnection(
                 }
               } else {
                 const m = netStateToMeters(ps);
-                state.interpolator.push(ps.id, {
-                  serverTick: packet.serverTick,
-                  receivedAtMs: performance.now(),
+                state.remoteInterpolator.push(ps.id, {
+                  serverTimeUs: packet.serverTimeUs,
                   position: m.position,
                   velocity: m.velocity,
                   yaw: m.yaw,
                   pitch: m.pitch,
-                  hp: 100,
                   flags: ps.flags,
                 });
                 state.remotePlayers.set(ps.id, {
@@ -100,9 +107,10 @@ export function useGameConnection(
             for (const id of state.remotePlayers.keys()) {
               if (!knownIds.has(id)) {
                 state.remotePlayers.delete(id);
-                state.interpolator.remove(id);
+                state.remoteInterpolator.remove(id);
               }
             }
+            state.remoteInterpolator.retainOnly(knownIds);
             break;
           }
           default:
@@ -128,12 +136,12 @@ export function useGameConnection(
     };
   }, []);
 
-  const sendInput = useCallback((cmd: InputCmd) => {
+  const sendInputs = useCallback((cmds: InputCmd[]) => {
     const state = stateRef.current;
     if (state.socket) {
-      state.socket.sendInput(cmd);
+      state.socket.sendInputs(cmds);
     }
   }, []);
 
-  return { stateRef, ready, sendInput };
+  return { stateRef, ready, sendInputs };
 }

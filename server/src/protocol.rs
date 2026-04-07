@@ -100,7 +100,7 @@ pub struct ChunkDiffPacket {
 
 #[derive(Clone, Debug)]
 pub enum ClientPacket {
-    Input(InputCmd),
+    InputBundle(Vec<InputCmd>),
     Fire(FireCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
@@ -206,21 +206,7 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
     let kind = buf.get_u8();
     Ok(match kind {
         PKT_INPUT_BUNDLE => {
-            ensure!(buf.remaining() >= 1, "short input bundle header");
-            let count = buf.get_u8() as usize;
-            ensure!(count > 0, "input bundle cannot be empty");
-            ensure!(buf.remaining() >= count * 10, "short input bundle payload");
-            let mut frames = Vec::with_capacity(count);
-            for _ in 0..count {
-                frames.push(InputFrame {
-                    seq: buf.get_u16_le(),
-                    buttons: buf.get_u16_le(),
-                    move_x: buf.get_i8(),
-                    move_y: buf.get_i8(),
-                    yaw: i16_to_angle(buf.get_i16_le()),
-                    pitch: i16_to_angle(buf.get_i16_le()),
-                });
-            }
+            let frames = decode_input_bundle_frames(&mut buf)?;
             ClientDatagram::InputBundle(frames)
         }
         PKT_FIRE => {
@@ -380,22 +366,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
     let kind = buf.get_u8();
     Ok(match kind {
         PKT_INPUT_BUNDLE => {
-            ensure!(buf.remaining() >= 1, "short input bundle header");
-            let count = buf.get_u8() as usize;
-            ensure!(count > 0, "input bundle cannot be empty");
-            ensure!(buf.remaining() >= count * 10, "short input bundle payload");
-            let mut last = InputFrame::default();
-            for _ in 0..count {
-                last = InputFrame {
-                    seq: buf.get_u16_le(),
-                    buttons: buf.get_u16_le(),
-                    move_x: buf.get_i8(),
-                    move_y: buf.get_i8(),
-                    yaw: i16_to_angle(buf.get_i16_le()),
-                    pitch: i16_to_angle(buf.get_i16_le()),
-                };
-            }
-            ClientPacket::Input(last)
+            ClientPacket::InputBundle(decode_input_bundle_frames(&mut buf)?)
         }
         PKT_FIRE => {
             ensure!(buf.remaining() >= 15, "short fire packet");
@@ -437,6 +408,73 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
         }
         other => bail!("unknown client packet kind {other}"),
     })
+}
+
+fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputFrame>> {
+    ensure!(buf.remaining() >= 1, "short input bundle header");
+    let count = buf.get_u8() as usize;
+    ensure!(count > 0, "input bundle cannot be empty");
+    ensure!(buf.remaining() >= count * 10, "short input bundle payload");
+    let mut frames = Vec::with_capacity(count);
+    for _ in 0..count {
+        frames.push(InputFrame {
+            seq: buf.get_u16_le(),
+            buttons: buf.get_u16_le(),
+            move_x: buf.get_i8(),
+            move_y: buf.get_i8(),
+            yaw: i16_to_angle(buf.get_i16_le()),
+            pitch: i16_to_angle(buf.get_i16_le()),
+        });
+    }
+    Ok(frames)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_client_packet, ClientPacket, PKT_INPUT_BUNDLE};
+
+    #[test]
+    fn decode_client_packet_preserves_full_input_bundle() {
+        let bytes = [
+            PKT_INPUT_BUNDLE,
+            2,
+            1,
+            0,
+            1,
+            0,
+            127u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            0,
+            3,
+            0,
+            0,
+            127u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+
+        let packet = decode_client_packet(&bytes).expect("bundle should decode");
+        match packet {
+            ClientPacket::InputBundle(frames) => {
+                assert_eq!(frames.len(), 2);
+                assert_eq!(frames[0].seq, 1);
+                assert_eq!(frames[0].buttons, 1);
+                assert_eq!(frames[0].move_x, 127);
+                assert_eq!(frames[1].seq, 2);
+                assert_eq!(frames[1].buttons, 3);
+                assert_eq!(frames[1].move_y, 127);
+            }
+            other => panic!("expected input bundle, got {other:?}"),
+        }
+    }
 }
 
 pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {

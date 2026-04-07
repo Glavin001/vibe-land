@@ -4,7 +4,7 @@ mod protocol;
 mod voxel_world;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -34,13 +34,14 @@ use crate::{
         decode_client_packet, encode_server_packet, make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket,
         SnapshotPacket, ShotResultPacket, WelcomePacket,
     },
-    voxel_world::{VoxelWorld, CHUNK_SIZE},
+    voxel_world::VoxelWorld,
 };
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
+const MAX_PENDING_INPUTS: usize = 120;
 
 #[derive(Clone)]
 struct SharedAppState {
@@ -84,7 +85,9 @@ enum MatchEvent {
 struct PlayerRuntime {
     identity: String,
     tx: mpsc::UnboundedSender<Vec<u8>>,
-    latest_input: InputCmd,
+    pending_inputs: VecDeque<InputCmd>,
+    last_applied_input: InputCmd,
+    last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     estimated_one_way_ms: u32,
     pending_server_ping: Option<(u32, Instant)>,
@@ -261,7 +264,9 @@ impl MatchState {
                     PlayerRuntime {
                         identity: conn.identity,
                         tx: conn.tx.clone(),
-                        latest_input: InputCmd::default(),
+                        pending_inputs: VecDeque::new(),
+                        last_applied_input: InputCmd::default(),
+                        last_received_input_seq: None,
                         last_ack_input_seq: 0,
                         estimated_one_way_ms: 40,
                         pending_server_ping: None,
@@ -292,8 +297,8 @@ impl MatchState {
             MatchEvent::Packet { player_id, packet } => {
                 let Some(runtime) = self.players.get_mut(&player_id) else { return; };
                 match packet {
-                    ClientPacket::Input(cmd) => {
-                        runtime.latest_input = cmd;
+                    ClientPacket::InputBundle(cmds) => {
+                        enqueue_inputs(runtime, cmds);
                     }
                     ClientPacket::Fire(cmd) => {
                         self.queued_shots.push(QueuedShot { player_id, cmd });
@@ -337,11 +342,12 @@ impl MatchState {
 
         let ids: Vec<u32> = self.players.keys().copied().collect();
         for player_id in ids.iter().copied() {
-            let input = self.players.get(&player_id).map(|p| p.latest_input.clone()).unwrap_or_default();
+            let input = self
+                .players
+                .get_mut(&player_id)
+                .map(take_input_for_tick)
+                .unwrap_or_default();
             self.arena.simulate_player_tick(player_id, &input, dt);
-            if let Some(runtime) = self.players.get_mut(&player_id) {
-                runtime.last_ack_input_seq = input.seq;
-            }
 
             if let Some((pos, _vel, _yaw, _pitch, hp, _flags)) = self.arena.snapshot_player(player_id) {
                 self.history.record(player_id, HistoricalCapsule {
@@ -447,6 +453,37 @@ impl MatchState {
     }
 }
 
+fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
+    if let Some(input) = runtime.pending_inputs.pop_front() {
+        runtime.last_ack_input_seq = input.seq;
+        runtime.last_applied_input = input.clone();
+        return input;
+    }
+    runtime.last_applied_input.clone()
+}
+
+fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
+    for cmd in cmds {
+        let is_new = runtime
+            .last_received_input_seq
+            .map(|last| seq_is_newer(cmd.seq, last))
+            .unwrap_or(true);
+        if !is_new {
+            continue;
+        }
+        runtime.last_received_input_seq = Some(cmd.seq);
+        runtime.pending_inputs.push_back(cmd);
+        while runtime.pending_inputs.len() > MAX_PENDING_INPUTS {
+            runtime.pending_inputs.pop_front();
+        }
+    }
+}
+
+fn seq_is_newer(a: u16, b: u16) -> bool {
+    let diff = a.wrapping_sub(b);
+    diff != 0 && diff < 0x8000
+}
+
 impl SpacetimeVerifier {
     async fn verify(&self, identity: &str, _token: &str) -> Result<()> {
         if std::env::var("SKIP_SPACETIMEDB_VERIFY").is_ok() {
@@ -467,5 +504,88 @@ impl SpacetimeVerifier {
         } else {
             anyhow::bail!("Spacetime identity verify failed: {}", response.status())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        enqueue_inputs, seq_is_newer, take_input_for_tick, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
+    };
+    use std::collections::VecDeque;
+    use tokio::sync::mpsc;
+
+    fn runtime() -> PlayerRuntime {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        PlayerRuntime {
+            identity: "test-player".to_string(),
+            tx,
+            pending_inputs: VecDeque::new(),
+            last_applied_input: InputCmd::default(),
+            last_received_input_seq: None,
+            last_ack_input_seq: 0,
+            estimated_one_way_ms: 40,
+            pending_server_ping: None,
+        }
+    }
+
+    fn input(seq: u16) -> InputCmd {
+        InputCmd {
+            seq,
+            buttons: seq,
+            move_x: 0,
+            move_y: 0,
+            yaw: 0.0,
+            pitch: 0.0,
+        }
+    }
+
+    #[test]
+    fn seq_is_newer_handles_wraparound() {
+        assert!(seq_is_newer(2, 0xfffe));
+        assert!(!seq_is_newer(0xfffe, 2));
+        assert!(!seq_is_newer(0x8000, 0));
+    }
+
+    #[test]
+    fn enqueue_inputs_rejects_stale_and_duplicate_frames() {
+        let mut runtime = runtime();
+
+        enqueue_inputs(&mut runtime, vec![input(10), input(11)]);
+        enqueue_inputs(&mut runtime, vec![input(11), input(9), input(12)]);
+
+        let queued: Vec<u16> = runtime.pending_inputs.iter().map(|cmd| cmd.seq).collect();
+        assert_eq!(queued, vec![10, 11, 12]);
+        assert_eq!(runtime.last_received_input_seq, Some(12));
+    }
+
+    #[test]
+    fn enqueue_inputs_keeps_newest_frames_when_queue_overflows() {
+        let mut runtime = runtime();
+        let frames = (1..=(MAX_PENDING_INPUTS as u16 + 5)).map(input).collect();
+
+        enqueue_inputs(&mut runtime, frames);
+
+        assert_eq!(runtime.pending_inputs.len(), MAX_PENDING_INPUTS);
+        assert_eq!(runtime.pending_inputs.front().map(|cmd| cmd.seq), Some(6));
+        assert_eq!(
+            runtime.pending_inputs.back().map(|cmd| cmd.seq),
+            Some(MAX_PENDING_INPUTS as u16 + 5)
+        );
+    }
+
+    #[test]
+    fn take_input_for_tick_consumes_queue_then_repeats_last_applied() {
+        let mut runtime = runtime();
+        enqueue_inputs(&mut runtime, vec![input(21), input(22)]);
+
+        let first = take_input_for_tick(&mut runtime);
+        let second = take_input_for_tick(&mut runtime);
+        let repeated = take_input_for_tick(&mut runtime);
+
+        assert_eq!(first.seq, 21);
+        assert_eq!(second.seq, 22);
+        assert_eq!(repeated.seq, 22);
+        assert_eq!(runtime.last_ack_input_seq, 22);
     }
 }

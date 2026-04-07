@@ -102,12 +102,13 @@ export function usePrediction() {
     buttons: number,
     yaw: number,
     pitch: number,
-    sendInput: (cmd: InputCmd) => void,
+    sendInputs: (cmds: InputCmd[]) => void,
   ): void => {
     const s = stateRef.current;
     if (!s) return;
 
     s.accumulator += frameDeltaSec;
+    const pendingInputs: InputCmd[] = [];
 
     let steps = 0;
     while (s.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
@@ -117,7 +118,7 @@ export function usePrediction() {
 
       // Predict locally and send to server — same seq, same input
       s.controller.predict(input, FIXED_DT);
-      sendInput(input);
+      pendingInputs.push(input);
 
       s.prevPosition = [...s.currPosition] as [number, number, number];
       const p = s.controller.getPosition();
@@ -137,6 +138,10 @@ export function usePrediction() {
     // Clamp accumulator to prevent runaway
     if (s.accumulator > FIXED_DT) {
       s.accumulator = FIXED_DT;
+    }
+
+    if (pendingInputs.length > 0) {
+      sendInputs(pendingInputs);
     }
   }, []);
 

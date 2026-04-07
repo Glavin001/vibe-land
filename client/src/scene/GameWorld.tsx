@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import { useGameConnection, type RemotePlayer } from './useGameConnection';
+import { useGameConnection } from './useGameConnection';
 import { usePrediction } from '../physics/usePrediction';
 import {
   BTN_FORWARD,
@@ -21,7 +21,7 @@ const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44fff
 
 export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const prediction = usePrediction();
-  const { stateRef, ready, sendInput } = useGameConnection(
+  const { stateRef, ready, sendInputs } = useGameConnection(
     onWelcome,
     onDisconnect,
     prediction.ready ? prediction.reconcile : undefined,
@@ -76,7 +76,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
       lastFrameTime.current = now;
       // Prediction owns seq counting, input building, and sending — all in lockstep
-      prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInput);
+      prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
     }
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
@@ -104,6 +104,7 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
 
     const currentRemote = state.remotePlayers;
     const activeIds = new Set<number>();
+    const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
 
     for (const [id, rp] of currentRemote) {
       activeIds.add(id);
@@ -114,8 +115,11 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
         remoteMeshes.current.set(id, playerGroup);
         console.log('[game] Created mesh for remote player', id);
       }
-      playerGroup.position.set(rp.position[0], rp.position[1], rp.position[2]);
-      playerGroup.rotation.y = rp.yaw;
+      const sample = state.remoteInterpolator.sample(id, renderTimeUs);
+      const position = sample?.position ?? rp.position;
+      const yaw = sample?.yaw ?? rp.yaw;
+      playerGroup.position.set(position[0], position[1], position[2]);
+      playerGroup.rotation.y = yaw;
     }
 
     // Remove stale
