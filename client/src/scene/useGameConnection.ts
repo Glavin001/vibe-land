@@ -3,6 +3,7 @@ import { GameSocket } from '../net/gameSocket';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import {
   netStateToMeters,
+  type BlockEditCmd,
   type InputCmd,
   type NetPlayerState,
   type ServerPacket,
@@ -147,5 +148,12 @@ export function useGameConnection(
     }
   }, []);
 
-  return { stateRef, ready, sendInputs };
+  const sendBlockEdit = useCallback((cmd: BlockEditCmd) => {
+    const state = stateRef.current;
+    if (state.socket) {
+      state.socket.sendBlockEdit(cmd);
+    }
+  }, []);
+
+  return { stateRef, ready, sendInputs, sendBlockEdit };
 }

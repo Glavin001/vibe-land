@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { PredictedFpsController } from './predictedFpsController';
-import type { InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import type { BlockEditCmd, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
@@ -27,6 +27,13 @@ type PredictionState = {
   nextSeq: number;
   tickCount: number;
   worldLoaded: boolean;
+};
+
+type BlockRayHit = {
+  point: [number, number, number];
+  normal: [number, number, number];
+  removeCell: [number, number, number];
+  placeCell: [number, number, number];
 };
 
 function applyWorldPacketToState(state: PredictionState, packet: ServerWorldPacket): void {
@@ -233,5 +240,78 @@ export function usePrediction() {
     ];
   }, []);
 
-  return { ready, renderBlocks, update, reconcile, getPosition, applyWorldPacket };
+  const raycastBlocks = useCallback((
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance = 6,
+  ): BlockRayHit | null => {
+    const s = stateRef.current;
+    if (!s || !s.worldLoaded) return null;
+
+    const ray = new RAPIER.Ray(
+      { x: origin[0], y: origin[1], z: origin[2] },
+      { x: direction[0], y: direction[1], z: direction[2] },
+    );
+    const hit = s.world.castRayAndGetNormal(ray, maxDistance, true, undefined, undefined, s.collider);
+    if (!hit) return null;
+
+    const point: [number, number, number] = [
+      origin[0] + direction[0] * hit.timeOfImpact,
+      origin[1] + direction[1] * hit.timeOfImpact,
+      origin[2] + direction[2] * hit.timeOfImpact,
+    ];
+    const normal: [number, number, number] = [hit.normal.x, hit.normal.y, hit.normal.z];
+    const epsilon = 0.01;
+
+    return {
+      point,
+      normal,
+      removeCell: pointToCell([
+        point[0] - normal[0] * epsilon,
+        point[1] - normal[1] * epsilon,
+        point[2] - normal[2] * epsilon,
+      ]),
+      placeCell: pointToCell([
+        point[0] + normal[0] * epsilon,
+        point[1] + normal[1] * epsilon,
+        point[2] + normal[2] * epsilon,
+      ]),
+    };
+  }, []);
+
+  const buildBlockEdit = useCallback((
+    cell: [number, number, number],
+    op: number,
+    material: number,
+  ): BlockEditCmd | null => {
+    const s = stateRef.current;
+    if (!s || !s.worldLoaded) return null;
+    return s.voxelWorld.buildEditRequest(cell[0], cell[1], cell[2], op, material);
+  }, []);
+
+  const getBlockMaterial = useCallback((cell: [number, number, number]): number => {
+    const s = stateRef.current;
+    if (!s || !s.worldLoaded) return 0;
+    return s.voxelWorld.getMaterial(cell[0], cell[1], cell[2]);
+  }, []);
+
+  return {
+    ready,
+    renderBlocks,
+    update,
+    reconcile,
+    getPosition,
+    applyWorldPacket,
+    raycastBlocks,
+    buildBlockEdit,
+    getBlockMaterial,
+  };
+}
+
+function pointToCell(point: [number, number, number]): [number, number, number] {
+  return [
+    Math.floor(point[0]),
+    Math.floor(point[1]),
+    Math.floor(point[2]),
+  ];
 }
