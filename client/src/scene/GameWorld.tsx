@@ -4,6 +4,9 @@ import * as THREE from 'three';
 import { useGameConnection } from './useGameConnection';
 import { usePrediction } from '../physics/usePrediction';
 import {
+  aimDirectionFromAngles,
+  BLOCK_ADD,
+  BLOCK_REMOVE,
   BTN_FORWARD,
   BTN_BACK,
   BTN_LEFT,
@@ -21,7 +24,7 @@ const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44fff
 
 export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const prediction = usePrediction();
-  const { stateRef, ready, sendInputs } = useGameConnection(
+  const { stateRef, ready, sendInputs, sendBlockEdit } = useGameConnection(
     onWelcome,
     onDisconnect,
     prediction.ready ? prediction.reconcile : undefined,
@@ -40,9 +43,14 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
+  const selectedMaterialRef = useRef(2);
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => keysRef.current.add(e.code);
+    const onKeyDown = (e: KeyboardEvent) => {
+      keysRef.current.add(e.code);
+      if (e.code === 'Digit1') selectedMaterialRef.current = 1;
+      if (e.code === 'Digit2') selectedMaterialRef.current = 2;
+    };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement !== gl.domElement) return;
@@ -52,16 +60,54 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
         Math.min(Math.PI / 2 - 0.01, pitchRef.current - e.movementY * 0.003),
       );
     };
+    const onMouseDown = (e: MouseEvent) => {
+      if (document.pointerLockElement !== gl.domElement) return;
+      if (e.button !== 0 && e.button !== 2) return;
+
+      const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
+      const hit = prediction.raycastBlocks(
+        [camera.position.x, camera.position.y, camera.position.z],
+        direction,
+        6,
+      );
+      if (!hit) return;
+
+      if (e.button === 0) {
+        if (prediction.getBlockMaterial(hit.removeCell) === 0) return;
+        const cmd = prediction.buildBlockEdit(hit.removeCell, BLOCK_REMOVE, 0);
+        if (cmd) {
+          sendBlockEdit(cmd);
+        }
+        e.preventDefault();
+        return;
+      }
+
+      if (prediction.getBlockMaterial(hit.placeCell) !== 0) return;
+      const cmd = prediction.buildBlockEdit(hit.placeCell, BLOCK_ADD, selectedMaterialRef.current);
+      if (cmd) {
+        sendBlockEdit(cmd);
+      }
+      e.preventDefault();
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      if (document.pointerLockElement === gl.domElement) {
+        e.preventDefault();
+      }
+    };
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('contextmenu', onContextMenu);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('contextmenu', onContextMenu);
     };
-  }, [gl]);
+  }, [camera, gl, prediction, sendBlockEdit]);
 
   useFrame(() => {
     if (!ready) return;

@@ -1,8 +1,15 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { PredictionManager } from './predictionManager';
-import type { InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import type { BlockEditCmd, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
+
+type BlockRayHit = {
+  point: [number, number, number];
+  normal: [number, number, number];
+  removeCell: [number, number, number];
+  placeCell: [number, number, number];
+};
 
 /**
  * Thin React wrapper around PredictionManager.
@@ -11,6 +18,8 @@ import type { RenderBlock } from '../world/voxelWorld';
  */
 export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
+  const worldRef = useRef<RAPIER.World | null>(null);
+  const colliderRef = useRef<RAPIER.Collider | null>(null);
   const initializedRef = useRef(false);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
@@ -31,6 +40,8 @@ export function usePrediction() {
 
       const manager = new PredictionManager(world, body, collider);
       managerRef.current = manager;
+      worldRef.current = world;
+      colliderRef.current = collider;
 
       // Apply any world packets that arrived before Rapier was ready.
       const pendingPackets = pendingWorldPacketsRef.current.splice(0);
@@ -56,6 +67,8 @@ export function usePrediction() {
         m.dispose();
         managerRef.current = null;
       }
+      worldRef.current = null;
+      colliderRef.current = null;
     };
   }, []);
 
@@ -102,5 +115,80 @@ export function usePrediction() {
     return m.getInterpolatedPosition();
   }, []);
 
-  return { ready, renderBlocks, update, reconcile, getPosition, applyWorldPacket };
+  const raycastBlocks = useCallback((
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance = 6,
+  ): BlockRayHit | null => {
+    const m = managerRef.current;
+    const world = worldRef.current;
+    const playerCollider = colliderRef.current;
+    if (!m || !world || !playerCollider || !m.isWorldLoaded()) return null;
+
+    const ray = new RAPIER.Ray(
+      { x: origin[0], y: origin[1], z: origin[2] },
+      { x: direction[0], y: direction[1], z: direction[2] },
+    );
+    const hit = world.castRayAndGetNormal(ray, maxDistance, true, undefined, undefined, playerCollider);
+    if (!hit) return null;
+
+    const point: [number, number, number] = [
+      origin[0] + direction[0] * hit.timeOfImpact,
+      origin[1] + direction[1] * hit.timeOfImpact,
+      origin[2] + direction[2] * hit.timeOfImpact,
+    ];
+    const normal: [number, number, number] = [hit.normal.x, hit.normal.y, hit.normal.z];
+    const epsilon = 0.01;
+
+    return {
+      point,
+      normal,
+      removeCell: pointToCell([
+        point[0] - normal[0] * epsilon,
+        point[1] - normal[1] * epsilon,
+        point[2] - normal[2] * epsilon,
+      ]),
+      placeCell: pointToCell([
+        point[0] + normal[0] * epsilon,
+        point[1] + normal[1] * epsilon,
+        point[2] + normal[2] * epsilon,
+      ]),
+    };
+  }, []);
+
+  const buildBlockEdit = useCallback((
+    cell: [number, number, number],
+    op: number,
+    material: number,
+  ): BlockEditCmd | null => {
+    const m = managerRef.current;
+    if (!m || !m.isWorldLoaded()) return null;
+    return m.voxelWorld.buildEditRequest(cell[0], cell[1], cell[2], op, material);
+  }, []);
+
+  const getBlockMaterial = useCallback((cell: [number, number, number]): number => {
+    const m = managerRef.current;
+    if (!m || !m.isWorldLoaded()) return 0;
+    return m.voxelWorld.getMaterial(cell[0], cell[1], cell[2]);
+  }, []);
+
+  return {
+    ready,
+    renderBlocks,
+    update,
+    reconcile,
+    getPosition,
+    applyWorldPacket,
+    raycastBlocks,
+    buildBlockEdit,
+    getBlockMaterial,
+  };
+}
+
+function pointToCell(point: [number, number, number]): [number, number, number] {
+  return [
+    Math.floor(point[0]),
+    Math.floor(point[1]),
+    Math.floor(point[2]),
+  ];
 }

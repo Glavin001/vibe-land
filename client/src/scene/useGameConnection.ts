@@ -1,7 +1,12 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
-import type { InputCmd, NetPlayerState, ServerPacket } from '../net/protocol';
+import type {
+  BlockEditCmd,
+  InputCmd,
+  NetPlayerState,
+  ServerPacket,
+} from '../net/protocol';
 
 export type { RemotePlayer };
 
@@ -99,5 +104,9 @@ export function useGameConnection(
     clientRef.current?.sendInputs(cmds);
   }, []);
 
-  return { stateRef, ready, sendInputs };
+  const sendBlockEdit = useCallback((cmd: BlockEditCmd) => {
+    clientRef.current?.sendBlockEdit(cmd);
+  }, []);
+
+  return { stateRef, ready, sendInputs, sendBlockEdit };
 }

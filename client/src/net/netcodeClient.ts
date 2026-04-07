@@ -2,6 +2,7 @@ import { GameSocket } from './gameSocket';
 import { PlayerInterpolator, ServerClockEstimator, type PlayerSample } from './interpolation';
 import {
   netStateToMeters,
+  type BlockEditCmd,
   type InputCmd,
   type NetPlayerState,
   type ServerPacket,
@@ -73,6 +74,10 @@ export class NetcodeClient {
 
   sendInputs(cmds: InputCmd[]): void {
     this.socket?.sendInputs(cmds);
+  }
+
+  sendBlockEdit(cmd: BlockEditCmd): void {
+    this.socket?.sendBlockEdit(cmd);
   }
 
   /**

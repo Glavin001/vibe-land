@@ -51,7 +51,7 @@ afterEach(() => {
   scenario = null;
 });
 
-function createScenario(config?: Parameters<typeof NetcodeTestScenario['prototype']['constructor']>[0]): NetcodeTestScenario {
+function createScenario(config?: ConstructorParameters<typeof NetcodeTestScenario>[0]): NetcodeTestScenario {
   const s = new NetcodeTestScenario(config);
   s.init();
   scenario = s;
