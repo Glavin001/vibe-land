@@ -31,7 +31,8 @@ use crate::{
     lag_comp::{HistoricalCapsule, LagCompHistory},
     movement::{MoveConfig, PhysicsArena},
     protocol::{
-        decode_client_packet, encode_server_packet, make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket,
+        decode_client_packet, encode_server_packet, make_net_dynamic_body_state,
+        make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket,
         SnapshotPacket, ShotResultPacket, WelcomePacket,
     },
     voxel_world::VoxelWorld,
@@ -228,6 +229,12 @@ async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchE
     let mut world = VoxelWorld::new();
     world.seed_demo_world(&mut arena);
 
+    // Spawn a dynamic box that falls from above onto the ground
+    arena.spawn_dynamic_box(
+        nalgebra::vector![4.0, 8.0, 4.0],
+        nalgebra::vector![0.5, 0.5, 0.5],
+    );
+
     let mut state = MatchState {
         id: match_id,
         arena,
@@ -361,6 +368,8 @@ impl MatchState {
             }
         }
 
+        self.arena.step_dynamics(dt);
+
         self.process_hitscan(server_time_ms);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
@@ -440,6 +449,13 @@ impl MatchState {
             }
         }
 
+        let dynamic_body_states: Vec<_> = self
+            .arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .map(|(id, pos, quat, he)| make_net_dynamic_body_state(id, pos, quat, he))
+            .collect();
+
         for runtime in self.players.values() {
             let packet = ServerPacket::Snapshot(SnapshotPacket {
                 server_time_us,
@@ -447,6 +463,7 @@ impl MatchState {
                 ack_input_seq: runtime.last_ack_input_seq,
                 player_states: states.clone(),
                 projectile_states: Vec::new(),
+                dynamic_body_states: dynamic_body_states.clone(),
             });
             let _ = runtime.tx.send(encode_server_packet(&packet));
         }

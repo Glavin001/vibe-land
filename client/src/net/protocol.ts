@@ -72,6 +72,27 @@ export type NetProjectileState = {
   vzCms: number;
 };
 
+export type NetDynamicBodyState = {
+  id: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  qxSnorm: number;
+  qySnorm: number;
+  qzSnorm: number;
+  qwSnorm: number;
+  hxCm: number;
+  hyCm: number;
+  hzCm: number;
+};
+
+export type DynamicBodyStateMeters = {
+  id: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number]; // x, y, z, w
+  halfExtents: [number, number, number];
+};
+
 export type WelcomePacket = {
   type: 'welcome';
   playerId: number;
@@ -88,6 +109,7 @@ export type SnapshotPacket = {
   ackInputSeq: number;
   playerStates: NetPlayerState[];
   projectileStates: NetProjectileState[];
+  dynamicBodyStates: NetDynamicBodyState[];
 };
 
 export type ShotResultPacket = {
@@ -282,6 +304,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
       const ackInputSeq = view.getUint16(o, true); o += 2;
       const playerCount = view.getUint16(o, true); o += 2;
       const projectileCount = view.getUint16(o, true); o += 2;
+      const dynamicBodyCount = view.getUint16(o, true); o += 2;
 
       const playerStates: NetPlayerState[] = [];
       for (let i = 0; i < playerCount; i += 1) {
@@ -317,6 +340,24 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
         o += 31;
       }
 
+      const dynamicBodyStates: NetDynamicBodyState[] = [];
+      for (let i = 0; i < dynamicBodyCount; i += 1) {
+        dynamicBodyStates.push({
+          id: view.getUint32(o, true),
+          pxMm: view.getInt32(o + 4, true),
+          pyMm: view.getInt32(o + 8, true),
+          pzMm: view.getInt32(o + 12, true),
+          qxSnorm: view.getInt16(o + 16, true),
+          qySnorm: view.getInt16(o + 18, true),
+          qzSnorm: view.getInt16(o + 20, true),
+          qwSnorm: view.getInt16(o + 22, true),
+          hxCm: view.getUint16(o + 24, true),
+          hyCm: view.getUint16(o + 26, true),
+          hzCm: view.getUint16(o + 28, true),
+        });
+        o += 30;
+      }
+
       return {
         type: 'snapshot',
         serverTimeUs,
@@ -324,6 +365,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
         ackInputSeq,
         playerStates,
         projectileStates,
+        dynamicBodyStates,
       };
     }
     default:
@@ -388,6 +430,20 @@ export function netProjectileStateToMeters(state: NetProjectileState): Projectil
     kind: state.kind,
     ownerId: state.ownerId,
     sourceShotId: state.sourceShotId,
+  };
+}
+
+export function netDynamicBodyStateToMeters(state: NetDynamicBodyState): DynamicBodyStateMeters {
+  return {
+    id: state.id,
+    position: [mmToMeters(state.pxMm), mmToMeters(state.pyMm), mmToMeters(state.pzMm)],
+    quaternion: [
+      snorm16ToF32(state.qxSnorm),
+      snorm16ToF32(state.qySnorm),
+      snorm16ToF32(state.qzSnorm),
+      snorm16ToF32(state.qwSnorm),
+    ],
+    halfExtents: [state.hxCm / 100, state.hyCm / 100, state.hzCm / 100],
   };
 }
 

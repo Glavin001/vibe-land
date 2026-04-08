@@ -65,10 +65,10 @@ describe('buildInputFromButtons', () => {
     expect(cmd.seq).toBe(42);
   });
 
-  it('preserves yaw and pitch', () => {
+  it('quantizes yaw and pitch to match network encoding', () => {
     const cmd = buildInputFromButtons(1, 0, 0, 1.5, -0.3);
-    expect(cmd.yaw).toBe(1.5);
-    expect(cmd.pitch).toBe(-0.3);
+    expect(cmd.yaw).toBeCloseTo(1.5, 2);
+    expect(cmd.pitch).toBeCloseTo(-0.3 + Math.PI * 2, 2); // wraps to [0, 2π)
   });
 
   it('preserves action buttons (jump, sprint, crouch)', () => {

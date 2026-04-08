@@ -31,7 +31,7 @@ export type MovementConfig = {
   correctionDistance: number;
 };
 
-const DEFAULT_CONFIG: MovementConfig = {
+export const DEFAULT_CONFIG: MovementConfig = {
   walkSpeed: 6.0,
   sprintSpeed: 8.5,
   crouchSpeed: 3.5,
@@ -76,7 +76,7 @@ export class PredictedFpsController {
     this.controller = world.createCharacterController(this.config.collisionOffset);
     this.controller.setMaxSlopeClimbAngle(this.config.maxSlopeRadians);
     this.controller.setMinSlopeSlideAngle(this.config.minSlideRadians);
-    this.controller.enableAutostep(this.config.maxStepHeight, this.config.minStepWidth, true);
+    this.controller.enableAutostep(this.config.maxStepHeight, this.config.minStepWidth, false);
     this.controller.enableSnapToGround(this.config.snapToGround);
   }
 
@@ -119,6 +119,15 @@ export class PredictedFpsController {
 
   predict(input: InputFrame, fixedDt: number): void {
     this.pendingInputs.push(input);
+    this.simulateOne(input, fixedDt);
+  }
+
+  /**
+   * Simulate one physics tick without queuing the input for reconciliation.
+   * Use this for server-side simulation in tests — same physics, no
+   * client-side bookkeeping.
+   */
+  simulateTick(input: InputFrame, fixedDt: number): void {
     this.simulateOne(input, fixedDt);
   }
 
@@ -204,7 +213,7 @@ export class PredictedFpsController {
     this.setPosition(next);
 
     const wantedDown = desiredTranslation.y <= 0;
-    const yClipped = Math.abs(corrected.y - desiredTranslation.y) > 1e-4;
+    const yClipped = corrected.y > desiredTranslation.y - 0.001;
     const yStopped = Math.abs(corrected.y) < 0.001;
     this.onGround = wantedDown && yClipped && yStopped;
     if (this.onGround && this.velocity.y < 0) {
@@ -235,7 +244,7 @@ function buildWishDir(input: InputFrame, yaw: number): Vec3 {
 }
 
 function normalizeXZ(value: Vec3): Vec3 {
-  const length = Math.hypot(value.x, value.z);
+  const length = Math.sqrt(value.x * value.x + value.z * value.z);
   if (length <= 1e-6) {
     return { x: 0, y: 0, z: 0 };
   }
@@ -244,7 +253,7 @@ function normalizeXZ(value: Vec3): Vec3 {
 
 function applyHorizontalFriction(velocity: Vec3, friction: number, dt: number, onGround: boolean): void {
   if (!onGround) return;
-  const speed = Math.hypot(velocity.x, velocity.z);
+  const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
   if (speed <= 1e-6) return;
   const drop = speed * friction * dt;
   const newSpeed = Math.max(0, speed - drop);

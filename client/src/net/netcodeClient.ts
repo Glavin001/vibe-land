@@ -1,8 +1,10 @@
 import { GameSocket } from './gameSocket';
 import { PlayerInterpolator, ServerClockEstimator, type PlayerSample } from './interpolation';
 import {
+  netDynamicBodyStateToMeters,
   netStateToMeters,
   type BlockEditCmd,
+  type DynamicBodyStateMeters,
   type InputCmd,
   type NetPlayerState,
   type ServerPacket,
@@ -49,6 +51,7 @@ export class NetcodeClient {
   interpolationDelayMs = 100;
   latestServerTick = 0;
   readonly remotePlayers = new Map<number, RemotePlayer>();
+  readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
 
   private socket: GameSocket | null = null;
   private config: NetcodeClientConfig;
@@ -127,6 +130,12 @@ export class NetcodeClient {
           }
         }
         this.interpolator.retainOnly(knownIds);
+
+        // Update dynamic bodies
+        this.dynamicBodies.clear();
+        for (const db of packet.dynamicBodyStates) {
+          this.dynamicBodies.set(db.id, netDynamicBodyStateToMeters(db));
+        }
         break;
       }
       case 'chunkFull':
@@ -162,5 +171,6 @@ export class NetcodeClient {
     this.latestServerTick = 0;
     this.interpolationDelayMs = 100;
     this.remotePlayers.clear();
+    this.dynamicBodies.clear();
   }
 }

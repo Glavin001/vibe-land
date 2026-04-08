@@ -57,6 +57,7 @@ function makeSnapshot(opts: {
     ackInputSeq: opts.ackInputSeq ?? 0,
     playerStates: opts.players,
     projectileStates: [],
+    dynamicBodyStates: [],
   };
 }
 

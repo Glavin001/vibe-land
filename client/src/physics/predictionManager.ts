@@ -1,6 +1,6 @@
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { PredictedFpsController, type MovementConfig } from './predictedFpsController';
-import type { InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import type { DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
@@ -43,6 +43,7 @@ export class PredictionManager {
   private tickCount = 0;
   private worldLoaded = false;
   private initialized = false;
+  private dynamicBodyColliders = new Map<number, RAPIER.ColliderHandle>();
 
   constructor(
     private readonly world: RAPIER.World,
@@ -117,38 +118,33 @@ export class PredictionManager {
       return;
     }
 
-    const curr = this.controller.getPosition();
-    const rawError = Math.hypot(
-      m.position[0] - curr.x,
-      m.position[1] - curr.y,
-      m.position[2] - curr.z,
-    );
-
-    if (rawError > HARD_SNAP_DISTANCE) {
-      this.controller.setFullState(
-        { x: m.position[0], y: m.position[1], z: m.position[2] },
-        { x: m.velocity[0], y: m.velocity[1], z: m.velocity[2] },
-        m.yaw,
-        m.pitch,
-        (m.flags & 1) !== 0,
-      );
-      const p = this.controller.getPosition();
-      this.currPosition = [p.x, p.y, p.z];
-      this.prevPosition = [...this.currPosition] as [number, number, number];
-      this.correctionOffset = [0, 0, 0];
-      return;
-    }
-
+    // Always do full reconciliation with input replay first.
+    // We must NOT compare raw server position vs current predicted position
+    // to decide on hard-snap, because that distance includes legitimate travel
+    // from unacked inputs (not prediction error).
     const delta = this.controller.reconcile(
       { ackInputSeq, state: playerState },
       FIXED_DT,
     );
 
     if (delta) {
-      this.correctionOffset = [-delta.dx, -delta.dy, -delta.dz];
-      const p = this.controller.getPosition();
-      this.currPosition = [p.x, p.y, p.z];
-      this.prevPosition = [...this.currPosition] as [number, number, number];
+      // delta = post-replay position minus pre-reconciliation position.
+      // This is the TRUE prediction error (after replaying unacked inputs).
+      const replayError = Math.hypot(delta.dx, delta.dy, delta.dz);
+
+      if (replayError > HARD_SNAP_DISTANCE) {
+        // Prediction was wildly wrong even after replay — hard snap visual
+        const p = this.controller.getPosition();
+        this.currPosition = [p.x, p.y, p.z];
+        this.prevPosition = [...this.currPosition] as [number, number, number];
+        this.correctionOffset = [0, 0, 0];
+      } else {
+        // Smooth visual correction
+        this.correctionOffset = [-delta.dx, -delta.dy, -delta.dz];
+        const p = this.controller.getPosition();
+        this.currPosition = [p.x, p.y, p.z];
+        this.prevPosition = [...this.currPosition] as [number, number, number];
+      }
     }
   }
 
@@ -215,6 +211,37 @@ export class PredictionManager {
   /** For testing only: advance the sequence counter to a specific value. */
   setNextSeq(seq: number): void {
     this.nextSeq = seq;
+  }
+
+  /** Update client-side colliders for server-authoritative dynamic bodies. */
+  updateDynamicBodies(bodies: DynamicBodyStateMeters[]): void {
+    const activeIds = new Set<number>();
+    for (const body of bodies) {
+      activeIds.add(body.id);
+      const existing = this.dynamicBodyColliders.get(body.id);
+      if (existing != null) {
+        // Move existing collider to new position
+        const col = this.world.getCollider(existing);
+        if (col) {
+          col.setTranslation({ x: body.position[0], y: body.position[1], z: body.position[2] });
+          col.setRotation({ x: body.quaternion[0], y: body.quaternion[1], z: body.quaternion[2], w: body.quaternion[3] });
+        }
+      } else {
+        // Create new collider
+        const desc = RAPIER.ColliderDesc.cuboid(body.halfExtents[0], body.halfExtents[1], body.halfExtents[2])
+          .setTranslation(body.position[0], body.position[1], body.position[2])
+          .setRotation({ x: body.quaternion[0], y: body.quaternion[1], z: body.quaternion[2], w: body.quaternion[3] });
+        const handle = this.world.createCollider(desc);
+        this.dynamicBodyColliders.set(body.id, handle.handle);
+      }
+    }
+    // Remove stale colliders
+    for (const [id, handle] of this.dynamicBodyColliders) {
+      if (!activeIds.has(id)) {
+        this.world.removeCollider(this.world.getCollider(handle)!, true);
+        this.dynamicBodyColliders.delete(id);
+      }
+    }
   }
 
   dispose(): void {

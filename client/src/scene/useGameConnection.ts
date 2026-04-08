@@ -3,6 +3,7 @@ import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import type {
   BlockEditCmd,
+  DynamicBodyStateMeters,
   InputCmd,
   NetPlayerState,
   ServerPacket,
@@ -18,6 +19,7 @@ export type ConnectionState = {
   interpolationDelayMs: number;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
+  dynamicBodies: Map<number, DynamicBodyStateMeters>;
   localPosition: [number, number, number];
 };
 
@@ -53,6 +55,7 @@ export function useGameConnection(
     interpolationDelayMs: 100,
     latestServerTick: 0,
     remotePlayers: new Map(),
+    dynamicBodies: new Map(),
     localPosition: [0, 2, 0],
   });
 
@@ -84,6 +87,7 @@ export function useGameConnection(
     stateRef.current.remoteInterpolator = client.interpolator;
     stateRef.current.serverClock = client.serverClock;
     stateRef.current.remotePlayers = client.remotePlayers;
+    stateRef.current.dynamicBodies = client.dynamicBodies;
 
     clientRef.current = client;
 

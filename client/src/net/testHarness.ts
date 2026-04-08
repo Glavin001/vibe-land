@@ -585,6 +585,7 @@ export class NetcodeTestScenario {
       ackInputSeq: localPlayer?.lastAckedSeq ?? 0,
       playerStates,
       projectileStates: [],
+      dynamicBodyStates: [],
     };
   }
 
@@ -668,6 +669,7 @@ export function makeSnapshot(opts: {
     ackInputSeq: opts.ackInputSeq ?? 0,
     playerStates: opts.players,
     projectileStates: [],
+    dynamicBodyStates: [],
   };
 }
 

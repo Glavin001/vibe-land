@@ -41,6 +41,8 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const dynamicBodyGroupRef = useRef<THREE.Group>(null);
+  const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
   const selectedMaterialRef = useRef(2);
@@ -181,6 +183,47 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
         console.log('[game] Removed mesh for remote player', id);
       }
     }
+
+    // Update dynamic body meshes
+    const dbGroup = dynamicBodyGroupRef.current;
+    if (dbGroup) {
+      const activeBodies = new Set<number>();
+      for (const [id, body] of state.dynamicBodies) {
+        activeBodies.add(id);
+        let mesh = dynamicBodyMeshes.current.get(id);
+        if (!mesh) {
+          const geom = new THREE.BoxGeometry(
+            body.halfExtents[0] * 2,
+            body.halfExtents[1] * 2,
+            body.halfExtents[2] * 2,
+          );
+          const mat = new THREE.MeshStandardMaterial({
+            color: 0xcc6622,
+            roughness: 0.6,
+            metalness: 0.2,
+          });
+          mesh = new THREE.Mesh(geom, mat);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          dbGroup.add(mesh);
+          dynamicBodyMeshes.current.set(id, mesh);
+        }
+        mesh.position.set(body.position[0], body.position[1], body.position[2]);
+        mesh.quaternion.set(
+          body.quaternion[0],
+          body.quaternion[1],
+          body.quaternion[2],
+          body.quaternion[3],
+        );
+      }
+      // Remove stale dynamic body meshes
+      for (const [id, mesh] of dynamicBodyMeshes.current) {
+        if (!activeBodies.has(id)) {
+          dbGroup.remove(mesh);
+          dynamicBodyMeshes.current.delete(id);
+        }
+      }
+    }
   });
 
   return (
@@ -198,10 +241,13 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
       ))}
 
       {/* Grid lines for spatial reference */}
-      <gridHelper args={[32, 32, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
+      <gridHelper args={[48, 48, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
+
+      {/* Dynamic body group */}
+      <group ref={dynamicBodyGroupRef} />
 
       {/* Crosshair */}
       <CrosshairHUD />

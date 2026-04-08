@@ -215,7 +215,7 @@ function buildSnapshotBinary(opts: {
   players?: NetPlayerState[];
 }): Uint8Array {
   const players = opts.players ?? [];
-  const size = 1 + 8 + 4 + 2 + 2 + 2 + players.length * 28;
+  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + players.length * 28;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -232,6 +232,7 @@ function buildSnapshotBinary(opts: {
   view.setUint16(o, opts.ackInputSeq ?? 0, true); o += 2;
   view.setUint16(o, players.length, true); o += 2;
   view.setUint16(o, 0, true); o += 2; // projectile count
+  view.setUint16(o, 0, true); o += 2; // dynamic body count
 
   for (const p of players) {
     view.setUint32(o, p.id, true); o += 4;

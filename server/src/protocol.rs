@@ -160,6 +160,21 @@ pub struct WelcomePacket {
     pub interpolation_delay_ms: u16,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NetDynamicBodyState {
+    pub id: u32,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub hx_cm: u16,
+    pub hy_cm: u16,
+    pub hz_cm: u16,
+}
+
 #[derive(Clone, Debug)]
 pub struct SnapshotPacket {
     pub server_time_us: u64,
@@ -167,6 +182,7 @@ pub struct SnapshotPacket {
     pub ack_input_seq: u16,
     pub player_states: Vec<NetPlayerState>,
     pub projectile_states: Vec<NetProjectileState>,
+    pub dynamic_body_states: Vec<NetDynamicBodyState>,
 }
 
 #[derive(Clone, Debug)]
@@ -264,6 +280,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u16_le(pkt.ack_input_seq);
             out.put_u16_le(pkt.player_states.len() as u16);
             out.put_u16_le(pkt.projectile_states.len() as u16);
+            out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -287,6 +304,19 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(p.vx_cms);
                 out.put_i16_le(p.vy_cms);
                 out.put_i16_le(p.vz_cms);
+            }
+            for d in &pkt.dynamic_body_states {
+                out.put_u32_le(d.id);
+                out.put_i32_le(d.px_mm);
+                out.put_i32_le(d.py_mm);
+                out.put_i32_le(d.pz_mm);
+                out.put_i16_le(d.qx_snorm);
+                out.put_i16_le(d.qy_snorm);
+                out.put_i16_le(d.qz_snorm);
+                out.put_i16_le(d.qw_snorm);
+                out.put_u16_le(d.hx_cm);
+                out.put_u16_le(d.hy_cm);
+                out.put_u16_le(d.hz_cm);
             }
         }
     }
@@ -335,6 +365,31 @@ pub fn make_net_projectile_state(
         vy_cms: meters_to_cms_i16(vel[1]),
         vz_cms: meters_to_cms_i16(vel[2]),
     }
+}
+
+pub fn make_net_dynamic_body_state(
+    id: u32,
+    pos: [f32; 3],
+    quat: [f32; 4], // x, y, z, w
+    half_extents: [f32; 3],
+) -> NetDynamicBodyState {
+    NetDynamicBodyState {
+        id,
+        px_mm: meters_to_mm(pos[0]),
+        py_mm: meters_to_mm(pos[1]),
+        pz_mm: meters_to_mm(pos[2]),
+        qx_snorm: f32_to_snorm16(quat[0]),
+        qy_snorm: f32_to_snorm16(quat[1]),
+        qz_snorm: f32_to_snorm16(quat[2]),
+        qw_snorm: f32_to_snorm16(quat[3]),
+        hx_cm: (half_extents[0] * 100.0).round() as u16,
+        hy_cm: (half_extents[1] * 100.0).round() as u16,
+        hz_cm: (half_extents[2] * 100.0).round() as u16,
+    }
+}
+
+fn f32_to_snorm16(value: f32) -> i16 {
+    (value.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
 pub fn meters_to_mm(value: f32) -> i32 {
@@ -526,6 +581,7 @@ mod tests {
                 },
             ],
             projectile_states: vec![],
+            dynamic_body_states: vec![],
         });
 
         let encoded = encode_server_packet(&packet);
@@ -546,6 +602,7 @@ mod tests {
             ack_input_seq: 0,
             player_states: vec![],
             projectile_states: vec![],
+            dynamic_body_states: vec![],
         });
 
         let encoded = encode_server_packet(&packet);
@@ -706,6 +763,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.ack_input_seq);
             out.put_u16_le(pkt.player_states.len() as u16);
             out.put_u16_le(pkt.projectile_states.len() as u16);
+            out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -729,6 +787,19 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(p.vx_cms);
                 out.put_i16_le(p.vy_cms);
                 out.put_i16_le(p.vz_cms);
+            }
+            for d in &pkt.dynamic_body_states {
+                out.put_u32_le(d.id);
+                out.put_i32_le(d.px_mm);
+                out.put_i32_le(d.py_mm);
+                out.put_i32_le(d.pz_mm);
+                out.put_i16_le(d.qx_snorm);
+                out.put_i16_le(d.qy_snorm);
+                out.put_i16_le(d.qz_snorm);
+                out.put_i16_le(d.qw_snorm);
+                out.put_u16_le(d.hx_cm);
+                out.put_u16_le(d.hy_cm);
+                out.put_u16_le(d.hz_cm);
             }
         }
         ServerPacket::ShotResult(pkt) => {

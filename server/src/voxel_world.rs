@@ -34,8 +34,8 @@ impl VoxelWorld {
     }
 
     pub fn seed_demo_world(&mut self, arena: &mut PhysicsArena) {
-        for x in -8..8 {
-            for z in -8..8 {
+        for x in -24..24 {
+            for z in -24..24 {
                 self.set_block(arena, world_to_chunk_and_local(x, 0, z), 1);
             }
         }

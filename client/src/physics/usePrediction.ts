@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { PredictionManager } from './predictionManager';
-import type { BlockEditCmd, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
 
 type BlockRayHit = {
@@ -172,6 +172,12 @@ export function usePrediction() {
     return m.voxelWorld.getMaterial(cell[0], cell[1], cell[2]);
   }, []);
 
+  const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
+    const m = managerRef.current;
+    if (!m) return;
+    m.updateDynamicBodies(bodies);
+  }, []);
+
   return {
     ready,
     renderBlocks,
@@ -182,6 +188,7 @@ export function usePrediction() {
     raycastBlocks,
     buildBlockEdit,
     getBlockMaterial,
+    updateDynamicBodies,
   };
 }
 
