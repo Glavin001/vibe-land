@@ -15,22 +15,39 @@ import {
   BTN_SPRINT,
 } from '../net/protocol';
 
+type FrameDebugCallback = (
+  frameTimeMs: number,
+  rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
+  network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number },
+  physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number },
+  position: [number, number, number],
+) => void;
+
 type GameWorldProps = {
   onWelcome: (id: number) => void;
   onDisconnect: () => void;
+  onDebugFrame?: FrameDebugCallback;
+  onSnapshot?: () => void;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
-export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
+export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }: GameWorldProps) {
   const prediction = usePrediction();
-  const { stateRef, ready, sendInputs, sendBlockEdit } = useGameConnection(
+  const onDebugFrameRef = useRef(onDebugFrame);
+  onDebugFrameRef.current = onDebugFrame;
+  const onSnapshotRef = useRef(onSnapshot);
+  onSnapshotRef.current = onSnapshot;
+  const { stateRef, ready, sendInputs, sendBlockEdit, clientRef } = useGameConnection(
     onWelcome,
     onDisconnect,
     prediction.ready ? prediction.reconcile : undefined,
     (packet) => {
       if (packet.type === 'chunkFull' || packet.type === 'chunkDiff') {
         prediction.applyWorldPacket(packet);
+      }
+      if (packet.type === 'snapshot') {
+        onSnapshotRef.current?.();
       }
     },
   );
@@ -124,10 +141,11 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     if (keys.has('Space')) buttons |= BTN_JUMP;
     if (keys.has('ShiftLeft') || keys.has('ShiftRight')) buttons |= BTN_SPRINT;
 
+    const now = performance.now();
+    const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
+    lastFrameTime.current = now;
+
     if (prediction.ready) {
-      const now = performance.now();
-      const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
-      lastFrameTime.current = now;
       // Prediction owns seq counting, input building, and sending — all in lockstep
       prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
     }
@@ -149,6 +167,25 @@ export function GameWorld({ onWelcome, onDisconnect }: GameWorldProps) {
     logTimer.current++;
     if (logTimer.current % 120 === 0) {
       console.log('[game] local pos:', pos, 'remotePlayers:', state.remotePlayers.size, 'tick:', state.latestServerTick);
+    }
+
+    // Debug overlay stats
+    if (onDebugFrameRef.current) {
+      const client = clientRef.current;
+      const physStats = prediction.getDebugStats();
+      onDebugFrameRef.current(
+        frameDelta * 1000,
+        gl.info,
+        {
+          pingMs: client?.rttMs ?? 0,
+          serverTick: state.latestServerTick,
+          interpolationDelayMs: state.interpolationDelayMs,
+          clockOffsetUs: state.serverClock.getOffsetUs(),
+          remotePlayers: state.remotePlayers.size,
+        },
+        physStats,
+        pos as [number, number, number],
+      );
     }
 
     // Update remote player meshes

@@ -1,10 +1,13 @@
 import { useState, useCallback } from 'react';
 import { GameScene } from './scene/GameScene';
+import { DebugOverlay } from './ui/DebugOverlay';
+import { useDebugStats } from './ui/useDebugStats';
 
 export function App() {
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState('Click to join');
+  const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
 
   const handleConnect = useCallback(() => {
     setConnected(true);
@@ -96,11 +99,14 @@ export function App() {
           />
         </div>
       )}
+      <DebugOverlay stats={displayStats} visible={debugVisible} />
       {connected && (
         <GameScene
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           playerId={playerId}
+          onDebugFrame={updateFrame}
+          onSnapshot={recordSnapshot}
         />
       )}
     </div>

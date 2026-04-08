@@ -44,6 +44,7 @@ export class PredictionManager {
   private worldLoaded = false;
   private initialized = false;
   private dynamicBodyColliders = new Map<number, RAPIER.ColliderHandle>();
+  private _lastPhysicsStepMs = 0;
 
   constructor(
     private readonly world: RAPIER.World,
@@ -68,11 +69,14 @@ export class PredictionManager {
     const pendingInputs: InputCmd[] = [];
 
     let steps = 0;
+    let physicsTimeTotal = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromButtons(seq, 0, buttons, yaw, pitch);
 
+      const t0 = performance.now();
       this.controller.predict(input, FIXED_DT);
+      physicsTimeTotal += performance.now() - t0;
       pendingInputs.push(input);
 
       this.prevPosition = [...this.currPosition] as [number, number, number];
@@ -91,6 +95,10 @@ export class PredictionManager {
 
     if (this.accumulator > FIXED_DT) {
       this.accumulator = FIXED_DT;
+    }
+
+    if (steps > 0) {
+      this._lastPhysicsStepMs = physicsTimeTotal / steps;
     }
 
     return pendingInputs;
@@ -202,6 +210,10 @@ export class PredictionManager {
 
   getTickCount(): number {
     return this.tickCount;
+  }
+
+  getLastPhysicsStepMs(): number {
+    return this._lastPhysicsStepMs;
   }
 
   getNextSeq(): number {

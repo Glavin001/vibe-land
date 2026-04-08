@@ -91,6 +91,11 @@ export function useGameConnection(
 
     clientRef.current = client;
 
+    // Periodic ping for RTT measurement
+    const pingInterval = setInterval(() => {
+      client.ping();
+    }, 2000);
+
     const matchId = 'default';
     const identity = 'player-' + Math.random().toString(36).slice(2, 8);
     const token = 'mvp-token';
@@ -99,6 +104,7 @@ export function useGameConnection(
     client.connect(wsUrl);
 
     return () => {
+      clearInterval(pingInterval);
       client.disconnect();
       clientRef.current = null;
     };
@@ -112,5 +118,5 @@ export function useGameConnection(
     clientRef.current?.sendBlockEdit(cmd);
   }, []);
 
-  return { stateRef, ready, sendInputs, sendBlockEdit };
+  return { stateRef, ready, sendInputs, sendBlockEdit, clientRef };
 }

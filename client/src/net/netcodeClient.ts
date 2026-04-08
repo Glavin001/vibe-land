@@ -50,6 +50,7 @@ export class NetcodeClient {
   playerId = 0;
   interpolationDelayMs = 100;
   latestServerTick = 0;
+  rttMs = 0;
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
 
@@ -66,8 +67,13 @@ export class NetcodeClient {
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.handlePacket(packet),
       onClose: () => { this.config.onDisconnect?.(); },
+      onRttUpdated: (rttMs: number) => { this.rttMs = rttMs; },
     });
     this.socket.connect(wsUrl);
+  }
+
+  ping(): void {
+    this.socket?.ping();
   }
 
   disconnect(): void {

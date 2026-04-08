@@ -6,9 +6,13 @@ type GameSceneProps = {
   onWelcome: (id: number) => void;
   onDisconnect: () => void;
   playerId: number;
+  onDebugFrame?: GameWorldDebugFrame;
+  onSnapshot?: () => void;
 };
 
-export function GameScene({ onWelcome, onDisconnect }: GameSceneProps) {
+type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
+
+export function GameScene({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }: GameSceneProps) {
   return (
     <Canvas
       style={{ width: '100%', height: '100%' }}
@@ -18,7 +22,12 @@ export function GameScene({ onWelcome, onDisconnect }: GameSceneProps) {
       }}
     >
       <Suspense fallback={null}>
-        <GameWorld onWelcome={onWelcome} onDisconnect={onDisconnect} />
+        <GameWorld
+          onWelcome={onWelcome}
+          onDisconnect={onDisconnect}
+          onDebugFrame={onDebugFrame}
+          onSnapshot={onSnapshot}
+        />
       </Suspense>
     </Canvas>
   );
