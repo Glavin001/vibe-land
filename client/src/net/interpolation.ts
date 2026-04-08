@@ -20,6 +20,23 @@ export class ServerClockEstimator {
   private offsetUs = 0;
   private initialized = false;
 
+  /**
+   * Update the estimated clock offset from a new server→client sample.
+   *
+   * The offset is `serverTime − localTime`.  A packet that arrives with
+   * lower one-way delay produces a *higher* offset, so the best estimate
+   * of the true offset is the *maximum* observed sample (minus jitter).
+   *
+   * Previous implementation used a monotonic ratchet (always jump up,
+   * slowly drift down at 2%).  This caused unbounded growth over long
+   * sessions because any transient jitter spike permanently ratcheted
+   * the offset up, and the 2% decay was too slow to compensate before
+   * the next spike.
+   *
+   * New approach: symmetric EMA with a 10% weight on new samples.
+   * This converges in ~10 samples (~0.3 s at 30 Hz snapshot rate)
+   * instead of ~50, and doesn't ratchet.
+   */
   observe(serverTimeUs: number, localTimeUs: number): void {
     const sampleOffsetUs = serverTimeUs - localTimeUs;
     if (!this.initialized) {
@@ -28,12 +45,9 @@ export class ServerClockEstimator {
       return;
     }
 
-    if (sampleOffsetUs > this.offsetUs) {
-      this.offsetUs = sampleOffsetUs;
-      return;
-    }
-
-    this.offsetUs = this.offsetUs * 0.98 + sampleOffsetUs * 0.02;
+    // Symmetric EMA — converges in both directions at the same rate.
+    // α = 0.1 gives a half-life of ~7 samples ≈ 0.23 s at 30 Hz.
+    this.offsetUs = this.offsetUs * 0.9 + sampleOffsetUs * 0.1;
   }
 
   serverNowUs(localTimeUs = performance.now() * 1000): number {

@@ -29,25 +29,25 @@ describe('ServerClockEstimator', () => {
     expect(clock.renderTimeUs(100_000, 950_000)).toBe(950_000);
   });
 
-  it('jumps up immediately when server time increases', () => {
+  it('moves toward higher offset via EMA', () => {
     const clock = new ServerClockEstimator();
     clock.observe(1_000_000, 900_000); // offset = 100_000
-    clock.observe(1_200_000, 900_000); // offset = 300_000 → jumps up
+    clock.observe(1_200_000, 900_000); // sample offset = 300_000
 
-    expect(clock.getOffsetUs()).toBe(300_000);
+    // Symmetric EMA: 100_000 * 0.9 + 300_000 * 0.1 = 120_000
+    expect(clock.getOffsetUs()).toBe(120_000);
   });
 
-  it('drifts down slowly when offset decreases', () => {
+  it('moves toward lower offset via EMA', () => {
     const clock = new ServerClockEstimator();
     clock.observe(1_000_000, 900_000); // offset = 100_000
 
-    // Observe a lower offset (e.g., less network delay)
+    // Observe a lower offset
     clock.observe(1_000_000, 920_000); // sample offset = 80_000
 
-    // Should NOT jump down — smoothed: 100_000 * 0.98 + 80_000 * 0.02 = 99_600
+    // Symmetric EMA: 100_000 * 0.9 + 80_000 * 0.1 = 98_000
     const offset = clock.getOffsetUs();
-    expect(offset).toBeGreaterThan(99_000);
-    expect(offset).toBeLessThan(100_000);
+    expect(offset).toBeCloseTo(98_000, -2);
   });
 
   it('eventually converges after many lower observations', () => {

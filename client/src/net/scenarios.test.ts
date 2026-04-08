@@ -859,7 +859,7 @@ describe('Category G: Interpolation Edge Cases', () => {
     expect(snapshot).toBeDefined();
   });
 
-  it('G24: server clock jump — offset adjusts upward immediately', () => {
+  it('G24: server clock jump — offset converges via EMA', () => {
     const clock = new ServerClockEstimator();
 
     // Normal observation
@@ -867,9 +867,15 @@ describe('Category G: Interpolation Edge Cases', () => {
     expect(clock.getOffsetUs()).toBe(100_000);
 
     // Server time jumps forward (clock correction)
-    clock.observe(1_500_000, 950_000); // new offset = +550_000 (larger)
-    // Should jump up immediately
-    expect(clock.getOffsetUs()).toBe(550_000);
+    clock.observe(1_500_000, 950_000); // sample offset = +550_000
+    // Symmetric EMA: 100_000 * 0.9 + 550_000 * 0.1 = 145_000
+    expect(clock.getOffsetUs()).toBe(145_000);
+
+    // After many observations at the new offset, it converges
+    for (let i = 0; i < 100; i++) {
+      clock.observe(1_500_000 + i * 33_333, 950_000 + i * 33_333);
+    }
+    expect(clock.getOffsetUs()).toBeCloseTo(550_000, -4);
   });
 
   it('G25: interpolation delay too short — holds at latest sample', () => {

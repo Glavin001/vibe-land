@@ -204,9 +204,15 @@ describe('PredictionManager', () => {
 
     it('sequences wrap around at u16 boundary', () => {
       const mgr = readyManager();
-      // Advance near wraparound
+      // Advance near wraparound, periodically reconciling to keep
+      // pending count below the throttle cap (MAX_PENDING_INPUTS).
       for (let i = 0; i < 0xfffe; i++) {
         mgr.update(FIXED_DT, 0, 0, 0);
+        // Reconcile every 20 ticks to clear the pending queue
+        if ((i + 1) % 20 === 0) {
+          const ackSeq = mgr.getNextSeq() - 1;
+          mgr.reconcile(ackSeq & 0xffff, makeNetState({ position: mgr.getPosition(), flags: FLAG_ON_GROUND }));
+        }
       }
       const cmdsLast = mgr.update(FIXED_DT, 0, 0, 0);
       expect(cmdsLast[0].seq).toBe(0xffff);

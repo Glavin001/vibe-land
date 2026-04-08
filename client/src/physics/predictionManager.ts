@@ -10,6 +10,16 @@ export const MAX_CATCHUP_STEPS = 4;
 export const HARD_SNAP_DISTANCE = 3.0;
 export const VISUAL_SMOOTH_RATE = 8.0;
 
+/**
+ * When pending (unacked) inputs exceed this count, the client pauses tick
+ * generation to let the server catch up.  This prevents unbounded growth
+ * caused by tiny clock-rate mismatches between client and server.
+ *
+ * 30 inputs ≈ 0.5 s at 60 Hz — well above any reasonable RTT buffer yet
+ * low enough to prevent the multi-second drift observed in the wild.
+ */
+export const MAX_PENDING_INPUTS = 30;
+
 export type PredictionManagerConfig = {
   movementConfig?: Partial<MovementConfig>;
 };
@@ -67,6 +77,17 @@ export class PredictionManager {
 
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
+
+    // Throttle: if we're too far ahead of the server, stop generating
+    // new inputs until the server catches up.  This prevents the pending
+    // input count from growing without bound due to clock-rate drift.
+    if (this.controller.getPendingCount() >= MAX_PENDING_INPUTS) {
+      // Drain the accumulator so we don't burst-generate when we resume.
+      if (this.accumulator > FIXED_DT) {
+        this.accumulator = FIXED_DT;
+      }
+      return [];
+    }
 
     let steps = 0;
     let physicsTimeTotal = 0;

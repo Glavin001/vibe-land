@@ -280,11 +280,12 @@ impl MatchState {
                     },
                 );
 
+                let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
                     player_id: conn.player_id,
                     sim_hz: SIM_HZ,
                     snapshot_hz: SNAPSHOT_HZ,
-                    server_time_us: 0,
+                    server_time_us,
                     interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
                 });
                 let _ = conn.tx.send(encode_server_packet(&welcome));

@@ -98,7 +98,9 @@ export class NetcodeClient {
       case 'welcome':
         this.playerId = packet.playerId;
         this.interpolationDelayMs = packet.interpolationDelayMs;
-        this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+        // Don't seed clock from welcome — it arrives with unpredictable
+        // latency (TLS handshake, etc.) and skews the initial offset.
+        // The first snapshot will initialize the estimator instead.
         this.config.onWelcome?.(packet.playerId);
         break;
       case 'snapshot': {
