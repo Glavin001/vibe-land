@@ -69,6 +69,7 @@ pub struct DynamicBody {
     pub body_handle: RigidBodyHandle,
     pub collider_handle: ColliderHandle,
     pub half_extents: Vec3,
+    pub shape_type: u8,
 }
 
 pub struct PhysicsArena {
@@ -133,11 +134,12 @@ impl PhysicsArena {
         };
 
         arena.integration_parameters.dt = 1.0 / 60.0;
+        arena.integration_parameters.num_solver_iterations = 2;
         arena
     }
 
     /// Flush pending collider changes into the broad-phase BVH.
-    fn sync_broad_phase(&mut self) {
+    pub fn sync_broad_phase(&mut self) {
         if self.modified_colliders.is_empty() && self.removed_colliders.is_empty() {
             return;
         }
@@ -152,6 +154,22 @@ impl PhysicsArena {
         );
         self.modified_colliders.clear();
         self.removed_colliders.clear();
+    }
+
+    /// Bootstrap the broad-phase BVH with all current colliders.  Call once
+    /// after bulk seeding, before the first tick.  This is needed because the
+    /// KCC queries the BVH during simulate_player_tick, which runs before
+    /// pipeline.step() has had a chance to populate the BVH.
+    ///
+    /// After the first pipeline.step(), the pipeline manages the BVH and
+    /// narrow phase automatically — do NOT call this mid-simulation.
+    pub fn rebuild_broad_phase(&mut self) {
+        self.modified_colliders.clear();
+        self.removed_colliders.clear();
+        for (handle, _) in self.colliders.iter() {
+            self.modified_colliders.push(handle);
+        }
+        self.sync_broad_phase();
     }
 
     pub fn spawn_player(&mut self, player_id: u32) -> Vec3d {
@@ -169,7 +187,6 @@ impl PhysicsArena {
         .user_data(player_id as u128)
         .build();
         let handle = self.colliders.insert(collider);
-        self.modified_colliders.push(handle);
 
         self.players.insert(
             player_id,
@@ -196,19 +213,43 @@ impl PhysicsArena {
     }
 
     pub fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) -> ColliderHandle {
-        let handle = self.colliders.insert(
+        // ColliderSet::insert() internally tracks the new collider.
+        // pipeline.step() will process it via colliders.take_modified(),
+        // adding it to the broad phase automatically.
+        self.colliders.insert(
             ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
                 .translation(center)
                 .user_data(user_data)
                 .build(),
-        );
-        self.modified_colliders.push(handle);
-        handle
+        )
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
-        self.removed_colliders.push(handle);
+        // ColliderSet::remove() internally tracks the removal.
+        // pipeline.step() will process it via colliders.take_removed(),
+        // updating both the broad phase and narrow phase automatically.
         self.colliders.remove(handle, &mut self.island_manager, &mut self.rigid_bodies, true);
+    }
+
+    pub fn collider_user_data(&self, handle: ColliderHandle) -> Option<u128> {
+        self.colliders.get(handle).map(|c| c.user_data)
+    }
+
+    /// Wake up all dynamic bodies whose center is within `radius` of `center`.
+    /// Call after removing a static collider so sleeping bodies notice the gap.
+    pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
+        let r2 = radius * radius;
+        for (_, db) in &self.dynamic_bodies {
+            if let Some(rb) = self.rigid_bodies.get(db.body_handle) {
+                let pos = *rb.translation();
+                let dx = pos.x - center.x;
+                let dy = pos.y - center.y;
+                let dz = pos.z - center.z;
+                if dx * dx + dy * dy + dz * dz < r2 {
+                    self.island_manager.wake_up(&mut self.rigid_bodies, db.body_handle, true);
+                }
+            }
+        }
     }
 
     pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
@@ -255,9 +296,10 @@ impl PhysicsArena {
             position_f32 = vector![state.position.x as f32, state.position.y as f32, state.position.z as f32];
         }
 
-        // Phase 2: Sync broad phase (needs &mut self, no borrow on players)
-        self.modified_colliders.push(collider_handle);
-        self.sync_broad_phase();
+        // Phase 2: Query the broad-phase BVH as-is (from the last pipeline.step).
+        // IMPORTANT: Do NOT call sync_broad_phase() here — calling
+        // broad_phase.update() between pipeline.step() calls corrupts the BVH
+        // and causes dynamic bodies to fall through static geometry.
 
         // Phase 3: Run KCC (all f32 — Rapier's native precision)
         let collider = self.colliders.get(collider_handle).expect("missing player collider");
@@ -305,19 +347,31 @@ impl PhysicsArena {
         state.velocity.x = ct.x as f64 / dt64;
         state.velocity.z = ct.z as f64 / dt64;
 
-        // Push dynamic bodies that the player collided with
+        // Push dynamic bodies that the player collided with.
+        // Use a gentle impulse scaled by body mass so light and heavy objects
+        // react proportionally — similar to how Rocket League / The Finals
+        // handle player-object contact: nudge, don't launch.
         if !hit_colliders.is_empty() {
             let hspeed = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
-            if hspeed > 0.5 {
-                let push_dir = Vector3::<f32>::new(
+            if hspeed > 0.3 {
+                let mut push_dir = Vector3::<f32>::new(
                     state.velocity.x as f32, 0.0, state.velocity.z as f32,
-                ).normalize();
-                let impulse = push_dir * (hspeed as f32).min(8.0) * 0.4;
+                );
+                let len = push_dir.norm();
+                if len > 1e-5 {
+                    push_dir /= len;
+                }
                 for handle in hit_colliders {
                     if let Some(col) = self.colliders.get(handle) {
                         if let Some(parent) = col.parent() {
                             if let Some(rb) = self.rigid_bodies.get_mut(parent) {
                                 if rb.is_dynamic() {
+                                    let mass = rb.mass();
+                                    // Impulse proportional to mass so objects move
+                                    // at a consistent speed regardless of weight.
+                                    // Clamp player speed contribution to keep it gentle.
+                                    let speed_factor = (hspeed as f32).min(5.0);
+                                    let impulse = push_dir * mass * speed_factor * 0.15;
                                     rb.apply_impulse(impulse, true);
                                 }
                             }
@@ -355,7 +409,9 @@ impl PhysicsArena {
             nalgebra::point![origin[0], origin[1], origin[2]],
             vector![dir[0], dir[1], dir[2]],
         );
-        self.sync_broad_phase();
+        // Note: do NOT call sync_broad_phase() here — the BVH is maintained
+        // exclusively by pipeline.step() during step_dynamics(). Calling
+        // broad_phase.update() between pipeline steps corrupts the BVH.
         let mut filter = QueryFilter::default();
         if let Some(player_id) = exclude_player {
             if let Some(player) = self.players.get(&player_id) {
@@ -392,7 +448,6 @@ impl PhysicsArena {
         let collider_handle =
             self.colliders
                 .insert_with_parent(collider, body_handle, &mut self.rigid_bodies);
-        self.modified_colliders.push(collider_handle);
 
         self.dynamic_bodies.insert(
             id,
@@ -400,6 +455,40 @@ impl PhysicsArena {
                 body_handle,
                 collider_handle,
                 half_extents,
+                shape_type: 0, // SHAPE_BOX
+            },
+        );
+
+        id
+    }
+
+    pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
+        let id = self.next_dynamic_id;
+        self.next_dynamic_id += 1;
+
+        let body = RigidBodyBuilder::dynamic()
+            .translation(position)
+            .linear_damping(3.0)
+            .angular_damping(4.0)
+            .build();
+        let body_handle = self.rigid_bodies.insert(body);
+
+        let collider = ColliderBuilder::ball(radius)
+            .restitution(0.4)
+            .friction(0.5)
+            .density(1.0)
+            .build();
+        let collider_handle =
+            self.colliders
+                .insert_with_parent(collider, body_handle, &mut self.rigid_bodies);
+
+        self.dynamic_bodies.insert(
+            id,
+            DynamicBody {
+                body_handle,
+                collider_handle,
+                half_extents: vector![radius, radius, radius],
+                shape_type: 1, // SHAPE_SPHERE
             },
         );
 
@@ -407,6 +496,9 @@ impl PhysicsArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
+        // pipeline.step() processes all collider changes automatically via
+        // colliders.take_modified() and colliders.take_removed(), updating
+        // the broad phase, narrow phase, and island manager internally.
         self.integration_parameters.dt = dt;
         self.pipeline.step(
             &self.gravity,
@@ -424,8 +516,8 @@ impl PhysicsArena {
         );
     }
 
-    /// Returns (id, position, quaternion [x,y,z,w], half_extents) for each dynamic body.
-    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3])> {
+    /// Returns (id, position, quaternion [x,y,z,w], half_extents, shape_type) for each dynamic body.
+    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], u8)> {
         let mut out = Vec::with_capacity(self.dynamic_bodies.len());
         for (&id, db) in &self.dynamic_bodies {
             if let Some(rb) = self.rigid_bodies.get(db.body_handle) {
@@ -436,6 +528,7 @@ impl PhysicsArena {
                     [pos.x, pos.y, pos.z],
                     [rot.i, rot.j, rot.k, rot.w],
                     [db.half_extents.x, db.half_extents.y, db.half_extents.z],
+                    db.shape_type,
                 ));
             }
         }
@@ -518,6 +611,9 @@ mod tests {
             Vector3::<f32>::new(50.0, 0.5, 50.0),
             0,
         );
+        // Initialize the BVH with all colliders (mirrors rebuild_broad_phase
+        // called at server startup). Must happen before any simulate_player_tick.
+        arena.rebuild_broad_phase();
         arena
     }
 
@@ -793,6 +889,8 @@ mod tests {
             0,
         );
         arena.spawn_player(1);
+        // Re-sync BVH after adding wall + player
+        arena.rebuild_broad_phase();
 
         // Settle
         for _ in 0..60 {
@@ -809,5 +907,376 @@ mod tests {
         let (pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
         assert!(pos[2] < 3.0, "should be stopped by wall, got z={}", pos[2]);
         assert!(pos[2] > 0.5, "should have moved toward wall");
+    }
+
+    /// Verify that a pushed ball doesn't tunnel through the ground.
+    #[test]
+    fn pushed_ball_stays_above_ground() {
+        use crate::voxel_world::VoxelWorld;
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+
+        // Spawn a ball sitting on the ground
+        let ball_id = arena.spawn_dynamic_ball(
+            vector![5.0, 2.0, 5.0],
+            0.3,
+        );
+        arena.rebuild_broad_phase();
+
+        // Settle the ball onto the ground
+        for _ in 0..120 {
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        // Apply a strong impulse (simulating a fast player push)
+        let snap_before = arena.snapshot_dynamic_bodies();
+        let ball = snap_before.iter().find(|s| s.0 == ball_id).unwrap();
+        eprintln!("Ball before push: y={:.3}", ball.1[1]);
+        assert!(ball.1[1] > 1.0, "Ball should be on ground before push");
+
+        // Apply a big horizontal impulse directly to the ball
+        if let Some(db) = arena.dynamic_bodies.get(&ball_id) {
+            if let Some(rb) = arena.rigid_bodies.get_mut(db.body_handle) {
+                rb.apply_impulse(vector![10.0, 0.0, 10.0], true);
+            }
+        }
+
+        // Step physics for 5 more seconds
+        for _ in 0..300 {
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let snap_after = arena.snapshot_dynamic_bodies();
+        let ball = snap_after.iter().find(|s| s.0 == ball_id).unwrap();
+        eprintln!("Ball after push: y={:.3}, pos=[{:.3}, {:.3}, {:.3}]",
+            ball.1[1], ball.1[0], ball.1[1], ball.1[2]);
+        assert!(ball.1[1] > 0.5, "Ball tunneled through ground after push! y={}", ball.1[1]);
+    }
+
+    /// Reproduce the actual server tick loop: player simulation AND dynamics
+    /// run every tick. Existing tests call step_dynamics alone — this test
+    /// interleaves simulate_player_tick + step_dynamics just like main.rs does.
+    /// If balls fall through the ground here but NOT in the dynamics-only test,
+    /// the KCC broad-phase sync is corrupting the BVH for rigid bodies.
+    #[test]
+    fn balls_survive_interleaved_player_and_dynamics() {
+        use crate::voxel_world::VoxelWorld;
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+        arena.rebuild_broad_phase();
+
+        let player_id = 1u32;
+        arena.spawn_player(player_id);
+        arena.rebuild_broad_phase();
+
+        let idle_input = input();
+        let dt = 1.0_f32 / 60.0;
+
+        // 600 ticks = 10 seconds of game time
+        for tick in 0..600 {
+            arena.simulate_player_tick(player_id, &idle_input, dt);
+            arena.step_dynamics(dt);
+
+            // Spot-check every 2 seconds to catch early failures
+            if (tick + 1) % 120 == 0 {
+                let snap = arena.snapshot_dynamic_bodies();
+                let fallen: Vec<_> = snap.iter()
+                    .filter(|s| s.4 == 1 && s.1[1] < 0.0)
+                    .collect();
+                if !fallen.is_empty() {
+                    eprintln!(
+                        "tick {}: {} / {} balls below y=0",
+                        tick + 1,
+                        fallen.len(),
+                        snap.iter().filter(|s| s.4 == 1).count(),
+                    );
+                    for b in fallen.iter().take(5) {
+                        eprintln!("  ball {}: y={:.3}", b.0, b.1[1]);
+                    }
+                }
+            }
+        }
+
+        let snapshot = arena.snapshot_dynamic_bodies();
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.4 == 1).collect();
+        assert!(!balls.is_empty(), "expected ball-pit balls");
+        eprintln!("Total balls: {}", balls.len());
+
+        let fallen: Vec<_> = balls.iter().filter(|b| b.1[1] < 0.0).collect();
+        for b in &fallen {
+            eprintln!("FALLEN ball {}: pos=[{:.3}, {:.3}, {:.3}]", b.0, b.1[0], b.1[1], b.1[2]);
+        }
+        assert_eq!(
+            fallen.len(), 0,
+            "{} / {} balls fell through the ground with interleaved player+dynamics!",
+            fallen.len(), balls.len(),
+        );
+    }
+
+    /// Reproduce the exact server startup: voxel ground + dynamic box + dynamic ball.
+    /// Verify both land on the voxel ground and don't fall through.
+    #[test]
+    fn dynamic_bodies_land_on_voxel_ground() {
+        use crate::voxel_world::VoxelWorld;
+
+        // Exactly replicate run_match_loop setup
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+
+        let box_id = arena.spawn_dynamic_box(
+            vector![4.0, 8.0, 4.0],
+            vector![0.5, 0.5, 0.5],
+        );
+        let ball_id = arena.spawn_dynamic_ball(
+            vector![6.0, 8.0, 4.0],
+            0.5,
+        );
+
+        arena.rebuild_broad_phase();
+
+        // Run physics for 10 seconds (600 ticks) — enough to settle
+        for _ in 0..600 {
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let snapshot = arena.snapshot_dynamic_bodies();
+        let box_state = snapshot.iter().find(|s| s.0 == box_id).unwrap();
+        let ball_state = snapshot.iter().find(|s| s.0 == ball_id).unwrap();
+
+        eprintln!("Box  y={:.3} (id={})", box_state.1[1], box_id);
+        eprintln!("Ball y={:.3} (id={})", ball_state.1[1], ball_id);
+
+        // Ground block at y=0 has top surface at y=1.0
+        // Box half-extent is 0.5, so center should be at ~1.5
+        // Ball radius is 0.5, so center should be at ~1.5
+        assert!(box_state.1[1] > 0.5, "Box fell through ground! y={}", box_state.1[1]);
+        assert!(box_state.1[1] < 3.0, "Box is floating too high! y={}", box_state.1[1]);
+        assert!(ball_state.1[1] > 0.5, "Ball fell through ground! y={}", ball_state.1[1]);
+        assert!(ball_state.1[1] < 3.0, "Ball is floating too high! y={}", ball_state.1[1]);
+    }
+
+    /// Regression test: removing a voxel block mid-simulation must not cause
+    /// balls elsewhere to fall through the ground. This reproduces the bug where
+    /// a block edit triggered rebuild_chunk_colliders → sync_broad_phase between
+    /// pipeline.step() calls, corrupting the BVH.
+    #[test]
+    fn block_edit_does_not_break_ball_physics() {
+        use crate::voxel_world::{VoxelWorld, world_to_chunk_and_local};
+        use crate::protocol::{BlockEditCmd, BLOCK_REMOVE};
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+        arena.rebuild_broad_phase();
+
+        let dt = 1.0_f32 / 60.0;
+
+        // Let balls settle for 5 seconds
+        for _ in 0..300 {
+            arena.step_dynamics(dt);
+        }
+
+        // Verify balls are resting on ground before the edit
+        let pre_snap = arena.snapshot_dynamic_bodies();
+        let pre_balls: Vec<_> = pre_snap.iter().filter(|s| s.4 == 1).collect();
+        assert!(!pre_balls.is_empty(), "expected ball-pit balls");
+        let pre_fallen: Vec<_> = pre_balls.iter().filter(|b| b.1[1] < 0.0).collect();
+        assert_eq!(pre_fallen.len(), 0, "balls fell before edit");
+
+        // Remove a ground block far from the ball pit (at origin area)
+        let (key, local) = world_to_chunk_and_local(0, 0, 0);
+        let chunk_version = world.chunks.get(&key).map(|c| c.version).unwrap_or(0);
+        let cmd = BlockEditCmd {
+            chunk: [key.x as i16, key.y as i16, key.z as i16],
+            local: [local[0], local[1], local[2]],
+            expected_version: chunk_version,
+            op: BLOCK_REMOVE,
+            material: 0,
+        };
+        let _ = world.apply_edit(&mut arena, &cmd);
+
+        // Continue simulating for 5 more seconds after the edit
+        for _ in 0..300 {
+            arena.step_dynamics(dt);
+        }
+
+        let post_snap = arena.snapshot_dynamic_bodies();
+        let post_balls: Vec<_> = post_snap.iter().filter(|s| s.4 == 1).collect();
+        let post_fallen: Vec<_> = post_balls.iter().filter(|b| b.1[1] < 0.0).collect();
+        for b in &post_fallen {
+            eprintln!("FALLEN after edit: ball {}: y={:.3}", b.0, b.1[1]);
+        }
+        assert_eq!(
+            post_fallen.len(), 0,
+            "{} / {} balls fell through ground after block edit!",
+            post_fallen.len(), post_balls.len(),
+        );
+    }
+
+    /// Removing the floor block directly under a ball must cause it to fall.
+    #[test]
+    fn rapier_orphan_collider_removal_minimal() {
+        // Minimal Rapier test: does removing an orphan floor collider let a ball fall?
+        let mut pipeline = PhysicsPipeline::new();
+        let gravity = vector![0.0, -9.81, 0.0];
+        let mut params = IntegrationParameters::default();
+        params.dt = 1.0 / 60.0;
+        let mut islands = IslandManager::new();
+        let mut broad = BroadPhaseBvh::new();
+        let mut narrow = NarrowPhase::new();
+        let mut bodies = RigidBodySet::new();
+        let mut colliders = ColliderSet::new();
+        let mut joints = ImpulseJointSet::new();
+        let mut multi_joints = MultibodyJointSet::new();
+        let mut ccd = CCDSolver::new();
+
+        // Floor: orphan collider (no parent body)
+        let floor = colliders.insert(
+            ColliderBuilder::cuboid(5.0, 0.5, 5.0)
+                .translation(vector![0.0, -0.5, 0.0])
+                .build()
+        );
+
+        // Ball: dynamic body with child collider
+        let ball_body = bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(vector![0.0, 3.0, 0.0])
+                .build()
+        );
+        colliders.insert_with_parent(
+            ColliderBuilder::ball(0.3).restitution(0.0).build(),
+            ball_body, &mut bodies
+        );
+
+        // Let ball settle
+        for _ in 0..300 {
+            pipeline.step(&gravity, &params, &mut islands, &mut broad, &mut narrow,
+                &mut bodies, &mut colliders, &mut joints, &mut multi_joints, &mut ccd, &(), &());
+        }
+
+        let pre_y = bodies.get(ball_body).unwrap().translation().y;
+        eprintln!("pre_y = {pre_y:.4}");
+
+        // Remove orphan floor collider
+        colliders.remove(floor, &mut islands, &mut bodies, true);
+
+        // Manually wake the ball
+        islands.wake_up(&mut bodies, ball_body, true);
+
+        // Simulate
+        for i in 0..120 {
+            pipeline.step(&gravity, &params, &mut islands, &mut broad, &mut narrow,
+                &mut bodies, &mut colliders, &mut joints, &mut multi_joints, &mut ccd, &(), &());
+            if i % 10 == 0 {
+                eprintln!("tick {i}: y = {:.4}", bodies.get(ball_body).unwrap().translation().y);
+            }
+        }
+
+        let post_y = bodies.get(ball_body).unwrap().translation().y;
+        assert!(post_y < pre_y - 1.0,
+            "Ball should fall after orphan floor removed! pre={pre_y:.4}, post={post_y:.4}");
+    }
+
+    #[test]
+    fn ball_falls_through_deleted_floor_block() {
+        use crate::voxel_world::{VoxelWorld, world_to_chunk_and_local};
+        use crate::protocol::{BlockEditCmd, BLOCK_REMOVE};
+
+        use crate::protocol::BLOCK_ADD;
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+
+        // Minimal world: just a ground layer, no ball pit
+        for x in 0..8 {
+            for z in 0..8 {
+                let (key, local) = world_to_chunk_and_local(x, 0, z);
+                let cmd = BlockEditCmd {
+                    chunk: [key.x as i16, key.y as i16, key.z as i16],
+                    local: [local[0], local[1], local[2]],
+                    expected_version: world.chunks.get(&key).map(|c| c.version).unwrap_or(0),
+                    op: BLOCK_ADD,
+                    material: 1,
+                };
+                let _ = world.apply_edit(&mut arena, &cmd);
+            }
+        }
+
+        // Spawn a single ball squarely in the center of block (4, 0, 4)
+        // Block center = (4.5, 0.5, 4.5), top surface = y=1.0
+        // Ball radius 0.3, so center will settle at ~y=1.3
+        let ball_id = arena.spawn_dynamic_ball(vector![4.5, 3.0, 4.5], 0.3);
+
+        let dt = 1.0_f32 / 60.0;
+
+        // Let ball settle
+        for _ in 0..300 {
+            arena.step_dynamics(dt);
+        }
+
+        let pre_snap = arena.snapshot_dynamic_bodies();
+        let pre_ball = pre_snap.iter().find(|s| s.0 == ball_id).unwrap();
+        let pre_y = pre_ball.1[1];
+        eprintln!("Ball before edit: y={:.3} pos=[{:.3}, {:.3}, {:.3}]",
+            pre_y, pre_ball.1[0], pre_ball.1[1], pre_ball.1[2]);
+        assert!(pre_y > 0.5 && pre_y < 2.0, "ball should be resting on ground, y={pre_y}");
+
+        // Remove the floor block at (4, 0, 4)
+        let (key, local) = world_to_chunk_and_local(4, 0, 4);
+        let chunk_version = world.chunks.get(&key).map(|c| c.version).unwrap_or(0);
+        let cmd = BlockEditCmd {
+            chunk: [key.x as i16, key.y as i16, key.z as i16],
+            local: [local[0], local[1], local[2]],
+            expected_version: chunk_version,
+            op: BLOCK_REMOVE,
+            material: 0,
+        };
+        let result = world.apply_edit(&mut arena, &cmd);
+        assert!(result.is_ok(), "apply_edit failed: {:?}", result.err());
+        eprintln!("Block removed, colliders={}", arena.colliders.len());
+
+        // Check ball wake state and collider position
+        {
+            let db = arena.dynamic_bodies.get(&ball_id).unwrap();
+            let rb = arena.rigid_bodies.get(db.body_handle).unwrap();
+            eprintln!("Ball sleeping={}, linvel=[{:.3},{:.3},{:.3}]",
+                rb.is_sleeping(), rb.linvel().x, rb.linvel().y, rb.linvel().z);
+        }
+
+        // Spawn a FRESH ball (never slept) directly over the removed block
+        let fresh_ball_id = arena.spawn_dynamic_ball(vector![4.5, 5.0, 4.5], 0.3);
+        // Also wake the original ball via island manager
+        {
+            let db = arena.dynamic_bodies.get(&ball_id).unwrap();
+            arena.island_manager.wake_up(&mut arena.rigid_bodies, db.body_handle, true);
+        }
+
+        // Simulate 3 more seconds
+        for tick in 0..180 {
+            arena.step_dynamics(dt);
+            if tick % 10 == 0 {
+                let snap = arena.snapshot_dynamic_bodies();
+                if let Some(s) = snap.iter().find(|s| s.0 == ball_id).cloned() {
+                    eprintln!("tick {}: original y={:.3}", tick, s.1[1]);
+                }
+                if let Some(s) = snap.iter().find(|s| s.0 == fresh_ball_id).cloned() {
+                    eprintln!("tick {}: fresh    y={:.3}", tick, s.1[1]);
+                }
+            }
+        }
+
+        let post_snap = arena.snapshot_dynamic_bodies();
+        let post_ball = post_snap.iter().find(|s| s.0 == ball_id).unwrap();
+        eprintln!("Final ball: y={:.3}", post_ball.1[1]);
+        assert!(
+            post_ball.1[1] < pre_y - 0.5,
+            "Ball should have fallen after floor removed! pre_y={:.3}, post_y={:.3}",
+            pre_y, post_ball.1[1],
+        );
     }
 }

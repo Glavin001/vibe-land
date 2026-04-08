@@ -128,7 +128,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
     };
   }, [camera, gl, prediction, sendBlockEdit]);
 
-  useFrame(() => {
+  useFrame((_frameState, delta) => {
     if (!ready) return;
     const state = stateRef.current;
     const keys = keysRef.current;
@@ -222,6 +222,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
     }
 
     // Update dynamic body meshes
+    const BALL_COLORS = [0xff4444, 0x44ff44, 0x4444ff, 0xffff44, 0xff44ff, 0x44ffff, 0xff8800, 0x8800ff];
     const dbGroup = dynamicBodyGroupRef.current;
     if (dbGroup) {
       const activeBodies = new Set<number>();
@@ -229,29 +230,44 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         activeBodies.add(id);
         let mesh = dynamicBodyMeshes.current.get(id);
         if (!mesh) {
-          const geom = new THREE.BoxGeometry(
-            body.halfExtents[0] * 2,
-            body.halfExtents[1] * 2,
-            body.halfExtents[2] * 2,
-          );
-          const mat = new THREE.MeshStandardMaterial({
-            color: 0xcc6622,
-            roughness: 0.6,
-            metalness: 0.2,
-          });
+          let geom: THREE.BufferGeometry;
+          let mat: THREE.MeshStandardMaterial;
+          if (body.shapeType === 1) {
+            const radius = body.halfExtents[0];
+            geom = new THREE.SphereGeometry(radius, 16, 12);
+            mat = new THREE.MeshStandardMaterial({
+              color: BALL_COLORS[id % BALL_COLORS.length],
+              roughness: 0.4,
+              metalness: 0.1,
+            });
+          } else {
+            geom = new THREE.BoxGeometry(
+              body.halfExtents[0] * 2,
+              body.halfExtents[1] * 2,
+              body.halfExtents[2] * 2,
+            );
+            mat = new THREE.MeshStandardMaterial({
+              color: 0xcc6622,
+              roughness: 0.6,
+              metalness: 0.2,
+            });
+          }
           mesh = new THREE.Mesh(geom, mat);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
           dbGroup.add(mesh);
           dynamicBodyMeshes.current.set(id, mesh);
         }
-        mesh.position.set(body.position[0], body.position[1], body.position[2]);
-        mesh.quaternion.set(
-          body.quaternion[0],
-          body.quaternion[1],
-          body.quaternion[2],
-          body.quaternion[3],
+        // Smoothly interpolate toward server position (like Rocket League / The Finals)
+        const lerpRate = 1.0 - Math.pow(0.001, delta);
+        mesh.position.lerp(
+          new THREE.Vector3(body.position[0], body.position[1], body.position[2]),
+          lerpRate,
         );
+        const targetQuat = new THREE.Quaternion(
+          body.quaternion[0], body.quaternion[1], body.quaternion[2], body.quaternion[3],
+        );
+        mesh.quaternion.slerp(targetQuat, lerpRate);
       }
       // Remove stale dynamic body meshes
       for (const [id, mesh] of dynamicBodyMeshes.current) {

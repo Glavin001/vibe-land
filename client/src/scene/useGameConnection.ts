@@ -99,7 +99,7 @@ export function useGameConnection(
     const matchId = 'default';
     const identity = 'player-' + Math.random().toString(36).slice(2, 8);
     const token = 'mvp-token';
-    const wsUrl = `ws://${window.location.hostname}:${window.location.port || '3000'}/ws/${matchId}?identity=${identity}&token=${token}`;
+    const wsUrl = `ws://${window.location.hostname}:${window.location.port || '5183'}/ws/${matchId}?identity=${identity}&token=${token}`;
     console.log('[game] Connecting to', wsUrl);
     client.connect(wsUrl);
 

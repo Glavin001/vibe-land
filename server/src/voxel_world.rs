@@ -36,15 +36,67 @@ impl VoxelWorld {
     pub fn seed_demo_world(&mut self, arena: &mut PhysicsArena) {
         for x in -24..24 {
             for z in -24..24 {
-                self.set_block(arena, world_to_chunk_and_local(x, 0, z), 1);
+                self.set_block_deferred(world_to_chunk_and_local(x, 0, z), 1);
             }
         }
 
         for y in 1..4 {
-            self.set_block(arena, world_to_chunk_and_local(2, y, 2), 2);
+            self.set_block_deferred(world_to_chunk_and_local(2, y, 2), 2);
         }
-        self.set_block(arena, world_to_chunk_and_local(3, 1, 2), 2);
-        self.set_block(arena, world_to_chunk_and_local(3, 2, 2), 2);
+        self.set_block_deferred(world_to_chunk_and_local(3, 1, 2), 2);
+        self.set_block_deferred(world_to_chunk_and_local(3, 2, 2), 2);
+
+        // Ball pit enclosure
+        self.seed_ball_pit(arena);
+
+        // Rebuild all chunk colliders once after all blocks are placed
+        self.rebuild_all_chunk_colliders(arena);
+    }
+
+    fn seed_ball_pit(&mut self, arena: &mut PhysicsArena) {
+        let pit_x = 8;
+        let pit_z = 8;
+        let pit_w = 8; // width (x)
+        let pit_d = 8; // depth (z)
+        let wall_h = 3;
+
+        // Build walls (material 3 for a distinct look)
+        // Skip front wall entirely to leave an open entrance
+        for y in 1..=wall_h {
+            for i in 0..pit_w {
+                // Back wall (z = pit_z + pit_d - 1)
+                self.set_block_deferred(world_to_chunk_and_local(pit_x + i, y, pit_z + pit_d - 1), 3);
+            }
+            for j in 0..pit_d {
+                // Left wall (x = pit_x)
+                self.set_block_deferred(world_to_chunk_and_local(pit_x, y, pit_z + j), 3);
+                // Right wall (x = pit_x + pit_w - 1)
+                self.set_block_deferred(world_to_chunk_and_local(pit_x + pit_w - 1, y, pit_z + j), 3);
+            }
+        }
+
+        // Spawn balls above the pit — they'll fall and settle on the ground
+        let radius = 0.3_f32;
+        let inner_min_x = pit_x as f32 + 1.5;
+        let inner_min_z = pit_z as f32 + 1.5;
+        let spacing = 0.8;
+        let cols = 5;
+        let rows = 5;
+        let layers = 2;
+
+        for layer in 0..layers {
+            for row in 0..rows {
+                for col in 0..cols {
+                    let x = inner_min_x + col as f32 * spacing;
+                    let y = 2.0 + layer as f32 * 0.8;
+                    let z = inner_min_z + row as f32 * spacing;
+                    arena.spawn_dynamic_ball(
+                        Vec3::new(x, y, z),
+                        radius,
+                    );
+                }
+            }
+        }
     }
 
     pub fn visible_chunks_around(&self, pos: [f32; 3], radius_chunks: i32) -> Vec<ChunkKey> {
@@ -131,7 +183,41 @@ impl VoxelWorld {
             chunk.dirty_edits.push(net_edit);
         }
 
-        self.rebuild_chunk_colliders(arena, key)?;
+        // Surgically add/remove only the single affected collider rather than
+        // rebuilding the entire chunk.  Rebuilding hundreds of colliders in one
+        // batch corrupts Rapier's BroadPhaseBvh incremental state.
+        {
+            let idx = pack_local_index(cmd.local[0], cmd.local[1], cmd.local[2]);
+            let chunk = self.chunks.get_mut(&key).unwrap();
+
+            match cmd.op {
+                BLOCK_ADD => {
+                    let world = chunk_local_to_world_center(key, [cmd.local[0], cmd.local[1], cmd.local[2]]);
+                    let handle = arena.add_static_cuboid(
+                        world,
+                        Vec3::new(0.5, 0.5, 0.5),
+                        encode_block_user_data(key, idx, cmd.material),
+                    );
+                    chunk.colliders.push(handle);
+                }
+                BLOCK_REMOVE => {
+                    let user_data = encode_block_user_data(key, idx, 0);
+                    // Match on chunk+idx portion of user_data (ignore 16-bit material field)
+                    let mask: u128 = !0xffff_u128;
+                    if let Some(pos) = chunk.colliders.iter().position(|&h| {
+                        arena.collider_user_data(h).map_or(false, |ud| (ud & mask) == (user_data & mask))
+                    }) {
+                        let handle = chunk.colliders.swap_remove(pos);
+                        arena.remove_collider(handle);
+                    }
+                    // Wake sleeping dynamic bodies near the removed block so they
+                    // notice the gap and fall through.
+                    let world = chunk_local_to_world_center(key, [cmd.local[0], cmd.local[1], cmd.local[2]]);
+                    arena.wake_bodies_near(world, 2.0);
+                }
+                _ => {}
+            }
+        }
 
         let chunk = self.chunks.get(&key).unwrap();
         let last_edit = chunk.dirty_edits.last().copied().unwrap();
@@ -164,6 +250,23 @@ impl VoxelWorld {
         let _ = self.rebuild_chunk_colliders(arena, key);
     }
 
+    /// Set block data without rebuilding colliders. Call `rebuild_all_chunk_colliders`
+    /// after bulk placement is complete.
+    fn set_block_deferred(&mut self, (key, local): (ChunkKey, [u8; 3]), material: u16) {
+        let chunk = self.chunks.entry(key).or_default();
+        chunk.blocks.insert(pack_local_index(local[0], local[1], local[2]), material);
+        chunk.version += 1;
+    }
+
+    /// Rebuild colliders for every chunk. Used once after bulk seeding to avoid
+    /// per-block rebuild overhead and stale-handle accumulation.
+    fn rebuild_all_chunk_colliders(&mut self, arena: &mut PhysicsArena) {
+        let keys: Vec<ChunkKey> = self.chunks.keys().copied().collect();
+        for key in keys {
+            let _ = self.rebuild_chunk_colliders(arena, key);
+        }
+    }
+
     fn rebuild_chunk_colliders(&mut self, arena: &mut PhysicsArena, key: ChunkKey) -> Result<(), String> {
         let Some(chunk) = self.chunks.get_mut(&key) else {
             return Ok(());
@@ -188,10 +291,16 @@ impl VoxelWorld {
 }
 
 fn encode_block_user_data(key: ChunkKey, idx: u16, material: u16) -> u128 {
-    let kx = (key.x as i64 as u64) as u128;
-    let ky = (key.y as i64 as u64) as u128;
-    let kz = (key.z as i64 as u64) as u128;
-    (kx << 80) | (ky << 48) | (kz << 16) | (((idx as u128) & 0xff) << 8) | (material as u128 & 0xff)
+    // Layout (128 bits, non-overlapping):
+    //   [127:96] chunk_x (32 bits, from i32 → u32)
+    //   [95:64]  chunk_y (32 bits)
+    //   [63:32]  chunk_z (32 bits)
+    //   [31:16]  local_idx (16 bits — pack_local_index produces up to 12 bits)
+    //   [15:0]   material (16 bits)
+    let cx = (key.x as u32) as u128;
+    let cy = (key.y as u32) as u128;
+    let cz = (key.z as u32) as u128;
+    (cx << 96) | (cy << 64) | (cz << 32) | ((idx as u128) << 16) | (material as u128)
 }
 
 pub fn world_to_chunk_and_local(wx: i32, wy: i32, wz: i32) -> (ChunkKey, [u8; 3]) {
@@ -535,5 +644,67 @@ mod tests {
     fn chunk_full_packet_missing_chunk_returns_none() {
         let world = VoxelWorld::new();
         assert!(world.chunk_full_packet(ChunkKey { x: 99, y: 99, z: 99 }).is_none());
+    }
+}
+
+#[cfg(test)]
+mod ball_pit_tests {
+    use super::*;
+    use crate::movement::MoveConfig;
+
+    #[test]
+    fn ball_pit_spawns_balls() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+
+        let snapshot = arena.snapshot_dynamic_bodies();
+        eprintln!("Dynamic bodies count: {}", snapshot.len());
+        for (id, pos, _quat, he, shape_type) in &snapshot {
+            if *shape_type == 1 {
+                eprintln!("Ball {}: pos={:?} he={:?}", id, pos, he);
+            }
+        }
+        // Should have balls (128 = 8*8*2) + possibly the existing box
+        assert!(snapshot.len() > 10, "Expected many dynamic bodies, got {}", snapshot.len());
+
+        // Check balls are above ground
+        for (_, pos, _, _, shape_type) in &snapshot {
+            if *shape_type == 1 {
+                assert!(pos[1] > 0.5, "Ball at y={} is below ground", pos[1]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ball_pit_physics_tests {
+    use super::*;
+    use crate::movement::MoveConfig;
+
+    #[test]
+    fn balls_dont_fall_through_ground() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+
+        // Step physics for 5 seconds (300 steps at 60Hz)
+        for _ in 0..300 {
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let snapshot = arena.snapshot_dynamic_bodies();
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.4 == 1).collect();
+        eprintln!("After 5s: {} balls remain above y=0", balls.iter().filter(|b| b.1[1] > 0.0).count());
+        eprintln!("Balls below y=0: {}", balls.iter().filter(|b| b.1[1] < 0.0).count());
+        
+        // Sample some positions
+        for b in balls.iter().take(5) {
+            eprintln!("Ball {}: y={:.3}", b.0, b.1[1]);
+        }
+
+        // All balls should still be above ground (y > 0.5)
+        let fallen = balls.iter().filter(|b| b.1[1] < 0.0).count();
+        assert_eq!(fallen, 0, "{} balls fell through the ground!", fallen);
     }
 }

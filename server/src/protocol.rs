@@ -25,6 +25,9 @@ pub const WEAPON_ROCKET: u8 = 2;
 pub const BLOCK_ADD: u8 = 1;
 pub const BLOCK_REMOVE: u8 = 2;
 
+pub const SHAPE_BOX: u8 = 0;
+pub const SHAPE_SPHERE: u8 = 1;
+
 pub const PKT_CHUNK_FULL: u8 = 104;
 pub const PKT_CHUNK_DIFF: u8 = 105;
 pub const PKT_PING: u8 = 110;
@@ -163,6 +166,7 @@ pub struct WelcomePacket {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetDynamicBodyState {
     pub id: u32,
+    pub shape_type: u8,
     pub px_mm: i32,
     pub py_mm: i32,
     pub pz_mm: i32,
@@ -307,6 +311,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             }
             for d in &pkt.dynamic_body_states {
                 out.put_u32_le(d.id);
+                out.put_u8(d.shape_type);
                 out.put_i32_le(d.px_mm);
                 out.put_i32_le(d.py_mm);
                 out.put_i32_le(d.pz_mm);
@@ -372,9 +377,11 @@ pub fn make_net_dynamic_body_state(
     pos: [f32; 3],
     quat: [f32; 4], // x, y, z, w
     half_extents: [f32; 3],
+    shape_type: u8,
 ) -> NetDynamicBodyState {
     NetDynamicBodyState {
         id,
+        shape_type,
         px_mm: meters_to_mm(pos[0]),
         py_mm: meters_to_mm(pos[1]),
         pz_mm: meters_to_mm(pos[2]),
@@ -790,6 +797,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             }
             for d in &pkt.dynamic_body_states {
                 out.put_u32_le(d.id);
+                out.put_u8(d.shape_type);
                 out.put_i32_le(d.px_mm);
                 out.put_i32_le(d.py_mm);
                 out.put_i32_le(d.pz_mm);

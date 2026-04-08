@@ -261,9 +261,13 @@ export class PredictionManager {
         }
       } else {
         // Create new collider
-        const desc = RAPIER.ColliderDesc.cuboid(body.halfExtents[0], body.halfExtents[1], body.halfExtents[2])
-          .setTranslation(body.position[0], body.position[1], body.position[2])
-          .setRotation({ x: body.quaternion[0], y: body.quaternion[1], z: body.quaternion[2], w: body.quaternion[3] });
+        const desc = body.shapeType === 1
+          ? RAPIER.ColliderDesc.ball(body.halfExtents[0])
+              .setTranslation(body.position[0], body.position[1], body.position[2])
+              .setRotation({ x: body.quaternion[0], y: body.quaternion[1], z: body.quaternion[2], w: body.quaternion[3] })
+          : RAPIER.ColliderDesc.cuboid(body.halfExtents[0], body.halfExtents[1], body.halfExtents[2])
+              .setTranslation(body.position[0], body.position[1], body.position[2])
+              .setRotation({ x: body.quaternion[0], y: body.quaternion[1], z: body.quaternion[2], w: body.quaternion[3] });
         const handle = this.world.createCollider(desc);
         this.dynamicBodyColliders.set(body.id, handle.handle);
       }

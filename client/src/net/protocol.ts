@@ -74,6 +74,7 @@ export type NetProjectileState = {
 
 export type NetDynamicBodyState = {
   id: number;
+  shapeType: number;
   pxMm: number;
   pyMm: number;
   pzMm: number;
@@ -88,6 +89,7 @@ export type NetDynamicBodyState = {
 
 export type DynamicBodyStateMeters = {
   id: number;
+  shapeType: number;
   position: [number, number, number];
   quaternion: [number, number, number, number]; // x, y, z, w
   halfExtents: [number, number, number];
@@ -344,18 +346,19 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
       for (let i = 0; i < dynamicBodyCount; i += 1) {
         dynamicBodyStates.push({
           id: view.getUint32(o, true),
-          pxMm: view.getInt32(o + 4, true),
-          pyMm: view.getInt32(o + 8, true),
-          pzMm: view.getInt32(o + 12, true),
-          qxSnorm: view.getInt16(o + 16, true),
-          qySnorm: view.getInt16(o + 18, true),
-          qzSnorm: view.getInt16(o + 20, true),
-          qwSnorm: view.getInt16(o + 22, true),
-          hxCm: view.getUint16(o + 24, true),
-          hyCm: view.getUint16(o + 26, true),
-          hzCm: view.getUint16(o + 28, true),
+          shapeType: view.getUint8(o + 4),
+          pxMm: view.getInt32(o + 5, true),
+          pyMm: view.getInt32(o + 9, true),
+          pzMm: view.getInt32(o + 13, true),
+          qxSnorm: view.getInt16(o + 17, true),
+          qySnorm: view.getInt16(o + 19, true),
+          qzSnorm: view.getInt16(o + 21, true),
+          qwSnorm: view.getInt16(o + 23, true),
+          hxCm: view.getUint16(o + 25, true),
+          hyCm: view.getUint16(o + 27, true),
+          hzCm: view.getUint16(o + 29, true),
         });
-        o += 30;
+        o += 31;
       }
 
       return {
@@ -436,6 +439,7 @@ export function netProjectileStateToMeters(state: NetProjectileState): Projectil
 export function netDynamicBodyStateToMeters(state: NetDynamicBodyState): DynamicBodyStateMeters {
   return {
     id: state.id,
+    shapeType: state.shapeType,
     position: [mmToMeters(state.pxMm), mmToMeters(state.pyMm), mmToMeters(state.pzMm)],
     quaternion: [
       snorm16ToF32(state.qxSnorm),

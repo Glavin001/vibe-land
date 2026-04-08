@@ -235,6 +235,10 @@ async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchE
         nalgebra::vector![0.5, 0.5, 0.5],
     );
 
+    // Rebuild broad phase from scratch so all colliders are cleanly registered
+    // (avoids BVH corruption from stale handles accumulated during seeding)
+    arena.rebuild_broad_phase();
+
     let mut state = MatchState {
         id: match_id,
         arena,
@@ -454,7 +458,7 @@ impl MatchState {
             .arena
             .snapshot_dynamic_bodies()
             .into_iter()
-            .map(|(id, pos, quat, he)| make_net_dynamic_body_state(id, pos, quat, he))
+            .map(|(id, pos, quat, he, shape_type)| make_net_dynamic_body_state(id, pos, quat, he, shape_type))
             .collect();
 
         for runtime in self.players.values() {
