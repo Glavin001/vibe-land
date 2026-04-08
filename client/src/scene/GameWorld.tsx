@@ -47,6 +47,9 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         prediction.applyWorldPacket(packet);
       }
       if (packet.type === 'snapshot') {
+        // Sync dynamic bodies into prediction world so KCC collides with them
+        const bodies = Array.from(stateRef.current.dynamicBodies.values());
+        prediction.updateDynamicBodies(bodies);
         onSnapshotRef.current?.();
       }
     },
