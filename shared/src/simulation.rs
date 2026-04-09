@@ -1,5 +1,7 @@
 use nalgebra::{vector, Isometry3, Vector3};
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::control::{
+    CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
+};
 use rapier3d::prelude::*;
 
 use crate::constants::*;
@@ -137,8 +139,8 @@ impl SimWorld {
     // ── Simulation tick ──────────────────────────────
 
     /// Run one simulation step for a single player.  Updates position,
-    /// velocity, and on_ground in place.  Returns the list of collider handles
-    /// the player contacted (useful for server-side dynamic body pushing).
+    /// velocity, and on_ground in place.  Returns the full collision events
+    /// (needed by `solve_character_collision_impulses` for server-side pushing).
     pub fn simulate_tick(
         &self,
         collider_handle: ColliderHandle,
@@ -149,7 +151,7 @@ impl SimWorld {
         on_ground: &mut bool,
         input: &InputCmd,
         dt: f32,
-    ) -> Vec<ColliderHandle> {
+    ) -> Vec<CharacterCollision> {
         let cfg = &self.config;
         let dt64 = dt as f64;
 
@@ -197,7 +199,7 @@ impl SimWorld {
             filter,
         );
 
-        let mut hit_colliders: Vec<ColliderHandle> = Vec::new();
+        let mut collisions: Vec<CharacterCollision> = Vec::new();
         let corrected = self.controller.move_shape(
             dt,
             &query_pipeline,
@@ -205,7 +207,7 @@ impl SimWorld {
             &character_pos,
             desired_translation_f32,
             |collision| {
-                hit_colliders.push(collision.handle);
+                collisions.push(collision);
             },
         );
 
@@ -215,9 +217,7 @@ impl SimWorld {
         position.y += ct.y as f64;
         position.z += ct.z as f64;
 
-        let was_falling = desired_translation_f32.y <= 0.0;
-        let y_clipped = ct.y > desired_translation_f32.y - 0.001;
-        *on_ground = was_falling && y_clipped && ct.y.abs() < 0.001;
+        *on_ground = corrected.grounded;
         if *on_ground && velocity.y < 0.0 {
             velocity.y = 0.0;
         }
@@ -225,7 +225,7 @@ impl SimWorld {
         velocity.x = ct.x as f64 / dt64;
         velocity.z = ct.z as f64 / dt64;
 
-        hit_colliders
+        collisions
     }
 
     /// Update the collider position to match the player's current position.
@@ -235,6 +235,37 @@ impl SimWorld {
         if let Some(collider) = self.colliders.get_mut(handle) {
             collider.set_translation(pos_f32);
         }
+    }
+
+    // ── Dynamic body impulses ─────────────────────────
+
+    /// Apply physics-correct impulses from KCC collisions to dynamic bodies.
+    /// Uses Rapier's built-in solver which accounts for contact normals,
+    /// penetration depth, and mass ratios.
+    pub fn solve_character_collision_impulses(
+        &mut self,
+        collider_handle: ColliderHandle,
+        character_mass: f32,
+        collisions: &[CharacterCollision],
+        dt: f32,
+    ) {
+        let character_shape = self.colliders.get(collider_handle)
+            .map(|c| c.shape().clone_dyn())
+            .expect("missing player collider");
+        let filter = QueryFilter::default().exclude_collider(collider_handle);
+        let mut query_pipeline = self.broad_phase.as_query_pipeline_mut(
+            self.narrow_phase.query_dispatcher(),
+            &mut self.rigid_bodies,
+            &mut self.colliders,
+            filter,
+        );
+        self.controller.solve_character_collision_impulses(
+            dt,
+            &mut query_pipeline,
+            &*character_shape,
+            character_mass,
+            collisions,
+        );
     }
 
     // ── Raycasting ───────────────────────────────────

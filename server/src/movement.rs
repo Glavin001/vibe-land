@@ -140,7 +140,7 @@ impl PhysicsArena {
         let Some(state) = self.players.get_mut(&player_id) else { return; };
         state.last_input = input.clone();
 
-        let hit_colliders = self.sim.simulate_tick(
+        let collisions = self.sim.simulate_tick(
             state.collider,
             &mut state.position,
             &mut state.velocity,
@@ -152,36 +152,15 @@ impl PhysicsArena {
         );
         self.sim.sync_player_collider(state.collider, &state.position);
 
-        // Push dynamic bodies that the player collided with.
-        // Use a gentle impulse scaled by body mass so light and heavy objects
-        // react proportionally — similar to how Rocket League / The Finals
-        // handle player-object contact: nudge, don't launch.
-        if !hit_colliders.is_empty() {
+        // Use Rapier's built-in impulse solver for natural dynamic body pushing.
+        // Character mass controls how hard the player pushes objects —
+        // higher mass = balls fly further, boxes barely budge.
+        if !collisions.is_empty() {
             let state = self.players.get(&player_id).unwrap();
-            let hspeed = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
-            if hspeed > 0.3 {
-                let mut push_dir = Vector3::<f32>::new(
-                    state.velocity.x as f32, 0.0, state.velocity.z as f32,
-                );
-                let len = push_dir.norm();
-                if len > 1e-5 {
-                    push_dir /= len;
-                }
-                for handle in hit_colliders {
-                    if let Some(col) = self.sim.colliders.get(handle) {
-                        if let Some(parent) = col.parent() {
-                            if let Some(rb) = self.sim.rigid_bodies.get_mut(parent) {
-                                if rb.is_dynamic() {
-                                    let mass = rb.mass();
-                                    let speed_factor = (hspeed as f32).min(5.0);
-                                    let impulse = push_dir * mass * speed_factor * 0.15;
-                                    rb.apply_impulse(impulse, true);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let character_mass = 80.0; // ~80kg player
+            self.sim.solve_character_collision_impulses(
+                state.collider, character_mass, &collisions, dt,
+            );
         }
     }
 
@@ -253,14 +232,14 @@ impl PhysicsArena {
 
         let body = RigidBodyBuilder::dynamic()
             .translation(position)
-            .linear_damping(3.0)
-            .angular_damping(4.0)
+            .linear_damping(0.3)
+            .angular_damping(0.5)
             .build();
         let body_handle = self.sim.rigid_bodies.insert(body);
 
         let collider = ColliderBuilder::ball(radius)
-            .restitution(0.4)
-            .friction(0.5)
+            .restitution(0.6)
+            .friction(0.2)
             .density(1.0)
             .build();
         let collider_handle =
@@ -1007,6 +986,95 @@ mod tests {
             post_ball.1[1] < pre_y - 0.5,
             "Ball should have fallen after floor removed! pre_y={:.3}, post_y={:.3}",
             pre_y, post_ball.1[1],
+        );
+    }
+
+    /// Walking into a ball should push it forward via Rapier's impulse solver.
+    #[test]
+    fn player_pushes_ball_when_walking_into_it() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena.rebuild_broad_phase();
+
+        // Settle player on ground
+        let dt = 1.0_f32 / 60.0;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+        }
+
+        // Spawn a ball 2m in front of the player (yaw=0 → +Z is forward)
+        let player_pos = arena.snapshot_player(1).unwrap().0;
+        let ball_id = arena.spawn_dynamic_ball(
+            vector![player_pos[0], player_pos[1], player_pos[2] + 2.0],
+            0.3,
+        );
+        arena.rebuild_broad_phase();
+
+        // Let ball settle
+        for _ in 0..60 {
+            arena.step_dynamics(dt);
+        }
+        let ball_before = arena.snapshot_dynamic_bodies()
+            .into_iter().find(|s| s.0 == ball_id).unwrap();
+        let ball_z_before = ball_before.1[2];
+
+        // Walk forward into the ball for 60 ticks
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..60 {
+            arena.simulate_player_tick(1, &fwd, dt);
+            arena.step_dynamics(dt);
+        }
+
+        let ball_after = arena.snapshot_dynamic_bodies()
+            .into_iter().find(|s| s.0 == ball_id).unwrap();
+        assert!(
+            ball_after.1[2] > ball_z_before + 0.3,
+            "Ball should be pushed forward: before z={:.3}, after z={:.3}",
+            ball_z_before, ball_after.1[2],
+        );
+    }
+
+    /// Player should advance through a ball, not get permanently blocked.
+    #[test]
+    fn player_advances_through_ball() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena.rebuild_broad_phase();
+
+        let dt = 1.0_f32 / 60.0;
+        // Settle
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+        }
+
+        let player_start = arena.snapshot_player(1).unwrap().0;
+
+        // Spawn ball in front
+        arena.spawn_dynamic_ball(
+            vector![player_start[0], player_start[1], player_start[2] + 2.0],
+            0.3,
+        );
+        arena.rebuild_broad_phase();
+        for _ in 0..60 {
+            arena.step_dynamics(dt);
+        }
+
+        // Walk forward for 120 ticks (2 seconds)
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &fwd, dt);
+            arena.step_dynamics(dt);
+        }
+
+        let player_end = arena.snapshot_player(1).unwrap().0;
+        assert!(
+            player_end[2] > player_start[2] + 1.0,
+            "Player should advance past ball: start z={:.3}, end z={:.3}",
+            player_start[2], player_end[2],
         );
     }
 }

@@ -129,7 +129,7 @@ impl WasmSimWorld {
         self.pending_inputs.push(input.clone());
 
         let collider = self.player_collider.expect("spawn_player not called");
-        self.sim.simulate_tick(
+        let _collisions = self.sim.simulate_tick(
             collider,
             &mut self.position,
             &mut self.velocity,
@@ -241,7 +241,7 @@ impl WasmSimWorld {
         let collider = self.player_collider.expect("spawn_player not called");
         let inputs: Vec<InputCmd> = self.pending_inputs.clone();
         for input in &inputs {
-            self.sim.simulate_tick(
+            let _collisions = self.sim.simulate_tick(
                 collider,
                 &mut self.position,
                 &mut self.velocity,
