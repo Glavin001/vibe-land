@@ -1150,7 +1150,7 @@ describe('Category O: Dynamic Body Reconciliation', () => {
     sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
 
     // Dynamic platform at y=1 (player will stand on it at y~2)
-    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1);
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0);
 
     sim.spawnPlayer(0, 2, 0);
     sim.rebuildBroadPhase();
@@ -1180,7 +1180,7 @@ describe('Category O: Dynamic Body Reconciliation', () => {
 
     // Now simulate the platform moving slightly (server moved it)
     // CORRECT ORDER: sync dynamic body FIRST, then reconcile
-    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0.5, 1, 0, 0, 0, 0, 1);
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0.5, 1, 0, 0, 0, 0, 1, 0, 0, 0);
     sim.rebuildBroadPhase();
 
     const posBefore = mgr.getPosition();
@@ -1212,7 +1212,7 @@ describe('Category O: Dynamic Body Reconciliation', () => {
     sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
 
     // Platform
-    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1);
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0);
     sim.spawnPlayer(0, 2, 0);
     sim.rebuildBroadPhase();
 
@@ -1242,7 +1242,7 @@ describe('Category O: Dynamic Body Reconciliation', () => {
 
       // Platform drifts slightly each round (simulating server physics)
       const platformX = round * 0.1;
-      sim.syncDynamicBody(100, 0, 2, 0.5, 2, platformX, 1, 0, 0, 0, 0, 1);
+      sim.syncDynamicBody(100, 0, 2, 0.5, 2, platformX, 1, 0, 0, 0, 0, 1, 0, 0, 0);
       sim.rebuildBroadPhase();
 
       const posBefore = mgr.getPosition();

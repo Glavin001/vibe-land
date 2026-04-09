@@ -102,6 +102,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
       if (e.code === 'KeyE') enterKeyLatchRef.current = true;
     };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
+    const onBlur = () => keysRef.current.clear();
     const onMouseMove = (e: MouseEvent) => {
       if (document.pointerLockElement !== gl.domElement) return;
       yawRef.current -= e.movementX * 0.003;
@@ -149,12 +150,14 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mousedown', onMouseDown);
     document.addEventListener('contextmenu', onContextMenu);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mousedown', onMouseDown);
       document.removeEventListener('contextmenu', onContextMenu);

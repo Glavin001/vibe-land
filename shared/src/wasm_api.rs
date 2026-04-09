@@ -47,8 +47,8 @@ pub struct WasmSimWorld {
     next_collider_id: u32,
     collider_ids: HashMap<u32, ColliderHandle>,
 
-    // Dynamic body colliders (server ID → our collider ID)
-    dynamic_colliders: HashMap<u32, u32>,
+    // Dynamic body rigid bodies (server ID → Rapier RigidBodyHandle)
+    dynamic_colliders: HashMap<u32, RigidBodyHandle>,
 
     // Vehicle simulation (driver-side prediction)
     vehicle_pipeline: Option<PhysicsPipeline>,
@@ -134,6 +134,15 @@ impl WasmSimWorld {
         self.on_ground = false;
         self.pending_inputs.clear();
         let handle = self.sim.create_player_collider(self.position, 0);
+        // Put the player capsule in GROUP_3 so the vehicle chassis (GROUP_1, filter=GROUP_1|GROUP_2)
+        // does not physically collide with it.  The capsule still collides with terrain (GROUP_1)
+        // and dynamic balls (GROUP_2) via the filter mask.
+        if let Some(col) = self.sim.colliders.get_mut(handle) {
+            col.set_collision_groups(InteractionGroups::new(
+                Group::GROUP_3,
+                Group::GROUP_1 | Group::GROUP_2 | Group::GROUP_3,
+            ));
+        }
         self.player_collider = Some(handle);
     }
 
@@ -357,7 +366,7 @@ impl WasmSimWorld {
 
     // ── Dynamic body colliders ───────────────────────
 
-    /// Add or create a dynamic body collider for KCC collision.
+    /// Add or create a dynamic body rigid body for physics simulation.
     #[wasm_bindgen(js_name = syncDynamicBody)]
     pub fn sync_dynamic_body(
         &mut self,
@@ -373,63 +382,79 @@ impl WasmSimWorld {
         qy: f32,
         qz: f32,
         qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
     ) {
-        if let Some(&collider_id) = self.dynamic_colliders.get(&id) {
-            // Update existing collider position/rotation and mark it modified so
+        if let Some(&body_handle) = self.dynamic_colliders.get(&id) {
+            // Update existing rigid body state and mark colliders modified so
             // the broad-phase BVH reflects the new position on the next sync.
-            // Without this, the KCC casts against stale AABBs and misses collisions.
-            if let Some(&handle) = self.collider_ids.get(&collider_id) {
-                if let Some(collider) = self.sim.colliders.get_mut(handle) {
-                    collider.set_translation(vector![px, py, pz]);
-                    collider.set_rotation(UnitQuaternion::from_quaternion(
-                        Quaternion::new(qw, qx, qy, qz),
-                    ));
+            if let Some(rb) = self.sim.rigid_bodies.get_mut(body_handle) {
+                rb.set_translation(vector![px, py, pz], true);
+                rb.set_rotation(UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz)), true);
+                rb.set_linvel(vector![vx, vy, vz], true);
+            }
+            if let Some(rb) = self.sim.rigid_bodies.get(body_handle) {
+                for ch in rb.colliders() {
+                    self.sim.modified_colliders.push(*ch);
                 }
-                self.sim.modified_colliders.push(handle);
             }
         } else {
-            // Create new collider.
-            // GROUP_2 = dynamic-body proxies; the vehicle chassis (GROUP_1) filters
-            // these out so client prediction doesn't collide with static-proxy balls
-            // that the server treats as dynamic (pushable) rigid bodies.
+            // Create new dynamic rigid body with collider parented to it.
+            let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+            let body = RigidBodyBuilder::dynamic()
+                .pose(nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(px, py, pz),
+                    iso,
+                ))
+                .linvel(vector![vx, vy, vz])
+                .linear_damping(0.3)
+                .angular_damping(0.5)
+                .can_sleep(false)
+                .build();
+            let body_handle = self.sim.rigid_bodies.insert(body);
+
+            // GROUP_2 = dynamic-body proxies; chassis (GROUP_1/filter=GROUP_1) won't
+            // physically contact them, preventing spawn-time penetration freezes.
+            // Balls still collide with terrain (GROUP_1) for realistic settling.
             let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1);
-            let handle = if shape_type == 1 {
-                self.sim.colliders.insert(
-                    ColliderBuilder::ball(hx)
-                        .translation(vector![px, py, pz])
-                        .rotation(
-                            UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz))
-                                .scaled_axis(),
-                        )
-                        .collision_groups(dyn_groups)
-                        .build(),
-                )
+            let collider = if shape_type == 1 {
+                ColliderBuilder::ball(hx)
+                    .density(1.0)
+                    .restitution(0.6)
+                    .friction(0.2)
+                    .collision_groups(dyn_groups)
+                    .build()
             } else {
-                self.sim.colliders.insert(
-                    ColliderBuilder::cuboid(hx, hy, hz)
-                        .translation(vector![px, py, pz])
-                        .rotation(
-                            UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz))
-                                .scaled_axis(),
-                        )
-                        .collision_groups(dyn_groups)
-                        .build(),
-                )
+                ColliderBuilder::cuboid(hx, hy, hz)
+                    .density(2.0)
+                    .restitution(0.3)
+                    .friction(0.6)
+                    .collision_groups(dyn_groups)
+                    .build()
             };
-            let collider_id = self.next_collider_id;
-            self.next_collider_id += 1;
-            self.collider_ids.insert(collider_id, handle);
-            self.dynamic_colliders.insert(id, collider_id);
+            let col_handle = self.sim.colliders.insert_with_parent(
+                collider,
+                body_handle,
+                &mut self.sim.rigid_bodies,
+            );
+            self.sim.modified_colliders.push(col_handle);
+            self.dynamic_colliders.insert(id, body_handle);
         }
     }
 
-    /// Remove a dynamic body collider.
+    /// Remove a dynamic body rigid body.
     #[wasm_bindgen(js_name = removeDynamicBody)]
     pub fn remove_dynamic_body(&mut self, id: u32) {
-        if let Some(collider_id) = self.dynamic_colliders.remove(&id) {
-            if let Some(handle) = self.collider_ids.remove(&collider_id) {
-                self.sim.remove_collider(handle);
-            }
+        if let Some(body_handle) = self.dynamic_colliders.remove(&id) {
+            self.sim.rigid_bodies.remove(
+                body_handle,
+                &mut self.sim.island_manager,
+                &mut self.sim.colliders,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+                true,
+            );
         }
     }
 
@@ -478,9 +503,14 @@ impl WasmSimWorld {
             .build();
         let chassis_body = self.sim.rigid_bodies.insert(body);
 
-        // GROUP_1 = terrain/chassis; filter GROUP_1 only so dynamic-proxy balls
-        // (GROUP_2) don't block client vehicle physics (on server they're real dynamic bodies).
-        let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1);
+        // GROUP_1 = terrain/chassis, GROUP_2 = dynamic bodies (balls).
+        // Chassis is in GROUP_1 and collides with GROUP_1|GROUP_2 — so it hits terrain and balls
+        // but NOT the player capsule (GROUP_3), which would otherwise create constraint forces
+        // that prevent movement while the KCC capsule overlaps the chassis.
+        let chassis_groups = InteractionGroups::new(
+            Group::GROUP_1,
+            Group::GROUP_1 | Group::GROUP_2,
+        );
         let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
             .friction(0.3)
             .restitution(0.1)
@@ -632,7 +662,10 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = reconcileVehicle)]
     pub fn reconcile_vehicle(
         &mut self,
-        correction_distance: f32,
+        pos_threshold: f32,
+        rot_threshold: f32,
+        vel_threshold: f32,
+        angvel_threshold: f32,
         ack_seq: u16,
         server_px: f32, server_py: f32, server_pz: f32,
         server_qx: f32, server_qy: f32, server_qz: f32, server_qw: f32,
@@ -646,19 +679,38 @@ impl WasmSimWorld {
 
         self.vehicle_pending_inputs.retain(|i| seq_is_newer(i.seq, ack_seq));
 
-        let (before_px, before_py, before_pz) = if let Some(v) = self.vehicles.get(&vid) {
-            if let Some(rb) = self.sim.rigid_bodies.get(v.chassis_body) {
-                let p = rb.translation();
-                (p.x, p.y, p.z)
-            } else { (0.0, 0.0, 0.0) }
-        } else { return Box::new([0.0; 14]); };
+        let Some(v) = self.vehicles.get(&vid) else { return Box::new([0.0; 14]); };
+        let Some(rb) = self.sim.rigid_bodies.get(v.chassis_body) else { return Box::new([0.0; 14]); };
+        let before_p = *rb.translation();
+        let before_q = *rb.rotation();
+        let before_v = *rb.linvel();
+        let before_w = *rb.angvel();
+        let (before_px, before_py, before_pz) = (before_p.x, before_p.y, before_p.z);
+        let (before_vx, before_vy, before_vz) = (before_v.x, before_v.y, before_v.z);
+        let (before_wx, before_wy, before_wz) = (before_w.x, before_w.y, before_w.z);
+        let (before_qx, before_qy, before_qz, before_qw) = (before_q.i, before_q.j, before_q.k, before_q.w);
 
-        let error = ((before_px - server_px).powi(2)
+        let pos_error = ((before_px - server_px).powi(2)
             + (before_py - server_py).powi(2)
-            + (before_pz - server_pz).powi(2))
-            .sqrt();
+            + (before_pz - server_pz).powi(2)).sqrt();
+        let vel_error = ((before_vx - server_vx).powi(2)
+            + (before_vy - server_vy).powi(2)
+            + (before_vz - server_vz).powi(2)).sqrt();
+        let angvel_error = ((before_wx - server_wx).powi(2)
+            + (before_wy - server_wy).powi(2)
+            + (before_wz - server_wz).powi(2)).sqrt();
+        let dot = (before_qx * server_qx
+            + before_qy * server_qy
+            + before_qz * server_qz
+            + before_qw * server_qw).abs().min(1.0);
+        let rot_error_rad = 2.0 * dot.acos();
 
-        if error <= correction_distance {
+        let needs_correction = pos_error > pos_threshold
+            || rot_error_rad > rot_threshold
+            || vel_error > vel_threshold
+            || angvel_error > angvel_threshold;
+
+        if !needs_correction {
             let state = self.get_vehicle_state(vid);
             let mut out = state.to_vec();
             out.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
@@ -716,8 +768,11 @@ impl WasmSimWorld {
     fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd) {
         let v = input_to_vehicle_cmd(input);
         let steering = v.steer * VEHICLE_MAX_STEER_RAD;
-        let engine_force = (v.throttle - v.reverse * 0.5) * VEHICLE_ENGINE_FORCE;
-        let brake = if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { v.reverse * VEHICLE_BRAKE_FORCE * 0.3 };
+        // Rapier's wheel forward direction = surface_normal × axle = (+Y)×(+X) = -Z.
+        // Positive engine_force therefore drives the vehicle in -Z.  Negate so W (throttle)
+        // drives in +Z (camera-forward) and S (reverse) drives in -Z.
+        let engine_force = (v.reverse - v.throttle) * VEHICLE_ENGINE_FORCE;
+        let brake = if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { 0.0 };
 
         let Some(vehicle) = self.vehicles.get_mut(&vid) else { return };
         for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
@@ -727,11 +782,10 @@ impl WasmSimWorld {
         }
 
         let chassis_collider = vehicle.chassis_collider;
-        // Exclude chassis itself and dynamic-body proxy colliders (GROUP_2) —
-        // suspension raycasts should only hit terrain.
+        // Suspension raycasts hit terrain (GROUP_1) and balls (GROUP_2) but skip player capsule (GROUP_3).
         let filter = QueryFilter::default()
             .exclude_collider(chassis_collider)
-            .groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1));
+            .groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2));
         let dt = 1.0_f32 / 60.0; // used internally for suspension forces
         let queries = self.sim.broad_phase.as_query_pipeline_mut(
             self.sim.narrow_phase.query_dispatcher(),

@@ -56,6 +56,9 @@ pub struct NetDynamicBodyState {
     pub hx_cm: u16,
     pub hy_cm: u16,
     pub hz_cm: u16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +223,7 @@ pub fn make_net_dynamic_body_state(
     pos: [f32; 3],
     quat: [f32; 4],
     half_extents: [f32; 3],
+    vel: [f32; 3],
     shape_type: u8,
 ) -> NetDynamicBodyState {
     NetDynamicBodyState {
@@ -235,6 +239,9 @@ pub fn make_net_dynamic_body_state(
         hx_cm: (half_extents[0] * 100.0).round() as u16,
         hy_cm: (half_extents[1] * 100.0).round() as u16,
         hz_cm: (half_extents[2] * 100.0).round() as u16,
+        vx_cms: meters_to_cms_i16(vel[0]),
+        vy_cms: meters_to_cms_i16(vel[1]),
+        vz_cms: meters_to_cms_i16(vel[2]),
     }
 }
 

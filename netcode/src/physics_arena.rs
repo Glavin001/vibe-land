@@ -178,19 +178,21 @@ impl DynamicArena {
         );
     }
 
-    /// Returns `(id, position, quaternion [x,y,z,w], half_extents, shape_type)`
+    /// Returns `(id, position, quaternion [x,y,z,w], half_extents, linvel, shape_type)`
     /// for each dynamic body.
-    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], u8)> {
+    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
         let mut out = Vec::with_capacity(self.dynamic_bodies.len());
         for (&id, db) in &self.dynamic_bodies {
             if let Some(rb) = self.sim.rigid_bodies.get(db.body_handle) {
                 let pos = rb.translation();
                 let rot = rb.rotation();
+                let vel = rb.linvel();
                 out.push((
                     id,
                     [pos.x, pos.y, pos.z],
                     [rot.i, rot.j, rot.k, rot.w],
                     [db.half_extents.x, db.half_extents.y, db.half_extents.z],
+                    [vel.x, vel.y, vel.z],
                     db.shape_type,
                 ));
             }

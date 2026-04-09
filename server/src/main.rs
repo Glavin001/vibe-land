@@ -471,7 +471,7 @@ impl MatchState {
             .arena
             .snapshot_dynamic_bodies()
             .into_iter()
-            .map(|(id, pos, quat, he, shape_type)| make_net_dynamic_body_state(id, pos, quat, he, shape_type))
+            .map(|(id, pos, quat, he, vel, shape_type)| make_net_dynamic_body_state(id, pos, quat, he, vel, shape_type))
             .collect();
 
         let vehicle_states = self.arena.snapshot_vehicles();

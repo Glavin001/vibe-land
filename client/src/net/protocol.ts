@@ -81,6 +81,9 @@ export type NetDynamicBodyState = {
   hxCm: number;
   hyCm: number;
   hzCm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
 };
 
 export type DynamicBodyStateMeters = {
@@ -89,6 +92,7 @@ export type DynamicBodyStateMeters = {
   position: [number, number, number];
   quaternion: [number, number, number, number]; // x, y, z, w
   halfExtents: [number, number, number];
+  velocity: [number, number, number];
 };
 
 export type WelcomePacket = {
@@ -388,8 +392,11 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
           hxCm: view.getUint16(o + 25, true),
           hyCm: view.getUint16(o + 27, true),
           hzCm: view.getUint16(o + 29, true),
+          vxCms: view.getInt16(o + 31, true),
+          vyCms: view.getInt16(o + 33, true),
+          vzCms: view.getInt16(o + 35, true),
         });
-        o += 31;
+        o += 37;
       }
 
       const vehicleStates: NetVehicleState[] = [];
@@ -510,6 +517,7 @@ export function netDynamicBodyStateToMeters(state: NetDynamicBodyState): Dynamic
       snorm16ToF32(state.qwSnorm),
     ],
     halfExtents: [state.hxCm / 100, state.hyCm / 100, state.hzCm / 100],
+    velocity: [state.vxCms / 100, state.vyCms / 100, state.vzCms / 100],
   };
 }
 

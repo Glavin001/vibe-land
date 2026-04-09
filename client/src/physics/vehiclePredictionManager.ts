@@ -5,9 +5,74 @@ import { buildInputFromButtons } from '../scene/inputBuilder';
 export const FIXED_DT = 1 / 60;
 export const MAX_CATCHUP_STEPS = 4;
 export const VEHICLE_HARD_SNAP_DISTANCE = 5.0;
-export const VEHICLE_CORRECTION_DISTANCE = 0.5;  // tolerate 0.5m before correcting
+export const VEHICLE_CORRECTION_DISTANCE = 0.05;    // 5cm position threshold
+export const VEHICLE_ROT_THRESHOLD = 0.0175;         // ~1 degree
+export const VEHICLE_LINVEL_THRESHOLD = 0.1;         // 10 cm/s
+export const VEHICLE_ANGVEL_THRESHOLD = 0.035;       // ~2 degrees/s
 export const VEHICLE_VISUAL_SMOOTH_RATE = 15.0;  // fast decay → correction applied in ~4 ticks
 export const MAX_PENDING_VEHICLE_INPUTS = 30;
+export const VEHICLE_INPUT_REDUNDANCY = 4;
+
+// ── Quaternion math helpers ──────────────────────────────────────────────────
+
+function quatMultiply(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): [number, number, number, number] {
+  const [ax, ay, az, aw] = a;
+  const [bx, by, bz, bw] = b;
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
+function quatInvert(q: [number, number, number, number]): [number, number, number, number] {
+  return [-q[0], -q[1], -q[2], q[3]]; // conjugate (unit quaternion)
+}
+
+function quatNormalize(q: [number, number, number, number]): [number, number, number, number] {
+  const len = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+  return [q[0] / len, q[1] / len, q[2] / len, q[3] / len];
+}
+
+function quatSlerp(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+  t: number,
+): [number, number, number, number] {
+  let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  let bFlipped: [number, number, number, number] = [...b] as [number, number, number, number];
+  if (dot < 0) {
+    bFlipped = [-b[0], -b[1], -b[2], -b[3]];
+    dot = -dot;
+  }
+  if (dot > 0.9995) {
+    const r: [number, number, number, number] = [
+      a[0] + t * (bFlipped[0] - a[0]),
+      a[1] + t * (bFlipped[1] - a[1]),
+      a[2] + t * (bFlipped[2] - a[2]),
+      a[3] + t * (bFlipped[3] - a[3]),
+    ];
+    return quatNormalize(r);
+  }
+  const theta0 = Math.acos(dot);
+  const theta = theta0 * t;
+  const sinTheta = Math.sin(theta);
+  const sinTheta0 = Math.sin(theta0);
+  const s0 = Math.cos(theta) - dot * sinTheta / sinTheta0;
+  const s1 = sinTheta / sinTheta0;
+  return [
+    s0 * a[0] + s1 * bFlipped[0],
+    s0 * a[1] + s1 * bFlipped[1],
+    s0 * a[2] + s1 * bFlipped[2],
+    s0 * a[3] + s1 * bFlipped[3],
+  ];
+}
+
+const IDENTITY_QUAT: [number, number, number, number] = [0, 0, 0, 1];
 
 /**
  * Driver-side client-side prediction for a vehicle.
@@ -25,8 +90,9 @@ export class VehiclePredictionManager {
   private prevPosition: [number, number, number] = [0, 0, 0];
   private currQuaternion: [number, number, number, number] = [0, 0, 0, 1];
 
-  // Visual smoothing correction offset (applied to rendered position)
+  // Visual smoothing correction offsets (applied to rendered pose)
   private correctionOffset: [number, number, number] = [0, 0, 0];
+  private correctionQuatOffset: [number, number, number, number] = [0, 0, 0, 1]; // identity
 
   constructor(private readonly sim: WasmSimWorld) {}
 
@@ -46,6 +112,7 @@ export class VehiclePredictionManager {
     this.vehicleId = vehicleId;
     this.accumulator = 0;
     this.correctionOffset = [0, 0, 0];
+    this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
 
     // Sync WASM chassis to authoritative server state BEFORE activating prediction
     // so the first tick starts from the correct position, not a stale spawn position.
@@ -74,12 +141,14 @@ export class VehiclePredictionManager {
     this.vehicleId = null;
     this.accumulator = 0;
     this.correctionOffset = [0, 0, 0];
+    this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     this.sim.clearLocalVehicle();
   }
 
   /**
    * Advance vehicle prediction for one render frame.
-   * Returns InputCmds generated (one per fixed-step tick).
+   * Returns InputCmds generated (one per fixed-step tick), with redundancy
+   * (last VEHICLE_INPUT_REDUNDANCY inputs) for packet loss resilience.
    */
   update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[] {
     if (this.vehicleId === null) return [];
@@ -108,11 +177,12 @@ export class VehiclePredictionManager {
       this.currPosition = [result[0], result[1], result[2]];
       this.currQuaternion = [result[3], result[4], result[5], result[6]];
 
-      // Decay correction offset
+      // Decay correction offsets
       const decay = Math.exp(-VEHICLE_VISUAL_SMOOTH_RATE * FIXED_DT);
       this.correctionOffset[0] *= decay;
       this.correctionOffset[1] *= decay;
       this.correctionOffset[2] *= decay;
+      this.correctionQuatOffset = quatSlerp(this.correctionQuatOffset, IDENTITY_QUAT, 1.0 - decay);
 
       this.accumulator -= FIXED_DT;
       steps++;
@@ -122,7 +192,9 @@ export class VehiclePredictionManager {
       this.accumulator = FIXED_DT;
     }
 
-    return pendingInputs;
+    // Return last N inputs for redundancy (server will dedup by seq)
+    if (pendingInputs.length === 0) return [];
+    return pendingInputs.slice(-VEHICLE_INPUT_REDUNDANCY);
   }
 
   /**
@@ -157,6 +229,9 @@ export class VehiclePredictionManager {
 
     const result = this.sim.reconcileVehicle(
       VEHICLE_CORRECTION_DISTANCE,
+      VEHICLE_ROT_THRESHOLD,
+      VEHICLE_LINVEL_THRESHOLD,
+      VEHICLE_ANGVEL_THRESHOLD,
       ackInputSeq,
       serverPos[0], serverPos[1], serverPos[2],
       serverQuat[0], serverQuat[1], serverQuat[2], serverQuat[3],
@@ -168,19 +243,33 @@ export class VehiclePredictionManager {
     const didCorrect = result[13] !== 0;
     if (!didCorrect) return;
 
+    const oldQuat = this.currQuaternion;
+
     const dx = result[10] as number;
     const dy = result[11] as number;
     const dz = result[12] as number;
     const replayError = Math.hypot(dx, dy, dz);
 
+    const newQuat: [number, number, number, number] = [
+      result[3] as number,
+      result[4] as number,
+      result[5] as number,
+      result[6] as number,
+    ];
+
     if (replayError > VEHICLE_HARD_SNAP_DISTANCE) {
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
       this.correctionOffset = [0, 0, 0];
+      this.currQuaternion = newQuat;
+      this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     } else {
       this.correctionOffset = [-dx, -dy, -dz];
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
+      this.currQuaternion = newQuat;
+      // Correction quat offset = oldQuat * inverse(newQuat) — the delta to decay away
+      this.correctionQuatOffset = quatNormalize(quatMultiply(oldQuat, quatInvert(newQuat)));
     }
   }
 
@@ -199,7 +288,9 @@ export class VehiclePredictionManager {
       this.prevPosition[1] + (this.currPosition[1] - this.prevPosition[1]) * alpha + this.correctionOffset[1],
       this.prevPosition[2] + (this.currPosition[2] - this.prevPosition[2]) * alpha + this.correctionOffset[2],
     ];
-    return { position, quaternion: this.currQuaternion };
+    // Apply orientation correction: render_quat = correctionQuatOffset * simulation_quat
+    const renderQuat = quatNormalize(quatMultiply(this.correctionQuatOffset, this.currQuaternion));
+    return { position, quaternion: renderQuat };
   }
 
   dispose(): void {

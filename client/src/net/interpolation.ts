@@ -75,7 +75,44 @@ export class VehicleInterpolator {
       }
     }
 
-    return { ...queue[queue.length - 1] };
+    // Extrapolate: buffer has run dry — use velocity to predict ahead
+    const latest = queue[queue.length - 1];
+    const maxExtrapolateSecs = 0.250;
+    const extrapolateSecs = Math.min(
+      (targetTimeUs - latest.serverTimeUs) / 1_000_000,
+      maxExtrapolateSecs,
+    );
+    if (extrapolateSecs <= 0) return { ...latest };
+
+    const lv = latest.linearVelocity;
+    const av = latest.angularVelocity;
+    const pos: [number, number, number] = [
+      latest.position[0] + lv[0] * extrapolateSecs,
+      latest.position[1] + lv[1] * extrapolateSecs,
+      latest.position[2] + lv[2] * extrapolateSecs,
+    ];
+
+    // Integrate angular velocity into quaternion
+    const angSpeed = Math.sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+    let quat = latest.quaternion;
+    if (angSpeed > 0.0001) {
+      const angle = angSpeed * extrapolateSecs;
+      const ax = av[0] / angSpeed;
+      const ay = av[1] / angSpeed;
+      const az = av[2] / angSpeed;
+      const s = Math.sin(angle / 2);
+      const dq: [number, number, number, number] = [ax * s, ay * s, az * s, Math.cos(angle / 2)];
+      // quat = dq * quat
+      const [qx, qy, qz, qw] = quat;
+      const [dx, dy, dz, dw] = dq;
+      quat = [
+        dw * qx + dx * qw + dy * qz - dz * qy,
+        dw * qy - dx * qz + dy * qw + dz * qx,
+        dw * qz + dx * qy - dy * qx + dz * qw,
+        dw * qw - dx * qx - dy * qy - dz * qz,
+      ];
+    }
+    return { ...latest, position: pos, quaternion: quat };
   }
 }
 

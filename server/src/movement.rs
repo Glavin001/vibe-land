@@ -304,8 +304,10 @@ impl PhysicsArena {
                         let v = input_to_vehicle_cmd(&player.last_input);
                         (
                             v.steer * VEHICLE_MAX_STEER_RAD,
-                            (v.throttle - v.reverse * 0.5) * VEHICLE_ENGINE_FORCE,
-                            if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { v.reverse * VEHICLE_BRAKE_FORCE * 0.3 },
+                            // Rapier wheel forward = surface_normal × axle = (+Y)×(+X) = -Z.
+                            // Negate so W drives in +Z (forward) and S in -Z (reverse).
+                            (v.reverse - v.throttle) * VEHICLE_ENGINE_FORCE,
+                            if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { 0.0 },
                         )
                     } else {
                         (0.0, 0.0, 0.0)
@@ -407,7 +409,7 @@ impl PhysicsArena {
         self.dynamic.step_dynamics(dt);
     }
 
-    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], u8)> {
+    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
 }
