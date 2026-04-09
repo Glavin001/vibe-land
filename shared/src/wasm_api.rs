@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 use crate::movement::{MoveConfig, Vec3d};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
-use crate::simulation::SimWorld;
+use crate::simulation::{simulate_player_tick, SimWorld};
 
 /// Client-side physics simulation exposed to JavaScript via WASM.
 ///
@@ -127,9 +127,17 @@ impl WasmSimWorld {
             pitch,
         };
         self.pending_inputs.push(input.clone());
+        // Cap rollback depth: replaying too many inputs causes CPU spikes on packet loss.
+        // Lightyear uses 100 ticks as the default max; inputs older than that are unreachable.
+        const MAX_ROLLBACK_INPUTS: usize = 100;
+        if self.pending_inputs.len() > MAX_ROLLBACK_INPUTS {
+            let excess = self.pending_inputs.len() - MAX_ROLLBACK_INPUTS;
+            self.pending_inputs.drain(0..excess);
+        }
 
         let collider = self.player_collider.expect("spawn_player not called");
-        let _collisions = self.sim.simulate_tick(
+        let _collisions = simulate_player_tick(
+            &self.sim,
             collider,
             &mut self.position,
             &mut self.velocity,
@@ -199,6 +207,11 @@ impl WasmSimWorld {
         self.pending_inputs
             .retain(|input| seq_is_newer(input.seq, ack_seq));
 
+        // Flush any pending broad-phase updates from dynamic body syncs before
+        // running the replay loop. Without this the KCC operates against stale
+        // AABBs and may miss or double-count collisions with moved objects.
+        self.sim.sync_broad_phase();
+
         let before_x = self.position.x;
         let before_y = self.position.y;
         let before_z = self.position.z;
@@ -241,7 +254,8 @@ impl WasmSimWorld {
         let collider = self.player_collider.expect("spawn_player not called");
         let inputs: Vec<InputCmd> = self.pending_inputs.clone();
         for input in &inputs {
-            let _collisions = self.sim.simulate_tick(
+            let _collisions = simulate_player_tick(
+                &self.sim,
                 collider,
                 &mut self.position,
                 &mut self.velocity,
@@ -330,7 +344,9 @@ impl WasmSimWorld {
         qw: f32,
     ) {
         if let Some(&collider_id) = self.dynamic_colliders.get(&id) {
-            // Update existing collider position/rotation
+            // Update existing collider position/rotation and mark it modified so
+            // the broad-phase BVH reflects the new position on the next sync.
+            // Without this, the KCC casts against stale AABBs and misses collisions.
             if let Some(&handle) = self.collider_ids.get(&collider_id) {
                 if let Some(collider) = self.sim.colliders.get_mut(handle) {
                     collider.set_translation(vector![px, py, pz]);
@@ -338,6 +354,7 @@ impl WasmSimWorld {
                         Quaternion::new(qw, qx, qy, qz),
                     ));
                 }
+                self.sim.modified_colliders.push(handle);
             }
         } else {
             // Create new collider

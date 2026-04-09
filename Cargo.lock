@@ -2598,7 +2598,16 @@ dependencies = [
  "js-sys",
  "nalgebra",
  "rapier3d",
+ "vibe-netcode",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "vibe-netcode"
+version = "0.1.0"
+dependencies = [
+ "nalgebra",
+ "rapier3d",
 ]
 
 [[package]]
@@ -2743,6 +2752,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vibe-land-shared",
+ "vibe-netcode",
  "wtransport",
 ]
 

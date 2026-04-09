@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 anyhow = "1"
 axum = { version = "0.7", features = ["macros", "ws"] }
