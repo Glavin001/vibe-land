@@ -23,6 +23,8 @@
   "exclude": [
     "src/GameRuntime.ts",
     "src/spacetime/connectSpacetime.ts",
-    "src/world/voxelWorld.ts"
+    "src/wasm/testInit.ts",
+    "src/**/*.test.ts",
+    "src/net/testHarness.ts"
   ]
 }

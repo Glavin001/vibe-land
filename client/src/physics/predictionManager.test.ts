@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
-import * as RAPIER from '@dimforge/rapier3d-compat';
+import { initWasmForTests, WasmSimWorld } from '../wasm/testInit';
 import {
   PredictionManager,
   FIXED_DT,
@@ -18,6 +18,10 @@ import {
   type ChunkFullPacket,
   type BlockCell,
 } from '../net/protocol';
+
+beforeAll(() => {
+  initWasmForTests();
+});
 
 function makeNetState(opts: {
   id?: number;
@@ -53,40 +57,29 @@ function makeGroundChunk(): ChunkFullPacket {
   return { type: 'chunkFull', chunk: [0, -1, 0], version: 1, blocks };
 }
 
+function createSim(): WasmSimWorld {
+  const sim = new WasmSimWorld();
+  sim.spawnPlayer(0, 2, 0);
+  return sim;
+}
+
 describe('PredictionManager', () => {
-  let world: RAPIER.World;
-  let body: RAPIER.RigidBody;
-  let collider: RAPIER.Collider;
-
-  beforeAll(async () => {
-    await RAPIER.init();
-  });
-
-  beforeEach(() => {
-    world = new RAPIER.World({ x: 0, y: -20, z: 0 });
-    const groundDesc = RAPIER.ColliderDesc.cuboid(50, 0.5, 50)
-      .setTranslation(0, -0.5, 0);
-    world.createCollider(groundDesc);
-    body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
-    collider = world.createCollider(RAPIER.ColliderDesc.capsule(0.45, 0.35), body);
-    world.step();
-  });
-
   // ──────────────────────────────────────────────
   // Initialization & lifecycle
   // ──────────────────────────────────────────────
 
   describe('initialization', () => {
     it('is not initialized before first reconcile', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       expect(mgr.isInitialized()).toBe(false);
       expect(mgr.getInterpolatedPosition()).toBeNull();
       mgr.dispose();
     });
 
     it('returns no inputs before world is loaded', () => {
-      const mgr = new PredictionManager(world, body, collider);
-      // Reconcile to initialize but don't load world
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
       expect(mgr.isInitialized()).toBe(true);
       expect(mgr.isWorldLoaded()).toBe(false);
@@ -97,7 +90,8 @@ describe('PredictionManager', () => {
     });
 
     it('returns no inputs before reconcile initializes', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       expect(mgr.isWorldLoaded()).toBe(true);
       expect(mgr.isInitialized()).toBe(false);
@@ -108,7 +102,8 @@ describe('PredictionManager', () => {
     });
 
     it('produces inputs after world loaded AND reconcile initialized', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
       expect(mgr.isWorldLoaded()).toBe(true);
@@ -126,7 +121,8 @@ describe('PredictionManager', () => {
 
   describe('fixed timestep accumulator', () => {
     function readyManager(): PredictionManager {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
       return mgr;
@@ -152,7 +148,7 @@ describe('PredictionManager', () => {
       expect(cmds1).toHaveLength(0);
 
       const cmds2 = mgr.update(FIXED_DT * 0.6, 0, 0, 0);
-      expect(cmds2).toHaveLength(1); // 0.6 + 0.6 = 1.2 * FIXED_DT → 1 tick
+      expect(cmds2).toHaveLength(1);
       mgr.dispose();
     });
 
@@ -172,10 +168,8 @@ describe('PredictionManager', () => {
 
     it('clamps accumulator to FIXED_DT after catchup overflow', () => {
       const mgr = readyManager();
-      mgr.update(FIXED_DT * 10, 0, 0, 0); // caps at 4 steps
-      // Remaining accumulator should be clamped to at most FIXED_DT
+      mgr.update(FIXED_DT * 10, 0, 0, 0);
       const cmds = mgr.update(FIXED_DT * 0.5, 0, 0, 0);
-      // Should produce 1 tick (leftover + 0.5)
       expect(cmds.length).toBeLessThanOrEqual(2);
       mgr.dispose();
     });
@@ -187,7 +181,8 @@ describe('PredictionManager', () => {
 
   describe('input sequence generation', () => {
     function readyManager(): PredictionManager {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
       return mgr;
@@ -204,11 +199,8 @@ describe('PredictionManager', () => {
 
     it('sequences wrap around at u16 boundary', () => {
       const mgr = readyManager();
-      // Advance near wraparound, periodically reconciling to keep
-      // pending count below the throttle cap (MAX_PENDING_INPUTS).
       for (let i = 0; i < 0xfffe; i++) {
         mgr.update(FIXED_DT, 0, 0, 0);
-        // Reconcile every 20 ticks to clear the pending queue
         if ((i + 1) % 20 === 0) {
           const ackSeq = mgr.getNextSeq() - 1;
           mgr.reconcile(ackSeq & 0xffff, makeNetState({ position: mgr.getPosition(), flags: FLAG_ON_GROUND }));
@@ -229,7 +221,8 @@ describe('PredictionManager', () => {
 
   describe('visual smoothing', () => {
     function readyManagerAt(pos: [number, number, number]): PredictionManager {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: pos, flags: FLAG_ON_GROUND }));
       return mgr;
@@ -238,13 +231,10 @@ describe('PredictionManager', () => {
     it('correction offset decays exponentially', () => {
       const mgr = readyManagerAt([0, 1, 0]);
 
-      // Predict 10 frames moving forward
       for (let i = 0; i < 10; i++) {
         mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
       }
 
-      // Reconcile with server acking only 5, at a noticeably different position
-      // The 5 unacked inputs will be replayed from a different start, creating offset
       const serverState = makeNetState({
         position: [0.5, 1, 0.3],
         flags: FLAG_ON_GROUND,
@@ -254,7 +244,6 @@ describe('PredictionManager', () => {
       const offset1 = mgr.getCorrectionOffset();
       const offsetMag1 = Math.hypot(...offset1);
 
-      // Run a few more frames — offset should decay
       for (let i = 0; i < 10; i++) {
         mgr.update(FIXED_DT, 0, 0, 0);
       }
@@ -269,12 +258,10 @@ describe('PredictionManager', () => {
     it('hard snap resets correction offset to zero', () => {
       const mgr = readyManagerAt([0, 1, 0]);
 
-      // Predict a few frames
       for (let i = 0; i < 3; i++) {
         mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
       }
 
-      // Server says player is 10m away (> HARD_SNAP_DISTANCE)
       const serverState = makeNetState({
         position: [10, 1, 10],
         flags: FLAG_ON_GROUND,
@@ -289,10 +276,8 @@ describe('PredictionManager', () => {
     it('interpolated position includes correction offset', () => {
       const mgr = readyManagerAt([5, 1, 5]);
 
-      // Predict one frame
       mgr.update(FIXED_DT, 0, 0, 0);
 
-      // Reconcile with small offset
       mgr.reconcile(1, makeNetState({
         position: [5.5, 1, 5],
         flags: FLAG_ON_GROUND,
@@ -300,7 +285,6 @@ describe('PredictionManager', () => {
 
       const pos = mgr.getInterpolatedPosition();
       expect(pos).not.toBeNull();
-      // Position should reflect correction offset
       const offset = mgr.getCorrectionOffset();
       expect(Math.hypot(...offset)).toBeGreaterThan(0);
       mgr.dispose();
@@ -313,14 +297,16 @@ describe('PredictionManager', () => {
 
   describe('reconciliation', () => {
     function readyManagerAt(pos: [number, number, number]): PredictionManager {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: pos, flags: FLAG_ON_GROUND }));
       return mgr;
     }
 
     it('first reconcile initializes position', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
 
       mgr.reconcile(0, makeNetState({ position: [5, 2, 3], flags: FLAG_ON_GROUND }));
@@ -336,42 +322,37 @@ describe('PredictionManager', () => {
     it('reconcile with all inputs acked snaps to server', () => {
       const mgr = readyManagerAt([0, 1, 0]);
 
-      // Predict 5 frames forward
       for (let i = 0; i < 5; i++) {
         mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
       }
       expect(mgr.getPendingInputCount()).toBe(5);
 
-      // Server acks all 5
       mgr.reconcile(5, makeNetState({ position: [0, 1, 3], flags: FLAG_ON_GROUND }));
 
       expect(mgr.getPendingInputCount()).toBe(0);
       const pos = mgr.getPosition();
-      expect(pos[2]).toBeCloseTo(3, 0); // Should match server
+      expect(pos[2]).toBeCloseTo(3, 0);
       mgr.dispose();
     });
 
     it('reconcile replays unacked inputs', () => {
       const mgr = readyManagerAt([0, 1, 0]);
 
-      // Predict 5 frames moving forward
       for (let i = 0; i < 5; i++) {
         mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
       }
 
-      // Server only acks 2 (inputs 3,4,5 need replay)
       mgr.reconcile(2, makeNetState({ position: [0, 1, 0.1], flags: FLAG_ON_GROUND }));
 
       expect(mgr.getPendingInputCount()).toBe(3);
       const pos = mgr.getPosition();
-      expect(pos[2]).toBeGreaterThan(0.1); // Replayed inputs moved forward
+      expect(pos[2]).toBeGreaterThan(0.1);
       mgr.dispose();
     });
 
     it('multiple reconciliations converge', () => {
       const mgr = readyManagerAt([0, 1, 0]);
 
-      // Predict and reconcile multiple times
       for (let round = 0; round < 5; round++) {
         for (let i = 0; i < 10; i++) {
           mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
@@ -383,7 +364,6 @@ describe('PredictionManager', () => {
         }));
       }
 
-      // Should have converged - pending count should be 0 after final ack
       expect(mgr.getPendingInputCount()).toBe(0);
       mgr.dispose();
     });
@@ -395,7 +375,8 @@ describe('PredictionManager', () => {
 
   describe('world packets', () => {
     it('applyWorldPacket loads chunk and enables worldLoaded', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       expect(mgr.isWorldLoaded()).toBe(false);
 
       mgr.applyWorldPacket(makeGroundChunk());
@@ -404,11 +385,12 @@ describe('PredictionManager', () => {
     });
 
     it('getRenderBlocks returns blocks from loaded chunks', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
 
       const blocks = mgr.getRenderBlocks();
-      expect(blocks.length).toBe(256); // 16x16 ground blocks
+      expect(blocks.length).toBe(256);
       mgr.dispose();
     });
   });
@@ -419,7 +401,8 @@ describe('PredictionManager', () => {
 
   describe('tick counting', () => {
     it('tickCount increments with each fixed step', () => {
-      const mgr = new PredictionManager(world, body, collider);
+      const sim = createSim();
+      const mgr = new PredictionManager(sim);
       mgr.applyWorldPacket(makeGroundChunk());
       mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
 

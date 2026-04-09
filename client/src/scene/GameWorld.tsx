@@ -41,15 +41,20 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
   const { stateRef, ready, sendInputs, sendBlockEdit, clientRef } = useGameConnection(
     onWelcome,
     onDisconnect,
-    prediction.ready ? prediction.reconcile : undefined,
+    prediction.ready
+      ? (ackInputSeq, state) => {
+          // Sync dynamic bodies BEFORE reconciliation so that input replay
+          // collides with the correct (same-tick) collider positions.
+          const bodies = Array.from(stateRef.current.dynamicBodies.values());
+          prediction.updateDynamicBodies(bodies);
+          prediction.reconcile(ackInputSeq, state);
+        }
+      : undefined,
     (packet) => {
       if (packet.type === 'chunkFull' || packet.type === 'chunkDiff') {
         prediction.applyWorldPacket(packet);
       }
       if (packet.type === 'snapshot') {
-        // Sync dynamic bodies into prediction world so KCC collides with them
-        const bodies = Array.from(stateRef.current.dynamicBodies.values());
-        prediction.updateDynamicBodies(bodies);
         onSnapshotRef.current?.();
       }
     },

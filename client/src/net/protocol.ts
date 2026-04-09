@@ -1,29 +1,23 @@
-export const PKT_CLIENT_HELLO = 1;
-export const PKT_INPUT_BUNDLE = 2;
-export const PKT_FIRE = 3;
-
-export const PKT_WELCOME = 101;
-export const PKT_SNAPSHOT = 102;
-export const PKT_SHOT_RESULT = 103;
-export const PKT_CHUNK_FULL = 104;
-export const PKT_CHUNK_DIFF = 105;
-
-export const BTN_FORWARD = 1 << 0;
-export const BTN_BACK = 1 << 1;
-export const BTN_LEFT = 1 << 2;
-export const BTN_RIGHT = 1 << 3;
-export const BTN_JUMP = 1 << 4;
-export const BTN_CROUCH = 1 << 5;
-export const BTN_SPRINT = 1 << 6;
-export const BTN_SECONDARY_FIRE = 1 << 7;
-export const BTN_RELOAD = 1 << 8;
-
-export const FLAG_ON_GROUND = 1 << 0;
-export const BLOCK_ADD = 1;
-export const BLOCK_REMOVE = 2;
-
-export const WEAPON_HITSCAN = 1;
-export const WEAPON_ROCKET = 2;
+// All protocol constants are generated from shared/src/constants.rs.
+// Regenerate with: node scripts/gen-constants.mjs
+export * from './sharedConstants';
+import {
+  PKT_CLIENT_HELLO,
+  PKT_INPUT_BUNDLE,
+  PKT_FIRE,
+  PKT_BLOCK_EDIT,
+  PKT_WELCOME,
+  PKT_SNAPSHOT,
+  PKT_SHOT_RESULT,
+  PKT_CHUNK_FULL,
+  PKT_CHUNK_DIFF,
+  PKT_PING,
+  PKT_PONG,
+  BTN_FORWARD,
+  BTN_BACK,
+  BTN_LEFT,
+  BTN_RIGHT,
+} from './sharedConstants';
 
 export type ClientHello = {
   matchId: string;
@@ -611,10 +605,6 @@ export function bytesFromHex(hex: string): Uint8Array {
 export function stringFromBytes(bytes: Uint8Array): string {
   return TEXT_DECODER.decode(bytes);
 }
-
-const PKT_PING = 110;
-const PKT_PONG = 111;
-const PKT_BLOCK_EDIT = 4;
 
 export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket {
   const bytes = toBytes(data);

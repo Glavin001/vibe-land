@@ -106,6 +106,14 @@ export class NetcodeClient {
       case 'snapshot': {
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+
+        // Update dynamic bodies BEFORE reconciliation so that input replay
+        // collides with the correct (same-tick) collider positions.
+        this.dynamicBodies.clear();
+        for (const db of packet.dynamicBodyStates) {
+          this.dynamicBodies.set(db.id, netDynamicBodyStateToMeters(db));
+        }
+
         const knownIds = new Set<number>();
         for (const ps of packet.playerStates) {
           knownIds.add(ps.id);
@@ -138,12 +146,6 @@ export class NetcodeClient {
           }
         }
         this.interpolator.retainOnly(knownIds);
-
-        // Update dynamic bodies
-        this.dynamicBodies.clear();
-        for (const db of packet.dynamicBodyStates) {
-          this.dynamicBodies.set(db.id, netDynamicBodyStateToMeters(db));
-        }
         break;
       }
       case 'chunkFull':

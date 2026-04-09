@@ -1,57 +1,15 @@
 use std::collections::HashMap;
 
-use nalgebra::{vector, Isometry3, Vector3};
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use nalgebra::{vector, Vector3};
 use rapier3d::prelude::*;
 
-use crate::protocol::{InputCmd, BTN_BACK, BTN_CROUCH, BTN_FORWARD, BTN_JUMP, BTN_LEFT, BTN_RIGHT, BTN_SPRINT};
+use crate::protocol::*;
+pub use vibe_land_shared::movement::{
+    MoveConfig, Vec3d, accelerate, apply_horizontal_friction, build_wish_dir, pick_move_speed,
+};
+pub use vibe_land_shared::simulation::SimWorld;
 
 pub type Vec3 = Vector3<f32>;
-
-#[derive(Clone, Debug)]
-pub struct MoveConfig {
-    pub walk_speed: f64,
-    pub sprint_speed: f64,
-    pub crouch_speed: f64,
-    pub ground_accel: f64,
-    pub air_accel: f64,
-    pub friction: f64,
-    pub gravity: f64,
-    pub jump_speed: f64,
-    pub capsule_half_segment: f32,
-    pub capsule_radius: f32,
-    pub collision_offset: f32,
-    pub max_step_height: f32,
-    pub min_step_width: f32,
-    pub snap_to_ground: f32,
-    pub max_slope_radians: f32,
-    pub min_slide_radians: f32,
-}
-
-impl Default for MoveConfig {
-    fn default() -> Self {
-        Self {
-            walk_speed: 6.0,
-            sprint_speed: 8.5,
-            crouch_speed: 3.5,
-            ground_accel: 80.0,
-            air_accel: 18.0,
-            friction: 10.0,
-            gravity: 20.0,
-            jump_speed: 6.5,
-            capsule_half_segment: 0.45,
-            capsule_radius: 0.35,
-            collision_offset: 0.01,
-            max_step_height: 0.55,
-            min_step_width: 0.2,
-            snap_to_ground: 0.2,
-            max_slope_radians: 45_f32.to_radians(),
-            min_slide_radians: 30_f32.to_radians(),
-        }
-    }
-}
-
-pub type Vec3d = Vector3<f64>;
 
 #[derive(Clone, Debug)]
 pub struct PlayerMotorState {
@@ -73,103 +31,50 @@ pub struct DynamicBody {
 }
 
 pub struct PhysicsArena {
-    pub config: MoveConfig,
+    pub sim: SimWorld,
     pub players: HashMap<u32, PlayerMotorState>,
-
-    pub rigid_bodies: RigidBodySet,
-    pub colliders: ColliderSet,
-    pub integration_parameters: IntegrationParameters,
-
-    controller: KinematicCharacterController,
     next_spawn_index: u32,
 
-    // Dynamic rigid body support
+    // Dynamic rigid body support (server-only, not in shared SimWorld)
     pub dynamic_bodies: HashMap<u32, DynamicBody>,
     next_dynamic_id: u32,
     pipeline: PhysicsPipeline,
-    island_manager: IslandManager,
-    broad_phase: BroadPhaseBvh,
-    narrow_phase: NarrowPhase,
     impulse_joints: ImpulseJointSet,
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
     gravity: Vec3,
-    modified_colliders: Vec<ColliderHandle>,
-    removed_colliders: Vec<ColliderHandle>,
 }
 
 impl PhysicsArena {
     pub fn new(config: MoveConfig) -> Self {
-        let mut controller = KinematicCharacterController::default();
-        controller.offset = CharacterLength::Absolute(config.collision_offset);
-        controller.autostep = Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(config.max_step_height),
-            min_width: CharacterLength::Absolute(config.min_step_width),
-            include_dynamic_bodies: false,
-        });
-        controller.snap_to_ground = Some(CharacterLength::Absolute(config.snap_to_ground));
-        controller.max_slope_climb_angle = config.max_slope_radians;
-        controller.min_slope_slide_angle = config.min_slide_radians;
-
-        let mut arena = Self {
-            config,
+        Self {
+            sim: SimWorld::new(config),
             players: HashMap::new(),
-            rigid_bodies: RigidBodySet::new(),
-            colliders: ColliderSet::new(),
-            integration_parameters: IntegrationParameters::default(),
-            controller,
             next_spawn_index: 0,
             dynamic_bodies: HashMap::new(),
             next_dynamic_id: 1,
             pipeline: PhysicsPipeline::new(),
-            island_manager: IslandManager::new(),
-            broad_phase: BroadPhaseBvh::new(),
-            narrow_phase: NarrowPhase::new(),
             impulse_joints: ImpulseJointSet::new(),
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             gravity: vector![0.0, -20.0, 0.0],
-            modified_colliders: Vec::new(),
-            removed_colliders: Vec::new(),
-        };
+        }
+    }
 
-        arena.integration_parameters.dt = 1.0 / 60.0;
-        arena.integration_parameters.num_solver_iterations = 2;
-        arena
+    /// Convenience accessor for the shared config.
+    pub fn config(&self) -> &MoveConfig {
+        &self.sim.config
     }
 
     /// Flush pending collider changes into the broad-phase BVH.
     pub fn sync_broad_phase(&mut self) {
-        if self.modified_colliders.is_empty() && self.removed_colliders.is_empty() {
-            return;
-        }
-        let mut events = Vec::new();
-        self.broad_phase.update(
-            &self.integration_parameters,
-            &self.colliders,
-            &self.rigid_bodies,
-            &self.modified_colliders,
-            &self.removed_colliders,
-            &mut events,
-        );
-        self.modified_colliders.clear();
-        self.removed_colliders.clear();
+        self.sim.sync_broad_phase();
     }
 
     /// Bootstrap the broad-phase BVH with all current colliders.  Call once
-    /// after bulk seeding, before the first tick.  This is needed because the
-    /// KCC queries the BVH during simulate_player_tick, which runs before
-    /// pipeline.step() has had a chance to populate the BVH.
-    ///
-    /// After the first pipeline.step(), the pipeline manages the BVH and
-    /// narrow phase automatically — do NOT call this mid-simulation.
+    /// after bulk seeding, before the first tick.
     pub fn rebuild_broad_phase(&mut self) {
-        self.modified_colliders.clear();
-        self.removed_colliders.clear();
-        for (handle, _) in self.colliders.iter() {
-            self.modified_colliders.push(handle);
-        }
-        self.sync_broad_phase();
+        self.sim.rebuild_broad_phase();
     }
 
     pub fn spawn_player(&mut self, player_id: u32) -> Vec3d {
@@ -177,16 +82,7 @@ impl PhysicsArena {
         self.next_spawn_index += 1;
         let spawn = Vector3::<f64>::new(lane as f64 * 2.0, 2.0, 0.0);
 
-        let collider = ColliderBuilder::capsule_y(
-            self.config.capsule_half_segment,
-            self.config.capsule_radius,
-        )
-        .translation(vector![spawn.x as f32, spawn.y as f32, spawn.z as f32])
-        .friction(0.0)
-        .active_collision_types(ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_FIXED)
-        .user_data(player_id as u128)
-        .build();
-        let handle = self.colliders.insert(collider);
+        let handle = self.sim.create_player_collider(spawn, player_id);
 
         self.players.insert(
             player_id,
@@ -207,32 +103,20 @@ impl PhysicsArena {
 
     pub fn remove_player(&mut self, player_id: u32) {
         if let Some(player) = self.players.remove(&player_id) {
-            self.removed_colliders.push(player.collider);
-            self.colliders.remove(player.collider, &mut self.island_manager, &mut self.rigid_bodies, true);
+            self.sim.remove_player_collider(player.collider);
         }
     }
 
     pub fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) -> ColliderHandle {
-        // ColliderSet::insert() internally tracks the new collider.
-        // pipeline.step() will process it via colliders.take_modified(),
-        // adding it to the broad phase automatically.
-        self.colliders.insert(
-            ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
-                .translation(center)
-                .user_data(user_data)
-                .build(),
-        )
+        self.sim.add_static_cuboid(center, half_extents, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
-        // ColliderSet::remove() internally tracks the removal.
-        // pipeline.step() will process it via colliders.take_removed(),
-        // updating both the broad phase and narrow phase automatically.
-        self.colliders.remove(handle, &mut self.island_manager, &mut self.rigid_bodies, true);
+        self.sim.remove_collider(handle);
     }
 
     pub fn collider_user_data(&self, handle: ColliderHandle) -> Option<u128> {
-        self.colliders.get(handle).map(|c| c.user_data)
+        self.sim.collider_user_data(handle)
     }
 
     /// Wake up all dynamic bodies whose center is within `radius` of `center`.
@@ -240,118 +124,40 @@ impl PhysicsArena {
     pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
         let r2 = radius * radius;
         for (_, db) in &self.dynamic_bodies {
-            if let Some(rb) = self.rigid_bodies.get(db.body_handle) {
+            if let Some(rb) = self.sim.rigid_bodies.get(db.body_handle) {
                 let pos = *rb.translation();
                 let dx = pos.x - center.x;
                 let dy = pos.y - center.y;
                 let dz = pos.z - center.z;
                 if dx * dx + dy * dy + dz * dz < r2 {
-                    self.island_manager.wake_up(&mut self.rigid_bodies, db.body_handle, true);
+                    self.sim.island_manager.wake_up(&mut self.sim.rigid_bodies, db.body_handle, true);
                 }
             }
         }
     }
 
     pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
-        let cfg = self.config.clone();
-        let dt64 = dt as f64;
+        let Some(state) = self.players.get_mut(&player_id) else { return; };
+        state.last_input = input.clone();
 
-        // Phase 1: Update player state in f64 (matches JS client arithmetic)
-        let (collider_handle, position_f32, desired_translation_f32);
-        {
-            let Some(state) = self.players.get_mut(&player_id) else { return; };
-            state.yaw = input.yaw as f64;
-            state.pitch = (input.pitch as f64).clamp(-1.55, 1.55);
-            state.last_input = input.clone();
-
-            let wish = build_wish_dir_f64(input, state.yaw);
-            let max_speed = if input.buttons & BTN_CROUCH != 0 {
-                cfg.crouch_speed
-            } else if input.buttons & BTN_SPRINT != 0 {
-                cfg.sprint_speed
-            } else {
-                cfg.walk_speed
-            };
-
-            apply_horizontal_friction_f64(&mut state.velocity, cfg.friction, dt64, state.on_ground);
-            accelerate_f64(
-                &mut state.velocity,
-                wish,
-                max_speed,
-                if state.on_ground { cfg.ground_accel } else { cfg.air_accel },
-                dt64,
-            );
-
-            if state.on_ground && (input.buttons & BTN_JUMP != 0) {
-                state.velocity.y = cfg.jump_speed;
-                state.on_ground = false;
-            }
-
-            state.velocity.y -= cfg.gravity * dt64;
-
-            // Convert to f32 for Rapier KCC (same truncation as JS→WASM boundary)
-            let desired = state.velocity * dt64;
-            desired_translation_f32 = vector![desired.x as f32, desired.y as f32, desired.z as f32];
-            collider_handle = state.collider;
-            position_f32 = vector![state.position.x as f32, state.position.y as f32, state.position.z as f32];
-        }
-
-        // Phase 2: Query the broad-phase BVH as-is (from the last pipeline.step).
-        // IMPORTANT: Do NOT call sync_broad_phase() here — calling
-        // broad_phase.update() between pipeline.step() calls corrupts the BVH
-        // and causes dynamic bodies to fall through static geometry.
-
-        // Phase 3: Run KCC (all f32 — Rapier's native precision)
-        let collider = self.colliders.get(collider_handle).expect("missing player collider");
-        let character_shape = collider.shape();
-        let character_pos = Isometry3::translation(position_f32.x, position_f32.y, position_f32.z);
-
-        let filter = QueryFilter::default().exclude_collider(collider_handle);
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
-
-        let mut hit_colliders: Vec<ColliderHandle> = Vec::new();
-        let corrected = self.controller.move_shape(
+        let hit_colliders = self.sim.simulate_tick(
+            state.collider,
+            &mut state.position,
+            &mut state.velocity,
+            &mut state.yaw,
+            &mut state.pitch,
+            &mut state.on_ground,
+            input,
             dt,
-            &query_pipeline,
-            character_shape,
-            &character_pos,
-            desired_translation_f32,
-            |collision| {
-                hit_colliders.push(collision.handle);
-            },
         );
-
-        // Phase 4: Apply f32 KCC results back to f64 state
-        let ct = corrected.translation;
-        let state = self.players.get_mut(&player_id).unwrap();
-        state.position.x += ct.x as f64;
-        state.position.y += ct.y as f64;
-        state.position.z += ct.z as f64;
-
-        let pos_f32 = vector![state.position.x as f32, state.position.y as f32, state.position.z as f32];
-        let collider = self.colliders.get_mut(state.collider).expect("missing player collider");
-        collider.set_translation(pos_f32);
-
-        let was_falling = desired_translation_f32.y <= 0.0;
-        let y_clipped = ct.y > desired_translation_f32.y - 0.001;
-        state.on_ground = was_falling && y_clipped && ct.y.abs() < 0.001;
-        if state.on_ground && state.velocity.y < 0.0 {
-            state.velocity.y = 0.0;
-        }
-
-        state.velocity.x = ct.x as f64 / dt64;
-        state.velocity.z = ct.z as f64 / dt64;
+        self.sim.sync_player_collider(state.collider, &state.position);
 
         // Push dynamic bodies that the player collided with.
         // Use a gentle impulse scaled by body mass so light and heavy objects
         // react proportionally — similar to how Rocket League / The Finals
         // handle player-object contact: nudge, don't launch.
         if !hit_colliders.is_empty() {
+            let state = self.players.get(&player_id).unwrap();
             let hspeed = (state.velocity.x.powi(2) + state.velocity.z.powi(2)).sqrt();
             if hspeed > 0.3 {
                 let mut push_dir = Vector3::<f32>::new(
@@ -362,14 +168,11 @@ impl PhysicsArena {
                     push_dir /= len;
                 }
                 for handle in hit_colliders {
-                    if let Some(col) = self.colliders.get(handle) {
+                    if let Some(col) = self.sim.colliders.get(handle) {
                         if let Some(parent) = col.parent() {
-                            if let Some(rb) = self.rigid_bodies.get_mut(parent) {
+                            if let Some(rb) = self.sim.rigid_bodies.get_mut(parent) {
                                 if rb.is_dynamic() {
                                     let mass = rb.mass();
-                                    // Impulse proportional to mass so objects move
-                                    // at a consistent speed regardless of weight.
-                                    // Clamp player speed contribution to keep it gentle.
                                     let speed_factor = (hspeed as f32).min(5.0);
                                     let impulse = push_dir * mass * speed_factor * 0.15;
                                     rb.apply_impulse(impulse, true);
@@ -399,34 +202,16 @@ impl PhysicsArena {
     }
 
     pub fn cast_static_world_ray(
-        &mut self,
+        &self,
         origin: [f32; 3],
         dir: [f32; 3],
         max_toi: f32,
         exclude_player: Option<u32>,
     ) -> Option<f32> {
-        let ray = Ray::new(
-            nalgebra::point![origin[0], origin[1], origin[2]],
-            vector![dir[0], dir[1], dir[2]],
-        );
-        // Note: do NOT call sync_broad_phase() here — the BVH is maintained
-        // exclusively by pipeline.step() during step_dynamics(). Calling
-        // broad_phase.update() between pipeline steps corrupts the BVH.
-        let mut filter = QueryFilter::default();
-        if let Some(player_id) = exclude_player {
-            if let Some(player) = self.players.get(&player_id) {
-                filter = filter.exclude_collider(player.collider);
-            }
-        }
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
-        query_pipeline
-            .cast_ray(&ray, max_toi, true)
-            .map(|(_handle, toi)| toi)
+        let exclude = exclude_player
+            .and_then(|pid| self.players.get(&pid))
+            .map(|p| p.collider);
+        self.sim.cast_ray(origin, dir, max_toi, exclude)
     }
 
     pub fn spawn_dynamic_box(&mut self, position: Vec3, half_extents: Vec3) -> u32 {
@@ -438,7 +223,7 @@ impl PhysicsArena {
             .linear_damping(0.3)
             .angular_damping(0.5)
             .build();
-        let body_handle = self.rigid_bodies.insert(body);
+        let body_handle = self.sim.rigid_bodies.insert(body);
 
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .restitution(0.3)
@@ -446,8 +231,8 @@ impl PhysicsArena {
             .density(2.0)
             .build();
         let collider_handle =
-            self.colliders
-                .insert_with_parent(collider, body_handle, &mut self.rigid_bodies);
+            self.sim.colliders
+                .insert_with_parent(collider, body_handle, &mut self.sim.rigid_bodies);
 
         self.dynamic_bodies.insert(
             id,
@@ -471,7 +256,7 @@ impl PhysicsArena {
             .linear_damping(3.0)
             .angular_damping(4.0)
             .build();
-        let body_handle = self.rigid_bodies.insert(body);
+        let body_handle = self.sim.rigid_bodies.insert(body);
 
         let collider = ColliderBuilder::ball(radius)
             .restitution(0.4)
@@ -479,8 +264,8 @@ impl PhysicsArena {
             .density(1.0)
             .build();
         let collider_handle =
-            self.colliders
-                .insert_with_parent(collider, body_handle, &mut self.rigid_bodies);
+            self.sim.colliders
+                .insert_with_parent(collider, body_handle, &mut self.sim.rigid_bodies);
 
         self.dynamic_bodies.insert(
             id,
@@ -496,18 +281,15 @@ impl PhysicsArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
-        // pipeline.step() processes all collider changes automatically via
-        // colliders.take_modified() and colliders.take_removed(), updating
-        // the broad phase, narrow phase, and island manager internally.
-        self.integration_parameters.dt = dt;
+        self.sim.integration_parameters.dt = dt;
         self.pipeline.step(
             &self.gravity,
-            &self.integration_parameters,
-            &mut self.island_manager,
-            &mut self.broad_phase,
-            &mut self.narrow_phase,
-            &mut self.rigid_bodies,
-            &mut self.colliders,
+            &self.sim.integration_parameters,
+            &mut self.sim.island_manager,
+            &mut self.sim.broad_phase,
+            &mut self.sim.narrow_phase,
+            &mut self.sim.rigid_bodies,
+            &mut self.sim.colliders,
             &mut self.impulse_joints,
             &mut self.multibody_joints,
             &mut self.ccd_solver,
@@ -520,7 +302,7 @@ impl PhysicsArena {
     pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], u8)> {
         let mut out = Vec::with_capacity(self.dynamic_bodies.len());
         for (&id, db) in &self.dynamic_bodies {
-            if let Some(rb) = self.rigid_bodies.get(db.body_handle) {
+            if let Some(rb) = self.sim.rigid_bodies.get(db.body_handle) {
                 let pos = rb.translation();
                 let rot = rb.rotation();
                 out.push((
@@ -534,58 +316,6 @@ impl PhysicsArena {
         }
         out
     }
-}
-
-fn build_wish_dir_f64(input: &InputCmd, yaw: f64) -> Vec3d {
-    let forward = Vector3::<f64>::new(yaw.sin(), 0.0, yaw.cos());
-    let right = Vector3::<f64>::new(forward.z, 0.0, -forward.x);
-
-    let mut move_x = input.move_x as f64 / 127.0;
-    let mut move_y = input.move_y as f64 / 127.0;
-
-    // Fall back to button-derived movement so older callers still behave.
-    if move_x.abs() <= f64::EPSILON && move_y.abs() <= f64::EPSILON {
-        move_x = (if input.buttons & BTN_RIGHT != 0 { 1.0 } else { 0.0 })
-            + (if input.buttons & BTN_LEFT != 0 { -1.0 } else { 0.0 });
-        move_y = (if input.buttons & BTN_FORWARD != 0 { 1.0 } else { 0.0 })
-            + (if input.buttons & BTN_BACK != 0 { -1.0 } else { 0.0 });
-    }
-
-    let mut wish = right * move_x + forward * move_y;
-    wish.y = 0.0;
-    if wish.norm_squared() > 0.0001 {
-        wish = wish.normalize();
-    }
-    wish
-}
-
-fn apply_horizontal_friction_f64(velocity: &mut Vec3d, friction: f64, dt: f64, on_ground: bool) {
-    if !on_ground {
-        return;
-    }
-    let speed = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
-    if speed <= 1e-6 {
-        return;
-    }
-    let drop = speed * friction * dt;
-    let new_speed = (speed - drop).max(0.0);
-    let ratio = new_speed / speed;
-    velocity.x *= ratio;
-    velocity.z *= ratio;
-}
-
-fn accelerate_f64(velocity: &mut Vec3d, wish_dir: Vec3d, wish_speed: f64, accel: f64, dt: f64) {
-    if wish_dir.norm_squared() <= 0.0001 {
-        return;
-    }
-    let current_speed = velocity.x * wish_dir.x + velocity.z * wish_dir.z;
-    let add_speed = (wish_speed - current_speed).max(0.0);
-    if add_speed <= 0.0 {
-        return;
-    }
-    let accel_speed = (accel * wish_speed * dt).min(add_speed);
-    velocity.x += wish_dir.x * accel_speed;
-    velocity.z += wish_dir.z * accel_speed;
 }
 
 #[cfg(test)]
@@ -624,11 +354,11 @@ mod tests {
     #[test]
     fn build_wish_dir_uses_move_axes_without_button_bits() {
         let mut cmd = input();
-        cmd.move_x = 127;
+        cmd.move_x = 127; // RIGHT strafe at yaw=0 → -X (Three.js camera convention)
 
-        let wish = build_wish_dir_f64(&cmd, 0.0);
+        let wish = build_wish_dir(&cmd, 0.0);
 
-        assert!(wish.x > 0.99);
+        assert!(wish.x < -0.99);
         assert!(wish.z.abs() < 0.001);
     }
 
@@ -637,17 +367,17 @@ mod tests {
         let mut cmd = input();
         cmd.buttons = BTN_FORWARD | BTN_RIGHT;
 
-        let wish = build_wish_dir_f64(&cmd, 0.0);
+        let wish = build_wish_dir(&cmd, 0.0);
 
-        assert!(wish.x > 0.7);
-        assert!(wish.z > 0.7);
+        assert!(wish.x < -0.7); // RIGHT → -X at yaw=0
+        assert!(wish.z > 0.7);  // FORWARD → +Z at yaw=0
     }
 
     #[test]
     fn build_wish_dir_forward_button_only() {
         let mut cmd = input();
         cmd.buttons = BTN_FORWARD;
-        let wish = build_wish_dir_f64(&cmd, 0.0);
+        let wish = build_wish_dir(&cmd, 0.0);
         assert!(wish.z > 0.99, "forward should produce +Z at yaw=0");
     }
 
@@ -655,7 +385,7 @@ mod tests {
     fn build_wish_dir_backward_button_only() {
         let mut cmd = input();
         cmd.buttons = BTN_BACK;
-        let wish = build_wish_dir_f64(&cmd, 0.0);
+        let wish = build_wish_dir(&cmd, 0.0);
         assert!(wish.z < -0.99, "back should produce -Z at yaw=0");
     }
 
@@ -663,7 +393,7 @@ mod tests {
     fn build_wish_dir_opposing_buttons_cancel() {
         let mut cmd = input();
         cmd.buttons = BTN_FORWARD | BTN_BACK;
-        let wish = build_wish_dir_f64(&cmd, 0.0);
+        let wish = build_wish_dir(&cmd, 0.0);
         assert!(wish.norm() < 0.01, "opposing buttons should cancel");
     }
 
@@ -938,7 +668,7 @@ mod tests {
 
         // Apply a big horizontal impulse directly to the ball
         if let Some(db) = arena.dynamic_bodies.get(&ball_id) {
-            if let Some(rb) = arena.rigid_bodies.get_mut(db.body_handle) {
+            if let Some(rb) = arena.sim.rigid_bodies.get_mut(db.body_handle) {
                 rb.apply_impulse(vector![10.0, 0.0, 10.0], true);
             }
         }
@@ -1238,12 +968,12 @@ mod tests {
         };
         let result = world.apply_edit(&mut arena, &cmd);
         assert!(result.is_ok(), "apply_edit failed: {:?}", result.err());
-        eprintln!("Block removed, colliders={}", arena.colliders.len());
+        eprintln!("Block removed, colliders={}", arena.sim.colliders.len());
 
         // Check ball wake state and collider position
         {
             let db = arena.dynamic_bodies.get(&ball_id).unwrap();
-            let rb = arena.rigid_bodies.get(db.body_handle).unwrap();
+            let rb = arena.sim.rigid_bodies.get(db.body_handle).unwrap();
             eprintln!("Ball sleeping={}, linvel=[{:.3},{:.3},{:.3}]",
                 rb.is_sleeping(), rb.linvel().x, rb.linvel().y, rb.linvel().z);
         }
@@ -1253,7 +983,7 @@ mod tests {
         // Also wake the original ball via island manager
         {
             let db = arena.dynamic_bodies.get(&ball_id).unwrap();
-            arena.island_manager.wake_up(&mut arena.rigid_bodies, db.body_handle, true);
+            arena.sim.island_manager.wake_up(&mut arena.sim.rigid_bodies, db.body_handle, true);
         }
 
         // Simulate 3 more seconds

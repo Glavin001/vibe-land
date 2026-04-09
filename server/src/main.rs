@@ -366,8 +366,8 @@ impl MatchState {
                     server_tick: self.server_tick,
                     server_time_ms,
                     center: pos,
-                    radius: self.arena.config.capsule_radius,
-                    half_segment: self.arena.config.capsule_half_segment,
+                    radius: self.arena.config().capsule_radius,
+                    half_segment: self.arena.config().capsule_half_segment,
                     alive: hp > 0,
                 });
             }
@@ -501,10 +501,7 @@ fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
     }
 }
 
-fn seq_is_newer(a: u16, b: u16) -> bool {
-    let diff = a.wrapping_sub(b);
-    diff != 0 && diff < 0x8000
-}
+use vibe_land_shared::seq::seq_is_newer;
 
 impl SpacetimeVerifier {
     async fn verify(&self, identity: &str, _token: &str) -> Result<()> {
@@ -532,8 +529,9 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_inputs, seq_is_newer, take_input_for_tick, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
+        enqueue_inputs, take_input_for_tick, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
     };
+    use vibe_land_shared::seq::seq_is_newer;
     use std::collections::VecDeque;
     use tokio::sync::mpsc;
 

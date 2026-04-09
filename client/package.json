@@ -4,14 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "gen:constants": "node ../scripts/gen-constants.mjs",
+    "build:wasm": "npm run gen:constants && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npm run build:wasm && tsc -b && vite build",
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run"
   },
   "dependencies": {
-    "@dimforge/rapier3d-compat": "^0.19.3",
     "@react-three/drei": "^9.117.0",
     "@react-three/fiber": "^8.17.0",
     "react": "^18.3.1",

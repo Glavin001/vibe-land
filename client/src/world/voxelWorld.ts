@@ -1,4 +1,4 @@
-import * as RAPIER from '@dimforge/rapier3d-compat';
+import type { WasmSimWorld } from '../wasm/sharedPhysics';
 
 import {
   BLOCK_ADD,
@@ -24,13 +24,13 @@ type ChunkState = {
   key: ChunkKey;
   version: number;
   blocks: Map<number, number>;
-  colliders: RAPIER.ColliderHandle[];
+  colliderIds: number[];   // IDs from WasmSimWorld.addCuboid
 };
 
 export class ClientVoxelWorld {
   private readonly chunks = new Map<string, ChunkState>();
 
-  constructor(private readonly world: RAPIER.World) {}
+  constructor(private readonly sim: WasmSimWorld) {}
 
   getChunkVersion(chunk: ChunkKey): number {
     return this.chunks.get(keyToString(chunk))?.version ?? 0;
@@ -65,7 +65,7 @@ export class ClientVoxelWorld {
       key,
       version: packet.version,
       blocks: new Map<number, number>(),
-      colliders: [],
+      colliderIds: [],
     };
 
     for (const block of packet.blocks) {
@@ -81,10 +81,9 @@ export class ClientVoxelWorld {
       key: packet.chunk,
       version: 0,
       blocks: new Map<number, number>(),
-      colliders: [],
+      colliderIds: [],
     };
 
-    // If the diff skipped versions, the caller should request a fresh full chunk.
     if (packet.version !== chunk.version + 1 && chunk.version !== 0) {
       throw new Error(`Chunk ${id} version mismatch on client: have ${chunk.version}, got ${packet.version}`);
     }
@@ -124,29 +123,23 @@ export class ClientVoxelWorld {
     const id = keyToString(chunk.key);
     const existing = this.chunks.get(id);
     if (existing) {
-      for (const handle of existing.colliders) {
-        try {
-          this.world.removeCollider(this.world.getCollider(handle), true);
-        } catch {
-          // noop
-        }
+      for (const colId of existing.colliderIds) {
+        this.sim.removeCuboid(colId);
       }
     }
 
-    chunk.colliders = [];
+    chunk.colliderIds = [];
     for (const [idx, material] of chunk.blocks) {
       if (material === 0) continue;
       const [lx, ly, lz] = unpackLocalIndex(idx);
       const center = chunkLocalToWorldCenter(chunk.key, [lx, ly, lz]);
-      const collider = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5)
-        .setTranslation(center.x, center.y, center.z);
-      const handle = this.world.createCollider(collider).handle;
-      chunk.colliders.push(handle);
+      const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
+      chunk.colliderIds.push(colId);
     }
 
     this.chunks.set(id, chunk);
-    // Refresh Rapier's broad-phase/query state after collider rebuilds so KCC sees new chunks immediately.
-    this.world.step();
+    // Refresh BVH so KCC sees new chunks immediately.
+    this.sim.rebuildBroadPhase();
   }
 }
 

@@ -16,4 +16,7 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    exclude: ['vibe-land-shared'],
+  },
 });

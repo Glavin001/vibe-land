@@ -4,13 +4,9 @@
  * No real network, no real timers, but realistic payloads.
  * Tests call the same functions the production code calls, just with
  * hand-crafted inputs and controlled time.
- *
- * The harness acts as "the network" — taking typed payloads from one
- * side and delivering them to the other. No WebSocket, no binary
- * encoding/decoding in the test loop.
  */
 
-import * as RAPIER from '@dimforge/rapier3d-compat';
+import { initWasmForTests, WasmSimWorld } from '../wasm/testInit';
 import { PredictionManager, FIXED_DT } from '../physics/predictionManager';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import {
@@ -73,7 +69,7 @@ export class MockTransport<T> {
   }
 
   send(packet: T, sendTimeMs: number): void {
-    if (this.rng.next() < this.config.packetLossRate) return; // dropped
+    if (this.rng.next() < this.config.packetLossRate) return;
     const jitter = (this.rng.next() - 0.5) * 2 * this.config.jitterMs;
     const deliverAt = sendTimeMs + this.config.latencyMs + jitter;
     this.queue.push({ packet, deliverAtMs: deliverAt });
@@ -118,7 +114,6 @@ export class SeededRandom {
     this.state = seed;
   }
 
-  /** Returns a value in [0, 1). */
   next(): number {
     this.state = (this.state * 1664525 + 1013904223) & 0xffffffff;
     return (this.state >>> 0) / 0x100000000;
@@ -140,7 +135,6 @@ export type SimulatedPlayerState = {
   lastAppliedInput: InputCmd | null;
 };
 
-// Movement config matching server/src/movement.rs defaults
 const WALK_SPEED = 6.0;
 const SPRINT_SPEED = 8.5;
 const CROUCH_SPEED = 3.5;
@@ -150,12 +144,6 @@ const FRICTION = 10.0;
 const GRAVITY = 20.0;
 const JUMP_SPEED = 6.5;
 
-/**
- * Pure-math simulation of FPS movement that mirrors the Rust server.
- * Does NOT use Rapier — keeps tests fast and avoids WASM init overhead
- * for the server side. Collisions are handled by an optional floor plane
- * at y=0 (sufficient for most netcode scenarios).
- */
 function simulatePlayerTick(
   player: SimulatedPlayerState,
   input: InputCmd,
@@ -165,7 +153,6 @@ function simulatePlayerTick(
   player.yaw = input.yaw;
   player.pitch = input.pitch;
 
-  // Horizontal friction (ground only)
   if (player.onGround) {
     const speed = Math.hypot(player.velocity[0], player.velocity[2]);
     if (speed > 1e-6) {
@@ -177,24 +164,21 @@ function simulatePlayerTick(
     }
   }
 
-  // Build wish direction
   const sinYaw = Math.sin(input.yaw);
   const cosYaw = Math.cos(input.yaw);
   const mx = input.moveX / 127;
   const my = input.moveY / 127;
-  const wishX = cosYaw * mx + sinYaw * my;
-  const wishZ = -sinYaw * mx + cosYaw * my;
+  const wishX = -cosYaw * mx + sinYaw * my;
+  const wishZ = sinYaw * mx + cosYaw * my;
   const wishLen = Math.hypot(wishX, wishZ);
   const wishDirX = wishLen > 1e-5 ? wishX / wishLen : 0;
   const wishDirZ = wishLen > 1e-5 ? wishZ / wishLen : 0;
   const hasMove = wishLen > 1e-5;
 
-  // Pick speed
   let moveSpeed = WALK_SPEED;
   if ((input.buttons & BTN_SPRINT) !== 0) moveSpeed = SPRINT_SPEED;
   if ((input.buttons & BTN_CROUCH) !== 0) moveSpeed = CROUCH_SPEED;
 
-  // Accelerate
   if (hasMove) {
     const currentSpeed = player.velocity[0] * wishDirX + player.velocity[2] * wishDirZ;
     const addSpeed = Math.max(0, moveSpeed - currentSpeed);
@@ -206,21 +190,17 @@ function simulatePlayerTick(
     }
   }
 
-  // Jump
   if (player.onGround && (input.buttons & BTN_JUMP) !== 0) {
     player.velocity[1] = JUMP_SPEED;
     player.onGround = false;
   }
 
-  // Gravity
   player.velocity[1] -= GRAVITY * dt;
 
-  // Integrate position
   player.position[0] += player.velocity[0] * dt;
   player.position[1] += player.velocity[1] * dt;
   player.position[2] += player.velocity[2] * dt;
 
-  // Floor collision (simple plane at floorY)
   if (player.position[1] <= floorY && player.velocity[1] <= 0) {
     player.position[1] = floorY;
     player.velocity[1] = 0;
@@ -229,7 +209,7 @@ function simulatePlayerTick(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// NetcodeTestScenario — orchestrates client + server + network
+// NetcodeTestScenario
 // ─────────────────────────────────────────────────────────────────────
 
 export type ScenarioConfig = {
@@ -237,7 +217,7 @@ export type ScenarioConfig = {
   jitterMs?: number;
   packetLossRate?: number;
   startPosition?: [number, number, number];
-  snapshotInterval?: number; // Server ticks between snapshots (default: 2)
+  snapshotInterval?: number;
   playerId?: number;
   floorY?: number;
   seed?: number;
@@ -263,11 +243,9 @@ export class NetcodeTestScenario {
   private readonly playerId: number;
   private readonly floorY: number;
 
-  /** Event log for debugging. */
   readonly log: ScenarioEvent[] = [];
 
-  private rapierWorld!: RAPIER.World;
-  private rapierBody!: RAPIER.RigidBody;
+  private wasmSim!: WasmSimWorld;
   private disposed = false;
 
   constructor(private readonly config: ScenarioConfig = {}) {
@@ -289,7 +267,6 @@ export class NetcodeTestScenario {
       seed + 1,
     );
 
-    // Server player
     const startPos = config.startPosition ?? [0, 0, 0];
     this.serverPlayers.set(this.playerId, {
       position: [...startPos] as [number, number, number],
@@ -303,45 +280,26 @@ export class NetcodeTestScenario {
     });
   }
 
-  /** Must be called after RAPIER.init(). Sets up the Rapier world for the client. */
+  /** Must be called after initWasmForTests(). */
   init(): void {
-    this.rapierWorld = new RAPIER.World({ x: 0, y: -20, z: 0 });
+    this.wasmSim = new WasmSimWorld();
 
-    // Ground plane for Rapier-based client prediction
-    const groundDesc = RAPIER.ColliderDesc.cuboid(500, 0.5, 500)
-      .setTranslation(0, this.floorY - 0.5, 0);
-    this.rapierWorld.createCollider(groundDesc);
+    // Ground plane collider
+    this.wasmSim.addCuboid(0, this.floorY - 0.5, 0, 500, 0.5, 500);
+    this.wasmSim.spawnPlayer(0, 2, 0);
+    this.wasmSim.rebuildBroadPhase();
 
-    this.rapierBody = this.rapierWorld.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased(),
-    );
-    const collider = this.rapierWorld.createCollider(
-      RAPIER.ColliderDesc.capsule(0.45, 0.35),
-      this.rapierBody,
-    );
+    this.client = new PredictionManager(this.wasmSim);
 
-    this.rapierWorld.step();
-
-    const startPos = this.config.startPosition ?? [0, 0, 0];
-    this.client = new PredictionManager(this.rapierWorld, this.rapierBody, collider);
-
-    // Give client a ground chunk so world is "loaded"
     this.injectGroundChunk();
 
-    // Initialize client with first snapshot
     const initSnapshot = this.buildSnapshot();
     this.client.reconcile(initSnapshot.ackInputSeq, initSnapshot.playerStates[0]);
 
+    const startPos = this.config.startPosition ?? [0, 0, 0];
     this.emit('init', `playerId=${this.playerId} pos=[${startPos}] latency=${this.config.latencyMs ?? 50}ms`);
   }
 
-  // ─── Time control ──────────────────────────────────────────────
-
-  /**
-   * Run N client frames. Each frame advances the client clock by FIXED_DT,
-   * calls PredictionManager.update(), and pushes emitted InputCmds into
-   * the clientToServer transport.
-   */
   runClientFrames(
     count: number,
     input?: { buttons?: number; yaw?: number; pitch?: number },
@@ -363,37 +321,26 @@ export class NetcodeTestScenario {
     return allCmds;
   }
 
-  /**
-   * Run N server ticks. Each tick:
-   * 1. Receives any arrived client inputs
-   * 2. Consumes one input per player (or repeats last)
-   * 3. Simulates movement
-   * 4. Generates snapshot every snapshotInterval ticks
-   */
   runServerTicks(count: number): void {
     for (let i = 0; i < count; i++) {
       this.serverClock.advance(FIXED_DT * 1000);
       this.serverTick++;
 
-      // Receive client inputs that have arrived
       const arrivedBundles = this.clientToServer.receive(this.serverClock.now());
       for (const bundle of arrivedBundles) {
         const player = this.serverPlayers.get(this.playerId);
         if (player) {
           for (const cmd of bundle) {
-            // Reject stale/duplicate
             const diff = (cmd.seq - player.lastAckedSeq + 0x10000) & 0xffff;
             if (diff === 0 || diff >= 0x8000) continue;
             player.inputQueue.push(cmd);
           }
-          // Cap queue
           while (player.inputQueue.length > 120) {
             player.inputQueue.shift();
           }
         }
       }
 
-      // Simulate each player
       for (const [, player] of this.serverPlayers) {
         let input: InputCmd;
         if (player.inputQueue.length > 0) {
@@ -409,7 +356,6 @@ export class NetcodeTestScenario {
         simulatePlayerTick(player, input, FIXED_DT, this.floorY);
       }
 
-      // Generate snapshot
       if (this.serverTick % this.snapshotInterval === 0) {
         const snapshot = this.buildSnapshot();
         this.serverToClient.send(snapshot, this.serverClock.now());
@@ -418,7 +364,6 @@ export class NetcodeTestScenario {
     }
   }
 
-  /** Deliver arrived server→client packets. Calls PredictionManager.reconcile(). */
   deliverServerToClient(): void {
     const snapshots = this.serverToClient.receive(this.clientClock.now());
     for (const snapshot of snapshots) {
@@ -440,7 +385,6 @@ export class NetcodeTestScenario {
     }
   }
 
-  /** Deliver arrived client→server packets (enqueue inputs). */
   deliverClientToServer(): void {
     const bundles = this.clientToServer.receive(this.serverClock.now());
     for (const bundle of bundles) {
@@ -455,9 +399,6 @@ export class NetcodeTestScenario {
     }
   }
 
-  // ─── Direct injection (bypass transport) ───────────────────────
-
-  /** Inject a snapshot directly as if server sent it right now. */
   injectSnapshot(snapshot: SnapshotPacket): void {
     const localState = snapshot.playerStates.find((p) => p.id === this.playerId);
     if (localState) {
@@ -466,38 +407,22 @@ export class NetcodeTestScenario {
     }
   }
 
-  /** Inject a world chunk packet. */
   injectWorldPacket(packet: ServerWorldPacket): void {
     this.client.applyWorldPacket(packet);
     this.emit('inject-world', `type=${packet.type}`);
   }
 
-  // ─── Convenience: run a full round-trip ────────────────────────
-
-  /**
-   * Simulate a full round-trip: N client frames → server processes → deliver back.
-   * Advances both clocks and delivers packets in the right order.
-   */
   runRoundTrip(
     clientFrames: number,
     input?: { buttons?: number; yaw?: number; pitch?: number },
   ): void {
-    // Client sends inputs
     this.runClientFrames(clientFrames, input);
-
-    // Advance server clock to match and process
     this.runServerTicks(clientFrames);
-
-    // Advance client clock by latency so server responses arrive
     const latency = this.config.latencyMs ?? 50;
-    this.clientClock.advance(latency * 2); // Full RTT
+    this.clientClock.advance(latency * 2);
     this.serverClock.advance(latency);
-
-    // Deliver server snapshots to client
     this.deliverServerToClient();
   }
-
-  // ─── Observation ───────────────────────────────────────────────
 
   getClientPosition(): [number, number, number] {
     return this.client.getPosition();
@@ -527,8 +452,6 @@ export class NetcodeTestScenario {
     return this.serverTick;
   }
 
-  // ─── Transport control ─────────────────────────────────────────
-
   setClientToServerConfig(config: Partial<TransportConfig>): void {
     this.clientToServer.setConfig(config);
   }
@@ -536,8 +459,6 @@ export class NetcodeTestScenario {
   setServerToClientConfig(config: Partial<TransportConfig>): void {
     this.serverToClient.setConfig(config);
   }
-
-  // ─── Add remote players ────────────────────────────────────────
 
   addRemotePlayer(id: number, position: [number, number, number]): void {
     this.serverPlayers.set(id, {
@@ -555,8 +476,6 @@ export class NetcodeTestScenario {
   removeRemotePlayer(id: number): void {
     this.serverPlayers.delete(id);
   }
-
-  // ─── Internal ──────────────────────────────────────────────────
 
   private buildSnapshot(): SnapshotPacket {
     const serverTimeUs = this.serverTick * Math.round(1_000_000 / 60);
@@ -590,11 +509,9 @@ export class NetcodeTestScenario {
   }
 
   private injectGroundChunk(): void {
-    // Create a minimal ground chunk so the prediction manager's worldLoaded gate opens
     const blocks: BlockCell[] = [];
     for (let x = 0; x < 16; x++) {
       for (let z = 0; z < 16; z++) {
-        // Place ground blocks at y=0 in chunk (0, -1, 0) so top surface is at world y=0
         blocks.push({ x, y: 15, z, material: 1 });
       }
     }
@@ -618,7 +535,6 @@ export class NetcodeTestScenario {
     this.client.dispose();
   }
 
-  /** Print the event log for debugging. */
   printLog(): void {
     for (const event of this.log) {
       console.log(`[${event.timeMs.toFixed(1)}ms] ${event.type}: ${event.detail}`);
@@ -630,7 +546,6 @@ export class NetcodeTestScenario {
 // Test helpers
 // ─────────────────────────────────────────────────────────────────────
 
-/** Build a NetPlayerState from meters (handles unit encoding). */
 export function makeNetState(opts: {
   id?: number;
   position?: [number, number, number];
@@ -655,7 +570,6 @@ export function makeNetState(opts: {
   };
 }
 
-/** Build a SnapshotPacket from player states. */
 export function makeSnapshot(opts: {
   serverTick?: number;
   ackInputSeq?: number;
@@ -673,7 +587,6 @@ export function makeSnapshot(opts: {
   };
 }
 
-/** Build a simple ground chunk at a given chunk Y. */
 export function makeGroundChunk(
   chunkX = 0,
   chunkZ = 0,

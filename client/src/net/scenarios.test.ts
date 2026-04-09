@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import * as RAPIER from '@dimforge/rapier3d-compat';
+import { initWasmForTests, WasmSimWorld } from '../wasm/testInit';
 import {
   NetcodeTestScenario,
   makeNetState,
@@ -37,12 +37,12 @@ import {
   MockTransport,
   SeededRandom,
 } from './testHarness';
-import { FIXED_DT, HARD_SNAP_DISTANCE, MAX_CATCHUP_STEPS } from '../physics/predictionManager';
-import { FLAG_ON_GROUND } from './protocol';
+import { PredictionManager, FIXED_DT, HARD_SNAP_DISTANCE, MAX_CATCHUP_STEPS } from '../physics/predictionManager';
+import { FLAG_ON_GROUND, metersToMm, angleToI16 } from './protocol';
 import { ServerClockEstimator, PlayerInterpolator, ProjectileInterpolator } from './interpolation';
 
 beforeAll(async () => {
-  await RAPIER.init();
+  initWasmForTests();
 });
 
 let scenario: NetcodeTestScenario | null = null;
@@ -1045,6 +1045,233 @@ describe('Category M: Multi-Player', () => {
     s.addRemotePlayer(2, [10, 0, 10]);
     const player2 = s.serverPlayers.get(2)!;
     expect(player2.lastAckedSeq).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category N: Movement Direction Regression
+// ═══════════════════════════════════════════════
+
+describe('Category N: Movement Direction Regression', () => {
+  /**
+   * Regression test for left/right strafe being flipped.
+   *
+   * Root cause: the movement code computed right = (cos(yaw), 0, -sin(yaw))
+   * which is +X at yaw=0. But Three.js cameras look down their local -Z, so
+   * when the game points the camera at +Z via lookAt, screen-right is -X.
+   * The right vector was pointing the wrong way, causing D key to move left.
+   *
+   * This test verifies that pressing D (BTN_RIGHT) at yaw=0 moves the player
+   * in the -X direction (matching Three.js camera screen-right).
+   */
+  it('N1: D key (BTN_RIGHT) at yaw=0 moves player in -X direction (screen right)', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    // Run enough frames to build up movement in the right-strafe direction
+    s.runClientFrames(30, { buttons: BTN_RIGHT, yaw: 0 });
+    s.runServerTicks(30);
+    s.deliverServerToClient();
+
+    const pos = s.getClientPosition();
+    // At yaw=0, camera forward is +Z, camera right is -X in Three.js
+    expect(pos[0]).toBeLessThan(-0.5,
+      `D key at yaw=0 should move -X (camera right), but X=${pos[0].toFixed(3)}`);
+    // Should not have significant forward/backward movement
+    expect(Math.abs(pos[2])).toBeLessThan(0.5);
+  });
+
+  it('N2: A key (BTN_LEFT) at yaw=0 moves player in +X direction (screen left)', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    s.runClientFrames(30, { buttons: BTN_LEFT, yaw: 0 });
+    s.runServerTicks(30);
+    s.deliverServerToClient();
+
+    const pos = s.getClientPosition();
+    expect(pos[0]).toBeGreaterThan(0.5,
+      `A key at yaw=0 should move +X (camera left), but X=${pos[0].toFixed(3)}`);
+    expect(Math.abs(pos[2])).toBeLessThan(0.5);
+  });
+
+  it('N3: left and right strafe produce opposite displacements', () => {
+    const sRight = createScenario({ latencyMs: 0 });
+    sRight.runClientFrames(30, { buttons: BTN_RIGHT, yaw: 0.7 });
+    const posRight = sRight.getClientPosition();
+    sRight.dispose();
+    scenario = null;
+
+    const sLeft = createScenario({ latencyMs: 0 });
+    sLeft.runClientFrames(30, { buttons: BTN_LEFT, yaw: 0.7 });
+    const posLeft = sLeft.getClientPosition();
+
+    // Displacement vectors should point in opposite directions
+    const dot = posRight[0] * posLeft[0] + posRight[2] * posLeft[2];
+    expect(dot).toBeLessThan(0,
+      `Left and right displacements should be opposite, dot=${dot.toFixed(3)}`);
+  });
+
+  it('N4: forward/backward remain correct after right-vector fix', () => {
+    const s = createScenario({ latencyMs: 0 });
+
+    s.runClientFrames(30, { buttons: BTN_FORWARD, yaw: 0 });
+    const pos = s.getClientPosition();
+
+    // At yaw=0, forward is +Z
+    expect(pos[2]).toBeGreaterThan(1.0,
+      `W key at yaw=0 should move +Z, but Z=${pos[2].toFixed(3)}`);
+    expect(Math.abs(pos[0])).toBeLessThan(1.0);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// Category O: Dynamic Body Reconciliation Regression
+// ═══════════════════════════════════════════════
+
+describe('Category O: Dynamic Body Reconciliation', () => {
+  /**
+   * Regression test for jitter when standing on a dynamic body.
+   *
+   * Root cause: reconcile() replayed pending inputs against stale dynamic
+   * body collider positions (from the previous snapshot). After reconcile,
+   * the dynamic bodies were updated to their new positions, causing a
+   * mismatch between the replayed trajectory and the actual collider state.
+   * This produced visible jitter every snapshot frame.
+   *
+   * Fix: sync dynamic body colliders into the WASM sim BEFORE running
+   * reconcile, so the replay collides with the same geometry the server used.
+   *
+   * This test creates a dynamic platform, positions the player on it, moves
+   * the platform, and verifies reconciliation produces minimal correction.
+   */
+  it('O1: player on moving dynamic body — reconcile after body sync produces small correction', () => {
+    const sim = new WasmSimWorld();
+
+    // Ground plane
+    sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
+
+    // Dynamic platform at y=1 (player will stand on it at y~2)
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1);
+
+    sim.spawnPlayer(0, 2, 0);
+    sim.rebuildBroadPhase();
+
+    const mgr = new PredictionManager(sim);
+
+    // Load ground chunk
+    const blocks: Array<{ x: number; y: number; z: number; material: number }> = [];
+    for (let x = 0; x < 16; x++)
+      for (let z = 0; z < 16; z++)
+        blocks.push({ x, y: 15, z, material: 1 });
+    mgr.applyWorldPacket({ type: 'chunkFull' as const, chunk: [0, -1, 0] as [number, number, number], version: 1, blocks });
+
+    // Initialize position on the platform
+    mgr.reconcile(0, {
+      id: 1,
+      pxMm: metersToMm(0), pyMm: metersToMm(2), pzMm: metersToMm(0),
+      vxCms: 0, vyCms: 0, vzCms: 0,
+      yawI16: angleToI16(0), pitchI16: angleToI16(0),
+      flags: FLAG_ON_GROUND,
+    });
+
+    // Predict 10 ticks standing still on the platform
+    for (let i = 0; i < 10; i++) {
+      mgr.update(FIXED_DT, 0, 0, 0);
+    }
+
+    // Now simulate the platform moving slightly (server moved it)
+    // CORRECT ORDER: sync dynamic body FIRST, then reconcile
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0.5, 1, 0, 0, 0, 0, 1);
+    sim.rebuildBroadPhase();
+
+    const posBefore = mgr.getPosition();
+    mgr.reconcile(5, {
+      id: 1,
+      pxMm: metersToMm(0), pyMm: metersToMm(2), pzMm: metersToMm(0),
+      vxCms: 0, vyCms: 0, vzCms: 0,
+      yawI16: angleToI16(0), pitchI16: angleToI16(0),
+      flags: FLAG_ON_GROUND,
+    });
+    const posAfter = mgr.getPosition();
+
+    const correction = Math.hypot(
+      posAfter[0] - posBefore[0],
+      posAfter[1] - posBefore[1],
+      posAfter[2] - posBefore[2],
+    );
+
+    // With dynamic bodies synced before reconcile, correction should be small
+    expect(correction).toBeLessThan(0.5,
+      `Correction after body-sync + reconcile should be small, got ${correction.toFixed(3)}m`);
+
+    mgr.dispose();
+  });
+
+  it('O2: repeated reconciliation on dynamic body — no jitter accumulation', () => {
+    const sim = new WasmSimWorld();
+
+    sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
+
+    // Platform
+    sim.syncDynamicBody(100, 0, 2, 0.5, 2, 0, 1, 0, 0, 0, 0, 1);
+    sim.spawnPlayer(0, 2, 0);
+    sim.rebuildBroadPhase();
+
+    const mgr = new PredictionManager(sim);
+    const blocks: Array<{ x: number; y: number; z: number; material: number }> = [];
+    for (let x = 0; x < 16; x++)
+      for (let z = 0; z < 16; z++)
+        blocks.push({ x, y: 15, z, material: 1 });
+    mgr.applyWorldPacket({ type: 'chunkFull' as const, chunk: [0, -1, 0] as [number, number, number], version: 1, blocks });
+
+    mgr.reconcile(0, {
+      id: 1,
+      pxMm: metersToMm(0), pyMm: metersToMm(2), pzMm: metersToMm(0),
+      vxCms: 0, vyCms: 0, vzCms: 0,
+      yawI16: angleToI16(0), pitchI16: angleToI16(0),
+      flags: FLAG_ON_GROUND,
+    });
+
+    const corrections: number[] = [];
+
+    // 10 rounds of predict + sync dynamic body + reconcile
+    for (let round = 0; round < 10; round++) {
+      // Predict 3 ticks
+      for (let i = 0; i < 3; i++) {
+        mgr.update(FIXED_DT, 0, 0, 0);
+      }
+
+      // Platform drifts slightly each round (simulating server physics)
+      const platformX = round * 0.1;
+      sim.syncDynamicBody(100, 0, 2, 0.5, 2, platformX, 1, 0, 0, 0, 0, 1);
+      sim.rebuildBroadPhase();
+
+      const posBefore = mgr.getPosition();
+      const ackSeq = (round + 1) * 3;
+      mgr.reconcile(ackSeq, {
+        id: 1,
+        pxMm: metersToMm(0), pyMm: metersToMm(2), pzMm: metersToMm(0),
+        vxCms: 0, vyCms: 0, vzCms: 0,
+        yawI16: angleToI16(0), pitchI16: angleToI16(0),
+        flags: FLAG_ON_GROUND,
+      });
+      const posAfter = mgr.getPosition();
+
+      corrections.push(Math.hypot(
+        posAfter[0] - posBefore[0],
+        posAfter[1] - posBefore[1],
+        posAfter[2] - posBefore[2],
+      ));
+    }
+
+    // Corrections should remain small and not accumulate
+    const maxCorrection = Math.max(...corrections);
+    const meanCorrection = corrections.reduce((a, b) => a + b, 0) / corrections.length;
+    expect(maxCorrection).toBeLessThan(1.0,
+      `Max correction should be small, got ${maxCorrection.toFixed(3)}m`);
+    expect(meanCorrection).toBeLessThan(0.5,
+      `Mean correction should be small, got ${meanCorrection.toFixed(3)}m`);
+
+    mgr.dispose();
   });
 });
 

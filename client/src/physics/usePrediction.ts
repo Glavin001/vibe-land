@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import * as RAPIER from '@dimforge/rapier3d-compat';
+import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
@@ -13,13 +13,11 @@ type BlockRayHit = {
 
 /**
  * Thin React wrapper around PredictionManager.
- * Handles Rapier WASM init and lifecycle only — all netcode logic lives
- * in PredictionManager which is framework-agnostic and fully testable.
+ * Handles shared WASM init and lifecycle only.
  */
 export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
-  const worldRef = useRef<RAPIER.World | null>(null);
-  const colliderRef = useRef<RAPIER.Collider | null>(null);
+  const simRef = useRef<WasmSimWorld | null>(null);
   const initializedRef = useRef(false);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
@@ -28,22 +26,19 @@ export function usePrediction() {
   useEffect(() => {
     let disposed = false;
 
-    RAPIER.init().then(() => {
+    initSharedPhysics().then(() => {
       if (disposed) return;
 
-      const world = new RAPIER.World({ x: 0, y: -20, z: 0 });
-      const body = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
-      const collider = world.createCollider(RAPIER.ColliderDesc.capsule(0.45, 0.35), body);
+      const sim = new WasmSimWorld();
+      // Spawn player at origin — will be repositioned on first server snapshot
+      sim.spawnPlayer(0, 2, 0);
+      sim.rebuildBroadPhase();
 
-      // Initialize Rapier internals before the first prediction tick.
-      world.step();
-
-      const manager = new PredictionManager(world, body, collider);
+      const manager = new PredictionManager(sim);
       managerRef.current = manager;
-      worldRef.current = world;
-      colliderRef.current = collider;
+      simRef.current = sim;
 
-      // Apply any world packets that arrived before Rapier was ready.
+      // Apply any world packets that arrived before WASM was ready.
       const pendingPackets = pendingWorldPacketsRef.current.splice(0);
       for (const packet of pendingPackets) {
         try {
@@ -67,8 +62,7 @@ export function usePrediction() {
         m.dispose();
         managerRef.current = null;
       }
-      worldRef.current = null;
-      colliderRef.current = null;
+      simRef.current = null;
     };
   }, []);
 
@@ -121,23 +115,23 @@ export function usePrediction() {
     maxDistance = 6,
   ): BlockRayHit | null => {
     const m = managerRef.current;
-    const world = worldRef.current;
-    const playerCollider = colliderRef.current;
-    if (!m || !world || !playerCollider || !m.isWorldLoaded()) return null;
+    const sim = simRef.current;
+    if (!m || !sim || !m.isWorldLoaded()) return null;
 
-    const ray = new RAPIER.Ray(
-      { x: origin[0], y: origin[1], z: origin[2] },
-      { x: direction[0], y: direction[1], z: direction[2] },
+    const result = sim.castRayAndGetNormal(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      maxDistance,
     );
-    const hit = world.castRayAndGetNormal(ray, maxDistance, true, undefined, undefined, playerCollider);
-    if (!hit) return null;
+    if (result.length === 0) return null;
 
+    const toi = result[0];
+    const normal: [number, number, number] = [result[1], result[2], result[3]];
     const point: [number, number, number] = [
-      origin[0] + direction[0] * hit.timeOfImpact,
-      origin[1] + direction[1] * hit.timeOfImpact,
-      origin[2] + direction[2] * hit.timeOfImpact,
+      origin[0] + direction[0] * toi,
+      origin[1] + direction[1] * toi,
+      origin[2] + direction[2] * toi,
     ];
-    const normal: [number, number, number] = [hit.normal.x, hit.normal.y, hit.normal.z];
     const epsilon = 0.01;
 
     return {
