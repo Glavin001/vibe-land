@@ -1,4 +1,4 @@
-import init, { WasmSimWorld, WasmClockSync } from './pkg/vibe_land_shared.js';
+import init, { WasmSimWorld, WasmClockSync } from '../../pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
 
 let initialized = false;

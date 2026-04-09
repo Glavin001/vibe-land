@@ -1,22 +1,30 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5183,
-    host: '0.0.0.0',
-    proxy: {
-      '/ws': {
-        target: 'http://localhost:4001',
-        ws: true,
-      },
-      '/healthz': {
-        target: 'http://localhost:4001',
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '../', '');
+  const serverPort = env.SERVER_PORT || '4001';
+  const allowedHosts = env.ALLOWED_HOSTS ? env.ALLOWED_HOSTS.split(',') : [];
+
+  return {
+    plugins: [react()],
+    envDir: '../',
+    server: {
+      port: Number(env.CLIENT_PORT) || 3001,
+      host: '0.0.0.0',
+      allowedHosts,
+      proxy: {
+        '/ws': {
+          target: `http://localhost:${serverPort}`,
+          ws: true,
+        },
+        '/healthz': {
+          target: `http://localhost:${serverPort}`,
+        },
       },
     },
-  },
-  optimizeDeps: {
-    exclude: ['vibe-land-shared'],
-  },
+    optimizeDeps: {
+      exclude: ['vibe-land-shared'],
+    },
+  };
 });

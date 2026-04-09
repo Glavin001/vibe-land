@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use nalgebra::{vector, Quaternion, UnitQuaternion};
+use nalgebra::{vector, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;

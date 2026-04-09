@@ -7,6 +7,7 @@ edition = "2021"
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 anyhow = "1"
+dotenvy = "0.15"
 axum = { version = "0.7", features = ["macros", "ws"] }
 bytes = "1"
 hex = "0.4"
