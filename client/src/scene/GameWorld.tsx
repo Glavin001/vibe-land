@@ -13,7 +13,12 @@ import {
   BTN_RIGHT,
   BTN_JUMP,
   BTN_SPRINT,
+  encodeVehicleEnterPacket,
+  encodeVehicleExitPacket,
 } from '../net/protocol';
+import type { NetVehicleState } from '../net/protocol';
+
+const VEHICLE_INTERACT_RADIUS = 4.0;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -38,7 +43,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
   onDebugFrameRef.current = onDebugFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
-  const { stateRef, ready, sendInputs, sendBlockEdit, clientRef } = useGameConnection(
+  const { stateRef, ready, sendInputs, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
     onWelcome,
     onDisconnect,
     prediction.ready
@@ -47,7 +52,12 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
           // collides with the correct (same-tick) collider positions.
           const bodies = Array.from(stateRef.current.dynamicBodies.values());
           prediction.updateDynamicBodies(bodies);
-          prediction.reconcile(ackInputSeq, state);
+          // Skip player KCC reconcile while driving — player position on server
+          // is the chassis position, which would cause a spurious large correction
+          // offset on the idle player collider.
+          if (!prediction.isInVehicle()) {
+            prediction.reconcile(ackInputSeq, state);
+          }
         }
       : undefined,
     (packet) => {
@@ -58,6 +68,9 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         onSnapshotRef.current?.();
       }
     },
+    prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
+      prediction.reconcileVehicle(vs, ackInputSeq);
+    } : undefined,
   );
   const { camera, gl } = useThree();
 
@@ -72,11 +85,21 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
   const lastFrameTime = useRef(performance.now());
   const selectedMaterialRef = useRef(2);
 
+  // Vehicle refs
+  const vehicleGroupRef = useRef<THREE.Group>(null);
+  const vehicleMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const localVehicleGroupRef = useRef<THREE.Group | null>(null);
+  const knownVehicleIds = useRef<Set<number>>(new Set());
+  const nearestVehicleIdRef = useRef<number | null>(null);
+  const enterKeyLatchRef = useRef(false); // true when E was pressed and not yet consumed
+  const smoothCamPos = useRef(new THREE.Vector3()); // smoothed chase camera position
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       keysRef.current.add(e.code);
       if (e.code === 'Digit1') selectedMaterialRef.current = 1;
       if (e.code === 'Digit2') selectedMaterialRef.current = 2;
+      if (e.code === 'KeyE') enterKeyLatchRef.current = true;
     };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
     const onMouseMove = (e: MouseEvent) => {
@@ -155,23 +178,135 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
     const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
     lastFrameTime.current = now;
 
+    // --- Vehicle spawn/despawn sync ---
+    const client = clientRef.current;
+    if (client && prediction.ready) {
+      const serverVehicles = client.vehicles;
+      // Spawn newly seen vehicles into WASM
+      for (const [id, vs] of serverVehicles) {
+        if (!knownVehicleIds.current.has(id)) {
+          knownVehicleIds.current.add(id);
+          prediction.spawnVehicle(
+            id, vs.vehicleType ?? 0,
+            vs.position[0], vs.position[1], vs.position[2],
+            vs.quaternion[0], vs.quaternion[1], vs.quaternion[2], vs.quaternion[3],
+          );
+        }
+      }
+      // Remove despawned vehicles from WASM
+      for (const id of knownVehicleIds.current) {
+        if (!serverVehicles.has(id)) {
+          knownVehicleIds.current.delete(id);
+          prediction.removeVehicle(id);
+        }
+      }
+    }
+
+    // --- Enter/Exit vehicle on E press ---
+    if (enterKeyLatchRef.current) {
+      enterKeyLatchRef.current = false;
+      if (prediction.isInVehicle()) {
+        // Exit current vehicle
+        const vehiclePose = prediction.getVehiclePose();
+        prediction.exitVehicle();
+        // Notify server — find which vehicle we're in
+        if (client) {
+          for (const [id, vs] of client.vehicles) {
+            if (vs.driverId === client.playerId) {
+              sendVehicleExit(id);
+              break;
+            }
+          }
+        }
+        void vehiclePose; // suppress unused warning
+      } else if (nearestVehicleIdRef.current !== null) {
+        const vehicleId = nearestVehicleIdRef.current;
+        const vs = client?.vehicles.get(vehicleId);
+        if (vs && vs.driverId === 0 && prediction.ready) {
+          // Enter vehicle — build a NetVehicleState from the VehicleStateMeters
+          const initState: NetVehicleState = {
+            id: vehicleId,
+            pxMm: Math.round(vs.position[0] * 1000),
+            pyMm: Math.round(vs.position[1] * 1000),
+            pzMm: Math.round(vs.position[2] * 1000),
+            qxSnorm: Math.round(vs.quaternion[0] * 32767),
+            qySnorm: Math.round(vs.quaternion[1] * 32767),
+            qzSnorm: Math.round(vs.quaternion[2] * 32767),
+            qwSnorm: Math.round(vs.quaternion[3] * 32767),
+            vxCms: Math.round(vs.linearVelocity[0] * 100),
+            vyCms: Math.round(vs.linearVelocity[1] * 100),
+            vzCms: Math.round(vs.linearVelocity[2] * 100),
+            wxMrads: Math.round(vs.angularVelocity[0] * 1000),
+            wyMrads: Math.round(vs.angularVelocity[1] * 1000),
+            wzMrads: Math.round(vs.angularVelocity[2] * 1000),
+            wheelData: vs.wheelData as [number, number, number, number],
+            driverId: 0,
+            vehicleType: vs.vehicleType ?? 0,
+            flags: vs.flags ?? 0,
+          };
+          prediction.enterVehicle(vehicleId, initState);
+          sendVehicleEnter(vehicleId, 0);
+          // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
+          smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
+        }
+      }
+    }
+
     if (prediction.ready) {
-      // Prediction owns seq counting, input building, and sending — all in lockstep
-      prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+      if (prediction.isInVehicle()) {
+        // Vehicle prediction — skip player KCC tick
+        prediction.updateVehicle(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+      } else {
+        // Prediction owns seq counting, input building, and sending — all in lockstep
+        prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+      }
     }
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
+    const isDriving = prediction.isInVehicle();
+    const vehiclePoseForCamera = isDriving ? prediction.getVehiclePose() : null;
     const predictedPos = prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
-    const eyeHeight = 1.6;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
 
-    camera.position.set(pos[0], pos[1] + eyeHeight, pos[2]);
-    const lookX = pos[0] + Math.sin(yaw) * Math.cos(pitch);
-    const lookY = pos[1] + eyeHeight + Math.sin(pitch);
-    const lookZ = pos[2] + Math.cos(yaw) * Math.cos(pitch);
-    camera.lookAt(lookX, lookY, lookZ);
+    if (isDriving && vehiclePoseForCamera) {
+      // Chase camera: yaw-only (no roll/pitch) + position smoothing to absorb
+      // suspension bounce and prediction micro-corrections.
+      const chassisPos = vehiclePoseForCamera.position;
+      const fullQuat = new THREE.Quaternion(
+        vehiclePoseForCamera.quaternion[0],
+        vehiclePoseForCamera.quaternion[1],
+        vehiclePoseForCamera.quaternion[2],
+        vehiclePoseForCamera.quaternion[3],
+      );
+      // Extract only yaw
+      const euler = new THREE.Euler().setFromQuaternion(fullQuat, 'YXZ');
+      const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, euler.y, 0));
+      const offset = new THREE.Vector3(0, 2.5, -6);
+      offset.applyQuaternion(yawQuat);
+
+      const targetX = chassisPos[0] + offset.x;
+      const targetY = chassisPos[1] + offset.y;
+      const targetZ = chassisPos[2] + offset.z;
+
+      // Smooth at ~20 Hz effective rate — filters chassis bounce without lag
+      const smoothRate = Math.min(frameDelta * 20.0, 1.0);
+      smoothCamPos.current.set(
+        smoothCamPos.current.x + (targetX - smoothCamPos.current.x) * smoothRate,
+        smoothCamPos.current.y + (targetY - smoothCamPos.current.y) * smoothRate,
+        smoothCamPos.current.z + (targetZ - smoothCamPos.current.z) * smoothRate,
+      );
+      camera.position.copy(smoothCamPos.current);
+      camera.lookAt(chassisPos[0], chassisPos[1] + 1.0, chassisPos[2]);
+    } else {
+      const eyeHeight = 1.6;
+      camera.position.set(pos[0], pos[1] + eyeHeight, pos[2]);
+      const lookX = pos[0] + Math.sin(yaw) * Math.cos(pitch);
+      const lookY = pos[1] + eyeHeight + Math.sin(pitch);
+      const lookZ = pos[2] + Math.cos(yaw) * Math.cos(pitch);
+      camera.lookAt(lookX, lookY, lookZ);
+    }
 
     // Debug logging
     logTimer.current++;
@@ -181,7 +316,6 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
 
     // Debug overlay stats
     if (onDebugFrameRef.current) {
-      const client = clientRef.current;
       const physStats = prediction.getDebugStats();
       onDebugFrameRef.current(
         frameDelta * 1000,
@@ -287,6 +421,78 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         }
       }
     }
+
+    // --- Vehicle rendering ---
+    const vGroup = vehicleGroupRef.current;
+    if (vGroup && client) {
+      const activeVehicleIds = new Set<number>();
+      const isDrivingNow = prediction.isInVehicle();
+      const localVehiclePos = isDrivingNow ? prediction.getVehiclePose() : null;
+
+      // Find nearest unoccupied vehicle for proximity indicator
+      let nearest: number | null = null;
+      let nearestDist = VEHICLE_INTERACT_RADIUS;
+
+      for (const [id, vs] of client.vehicles) {
+        activeVehicleIds.add(id);
+        let vehicleMeshGroup = vehicleMeshes.current.get(id);
+        if (!vehicleMeshGroup) {
+          vehicleMeshGroup = createVehicleMesh(id);
+          vGroup.add(vehicleMeshGroup);
+          vehicleMeshes.current.set(id, vehicleMeshGroup);
+        }
+
+        const isLocalVehicle = isDrivingNow && localVehiclePos !== null && client.vehicles.get(id)?.driverId === client.playerId;
+
+        let vPos: [number, number, number];
+        let vQuat: [number, number, number, number];
+
+        if (isLocalVehicle && localVehiclePos) {
+          vPos = localVehiclePos.position;
+          vQuat = localVehiclePos.quaternion;
+        } else {
+          const sample = client.sampleRemoteVehicle(id, renderTimeUs);
+          vPos = sample?.position ?? vs.position;
+          vQuat = sample?.quaternion ?? vs.quaternion;
+        }
+
+        vehicleMeshGroup.position.set(vPos[0], vPos[1], vPos[2]);
+        vehicleMeshGroup.quaternion.set(vQuat[0], vQuat[1], vQuat[2], vQuat[3]);
+
+        // Update wheel visuals from wheelData
+        const wheelData = vs.wheelData;
+        for (let wi = 0; wi < 4 && wi < wheelData.length; wi++) {
+          const wheel = vehicleMeshGroup.getObjectByName(`wheel_${wi}`) as THREE.Mesh | undefined;
+          if (wheel) {
+            const spinAngle = ((wheelData[wi] >> 8) & 0xff) / 255 * Math.PI * 2;
+            const steerByte = (wheelData[wi] & 0xff) as number;
+            const steer = ((steerByte > 127 ? steerByte - 256 : steerByte) / 127);
+            wheel.rotation.x = spinAngle;
+            if (wi < 2) wheel.rotation.y = steer * 0.5; // front wheels steer
+          }
+        }
+
+        // Proximity check (only when not driving)
+        if (!isDrivingNow && vs.driverId === 0) {
+          const dx = vPos[0] - pos[0];
+          const dz = vPos[2] - pos[2];
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < nearestDist) {
+            nearestDist = dist;
+            nearest = id;
+          }
+        }
+      }
+      nearestVehicleIdRef.current = nearest;
+
+      // Remove stale vehicle meshes
+      for (const [id, mesh] of vehicleMeshes.current) {
+        if (!activeVehicleIds.has(id)) {
+          vGroup.remove(mesh);
+          vehicleMeshes.current.delete(id);
+        }
+      }
+    }
   });
 
   return (
@@ -312,6 +518,9 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
       {/* Dynamic body group */}
       <group ref={dynamicBodyGroupRef} />
 
+      {/* Vehicle group */}
+      <group ref={vehicleGroupRef} />
+
       {/* Crosshair */}
       <CrosshairHUD />
     </>
@@ -335,6 +544,46 @@ function WorldBlock({
 
 function CrosshairHUD() {
   return null;
+}
+
+function createVehicleMesh(_id: number): THREE.Group {
+  const group = new THREE.Group();
+
+  // Chassis body
+  const chassisGeom = new THREE.BoxGeometry(1.8, 0.5, 3.6);
+  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x888899, roughness: 0.5, metalness: 0.3 });
+  const chassis = new THREE.Mesh(chassisGeom, chassisMat);
+  chassis.castShadow = true;
+  chassis.receiveShadow = true;
+  group.add(chassis);
+
+  // Cabin
+  const cabinGeom = new THREE.BoxGeometry(1.6, 0.6, 2.0);
+  const cabinMat = new THREE.MeshStandardMaterial({ color: 0x666677, roughness: 0.5, metalness: 0.2 });
+  const cabin = new THREE.Mesh(cabinGeom, cabinMat);
+  cabin.position.set(0, 0.55, 0);
+  cabin.castShadow = true;
+  group.add(cabin);
+
+  // Wheels: FL, FR, RL, RR
+  const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
+  const wheelPositions: [number, number, number][] = [
+    [0.9, -0.15, 1.1],
+    [-0.9, -0.15, 1.1],
+    [0.9, -0.15, -1.1],
+    [-0.9, -0.15, -1.1],
+  ];
+  for (let i = 0; i < 4; i++) {
+    const wheel = new THREE.Mesh(wheelGeom, wheelMat);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(...wheelPositions[i]);
+    wheel.name = `wheel_${i}`;
+    wheel.castShadow = true;
+    group.add(wheel);
+  }
+
+  return group;
 }
 
 function createPlayerMesh(id: number): THREE.Group {

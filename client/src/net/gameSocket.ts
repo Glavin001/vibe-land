@@ -5,6 +5,8 @@ import {
   encodeInputBundle,
   encodeInputPacket,
   encodePingPacket,
+  encodeVehicleEnterPacket,
+  encodeVehicleExitPacket,
   type BlockEditCmd,
   type FireCmd,
   type InputCmd,
@@ -66,6 +68,14 @@ export class GameSocket {
 
   sendBlockEdit(cmd: BlockEditCmd): void {
     this.sendRaw(encodeBlockEditPacket(cmd));
+  }
+
+  sendVehicleEnter(vehicleId: number, seat = 0): void {
+    this.sendRaw(encodeVehicleEnterPacket(vehicleId, seat));
+  }
+
+  sendVehicleExit(vehicleId: number): void {
+    this.sendRaw(encodeVehicleExitPacket(vehicleId));
   }
 
   ping(): number {

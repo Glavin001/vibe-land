@@ -14,12 +14,16 @@ export const BTN_RELOAD = 1 << 8;
 
 // ── Player state flags ──────────────────────────
 export const FLAG_ON_GROUND = 1 << 0;
+export const FLAG_IN_VEHICLE = 1 << 1;
+export const FLAG_DEAD = 1 << 2;
 
 // ── Packet type IDs ─────────────────────────────
 export const PKT_CLIENT_HELLO = 1;
 export const PKT_INPUT_BUNDLE = 2;
 export const PKT_FIRE = 3;
 export const PKT_BLOCK_EDIT = 4;
+export const PKT_VEHICLE_ENTER = 5;
+export const PKT_VEHICLE_EXIT = 6;
 
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;

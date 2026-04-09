@@ -6,6 +6,7 @@ import type {
   DynamicBodyStateMeters,
   InputCmd,
   NetPlayerState,
+  NetVehicleState,
   ServerPacket,
 } from '../net/protocol';
 
@@ -33,6 +34,7 @@ export function useGameConnection(
   onDisconnect: () => void,
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
   onServerPacket?: (packet: ServerPacket) => void,
+  onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void,
 ) {
   const clientRef = useRef<NetcodeClient | null>(null);
 
@@ -45,6 +47,9 @@ export function useGameConnection(
   onLocalSnapshotRef.current = onLocalSnapshot;
   const onServerPacketRef = useRef(onServerPacket);
   onServerPacketRef.current = onServerPacket;
+  const onLocalVehicleSnapshotRef = useRef(onLocalVehicleSnapshot);
+  onLocalVehicleSnapshotRef.current = onLocalVehicleSnapshot;
+
 
   // Expose ConnectionState-shaped ref for backward compat with GameWorld
   const stateRef = useRef<ConnectionState>({
@@ -71,6 +76,9 @@ export function useGameConnection(
       onDisconnect: () => onDisconnectRef.current(),
       onLocalSnapshot: (ackInputSeq, state) => {
         onLocalSnapshotRef.current?.(ackInputSeq, state);
+      },
+      onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+        onLocalVehicleSnapshotRef.current?.(vehicleState, ackInputSeq);
       },
       onWorldPacket: (packet) => {
         onServerPacketRef.current?.(packet);
@@ -118,5 +126,13 @@ export function useGameConnection(
     clientRef.current?.sendBlockEdit(cmd);
   }, []);
 
-  return { stateRef, ready, sendInputs, sendBlockEdit, clientRef };
+  const sendVehicleEnter = useCallback((vehicleId: number, seat = 0) => {
+    clientRef.current?.sendVehicleEnter(vehicleId, seat);
+  }, []);
+
+  const sendVehicleExit = useCallback((vehicleId: number) => {
+    clientRef.current?.sendVehicleExit(vehicleId);
+  }, []);
+
+  return { stateRef, ready, sendInputs, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
 }

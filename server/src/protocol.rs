@@ -19,6 +19,8 @@ pub enum ClientPacket {
     Fire(FireCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
+    VehicleEnter(VehicleEnterCmd),
+    VehicleExit(VehicleExitCmd),
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +130,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u16_le(pkt.player_states.len() as u16);
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
+            out.put_u16_le(pkt.vehicle_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -166,6 +169,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_u16_le(d.hy_cm);
                 out.put_u16_le(d.hz_cm);
             }
+            encode_vehicle_states(&mut out, &pkt.vehicle_states);
         }
     }
     out.to_vec()
@@ -217,8 +221,44 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             ensure!(buf.remaining() >= 4, "short ping packet");
             ClientPacket::Ping(buf.get_u32_le())
         }
+        PKT_VEHICLE_ENTER => {
+            ensure!(buf.remaining() >= 5, "short vehicle enter packet");
+            let vehicle_id = buf.get_u32_le();
+            let seat = buf.get_u8();
+            ClientPacket::VehicleEnter(VehicleEnterCmd { vehicle_id, seat })
+        }
+        PKT_VEHICLE_EXIT => {
+            ensure!(buf.remaining() >= 4, "short vehicle exit packet");
+            let vehicle_id = buf.get_u32_le();
+            ClientPacket::VehicleExit(VehicleExitCmd { vehicle_id })
+        }
         other => bail!("unknown client packet kind {other}"),
     })
+}
+
+fn encode_vehicle_states(out: &mut bytes::BytesMut, states: &[NetVehicleState]) {
+    for v in states {
+        out.put_u32_le(v.id);
+        out.put_u8(v.vehicle_type);
+        out.put_u8(v.flags);
+        out.put_u32_le(v.driver_id);
+        out.put_i32_le(v.px_mm);
+        out.put_i32_le(v.py_mm);
+        out.put_i32_le(v.pz_mm);
+        out.put_i16_le(v.qx_snorm);
+        out.put_i16_le(v.qy_snorm);
+        out.put_i16_le(v.qz_snorm);
+        out.put_i16_le(v.qw_snorm);
+        out.put_i16_le(v.vx_cms);
+        out.put_i16_le(v.vy_cms);
+        out.put_i16_le(v.vz_cms);
+        out.put_i16_le(v.wx_mrads);
+        out.put_i16_le(v.wy_mrads);
+        out.put_i16_le(v.wz_mrads);
+        for &wd in &v.wheel_data {
+            out.put_u16_le(wd);
+        }
+    }
 }
 
 fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputFrame>> {
@@ -259,6 +299,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.player_states.len() as u16);
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
+            out.put_u16_le(pkt.vehicle_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -297,6 +338,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_u16_le(d.hy_cm);
                 out.put_u16_le(d.hz_cm);
             }
+            encode_vehicle_states(&mut out, &pkt.vehicle_states);
         }
         ServerPacket::ShotResult(pkt) => {
             out.put_u8(PKT_SHOT_RESULT);
@@ -394,7 +436,7 @@ mod tests {
                 vx_cms: 100, vy_cms: -50, vz_cms: 200,
                 yaw_i16: 1000, pitch_i16: -500, flags: 1,
             }],
-            projectile_states: vec![], dynamic_body_states: vec![],
+            projectile_states: vec![], dynamic_body_states: vec![], vehicle_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT);
@@ -406,7 +448,7 @@ mod tests {
     fn snapshot_encode_empty_no_players() {
         let packet = ServerPacket::Snapshot(SnapshotPacket {
             server_time_us: 0, server_tick: 0, ack_input_seq: 0,
-            player_states: vec![], projectile_states: vec![], dynamic_body_states: vec![],
+            player_states: vec![], projectile_states: vec![], dynamic_body_states: vec![], vehicle_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];

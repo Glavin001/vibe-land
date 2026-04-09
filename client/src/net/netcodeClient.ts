@@ -1,14 +1,17 @@
 import { GameSocket } from './gameSocket';
-import { PlayerInterpolator, ServerClockEstimator, type PlayerSample } from './interpolation';
+import { PlayerInterpolator, ServerClockEstimator, VehicleInterpolator, type PlayerSample, type VehicleSample } from './interpolation';
 import {
   netDynamicBodyStateToMeters,
   netStateToMeters,
+  netVehicleStateToMeters,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
   type InputCmd,
   type NetPlayerState,
+  type NetVehicleState,
   type ServerPacket,
   type ServerWorldPacket,
+  type VehicleStateMeters,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -23,6 +26,7 @@ export type NetcodeClientConfig = {
   onWelcome?: (playerId: number) => void;
   onDisconnect?: () => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
+  onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
@@ -46,6 +50,7 @@ export type NetcodeClientConfig = {
 export class NetcodeClient {
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
+  readonly vehicleInterpolator: VehicleInterpolator;
 
   playerId = 0;
   interpolationDelayMs = 100;
@@ -53,6 +58,7 @@ export class NetcodeClient {
   rttMs = 0;
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
+  readonly vehicles = new Map<number, VehicleStateMeters>();
 
   private socket: GameSocket | null = null;
   private config: NetcodeClientConfig;
@@ -61,6 +67,7 @@ export class NetcodeClient {
     this.config = config;
     this.interpolator = new PlayerInterpolator();
     this.serverClock = new ServerClockEstimator();
+    this.vehicleInterpolator = new VehicleInterpolator();
   }
 
   connect(wsUrl: string): void {
@@ -90,6 +97,14 @@ export class NetcodeClient {
 
   sendBlockEdit(cmd: BlockEditCmd): void {
     this.socket?.sendBlockEdit(cmd);
+  }
+
+  sendVehicleEnter(vehicleId: number, seat = 0): void {
+    this.socket?.sendVehicleEnter(vehicleId, seat);
+  }
+
+  sendVehicleExit(vehicleId: number): void {
+    this.socket?.sendVehicleExit(vehicleId);
   }
 
   /**
@@ -156,6 +171,39 @@ export class NetcodeClient {
           }
         }
         this.interpolator.retainOnly(knownIds);
+
+        // Handle vehicle states
+        const knownVehicleIds = new Set<number>();
+        for (const vs of packet.vehicleStates) {
+          knownVehicleIds.add(vs.id);
+          const m = netVehicleStateToMeters(vs);
+          this.vehicles.set(vs.id, m);
+
+          // Route local vehicle snapshot to driver-side prediction
+          if (vs.driverId === this.playerId && vs.driverId !== 0) {
+            this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
+          } else {
+            // Push to interpolator for remote rendering
+            this.vehicleInterpolator.push(vs.id, {
+              serverTimeUs: packet.serverTimeUs,
+              position: m.position,
+              quaternion: m.quaternion,
+              linearVelocity: m.linearVelocity,
+              angularVelocity: m.angularVelocity,
+              wheelData: m.wheelData,
+              driverPlayerId: vs.driverId,
+              flags: vs.flags,
+            });
+          }
+        }
+        // Remove despawned vehicles
+        for (const id of this.vehicles.keys()) {
+          if (!knownVehicleIds.has(id)) {
+            this.vehicles.delete(id);
+            this.vehicleInterpolator.remove(id);
+          }
+        }
+        this.vehicleInterpolator.retainOnly(knownVehicleIds);
         break;
       }
       case 'chunkFull':
@@ -185,6 +233,12 @@ export class NetcodeClient {
     return this.interpolator.sample(id, t);
   }
 
+  /** Get the render time for interpolating remote vehicles. */
+  sampleRemoteVehicle(id: number, renderTimeUs?: number): VehicleSample | null {
+    const t = renderTimeUs ?? this.getRenderTimeUs();
+    return this.vehicleInterpolator.sample(id, t);
+  }
+
   /** Reset all state (for reconnection). */
   reset(): void {
     this.playerId = 0;
@@ -192,5 +246,6 @@ export class NetcodeClient {
     this.interpolationDelayMs = 100;
     this.remotePlayers.clear();
     this.dynamicBodies.clear();
+    this.vehicles.clear();
   }
 }

@@ -7,6 +7,78 @@ export type PlayerSample = {
   flags: number;
 };
 
+export type VehicleSample = {
+  serverTimeUs: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number]; // x, y, z, w
+  linearVelocity: [number, number, number];
+  angularVelocity: [number, number, number];
+  wheelData: [number, number, number, number];
+  driverPlayerId: number;
+  flags: number;
+};
+
+export class VehicleInterpolator {
+  private readonly byEntity = new Map<number, VehicleSample[]>();
+
+  constructor(private readonly maxSamples = 32) {}
+
+  push(entityId: number, sample: VehicleSample): void {
+    const queue = this.byEntity.get(entityId) ?? [];
+    queue.push(sample);
+    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    while (queue.length > this.maxSamples) {
+      queue.shift();
+    }
+    this.byEntity.set(entityId, queue);
+  }
+
+  remove(entityId: number): void {
+    this.byEntity.delete(entityId);
+  }
+
+  retainOnly(activeIds: Set<number>): void {
+    for (const id of this.byEntity.keys()) {
+      if (!activeIds.has(id)) {
+        this.byEntity.delete(id);
+      }
+    }
+  }
+
+  ids(): number[] {
+    return [...this.byEntity.keys()];
+  }
+
+  sample(entityId: number, targetTimeUs: number): VehicleSample | null {
+    const queue = this.byEntity.get(entityId);
+    if (!queue || queue.length === 0) return null;
+    if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
+      return { ...queue[0] };
+    }
+
+    for (let i = 1; i < queue.length; i += 1) {
+      const prev = queue[i - 1];
+      const next = queue[i];
+      if (targetTimeUs <= next.serverTimeUs) {
+        if (next.serverTimeUs === prev.serverTimeUs) return { ...next };
+        const alpha = clamp01((targetTimeUs - prev.serverTimeUs) / (next.serverTimeUs - prev.serverTimeUs));
+        return {
+          serverTimeUs: targetTimeUs,
+          position: lerpVec3(prev.position, next.position, alpha),
+          quaternion: slerpQuat(prev.quaternion, next.quaternion, alpha),
+          linearVelocity: lerpVec3(prev.linearVelocity, next.linearVelocity, alpha),
+          angularVelocity: lerpVec3(prev.angularVelocity, next.angularVelocity, alpha),
+          wheelData: alpha < 0.5 ? prev.wheelData : next.wheelData,
+          driverPlayerId: alpha < 0.5 ? prev.driverPlayerId : next.driverPlayerId,
+          flags: alpha < 0.5 ? prev.flags : next.flags,
+        };
+      }
+    }
+
+    return { ...queue[queue.length - 1] };
+  }
+}
+
 export type ProjectileSample = {
   serverTimeUs: number;
   position: [number, number, number];
@@ -350,4 +422,43 @@ function lerpAngle(a: number, b: number, t: number): number {
   while (delta > Math.PI) delta -= Math.PI * 2;
   while (delta < -Math.PI) delta += Math.PI * 2;
   return a + delta * t;
+}
+
+function slerpQuat(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+  t: number,
+): [number, number, number, number] {
+  // dot product to find angle between quaternions
+  let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+  // flip b if dot < 0 to take shortest path
+  const bx = dot < 0 ? -b[0] : b[0];
+  const by = dot < 0 ? -b[1] : b[1];
+  const bz = dot < 0 ? -b[2] : b[2];
+  const bw = dot < 0 ? -b[3] : b[3];
+  dot = Math.abs(dot);
+
+  // Use lerp for nearly identical quaternions to avoid NaN from acos
+  if (dot > 0.9995) {
+    const inv = 1 - t;
+    const rx = inv * a[0] + t * bx;
+    const ry = inv * a[1] + t * by;
+    const rz = inv * a[2] + t * bz;
+    const rw = inv * a[3] + t * bw;
+    const len = Math.hypot(rx, ry, rz, rw) || 1;
+    return [rx / len, ry / len, rz / len, rw / len];
+  }
+
+  const theta0 = Math.acos(dot);
+  const theta = theta0 * t;
+  const sinTheta = Math.sin(theta);
+  const sinTheta0 = Math.sin(theta0);
+  const s1 = Math.cos(theta) - dot * sinTheta / sinTheta0;
+  const s2 = sinTheta / sinTheta0;
+  return [
+    s1 * a[0] + s2 * bx,
+    s1 * a[1] + s2 * by,
+    s1 * a[2] + s2 * bz,
+    s1 * a[3] + s2 * bw,
+  ];
 }

@@ -1,14 +1,28 @@
 use std::collections::HashMap;
 
-use nalgebra::Vector3;
+use nalgebra::{point, Vector3};
+use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
 
 use crate::protocol::*;
-pub use vibe_land_shared::movement::{build_wish_dir, MoveConfig, Vec3d};
+pub use vibe_land_shared::movement::{
+    input_to_vehicle_cmd, MoveConfig, Vec3d, VEHICLE_BRAKE_FORCE, VEHICLE_CHASSIS_DENSITY,
+    VEHICLE_ENGINE_FORCE, VEHICLE_FRICTION_SLIP, VEHICLE_MAX_STEER_RAD,
+    VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS,
+    VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
+};
 pub use vibe_land_shared::simulation::simulate_player_tick;
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
+
+pub struct Vehicle {
+    pub chassis_body: RigidBodyHandle,
+    pub chassis_collider: ColliderHandle,
+    pub controller: DynamicRayCastVehicleController,
+    pub vehicle_type: u8,
+    pub driver_id: Option<u32>,
+}
 
 #[derive(Clone, Debug)]
 pub struct PlayerMotorState {
@@ -28,6 +42,10 @@ pub struct PhysicsArena {
     pub dynamic: DynamicArena,
     pub players: HashMap<u32, PlayerMotorState>,
     next_spawn_index: u32,
+
+    pub vehicles: HashMap<u32, Vehicle>,
+    next_vehicle_id: u32,
+    pub vehicle_of_player: HashMap<u32, u32>,
 }
 
 impl PhysicsArena {
@@ -36,6 +54,9 @@ impl PhysicsArena {
             dynamic: DynamicArena::new(config),
             players: HashMap::new(),
             next_spawn_index: 0,
+            vehicles: HashMap::new(),
+            next_vehicle_id: 1,
+            vehicle_of_player: HashMap::new(),
         }
     }
 
@@ -102,6 +123,14 @@ impl PhysicsArena {
     }
 
     pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
+        // Players driving a vehicle don't move independently — store input for vehicle use.
+        if self.vehicle_of_player.contains_key(&player_id) {
+            if let Some(state) = self.players.get_mut(&player_id) {
+                state.last_input = input.clone();
+            }
+            return;
+        }
+
         let Some(state) = self.players.get_mut(&player_id) else { return; };
         state.last_input = input.clone();
 
@@ -132,8 +161,28 @@ impl PhysicsArena {
         let state = self.players.get(&player_id)?;
         let mut flags = 0u16;
         if state.on_ground {
-            flags |= 1 << 0;
+            flags |= FLAG_ON_GROUND;
         }
+
+        // When driving, report chassis position so client can keep player in vehicle.
+        if let Some(&vehicle_id) = self.vehicle_of_player.get(&player_id) {
+            flags |= FLAG_IN_VEHICLE;
+            if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
+                    let p = rb.translation();
+                    let v = rb.linvel();
+                    return Some((
+                        [p.x, p.y, p.z],
+                        [v.x, v.y, v.z],
+                        state.yaw as f32,
+                        state.pitch as f32,
+                        state.hp,
+                        flags,
+                    ));
+                }
+            }
+        }
+
         Some((
             [state.position.x as f32, state.position.y as f32, state.position.z as f32],
             [state.velocity.x as f32, state.velocity.y as f32, state.velocity.z as f32],
@@ -165,6 +214,193 @@ impl PhysicsArena {
 
     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
         self.dynamic.spawn_dynamic_ball(position, radius)
+    }
+
+    // ── Vehicle management ──────────────────────────────────────────────────
+
+    /// Spawn a vehicle of the given type at `position`.  Returns its ID.
+    pub fn spawn_vehicle(&mut self, vehicle_type: u8, position: Vec3) -> u32 {
+        let id = self.next_vehicle_id;
+        self.next_vehicle_id += 1;
+
+        // Chassis body — dynamic, slightly heavy so the suspension works well.
+        let body = RigidBodyBuilder::dynamic()
+            .translation(position)
+            .linear_damping(0.1)
+            .angular_damping(0.5)
+            .build();
+        let chassis_body = self.dynamic.sim.rigid_bodies.insert(body);
+
+        // Chassis collider (box roughly 1.8 × 0.6 × 3.6 m).
+        let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
+            .friction(0.3)
+            .restitution(0.1)
+            .density(VEHICLE_CHASSIS_DENSITY)
+            .build();
+        let chassis_collider = self.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            chassis_body,
+            &mut self.dynamic.sim.rigid_bodies,
+        );
+
+        // Vehicle controller with 4 wheels.
+        // index_forward_axis=2 → chassis +Z is forward (wheels placed at ±z=1.1).
+        let mut controller = DynamicRayCastVehicleController::new(chassis_body);
+        controller.index_forward_axis = 2;
+        let tuning = WheelTuning {
+            suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
+            suspension_damping: VEHICLE_SUSPENSION_DAMPING,
+            friction_slip: VEHICLE_FRICTION_SLIP,
+            max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
+            ..WheelTuning::default()
+        };
+        // Wheel layout: FL, FR, RL, RR (x = ±0.9, y = 0, z = ±1.1)
+        // suspension_dir = -Y (downward), axle_dir = +X (right)
+        let wheel_offsets = [
+            point![-0.9_f32, 0.0, 1.1],
+            point![ 0.9_f32, 0.0, 1.1],
+            point![-0.9_f32, 0.0, -1.1],
+            point![ 0.9_f32, 0.0, -1.1],
+        ];
+        for offset in wheel_offsets {
+            controller.add_wheel(
+                offset,
+                -Vector3::y(),
+                Vector3::x(),
+                VEHICLE_SUSPENSION_REST_LENGTH,
+                VEHICLE_WHEEL_RADIUS,
+                &tuning,
+            );
+        }
+
+        self.vehicles.insert(id, Vehicle {
+            chassis_body,
+            chassis_collider,
+            controller,
+            vehicle_type,
+            driver_id: None,
+        });
+
+        // Mark new colliders so BVH sees the vehicle.
+        self.dynamic.sim.modified_colliders.push(chassis_collider);
+
+        id
+    }
+
+    /// Apply driver inputs to each vehicle and update suspension.
+    /// Call BEFORE `step_dynamics` so forces are integrated in the same tick.
+    pub fn step_vehicles(&mut self, dt: f32) {
+        if self.vehicles.is_empty() {
+            return;
+        }
+
+        let vehicle_ids: Vec<u32> = self.vehicles.keys().copied().collect();
+        for vid in vehicle_ids {
+            // Collect driver input from the player driving this vehicle.
+            let (steering, engine_force, brake) = {
+                let vehicle = match self.vehicles.get(&vid) { Some(v) => v, None => continue };
+                if let Some(driver_id) = vehicle.driver_id {
+                    if let Some(player) = self.players.get(&driver_id) {
+                        let v = input_to_vehicle_cmd(&player.last_input);
+                        (
+                            v.steer * VEHICLE_MAX_STEER_RAD,
+                            (v.throttle - v.reverse * 0.5) * VEHICLE_ENGINE_FORCE,
+                            if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { v.reverse * VEHICLE_BRAKE_FORCE * 0.3 },
+                        )
+                    } else {
+                        (0.0, 0.0, 0.0)
+                    }
+                } else {
+                    (0.0, 0.0, 0.0)
+                }
+            };
+
+            // Apply inputs to wheels.
+            let vehicle = self.vehicles.get_mut(&vid).unwrap();
+            for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
+                if i < 2 {
+                    wheel.steering = steering; // front-wheel steering
+                }
+                wheel.engine_force = if i >= 2 { engine_force } else { 0.0 }; // RWD
+                wheel.brake = brake;
+            }
+
+            // Run suspension + traction.
+            let chassis_collider = vehicle.chassis_collider;
+            let filter = QueryFilter::default().exclude_collider(chassis_collider);
+            let queries = self.dynamic.sim.broad_phase.as_query_pipeline_mut(
+                self.dynamic.sim.narrow_phase.query_dispatcher(),
+                &mut self.dynamic.sim.rigid_bodies,
+                &mut self.dynamic.sim.colliders,
+                filter,
+            );
+            vehicle.controller.update_vehicle(dt, queries);
+        }
+    }
+
+    /// Put `player_id` into `vehicle_id`.
+    pub fn enter_vehicle(&mut self, player_id: u32, vehicle_id: u32) {
+        if let Some(player) = self.players.get(&player_id) {
+            // Ghost the player collider so it doesn't interfere with the chassis.
+            if let Some(c) = self.dynamic.sim.colliders.get_mut(player.collider) {
+                c.set_collision_groups(InteractionGroups::none());
+            }
+        }
+        if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
+            vehicle.driver_id = Some(player_id);
+        }
+        self.vehicle_of_player.insert(player_id, vehicle_id);
+    }
+
+    /// Remove `player_id` from their current vehicle.
+    pub fn exit_vehicle(&mut self, player_id: u32) {
+        if let Some(vehicle_id) = self.vehicle_of_player.remove(&player_id) {
+            if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
+                vehicle.driver_id = None;
+                // Teleport player 2.5 m to the right of the chassis.
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
+                    let p = *rb.translation();
+                    if let Some(state) = self.players.get_mut(&player_id) {
+                        state.position = Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
+                        if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
+                            c.set_collision_groups(InteractionGroups::all());
+                        }
+                        self.dynamic.sim.sync_player_collider(state.collider, &state.position);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Snapshot all vehicles for broadcasting.
+    pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
+        self.vehicles.iter().filter_map(|(&id, vehicle)| {
+            let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
+            let p = rb.translation();
+            let r = rb.rotation();
+            let lv = rb.linvel();
+            let av = rb.angvel();
+
+            let mut wheel_data = [0u16; 4];
+            for (i, wheel) in vehicle.controller.wheels().iter().enumerate().take(4) {
+                let spin = ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
+                let steer = (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0)
+                    .clamp(-127.0, 127.0) as i8 as u8;
+                wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
+            }
+
+            Some(make_net_vehicle_state(
+                id,
+                vehicle.vehicle_type,
+                0,
+                vehicle.driver_id.unwrap_or(0),
+                [p.x, p.y, p.z],
+                [r.i, r.j, r.k, r.w],
+                [lv.x, lv.y, lv.z],
+                [av.x, av.y, av.z],
+                wheel_data,
+            ))
+        }).collect()
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {

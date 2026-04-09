@@ -2,15 +2,27 @@
 
 use std::collections::HashMap;
 
-use nalgebra::{vector, Quaternion, UnitQuaternion};
+use nalgebra::{point, vector, Quaternion, UnitQuaternion, Vector3};
+use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use crate::movement::{MoveConfig, Vec3d};
+use crate::movement::{
+    input_to_vehicle_cmd, MoveConfig, Vec3d, VEHICLE_BRAKE_FORCE, VEHICLE_CHASSIS_DENSITY,
+    VEHICLE_ENGINE_FORCE, VEHICLE_FRICTION_SLIP, VEHICLE_MAX_STEER_RAD, VEHICLE_SUSPENSION_DAMPING,
+    VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL,
+    VEHICLE_WHEEL_RADIUS,
+};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use vibe_netcode::clock_sync::ServerClockEstimator;
+
+struct WasmVehicle {
+    chassis_body: RigidBodyHandle,
+    chassis_collider: ColliderHandle,
+    controller: DynamicRayCastVehicleController,
+}
 
 /// Client-side physics simulation exposed to JavaScript via WASM.
 ///
@@ -37,6 +49,16 @@ pub struct WasmSimWorld {
 
     // Dynamic body colliders (server ID → our collider ID)
     dynamic_colliders: HashMap<u32, u32>,
+
+    // Vehicle simulation (driver-side prediction)
+    vehicle_pipeline: Option<PhysicsPipeline>,
+    vehicle_joints: ImpulseJointSet,
+    vehicle_multibody_joints: MultibodyJointSet,
+    vehicle_ccd: CCDSolver,
+    vehicles: HashMap<u32, WasmVehicle>,
+    local_vehicle_id: Option<u32>,
+    vehicle_pending_inputs: Vec<InputCmd>,
+    gravity: Vector3<f32>,
 }
 
 #[wasm_bindgen]
@@ -55,6 +77,14 @@ impl WasmSimWorld {
             next_collider_id: 1,
             collider_ids: HashMap::new(),
             dynamic_colliders: HashMap::new(),
+            vehicle_pipeline: None,
+            vehicle_joints: ImpulseJointSet::new(),
+            vehicle_multibody_joints: MultibodyJointSet::new(),
+            vehicle_ccd: CCDSolver::new(),
+            vehicles: HashMap::new(),
+            local_vehicle_id: None,
+            vehicle_pending_inputs: Vec::new(),
+            gravity: vector![0.0, -20.0, 0.0],
         }
     }
 
@@ -358,7 +388,11 @@ impl WasmSimWorld {
                 self.sim.modified_colliders.push(handle);
             }
         } else {
-            // Create new collider
+            // Create new collider.
+            // GROUP_2 = dynamic-body proxies; the vehicle chassis (GROUP_1) filters
+            // these out so client prediction doesn't collide with static-proxy balls
+            // that the server treats as dynamic (pushable) rigid bodies.
+            let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1);
             let handle = if shape_type == 1 {
                 self.sim.colliders.insert(
                     ColliderBuilder::ball(hx)
@@ -367,6 +401,7 @@ impl WasmSimWorld {
                             UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz))
                                 .scaled_axis(),
                         )
+                        .collision_groups(dyn_groups)
                         .build(),
                 )
             } else {
@@ -377,6 +412,7 @@ impl WasmSimWorld {
                             UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz))
                                 .scaled_axis(),
                         )
+                        .collision_groups(dyn_groups)
                         .build(),
                 )
             };
@@ -411,6 +447,340 @@ impl WasmSimWorld {
         for id in stale {
             self.remove_dynamic_body(id);
         }
+    }
+
+    // ── Vehicle simulation (driver-side prediction) ──────────────────────────
+
+    /// Spawn a vehicle chassis in the shared physics world.
+    /// Call this for ALL vehicles (local and remote) so their colliders participate
+    /// in broad-phase queries.
+    #[wasm_bindgen(js_name = spawnVehicle)]
+    pub fn spawn_vehicle(
+        &mut self,
+        id: u32,
+        _vehicle_type: u8,
+        px: f32, py: f32, pz: f32,
+        qx: f32, qy: f32, qz: f32, qw: f32,
+    ) {
+        // Remove existing vehicle with same ID if present.
+        self.remove_vehicle(id);
+
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let body = RigidBodyBuilder::dynamic()
+            .pose(nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(px, py, pz),
+                iso,
+            ))
+            .linear_damping(0.1)
+            .angular_damping(0.5)
+            .sleeping(false)
+            .can_sleep(false)
+            .build();
+        let chassis_body = self.sim.rigid_bodies.insert(body);
+
+        // GROUP_1 = terrain/chassis; filter GROUP_1 only so dynamic-proxy balls
+        // (GROUP_2) don't block client vehicle physics (on server they're real dynamic bodies).
+        let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1);
+        let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
+            .friction(0.3)
+            .restitution(0.1)
+            .density(VEHICLE_CHASSIS_DENSITY)
+            .collision_groups(chassis_groups)
+            .build();
+        let chassis_collider = self.sim.colliders.insert_with_parent(
+            collider,
+            chassis_body,
+            &mut self.sim.rigid_bodies,
+        );
+
+        // Build vehicle controller.
+        // index_forward_axis=2 → chassis +Z is forward (wheels placed at ±z=1.1).
+        let mut controller = DynamicRayCastVehicleController::new(chassis_body);
+        controller.index_forward_axis = 2;
+        let tuning = WheelTuning {
+            suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
+            suspension_damping: VEHICLE_SUSPENSION_DAMPING,
+            friction_slip: VEHICLE_FRICTION_SLIP,
+            max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
+            ..WheelTuning::default()
+        };
+        let wheel_offsets = [
+            point![-0.9_f32, 0.0, 1.1],
+            point![ 0.9_f32, 0.0, 1.1],
+            point![-0.9_f32, 0.0, -1.1],
+            point![ 0.9_f32, 0.0, -1.1],
+        ];
+        for offset in wheel_offsets {
+            controller.add_wheel(
+                offset,
+                -Vector3::y(),
+                Vector3::x(),
+                VEHICLE_SUSPENSION_REST_LENGTH,
+                VEHICLE_WHEEL_RADIUS,
+                &tuning,
+            );
+        }
+
+        // Mark collider so BVH is updated.
+        self.sim.modified_colliders.push(chassis_collider);
+
+        self.vehicles.insert(id, WasmVehicle { chassis_body, chassis_collider, controller });
+    }
+
+    /// Remove a vehicle from the simulation.
+    #[wasm_bindgen(js_name = removeVehicle)]
+    pub fn remove_vehicle(&mut self, id: u32) {
+        if let Some(vehicle) = self.vehicles.remove(&id) {
+            self.sim.colliders.remove(
+                vehicle.chassis_collider,
+                &mut self.sim.island_manager,
+                &mut self.sim.rigid_bodies,
+                true,
+            );
+            self.sim.rigid_bodies.remove(
+                vehicle.chassis_body,
+                &mut self.sim.island_manager,
+                &mut self.sim.colliders,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+                true,
+            );
+            if self.local_vehicle_id == Some(id) {
+                self.local_vehicle_id = None;
+                self.vehicle_pipeline = None;
+                self.vehicle_pending_inputs.clear();
+            }
+        }
+    }
+
+    /// Mark `vehicle_id` as the locally-driven vehicle (activates prediction pipeline).
+    #[wasm_bindgen(js_name = setLocalVehicle)]
+    pub fn set_local_vehicle(&mut self, vehicle_id: u32) {
+        self.local_vehicle_id = Some(vehicle_id);
+        self.vehicle_pipeline = Some(PhysicsPipeline::new());
+        self.vehicle_pending_inputs.clear();
+    }
+
+    /// Clear the local vehicle (called on exit).
+    #[wasm_bindgen(js_name = clearLocalVehicle)]
+    pub fn clear_local_vehicle(&mut self) {
+        self.local_vehicle_id = None;
+        self.vehicle_pipeline = None;
+        self.vehicle_pending_inputs.clear();
+    }
+
+    /// Sync a remote vehicle's chassis pose/velocity (kinematic update).
+    /// Returns `[px, py, pz, qx, qy, qz, qw]`.
+    #[wasm_bindgen(js_name = syncRemoteVehicle)]
+    pub fn sync_remote_vehicle(
+        &mut self,
+        id: u32,
+        px: f32, py: f32, pz: f32,
+        qx: f32, qy: f32, qz: f32, qw: f32,
+        vx: f32, vy: f32, vz: f32,
+    ) {
+        let Some(vehicle) = self.vehicles.get(&id) else { return; };
+        if Some(id) == self.local_vehicle_id { return; } // local vehicle is predicted, not synced
+        let body_handle = vehicle.chassis_body;
+        if let Some(rb) = self.sim.rigid_bodies.get_mut(body_handle) {
+            let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+            rb.set_position(
+                nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(px, py, pz), iso),
+                true,
+            );
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![0.0, 0.0, 0.0], true);
+        }
+        if let Some(handle) = self.vehicles.get(&id).map(|v| v.chassis_collider) {
+            self.sim.modified_colliders.push(handle);
+        }
+    }
+
+    /// Tick the local vehicle for one fixed-step.
+    /// Returns `[px, py, pz, qx, qy, qz, qw, vx, vy, vz]`.
+    #[wasm_bindgen(js_name = tickVehicle)]
+    pub fn tick_vehicle(
+        &mut self,
+        seq: u16,
+        buttons: u16,
+        move_x: i8,
+        move_y: i8,
+        yaw: f32,
+        pitch: f32,
+        dt: f32,
+    ) -> Box<[f64]> {
+        let Some(vid) = self.local_vehicle_id else {
+            return Box::new([0.0; 10]);
+        };
+
+        let input = InputCmd { seq, buttons, move_x, move_y, yaw, pitch };
+        self.vehicle_pending_inputs.push(input.clone());
+        const MAX_ROLLBACK: usize = 100;
+        if self.vehicle_pending_inputs.len() > MAX_ROLLBACK {
+            let excess = self.vehicle_pending_inputs.len() - MAX_ROLLBACK;
+            self.vehicle_pending_inputs.drain(0..excess);
+        }
+
+        self.apply_vehicle_input(vid, &input);
+        self.step_vehicle_pipeline(dt);
+
+        self.get_vehicle_state(vid)
+    }
+
+    /// Reconcile local vehicle with an authoritative server snapshot.
+    /// Returns `[px, py, pz, qx, qy, qz, qw, vx, vy, vz, dx, dy, dz, did_correct]`.
+    #[wasm_bindgen(js_name = reconcileVehicle)]
+    pub fn reconcile_vehicle(
+        &mut self,
+        correction_distance: f32,
+        ack_seq: u16,
+        server_px: f32, server_py: f32, server_pz: f32,
+        server_qx: f32, server_qy: f32, server_qz: f32, server_qw: f32,
+        server_vx: f32, server_vy: f32, server_vz: f32,
+        server_wx: f32, server_wy: f32, server_wz: f32,
+        dt: f32,
+    ) -> Box<[f64]> {
+        let Some(vid) = self.local_vehicle_id else {
+            return Box::new([0.0; 14]);
+        };
+
+        self.vehicle_pending_inputs.retain(|i| seq_is_newer(i.seq, ack_seq));
+
+        let (before_px, before_py, before_pz) = if let Some(v) = self.vehicles.get(&vid) {
+            if let Some(rb) = self.sim.rigid_bodies.get(v.chassis_body) {
+                let p = rb.translation();
+                (p.x, p.y, p.z)
+            } else { (0.0, 0.0, 0.0) }
+        } else { return Box::new([0.0; 14]); };
+
+        let error = ((before_px - server_px).powi(2)
+            + (before_py - server_py).powi(2)
+            + (before_pz - server_pz).powi(2))
+            .sqrt();
+
+        if error <= correction_distance {
+            let state = self.get_vehicle_state(vid);
+            let mut out = state.to_vec();
+            out.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
+            return out.into_boxed_slice();
+        }
+
+        // Reset chassis to server state.
+        if let Some(v) = self.vehicles.get(&vid) {
+            if let Some(rb) = self.sim.rigid_bodies.get_mut(v.chassis_body) {
+                let iso = UnitQuaternion::from_quaternion(
+                    Quaternion::new(server_qw, server_qx, server_qy, server_qz),
+                );
+                rb.set_position(
+                    nalgebra::Isometry3::from_parts(
+                        nalgebra::Translation3::new(server_px, server_py, server_pz),
+                        iso,
+                    ),
+                    true,
+                );
+                rb.set_linvel(vector![server_vx, server_vy, server_vz], true);
+                rb.set_angvel(vector![server_wx, server_wy, server_wz], true);
+            }
+        }
+
+        // Warm up contacts before replay: run a few zero-input steps so the
+        // pipeline builds constraint data from the server-reset position.
+        // Without this, the first replay steps use cold (uninitialized) contact
+        // data, producing different forces than the warm-started server physics.
+        for _ in 0..3 {
+            self.step_vehicle_pipeline(dt);
+        }
+
+        // Replay pending inputs.
+        let inputs: Vec<InputCmd> = self.vehicle_pending_inputs.clone();
+        for input in &inputs {
+            self.apply_vehicle_input(vid, input);
+            self.step_vehicle_pipeline(dt);
+        }
+
+        let state = self.get_vehicle_state(vid);
+        let (after_px, after_py, after_pz) = (state[0] as f32, state[1] as f32, state[2] as f32);
+        let dx = (after_px - before_px) as f64;
+        let dy = (after_py - before_py) as f64;
+        let dz = (after_pz - before_pz) as f64;
+
+        let mut out = state.to_vec();
+        out.extend_from_slice(&[dx, dy, dz, 1.0]);
+        out.into_boxed_slice()
+    }
+}
+
+// ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
+
+impl WasmSimWorld {
+    fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd) {
+        let v = input_to_vehicle_cmd(input);
+        let steering = v.steer * VEHICLE_MAX_STEER_RAD;
+        let engine_force = (v.throttle - v.reverse * 0.5) * VEHICLE_ENGINE_FORCE;
+        let brake = if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { v.reverse * VEHICLE_BRAKE_FORCE * 0.3 };
+
+        let Some(vehicle) = self.vehicles.get_mut(&vid) else { return };
+        for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
+            if i < 2 { wheel.steering = steering; }
+            wheel.engine_force = if i >= 2 { engine_force } else { 0.0 };
+            wheel.brake = brake;
+        }
+
+        let chassis_collider = vehicle.chassis_collider;
+        // Exclude chassis itself and dynamic-body proxy colliders (GROUP_2) —
+        // suspension raycasts should only hit terrain.
+        let filter = QueryFilter::default()
+            .exclude_collider(chassis_collider)
+            .groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1));
+        let dt = 1.0_f32 / 60.0; // used internally for suspension forces
+        let queries = self.sim.broad_phase.as_query_pipeline_mut(
+            self.sim.narrow_phase.query_dispatcher(),
+            &mut self.sim.rigid_bodies,
+            &mut self.sim.colliders,
+            filter,
+        );
+        // update_vehicle applies suspension impulses but not integration
+        let Some(vehicle) = self.vehicles.get_mut(&vid) else { return };
+        vehicle.controller.update_vehicle(dt, queries);
+    }
+
+    fn step_vehicle_pipeline(&mut self, dt: f32) {
+        let Some(pipeline) = &mut self.vehicle_pipeline else { return };
+        // Use the same integration parameters as the server (num_solver_iterations=2)
+        // so client and server produce identical physics outputs.
+        let mut params = self.sim.integration_parameters;
+        params.dt = dt;
+        pipeline.step(
+            &self.gravity,
+            &params,
+            &mut self.sim.island_manager,
+            &mut self.sim.broad_phase,
+            &mut self.sim.narrow_phase,
+            &mut self.sim.rigid_bodies,
+            &mut self.sim.colliders,
+            &mut self.vehicle_joints,
+            &mut self.vehicle_multibody_joints,
+            &mut self.vehicle_ccd,
+            &(),
+            &(),
+        );
+    }
+
+    fn get_vehicle_state(&self, vid: u32) -> Box<[f64]> {
+        let Some(vehicle) = self.vehicles.get(&vid) else {
+            return Box::new([0.0; 10]);
+        };
+        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+            return Box::new([0.0; 10]);
+        };
+        let p = rb.translation();
+        let r = rb.rotation();
+        let v = rb.linvel();
+        Box::new([
+            p.x as f64, p.y as f64, p.z as f64,
+            r.i as f64, r.j as f64, r.k as f64, r.w as f64,
+            v.x as f64, v.y as f64, v.z as f64,
+        ])
     }
 }
 

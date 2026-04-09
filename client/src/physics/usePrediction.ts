@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
-import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import { VehiclePredictionManager } from './vehiclePredictionManager';
+import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
 
 type BlockRayHit = {
@@ -17,6 +18,7 @@ type BlockRayHit = {
  */
 export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
+  const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const simRef = useRef<WasmSimWorld | null>(null);
   const initializedRef = useRef(false);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
@@ -36,6 +38,7 @@ export function usePrediction() {
 
       const manager = new PredictionManager(sim);
       managerRef.current = manager;
+      vehicleManagerRef.current = new VehiclePredictionManager(sim);
       simRef.current = sim;
 
       // Apply any world packets that arrived before WASM was ready.
@@ -62,6 +65,8 @@ export function usePrediction() {
         m.dispose();
         managerRef.current = null;
       }
+      vehicleManagerRef.current?.dispose();
+      vehicleManagerRef.current = null;
       simRef.current = null;
     };
   }, []);
@@ -173,6 +178,51 @@ export function usePrediction() {
     return m.voxelWorld.getMaterial(cell[0], cell[1], cell[2]);
   }, []);
 
+  const spawnVehicle = useCallback((
+    id: number, vehicleType: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+  ): void => {
+    simRef.current?.spawnVehicle(id, vehicleType, px, py, pz, qx, qy, qz, qw);
+  }, []);
+
+  const removeVehicle = useCallback((id: number): void => {
+    simRef.current?.removeVehicle(id);
+  }, []);
+
+  const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
+    vehicleManagerRef.current?.enterVehicle(vehicleId, initState);
+  }, []);
+
+  const exitVehicle = useCallback((): void => {
+    vehicleManagerRef.current?.exitVehicle();
+  }, []);
+
+  const updateVehicle = useCallback((
+    frameDeltaSec: number,
+    buttons: number,
+    yaw: number,
+    pitch: number,
+    sendInputs: (cmds: InputCmd[]) => void,
+  ): void => {
+    const vm = vehicleManagerRef.current;
+    if (!vm) return;
+    const cmds = vm.update(frameDeltaSec, buttons, yaw, pitch);
+    if (cmds.length > 0) sendInputs(cmds);
+  }, []);
+
+  const reconcileVehicle = useCallback((vehicleState: NetVehicleState, ackInputSeq: number): void => {
+    vehicleManagerRef.current?.reconcile(vehicleState, ackInputSeq);
+  }, []);
+
+  const getVehiclePose = useCallback(() => {
+    return vehicleManagerRef.current?.getInterpolatedChassisPose() ?? null;
+  }, []);
+
+  const isInVehicle = useCallback((): boolean => {
+    return vehicleManagerRef.current?.isActive() ?? false;
+  }, []);
+
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const m = managerRef.current;
     if (!m) return;
@@ -204,6 +254,14 @@ export function usePrediction() {
     getBlockMaterial,
     updateDynamicBodies,
     getDebugStats,
+    spawnVehicle,
+    removeVehicle,
+    enterVehicle,
+    exitVehicle,
+    updateVehicle,
+    reconcileVehicle,
+    getVehiclePose,
+    isInVehicle,
   };
 }
 

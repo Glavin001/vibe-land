@@ -37,6 +37,7 @@ use crate::{
     },
     voxel_world::VoxelWorld,
 };
+use nalgebra::vector;
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = 30;
@@ -231,9 +232,12 @@ async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchE
 
     // Spawn a dynamic box that falls from above onto the ground
     arena.spawn_dynamic_box(
-        nalgebra::vector![4.0, 8.0, 4.0],
-        nalgebra::vector![0.5, 0.5, 0.5],
+        vector![4.0, 8.0, 4.0],
+        vector![0.5, 0.5, 0.5],
     );
+
+    // Spawn a test vehicle on the ground near spawn
+    arena.spawn_vehicle(0, vector![8.0, 2.0, 0.0]);
 
     // Rebuild broad phase from scratch so all colliders are cleanly registered
     // (avoids BVH corruption from stale handles accumulated during seeding)
@@ -342,6 +346,14 @@ impl MatchState {
                         }
                         let _ = runtime.tx.send(encode_server_packet(&ServerPacket::Pong(value)));
                     }
+                    ClientPacket::VehicleEnter(cmd) => {
+                        if self.arena.vehicles.contains_key(&cmd.vehicle_id) {
+                            self.arena.enter_vehicle(player_id, cmd.vehicle_id);
+                        }
+                    }
+                    ClientPacket::VehicleExit(_cmd) => {
+                        self.arena.exit_vehicle(player_id);
+                    }
                 }
             }
         }
@@ -373,6 +385,7 @@ impl MatchState {
             }
         }
 
+        self.arena.step_vehicles(dt);
         self.arena.step_dynamics(dt);
 
         self.process_hitscan(server_time_ms);
@@ -461,6 +474,8 @@ impl MatchState {
             .map(|(id, pos, quat, he, shape_type)| make_net_dynamic_body_state(id, pos, quat, he, shape_type))
             .collect();
 
+        let vehicle_states = self.arena.snapshot_vehicles();
+
         for runtime in self.players.values() {
             let packet = ServerPacket::Snapshot(SnapshotPacket {
                 server_time_us,
@@ -469,6 +484,7 @@ impl MatchState {
                 player_states: states.clone(),
                 projectile_states: Vec::new(),
                 dynamic_body_states: dynamic_body_states.clone(),
+                vehicle_states: vehicle_states.clone(),
             });
             let _ = runtime.tx.send(encode_server_packet(&packet));
         }

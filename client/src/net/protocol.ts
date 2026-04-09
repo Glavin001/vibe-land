@@ -6,6 +6,8 @@ import {
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
   PKT_BLOCK_EDIT,
+  PKT_VEHICLE_ENTER,
+  PKT_VEHICLE_EXIT,
   PKT_WELCOME,
   PKT_SNAPSHOT,
   PKT_SHOT_RESULT,
@@ -98,6 +100,39 @@ export type WelcomePacket = {
   interpolationDelayMs: number;
 };
 
+export type NetVehicleState = {
+  id: number;
+  vehicleType: number;
+  flags: number;
+  driverId: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  qxSnorm: number;
+  qySnorm: number;
+  qzSnorm: number;
+  qwSnorm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+  wheelData: [number, number, number, number];
+};
+
+export type VehicleStateMeters = {
+  id: number;
+  vehicleType: number;
+  flags: number;
+  driverId: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number]; // x, y, z, w
+  linearVelocity: [number, number, number];
+  angularVelocity: [number, number, number];
+  wheelData: [number, number, number, number];
+};
+
 export type SnapshotPacket = {
   type: 'snapshot';
   serverTimeUs: number;
@@ -106,6 +141,7 @@ export type SnapshotPacket = {
   playerStates: NetPlayerState[];
   projectileStates: NetProjectileState[];
   dynamicBodyStates: NetDynamicBodyState[];
+  vehicleStates: NetVehicleState[];
 };
 
 export type ShotResultPacket = {
@@ -301,6 +337,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
       const playerCount = view.getUint16(o, true); o += 2;
       const projectileCount = view.getUint16(o, true); o += 2;
       const dynamicBodyCount = view.getUint16(o, true); o += 2;
+      const vehicleCount = view.getUint16(o, true); o += 2;
 
       const playerStates: NetPlayerState[] = [];
       for (let i = 0; i < playerCount; i += 1) {
@@ -355,6 +392,36 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
         o += 31;
       }
 
+      const vehicleStates: NetVehicleState[] = [];
+      for (let i = 0; i < vehicleCount; i += 1) {
+        vehicleStates.push({
+          id: view.getUint32(o, true),
+          vehicleType: view.getUint8(o + 4),
+          flags: view.getUint8(o + 5),
+          driverId: view.getUint32(o + 6, true),
+          pxMm: view.getInt32(o + 10, true),
+          pyMm: view.getInt32(o + 14, true),
+          pzMm: view.getInt32(o + 18, true),
+          qxSnorm: view.getInt16(o + 22, true),
+          qySnorm: view.getInt16(o + 24, true),
+          qzSnorm: view.getInt16(o + 26, true),
+          qwSnorm: view.getInt16(o + 28, true),
+          vxCms: view.getInt16(o + 30, true),
+          vyCms: view.getInt16(o + 32, true),
+          vzCms: view.getInt16(o + 34, true),
+          wxMrads: view.getInt16(o + 36, true),
+          wyMrads: view.getInt16(o + 38, true),
+          wzMrads: view.getInt16(o + 40, true),
+          wheelData: [
+            view.getUint16(o + 42, true),
+            view.getUint16(o + 44, true),
+            view.getUint16(o + 46, true),
+            view.getUint16(o + 48, true),
+          ],
+        });
+        o += 50; // 4+1+1+4+4+4+4+2*4+2*3+2*3+2*4 = 50 bytes
+      }
+
       return {
         type: 'snapshot',
         serverTimeUs,
@@ -363,6 +430,7 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
         playerStates,
         projectileStates,
         dynamicBodyStates,
+        vehicleStates,
       };
     }
     default:
@@ -443,6 +511,50 @@ export function netDynamicBodyStateToMeters(state: NetDynamicBodyState): Dynamic
     ],
     halfExtents: [state.hxCm / 100, state.hyCm / 100, state.hzCm / 100],
   };
+}
+
+export function netVehicleStateToMeters(state: NetVehicleState): VehicleStateMeters {
+  return {
+    id: state.id,
+    vehicleType: state.vehicleType,
+    flags: state.flags,
+    driverId: state.driverId,
+    position: [mmToMeters(state.pxMm), mmToMeters(state.pyMm), mmToMeters(state.pzMm)],
+    quaternion: [
+      snorm16ToF32(state.qxSnorm),
+      snorm16ToF32(state.qySnorm),
+      snorm16ToF32(state.qzSnorm),
+      snorm16ToF32(state.qwSnorm),
+    ],
+    linearVelocity: [
+      cmsToMetersPerSecond(state.vxCms),
+      cmsToMetersPerSecond(state.vyCms),
+      cmsToMetersPerSecond(state.vzCms),
+    ],
+    angularVelocity: [
+      state.wxMrads / 1000,
+      state.wyMrads / 1000,
+      state.wzMrads / 1000,
+    ],
+    wheelData: state.wheelData,
+  };
+}
+
+export function encodeVehicleEnterPacket(vehicleId: number, seat = 0): Uint8Array {
+  const out = new Uint8Array(6);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_VEHICLE_ENTER);
+  view.setUint32(1, vehicleId >>> 0, true);
+  view.setUint8(5, seat & 0xff);
+  return out;
+}
+
+export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
+  const out = new Uint8Array(5);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_VEHICLE_EXIT);
+  view.setUint32(1, vehicleId >>> 0, true);
+  return out;
 }
 
 export function mmToMeters(value: number): number {

@@ -4,6 +4,62 @@ pub use vibe_netcode::movement::{accelerate, apply_horizontal_friction, MoveConf
 use crate::constants::*;
 use crate::protocol::InputCmd;
 
+// ── Vehicle tuning constants ─────────────────────
+pub const VEHICLE_MAX_STEER_RAD: f32 = 0.5;
+pub const VEHICLE_ENGINE_FORCE: f32 = 4000.0; // 2 rear wheels × 4000 N / ~600 kg ≈ 13 m/s² — sporty car
+pub const VEHICLE_BRAKE_FORCE: f32 = 2000.0;
+pub const VEHICLE_SUSPENSION_STIFFNESS: f32 = 80.0;
+pub const VEHICLE_SUSPENSION_DAMPING: f32 = 20.0; // critically-damped at ~300kg chassis
+pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.3;
+pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.2;
+pub const VEHICLE_WHEEL_RADIUS: f32 = 0.35;
+pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
+// Chassis collider density — cuboid 0.9*0.3*1.8m * 8 corners * density ≈ mass in kg.
+// Volume = 0.9*0.6*3.6 ≈ 1.944 m³; density=155 → mass ≈ 300 kg (light car).
+pub const VEHICLE_CHASSIS_DENSITY: f32 = 155.0;
+
+/// Vehicle control inputs derived from a player `InputCmd`.
+pub struct VehicleInputCmd {
+    pub throttle: f32,   // 0..1  (move_y > 0)
+    pub reverse: f32,    // 0..1  (move_y < 0)
+    pub steer: f32,      // -1..1 (move_x, positive = right)
+    pub handbrake: bool, // BTN_JUMP
+}
+
+/// Map a generic `InputCmd` to vehicle controls.
+/// Pure function — called identically on server and WASM client for determinism.
+pub fn input_to_vehicle_cmd(input: &InputCmd) -> VehicleInputCmd {
+    let move_y = if input.move_y != 0 {
+        input.move_y as f32 / 127.0
+    } else if input.buttons & BTN_FORWARD != 0 {
+        1.0
+    } else if input.buttons & BTN_BACK != 0 {
+        -1.0
+    } else {
+        0.0
+    };
+
+    let move_x = if input.move_x != 0 {
+        input.move_x as f32 / 127.0
+    } else if input.buttons & BTN_LEFT != 0 {
+        -1.0
+    } else if input.buttons & BTN_RIGHT != 0 {
+        1.0
+    } else {
+        0.0
+    };
+
+    VehicleInputCmd {
+        throttle: move_y.max(0.0),
+        reverse: (-move_y).max(0.0),
+        // move_x positive = BTN_RIGHT = camera-right. In our world yaw convention,
+        // camera-right at yaw=0 is -X, so steer right means negative move_x. Negate so
+        // positive steer = turn right in vehicle's forward direction.
+        steer: -move_x.clamp(-1.0, 1.0),
+        handbrake: input.buttons & BTN_JUMP != 0,
+    }
+}
+
 /// Build the horizontal wish direction from input axes and yaw angle.
 /// Falls back to button-derived movement if analog axes are zero.
 pub fn build_wish_dir(input: &InputCmd, yaw: f64) -> Vec3d {
