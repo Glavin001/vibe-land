@@ -10,7 +10,6 @@ export const VEHICLE_ROT_THRESHOLD = 0.0175;         // ~1 degree
 export const VEHICLE_LINVEL_THRESHOLD = 0.1;         // 10 cm/s
 export const VEHICLE_ANGVEL_THRESHOLD = 0.035;       // ~2 degrees/s
 export const VEHICLE_VISUAL_SMOOTH_RATE = 15.0;  // fast decay → correction applied in ~4 ticks
-export const MAX_PENDING_VEHICLE_INPUTS = 30;
 export const VEHICLE_INPUT_REDUNDANCY = 4;
 
 // ── Quaternion math helpers ──────────────────────────────────────────────────
@@ -155,13 +154,6 @@ export class VehiclePredictionManager {
 
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
-
-    if (this.sim.getPendingCount() >= MAX_PENDING_VEHICLE_INPUTS) {
-      if (this.accumulator > FIXED_DT) {
-        this.accumulator = FIXED_DT;
-      }
-      return [];
-    }
 
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {

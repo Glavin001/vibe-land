@@ -105,10 +105,13 @@ impl DynamicArena {
             .build();
         let body_handle = self.sim.rigid_bodies.insert(body);
 
+        // GROUP_2 = dynamic bodies; suspension raycasts only query GROUP_1 (terrain)
+        // so the vehicle chassis pushes boxes directly rather than climbing over them.
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .restitution(0.3)
             .friction(0.6)
             .density(2.0)
+            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2))
             .build();
         let collider_handle =
             self.sim.colliders
@@ -142,6 +145,7 @@ impl DynamicArena {
             .restitution(0.6)
             .friction(0.2)
             .density(1.0)
+            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2))
             .build();
         let collider_handle =
             self.sim.colliders

@@ -60,6 +60,21 @@ pub fn input_to_vehicle_cmd(input: &InputCmd) -> VehicleInputCmd {
     }
 }
 
+/// Compute the wheel parameters (steering angle, engine force, brake force) for one tick.
+///
+/// Single source of truth shared by the server-side physics pipeline and the WASM
+/// client prediction world — callers must not reimplement this logic inline.
+///
+/// Sign convention: Rapier's wheel forward = surface_normal × axle = (+Y)×(+X) = −Z,
+/// so positive engine_force drives in −Z.  Negating the throttle/reverse maps W→forward.
+pub fn vehicle_wheel_params(input: &InputCmd) -> (f32, f32, f32) {
+    let v = input_to_vehicle_cmd(input);
+    let steering    = v.steer * VEHICLE_MAX_STEER_RAD;
+    let engine_force = (v.reverse - v.throttle) * VEHICLE_ENGINE_FORCE;
+    let brake       = if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { 0.0 };
+    (steering, engine_force, brake)
+}
+
 /// Build the horizontal wish direction from input axes and yaw angle.
 /// Falls back to button-derived movement if analog axes are zero.
 pub fn build_wish_dir(input: &InputCmd, yaw: f64) -> Vec3d {

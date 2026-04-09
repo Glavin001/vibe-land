@@ -4,5 +4,6 @@ pub mod seq;
 pub mod protocol;
 pub mod movement;
 pub mod simulation;
+pub mod vehicle;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm_api;

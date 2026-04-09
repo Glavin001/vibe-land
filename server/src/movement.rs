@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 
-use nalgebra::{point, Vector3};
-use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
+use nalgebra::Vector3;
+use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
 use crate::protocol::*;
 pub use vibe_land_shared::movement::{
-    input_to_vehicle_cmd, MoveConfig, Vec3d, VEHICLE_BRAKE_FORCE, VEHICLE_CHASSIS_DENSITY,
-    VEHICLE_ENGINE_FORCE, VEHICLE_FRICTION_SLIP, VEHICLE_MAX_STEER_RAD,
-    VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS,
-    VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
+    vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
+use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_land_shared::simulation::simulate_player_tick;
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -223,55 +221,9 @@ impl PhysicsArena {
         let id = self.next_vehicle_id;
         self.next_vehicle_id += 1;
 
-        // Chassis body — dynamic, slightly heavy so the suspension works well.
-        let body = RigidBodyBuilder::dynamic()
-            .translation(position)
-            .linear_damping(0.1)
-            .angular_damping(0.5)
-            .build();
-        let chassis_body = self.dynamic.sim.rigid_bodies.insert(body);
-
-        // Chassis collider (box roughly 1.8 × 0.6 × 3.6 m).
-        let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
-            .friction(0.3)
-            .restitution(0.1)
-            .density(VEHICLE_CHASSIS_DENSITY)
-            .build();
-        let chassis_collider = self.dynamic.sim.colliders.insert_with_parent(
-            collider,
-            chassis_body,
-            &mut self.dynamic.sim.rigid_bodies,
-        );
-
-        // Vehicle controller with 4 wheels.
-        // index_forward_axis=2 → chassis +Z is forward (wheels placed at ±z=1.1).
-        let mut controller = DynamicRayCastVehicleController::new(chassis_body);
-        controller.index_forward_axis = 2;
-        let tuning = WheelTuning {
-            suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
-            suspension_damping: VEHICLE_SUSPENSION_DAMPING,
-            friction_slip: VEHICLE_FRICTION_SLIP,
-            max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
-            ..WheelTuning::default()
-        };
-        // Wheel layout: FL, FR, RL, RR (x = ±0.9, y = 0, z = ±1.1)
-        // suspension_dir = -Y (downward), axle_dir = +X (right)
-        let wheel_offsets = [
-            point![-0.9_f32, 0.0, 1.1],
-            point![ 0.9_f32, 0.0, 1.1],
-            point![-0.9_f32, 0.0, -1.1],
-            point![ 0.9_f32, 0.0, -1.1],
-        ];
-        for offset in wheel_offsets {
-            controller.add_wheel(
-                offset,
-                -Vector3::y(),
-                Vector3::x(),
-                VEHICLE_SUSPENSION_REST_LENGTH,
-                VEHICLE_WHEEL_RADIUS,
-                &tuning,
-            );
-        }
+        let pose = nalgebra::Isometry3::translation(position.x, position.y, position.z);
+        let (chassis_body, chassis_collider, controller) =
+            create_vehicle_physics(&mut self.dynamic.sim, pose);
 
         self.vehicles.insert(id, Vehicle {
             chassis_body,
@@ -280,9 +232,6 @@ impl PhysicsArena {
             vehicle_type,
             driver_id: None,
         });
-
-        // Mark new colliders so BVH sees the vehicle.
-        self.dynamic.sim.modified_colliders.push(chassis_collider);
 
         id
     }
@@ -301,14 +250,8 @@ impl PhysicsArena {
                 let vehicle = match self.vehicles.get(&vid) { Some(v) => v, None => continue };
                 if let Some(driver_id) = vehicle.driver_id {
                     if let Some(player) = self.players.get(&driver_id) {
-                        let v = input_to_vehicle_cmd(&player.last_input);
-                        (
-                            v.steer * VEHICLE_MAX_STEER_RAD,
-                            // Rapier wheel forward = surface_normal × axle = (+Y)×(+X) = -Z.
-                            // Negate so W drives in +Z (forward) and S in -Z (reverse).
-                            (v.reverse - v.throttle) * VEHICLE_ENGINE_FORCE,
-                            if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { 0.0 },
-                        )
+                        let (steering, engine_force, brake) = vehicle_wheel_params(&player.last_input);
+                        (steering, engine_force, brake)
                     } else {
                         (0.0, 0.0, 0.0)
                     }
@@ -329,7 +272,7 @@ impl PhysicsArena {
 
             // Run suspension + traction.
             let chassis_collider = vehicle.chassis_collider;
-            let filter = QueryFilter::default().exclude_collider(chassis_collider);
+            let filter = vehicle_suspension_filter(chassis_collider);
             let queries = self.dynamic.sim.broad_phase.as_query_pipeline_mut(
                 self.dynamic.sim.narrow_phase.query_dispatcher(),
                 &mut self.dynamic.sim.rigid_bodies,
