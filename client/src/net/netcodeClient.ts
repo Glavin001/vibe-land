@@ -114,7 +114,7 @@ export class NetcodeClient {
         // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
         const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
         if (adaptiveDelayMs > 0) {
-          this.interpolationDelayMs = adaptiveDelayMs;
+          this.interpolationDelayMs = Math.round(adaptiveDelayMs * 100) / 100;
         }
 
         // Update dynamic bodies BEFORE reconciliation so that input replay

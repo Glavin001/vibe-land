@@ -82,7 +82,7 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
       <Section title="Network">
         {`Ping: ${fmt(stats.pingMs)}ms`}
         {`Server tick: ${stats.serverTick}`}
-        {`Interp delay: ${stats.interpolationDelayMs}ms`}
+        {`Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
         {`Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
         {`Remote players: ${stats.remotePlayers}`}
         {`Snapshots/s: ${fmt(stats.snapshotsPerSec, 0)}`}

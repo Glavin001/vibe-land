@@ -1,5 +1,5 @@
 import type { WasmSimWorld } from '../wasm/sharedPhysics';
-import type { DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
+import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
@@ -157,6 +157,10 @@ export class PredictionManager {
       this.prevPosition[1] + (this.currPosition[1] - this.prevPosition[1]) * alpha + this.correctionOffset[1],
       this.prevPosition[2] + (this.currPosition[2] - this.prevPosition[2]) * alpha + this.correctionOffset[2],
     ];
+  }
+
+  applyOptimisticEdit(cmd: BlockEditCmd): void {
+    this.voxelWorld.applyOptimisticEdit(cmd);
   }
 
   applyWorldPacket(packet: ServerWorldPacket): void {

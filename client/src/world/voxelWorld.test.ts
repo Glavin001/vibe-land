@@ -6,7 +6,8 @@ import {
   chunkLocalToWorldCenter,
   CHUNK_SIZE,
 } from './voxelWorld';
-import type { ChunkFullPacket, ChunkDiffPacket, BlockCell } from '../net/protocol';
+import { BLOCK_ADD, BLOCK_REMOVE } from '../net/protocol';
+import type { BlockEditCmd, ChunkFullPacket, ChunkDiffPacket, BlockCell } from '../net/protocol';
 
 beforeAll(() => {
   initWasmForTests();
@@ -183,18 +184,20 @@ describe('ClientVoxelWorld', () => {
       expect(vw.getMaterial(1, 0, 0)).toBe(2);
     });
 
-    it('throws on version mismatch', () => {
+    it('warns and no-ops on version gap (does not throw)', () => {
       const vw = new ClientVoxelWorld(sim);
       vw.applyFullChunk(makeFullChunk([0, 0, 0], 1));
 
       const diff: ChunkDiffPacket = {
         type: 'chunkDiff',
         chunk: [0, 0, 0],
-        version: 5,
-        edits: [{ x: 0, y: 0, z: 0, op: 1, material: 1 }],
+        version: 5, // gap: expected version 2
+        edits: [{ x: 0, y: 0, z: 0, op: 1, material: 3 }],
       };
 
-      expect(() => vw.applyChunkDiff(diff)).toThrow('version mismatch');
+      expect(() => vw.applyChunkDiff(diff)).not.toThrow();
+      // Version and block state should be unchanged
+      expect(vw.getChunkVersion([0, 0, 0])).toBe(1);
     });
 
     it('applies sequential diffs correctly', () => {
@@ -297,6 +300,122 @@ describe('ClientVoxelWorld', () => {
     });
   });
 
+  describe('applyOptimisticEdit', () => {
+    it('block appears immediately before server ack', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, []));
+
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [3, 0, 0], op: BLOCK_ADD, material: 2, expectedVersion: 1,
+      };
+      vw.applyOptimisticEdit(cmd);
+
+      expect(vw.getMaterial(3, 0, 0)).toBe(2);
+      expect(vw.getRenderBlocks().find(b => b.position[0] === 3.5)).toBeDefined();
+    });
+
+    it('block disappears immediately before server ack', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, [
+        { x: 3, y: 0, z: 0, material: 1 },
+      ]));
+
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [3, 0, 0], op: BLOCK_REMOVE, material: 0, expectedVersion: 1,
+      };
+      vw.applyOptimisticEdit(cmd);
+
+      expect(vw.getMaterial(3, 0, 0)).toBe(0);
+    });
+
+    it('no-op when chunk is not loaded', () => {
+      const vw = new ClientVoxelWorld(sim);
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [0, 0, 0], op: BLOCK_ADD, material: 1, expectedVersion: 0,
+      };
+      expect(() => vw.applyOptimisticEdit(cmd)).not.toThrow();
+    });
+
+    it('confirmed by matching server diff — version advances, state unchanged', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, []));
+
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [2, 0, 0], op: BLOCK_ADD, material: 1, expectedVersion: 1,
+      };
+      vw.applyOptimisticEdit(cmd);
+      expect(vw.getMaterial(2, 0, 0)).toBe(1);
+
+      // Server confirms with matching diff
+      vw.applyChunkDiff({
+        type: 'chunkDiff', chunk: [0, 0, 0], version: 2,
+        edits: [{ x: 2, y: 0, z: 0, op: BLOCK_ADD, material: 1 }],
+      });
+
+      expect(vw.getMaterial(2, 0, 0)).toBe(1);
+      expect(vw.getChunkVersion([0, 0, 0])).toBe(2);
+    });
+
+    it('reverted on conflicting server diff', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, []));
+
+      // Player optimistically adds a block at (2,0,0)
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [2, 0, 0], op: BLOCK_ADD, material: 1, expectedVersion: 1,
+      };
+      vw.applyOptimisticEdit(cmd);
+      expect(vw.getMaterial(2, 0, 0)).toBe(1);
+
+      // Server sends a conflicting diff (different cell edited by another player)
+      vw.applyChunkDiff({
+        type: 'chunkDiff', chunk: [0, 0, 0], version: 2,
+        edits: [{ x: 5, y: 0, z: 0, op: BLOCK_ADD, material: 2 }],
+      });
+
+      // Our optimistic add was reverted; only server's change remains
+      expect(vw.getMaterial(2, 0, 0)).toBe(0);
+      expect(vw.getMaterial(5, 0, 0)).toBe(2);
+    });
+
+    it('remove is reverted to original material on conflict', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, [
+        { x: 1, y: 0, z: 0, material: 3 },
+      ]));
+
+      const cmd: BlockEditCmd = {
+        chunk: [0, 0, 0], local: [1, 0, 0], op: BLOCK_REMOVE, material: 0, expectedVersion: 1,
+      };
+      vw.applyOptimisticEdit(cmd);
+      expect(vw.getMaterial(1, 0, 0)).toBe(0); // removed optimistically
+
+      // Server sends a different diff
+      vw.applyChunkDiff({
+        type: 'chunkDiff', chunk: [0, 0, 0], version: 2,
+        edits: [{ x: 5, y: 0, z: 0, op: BLOCK_ADD, material: 1 }],
+      });
+
+      // Block restored to original material
+      expect(vw.getMaterial(1, 0, 0)).toBe(3);
+    });
+
+    it('applyFullChunk clears pending edits', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 1, []));
+
+      vw.applyOptimisticEdit({
+        chunk: [0, 0, 0], local: [0, 0, 0], op: BLOCK_ADD, material: 1, expectedVersion: 1,
+      });
+      expect(vw.getMaterial(0, 0, 0)).toBe(1);
+
+      // Server sends full chunk without our edit
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 2, []));
+      expect(vw.getMaterial(0, 0, 0)).toBe(0);
+      expect(vw.getChunkVersion([0, 0, 0])).toBe(2);
+    });
+  });
+
   describe('buildEditRequest', () => {
     it('maps world coords to chunk + local', () => {
       const vw = new ClientVoxelWorld(sim);
@@ -314,6 +433,19 @@ describe('ClientVoxelWorld', () => {
       const vw = new ClientVoxelWorld(sim);
       const edit = vw.buildEditRequest(100, 0, 0, 1, 1);
       expect(edit.expectedVersion).toBe(0);
+    });
+
+    it('includes pending edit count in expectedVersion', () => {
+      const vw = new ClientVoxelWorld(sim);
+      vw.applyFullChunk(makeFullChunk([0, 0, 0], 5, []));
+
+      // One pending edit: next edit should use expectedVersion = 5 + 1 = 6
+      vw.applyOptimisticEdit({
+        chunk: [0, 0, 0], local: [0, 0, 0], op: BLOCK_ADD, material: 1, expectedVersion: 5,
+      });
+
+      const edit = vw.buildEditRequest(1, 0, 0, BLOCK_ADD, 2);
+      expect(edit.expectedVersion).toBe(6);
     });
   });
 });

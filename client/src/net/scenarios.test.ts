@@ -409,11 +409,11 @@ describe('Category F: Sequence Numbers', () => {
 // ═══════════════════════════════════════════════
 
 describe('Category H: World State', () => {
-  it('H28: chunk version mismatch throws', () => {
+  it('H28: chunk version gap warns and no-ops (does not throw)', () => {
     const s = createScenario();
 
     // Apply chunk at version 1 (already done in init)
-    // Try to apply diff with version 5 (mismatch: expected version 2)
+    // Try to apply diff with version 5 (gap: expected version 2)
     expect(() => {
       s.injectWorldPacket({
         type: 'chunkDiff',
@@ -421,7 +421,7 @@ describe('Category H: World State', () => {
         version: 5,
         edits: [{ x: 0, y: 0, z: 0, op: 1, material: 2 }],
       });
-    }).toThrow('version mismatch');
+    }).not.toThrow();
   });
 
   it('H29: multiple chunks arrive at once', () => {

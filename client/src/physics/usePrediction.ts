@@ -160,6 +160,13 @@ export function usePrediction() {
     return m.voxelWorld.buildEditRequest(cell[0], cell[1], cell[2], op, material);
   }, []);
 
+  const applyOptimisticEdit = useCallback((cmd: BlockEditCmd): void => {
+    const m = managerRef.current;
+    if (!m || !m.isWorldLoaded()) return;
+    m.applyOptimisticEdit(cmd);
+    setRenderBlocks(m.getRenderBlocks());
+  }, []);
+
   const getBlockMaterial = useCallback((cell: [number, number, number]): number => {
     const m = managerRef.current;
     if (!m || !m.isWorldLoaded()) return 0;
@@ -193,6 +200,7 @@ export function usePrediction() {
     applyWorldPacket,
     raycastBlocks,
     buildBlockEdit,
+    applyOptimisticEdit,
     getBlockMaterial,
     updateDynamicBodies,
     getDebugStats,

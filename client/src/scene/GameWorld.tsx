@@ -103,6 +103,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         if (prediction.getBlockMaterial(hit.removeCell) === 0) return;
         const cmd = prediction.buildBlockEdit(hit.removeCell, BLOCK_REMOVE, 0);
         if (cmd) {
+          prediction.applyOptimisticEdit(cmd);
           sendBlockEdit(cmd);
         }
         e.preventDefault();
@@ -112,6 +113,7 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
       if (prediction.getBlockMaterial(hit.placeCell) !== 0) return;
       const cmd = prediction.buildBlockEdit(hit.placeCell, BLOCK_ADD, selectedMaterialRef.current);
       if (cmd) {
+        prediction.applyOptimisticEdit(cmd);
         sendBlockEdit(cmd);
       }
       e.preventDefault();
