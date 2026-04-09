@@ -67,7 +67,10 @@ export class NetcodeClient {
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.handlePacket(packet),
       onClose: () => { this.config.onDisconnect?.(); },
-      onRttUpdated: (rttMs: number) => { this.rttMs = rttMs; },
+      onRttUpdated: (rttMs: number) => {
+        this.rttMs = rttMs;
+        this.serverClock.observeRtt(rttMs);
+      },
     });
     this.socket.connect(wsUrl);
   }
@@ -98,6 +101,8 @@ export class NetcodeClient {
       case 'welcome':
         this.playerId = packet.playerId;
         this.interpolationDelayMs = packet.interpolationDelayMs;
+        // Tell the clock the server's tick rate so hysteresis thresholds are correct.
+        this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
         // latency (TLS handshake, etc.) and skews the initial offset.
         // The first snapshot will initialize the estimator instead.
@@ -106,6 +111,11 @@ export class NetcodeClient {
       case 'snapshot': {
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+        // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
+        const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+        if (adaptiveDelayMs > 0) {
+          this.interpolationDelayMs = adaptiveDelayMs;
+        }
 
         // Update dynamic bodies BEFORE reconciliation so that input replay
         // collides with the correct (same-tick) collider positions.

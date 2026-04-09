@@ -16,42 +16,88 @@ export type ProjectileSample = {
   sourceShotId: number;
 };
 
+// Minimal interface for the WASM-backed clock estimator (vibe_netcode::clock_sync).
+// Defined here as a duck-type interface so interpolation.ts stays free of WASM imports.
+interface WasmClockSyncLike {
+  observeRtt(rttMs: number): void;
+  observeServerTime(serverUs: number, localUs: number): void;
+  getClockOffsetUs(): number;
+  getJitterUs(): number;
+  getInterpolationDelayMs(): number;
+  getRttMs(): number;
+  free(): void;
+}
+
+// Registered by sharedPhysics.ts after WASM init.
+let _WasmClockSyncClass: ((simHz: number) => WasmClockSyncLike) | null = null;
+
+/**
+ * Register the WASM WasmClockSync constructor.
+ * Called once by sharedPhysics after `init()` resolves.
+ */
+export function provideWasmClockSync(cls: new (simHz: number) => WasmClockSyncLike): void {
+  _WasmClockSyncClass = (simHz) => new cls(simHz);
+}
+
 export class ServerClockEstimator {
-  private offsetUs = 0;
-  private initialized = false;
+  // WASM-backed estimator (adaptive α, Jacobson RTT, speed-adjustment hysteresis).
+  private wasm: WasmClockSyncLike | null = null;
+  private simHz = 20;
+
+  // TypeScript fallback (used in tests / before WASM init).
+  private tsOffsetUs = 0;
+  private tsInitialized = false;
+
+  private getWasm(): WasmClockSyncLike | null {
+    if (!this.wasm && _WasmClockSyncClass) {
+      this.wasm = _WasmClockSyncClass(this.simHz);
+    }
+    return this.wasm;
+  }
+
+  /** Set the server sim tick rate so the WASM hysteresis thresholds are correct. */
+  setSimHz(hz: number): void {
+    if (this.simHz === hz) return;
+    this.simHz = hz;
+    // Recreate WASM instance with corrected tick rate.
+    if (this.wasm) {
+      this.wasm.free();
+      this.wasm = null;
+    }
+  }
+
+  /** Feed a smoothed RTT measurement in milliseconds. */
+  observeRtt(rttMs: number): void {
+    this.getWasm()?.observeRtt(rttMs);
+  }
 
   /**
    * Update the estimated clock offset from a new server→client sample.
    *
-   * The offset is `serverTime − localTime`.  A packet that arrives with
-   * lower one-way delay produces a *higher* offset, so the best estimate
-   * of the true offset is the *maximum* observed sample (minus jitter).
+   * When WASM is available: uses Lightyear's adaptive-alpha EMA with Jacobson
+   * RTT estimation, speed-adjustment hysteresis, and one-way latency correction.
    *
-   * Previous implementation used a monotonic ratchet (always jump up,
-   * slowly drift down at 2%).  This caused unbounded growth over long
-   * sessions because any transient jitter spike permanently ratcheted
-   * the offset up, and the 2% decay was too slow to compensate before
-   * the next spike.
-   *
-   * New approach: symmetric EMA with a 10% weight on new samples.
-   * This converges in ~10 samples (~0.3 s at 30 Hz snapshot rate)
-   * instead of ~50, and doesn't ratchet.
+   * TypeScript fallback (tests / no WASM): symmetric α=0.1 EMA, no RTT correction.
    */
   observe(serverTimeUs: number, localTimeUs: number): void {
-    const sampleOffsetUs = serverTimeUs - localTimeUs;
-    if (!this.initialized) {
-      this.offsetUs = sampleOffsetUs;
-      this.initialized = true;
+    const wasm = this.getWasm();
+    if (wasm) {
+      wasm.observeServerTime(serverTimeUs, localTimeUs);
       return;
     }
 
-    // Symmetric EMA — converges in both directions at the same rate.
-    // α = 0.1 gives a half-life of ~7 samples ≈ 0.23 s at 30 Hz.
-    this.offsetUs = this.offsetUs * 0.9 + sampleOffsetUs * 0.1;
+    // TS fallback — simple symmetric EMA (α=0.1).
+    const sampleOffsetUs = serverTimeUs - localTimeUs;
+    if (!this.tsInitialized) {
+      this.tsOffsetUs = sampleOffsetUs;
+      this.tsInitialized = true;
+      return;
+    }
+    this.tsOffsetUs = this.tsOffsetUs * 0.9 + sampleOffsetUs * 0.1;
   }
 
   serverNowUs(localTimeUs = performance.now() * 1000): number {
-    return Math.round(localTimeUs + this.offsetUs);
+    return Math.round(localTimeUs + this.getOffsetUs());
   }
 
   renderTimeUs(interpolationDelayUs: number, localTimeUs = performance.now() * 1000): number {
@@ -59,7 +105,20 @@ export class ServerClockEstimator {
   }
 
   getOffsetUs(): number {
-    return this.offsetUs;
+    return this.wasm?.getClockOffsetUs() ?? this.tsOffsetUs;
+  }
+
+  /** Jitter estimate in microseconds (0 when WASM not available). */
+  getJitterUs(): number {
+    return this.wasm?.getJitterUs() ?? 0;
+  }
+
+  /**
+   * Recommended interpolation delay in milliseconds.
+   * WASM: adaptive (jitter*4 + 5 ms). TS fallback: returns 0 (caller uses welcome value).
+   */
+  getInterpolationDelayMs(): number {
+    return this.wasm?.getInterpolationDelayMs() ?? 0;
   }
 }
 

@@ -10,6 +10,7 @@ use crate::movement::{MoveConfig, Vec3d};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
+use vibe_netcode::clock_sync::ServerClockEstimator;
 
 /// Client-side physics simulation exposed to JavaScript via WASM.
 ///
@@ -410,5 +411,72 @@ impl WasmSimWorld {
         for id in stale {
             self.remove_dynamic_body(id);
         }
+    }
+}
+
+/// Clock-sync estimator exposed to JavaScript via WASM.
+///
+/// Implements Lightyear's adaptive-alpha EMA clock offset tracking with:
+/// - Jacobson EWMA RTT estimation (α=1/12, β=1/6)
+/// - Adaptive alpha 0.02–0.10 based on jitter
+/// - Speed-adjustment hysteresis (3-state: DoNothing/SpeedAdjust/Resync)
+/// - Adaptive interpolation delay (jitter*4 + 5 ms)
+#[wasm_bindgen]
+pub struct WasmClockSync {
+    estimator: ServerClockEstimator,
+}
+
+#[wasm_bindgen]
+impl WasmClockSync {
+    /// Create a new clock-sync estimator.
+    ///
+    /// `sim_hz` — server simulation tick rate (e.g. 20).
+    #[wasm_bindgen(constructor)]
+    pub fn new(sim_hz: f64) -> Self {
+        Self {
+            estimator: ServerClockEstimator::new(sim_hz),
+        }
+    }
+
+    /// Feed a smoothed RTT measurement in milliseconds.
+    ///
+    /// Call this each time the client computes a round-trip time.
+    #[wasm_bindgen(js_name = observeRtt)]
+    pub fn observe_rtt(&mut self, rtt_ms: f64) {
+        self.estimator.observe_rtt(rtt_ms);
+    }
+
+    /// Feed a server-time observation.
+    ///
+    /// `server_us` — server monotonic timestamp (µs) from the snapshot packet.
+    /// `local_us`  — local monotonic timestamp (µs) at packet receipt
+    ///               (`performance.now() * 1000` is suitable).
+    #[wasm_bindgen(js_name = observeServerTime)]
+    pub fn observe_server_time(&mut self, server_us: f64, local_us: f64) {
+        self.estimator.observe_server_time(server_us as i64, local_us as i64);
+    }
+
+    /// Estimated clock offset in microseconds: `server_time ≈ local_time + offset`.
+    #[wasm_bindgen(js_name = getClockOffsetUs)]
+    pub fn get_clock_offset_us(&self) -> f64 {
+        self.estimator.clock_offset_us()
+    }
+
+    /// Current jitter estimate in microseconds.
+    #[wasm_bindgen(js_name = getJitterUs)]
+    pub fn get_jitter_us(&self) -> f64 {
+        self.estimator.jitter_us()
+    }
+
+    /// Recommended interpolation delay in milliseconds (jitter*4 + 5 ms, min 5 ms).
+    #[wasm_bindgen(js_name = getInterpolationDelayMs)]
+    pub fn get_interpolation_delay_ms(&self) -> f64 {
+        self.estimator.interpolation_delay_ms()
+    }
+
+    /// Smoothed RTT in milliseconds.
+    #[wasm_bindgen(js_name = getRttMs)]
+    pub fn get_rtt_ms(&self) -> f64 {
+        self.estimator.rtt_ms()
     }
 }

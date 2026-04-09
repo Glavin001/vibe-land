@@ -14,3 +14,4 @@ pub mod movement;
 pub mod sim_world;
 pub mod physics_arena;
 pub mod lag_comp;
+pub mod clock_sync;
