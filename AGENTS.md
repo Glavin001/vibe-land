@@ -60,6 +60,31 @@ npx vite
 - **Client (WASM):** `cd shared && wasm-pack build --target web --out-dir ../client/pkg`
 - **Client:** `cd client && npx vite build`
 
+### WebTransport infrastructure (infra/)
+
+The `infra/` directory contains a standalone Go demo server and Playwright tests for verifying WebTransport (QUIC/HTTP3) connectivity. This runs independently of the Rust game server and is used to validate the Hetzner Cloud VPS setup.
+
+**Running the demo server** (requires a TLS cert and `WT_DOMAIN` env var):
+
+```bash
+cd infra/webtransport-demo
+go build -o webtransport-server .
+WT_DOMAIN=wt.yourdomain.com ./webtransport-server
+```
+
+Serves `https://YOUR_DOMAIN/` (chat demo) and `https://YOUR_DOMAIN/diag` (capability diagnostic).
+
+**Running automated tests** (from the server host):
+
+```bash
+cd infra/webtransport-tests
+npm install
+WT_DOMAIN=wt.yourdomain.com xvfb-run --auto-servernum node test-full.mjs   # all capabilities
+WT_DOMAIN=wt.yourdomain.com xvfb-run --auto-servernum node test-chat2.mjs   # two-client broadcast
+```
+
+See `infra/WEBTRANSPORT_SETUP.md` for the full Hetzner VPS setup guide (DNS, firewall, TLS, systemd service, troubleshooting).
+
 ### Non-obvious notes
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.
