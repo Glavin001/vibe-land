@@ -137,11 +137,13 @@ export class VehiclePredictionManager {
 
   /** Exit vehicle — deactivate prediction. */
   exitVehicle(): void {
+    if (this.vehicleId !== null) {
+      this.sim.clearLocalVehicle();
+    }
     this.vehicleId = null;
     this.accumulator = 0;
     this.correctionOffset = [0, 0, 0];
     this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
-    this.sim.clearLocalVehicle();
   }
 
   /**

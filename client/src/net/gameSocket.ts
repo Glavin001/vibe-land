@@ -35,9 +35,18 @@ export class GameSocket {
 
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => this.handlers.onOpen?.();
-    ws.onerror = (event) => this.handlers.onError?.(event);
-    ws.onclose = (event) => this.handlers.onClose?.(event);
+    ws.onopen = () => {
+      console.log('[socket] connected');
+      this.handlers.onOpen?.();
+    };
+    ws.onerror = (event) => {
+      console.error('[socket] error', event);
+      this.handlers.onError?.(event);
+    };
+    ws.onclose = (event) => {
+      console.warn(`[socket] closed — code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`);
+      this.handlers.onClose?.(event);
+    };
     ws.onmessage = (event) => this.handleMessage(event.data);
     this.ws = ws;
   }

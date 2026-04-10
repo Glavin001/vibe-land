@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../', '');
   const serverPort = env.SERVER_PORT || '4001';
+  const serverHost = env.SERVER_HOST || 'localhost';
   const allowedHosts = env.ALLOWED_HOSTS ? env.ALLOWED_HOSTS.split(',') : [];
 
   return {
@@ -15,11 +16,11 @@ export default defineConfig(({ mode }) => {
       allowedHosts,
       proxy: {
         '/ws': {
-          target: `http://localhost:${serverPort}`,
+          target: `http://${serverHost}:${serverPort}`,
           ws: true,
         },
         '/healthz': {
-          target: `http://localhost:${serverPort}`,
+          target: `http://${serverHost}:${serverPort}`,
         },
       },
     },
