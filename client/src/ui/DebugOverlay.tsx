@@ -8,6 +8,7 @@ export type DebugStats = {
   textures: number;
 
   // Network
+  transport: string;
   pingMs: number;
   serverTick: number;
   interpolationDelayMs: number;
@@ -22,6 +23,7 @@ export type DebugStats = {
   physicsStepMs: number;
 
   // Player
+  playerId: number;
   position: [number, number, number];
 };
 
@@ -32,6 +34,7 @@ export const DEFAULT_STATS: DebugStats = {
   triangles: 0,
   geometries: 0,
   textures: 0,
+  transport: 'connecting',
   pingMs: 0,
   serverTick: 0,
   interpolationDelayMs: 0,
@@ -42,12 +45,14 @@ export const DEFAULT_STATS: DebugStats = {
   predictionTicks: 0,
   correctionMagnitude: 0,
   physicsStepMs: 0,
+  playerId: 0,
   position: [0, 0, 0],
 };
 
 function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
+
 
 export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: boolean }) {
   if (!visible) return null;
@@ -80,6 +85,7 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
       </Section>
 
       <Section title="Network">
+        {`Transport: ${stats.transport}`}
         {`Ping: ${fmt(stats.pingMs)}ms`}
         {`Server tick: ${stats.serverTick}`}
         {`Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
@@ -96,6 +102,7 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
       </Section>
 
       <Section title="Player">
+        {`ID: ${stats.playerId}`}
         {`Pos: ${fmt(p[0], 2)}, ${fmt(p[1], 2)}, ${fmt(p[2], 2)}`}
       </Section>
     </div>

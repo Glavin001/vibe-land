@@ -23,17 +23,22 @@ use axum::{
     routing::get,
     Router,
 };
+use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
+use wtransport::{Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     lag_comp::{HistoricalCapsule, LagCompHistory},
     movement::{MoveConfig, PhysicsArena},
     protocol::{
+        client_datagram_to_packet, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, make_net_dynamic_body_state,
         make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        SnapshotPacket, ShotResultPacket, WelcomePacket,
+        SnapshotPacket, ShotResultPacket, WelcomePacket, PKT_PING, PKT_SNAPSHOT,
     },
     voxel_world::VoxelWorld,
 };
@@ -54,6 +59,8 @@ struct AppState {
     matches: RwLock<HashMap<String, MatchHandle>>,
     next_player_id: AtomicU32,
     verifier: SpacetimeVerifier,
+    cert_hash_hex: String,
+    wt_base_url: String,
 }
 
 #[derive(Clone)]
@@ -70,6 +77,21 @@ struct SpacetimeVerifier {
 struct WsQuery {
     identity: String,
     token: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SessionConfigQuery {
+    match_id: String,
+}
+
+#[derive(serde::Serialize)]
+struct SessionConfig {
+    match_id: String,
+    url: String,
+    server_certificate_hash_hex: String,
+    sim_hz: u16,
+    snapshot_hz: u16,
+    interpolation_delay_ms: u16,
 }
 
 struct PlayerConnection {
@@ -119,6 +141,39 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Build TLS identity for WebTransport.
+    // If WT_CERT_PEM + WT_KEY_PEM are set, load a CA-signed cert (production).
+    // Otherwise generate a self-signed cert (dev/local) and expose its hash for
+    // the browser's serverCertificateHashes pinning API.
+    let (identity, cert_hash_hex) = match (
+        std::env::var("WT_CERT_PEM").ok(),
+        std::env::var("WT_KEY_PEM").ok(),
+    ) {
+        (Some(cert_path), Some(key_path)) => {
+            let identity = Identity::load_pemfiles(&cert_path, &key_path).await?;
+            info!(%cert_path, "WebTransport: loaded CA-signed certificate");
+            // Empty hash signals the client to skip certificate pinning
+            (identity, String::new())
+        }
+        _ => {
+            let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
+            let cert_der = identity.certificate_chain().as_slice()[0].der().to_vec();
+            let cert_hash_hex = hex::encode(Sha256::digest(&cert_der));
+            info!("WebTransport: using self-signed certificate (dev mode)");
+            (identity, cert_hash_hex)
+        }
+    };
+
+    // Determine WebTransport bind address and public base URL
+    let wt_addr: SocketAddr = std::env::var("WT_BIND_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:4002".to_string())
+        .parse()?;
+    let wt_host = std::env::var("WT_HOST")
+        .unwrap_or_else(|_| "localhost".to_string());
+    let wt_base_url = format!("https://{}:{}", wt_host, wt_addr.port());
+
+    info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: RwLock::new(HashMap::new()),
@@ -128,12 +183,52 @@ async fn main() -> Result<()> {
                 base_url: std::env::var("SPACETIMEDB_BASE_URL")
                     .unwrap_or_else(|_| "https://maincloud.spacetimedb.com".to_string()),
             },
+            cert_hash_hex,
+            wt_base_url,
         }),
     };
 
+    // Start WebTransport server
+    let wt_config = ServerConfig::builder()
+        .with_bind_address(wt_addr)
+        .with_identity(identity)
+        .build();
+    let wt_endpoint = Endpoint::server(wt_config)?;
+    info!(%wt_addr, "WebTransport endpoint listening");
+
+    {
+        let app_inner = state.inner.clone();
+        tokio::spawn(async move {
+            loop {
+                let incoming = wt_endpoint.accept().await;
+                let app = app_inner.clone();
+                tokio::spawn(async move {
+                    let request = match incoming.await {
+                        Ok(r) => r,
+                        Err(err) => { warn!(error = ?err, "WT incoming session failed"); return; }
+                    };
+                    let path = request.path().to_string();
+                    let connection = match request.accept().await {
+                        Ok(c) => c,
+                        Err(err) => { warn!(error = ?err, "WT session accept failed"); return; }
+                    };
+                    if path != "/game" {
+                        warn!(%path, "WT session rejected: unknown path");
+                        return;
+                    }
+                    if let Err(err) = handle_wt_session(app, connection).await {
+                        error!(error = ?err, "WT session error");
+                    }
+                });
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
+        .route("/session-config", get(session_config_handler))
         .route("/ws/:match_id", get(ws_handler))
+        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
     let addr: SocketAddr = std::env::var("BIND_ADDR")
@@ -142,6 +237,97 @@ async fn main() -> Result<()> {
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn session_config_handler(
+    Query(query): Query<SessionConfigQuery>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let config = SessionConfig {
+        url: format!("{}/game", state.inner.wt_base_url),
+        server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
+        match_id: query.match_id,
+        sim_hz: SIM_HZ,
+        snapshot_hz: SNAPSHOT_HZ,
+        interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+    };
+    axum::Json(config)
+}
+
+async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result<()> {
+    // Accept the client's first bidi stream which carries the framed ClientHello
+    let (mut send_stream, mut recv_stream) = connection.accept_bi().await?;
+
+    // Read all bytes from the stream (client closes its write side after sending ClientHello)
+    let mut raw = Vec::new();
+    recv_stream.read_to_end(&mut raw).await?;
+
+    // Strip 4-byte LE length prefix from frameReliablePacket
+    anyhow::ensure!(raw.len() >= 4, "ClientHello too short");
+    let payload_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+    anyhow::ensure!(raw.len() >= 4 + payload_len, "ClientHello truncated");
+    let hello = decode_client_hello(&raw[4..4 + payload_len])?;
+
+    let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
+    let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
+
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+
+    handle.tx.send(MatchEvent::Connect(PlayerConnection {
+        player_id,
+        identity: format!("wt-player-{player_id}"),
+        tx: out_tx,
+    }))?;
+
+    // Writer: prefer datagrams for snapshots/pings; fall back to reliable stream
+    // if the datagram is too large for the current QUIC path MTU.
+    let conn_write = connection.clone();
+    let writer = tokio::spawn(async move {
+        let mut buf = bytes::BytesMut::with_capacity(4096);
+        while let Some(bytes) = out_rx.recv().await {
+            if bytes.is_empty() {
+                continue;
+            }
+            let first = bytes[0];
+            let use_datagram = (first == PKT_SNAPSHOT || first == PKT_PING)
+                && conn_write.send_datagram(bytes.as_slice()).is_ok();
+            if !use_datagram {
+                // Reliable stream: 4-byte LE length prefix
+                buf.clear();
+                buf.put_u32_le(bytes.len() as u32);
+                buf.put_slice(&bytes);
+                if send_stream.write_all(&buf).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Reader: receive client datagrams → route to match
+    let tx_to_match = handle.tx.clone();
+    let reader = tokio::spawn(async move {
+        loop {
+            match connection.receive_datagram().await {
+                Ok(datagram) => {
+                    let payload = datagram.payload();
+                    match decode_client_datagram(&payload) {
+                        Ok(dgram) => {
+                            let packet = client_datagram_to_packet(dgram);
+                            if tx_to_match.send(MatchEvent::Packet { player_id, packet }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(err) => warn!(player_id, error = ?err, "dropping malformed WT datagram"),
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = tx_to_match.send(MatchEvent::Disconnect { player_id });
+    });
+
+    let _ = tokio::join!(writer, reader);
     Ok(())
 }
 

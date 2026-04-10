@@ -33,18 +33,19 @@ export class GameSocket {
       return;
     }
 
+    console.info('[websocket] connecting to', url);
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
-      console.log('[socket] connected');
+      console.info('[websocket] ✓ connected to', url);
       this.handlers.onOpen?.();
     };
     ws.onerror = (event) => {
-      console.error('[socket] error', event);
+      console.error('[websocket] error on', url, event);
       this.handlers.onError?.(event);
     };
     ws.onclose = (event) => {
-      console.warn(`[socket] closed — code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`);
+      console.warn(`[websocket] closed — url=${url} code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`);
       this.handlers.onClose?.(event);
     };
     ws.onmessage = (event) => this.handleMessage(event.data);

@@ -36,7 +36,7 @@ export function useDebugStats() {
   const updateFrame = useCallback((
     frameTimeMs: number,
     rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
-    network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number },
+    network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
     physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number },
     position: [number, number, number],
   ) => {
@@ -59,12 +59,14 @@ export function useDebugStats() {
     s.triangles = rendererInfo.render.triangles;
     s.geometries = rendererInfo.memory.geometries;
     s.textures = rendererInfo.memory.textures;
+    s.transport = network.transport;
     s.pingMs = network.pingMs;
     s.serverTick = network.serverTick;
     s.interpolationDelayMs = network.interpolationDelayMs;
     s.clockOffsetUs = network.clockOffsetUs;
     s.remotePlayers = network.remotePlayers;
     s.snapshotsPerSec = snapshotsPerSec;
+    s.playerId = network.playerId;
     s.pendingInputs = physics.pendingInputs;
     s.predictionTicks = physics.predictionTicks;
     s.correctionMagnitude = physics.correctionMagnitude;

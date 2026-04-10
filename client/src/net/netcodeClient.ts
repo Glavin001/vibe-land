@@ -1,4 +1,5 @@
 import { GameSocket } from './gameSocket';
+import { WebTransportGameClient } from './webTransportClient';
 import { PlayerInterpolator, ServerClockEstimator, VehicleInterpolator, type PlayerSample, type VehicleSample } from './interpolation';
 import {
   netDynamicBodyStateToMeters,
@@ -6,6 +7,7 @@ import {
   netVehicleStateToMeters,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
+  type FireCmd,
   type InputCmd,
   type NetPlayerState,
   type NetVehicleState,
@@ -61,7 +63,15 @@ export class NetcodeClient {
   readonly vehicles = new Map<number, VehicleStateMeters>();
 
   private socket: GameSocket | null = null;
+  private wtClient: WebTransportGameClient | null = null;
   private config: NetcodeClientConfig;
+
+  /** Human-readable active transport: 'webtransport', 'websocket', or 'connecting' */
+  get transport(): string {
+    if (this.wtClient) return 'webtransport';
+    if (this.socket) return 'websocket';
+    return 'connecting';
+  }
 
   constructor(config: NetcodeClientConfig) {
     this.config = config;
@@ -82,29 +92,88 @@ export class NetcodeClient {
     this.socket.connect(wsUrl);
   }
 
+  /**
+   * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
+   */
+  async connectWithFallback(matchId: string, wsUrl: string): Promise<void> {
+    const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
+    console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
+
+    if (hasWebTransport) {
+      console.info('[netcode] attempting WebTransport (QUIC/UDP)...');
+      try {
+        const wt = await WebTransportGameClient.connect({
+          matchId,
+          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket),
+          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket),
+          onClose: () => { this.config.onDisconnect?.(); },
+        });
+        this.wtClient = wt;
+        console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
+        return;
+      } catch (err) {
+        console.warn('[netcode] WebTransport failed — falling back to WebSocket', err);
+      }
+    } else {
+      console.info('[netcode] WebTransport not supported in this browser — using WebSocket');
+    }
+
+    console.info('[netcode] connecting via WebSocket (TCP):', wsUrl);
+    this.connect(wsUrl);
+  }
+
   ping(): void {
-    this.socket?.ping();
+    // WebTransport RTT is measured server-side via server-initiated pings
+    if (!this.wtClient) {
+      this.socket?.ping();
+    }
   }
 
   disconnect(): void {
+    this.wtClient?.close();
+    this.wtClient = null;
     this.socket?.disconnect();
     this.socket = null;
   }
 
   sendInputs(cmds: InputCmd[]): void {
-    this.socket?.sendInputs(cmds);
+    if (this.wtClient) {
+      if (cmds.length > 0) this.wtClient.sendInputBundle(cmds);
+    } else {
+      this.socket?.sendInputs(cmds);
+    }
+  }
+
+  sendFire(cmd: FireCmd): void {
+    if (this.wtClient) {
+      this.wtClient.sendFire(cmd);
+    } else {
+      this.socket?.sendFire(cmd);
+    }
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {
-    this.socket?.sendBlockEdit(cmd);
+    if (this.wtClient) {
+      this.wtClient.sendBlockEdit(cmd);
+    } else {
+      this.socket?.sendBlockEdit(cmd);
+    }
   }
 
   sendVehicleEnter(vehicleId: number, seat = 0): void {
-    this.socket?.sendVehicleEnter(vehicleId, seat);
+    if (this.wtClient) {
+      this.wtClient.sendVehicleEnter(vehicleId, seat);
+    } else {
+      this.socket?.sendVehicleEnter(vehicleId, seat);
+    }
   }
 
   sendVehicleExit(vehicleId: number): void {
-    this.socket?.sendVehicleExit(vehicleId);
+    if (this.wtClient) {
+      this.wtClient.sendVehicleExit(vehicleId);
+    } else {
+      this.socket?.sendVehicleExit(vehicleId);
+    }
   }
 
   /**
@@ -121,6 +190,7 @@ export class NetcodeClient {
         // Don't seed clock from welcome — it arrives with unpredictable
         // latency (TLS handshake, etc.) and skews the initial offset.
         // The first snapshot will initialize the estimator instead.
+        console.info('[netcode] Welcome — playerId:', packet.playerId, { transport: this.transport, simHz: packet.simHz, interpolationDelayMs: packet.interpolationDelayMs });
         this.config.onWelcome?.(packet.playerId);
         break;
       case 'snapshot': {

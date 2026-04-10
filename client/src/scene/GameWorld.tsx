@@ -23,7 +23,7 @@ const VEHICLE_INTERACT_RADIUS = 4.0;
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
-  network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number },
+  network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
   physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number },
   position: [number, number, number],
 ) => void;
@@ -329,6 +329,8 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
           interpolationDelayMs: state.interpolationDelayMs,
           clockOffsetUs: state.serverClock.getOffsetUs(),
           remotePlayers: state.remotePlayers.size,
+          transport: client?.transport ?? 'connecting',
+          playerId: state.playerId,
         },
         physStats,
         pos as [number, number, number],
