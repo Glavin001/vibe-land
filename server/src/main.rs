@@ -50,6 +50,47 @@ const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_PENDING_INPUTS: usize = 120;
 
+// ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
+
+#[derive(serde::Serialize, Clone, Default)]
+struct PlayerStatsSnapshot {
+    id: u32,
+    one_way_ms: u32,
+    pending_inputs: usize,
+    hp: u8,
+    pos_m: [f32; 3],
+    vel_ms: [f32; 3],
+    on_ground: bool,
+    in_vehicle: bool,
+    dead: bool,
+    // Server-observed network quality
+    input_jitter_ms: f32,
+    avg_bundle_size: f32,
+    // Client-reported experience metrics (1 Hz)
+    correction_m: f32,
+    physics_ms: f32,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct MatchStatsSnapshot {
+    id: String,
+    server_tick: u32,
+    player_count: usize,
+    dynamic_body_count: usize,
+    vehicle_count: usize,
+    chunk_count: usize,
+    players: Vec<PlayerStatsSnapshot>,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct GlobalStatsSnapshot {
+    sim_hz: u16,
+    snapshot_hz: u16,
+    matches: Vec<MatchStatsSnapshot>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[derive(Clone)]
 struct SharedAppState {
     inner: Arc<AppState>,
@@ -61,6 +102,7 @@ struct AppState {
     verifier: SpacetimeVerifier,
     cert_hash_hex: String,
     wt_base_url: String,
+    stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +157,13 @@ struct PlayerRuntime {
     last_ack_input_seq: u16,
     estimated_one_way_ms: u32,
     pending_server_ping: Option<(u32, Instant)>,
+    // Input arrival jitter tracking (server-observed)
+    last_bundle_recv: Option<Instant>,
+    bundle_intervals_ms: VecDeque<f32>, // last ~60 intervals (~1s)
+    bundle_sizes: VecDeque<u32>,        // inputs per bundle
+    // Client-reported debug stats (1 Hz)
+    client_correction_m: f32,
+    client_physics_ms: f32,
 }
 
 struct QueuedShot {
@@ -130,6 +179,7 @@ struct MatchState {
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
     server_tick: u32,
+    stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
 }
 
 #[tokio::main]
@@ -174,6 +224,9 @@ async fn main() -> Result<()> {
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
 
+    let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
+    let stats_tx = Arc::new(stats_tx);
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: RwLock::new(HashMap::new()),
@@ -185,6 +238,7 @@ async fn main() -> Result<()> {
             },
             cert_hash_hex,
             wt_base_url,
+            stats_tx,
         }),
     };
 
@@ -227,6 +281,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/session-config", get(session_config_handler))
+        .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
@@ -253,6 +308,32 @@ async fn session_config_handler(
         interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
     };
     axum::Json(config)
+}
+
+async fn ws_stats_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let mut stats_rx = state.inner.stats_tx.subscribe();
+    ws.on_upgrade(move |mut socket| async move {
+        // Send current state immediately on connect
+        let initial = serde_json::to_string(&*stats_rx.borrow()).unwrap_or_default();
+        if socket.send(Message::Text(initial.into())).await.is_err() {
+            return;
+        }
+
+        loop {
+            match stats_rx.changed().await {
+                Ok(()) => {
+                    let json = serde_json::to_string(&*stats_rx.borrow()).unwrap_or_default();
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break, // sender dropped
+            }
+        }
+    })
 }
 
 async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result<()> {
@@ -410,11 +491,15 @@ async fn get_or_create_match(app: Arc<AppState>, match_id: String) -> MatchHandl
     let (tx, rx) = mpsc::unbounded_channel();
     let handle = MatchHandle { tx: tx.clone() };
     write.insert(match_id.clone(), handle.clone());
-    tokio::spawn(run_match_loop(match_id, rx));
+    tokio::spawn(run_match_loop(match_id, rx, app.stats_tx.clone()));
     handle
 }
 
-async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchEvent>) {
+async fn run_match_loop(
+    match_id: String,
+    mut rx: mpsc::UnboundedReceiver<MatchEvent>,
+    stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
+) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
     let mut world = VoxelWorld::new();
     world.seed_demo_world(&mut arena);
@@ -440,6 +525,7 @@ async fn run_match_loop(match_id: String, mut rx: mpsc::UnboundedReceiver<MatchE
         players: HashMap::new(),
         queued_shots: Vec::new(),
         server_tick: 0,
+        stats_tx,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -474,6 +560,11 @@ impl MatchState {
                         last_ack_input_seq: 0,
                         estimated_one_way_ms: 40,
                         pending_server_ping: None,
+                        last_bundle_recv: None,
+                        bundle_intervals_ms: VecDeque::new(),
+                        bundle_sizes: VecDeque::new(),
+                        client_correction_m: 0.0,
+                        client_physics_ms: 0.0,
                     },
                 );
 
@@ -503,6 +594,21 @@ impl MatchState {
                 let Some(runtime) = self.players.get_mut(&player_id) else { return; };
                 match packet {
                     ClientPacket::InputBundle(cmds) => {
+                        // Track inter-arrival timing for jitter measurement
+                        let now = Instant::now();
+                        if let Some(last) = runtime.last_bundle_recv {
+                            let interval_ms = last.elapsed().as_secs_f32() * 1000.0;
+                            runtime.bundle_intervals_ms.push_back(interval_ms);
+                            if runtime.bundle_intervals_ms.len() > 60 {
+                                runtime.bundle_intervals_ms.pop_front();
+                            }
+                        }
+                        runtime.last_bundle_recv = Some(now);
+                        let bundle_len = cmds.len() as u32;
+                        runtime.bundle_sizes.push_back(bundle_len);
+                        if runtime.bundle_sizes.len() > 60 {
+                            runtime.bundle_sizes.pop_front();
+                        }
                         enqueue_inputs(runtime, cmds);
                     }
                     ClientPacket::Fire(cmd) => {
@@ -542,6 +648,10 @@ impl MatchState {
                     }
                     ClientPacket::VehicleExit(_cmd) => {
                         self.arena.exit_vehicle(player_id);
+                    }
+                    ClientPacket::DebugStats { correction_m, physics_ms } => {
+                        runtime.client_correction_m = correction_m;
+                        runtime.client_physics_ms = physics_ms;
                     }
                 }
             }
@@ -585,6 +695,7 @@ impl MatchState {
 
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
             self.send_server_latency_pings();
+            self.publish_stats();
         }
     }
 
@@ -594,6 +705,67 @@ impl MatchState {
             runtime.pending_server_ping = Some((nonce, Instant::now()));
             let _ = runtime.tx.send(encode_server_packet(&ServerPacket::Ping(nonce)));
         }
+    }
+
+    fn publish_stats(&self) {
+        // Only do work if there are receivers (stats page connected)
+        if self.stats_tx.receiver_count() == 0 {
+            return;
+        }
+
+        let mut player_snapshots = Vec::with_capacity(self.players.len());
+        for (&player_id, runtime) in &self.players {
+            if let Some((pos, vel, _yaw, _pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
+                // Jitter = stddev of inter-arrival intervals
+                let input_jitter_ms = {
+                    let ivs = &runtime.bundle_intervals_ms;
+                    if ivs.len() >= 2 {
+                        let mean = ivs.iter().sum::<f32>() / ivs.len() as f32;
+                        let var = ivs.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / ivs.len() as f32;
+                        var.sqrt()
+                    } else { 0.0 }
+                };
+                let avg_bundle_size = if runtime.bundle_sizes.is_empty() {
+                    0.0
+                } else {
+                    runtime.bundle_sizes.iter().sum::<u32>() as f32 / runtime.bundle_sizes.len() as f32
+                };
+                player_snapshots.push(PlayerStatsSnapshot {
+                    id: player_id,
+                    one_way_ms: runtime.estimated_one_way_ms,
+                    pending_inputs: runtime.pending_inputs.len(),
+                    hp,
+                    pos_m: pos,
+                    vel_ms: vel,
+                    on_ground: (flags & 0x1) != 0,
+                    in_vehicle: (flags & 0x2) != 0,
+                    dead: (flags & 0x4) != 0,
+                    input_jitter_ms,
+                    avg_bundle_size,
+                    correction_m: runtime.client_correction_m,
+                    physics_ms: runtime.client_physics_ms,
+                });
+            }
+        }
+        player_snapshots.sort_by_key(|p| p.id);
+
+        let match_stats = MatchStatsSnapshot {
+            id: self.id.clone(),
+            server_tick: self.server_tick,
+            player_count: self.players.len(),
+            dynamic_body_count: self.arena.dynamic.dynamic_bodies.len(),
+            vehicle_count: self.arena.vehicles.len(),
+            chunk_count: self.world.chunks.len(),
+            players: player_snapshots,
+        };
+
+        let global = GlobalStatsSnapshot {
+            sim_hz: SIM_HZ,
+            snapshot_hz: SNAPSHOT_HZ,
+            matches: vec![match_stats],
+        };
+
+        let _ = self.stats_tx.send(global);
     }
 
     fn process_hitscan(&mut self, server_time_ms: u32) {
@@ -751,6 +923,11 @@ mod tests {
             last_ack_input_seq: 0,
             estimated_one_way_ms: 40,
             pending_server_ping: None,
+            last_bundle_recv: None,
+            bundle_intervals_ms: VecDeque::new(),
+            bundle_sizes: VecDeque::new(),
+            client_correction_m: 0.0,
+            client_physics_ms: 0.0,
         }
     }
 

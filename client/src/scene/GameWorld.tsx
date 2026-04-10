@@ -24,8 +24,9 @@ type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
   network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
-  physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number },
+  physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number; velocity: [number, number, number] },
   position: [number, number, number],
+  player: { velocity: [number, number, number]; hp: number; localFlags: number },
 ) => void;
 
 type GameWorldProps = {
@@ -317,9 +318,12 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
       console.log('[game] local pos:', pos, 'remotePlayers:', state.remotePlayers.size, 'tick:', state.latestServerTick);
     }
 
+    // Report per-frame debug stats to server (aggregated to 1 Hz)
+    const physStats = prediction.getDebugStats();
+    client?.accumulateDebugStats(physStats.correctionMagnitude, physStats.physicsStepMs);
+
     // Debug overlay stats
     if (onDebugFrameRef.current) {
-      const physStats = prediction.getDebugStats();
       onDebugFrameRef.current(
         frameDelta * 1000,
         gl.info,
@@ -334,6 +338,11 @@ export function GameWorld({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         },
         physStats,
         pos as [number, number, number],
+        {
+          velocity: physStats.velocity,
+          hp: client?.localPlayerHp ?? 100,
+          localFlags: client?.localPlayerFlags ?? 0,
+        },
       );
     }
 

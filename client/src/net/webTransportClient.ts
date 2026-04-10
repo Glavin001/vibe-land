@@ -181,6 +181,13 @@ export class WebTransportGameClient {
     void this.datagramWriter.write(encodeVehicleExitPacket(vehicleId)).catch((error) => this.handleClosed(error));
   }
 
+  sendRawDatagram(packet: Uint8Array): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(packet).catch((error) => this.handleClosed(error));
+  }
+
   close(reason = 'client closed'): void {
     if (this.closed) {
       return;

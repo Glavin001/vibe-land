@@ -2,6 +2,7 @@ import { GameSocket } from './gameSocket';
 import { WebTransportGameClient } from './webTransportClient';
 import { PlayerInterpolator, ServerClockEstimator, VehicleInterpolator, type PlayerSample, type VehicleSample } from './interpolation';
 import {
+  encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
   netStateToMeters,
   netVehicleStateToMeters,
@@ -58,6 +59,8 @@ export class NetcodeClient {
   interpolationDelayMs = 100;
   latestServerTick = 0;
   rttMs = 0;
+  localPlayerHp = 100;
+  localPlayerFlags = 0;
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
@@ -65,6 +68,12 @@ export class NetcodeClient {
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
   private config: NetcodeClientConfig;
+
+  // Rolling accumulators for 1Hz debug stats report to server
+  private _debugCorrectionSum = 0;
+  private _debugPhysicsSum = 0;
+  private _debugSampleCount = 0;
+  private _debugLastSendMs = 0;
 
   /** Human-readable active transport: 'webtransport', 'websocket', or 'connecting' */
   get transport(): string {
@@ -144,6 +153,32 @@ export class NetcodeClient {
     }
   }
 
+  /**
+   * Accumulate per-frame debug stats; sends a 9-byte report to the server once per second.
+   * Call each frame with the current correction magnitude and physics step time.
+   */
+  accumulateDebugStats(correctionM: number, physicsStepMs: number): void {
+    this._debugCorrectionSum += correctionM;
+    this._debugPhysicsSum += physicsStepMs;
+    this._debugSampleCount++;
+
+    const now = performance.now();
+    if (now - this._debugLastSendMs >= 1000 && this._debugSampleCount > 0) {
+      const avgCorrection = this._debugCorrectionSum / this._debugSampleCount;
+      const avgPhysics = this._debugPhysicsSum / this._debugSampleCount;
+      const pkt = encodeDebugStatsPacket(avgCorrection, avgPhysics);
+      if (this.wtClient) {
+        this.wtClient.sendRawDatagram(pkt);
+      } else {
+        this.socket?.sendRaw(pkt);
+      }
+      this._debugCorrectionSum = 0;
+      this._debugPhysicsSum = 0;
+      this._debugSampleCount = 0;
+      this._debugLastSendMs = now;
+    }
+  }
+
   sendFire(cmd: FireCmd): void {
     if (this.wtClient) {
       this.wtClient.sendFire(cmd);
@@ -213,6 +248,8 @@ export class NetcodeClient {
         for (const ps of packet.playerStates) {
           knownIds.add(ps.id);
           if (ps.id === this.playerId) {
+            this.localPlayerHp = (ps.flags & 0x4) ? 0 : 100; // FLAG_DEAD = 1<<2
+            this.localPlayerFlags = ps.flags;
             this.config.onLocalSnapshot?.(packet.ackInputSeq, ps);
           } else {
             const m = netStateToMeters(ps);

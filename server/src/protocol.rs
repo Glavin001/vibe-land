@@ -21,6 +21,7 @@ pub enum ClientPacket {
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
+    DebugStats { correction_m: f32, physics_ms: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -42,6 +43,7 @@ pub enum ClientDatagram {
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
     Ping(u32),
+    DebugStats { correction_m: f32, physics_ms: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +125,12 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             ensure!(buf.remaining() >= 4, "short ping datagram");
             ClientDatagram::Ping(buf.get_u32_le())
         }
+        PKT_DEBUG_STATS => {
+            ensure!(buf.remaining() >= 8, "short debug stats datagram");
+            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientDatagram::DebugStats { correction_m, physics_ms }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
 }
@@ -136,6 +144,7 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
         ClientDatagram::Ping(n) => ClientPacket::Ping(n),
+        ClientDatagram::DebugStats { correction_m, physics_ms } => ClientPacket::DebugStats { correction_m, physics_ms },
     }
 }
 
@@ -305,6 +314,12 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             ensure!(buf.remaining() >= 4, "short vehicle exit packet");
             let vehicle_id = buf.get_u32_le();
             ClientPacket::VehicleExit(VehicleExitCmd { vehicle_id })
+        }
+        PKT_DEBUG_STATS => {
+            ensure!(buf.remaining() >= 8, "short debug stats packet");
+            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientPacket::DebugStats { correction_m, physics_ms }
         }
         other => bail!("unknown client packet kind {other}"),
     })

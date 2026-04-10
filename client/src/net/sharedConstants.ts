@@ -24,6 +24,7 @@ export const PKT_FIRE = 3;
 export const PKT_BLOCK_EDIT = 4;
 export const PKT_VEHICLE_ENTER = 5;
 export const PKT_VEHICLE_EXIT = 6;
+export const PKT_DEBUG_STATS = 7;
 
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;

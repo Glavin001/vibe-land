@@ -8,6 +8,7 @@ import {
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
+  PKT_DEBUG_STATS,
   PKT_WELCOME,
   PKT_SNAPSHOT,
   PKT_SHOT_RESULT,
@@ -787,6 +788,16 @@ export function encodePingPacket(nonce: number): Uint8Array {
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_PING);
   view.setUint32(1, nonce >>> 0, true);
+  return out;
+}
+
+/** Send rolling-average client debug stats to the server (1 Hz). 9 bytes total. */
+export function encodeDebugStatsPacket(correctionM: number, physicsStepMs: number): Uint8Array {
+  const out = new Uint8Array(9);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_DEBUG_STATS);
+  view.setFloat32(1, correctionM, true);
+  view.setFloat32(5, physicsStepMs, true);
   return out;
 }
 

@@ -128,7 +128,7 @@ export class GameSocket {
     this.handlers.onPacket?.(packet);
   }
 
-  private sendRaw(packet: Uint8Array): void {
+  sendRaw(packet: Uint8Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
