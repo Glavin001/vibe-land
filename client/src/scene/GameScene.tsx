@@ -33,6 +33,7 @@ export function GameScene({
   return (
     <Canvas
       style={{ width: '100%', height: '100%' }}
+      shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
       onPointerDown={(e) => {
         (e.target as HTMLCanvasElement).requestPointerLock();

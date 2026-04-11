@@ -233,7 +233,7 @@ export function GameWorld({
             quaternion: localPreviewVehicleEntry[1].quaternion,
           }
         : null);
-    let localVehicleRenderPose = localControlledVehiclePose;
+    let localVehicleCameraPose = localControlledVehiclePose;
     if (localControlledVehiclePose && drivenVehicleId != null) {
       const visualPose = localVehicleVisualPoseRef.current;
       const targetPosition = localControlledVehiclePose.position;
@@ -254,7 +254,7 @@ export function GameWorld({
           rotAlpha,
         );
       }
-      localVehicleRenderPose = {
+      localVehicleCameraPose = {
         position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
         quaternion: [visualPose.quaternion.x, visualPose.quaternion.y, visualPose.quaternion.z, visualPose.quaternion.w],
       };
@@ -469,7 +469,7 @@ export function GameWorld({
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
-    const vehiclePoseForCamera = localVehicleRenderPose;
+    const vehiclePoseForCamera = localVehicleCameraPose;
     const predictedPos = IS_LOCAL_PREVIEW ? null : prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
@@ -781,7 +781,7 @@ export function GameWorld({
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
-      const localVehiclePos = localVehicleRenderPose;
+      const localVehiclePos = localControlledVehiclePose;
 
       // Find nearest unoccupied vehicle for proximity indicator
       let nearest: number | null = null;

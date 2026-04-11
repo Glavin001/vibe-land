@@ -29,16 +29,77 @@ export function DemoTerrain() {
     }
     positions.needsUpdate = true;
     geom.computeVertexNormals();
+
+    const normals = geom.attributes.normal;
+    const colors = new Float32Array(positions.count * 3);
+    const lowColor = new THREE.Color(0x365846);
+    const midColor = new THREE.Color(0x7fa164);
+    const highColor = new THREE.Color(0xd6c08d);
+    const steepColor = new THREE.Color(0x87684a);
+    const ridgeColor = new THREE.Color(0xf0e3be);
+    const vertexColor = new THREE.Color();
+
+    for (let i = 0; i < positions.count; i++) {
+      const height01 = clamp((positions.getY(i) + 1) * 0.5, 0, 1);
+      const slope01 = clamp(1 - normals.getY(i), 0, 1);
+
+      if (height01 < 0.58) {
+        vertexColor.copy(lowColor).lerp(midColor, smoothstep(0, 0.58, height01));
+      } else {
+        vertexColor.copy(midColor).lerp(highColor, smoothstep(0.58, 1, height01));
+      }
+
+      vertexColor.lerp(steepColor, slope01 * 0.5);
+      vertexColor.lerp(ridgeColor, smoothstep(0.72, 1, height01) * 0.45);
+      vertexColor.multiplyScalar(0.92 + height01 * 0.12 - slope01 * 0.08);
+
+      colors[i * 3] = vertexColor.r;
+      colors[i * 3 + 1] = vertexColor.g;
+      colors[i * 3 + 2] = vertexColor.b;
+    }
+
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     return geom;
+  }, []);
+
+  const terrainMaterial = useMemo(() => {
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.98,
+      metalness: 0.02,
+      dithering: true,
+    });
+
+    material.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPosition;')
+        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorldPosition = worldPosition.xyz;');
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPosition;')
+        .replace(
+          '#include <dithering_fragment>',
+          `
+            float contourHeight = vWorldPosition.y * 4.75 + 0.075 * (vWorldPosition.x + vWorldPosition.z);
+            float contourBand = min(fract(contourHeight), 1.0 - fract(contourHeight));
+            float contourLine = 1.0 - smoothstep(0.03, 0.11, contourBand);
+            float slopeShade = clamp(1.0 - normal.y, 0.0, 1.0);
+            gl_FragColor.rgb *= 1.0 - contourLine * (0.16 + slopeShade * 0.28);
+            gl_FragColor.rgb += vec3(0.05, 0.04, 0.02) * slopeShade;
+            #include <dithering_fragment>
+          `,
+        );
+    };
+    material.customProgramCacheKey = () => 'demo-terrain-contours-v1';
+
+    return material;
   }, []);
 
   const wallY = PIT_WALL_HEIGHT * 0.5;
 
   return (
     <group>
-      <mesh geometry={geometry} receiveShadow>
-        <meshStandardMaterial color={0x587344} roughness={0.95} metalness={0.02} />
-      </mesh>
+      <mesh geometry={geometry} material={terrainMaterial} receiveShadow />
 
       <mesh
         position={[PIT_X + PIT_W * 0.5 - 0.5, wallY, PIT_Z + PIT_D - 0.5]}
