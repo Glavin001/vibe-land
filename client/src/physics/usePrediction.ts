@@ -4,6 +4,7 @@ import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
+import type { SemanticInputState } from '../input/types';
 import type { RenderBlock } from '../world/voxelWorld';
 
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
@@ -109,15 +110,13 @@ export function usePrediction() {
 
   const update = useCallback((
     frameDeltaSec: number,
-    buttons: number,
-    yaw: number,
-    pitch: number,
+    input: SemanticInputState,
     sendInputs: (cmds: InputCmd[]) => void,
   ): void => {
     const m = managerRef.current;
     if (!m) return;
 
-    const cmds = m.update(frameDeltaSec, buttons, yaw, pitch);
+    const cmds = m.update(frameDeltaSec, input);
     if (cmds.length > 0) {
       sendInputs(cmds);
     }
@@ -264,14 +263,12 @@ export function usePrediction() {
 
   const updateVehicle = useCallback((
     frameDeltaSec: number,
-    buttons: number,
-    yaw: number,
-    pitch: number,
+    input: SemanticInputState,
     sendInputs: (cmds: InputCmd[]) => void,
   ): void => {
     const vm = vehicleManagerRef.current;
     if (!vm) return;
-    const cmds = vm.update(frameDeltaSec, buttons, yaw, pitch);
+    const cmds = vm.update(frameDeltaSec, input);
     if (cmds.length > 0) sendInputs(cmds);
   }, []);
 

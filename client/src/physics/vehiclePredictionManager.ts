@@ -1,6 +1,7 @@
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { InputCmd, NetVehicleState } from '../net/protocol';
-import { buildInputFromButtons } from '../scene/inputBuilder';
+import type { SemanticInputState } from '../input/types';
+import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 
 export const FIXED_DT = 1 / 60;
 export const MAX_CATCHUP_STEPS = 4;
@@ -151,8 +152,16 @@ export class VehiclePredictionManager {
    * Returns InputCmds generated (one per fixed-step tick), with redundancy
    * (last VEHICLE_INPUT_REDUNDANCY inputs) for packet loss resilience.
    */
-  update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[] {
+  update(frameDeltaSec: number, input: SemanticInputState): InputCmd[];
+  update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[];
+  update(
+    frameDeltaSec: number,
+    inputOrButtons: SemanticInputState | number,
+    yaw = 0,
+    pitch = 0,
+  ): InputCmd[] {
     if (this.vehicleId === null) return [];
+    const semanticInput = normalizeVehicleSemanticInput(inputOrButtons, yaw, pitch);
 
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
@@ -160,7 +169,7 @@ export class VehiclePredictionManager {
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
-      const input = buildInputFromButtons(seq, 0, buttons, yaw, pitch);
+      const input = buildInputFromState(seq, 0, semanticInput);
 
       const result = this.sim.tickVehicle(
         input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT,
@@ -290,4 +299,23 @@ export class VehiclePredictionManager {
   dispose(): void {
     this.exitVehicle();
   }
+}
+
+function normalizeVehicleSemanticInput(
+  inputOrButtons: SemanticInputState | number,
+  yaw: number,
+  pitch: number,
+): SemanticInputState {
+  if (typeof inputOrButtons !== 'number') {
+    return inputOrButtons;
+  }
+
+  const legacyInput = buildInputFromButtons(0, 0, inputOrButtons, yaw, pitch);
+  return {
+    moveX: legacyInput.moveX / 127,
+    moveY: legacyInput.moveY / 127,
+    yaw: legacyInput.yaw,
+    pitch: legacyInput.pitch,
+    buttons: inputOrButtons,
+  };
 }

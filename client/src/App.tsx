@@ -1,7 +1,9 @@
 import { useState, useCallback, useRef } from 'react';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
+import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { DebugOverlay } from './ui/DebugOverlay';
+import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
@@ -12,6 +14,7 @@ export function App() {
   const [status, setStatus] = useState('Click to join');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
+  const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const handleConnect = useCallback(() => {
@@ -22,7 +25,7 @@ export function App() {
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview' : `Player #${id}`} — WASD move, mouse look, hold left click fire, Q remove, F place, 1/2 switch block`);
+    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview' : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
   }, []);
 
   const handleDisconnect = useCallback(() => {
@@ -122,6 +125,7 @@ export function App() {
           />
         </div>
       )}
+      <ControlHintsOverlay state={controlHintsState} visible={connected && isDesktop} />
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
         <div
@@ -141,6 +145,7 @@ export function App() {
           onAimStateChange={setCrosshairState}
           playerId={playerId}
           onDebugFrame={updateFrame}
+          onInputFrame={updateInputFrame}
           onSnapshot={recordSnapshot}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}

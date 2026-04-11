@@ -1,7 +1,8 @@
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
-import { buildInputFromButtons } from '../scene/inputBuilder';
+import type { SemanticInputState } from '../input/types';
+import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
@@ -47,10 +48,18 @@ export class PredictionManager {
    * Advance the prediction simulation by one render-frame's worth of time.
    * Returns any InputCmds generated (one per fixed-step tick).
    */
-  update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[] {
+  update(frameDeltaSec: number, input: SemanticInputState): InputCmd[];
+  update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[];
+  update(
+    frameDeltaSec: number,
+    inputOrButtons: SemanticInputState | number,
+    yaw = 0,
+    pitch = 0,
+  ): InputCmd[] {
     if (!this.worldLoaded || (!this.initialized && !this.isLocalPreview)) {
       return [];
     }
+    const semanticInput = normalizeSemanticInput(inputOrButtons, yaw, pitch);
 
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
@@ -66,7 +75,7 @@ export class PredictionManager {
     let physicsTimeTotal = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
-      const input = buildInputFromButtons(seq, 0, buttons, yaw, pitch);
+      const input = buildInputFromState(seq, 0, semanticInput);
 
       if (this.isLocalPreview) {
         pendingInputs.push(input);
@@ -267,4 +276,23 @@ export class PredictionManager {
   dispose(): void {
     this.sim.free();
   }
+}
+
+function normalizeSemanticInput(
+  inputOrButtons: SemanticInputState | number,
+  yaw: number,
+  pitch: number,
+): SemanticInputState {
+  if (typeof inputOrButtons !== 'number') {
+    return inputOrButtons;
+  }
+
+  const legacyInput = buildInputFromButtons(0, 0, inputOrButtons, yaw, pitch);
+  return {
+    moveX: legacyInput.moveX / 127,
+    moveY: legacyInput.moveY / 127,
+    yaw: legacyInput.yaw,
+    pitch: legacyInput.pitch,
+    buttons: inputOrButtons,
+  };
 }

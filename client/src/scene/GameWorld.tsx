@@ -3,20 +3,27 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CrosshairAimState } from './aimTargeting';
 import { DemoTerrain } from './DemoTerrain';
+import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
 import { usePrediction } from '../physics/usePrediction';
-import { buildInputFromButtons } from './inputBuilder';
+import { buildInputFromState } from './inputBuilder';
+import { GameInputManager } from '../input/manager';
+import {
+  advanceLookAngles,
+  advanceVehicleCamera,
+  resolveOnFootInput,
+  resolveVehicleInput,
+  VEHICLE_CAMERA_DEFAULT_PITCH,
+} from '../input/resolver';
+import type { InputSample } from '../input/types';
+import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
 import {
   aimDirectionFromAngles,
   BLOCK_ADD,
   BLOCK_REMOVE,
-  BTN_FORWARD,
-  BTN_BACK,
-  BTN_LEFT,
-  BTN_RIGHT,
-  BTN_JUMP,
-  BTN_SPRINT,
   FLAG_DEAD,
+  HIT_ZONE_BODY,
+  HIT_ZONE_HEAD,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { InputCmd, NetVehicleState } from '../net/protocol';
@@ -27,7 +34,12 @@ const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
 const LOCAL_PREVIEW_INPUT_DT = 1 / 60;
+const LOCAL_SHOT_TRACE_TTL_MS = 90;
+const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
+const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
+const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -43,17 +55,20 @@ type GameWorldProps = {
   onDisconnect: () => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
   onDebugFrame?: FrameDebugCallback;
+  onInputFrame?: (sample: InputSample) => void;
   onSnapshot?: () => void;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
-export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFrame, onSnapshot }: GameWorldProps) {
+export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFrame, onInputFrame, onSnapshot }: GameWorldProps) {
   const prediction = usePrediction();
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
   onAimStateChangeRef.current = onAimStateChange;
+  const onInputFrameRef = useRef(onInputFrame);
+  onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
   const { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
@@ -87,8 +102,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   );
   const { camera, gl } = useThree();
 
-  const keysRef = useRef(new Set<string>());
-  const mouseButtonsRef = useRef(new Set<number>());
+  const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
@@ -104,78 +118,30 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   const nextLocalFireMsRef = useRef(0);
   const localPreviewInputAccumulatorRef = useRef(0);
   const localPreviewNextSeqRef = useRef(1);
-  const removeBlockLatchRef = useRef(false);
-  const placeBlockLatchRef = useRef(false);
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
+  const localShotTraceRef = useRef<LocalShotTrace | null>(null);
 
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
   const vehicleMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const knownVehicleIds = useRef<Set<number>>(new Set());
   const nearestVehicleIdRef = useRef<number | null>(null);
-  const enterKeyLatchRef = useRef(false); // true when E was pressed and not yet consumed
   const smoothCamPos = useRef(new THREE.Vector3()); // smoothed chase camera position
+  const vehicleCameraYawOffsetRef = useRef(0);
+  const vehicleCameraPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
+  const lastVehicleLookAtMsRef = useRef(performance.now());
+  const shotTraceBeamRef = useRef<THREE.Mesh>(null);
+  const shotTraceImpactRef = useRef<THREE.Mesh>(null);
 
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      keysRef.current.add(e.code);
-      if (e.code === 'Digit1') selectedMaterialRef.current = 1;
-      if (e.code === 'Digit2') selectedMaterialRef.current = 2;
-      if (e.code === 'KeyE') enterKeyLatchRef.current = true;
-      if (e.code === 'KeyQ') removeBlockLatchRef.current = true;
-      if (e.code === 'KeyF') placeBlockLatchRef.current = true;
-    };
-    const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.code);
-    const onBlur = () => {
-      keysRef.current.clear();
-      mouseButtonsRef.current.clear();
-    };
-    const onPointerLockChange = () => {
-      if (document.pointerLockElement !== gl.domElement) {
-        mouseButtonsRef.current.clear();
-      }
-    };
-    const onMouseMove = (e: MouseEvent) => {
-      if (document.pointerLockElement !== gl.domElement) return;
-      yawRef.current -= e.movementX * 0.003;
-      pitchRef.current = Math.max(
-        -Math.PI / 2 + 0.01,
-        Math.min(Math.PI / 2 - 0.01, pitchRef.current - e.movementY * 0.003),
-      );
-    };
-    const onMouseDown = (e: MouseEvent) => {
-      if (document.pointerLockElement !== gl.domElement) return;
-      mouseButtonsRef.current.add(e.button);
-      if (e.button === 0 || e.button === 2) e.preventDefault();
-    };
-    const onMouseUp = (e: MouseEvent) => {
-      mouseButtonsRef.current.delete(e.button);
-    };
-    const onContextMenu = (e: MouseEvent) => {
-      if (document.pointerLockElement === gl.domElement) {
-        e.preventDefault();
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('pointerlockchange', onPointerLockChange);
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('mouseup', onMouseUp);
-    document.addEventListener('contextmenu', onContextMenu);
+    const manager = new GameInputManager();
+    manager.attach();
+    inputManagerRef.current = manager;
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('pointerlockchange', onPointerLockChange);
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('mouseup', onMouseUp);
-      document.removeEventListener('contextmenu', onContextMenu);
+      manager.detach();
+      inputManagerRef.current = null;
     };
-  }, [gl]);
+  }, []);
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
@@ -184,15 +150,6 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   useFrame((_frameState, delta) => {
     if (!ready) return;
     const state = stateRef.current;
-    const keys = keysRef.current;
-
-    let buttons = 0;
-    if (keys.has('KeyW') || keys.has('ArrowUp')) buttons |= BTN_FORWARD;
-    if (keys.has('KeyS') || keys.has('ArrowDown')) buttons |= BTN_BACK;
-    if (keys.has('KeyA') || keys.has('ArrowLeft')) buttons |= BTN_LEFT;
-    if (keys.has('KeyD') || keys.has('ArrowRight')) buttons |= BTN_RIGHT;
-    if (keys.has('Space')) buttons |= BTN_JUMP;
-    if (keys.has('ShiftLeft') || keys.has('ShiftRight')) buttons |= BTN_SPRINT;
 
     const now = performance.now();
     const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
@@ -212,6 +169,36 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
           }
         : null);
     const isDrivingNow = localControlledVehiclePose !== null;
+    const pointerLocked = document.pointerLockElement === gl.domElement;
+    const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot')
+      ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
+    onInputFrameRef.current?.(inputSample);
+
+    if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
+    if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
+
+    if (isDrivingNow) {
+      const updatedCamera = advanceVehicleCamera(
+        vehicleCameraYawOffsetRef.current,
+        vehicleCameraPitchRef.current,
+        inputSample.action,
+        now - lastVehicleLookAtMsRef.current,
+        frameDelta,
+      );
+      vehicleCameraYawOffsetRef.current = updatedCamera.orbitYaw;
+      vehicleCameraPitchRef.current = updatedCamera.orbitPitch;
+      if (updatedCamera.hadLookInput) {
+        lastVehicleLookAtMsRef.current = now;
+      }
+    } else {
+      const look = advanceLookAngles(yawRef.current, pitchRef.current, inputSample.action);
+      yawRef.current = look.yaw;
+      pitchRef.current = look.pitch;
+    }
+
+    const resolvedInput = isDrivingNow
+      ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
+      : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily);
 
     // --- Vehicle spawn/despawn sync ---
     if (!IS_LOCAL_PREVIEW && client && prediction.ready) {
@@ -237,8 +224,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     }
 
     // --- Enter/Exit vehicle on E press ---
-    if (enterKeyLatchRef.current) {
-      enterKeyLatchRef.current = false;
+    if (resolvedInput.interactPressed) {
       if (isDrivingNow) {
         // Exit current vehicle
         if (!IS_LOCAL_PREVIEW) {
@@ -287,6 +273,9 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
             sendVehicleEnter(vehicleId, 0);
             // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
             smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
+            vehicleCameraYawOffsetRef.current = 0;
+            vehicleCameraPitchRef.current = VEHICLE_CAMERA_DEFAULT_PITCH;
+            lastVehicleLookAtMsRef.current = now;
           }
         }
       }
@@ -295,7 +284,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     if (prediction.ready) {
       if (prediction.isInVehicle()) {
         // Vehicle prediction — skip player KCC tick
-        prediction.updateVehicle(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+        prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
         if (IS_LOCAL_PREVIEW) {
           localPreviewInputAccumulatorRef.current += frameDelta;
@@ -303,7 +292,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
           let steps = 0;
           while (localPreviewInputAccumulatorRef.current >= LOCAL_PREVIEW_INPUT_DT && steps < 4) {
             const seq = localPreviewNextSeqRef.current++ & 0xffff;
-            cmds.push(buildInputFromButtons(seq, 0, buttons, yawRef.current, pitchRef.current));
+            cmds.push(buildInputFromState(seq, 0, resolvedInput));
             localPreviewInputAccumulatorRef.current -= LOCAL_PREVIEW_INPUT_DT;
             steps++;
           }
@@ -315,14 +304,25 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
           }
         } else {
           // Prediction owns seq counting, input building, and sending — all in lockstep
-          prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+          prediction.update(frameDelta, resolvedInput, sendInputs);
         }
       }
     }
 
-    if (!isDrivingNow && !localDead && document.pointerLockElement === gl.domElement) {
-      if (mouseButtonsRef.current.has(0) && client && now >= nextLocalFireMsRef.current) {
+    const canUseAimActions = !isDrivingNow && !localDead && (pointerLocked || inputSample.activeFamily === 'gamepad');
+
+    if (canUseAimActions) {
+      if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
+        localShotTraceRef.current = createLocalShotTrace(
+          camera,
+          now,
+          aimDirectionFromAngles(yawRef.current, pitchRef.current),
+          state.remotePlayers,
+          state.remoteInterpolator,
+          state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+          prediction,
+        );
         sendFire({
           seq: prediction.getNextSeq(),
           shotId: nextShotIdRef.current++ >>> 0,
@@ -333,12 +333,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         });
       }
 
-      if (!IS_LOCAL_PREVIEW && (removeBlockLatchRef.current || placeBlockLatchRef.current)) {
-        const removeRequested = removeBlockLatchRef.current;
-        const placeRequested = placeBlockLatchRef.current;
-        removeBlockLatchRef.current = false;
-        placeBlockLatchRef.current = false;
-
+      if (!IS_LOCAL_PREVIEW && (resolvedInput.blockRemovePressed || resolvedInput.blockPlacePressed)) {
         const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const hit = prediction.raycastBlocks(
           [camera.position.x, camera.position.y, camera.position.z],
@@ -346,13 +341,13 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
           6,
         );
         if (hit) {
-          if (removeRequested && prediction.getBlockMaterial(hit.removeCell) !== 0) {
+          if (resolvedInput.blockRemovePressed && prediction.getBlockMaterial(hit.removeCell) !== 0) {
             const cmd = prediction.buildBlockEdit(hit.removeCell, BLOCK_REMOVE, 0);
             if (cmd) {
               prediction.applyOptimisticEdit(cmd);
               sendBlockEdit(cmd);
             }
-          } else if (placeRequested && prediction.getBlockMaterial(hit.placeCell) === 0) {
+          } else if (resolvedInput.blockPlacePressed && prediction.getBlockMaterial(hit.placeCell) === 0) {
             const cmd = prediction.buildBlockEdit(hit.placeCell, BLOCK_ADD, selectedMaterialRef.current);
             if (cmd) {
               prediction.applyOptimisticEdit(cmd);
@@ -372,8 +367,6 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     const pitch = pitchRef.current;
 
     if (isDriving && vehiclePoseForCamera) {
-      // Chase camera: yaw-only (no roll/pitch) + position smoothing to absorb
-      // suspension bounce and prediction micro-corrections.
       const chassisPos = vehiclePoseForCamera.position;
       const fullQuat = new THREE.Quaternion(
         vehiclePoseForCamera.quaternion[0],
@@ -381,17 +374,15 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         vehiclePoseForCamera.quaternion[2],
         vehiclePoseForCamera.quaternion[3],
       );
-      // Extract only yaw
       const euler = new THREE.Euler().setFromQuaternion(fullQuat, 'YXZ');
-      const yawQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, euler.y, 0));
-      const offset = new THREE.Vector3(0, 2.5, -6);
-      offset.applyQuaternion(yawQuat);
+      const orbitYaw = euler.y + vehicleCameraYawOffsetRef.current;
+      const orbitPitch = vehicleCameraPitchRef.current;
+      const focusY = chassisPos[1] + 1.0;
+      const followDistance = 6.0;
+      const targetX = chassisPos[0] - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+      const targetY = focusY + Math.sin(orbitPitch) * followDistance + 1.0;
+      const targetZ = chassisPos[2] - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
 
-      const targetX = chassisPos[0] + offset.x;
-      const targetY = chassisPos[1] + offset.y;
-      const targetZ = chassisPos[2] + offset.z;
-
-      // Smooth at ~20 Hz effective rate — filters chassis bounce without lag
       const smoothRate = Math.min(frameDelta * 20.0, 1.0);
       smoothCamPos.current.set(
         smoothCamPos.current.x + (targetX - smoothCamPos.current.x) * smoothRate,
@@ -399,7 +390,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         smoothCamPos.current.z + (targetZ - smoothCamPos.current.z) * smoothRate,
       );
       camera.position.copy(smoothCamPos.current);
-      camera.lookAt(chassisPos[0], chassisPos[1] + 1.0, chassisPos[2]);
+      camera.lookAt(chassisPos[0], focusY, chassisPos[2]);
     } else {
       const eyeHeight = PLAYER_EYE_HEIGHT;
       camera.position.set(pos[0], pos[1] + eyeHeight, pos[2]);
@@ -418,6 +409,13 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     // Report per-frame debug stats to server (aggregated to 1 Hz)
     const physStats = prediction.getDebugStats();
     client?.accumulateDebugStats(physStats.correctionMagnitude, physStats.physicsStepMs);
+
+    updateLocalShotTraceVisuals(
+      localShotTraceRef.current,
+      now,
+      shotTraceBeamRef.current,
+      shotTraceImpactRef.current,
+    );
 
     // Debug overlay stats
     if (onDebugFrameRef.current) {
@@ -453,7 +451,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 
-    if (!IS_LOCAL_PREVIEW && !isDrivingNow && !localDead && document.pointerLockElement === gl.domElement) {
+    if (!IS_LOCAL_PREVIEW && canUseAimActions) {
       const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
       const aimDirection = aimDirectionFromAngles(yawRef.current, pitchRef.current);
       const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, CROSSHAIR_MAX_DISTANCE);
@@ -682,6 +680,16 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
       {/* Vehicle group */}
       <group ref={vehicleGroupRef} />
 
+      {/* Local shot trace */}
+      <mesh ref={shotTraceBeamRef} visible={false}>
+        <cylinderGeometry args={[LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10]} />
+        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+      </mesh>
+      <mesh ref={shotTraceImpactRef} visible={false}>
+        <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
+        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+      </mesh>
+
       {/* Crosshair */}
       <CrosshairHUD />
     </>
@@ -705,6 +713,92 @@ function WorldBlock({
 
 function CrosshairHUD() {
   return null;
+}
+
+function createLocalShotTrace(
+  camera: THREE.Camera,
+  nowMs: number,
+  aimDirection: [number, number, number],
+  remotePlayers: Map<number, RemotePlayer>,
+  remoteInterpolator: ReturnType<typeof useGameConnection>['stateRef']['current']['remoteInterpolator'],
+  renderTimeUs: number,
+  prediction: ReturnType<typeof usePrediction>,
+): LocalShotTrace {
+  const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
+  const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, LOCAL_SHOT_TRACE_MAX_DISTANCE);
+  const blockerDistance = sceneHit?.toi ?? null;
+  const remoteHits: RemoteShotHit[] = [];
+
+  for (const [id, rp] of remotePlayers) {
+    const sample = remoteInterpolator.sample(id, renderTimeUs);
+    const position = sample?.position ?? rp.position;
+    const hit = prediction.classifyHitscanPlayer(aimOrigin, aimDirection, position, blockerDistance);
+    if (!hit) continue;
+    remoteHits.push({
+      distance: hit.distance,
+      kind: hit.kind === HIT_ZONE_HEAD ? 'head' : 'body',
+    });
+  }
+
+  const intercept = pickShotTraceIntercept(blockerDistance, remoteHits, LOCAL_SHOT_TRACE_MAX_DISTANCE);
+  const pseudoMuzzleOrigin = camera.position.clone().add(CAMERA_PSEUDO_MUZZLE_OFFSET.clone().applyQuaternion(camera.quaternion));
+  const end = [
+    aimOrigin[0] + aimDirection[0] * intercept.distance,
+    aimOrigin[1] + aimDirection[1] * intercept.distance,
+    aimOrigin[2] + aimDirection[2] * intercept.distance,
+  ] as [number, number, number];
+
+  return {
+    origin: [pseudoMuzzleOrigin.x, pseudoMuzzleOrigin.y, pseudoMuzzleOrigin.z],
+    end,
+    kind: intercept.kind,
+    expiresAtMs: nowMs + LOCAL_SHOT_TRACE_TTL_MS,
+  };
+}
+
+function updateLocalShotTraceVisuals(
+  trace: LocalShotTrace | null,
+  nowMs: number,
+  beam: THREE.Mesh | null,
+  impact: THREE.Mesh | null,
+) {
+  if (!beam || !impact) return;
+  if (!isShotTraceActive(trace, nowMs)) {
+    beam.visible = false;
+    impact.visible = false;
+    return;
+  }
+  if (!trace) {
+    beam.visible = false;
+    impact.visible = false;
+    return;
+  }
+
+  const alpha = Math.max(0, (trace.expiresAtMs - nowMs) / LOCAL_SHOT_TRACE_TTL_MS);
+  const color = shotTraceColor(trace.kind);
+  const origin = new THREE.Vector3(...trace.origin);
+  const end = new THREE.Vector3(...trace.end);
+  const delta = new THREE.Vector3().subVectors(end, origin);
+  const length = Math.max(delta.length(), 0.001);
+  const mid = new THREE.Vector3().addVectors(origin, end).multiplyScalar(0.5);
+  const direction = delta.normalize();
+
+  beam.visible = true;
+  beam.position.copy(mid);
+  beam.scale.set(1, length, 1);
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  if (beam.material instanceof THREE.MeshBasicMaterial) {
+    beam.material.color.setHex(color);
+    beam.material.opacity = alpha * 0.9;
+  }
+
+  impact.visible = true;
+  impact.position.copy(end);
+  impact.scale.setScalar(0.85 + alpha * 0.55);
+  if (impact.material instanceof THREE.MeshBasicMaterial) {
+    impact.material.color.setHex(color);
+    impact.material.opacity = alpha;
+  }
 }
 
 function createVehicleMesh(_id: number): THREE.Group {

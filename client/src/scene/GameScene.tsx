@@ -2,6 +2,7 @@ import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense } from 'react';
 import { GameWorld } from './GameWorld';
+import type { InputSample } from '../input/types';
 
 type GameSceneProps = {
   onWelcome: (id: number) => void;
@@ -9,6 +10,7 @@ type GameSceneProps = {
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
+  onInputFrame?: (sample: InputSample) => void;
   onSnapshot?: () => void;
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
@@ -21,6 +23,7 @@ export function GameScene({
   onDisconnect,
   onAimStateChange,
   onDebugFrame,
+  onInputFrame,
   onSnapshot,
   showRenderStats,
   renderStatsParent,
@@ -46,6 +49,7 @@ export function GameScene({
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}
           onDebugFrame={onDebugFrame}
+          onInputFrame={onInputFrame}
           onSnapshot={onSnapshot}
         />
       </Suspense>

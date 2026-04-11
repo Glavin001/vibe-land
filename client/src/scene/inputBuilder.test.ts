@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildInputFromButtons } from './inputBuilder';
+import { buildInputFromButtons, buildInputFromState } from './inputBuilder';
 import {
   BTN_FORWARD,
   BTN_BACK,
@@ -93,5 +93,20 @@ describe('buildInputFromButtons', () => {
     const cmd = buildInputFromButtons(1, 0, buttons, 0, 0);
     expect(cmd.moveX).toBe(0);
     expect(cmd.moveY).toBe(0);
+  });
+
+  it('builds analog movement from semantic state', () => {
+    const cmd = buildInputFromState(1, 0, {
+      moveX: 0.5,
+      moveY: -0.25,
+      yaw: 0.1,
+      pitch: -0.2,
+      buttons: BTN_JUMP,
+    });
+    expect(cmd.moveX).toBe(64);
+    expect(cmd.moveY).toBe(-32);
+    expect(cmd.buttons & BTN_RIGHT).toBeTruthy();
+    expect(cmd.buttons & BTN_BACK).toBeTruthy();
+    expect(cmd.buttons & BTN_JUMP).toBeTruthy();
   });
 });
