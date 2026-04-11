@@ -19,6 +19,35 @@ make dev     # start server + client in parallel
 
 Open `https://localhost:5555` and click to join.
 
+## Local Preview Mode
+
+To run the game entirely in one browser tab with no Rust server, WebSocket, or WebTransport dependency:
+
+```bash
+cd client
+npm run dev:local-preview
+```
+
+To build the static browser-only preview bundle:
+
+```bash
+cd client
+npm run build:local-preview
+```
+
+This mode keeps the normal client prediction/render path, but swaps the remote server transport for an in-browser authoritative WASM session seeded with the demo world, vehicle, and dynamic bodies.
+
+## Vercel Deployment
+
+The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the static `local-preview` client bundle.
+
+- Vercel build target: `client/dist`
+- Vercel build command: `npm --prefix client run build:vercel-local-preview`
+- Local/full multiplayer dev remains unchanged:
+  use `make dev` or `cd client && npm run dev` plus the Rust server
+
+This means Vercel preview deployments host the browser-only single-player preview, while local development can still run the full multiplayer stack.
+
 > **HTTPS is required** — WebTransport only works in secure contexts. When `WT_CERT_PEM`/`WT_KEY_PEM` are set in `.env`, Vite serves HTTPS automatically using those certs. In dev (no certs set), the server generates a self-signed cert; Chrome/Edge accept it via hash pinning.
 
 Or run manually:

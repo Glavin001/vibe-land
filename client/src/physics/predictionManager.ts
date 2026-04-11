@@ -4,6 +4,8 @@ import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
+const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+
 export const FIXED_DT = 1 / 60;
 export const MAX_CATCHUP_STEPS = 4;
 export const HARD_SNAP_DISTANCE = 3.0;
@@ -34,9 +36,10 @@ export class PredictionManager {
   private worldLoaded = false;
   private initialized = false;
   private _lastPhysicsStepMs = 0;
+  readonly isLocalPreview = IS_LOCAL_PREVIEW;
 
   constructor(private readonly sim: WasmSimWorld) {
-    this.voxelWorld = new ClientVoxelWorld(sim);
+    this.voxelWorld = new ClientVoxelWorld(sim, !IS_LOCAL_PREVIEW);
   }
 
   /**
@@ -44,7 +47,7 @@ export class PredictionManager {
    * Returns any InputCmds generated (one per fixed-step tick).
    */
   update(frameDeltaSec: number, buttons: number, yaw: number, pitch: number): InputCmd[] {
-    if (!this.worldLoaded || !this.initialized) {
+    if (!this.worldLoaded || (!this.initialized && !this.isLocalPreview)) {
       return [];
     }
 
@@ -63,6 +66,14 @@ export class PredictionManager {
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromButtons(seq, 0, buttons, yaw, pitch);
+
+      if (this.isLocalPreview) {
+        pendingInputs.push(input);
+        this.accumulator -= FIXED_DT;
+        steps++;
+        this.tickCount++;
+        continue;
+      }
 
       const t0 = performance.now();
       this.sim.tick(input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT);

@@ -7,6 +7,7 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
 use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 use crate::protocol::InputCmd;
@@ -816,6 +817,45 @@ impl WasmSimWorld {
             r.i as f64, r.j as f64, r.k as f64, r.w as f64,
             v.x as f64, v.y as f64, v.z as f64,
         ])
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmLocalSession {
+    inner: LocalPreviewSession,
+}
+
+#[wasm_bindgen]
+impl WasmLocalSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: LocalPreviewSession::new(),
+        }
+    }
+
+    pub fn connect(&mut self) {
+        self.inner.connect();
+    }
+
+    pub fn disconnect(&mut self) {
+        self.inner.disconnect();
+    }
+
+    #[wasm_bindgen(js_name = handleClientPacket)]
+    pub fn handle_client_packet(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .handle_client_packet(bytes)
+            .map_err(|err| JsValue::from_str(&err))
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        self.inner.tick(dt);
+    }
+
+    #[wasm_bindgen(js_name = drainPackets)]
+    pub fn drain_packets(&mut self) -> Box<[u8]> {
+        self.inner.drain_packet_blob().into_boxed_slice()
     }
 }
 

@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import type { CrosshairAimState } from './aimTargeting';
 import { useGameConnection } from './useGameConnection';
 import { usePrediction } from '../physics/usePrediction';
+import { buildInputFromButtons } from './inputBuilder';
 import {
   aimDirectionFromAngles,
   BLOCK_ADD,
@@ -17,13 +18,15 @@ import {
   FLAG_DEAD,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState } from '../net/protocol';
+import type { InputCmd, NetVehicleState } from '../net/protocol';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+const LOCAL_PREVIEW_INPUT_DT = 1 / 60;
+const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -55,7 +58,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   const { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
     onWelcome,
     onDisconnect,
-    prediction.ready
+    !IS_LOCAL_PREVIEW && prediction.ready
       ? (ackInputSeq, state) => {
           // Sync dynamic bodies BEFORE reconciliation so that input replay
           // collides with the correct (same-tick) collider positions.
@@ -77,7 +80,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         onSnapshotRef.current?.();
       }
     },
-    prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
+    !IS_LOCAL_PREVIEW && prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
       prediction.reconcileVehicle(vs, ackInputSeq);
     } : undefined,
   );
@@ -98,6 +101,8 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  const localPreviewInputAccumulatorRef = useRef(0);
+  const localPreviewNextSeqRef = useRef(1);
   const removeBlockLatchRef = useRef(false);
   const placeBlockLatchRef = useRef(false);
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
@@ -105,7 +110,6 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
   const vehicleMeshes = useRef<Map<number, THREE.Group>>(new Map());
-  const localVehicleGroupRef = useRef<THREE.Group | null>(null);
   const knownVehicleIds = useRef<Set<number>>(new Set());
   const nearestVehicleIdRef = useRef<number | null>(null);
   const enterKeyLatchRef = useRef(false); // true when E was pressed and not yet consumed
@@ -195,9 +199,21 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     const client = clientRef.current;
     const localFlags = client?.localPlayerFlags ?? 0;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
+    const localPreviewVehicleEntry = IS_LOCAL_PREVIEW && client
+      ? [...client.vehicles.entries()].find(([, vs]) => vs.driverId === client.playerId) ?? null
+      : null;
+    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
+    const localControlledVehiclePose = predictedVehiclePose
+      ?? (localPreviewVehicleEntry
+        ? {
+            position: localPreviewVehicleEntry[1].position,
+            quaternion: localPreviewVehicleEntry[1].quaternion,
+          }
+        : null);
+    const isDrivingNow = localControlledVehiclePose !== null;
 
     // --- Vehicle spawn/despawn sync ---
-    if (client && prediction.ready) {
+    if (!IS_LOCAL_PREVIEW && client && prediction.ready) {
       const serverVehicles = client.vehicles;
       // Spawn newly seen vehicles into WASM
       for (const [id, vs] of serverVehicles) {
@@ -222,10 +238,13 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     // --- Enter/Exit vehicle on E press ---
     if (enterKeyLatchRef.current) {
       enterKeyLatchRef.current = false;
-      if (prediction.isInVehicle()) {
+      if (isDrivingNow) {
         // Exit current vehicle
-        const vehiclePose = prediction.getVehiclePose();
-        prediction.exitVehicle();
+        if (!IS_LOCAL_PREVIEW) {
+          const vehiclePose = prediction.getVehiclePose();
+          prediction.exitVehicle();
+          void vehiclePose; // suppress unused warning
+        }
         // Notify server — find which vehicle we're in
         if (client) {
           for (const [id, vs] of client.vehicles) {
@@ -235,36 +254,39 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
             }
           }
         }
-        void vehiclePose; // suppress unused warning
       } else if (nearestVehicleIdRef.current !== null) {
         const vehicleId = nearestVehicleIdRef.current;
         const vs = client?.vehicles.get(vehicleId);
-        if (vs && vs.driverId === 0 && prediction.ready) {
+        if (vs && vs.driverId === 0 && (IS_LOCAL_PREVIEW || prediction.ready)) {
+          if (IS_LOCAL_PREVIEW) {
+            sendVehicleEnter(vehicleId, 0);
+          } else {
           // Enter vehicle — build a NetVehicleState from the VehicleStateMeters
-          const initState: NetVehicleState = {
-            id: vehicleId,
-            pxMm: Math.round(vs.position[0] * 1000),
-            pyMm: Math.round(vs.position[1] * 1000),
-            pzMm: Math.round(vs.position[2] * 1000),
-            qxSnorm: Math.round(vs.quaternion[0] * 32767),
-            qySnorm: Math.round(vs.quaternion[1] * 32767),
-            qzSnorm: Math.round(vs.quaternion[2] * 32767),
-            qwSnorm: Math.round(vs.quaternion[3] * 32767),
-            vxCms: Math.round(vs.linearVelocity[0] * 100),
-            vyCms: Math.round(vs.linearVelocity[1] * 100),
-            vzCms: Math.round(vs.linearVelocity[2] * 100),
-            wxMrads: Math.round(vs.angularVelocity[0] * 1000),
-            wyMrads: Math.round(vs.angularVelocity[1] * 1000),
-            wzMrads: Math.round(vs.angularVelocity[2] * 1000),
-            wheelData: vs.wheelData as [number, number, number, number],
-            driverId: 0,
-            vehicleType: vs.vehicleType ?? 0,
-            flags: vs.flags ?? 0,
-          };
-          prediction.enterVehicle(vehicleId, initState);
-          sendVehicleEnter(vehicleId, 0);
-          // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
-          smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
+            const initState: NetVehicleState = {
+              id: vehicleId,
+              pxMm: Math.round(vs.position[0] * 1000),
+              pyMm: Math.round(vs.position[1] * 1000),
+              pzMm: Math.round(vs.position[2] * 1000),
+              qxSnorm: Math.round(vs.quaternion[0] * 32767),
+              qySnorm: Math.round(vs.quaternion[1] * 32767),
+              qzSnorm: Math.round(vs.quaternion[2] * 32767),
+              qwSnorm: Math.round(vs.quaternion[3] * 32767),
+              vxCms: Math.round(vs.linearVelocity[0] * 100),
+              vyCms: Math.round(vs.linearVelocity[1] * 100),
+              vzCms: Math.round(vs.linearVelocity[2] * 100),
+              wxMrads: Math.round(vs.angularVelocity[0] * 1000),
+              wyMrads: Math.round(vs.angularVelocity[1] * 1000),
+              wzMrads: Math.round(vs.angularVelocity[2] * 1000),
+              wheelData: vs.wheelData as [number, number, number, number],
+              driverId: 0,
+              vehicleType: vs.vehicleType ?? 0,
+              flags: vs.flags ?? 0,
+            };
+            prediction.enterVehicle(vehicleId, initState);
+            sendVehicleEnter(vehicleId, 0);
+            // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
+            smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
+          }
         }
       }
     }
@@ -274,12 +296,30 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
       } else {
-        // Prediction owns seq counting, input building, and sending — all in lockstep
-        prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+        if (IS_LOCAL_PREVIEW) {
+          localPreviewInputAccumulatorRef.current += frameDelta;
+          const cmds: InputCmd[] = [];
+          let steps = 0;
+          while (localPreviewInputAccumulatorRef.current >= LOCAL_PREVIEW_INPUT_DT && steps < 4) {
+            const seq = localPreviewNextSeqRef.current++ & 0xffff;
+            cmds.push(buildInputFromButtons(seq, 0, buttons, yawRef.current, pitchRef.current));
+            localPreviewInputAccumulatorRef.current -= LOCAL_PREVIEW_INPUT_DT;
+            steps++;
+          }
+          if (localPreviewInputAccumulatorRef.current > LOCAL_PREVIEW_INPUT_DT) {
+            localPreviewInputAccumulatorRef.current = LOCAL_PREVIEW_INPUT_DT;
+          }
+          if (cmds.length > 0) {
+            sendInputs(cmds);
+          }
+        } else {
+          // Prediction owns seq counting, input building, and sending — all in lockstep
+          prediction.update(frameDelta, buttons, yawRef.current, pitchRef.current, sendInputs);
+        }
       }
     }
 
-    if (!prediction.isInVehicle() && !localDead && document.pointerLockElement === gl.domElement) {
+    if (!isDrivingNow && !localDead && document.pointerLockElement === gl.domElement) {
       if (mouseButtonsRef.current.has(0) && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
         sendFire({
@@ -292,7 +332,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         });
       }
 
-      if (removeBlockLatchRef.current || placeBlockLatchRef.current) {
+      if (!IS_LOCAL_PREVIEW && (removeBlockLatchRef.current || placeBlockLatchRef.current)) {
         const removeRequested = removeBlockLatchRef.current;
         const placeRequested = placeBlockLatchRef.current;
         removeBlockLatchRef.current = false;
@@ -323,9 +363,9 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     }
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
-    const isDriving = prediction.isInVehicle();
-    const vehiclePoseForCamera = isDriving ? prediction.getVehiclePose() : null;
-    const predictedPos = prediction.getPosition();
+    const isDriving = isDrivingNow;
+    const vehiclePoseForCamera = localControlledVehiclePose;
+    const predictedPos = IS_LOCAL_PREVIEW ? null : prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
@@ -412,7 +452,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 
-    if (!prediction.isInVehicle() && !localDead && document.pointerLockElement === gl.domElement) {
+    if (!IS_LOCAL_PREVIEW && !isDrivingNow && !localDead && document.pointerLockElement === gl.domElement) {
       const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
       const aimDirection = aimDirectionFromAngles(yawRef.current, pitchRef.current);
       const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, CROSSHAIR_MAX_DISTANCE);
@@ -549,8 +589,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
-      const isDrivingNow = prediction.isInVehicle();
-      const localVehiclePos = isDrivingNow ? prediction.getVehiclePose() : null;
+      const localVehiclePos = localControlledVehiclePose;
 
       // Find nearest unoccupied vehicle for proximity indicator
       let nearest: number | null = null;

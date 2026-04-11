@@ -1,4 +1,4 @@
-import init, { WasmSimWorld, WasmClockSync } from './pkg/vibe_land_shared.js';
+import init, { WasmSimWorld, WasmClockSync, WasmLocalSession } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
 
 let initialized = false;
@@ -10,4 +10,4 @@ export async function initSharedPhysics(): Promise<void> {
   initialized = true;
 }
 
-export { WasmSimWorld, WasmClockSync };
+export { WasmSimWorld, WasmClockSync, WasmLocalSession };

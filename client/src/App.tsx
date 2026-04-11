@@ -4,6 +4,8 @@ import type { CrosshairAimState } from './scene/aimTargeting';
 import { DebugOverlay } from './ui/DebugOverlay';
 import { useDebugStats } from './ui/useDebugStats';
 
+const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+
 export function App() {
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(0);
@@ -14,16 +16,16 @@ export function App() {
   const handleConnect = useCallback(() => {
     setConnected(true);
     setCrosshairState('idle');
-    setStatus('Connecting...');
+    setStatus(IS_LOCAL_PREVIEW ? 'Starting local preview...' : 'Connecting...');
   }, []);
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`Player #${id} — WASD move, mouse look, hold left click fire, Q remove, F place, 1/2 switch block`);
+    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview' : `Player #${id}`} — WASD move, mouse look, hold left click fire, Q remove, F place, 1/2 switch block`);
   }, []);
 
   const handleDisconnect = useCallback(() => {
-    setStatus('Disconnected — click to rejoin');
+    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview stopped' : 'Disconnected'} — click to rejoin`);
     setConnected(false);
     setPlayerId(0);
     setCrosshairState('idle');
@@ -60,7 +62,9 @@ export function App() {
         >
           <div style={{ textAlign: 'center' }}>
             <h1 style={{ fontSize: 48, marginBottom: 16 }}>vibe-land</h1>
-            <p style={{ fontSize: 20, opacity: 0.7 }}>Click anywhere to join</p>
+            <p style={{ fontSize: 20, opacity: 0.7 }}>
+              {IS_LOCAL_PREVIEW ? 'Click anywhere to launch local preview' : 'Click anywhere to join'}
+            </p>
           </div>
         </div>
       )}

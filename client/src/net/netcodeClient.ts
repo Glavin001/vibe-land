@@ -1,4 +1,5 @@
 import { GameSocket } from './gameSocket';
+import { LocalPreviewTransport } from './localPreviewTransport';
 import { WebTransportGameClient } from './webTransportClient';
 import { PlayerInterpolator, ServerClockEstimator, VehicleInterpolator, type PlayerSample, type VehicleSample } from './interpolation';
 import {
@@ -67,6 +68,7 @@ export class NetcodeClient {
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
+  private localTransport: LocalPreviewTransport | null = null;
   private config: NetcodeClientConfig;
 
   // Rolling accumulators for 1Hz debug stats report to server
@@ -75,8 +77,9 @@ export class NetcodeClient {
   private _debugSampleCount = 0;
   private _debugLastSendMs = 0;
 
-  /** Human-readable active transport: 'webtransport', 'websocket', or 'connecting' */
+  /** Human-readable active transport. */
   get transport(): string {
+    if (this.localTransport) return 'local-preview';
     if (this.wtClient) return 'webtransport';
     if (this.socket) return 'websocket';
     return 'connecting';
@@ -99,6 +102,16 @@ export class NetcodeClient {
       },
     });
     this.socket.connect(wsUrl);
+  }
+
+  async connectLocalPreview(): Promise<void> {
+    this.localTransport = await LocalPreviewTransport.connect({
+      onPacket: (packet) => this.handlePacket(packet),
+      onClose: () => {
+        this.localTransport = null;
+        this.config.onDisconnect?.();
+      },
+    });
   }
 
   /**
@@ -132,6 +145,10 @@ export class NetcodeClient {
   }
 
   ping(): void {
+    if (this.localTransport) {
+      this.localTransport.ping();
+      return;
+    }
     // WebTransport RTT is measured server-side via server-initiated pings
     if (!this.wtClient) {
       this.socket?.ping();
@@ -139,6 +156,8 @@ export class NetcodeClient {
   }
 
   disconnect(): void {
+    this.localTransport?.close();
+    this.localTransport = null;
     this.wtClient?.close();
     this.wtClient = null;
     this.socket?.disconnect();
@@ -146,7 +165,9 @@ export class NetcodeClient {
   }
 
   sendInputs(cmds: InputCmd[]): void {
-    if (this.wtClient) {
+    if (this.localTransport) {
+      this.localTransport.sendInputs(cmds);
+    } else if (this.wtClient) {
       if (cmds.length > 0) this.wtClient.sendInputBundle(cmds);
     } else {
       this.socket?.sendInputs(cmds);
@@ -167,7 +188,9 @@ export class NetcodeClient {
       const avgCorrection = this._debugCorrectionSum / this._debugSampleCount;
       const avgPhysics = this._debugPhysicsSum / this._debugSampleCount;
       const pkt = encodeDebugStatsPacket(avgCorrection, avgPhysics);
-      if (this.wtClient) {
+      if (this.localTransport) {
+        // Local preview has no server stats consumer.
+      } else if (this.wtClient) {
         this.wtClient.sendRawDatagram(pkt);
       } else {
         this.socket?.sendRaw(pkt);
@@ -180,7 +203,9 @@ export class NetcodeClient {
   }
 
   sendFire(cmd: FireCmd): void {
-    if (this.wtClient) {
+    if (this.localTransport) {
+      this.localTransport.sendFire(cmd);
+    } else if (this.wtClient) {
       this.wtClient.sendFire(cmd);
     } else {
       this.socket?.sendFire(cmd);
@@ -188,7 +213,9 @@ export class NetcodeClient {
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {
-    if (this.wtClient) {
+    if (this.localTransport) {
+      this.localTransport.sendBlockEdit(cmd);
+    } else if (this.wtClient) {
       this.wtClient.sendBlockEdit(cmd);
     } else {
       this.socket?.sendBlockEdit(cmd);
@@ -196,7 +223,9 @@ export class NetcodeClient {
   }
 
   sendVehicleEnter(vehicleId: number, seat = 0): void {
-    if (this.wtClient) {
+    if (this.localTransport) {
+      this.localTransport.sendVehicleEnter(vehicleId, seat);
+    } else if (this.wtClient) {
       this.wtClient.sendVehicleEnter(vehicleId, seat);
     } else {
       this.socket?.sendVehicleEnter(vehicleId, seat);
@@ -204,7 +233,9 @@ export class NetcodeClient {
   }
 
   sendVehicleExit(vehicleId: number): void {
-    if (this.wtClient) {
+    if (this.localTransport) {
+      this.localTransport.sendVehicleExit(vehicleId);
+    } else if (this.wtClient) {
       this.wtClient.sendVehicleExit(vehicleId);
     } else {
       this.socket?.sendVehicleExit(vehicleId);
@@ -219,7 +250,7 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
-        this.interpolationDelayMs = packet.interpolationDelayMs;
+        this.interpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
@@ -231,10 +262,14 @@ export class NetcodeClient {
       case 'snapshot': {
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
-        // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
-        const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
-        if (adaptiveDelayMs > 0) {
-          this.interpolationDelayMs = Math.round(adaptiveDelayMs * 100) / 100;
+        if (this.localTransport) {
+          this.interpolationDelayMs = 0;
+        } else {
+          // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
+          const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+          if (adaptiveDelayMs > 0) {
+            this.interpolationDelayMs = Math.round(adaptiveDelayMs * 100) / 100;
+          }
         }
 
         // Update dynamic bodies BEFORE reconciliation so that input replay

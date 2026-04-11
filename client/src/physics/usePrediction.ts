@@ -5,6 +5,8 @@ import { VehiclePredictionManager } from './vehiclePredictionManager';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
 
+const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+
 type BlockRayHit = {
   point: [number, number, number];
   normal: [number, number, number];
@@ -29,7 +31,6 @@ export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const simRef = useRef<WasmSimWorld | null>(null);
-  const initializedRef = useRef(false);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
   const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
@@ -43,6 +44,11 @@ export function usePrediction() {
       const sim = new WasmSimWorld();
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
+      if (IS_LOCAL_PREVIEW) {
+        // Local preview skips per-block collider sync; seed a simple ground plane
+        // directly so movement works without waiting on network-style world packets.
+        sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
+      }
       sim.rebuildBroadPhase();
 
       const manager = new PredictionManager(sim);
@@ -66,7 +72,6 @@ export function usePrediction() {
 
     return () => {
       disposed = true;
-      initializedRef.current = false;
       setReady(false);
       setRenderBlocks([]);
       const m = managerRef.current;
@@ -278,6 +283,7 @@ export function usePrediction() {
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const m = managerRef.current;
     if (!m) return;
+    if (IS_LOCAL_PREVIEW) return;
     m.updateDynamicBodies(bodies);
   }, []);
 
