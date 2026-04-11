@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use nalgebra::Vector3;
 use rapier3d::control::DynamicRayCastVehicleController;
@@ -9,7 +10,7 @@ use crate::protocol::*;
 pub use crate::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
-pub use crate::simulation::simulate_player_tick;
+pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
 use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -123,25 +124,30 @@ impl PhysicsArena {
         self.dynamic.wake_bodies_near(center, radius);
     }
 
-    pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
+    pub fn simulate_player_tick(
+        &mut self,
+        player_id: u32,
+        input: &InputCmd,
+        dt: f32,
+    ) -> Option<PlayerTickResult> {
         if self.vehicle_of_player.contains_key(&player_id) {
             if let Some(state) = self.players.get_mut(&player_id) {
                 state.last_input = input.clone();
             }
-            return;
+            return None;
         }
 
         let Some(state) = self.players.get_mut(&player_id) else {
-            return;
+            return None;
         };
         if state.dead {
             state.last_input = InputCmd::default();
             state.velocity = Vec3d::zeros();
-            return;
+            return None;
         }
         state.last_input = input.clone();
 
-        let collisions = simulate_player_tick(
+        let mut tick_result = simulate_player_tick(
             &self.dynamic.sim,
             state.collider,
             &mut state.position,
@@ -152,19 +158,22 @@ impl PhysicsArena {
             input,
             dt,
         );
+        let sync_started = Instant::now();
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
+        tick_result.timings.collider_sync_ms =
+            sync_started.elapsed().as_secs_f32() * 1000.0;
 
-        if !collisions.is_empty() {
-            let state = self.players.get(&player_id).unwrap();
-            self.dynamic.sim.solve_character_collision_impulses(
-                state.collider,
-                80.0,
-                &collisions,
-                dt,
+        for impulse in &tick_result.dynamic_impulses {
+            let _ = self.apply_dynamic_body_impulse(
+                impulse.body_id,
+                impulse.impulse,
+                impulse.contact_point,
             );
         }
+
+        Some(tick_result)
     }
 
     pub fn snapshot_player(

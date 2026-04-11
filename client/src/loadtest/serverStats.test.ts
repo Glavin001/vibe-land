@@ -27,6 +27,10 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
     timings: {
       total_ms: { avg: 8, p95: 10, max: 12 },
       player_sim_ms: { avg: 3, p95: 4, max: 5 },
+      player_move_math_ms: { avg: 0.5, p95: 0.7, max: 0.9 },
+      player_kcc_ms: { avg: 2.0, p95: 2.5, max: 3.0 },
+      player_collider_sync_ms: { avg: 0.1, p95: 0.2, max: 0.3 },
+      player_dynamic_interaction_ms: { avg: 0.4, p95: 0.6, max: 0.8 },
       vehicle_ms: { avg: 0.1, p95: 0.2, max: 0.3 },
       dynamics_ms: { avg: 4, p95: 5, max: 6 },
       hitscan_ms: { avg: 0, p95: 0, max: 0 },
@@ -56,6 +60,9 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
       snapshot_players_per_client: { avg: 4, p95: 4, max: 4 },
       snapshot_dynamic_bodies_per_client: { avg: 12, p95: 16, max: 20 },
       snapshot_vehicles_per_client: { avg: 1, p95: 1, max: 1 },
+      dynamic_bodies_considered_per_tick: { avg: 1, p95: 2, max: 3 },
+      dynamic_bodies_pushed_per_tick: { avg: 1, p95: 1, max: 2 },
+      contacted_dynamic_mass_per_tick: { avg: 0.5, p95: 0.8, max: 1.0 },
       ...overrides.network,
     },
     players: [

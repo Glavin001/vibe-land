@@ -133,6 +133,7 @@ impl DynamicArena {
                 Group::GROUP_2,
                 Group::GROUP_1 | Group::GROUP_2,
             ))
+            .user_data(id as u128)
             .build();
         let collider_handle = self.sim.colliders.insert_with_parent(
             collider,
@@ -172,6 +173,7 @@ impl DynamicArena {
                 Group::GROUP_2,
                 Group::GROUP_1 | Group::GROUP_2,
             ))
+            .user_data(id as u128)
             .build();
         let collider_handle = self.sim.colliders.insert_with_parent(
             collider,

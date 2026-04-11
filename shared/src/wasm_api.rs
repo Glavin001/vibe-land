@@ -197,7 +197,7 @@ impl WasmSimWorld {
         }
 
         let collider = self.player_collider.expect("spawn_player not called");
-        let _collisions = simulate_player_tick(
+        let _tick = simulate_player_tick(
             &self.sim,
             collider,
             &mut self.position,
@@ -315,7 +315,7 @@ impl WasmSimWorld {
         let collider = self.player_collider.expect("spawn_player not called");
         let inputs: Vec<InputCmd> = self.pending_inputs.clone();
         for input in &inputs {
-            let _collisions = simulate_player_tick(
+            let _tick = simulate_player_tick(
                 &self.sim,
                 collider,
                 &mut self.position,
@@ -488,6 +488,7 @@ impl WasmSimWorld {
                     .restitution(0.6)
                     .friction(0.2)
                     .collision_groups(dyn_groups)
+                    .user_data(id as u128)
                     .build()
             } else {
                 ColliderBuilder::cuboid(hx, hy, hz)
@@ -495,6 +496,7 @@ impl WasmSimWorld {
                     .restitution(0.3)
                     .friction(0.6)
                     .collision_groups(dyn_groups)
+                    .user_data(id as u128)
                     .build()
             };
             let col_handle = self.sim.colliders.insert_with_parent(

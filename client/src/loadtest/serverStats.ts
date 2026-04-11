@@ -7,6 +7,10 @@ export interface SummaryStatsSnapshot {
 export interface MatchTimingSnapshot {
   total_ms: SummaryStatsSnapshot;
   player_sim_ms: SummaryStatsSnapshot;
+  player_move_math_ms: SummaryStatsSnapshot;
+  player_kcc_ms: SummaryStatsSnapshot;
+  player_collider_sync_ms: SummaryStatsSnapshot;
+  player_dynamic_interaction_ms: SummaryStatsSnapshot;
   vehicle_ms: SummaryStatsSnapshot;
   dynamics_ms: SummaryStatsSnapshot;
   hitscan_ms: SummaryStatsSnapshot;
@@ -36,6 +40,9 @@ export interface MatchNetworkSnapshot {
   snapshot_players_per_client: SummaryStatsSnapshot;
   snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot;
   snapshot_vehicles_per_client: SummaryStatsSnapshot;
+  dynamic_bodies_considered_per_tick: SummaryStatsSnapshot;
+  dynamic_bodies_pushed_per_tick: SummaryStatsSnapshot;
+  contacted_dynamic_mass_per_tick: SummaryStatsSnapshot;
 }
 
 export interface MatchLoadSnapshot {
@@ -136,6 +143,15 @@ export function describeTransport(match: MatchStatsSnapshot): string {
 }
 
 export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): string {
+  const playerSubCandidates = [
+    ['movement math', match.timings.player_move_math_ms.p95],
+    ['player KCC', match.timings.player_kcc_ms.p95],
+    ['collider sync', match.timings.player_collider_sync_ms.p95],
+    ['dynamic interaction', match.timings.player_dynamic_interaction_ms.p95],
+  ] as const;
+  const [playerDetailName, playerDetailMs] = playerSubCandidates.reduce((best, current) =>
+    current[1] > best[1] ? current : best,
+  );
   const timingCandidates = [
     ['player movement', match.timings.player_sim_ms.p95],
     ['dynamic bodies', match.timings.dynamics_ms.p95],
@@ -152,12 +168,16 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
   const snapshotBytes = match.network.snapshot_bytes_per_client.p95;
   const wtFallbackRatio = webTransportSnapshotFallbackRatio(match);
   const pendingMax = maxPendingInputs(match);
+  const timingLabel =
+    timingName === 'player movement'
+      ? `${playerDetailName} ${playerDetailMs.toFixed(1)}ms`
+      : `${timingName} ${timingMs.toFixed(1)}ms`;
 
   if (budgetMs > 0 && headroomMs <= 0) {
-    return `CPU-limited: ${timingName} ${timingMs.toFixed(1)}ms, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms / ${budgetMs.toFixed(1)}ms budget`;
+    return `CPU-limited: ${timingLabel}, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms / ${budgetMs.toFixed(1)}ms budget`;
   }
   if (budgetMs > 0 && headroomMs <= 4.0) {
-    return `Near tick budget: ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
+    return `Near tick budget: ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
     return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
@@ -170,7 +190,7 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
     return `${mode}: ${timingName} ${timingMs.toFixed(1)}ms, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
   }
   if (pendingMax >= 20) {
-    return `Input backlog: max in-buf ${pendingMax}, ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
+    return `Input backlog: max in-buf ${pendingMax}, ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
   }
-  return `Healthy: ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
+  return `Healthy: ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
 }

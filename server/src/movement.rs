@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use nalgebra::{DMatrix, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
@@ -8,7 +9,7 @@ use crate::protocol::*;
 pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
-pub use vibe_land_shared::simulation::simulate_player_tick;
+pub use vibe_land_shared::simulation::{simulate_player_tick, PlayerTickResult};
 use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -137,26 +138,31 @@ impl PhysicsArena {
         self.dynamic.wake_bodies_near(center, radius);
     }
 
-    pub fn simulate_player_tick(&mut self, player_id: u32, input: &InputCmd, dt: f32) {
+    pub fn simulate_player_tick(
+        &mut self,
+        player_id: u32,
+        input: &InputCmd,
+        dt: f32,
+    ) -> Option<PlayerTickResult> {
         // Players driving a vehicle don't move independently — store input for vehicle use.
         if self.vehicle_of_player.contains_key(&player_id) {
             if let Some(state) = self.players.get_mut(&player_id) {
                 state.last_input = input.clone();
             }
-            return;
+            return None;
         }
 
         let Some(state) = self.players.get_mut(&player_id) else {
-            return;
+            return None;
         };
         if state.dead {
             state.last_input = InputCmd::default();
             state.velocity = Vec3d::zeros();
-            return;
+            return None;
         }
         state.last_input = input.clone();
 
-        let collisions = simulate_player_tick(
+        let mut tick_result = simulate_player_tick(
             &self.dynamic.sim,
             state.collider,
             &mut state.position,
@@ -167,21 +173,22 @@ impl PhysicsArena {
             input,
             dt,
         );
+        let sync_started = Instant::now();
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
+        tick_result.timings.collider_sync_ms =
+            sync_started.elapsed().as_secs_f32() * 1000.0;
 
-        // Use Rapier's built-in impulse solver for natural dynamic body pushing.
-        if !collisions.is_empty() {
-            let state = self.players.get(&player_id).unwrap();
-            let character_mass = 80.0; // ~80kg player
-            self.dynamic.sim.solve_character_collision_impulses(
-                state.collider,
-                character_mass,
-                &collisions,
-                dt,
+        for impulse in &tick_result.dynamic_impulses {
+            let _ = self.apply_dynamic_body_impulse(
+                impulse.body_id,
+                impulse.impulse,
+                impulse.contact_point,
             );
         }
+
+        Some(tick_result)
     }
 
     pub fn snapshot_player(
@@ -1246,6 +1253,76 @@ mod tests {
             "Player should advance past ball: start z={:.3}, end z={:.3}",
             player_start[2],
             player_end[2],
+        );
+    }
+
+    #[test]
+    fn player_can_stand_stably_on_dynamic_box() {
+        let mut arena = arena_with_ground();
+        let box_id = arena.spawn_dynamic_box(vector![0.0, 3.0, 0.0], vector![0.6, 0.6, 0.6]);
+        arena.rebuild_broad_phase();
+
+        let dt = 1.0_f32 / 60.0;
+        for _ in 0..240 {
+            arena.step_dynamics(dt);
+        }
+
+        arena.spawn_player(1);
+        if let Some(state) = arena.players.get_mut(&1) {
+            state.position = Vector3::<f64>::new(0.0, 4.0, 0.0);
+            state.velocity = Vec3d::zeros();
+            arena
+                .dynamic
+                .sim
+                .sync_player_collider(state.collider, &state.position);
+        }
+
+        let mut settle_ticks = 0usize;
+        for _ in 0..180 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+            let (_, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+            if flags & FLAG_ON_GROUND != 0 {
+                settle_ticks += 1;
+            }
+        }
+
+        let mut ys = Vec::new();
+        let mut grounded_ticks = 0usize;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+            let (pos, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+            ys.push(pos[1]);
+            if flags & FLAG_ON_GROUND != 0 {
+                grounded_ticks += 1;
+            }
+        }
+
+        let box_state = arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|s| s.0 == box_id)
+            .unwrap();
+        let max_y = ys.iter().copied().fold(f32::MIN, f32::max);
+        let min_y = ys.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            settle_ticks > 60,
+            "player should land on the dynamic box during settle, grounded={settle_ticks}"
+        );
+        assert!(
+            grounded_ticks > 90,
+            "player should remain grounded on dynamic box most ticks, grounded={grounded_ticks}"
+        );
+        assert!(
+            max_y - min_y < 0.18,
+            "standing on dynamic box should be stable, y range={:.3}",
+            max_y - min_y
+        );
+        assert!(
+            box_state.1[1] > 0.5,
+            "dynamic box should remain resting on the floor, y={:.3}",
+            box_state.1[1]
         );
     }
 }

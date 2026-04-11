@@ -137,6 +137,10 @@ impl RollingSamples {
 struct MatchTimingStats {
     total_ms: RollingSamples,
     player_sim_ms: RollingSamples,
+    player_move_math_ms: RollingSamples,
+    player_kcc_ms: RollingSamples,
+    player_collider_sync_ms: RollingSamples,
+    player_dynamic_interaction_ms: RollingSamples,
     vehicle_ms: RollingSamples,
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
@@ -147,6 +151,10 @@ struct MatchTimingStats {
 struct MatchTimingSnapshot {
     total_ms: SummaryStatsSnapshot,
     player_sim_ms: SummaryStatsSnapshot,
+    player_move_math_ms: SummaryStatsSnapshot,
+    player_kcc_ms: SummaryStatsSnapshot,
+    player_collider_sync_ms: SummaryStatsSnapshot,
+    player_dynamic_interaction_ms: SummaryStatsSnapshot,
     vehicle_ms: SummaryStatsSnapshot,
     dynamics_ms: SummaryStatsSnapshot,
     hitscan_ms: SummaryStatsSnapshot,
@@ -158,6 +166,10 @@ impl MatchTimingStats {
         MatchTimingSnapshot {
             total_ms: self.total_ms.snapshot(),
             player_sim_ms: self.player_sim_ms.snapshot(),
+            player_move_math_ms: self.player_move_math_ms.snapshot(),
+            player_kcc_ms: self.player_kcc_ms.snapshot(),
+            player_collider_sync_ms: self.player_collider_sync_ms.snapshot(),
+            player_dynamic_interaction_ms: self.player_dynamic_interaction_ms.snapshot(),
             vehicle_ms: self.vehicle_ms.snapshot(),
             dynamics_ms: self.dynamics_ms.snapshot(),
             hitscan_ms: self.hitscan_ms.snapshot(),
@@ -173,6 +185,9 @@ struct MatchSnapshotStats {
     players_per_client: RollingSamples,
     dynamic_bodies_per_client: RollingSamples,
     vehicles_per_client: RollingSamples,
+    dynamic_bodies_considered_per_tick: RollingSamples,
+    dynamic_bodies_pushed_per_tick: RollingSamples,
+    contacted_dynamic_mass_per_tick: RollingSamples,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -199,6 +214,9 @@ struct MatchNetworkSnapshot {
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
     snapshot_vehicles_per_client: SummaryStatsSnapshot,
+    dynamic_bodies_considered_per_tick: SummaryStatsSnapshot,
+    dynamic_bodies_pushed_per_tick: SummaryStatsSnapshot,
+    contacted_dynamic_mass_per_tick: SummaryStatsSnapshot,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -1045,31 +1063,38 @@ impl MatchState {
 
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
+        let mut player_move_math_ms = 0.0f32;
+        let mut player_kcc_ms = 0.0f32;
+        let mut player_collider_sync_ms = 0.0f32;
+        let mut player_dynamic_interaction_ms = 0.0f32;
+        let mut dynamic_bodies_considered_per_tick = 0.0f32;
+        let mut dynamic_bodies_pushed_per_tick = 0.0f32;
+        let mut contacted_dynamic_mass_per_tick = 0.0f32;
         for player_id in ids.iter().copied() {
             let input = self
                 .players
                 .get_mut(&player_id)
                 .map(take_input_for_tick)
                 .unwrap_or_default();
-            self.arena.simulate_player_tick(player_id, &input, dt);
+            if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
+                player_move_math_ms += result.timings.move_math_ms;
+                player_kcc_ms += result.timings.kcc_query_ms;
+                player_collider_sync_ms += result.timings.collider_sync_ms;
+                player_dynamic_interaction_ms += result.timings.dynamic_interaction_ms;
+                dynamic_bodies_considered_per_tick += result.dynamic_stats.considered_count as f32;
+                dynamic_bodies_pushed_per_tick += result.dynamic_stats.pushed_count as f32;
+                contacted_dynamic_mass_per_tick += result.dynamic_stats.contacted_mass;
+            }
 
-            if let Some((pos, _vel, _yaw, _pitch, hp, _flags)) =
+            if let Some((pos, _vel, _yaw, _pitch, hp, flags)) =
                 self.arena.snapshot_player(player_id)
             {
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
                     self.kill_player(player_id, server_time_ms);
                     self.void_kills += 1;
                 }
-                let alive = self
-                    .arena
-                    .snapshot_player(player_id)
-                    .map(|(_, _, _, _, hp, flags)| hp > 0 && (flags & 0x4) == 0)
-                    .unwrap_or(false);
-                let center = self
-                    .arena
-                    .snapshot_player(player_id)
-                    .map(|(pos, _, _, _, _, _)| pos)
-                    .unwrap_or(pos);
+                let alive = hp > 0 && (flags & 0x4) == 0;
+                let center = pos;
                 self.history.record(
                     player_id,
                     HistoricalCapsule {
@@ -1086,6 +1111,23 @@ impl MatchState {
         self.timings
             .player_sim_ms
             .record(player_sim_started.elapsed().as_secs_f32() * 1000.0);
+        self.timings.player_move_math_ms.record(player_move_math_ms);
+        self.timings.player_kcc_ms.record(player_kcc_ms);
+        self.timings
+            .player_collider_sync_ms
+            .record(player_collider_sync_ms);
+        self.timings
+            .player_dynamic_interaction_ms
+            .record(player_dynamic_interaction_ms);
+        self.snapshot_stats
+            .dynamic_bodies_considered_per_tick
+            .record(dynamic_bodies_considered_per_tick);
+        self.snapshot_stats
+            .dynamic_bodies_pushed_per_tick
+            .record(dynamic_bodies_pushed_per_tick);
+        self.snapshot_stats
+            .contacted_dynamic_mass_per_tick
+            .record(contacted_dynamic_mass_per_tick);
 
         let vehicle_started = Instant::now();
         self.arena.step_vehicles(dt);
@@ -1268,6 +1310,18 @@ impl MatchState {
                     .dynamic_bodies_per_client
                     .snapshot(),
                 snapshot_vehicles_per_client: self.snapshot_stats.vehicles_per_client.snapshot(),
+                dynamic_bodies_considered_per_tick: self
+                    .snapshot_stats
+                    .dynamic_bodies_considered_per_tick
+                    .snapshot(),
+                dynamic_bodies_pushed_per_tick: self
+                    .snapshot_stats
+                    .dynamic_bodies_pushed_per_tick
+                    .snapshot(),
+                contacted_dynamic_mass_per_tick: self
+                    .snapshot_stats
+                    .contacted_dynamic_mass_per_tick
+                    .snapshot(),
             },
             players: player_snapshots,
         };

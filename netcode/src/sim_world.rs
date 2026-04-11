@@ -1,10 +1,26 @@
 use nalgebra::{vector, DMatrix, Isometry3, Vector3};
+use rapier3d::parry::query::details::ShapeCastOptions;
 use rapier3d::control::{
     CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
 use rapier3d::prelude::*;
 
 use crate::movement::{MoveConfig, Vec3d};
+
+const STATIC_WORLD_GROUP: Group = Group::GROUP_1;
+const PUSHABLE_DYNAMIC_GROUP: Group = Group::GROUP_2;
+const PLAYER_GROUP: Group = Group::GROUP_3;
+
+#[derive(Clone, Debug)]
+pub struct DynamicBodyContact {
+    pub body_id: u32,
+    pub mass: f32,
+    pub center: [f32; 3],
+    pub contact_point: [f32; 3],
+    pub aabb_max_y: f32,
+    pub horizontal_distance_sq: f32,
+    pub linvel: [f32; 3],
+}
 
 /// Core collision world + KCC simulation shared between server (native) and
 /// client (WASM).  Owns the Rapier collision primitives but does NOT own a
@@ -67,6 +83,10 @@ impl SimWorld {
         self.colliders.insert(
             ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
                 .translation(center)
+                .collision_groups(InteractionGroups::new(
+                    STATIC_WORLD_GROUP,
+                    Group::all(),
+                ))
                 .user_data(user_data)
                 .build(),
         )
@@ -80,6 +100,10 @@ impl SimWorld {
     ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::heightfield(heights, scale)
+                .collision_groups(InteractionGroups::new(
+                    STATIC_WORLD_GROUP,
+                    Group::all(),
+                ))
                 .user_data(user_data)
                 .build(),
         )
@@ -144,6 +168,10 @@ impl SimWorld {
         .active_collision_types(
             ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_FIXED,
         )
+        .collision_groups(InteractionGroups::new(
+            PLAYER_GROUP,
+            STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP | PLAYER_GROUP,
+        ))
         .user_data(player_id as u128)
         .build();
         self.colliders.insert(collider)
@@ -177,6 +205,66 @@ impl SimWorld {
         on_ground: &mut bool,
         dt: f32,
     ) -> Vec<CharacterCollision> {
+        let filter = QueryFilter::default()
+            .exclude_collider(collider_handle)
+            .groups(InteractionGroups::new(
+                STATIC_WORLD_GROUP,
+                STATIC_WORLD_GROUP,
+            ));
+        self.move_character_with_filter(collider_handle, position, velocity, on_ground, dt, filter)
+    }
+
+    /// Horizontal locomotion treats static world and heavy dynamic blockers as
+    /// obstacles, but excludes pushable dynamic props identified by non-zero
+    /// collider user_data.
+    pub fn move_character_horizontal(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &mut Vec3d,
+        velocity: &mut Vec3d,
+        on_ground: &mut bool,
+        dt: f32,
+    ) -> Vec<CharacterCollision> {
+        let rigid_bodies = &self.rigid_bodies;
+        let predicate = |_: ColliderHandle, collider: &Collider| {
+            let Some(parent) = collider.parent().and_then(|p| rigid_bodies.get(p)) else {
+                return true;
+            };
+            !parent.body_type().is_dynamic() || collider.user_data == 0
+        };
+        let filter = QueryFilter::exclude_kinematic()
+            .exclude_sensors()
+            .exclude_collider(collider_handle)
+            .predicate(&predicate);
+        self.move_character_with_filter(collider_handle, position, velocity, on_ground, dt, filter)
+    }
+
+    /// Vertical/support motion includes dynamic bodies so characters can land
+    /// on and stand stably atop dynamic props when Rapier determines the
+    /// configuration is supported.
+    pub fn move_character_support(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &mut Vec3d,
+        velocity: &mut Vec3d,
+        on_ground: &mut bool,
+        dt: f32,
+    ) -> Vec<CharacterCollision> {
+        let filter = QueryFilter::exclude_kinematic()
+            .exclude_sensors()
+            .exclude_collider(collider_handle);
+        self.move_character_with_filter(collider_handle, position, velocity, on_ground, dt, filter)
+    }
+
+    pub fn move_character_with_filter(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &mut Vec3d,
+        velocity: &mut Vec3d,
+        on_ground: &mut bool,
+        dt: f32,
+        filter: QueryFilter,
+    ) -> Vec<CharacterCollision> {
         let dt64 = dt as f64;
 
         let desired = *velocity * dt64;
@@ -189,8 +277,6 @@ impl SimWorld {
             .expect("missing player collider");
         let character_shape = collider.shape();
         let character_pos = Isometry3::translation(position_f32.x, position_f32.y, position_f32.z);
-
-        let filter = QueryFilter::default().exclude_collider(collider_handle);
         let query_pipeline = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.rigid_bodies,
@@ -224,6 +310,135 @@ impl SimWorld {
         velocity.z = ct.z as f64 / dt64;
 
         collisions
+    }
+
+    pub fn player_obstacle_groups() -> InteractionGroups {
+        InteractionGroups::new(STATIC_WORLD_GROUP, STATIC_WORLD_GROUP)
+    }
+
+    pub fn player_dynamic_groups() -> InteractionGroups {
+        InteractionGroups::new(PUSHABLE_DYNAMIC_GROUP, PUSHABLE_DYNAMIC_GROUP)
+    }
+
+    pub fn intersect_pushable_dynamic_bodies(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &Vec3d,
+    ) -> Vec<DynamicBodyContact> {
+        let Some(character_collider) = self.colliders.get(collider_handle) else {
+            return Vec::new();
+        };
+        let character_shape = character_collider.shape();
+        let character_pos = Isometry3::translation(
+            position.x as f32,
+            position.y as f32,
+            position.z as f32,
+        );
+        let rigid_bodies = &self.rigid_bodies;
+        let predicate = |_: ColliderHandle, collider: &Collider| {
+            collider.user_data != 0
+                && collider
+                    .parent()
+                    .and_then(|p| rigid_bodies.get(p))
+                    .map(|rb| rb.body_type().is_dynamic())
+                    .unwrap_or(false)
+        };
+        let filter = QueryFilter::only_dynamic()
+            .exclude_sensors()
+            .exclude_collider(collider_handle)
+            .predicate(&predicate);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.rigid_bodies,
+            &self.colliders,
+            filter,
+        );
+        let player_center = vector![position.x as f32, position.y as f32, position.z as f32];
+        let mut contacts = Vec::new();
+        for (_handle, collider) in query_pipeline.intersect_shape(character_pos, character_shape) {
+            let body_id = collider.user_data as u32;
+            let Some(parent) = collider.parent().and_then(|p| self.rigid_bodies.get(p)) else {
+                continue;
+            };
+            let center = *parent.center_of_mass();
+            let dx = center.x - player_center.x;
+            let dz = center.z - player_center.z;
+            let aabb = collider.compute_aabb();
+            contacts.push(DynamicBodyContact {
+                body_id,
+                mass: parent.mass(),
+                center: [center.x, center.y, center.z],
+                contact_point: [center.x, center.y, center.z],
+                aabb_max_y: aabb.maxs.y,
+                horizontal_distance_sq: dx * dx + dz * dz,
+                linvel: [parent.linvel().x, parent.linvel().y, parent.linvel().z],
+            });
+        }
+        contacts.sort_by(|a, b| a.horizontal_distance_sq.total_cmp(&b.horizontal_distance_sq));
+        contacts
+    }
+
+    pub fn probe_dynamic_support(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &Vec3d,
+        max_probe_distance: f32,
+    ) -> Option<DynamicBodyContact> {
+        let character_collider = self.colliders.get(collider_handle)?;
+        let character_shape = character_collider.shape();
+        let character_pos = Isometry3::translation(
+            position.x as f32,
+            position.y as f32,
+            position.z as f32,
+        );
+        let rigid_bodies = &self.rigid_bodies;
+        let predicate = |_: ColliderHandle, collider: &Collider| {
+            collider.user_data != 0
+                && collider
+                    .parent()
+                    .and_then(|p| rigid_bodies.get(p))
+                    .map(|rb| rb.body_type().is_dynamic())
+                    .unwrap_or(false)
+        };
+        let filter = QueryFilter::only_dynamic()
+            .exclude_sensors()
+            .exclude_collider(collider_handle)
+            .predicate(&predicate);
+        let query_pipeline = self.broad_phase.as_query_pipeline(
+            self.narrow_phase.query_dispatcher(),
+            &self.rigid_bodies,
+            &self.colliders,
+            filter,
+        );
+        let options = ShapeCastOptions {
+            max_time_of_impact: 1.0,
+            target_distance: 0.0,
+            stop_at_penetration: true,
+            compute_impact_geometry_on_penetration: false,
+        };
+        let downward = vector![0.0, -max_probe_distance, 0.0];
+        let (handle, _hit) = query_pipeline.cast_shape(
+            &character_pos,
+            &downward,
+            character_shape,
+            options,
+        )?;
+        let collider = self.colliders.get(handle)?;
+        let body_id = collider.user_data as u32;
+        let parent = collider.parent().and_then(|p| self.rigid_bodies.get(p))?;
+        let center = *parent.center_of_mass();
+        let dx = center.x - position.x as f32;
+        let dz = center.z - position.z as f32;
+        let aabb = collider.compute_aabb();
+        Some(DynamicBodyContact {
+            body_id,
+            mass: parent.mass(),
+            center: [center.x, center.y, center.z],
+            contact_point: [center.x, center.y, center.z],
+            aabb_max_y: aabb.maxs.y,
+            horizontal_distance_sq: dx * dx + dz * dz,
+            linvel: [parent.linvel().x, parent.linvel().y, parent.linvel().z],
+        })
     }
 
     /// Update the collider position to match the player's current position.
