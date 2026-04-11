@@ -1,3 +1,4 @@
+mod demo_world;
 mod lag_comp;
 mod movement;
 mod protocol;
@@ -33,6 +34,7 @@ use tracing::{error, info, warn};
 use wtransport::{Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
+    demo_world::seed_default_world,
     lag_comp::{HistoricalCapsule, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena},
     protocol::{
@@ -832,8 +834,8 @@ async fn run_match_loop(
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
-    let mut world = VoxelWorld::new();
-    world.seed_demo_world(&mut arena);
+    let world = VoxelWorld::new();
+    seed_default_world(&mut arena);
 
     // Spawn a dynamic box that falls from above onto the ground
     arena.spawn_dynamic_box(vector![4.0, 8.0, 4.0], vector![0.5, 0.5, 0.5]);

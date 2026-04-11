@@ -34,6 +34,7 @@ export class PredictionManager {
   private nextSeq = 1;
   private tickCount = 0;
   private worldLoaded = false;
+  private terrainLoaded = false;
   private initialized = false;
   private _lastPhysicsStepMs = 0;
   readonly isLocalPreview = IS_LOCAL_PREVIEW;
@@ -180,11 +181,20 @@ export class PredictionManager {
     } else {
       this.voxelWorld.applyChunkDiff(packet);
     }
-    this.worldLoaded = this.voxelWorld.hasChunks();
+    this.worldLoaded = this.terrainLoaded || this.voxelWorld.hasChunks();
   }
 
   isWorldLoaded(): boolean {
     return this.worldLoaded;
+  }
+
+  enableTerrainWorld(): void {
+    this.terrainLoaded = true;
+    this.worldLoaded = true;
+  }
+
+  hasEditableWorld(): boolean {
+    return this.voxelWorld.hasChunks();
   }
 
   isInitialized(): boolean {

@@ -42,6 +42,9 @@ export function usePrediction() {
       if (disposed) return;
 
       const sim = new WasmSimWorld();
+      if (!IS_LOCAL_PREVIEW) {
+        sim.seedDemoTerrain();
+      }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
       if (IS_LOCAL_PREVIEW) {
@@ -52,6 +55,9 @@ export function usePrediction() {
       sim.rebuildBroadPhase();
 
       const manager = new PredictionManager(sim);
+      if (!IS_LOCAL_PREVIEW) {
+        manager.enableTerrainWorld();
+      }
       managerRef.current = manager;
       vehicleManagerRef.current = new VehiclePredictionManager(sim);
       simRef.current = sim;
@@ -135,7 +141,7 @@ export function usePrediction() {
   ): BlockRayHit | null => {
     const m = managerRef.current;
     const sim = simRef.current;
-    if (!m || !sim || !m.isWorldLoaded()) return null;
+    if (!m || !sim || !m.hasEditableWorld()) return null;
 
     const result = sim.castRayAndGetNormal(
       origin[0], origin[1], origin[2],
@@ -218,20 +224,20 @@ export function usePrediction() {
     material: number,
   ): BlockEditCmd | null => {
     const m = managerRef.current;
-    if (!m || !m.isWorldLoaded()) return null;
+    if (!m || !m.hasEditableWorld()) return null;
     return m.voxelWorld.buildEditRequest(cell[0], cell[1], cell[2], op, material);
   }, []);
 
   const applyOptimisticEdit = useCallback((cmd: BlockEditCmd): void => {
     const m = managerRef.current;
-    if (!m || !m.isWorldLoaded()) return;
+    if (!m || !m.hasEditableWorld()) return;
     m.applyOptimisticEdit(cmd);
     setRenderBlocks(m.getRenderBlocks());
   }, []);
 
   const getBlockMaterial = useCallback((cell: [number, number, number]): number => {
     const m = managerRef.current;
-    if (!m || !m.isWorldLoaded()) return 0;
+    if (!m || !m.hasEditableWorld()) return 0;
     return m.voxelWorld.getMaterial(cell[0], cell[1], cell[2]);
   }, []);
 

@@ -1,4 +1,4 @@
-use nalgebra::{vector, Isometry3, Vector3};
+use nalgebra::{vector, DMatrix, Isometry3, Vector3};
 use rapier3d::control::{
     CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
@@ -67,6 +67,19 @@ impl SimWorld {
         self.colliders.insert(
             ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
                 .translation(center)
+                .user_data(user_data)
+                .build(),
+        )
+    }
+
+    pub fn add_static_heightfield(
+        &mut self,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.colliders.insert(
+            ColliderBuilder::heightfield(heights, scale)
                 .user_data(user_data)
                 .build(),
         )
@@ -315,6 +328,7 @@ impl SimWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nalgebra::DMatrix;
 
     fn sim_with_ground() -> SimWorld {
         let mut sim = SimWorld::new(MoveConfig::default());
@@ -338,5 +352,18 @@ mod tests {
         // Ray pointing upward should miss the ground below
         let hit = sim.cast_ray([0.0, 1.0, 0.0], [0.0, 1.0, 0.0], 100.0, None);
         assert!(hit.is_none(), "upward ray should miss ground");
+    }
+
+    #[test]
+    fn raycast_hits_heightfield_ground() {
+        let mut sim = SimWorld::new(MoveConfig::default());
+        let heights = DMatrix::from_element(4, 4, 0.0);
+        sim.add_static_heightfield(heights, vector![20.0, 1.0, 20.0], 0);
+        sim.rebuild_broad_phase();
+
+        let hit = sim.cast_ray([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 100.0, None);
+        assert!(hit.is_some(), "ray should hit heightfield");
+        let toi = hit.unwrap();
+        assert!((toi - 5.0).abs() < 0.2, "toi should be ~5.0, got {}", toi);
     }
 }

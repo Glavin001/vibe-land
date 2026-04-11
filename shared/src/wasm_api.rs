@@ -9,6 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
+use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
@@ -103,6 +104,22 @@ impl WasmSimWorld {
         let id = self.next_collider_id;
         self.next_collider_id += 1;
         self.collider_ids.insert(id, handle);
+        id
+    }
+
+    #[wasm_bindgen(js_name = seedDemoTerrain)]
+    pub fn seed_demo_terrain(&mut self) -> u32 {
+        let (heights, scale) = build_demo_heightfield();
+        let handle = self.sim.add_static_heightfield(heights, scale, 0);
+        let id = self.next_collider_id;
+        self.next_collider_id += 1;
+        self.collider_ids.insert(id, handle);
+        for (center, half_extents) in demo_ball_pit_wall_cuboids() {
+            let wall_handle = self.sim.add_static_cuboid(center, half_extents, 0);
+            let wall_id = self.next_collider_id;
+            self.next_collider_id += 1;
+            self.collider_ids.insert(wall_id, wall_handle);
+        }
         id
     }
 

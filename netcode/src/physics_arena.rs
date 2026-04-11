@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nalgebra::{vector, Vector3};
+use nalgebra::{vector, DMatrix, Vector3};
 use rapier3d::prelude::*;
 
 use crate::movement::MoveConfig;
@@ -72,6 +72,15 @@ impl DynamicArena {
         user_data: u128,
     ) -> ColliderHandle {
         self.sim.add_static_cuboid(center, half_extents, user_data)
+    }
+
+    pub fn add_static_heightfield(
+        &mut self,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.sim.add_static_heightfield(heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {

@@ -115,6 +115,30 @@ describe('PredictionManager', () => {
       expect(cmds).toHaveLength(1);
       mgr.dispose();
     });
+
+    it('terrain mode loads world without chunk packets', () => {
+      const sim = createSim();
+      sim.seedDemoTerrain();
+      sim.rebuildBroadPhase();
+      const mgr = new PredictionManager(sim);
+      mgr.enableTerrainWorld();
+      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
+
+      expect(mgr.isWorldLoaded()).toBe(true);
+      expect(mgr.hasEditableWorld()).toBe(false);
+      expect(mgr.update(FIXED_DT, BTN_FORWARD, 0, 0)).toHaveLength(1);
+      mgr.dispose();
+    });
+
+    it('terrain mode includes pit wall colliders', () => {
+      const sim = createSim();
+      sim.seedDemoTerrain();
+      sim.rebuildBroadPhase();
+
+      const result = sim.castRayAndGetNormal(4, 1.5, 11, 1, 0, 0, 10);
+      expect(result.length).toBe(4);
+      expect(result[0]).toBeLessThan(5);
+    });
   });
 
   // ──────────────────────────────────────────────

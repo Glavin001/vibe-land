@@ -2,6 +2,7 @@ import { useRef, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CrosshairAimState } from './aimTargeting';
+import { DemoTerrain } from './DemoTerrain';
 import { useGameConnection } from './useGameConnection';
 import { usePrediction } from '../physics/usePrediction';
 import { buildInputFromButtons } from './inputBuilder';
@@ -662,6 +663,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
       <ambientLight intensity={0.6} />
       <directionalLight position={[20, 30, 10]} intensity={1} />
       <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
+      {!IS_LOCAL_PREVIEW && <DemoTerrain />}
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock
@@ -670,9 +672,6 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
           color={block.color}
         />
       ))}
-
-      {/* Grid lines for spatial reference */}
-      <gridHelper args={[48, 48, 0x444444, 0x333333]} position={[0, 0.51, 0]} />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />

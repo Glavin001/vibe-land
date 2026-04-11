@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nalgebra::Vector3;
+use nalgebra::{DMatrix, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
@@ -113,6 +113,15 @@ impl PhysicsArena {
     ) -> ColliderHandle {
         self.dynamic
             .add_static_cuboid(center, half_extents, user_data)
+    }
+
+    pub fn add_static_heightfield(
+        &mut self,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic.add_static_heightfield(heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
