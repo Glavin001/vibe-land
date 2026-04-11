@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import { DebugOverlay } from './ui/DebugOverlay';
@@ -12,6 +12,7 @@ export function App() {
   const [status, setStatus] = useState('Click to join');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
+  const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const handleConnect = useCallback(() => {
     setConnected(true);
@@ -122,6 +123,17 @@ export function App() {
         </div>
       )}
       <DebugOverlay stats={displayStats} visible={debugVisible} />
+      {debugVisible && (
+        <div
+          ref={renderStatsParentRef}
+          style={{
+            position: 'absolute',
+            right: 8,
+            bottom: 8,
+            zIndex: 20,
+          }}
+        />
+      )}
       {connected && (
         <GameScene
           onWelcome={handleWelcome}
@@ -130,6 +142,8 @@ export function App() {
           playerId={playerId}
           onDebugFrame={updateFrame}
           onSnapshot={recordSnapshot}
+          renderStatsParent={renderStatsParentRef}
+          showRenderStats={debugVisible}
         />
       )}
     </div>

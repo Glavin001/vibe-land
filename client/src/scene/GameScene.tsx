@@ -1,3 +1,4 @@
+import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense } from 'react';
 import { GameWorld } from './GameWorld';
@@ -9,11 +10,21 @@ type GameSceneProps = {
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
   onSnapshot?: () => void;
+  showRenderStats?: boolean;
+  renderStatsParent?: React.RefObject<HTMLElement>;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
 
-export function GameScene({ onWelcome, onDisconnect, onAimStateChange, onDebugFrame, onSnapshot }: GameSceneProps) {
+export function GameScene({
+  onWelcome,
+  onDisconnect,
+  onAimStateChange,
+  onDebugFrame,
+  onSnapshot,
+  showRenderStats,
+  renderStatsParent,
+}: GameSceneProps) {
   return (
     <Canvas
       style={{ width: '100%', height: '100%' }}
@@ -23,6 +34,13 @@ export function GameScene({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
       }}
     >
       <Suspense fallback={null}>
+        {showRenderStats && (
+          <StatsGl
+            parent={renderStatsParent}
+            trackGPU
+            horizontal={false}
+          />
+        )}
         <GameWorld
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
