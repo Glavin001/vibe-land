@@ -1,47 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-
-// ── Types matching server's JSON output ──────────────────────────────────────
-
-interface PlayerStats {
-  id: number;
-  one_way_ms: number;
-  pending_inputs: number;
-  hp: number;
-  pos_m: [number, number, number];
-  vel_ms: [number, number, number];
-  on_ground: boolean;
-  in_vehicle: boolean;
-  dead: boolean;
-  // server-observed
-  input_jitter_ms: number;
-  avg_bundle_size: number;
-  // client-reported
-  correction_m: number;
-  physics_ms: number;
-}
-
-interface MatchStats {
-  id: string;
-  server_tick: number;
-  player_count: number;
-  dynamic_body_count: number;
-  vehicle_count: number;
-  chunk_count: number;
-  players: PlayerStats[];
-}
-
-interface GlobalStats {
-  sim_hz: number;
-  snapshot_hz: number;
-  matches: MatchStats[];
-}
+import {
+  describeBottleneck,
+  totalPhysicsP95,
+  type GlobalStatsSnapshot,
+  type MatchStatsSnapshot,
+  type PlayerStatsSnapshot,
+} from '../loadtest/serverStats';
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 type ConnState = 'connecting' | 'connected' | 'disconnected';
 
 function useServerStats() {
-  const [stats, setStats] = useState<GlobalStats | null>(null);
+  const [stats, setStats] = useState<GlobalStatsSnapshot | null>(null);
   const [connState, setConnState] = useState<ConnState>('connecting');
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -65,7 +36,7 @@ function useServerStats() {
       ws.onmessage = (e) => {
         if (cancelled) return;
         try {
-          const data = JSON.parse(e.data as string) as GlobalStats;
+          const data = JSON.parse(e.data as string) as GlobalStatsSnapshot;
           setStats(data);
           setLastUpdate(new Date());
         } catch {
@@ -102,10 +73,15 @@ function fmt(n: number, d = 1): string { return n.toFixed(d); }
 function fmtSpeed(vel: [number, number, number]): string {
   return fmt(Math.hypot(vel[0], vel[1], vel[2]), 1);
 }
+function fmtRate(bytesPerSecond: number): string {
+  if (bytesPerSecond >= 1024 * 1024) return `${fmt(bytesPerSecond / 1024 / 1024, 2)} MiB/s`;
+  if (bytesPerSecond >= 1024) return `${fmt(bytesPerSecond / 1024, 1)} KiB/s`;
+  return `${fmt(bytesPerSecond, 0)} B/s`;
+}
 function fmtPos(pos: [number, number, number]): string {
   return `${fmt(pos[0], 1)}, ${fmt(pos[1], 1)}, ${fmt(pos[2], 1)}`;
 }
-function statusStr(p: PlayerStats): string {
+function statusStr(p: PlayerStatsSnapshot): string {
   if (p.dead) return 'DEAD';
   if (p.in_vehicle) return 'vehicle';
   if (p.on_ground) return 'ground';
@@ -168,6 +144,18 @@ const styles = {
     marginBottom: 8,
     fontSize: 12,
   },
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gap: 10,
+    marginBottom: 12,
+  },
+  summaryCard: {
+    border: `1px solid ${DIM}`,
+    borderRadius: 4,
+    padding: '8px 10px',
+    background: '#060606',
+  },
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
@@ -201,11 +189,47 @@ function ConnBadge({ state }: { state: ConnState }) {
   return <span style={styles.connBadge(state)}>{label}</span>;
 }
 
-function MatchPanel({ match }: { match: MatchStats }) {
+function MatchPanel({ match }: { match: MatchStatsSnapshot }) {
   return (
     <div style={styles.matchBox}>
       <div style={styles.matchSummary}>
-        {`match: ${match.id}  |  tick: ${match.server_tick}  |  players: ${match.player_count}  |  bodies: ${match.dynamic_body_count}  |  vehicles: ${match.vehicle_count}  |  chunks: ${match.chunk_count}`}
+        {`match: ${match.id}  |  scenario: ${match.scenario_tag}  |  tick: ${match.server_tick}  |  players: ${match.player_count}  |  bodies: ${match.dynamic_body_count}  |  vehicles: ${match.vehicle_count}  |  chunks: ${match.chunk_count}`}
+      </div>
+      <div style={styles.summaryGrid}>
+        <SummaryCard
+          title="Bottleneck"
+          lines={[
+            describeBottleneck(match),
+            `tick p95 ${fmt(match.timings.total_ms.p95, 2)}ms`,
+            `total physics p95 ${fmt(totalPhysicsP95(match), 2)}ms`,
+            `snapshot p95 ${(match.network.snapshot_bytes_per_client.p95 / 1024).toFixed(2)} KiB/client`,
+          ]}
+        />
+        <SummaryCard
+          title="Load Shape"
+          lines={[
+            `ws ${match.load.websocket_players}  wt ${match.load.webtransport_players}`,
+            `nearby avg ${fmt(match.load.avg_nearby_players, 1)}  max ${match.load.max_nearby_players}`,
+            `void kills ${match.load.void_kills}`,
+          ]}
+        />
+        <SummaryCard
+          title="Network"
+          lines={[
+            `in ${fmtRate(match.network.inbound_bps)}  out ${fmtRate(match.network.outbound_bps)}`,
+            `pkts ${match.network.inbound_packets_per_sec}/${match.network.outbound_packets_per_sec} per sec`,
+            `fallbacks ${match.network.datagram_fallbacks}  malformed ${match.network.malformed_packets}`,
+          ]}
+        />
+        <SummaryCard
+          title="Tick Breakdown"
+          lines={[
+            `player movement ${fmt(match.timings.player_sim_ms.p95, 2)}ms`,
+            `vehicles ${fmt(match.timings.vehicle_ms.p95, 2)}ms`,
+            `dynamic bodies ${fmt(match.timings.dynamics_ms.p95, 2)}ms`,
+            `snapshot ${fmt(match.timings.snapshot_ms.p95, 2)}ms`,
+          ]}
+        />
       </div>
 
       {match.players.length === 0 ? (
@@ -214,7 +238,7 @@ function MatchPanel({ match }: { match: MatchStats }) {
         <table style={styles.table}>
           <thead>
             <tr>
-              {['ID', 'Latency', 'In-buf', 'HP', 'Position (m)', 'Speed', 'Status', 'Net-jitter', 'Bundle', 'Correction', 'Phys-ms'].map((h) => (
+              {['ID', 'Transport', 'Latency', 'In-buf', 'HP', 'Position (m)', 'Speed', 'Status', 'Net-jitter', 'Bundle', 'Correction', 'Phys-ms'].map((h) => (
                 <th key={h} style={styles.th}>{h}</th>
               ))}
             </tr>
@@ -223,6 +247,9 @@ function MatchPanel({ match }: { match: MatchStats }) {
             {match.players.map((p) => (
               <tr key={p.id}>
                 <td style={styles.td}>{p.id}</td>
+                <td style={{ ...styles.td, color: p.transport === 'webtransport' ? '#6ef2ff' : WHITE }}>
+                  {p.transport === 'webtransport' ? 'WT' : 'WS'}
+                </td>
                 <td style={{ ...styles.td, color: p.one_way_ms > 100 ? RED : p.one_way_ms > 50 ? '#ffaa00' : FG }}>
                   {p.one_way_ms}ms
                 </td>
@@ -252,6 +279,17 @@ function MatchPanel({ match }: { match: MatchStats }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+function SummaryCard({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div style={styles.summaryCard}>
+      <div style={{ color: YELLOW, fontWeight: 'bold', marginBottom: 4 }}>{title}</div>
+      {lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
     </div>
   );
 }

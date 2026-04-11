@@ -6,3 +6,4 @@ client/dist/
 tsconfig.tsbuildinfo
 debug*.log
 inspiration/
+loadtest-results/

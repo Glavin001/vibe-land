@@ -1,194 +1,220 @@
 /**
- * Bot Simulation / Load Test
+ * Scenario-driven WebSocket load test runner.
  *
- * Spawns N headless bot clients that connect to the game server via WebSocket
- * and send random movement inputs, useful for load testing and netcode validation.
+ * Backward-compatible usage:
+ *   npm run simulate
+ *   npm run simulate -- 50
+ *   npm run simulate -- 50 60
  *
- * Usage:
- *   cd client
- *   npm run simulate              # 10 bots, 30 s
- *   npm run simulate -- 50        # 50 bots, 30 s
- *   npm run simulate -- 50 60     # 50 bots for 60 s
- *   npm run simulate -- 10 0      # 10 bots, run until Ctrl-C
- *
- * Requires a running game server at localhost:4001.
- * The server must have SKIP_SPACETIMEDB_VERIFY=1 set to accept bot tokens.
+ * Structured usage:
+ *   npm run simulate -- --scenario ./scenario.json
  */
 
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import WebSocket from 'ws';
+import { buildInputFromButtons } from './src/scene/inputBuilder.js';
 import {
   decodeServerPacket,
   encodeInputBundle,
   encodePingPacket,
-  buildInputFrame,
-  type InputFrame,
+  netStateToMeters,
+  type PlayerStateMeters,
 } from './src/net/protocol.js';
+import { stepBotBrain, createBotBrainState, type ObservedPlayer } from './src/loadtest/brain.js';
+import { PacketImpairment } from './src/loadtest/networkModel.js';
 import {
-  BTN_FORWARD,
-  BTN_BACK,
-  BTN_LEFT,
-  BTN_RIGHT,
-  BTN_SPRINT,
-} from './src/net/sharedConstants.js';
+  DEFAULT_SCENARIO,
+  SeededRandom,
+  chooseWeightedProfile,
+  createScenarioFromLegacyArgs,
+  normalizeScenario,
+  parseScenarioJson,
+  type LoadTestScenario,
+  type NetworkProfile,
+} from './src/loadtest/scenario.js';
+import {
+  describeBottleneck,
+  type GlobalStatsSnapshot,
+  type MatchStatsSnapshot,
+} from './src/loadtest/serverStats.js';
 
-// ── Configuration ────────────────────────────────────────────────────────────
-
-// Bots connect directly to the game server, bypassing the Vite proxy.
-// Reads SERVER_HOST and SERVER_PORT from env (compatible with .env config).
-// Override example: SERVER_HOST=192.168.1.10 SERVER_PORT=4002 npm run simulate
 const _serverHost = process.env.SERVER_HOST ?? 'localhost';
 const _serverPort = process.env.SERVER_PORT ?? '4001';
 const SERVER_HOST = `${_serverHost}:${_serverPort}`;
-const MATCH_ID    = process.env.MATCH_ID    ?? 'default';
-const TOKEN       = process.env.TOKEN       ?? 'mvp-token';
+const TOKEN = process.env.TOKEN ?? 'mvp-token';
 
-const NUM_BOTS         = parseInt(process.argv[2] ?? '10',  10);
-const DURATION_S       = parseInt(process.argv[3] ?? '30',  10); // 0 = run forever
-const INPUT_HZ         = 20;   // input send rate
-const DIR_CHANGE_MIN   = 5;    // minimum ticks before changing direction
-const DIR_CHANGE_MAX   = 25;   // maximum ticks before changing direction
-const SPRINT_CHANCE    = 0.3;  // probability of holding sprint each tick
+type BotMetrics = {
+  inboundBytes: number;
+  outboundBytes: number;
+  snapshotsReceived: number;
+  pingsReceived: number;
+  followTicks: number;
+  recoverTicks: number;
+  anchorTicks: number;
+  deadTicks: number;
+  targetSwitches: number;
+};
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-type Direction = 'forward' | 'back' | 'left' | 'right';
-
-interface BotState {
+type BotState = {
   id: number;
+  identity: string;
+  profile: NetworkProfile;
   ws: WebSocket | null;
   connected: boolean;
   playerId: number;
   seq: number;
-  direction: Direction;
-  dirCountdown: number;
-  yaw: number;
   tickHandle: ReturnType<typeof setInterval> | null;
-  snapshotsReceived: number;
-  pingsReceived: number;
-  connectTime: number;
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-const DIRECTION_BUTTONS: Record<Direction, number> = {
-  forward: BTN_FORWARD,
-  back:    BTN_BACK,
-  left:    BTN_LEFT,
-  right:   BTN_RIGHT,
+  connectStartedAt: number;
+  connectedAt: number;
+  latestServerTick: number;
+  metrics: BotMetrics;
+  localState: PlayerStateMeters | null;
+  remotePlayers: Map<number, ObservedPlayer>;
+  brainState: ReturnType<typeof createBotBrainState>;
+  inboundImpairment: PacketImpairment<Uint8Array>;
+  outboundImpairment: PacketImpairment<Uint8Array>;
+  currentTargetPlayerId: number | null;
 };
 
-const DIRECTION_YAW: Record<Direction, number> = {
-  forward: 0,
-  back:    Math.PI,
-  left:    Math.PI / 2,
-  right:   -Math.PI / 2,
-};
+class StatsMonitor {
+  latest: GlobalStatsSnapshot | null = null;
+  private socket: WebSocket | null = null;
 
-const DIRECTIONS: Direction[] = ['forward', 'back', 'left', 'right'];
+  constructor(private readonly url: string) {}
 
-function randomDir(): Direction {
-  return DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
-}
+  connect(): void {
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
 
-function randomDirCountdown(): number {
-  return DIR_CHANGE_MIN + Math.floor(Math.random() * (DIR_CHANGE_MAX - DIR_CHANGE_MIN));
-}
-
-function buildBotFrame(state: BotState): InputFrame {
-  let buttons = DIRECTION_BUTTONS[state.direction];
-  if (Math.random() < SPRINT_CHANCE) buttons |= BTN_SPRINT;
-  return buildInputFrame(state.seq, buttons, state.yaw, 0);
-}
-
-// ── Bot lifecycle ─────────────────────────────────────────────────────────────
-
-function tickBot(state: BotState): void {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-
-  state.dirCountdown--;
-  if (state.dirCountdown <= 0) {
-    state.direction = randomDir();
-    state.dirCountdown = randomDirCountdown();
-    state.yaw = DIRECTION_YAW[state.direction] + (Math.random() - 0.5) * 0.5;
+    socket.on('message', (data) => {
+      const text = typeof data === 'string'
+        ? data
+        : data instanceof Buffer
+          ? data.toString('utf8')
+          : '';
+      if (!text) {
+        return;
+      }
+      try {
+        this.latest = JSON.parse(text) as GlobalStatsSnapshot;
+      } catch {
+        // ignore malformed stats snapshots
+      }
+    });
   }
 
-  state.seq = (state.seq + 1) & 0xffff;
-  const frame = buildBotFrame(state);
-  const packet = encodeInputBundle([frame]);
-  state.ws.send(packet);
+  close(): void {
+    this.socket?.close();
+    this.socket = null;
+  }
+
+  match(matchId: string): MatchStatsSnapshot | null {
+    return this.latest?.matches.find((match) => match.id === matchId) ?? null;
+  }
 }
 
-function spawnBot(id: number): Promise<BotState> {
+async function parseScenarioFromArgs(): Promise<LoadTestScenario> {
+  const args = process.argv.slice(2);
+  const scenarioFlagIndex = args.findIndex((arg) => arg === '--scenario');
+  if (scenarioFlagIndex >= 0) {
+    const value = args[scenarioFlagIndex + 1];
+    if (!value) {
+      throw new Error('missing value after --scenario');
+    }
+    if (value.trim().startsWith('{')) {
+      return parseScenarioJson(value);
+    }
+    const fullPath = path.resolve(process.cwd(), value);
+    return parseScenarioJson(await readFile(fullPath, 'utf8'));
+  }
+
+  if (process.env.LOADTEST_SCENARIO_JSON) {
+    return parseScenarioJson(process.env.LOADTEST_SCENARIO_JSON);
+  }
+
+  const botCount = Number.parseInt(args[0] ?? `${DEFAULT_SCENARIO.botCount}`, 10);
+  const durationS = Number.parseInt(args[1] ?? `${DEFAULT_SCENARIO.durationS}`, 10);
+  return createScenarioFromLegacyArgs(botCount, durationS);
+}
+
+function makeBotMetrics(): BotMetrics {
+  return {
+    inboundBytes: 0,
+    outboundBytes: 0,
+    snapshotsReceived: 0,
+    pingsReceived: 0,
+    followTicks: 0,
+    recoverTicks: 0,
+    anchorTicks: 0,
+    deadTicks: 0,
+    targetSwitches: 0,
+  };
+}
+
+function spawnBot(
+  id: number,
+  scenario: LoadTestScenario,
+  profile: NetworkProfile,
+  statsMonitor: StatsMonitor,
+): Promise<BotState> {
   return new Promise((resolve, reject) => {
     const identity = `bot-${id}`;
-    const url = `ws://${SERVER_HOST}/ws/${MATCH_ID}?identity=${identity}&token=${TOKEN}`;
+    const url = `ws://${SERVER_HOST}/ws/${scenario.matchId}?identity=${identity}&token=${TOKEN}`;
+
+    let settled = false;
+    const ws = new WebSocket(url);
+    ws.binaryType = 'arraybuffer';
 
     const state: BotState = {
       id,
-      ws: null,
+      identity,
+      profile,
+      ws,
       connected: false,
       playerId: 0,
       seq: 0,
-      direction: randomDir(),
-      dirCountdown: randomDirCountdown(),
-      yaw: Math.random() * Math.PI * 2,
       tickHandle: null,
-      snapshotsReceived: 0,
-      pingsReceived: 0,
-      connectTime: 0,
+      connectStartedAt: Date.now(),
+      connectedAt: 0,
+      latestServerTick: 0,
+      metrics: makeBotMetrics(),
+      localState: null,
+      remotePlayers: new Map(),
+      brainState: createBotBrainState(id - 1, scenario),
+      inboundImpairment: new PacketImpairment(profile.downlink, scenario.seed + id * 17, (bytes) => {
+        handlePacket(state, scenario, statsMonitor, bytes);
+      }),
+      outboundImpairment: new PacketImpairment(profile.uplink, scenario.seed + id * 31, (packet) => {
+        if (state.ws?.readyState === WebSocket.OPEN) {
+          state.metrics.outboundBytes += packet.length;
+          state.ws.send(packet);
+        }
+      }),
+      currentTargetPlayerId: null,
     };
 
     const timeout = setTimeout(() => {
-      reject(new Error(`Bot ${id}: connection timeout`));
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Bot ${id}: connection timeout`));
+      }
     }, 10_000);
 
-    const ws = new WebSocket(url);
-    ws.binaryType = 'arraybuffer';
-    state.ws = ws;
-
-    ws.on('open', () => {
-      // Server sends welcome on connect; nothing to send yet.
-    });
-
     ws.on('message', (data: ArrayBuffer | Buffer) => {
-      const buf = data instanceof Buffer ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data;
-
-      let packet;
-      try {
-        packet = decodeServerPacket(buf as ArrayBuffer);
-      } catch {
-        return; // ignore unknown packets
-      }
-
-      switch (packet.type) {
-        case 'welcome':
-          state.playerId = packet.playerId;
-          state.connected = true;
-          state.connectTime = Date.now();
-          clearTimeout(timeout);
-
-          state.tickHandle = setInterval(() => tickBot(state), 1000 / INPUT_HZ);
-          resolve(state);
-          break;
-
-        case 'snapshot':
-          state.snapshotsReceived++;
-          break;
-
-        case 'serverPing':
-          // Respond with pong so server lag-comp history advances correctly.
-          ws.send(encodePingPacket(packet.value));
-          state.pingsReceived++;
-          break;
-
-        default:
-          break;
-      }
+      const bytes = data instanceof Buffer
+        ? new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength))
+        : new Uint8Array(data);
+      state.metrics.inboundBytes += bytes.length;
+      state.inboundImpairment.enqueue(bytes);
     });
 
-    ws.on('error', (err: Error) => {
+    ws.on('error', (error: Error) => {
       clearTimeout(timeout);
-      reject(err);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
     });
 
     ws.on('close', () => {
@@ -197,8 +223,104 @@ function spawnBot(id: number): Promise<BotState> {
         clearInterval(state.tickHandle);
         state.tickHandle = null;
       }
+      state.inboundImpairment.dispose();
+      state.outboundImpairment.dispose();
     });
+
+    ws.on('open', () => {
+      // welcome packet will start the bot loop
+    });
+
+    function markConnected(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeout);
+      state.connected = true;
+      state.connectedAt = Date.now();
+      state.tickHandle = setInterval(() => tickBot(state, scenario), 1000 / scenario.inputHz);
+      resolve(state);
+    }
+
+    function handlePacket(
+      bot: BotState,
+      activeScenario: LoadTestScenario,
+      _monitor: StatsMonitor,
+      bytes: Uint8Array,
+    ): void {
+      let packet;
+      try {
+        packet = decodeServerPacket(bytes);
+      } catch {
+        return;
+      }
+
+      switch (packet.type) {
+        case 'welcome':
+          bot.playerId = packet.playerId;
+          markConnected();
+          break;
+        case 'snapshot': {
+          bot.metrics.snapshotsReceived += 1;
+          bot.latestServerTick = packet.serverTick;
+          bot.remotePlayers.clear();
+          for (const playerState of packet.playerStates) {
+            const meters = netStateToMeters(playerState);
+            if (playerState.id === bot.playerId) {
+              bot.localState = meters;
+            } else {
+              bot.remotePlayers.set(playerState.id, { id: playerState.id, state: meters });
+            }
+          }
+          if (!bot.localState) {
+            bot.localState = null;
+          }
+          break;
+        }
+        case 'serverPing':
+          bot.metrics.pingsReceived += 1;
+          bot.outboundImpairment.enqueue(encodePingPacket(packet.value));
+          break;
+        default:
+          break;
+      }
+    }
   });
+}
+
+function tickBot(state: BotState, scenario: LoadTestScenario): void {
+  if (!state.connected || !state.localState) {
+    return;
+  }
+
+  state.seq = (state.seq + 1) & 0xffff;
+  const remotePlayers = Array.from(state.remotePlayers.values());
+  const intent = stepBotBrain(state.brainState, scenario, state.localState, remotePlayers);
+
+  if (intent.targetPlayerId !== state.currentTargetPlayerId) {
+    state.metrics.targetSwitches += 1;
+    state.currentTargetPlayerId = intent.targetPlayerId;
+  }
+
+  switch (intent.mode) {
+    case 'follow_target':
+      state.metrics.followTicks += 1;
+      break;
+    case 'recover_center':
+      state.metrics.recoverTicks += 1;
+      break;
+    case 'hold_anchor':
+    case 'acquire_target':
+      state.metrics.anchorTicks += 1;
+      break;
+    case 'dead':
+      state.metrics.deadTicks += 1;
+      break;
+  }
+
+  const frame = buildInputFromButtons(state.seq, 0, intent.buttons, intent.yaw, 0);
+  state.outboundImpairment.enqueue(encodeInputBundle([frame]));
 }
 
 function stopBot(state: BotState): void {
@@ -206,85 +328,181 @@ function stopBot(state: BotState): void {
     clearInterval(state.tickHandle);
     state.tickHandle = null;
   }
+  state.inboundImpairment.dispose();
+  state.outboundImpairment.dispose();
   state.ws?.close();
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
+function summarizeBots(bots: BotState[]) {
+  const total = bots.reduce((acc, bot) => {
+    acc.inboundBytes += bot.metrics.inboundBytes;
+    acc.outboundBytes += bot.metrics.outboundBytes;
+    acc.snapshotsReceived += bot.metrics.snapshotsReceived;
+    acc.followTicks += bot.metrics.followTicks;
+    acc.recoverTicks += bot.metrics.recoverTicks;
+    acc.anchorTicks += bot.metrics.anchorTicks;
+    acc.deadTicks += bot.metrics.deadTicks;
+    acc.targetSwitches += bot.metrics.targetSwitches;
+    return acc;
+  }, {
+    inboundBytes: 0,
+    outboundBytes: 0,
+    snapshotsReceived: 0,
+    followTicks: 0,
+    recoverTicks: 0,
+    anchorTicks: 0,
+    deadTicks: 0,
+    targetSwitches: 0,
+  });
 
-async function main(): Promise<void> {
-  const durationLabel = DURATION_S > 0 ? `${DURATION_S}s` : 'until Ctrl-C';
-  console.log(`\n=== vibe-land bot simulation: ${NUM_BOTS} bots, ${durationLabel} ===\n`);
-  console.log(`Server: ws://${SERVER_HOST}/ws/${MATCH_ID}`);
-  console.log('Connecting...\n');
-
-  const results = await Promise.allSettled(
-    Array.from({ length: NUM_BOTS }, (_, i) => spawnBot(i + 1))
+  const profiles = Object.fromEntries(
+    Array.from(
+      bots.reduce((map, bot) => {
+        map.set(bot.profile.name, (map.get(bot.profile.name) ?? 0) + 1);
+        return map;
+      }, new Map<string, number>()),
+    ),
   );
 
+  return { ...total, profiles };
+}
+
+async function writeSummary(
+  scenario: LoadTestScenario,
+  bots: BotState[],
+  statsMonitor: StatsMonitor,
+): Promise<string> {
+  const now = new Date();
+  const resultsDir = path.resolve(process.cwd(), 'loadtest-results');
+  await mkdir(resultsDir, { recursive: true });
+  const outputPath = path.join(
+    resultsDir,
+    `${now.toISOString().replace(/[:.]/g, '-')}-${scenario.name}.json`,
+  );
+  const botSummary = summarizeBots(bots);
+  const matchStats = statsMonitor.match(scenario.matchId);
+  const payload = {
+    generatedAt: now.toISOString(),
+    server: SERVER_HOST,
+    scenario,
+    localSummary: {
+      connectedBots: bots.filter((bot) => bot.connectedAt > 0).length,
+      botSummary,
+    },
+    serverSummary: matchStats,
+    bottleneck: matchStats ? describeBottleneck(matchStats) : 'no live server stats captured',
+  };
+  await writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  return outputPath;
+}
+
+async function main(): Promise<void> {
+  const scenario = normalizeScenario(await parseScenarioFromArgs());
+  const wsBotCount = scenario.transportMix.websocket;
+  const durationLabel = scenario.durationS > 0 ? `${scenario.durationS}s` : 'until Ctrl-C';
+  console.log(`\n=== vibe-land load test: ${scenario.name} ===\n`);
+  console.log(`Server: ws://${SERVER_HOST}/ws/${scenario.matchId}`);
+  console.log(`Scenario: ${scenario.botCount} bots total, ${wsBotCount} websocket bots here, ${scenario.transportMix.webtransport} webtransport bots expected elsewhere`);
+  console.log(`Duration: ${durationLabel}  Ramp-up: ${scenario.rampUpS}s  Spawn pattern: ${scenario.spawnPattern}\n`);
+
+  const statsMonitor = new StatsMonitor(`ws://${SERVER_HOST}/ws/stats`);
+  statsMonitor.connect();
+
+  const rng = new SeededRandom(scenario.seed);
+  const botPromises = Array.from({ length: wsBotCount }, (_, index) => {
+    const profile = chooseWeightedProfile(scenario, 'websocket', rng);
+    const delayMs = scenario.rampUpS > 0 ? Math.round((scenario.rampUpS * 1000 * index) / Math.max(1, wsBotCount)) : 0;
+    return new Promise<BotState>((resolve, reject) => {
+      setTimeout(() => {
+        void spawnBot(index + 1, scenario, profile, statsMonitor).then(resolve, reject);
+      }, delayMs);
+    });
+  });
+
+  const results = await Promise.allSettled(botPromises);
   const bots: BotState[] = [];
   let failures = 0;
-  for (const r of results) {
-    if (r.status === 'fulfilled') {
-      bots.push(r.value);
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      bots.push(result.value);
     } else {
-      failures++;
-      console.error('  Failed:', (r.reason as Error).message);
+      failures += 1;
+      console.error('  Failed:', result.reason instanceof Error ? result.reason.message : String(result.reason));
     }
   }
 
-  console.log(`\n${bots.length}/${NUM_BOTS} bots connected and walking.\n`);
-
+  console.log(`\n${bots.length}/${wsBotCount} websocket bots connected.\n`);
   if (bots.length === 0) {
-    console.error('No bots connected. Is the server running?');
-    process.exit(1);
+    statsMonitor.close();
+    throw new Error('No websocket bots connected. Is the server running?');
   }
 
-  // Periodic status line
   let lastSnapshotTotal = 0;
-  let lastStatusTime = Date.now();
+  let lastInboundBytes = 0;
+  let lastOutboundBytes = 0;
+  let lastStatusAt = Date.now();
 
   const statusInterval = setInterval(() => {
     const now = Date.now();
-    const elapsedS = (now - lastStatusTime) / 1000;
-    lastStatusTime = now;
+    const elapsedS = (now - lastStatusAt) / 1000;
+    lastStatusAt = now;
 
-    const connected = bots.filter(b => b.connected).length;
-    const totalSnapshots = bots.reduce((s, b) => s + b.snapshotsReceived, 0);
-    const snapshotDelta = totalSnapshots - lastSnapshotTotal;
+    const connected = bots.filter((bot) => bot.connected).length;
+    const totalSnapshots = bots.reduce((sum, bot) => sum + bot.metrics.snapshotsReceived, 0);
+    const totalInbound = bots.reduce((sum, bot) => sum + bot.metrics.inboundBytes, 0);
+    const totalOutbound = bots.reduce((sum, bot) => sum + bot.metrics.outboundBytes, 0);
+
+    const snapshotsPerSec = ((totalSnapshots - lastSnapshotTotal) / elapsedS).toFixed(1);
+    const inboundKbps = (((totalInbound - lastInboundBytes) * 8) / 1024 / elapsedS).toFixed(1);
+    const outboundKbps = (((totalOutbound - lastOutboundBytes) * 8) / 1024 / elapsedS).toFixed(1);
     lastSnapshotTotal = totalSnapshots;
-    const snapsPerSecond = (snapshotDelta / elapsedS).toFixed(1);
+    lastInboundBytes = totalInbound;
+    lastOutboundBytes = totalOutbound;
 
+    const matchStats = statsMonitor.match(scenario.matchId);
+    const bottleneck = matchStats ? describeBottleneck(matchStats) : 'waiting for /ws/stats';
     console.log(
-      `  [Status] connected=${connected}/${bots.length}  ` +
-      `snapshots/s=${snapsPerSecond} (${totalSnapshots} total)`
+      `  [Status] connected=${connected}/${bots.length} snapshots/s=${snapshotsPerSec} in=${inboundKbps} kbps out=${outboundKbps} kbps  bottleneck=${bottleneck}`,
     );
   }, 2000);
 
-  // Run for duration or until Ctrl-C
-  const cleanup = () => {
+  let cleanedUp = false;
+  const cleanup = async () => {
+    if (cleanedUp) {
+      return;
+    }
+    cleanedUp = true;
     clearInterval(statusInterval);
-    console.log('\nStopping all bots...');
-    for (const bot of bots) stopBot(bot);
+    console.log('\nStopping all websocket bots...');
+    for (const bot of bots) {
+      stopBot(bot);
+    }
+    statsMonitor.close();
 
-    const totalSnapshots = bots.reduce((s, b) => s + b.snapshotsReceived, 0);
+    const outputPath = await writeSummary(scenario, bots, statsMonitor);
+    const botSummary = summarizeBots(bots);
     console.log(
-      `\nSimulation complete.\n` +
-      `  Bots connected:     ${bots.length}/${NUM_BOTS}\n` +
-      `  Total snapshots:    ${totalSnapshots}\n` +
-      `  Avg per bot:        ${(totalSnapshots / bots.length).toFixed(1)}\n`
+      `\nSimulation complete.\n`
+      + `  Bots connected:      ${bots.length}/${wsBotCount}\n`
+      + `  Total snapshots:     ${botSummary.snapshotsReceived}\n`
+      + `  Total inbound bytes: ${botSummary.inboundBytes}\n`
+      + `  Total outbound bytes:${botSummary.outboundBytes}\n`
+      + `  Follow ticks:        ${botSummary.followTicks}\n`
+      + `  Recover ticks:       ${botSummary.recoverTicks}\n`
+      + `  Summary file:        ${outputPath}\n`,
     );
     process.exit(failures > 0 ? 1 : 0);
   };
 
-  process.on('SIGINT',  cleanup);
-  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', () => { void cleanup(); });
+  process.on('SIGTERM', () => { void cleanup(); });
 
-  if (DURATION_S > 0) {
-    setTimeout(cleanup, DURATION_S * 1000);
+  if (scenario.durationS > 0) {
+    setTimeout(() => { void cleanup(); }, scenario.durationS * 1000);
   }
 }
 
-main().catch((err: Error) => {
-  console.error('Simulation failed:', err);
+main().catch((error: Error) => {
+  console.error('Simulation failed:', error);
   process.exit(1);
 });

@@ -9,6 +9,7 @@ use std::{
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
+        RwLock as StdRwLock,
     },
     time::{Duration, Instant},
 };
@@ -27,7 +28,7 @@ use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use wtransport::{Connection, Endpoint, Identity, ServerConfig};
 
@@ -59,6 +60,9 @@ const RIFLE_HEAD_DAMAGE: u8 = 50;
 const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
 const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
 const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
+const OUT_OF_BOUNDS_Y_M: f32 = -12.0;
+const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
+const ROLLING_METRIC_SAMPLES: usize = 180;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
@@ -69,9 +73,181 @@ fn rifle_damage(zone: HitZone) -> u8 {
 
 // ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ClientTransport {
+    #[default]
+    WebSocket,
+    WebTransport,
+}
+
+impl ClientTransport {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WebSocket => "websocket",
+            Self::WebTransport => "webtransport",
+        }
+    }
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct SummaryStatsSnapshot {
+    avg: f32,
+    p95: f32,
+    max: f32,
+}
+
+#[derive(Default)]
+struct RollingSamples {
+    values: VecDeque<f32>,
+}
+
+impl RollingSamples {
+    fn record(&mut self, value: f32) {
+        self.values.push_back(value);
+        while self.values.len() > ROLLING_METRIC_SAMPLES {
+            self.values.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> SummaryStatsSnapshot {
+        if self.values.is_empty() {
+            return SummaryStatsSnapshot::default();
+        }
+
+        let mut sorted: Vec<f32> = self.values.iter().copied().collect();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let avg = sorted.iter().sum::<f32>() / sorted.len() as f32;
+        let p95_index = ((sorted.len() - 1) as f32 * 0.95).round() as usize;
+        SummaryStatsSnapshot {
+            avg,
+            p95: sorted[p95_index.min(sorted.len() - 1)],
+            max: *sorted.last().unwrap_or(&0.0),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MatchTimingStats {
+    total_ms: RollingSamples,
+    player_sim_ms: RollingSamples,
+    vehicle_ms: RollingSamples,
+    dynamics_ms: RollingSamples,
+    hitscan_ms: RollingSamples,
+    snapshot_ms: RollingSamples,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct MatchTimingSnapshot {
+    total_ms: SummaryStatsSnapshot,
+    player_sim_ms: SummaryStatsSnapshot,
+    vehicle_ms: SummaryStatsSnapshot,
+    dynamics_ms: SummaryStatsSnapshot,
+    hitscan_ms: SummaryStatsSnapshot,
+    snapshot_ms: SummaryStatsSnapshot,
+}
+
+impl MatchTimingStats {
+    fn snapshot(&self) -> MatchTimingSnapshot {
+        MatchTimingSnapshot {
+            total_ms: self.total_ms.snapshot(),
+            player_sim_ms: self.player_sim_ms.snapshot(),
+            vehicle_ms: self.vehicle_ms.snapshot(),
+            dynamics_ms: self.dynamics_ms.snapshot(),
+            hitscan_ms: self.hitscan_ms.snapshot(),
+            snapshot_ms: self.snapshot_ms.snapshot(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct MatchSnapshotStats {
+    bytes_per_client: RollingSamples,
+    bytes_per_tick: RollingSamples,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct MatchNetworkSnapshot {
+    inbound_bps: u64,
+    outbound_bps: u64,
+    inbound_packets_per_sec: u64,
+    outbound_packets_per_sec: u64,
+    total_inbound_bytes: u64,
+    total_outbound_bytes: u64,
+    total_inbound_packets: u64,
+    total_outbound_packets: u64,
+    reliable_packets_sent: u64,
+    datagram_packets_sent: u64,
+    datagram_fallbacks: u64,
+    malformed_packets: u64,
+    snapshot_bytes_per_client: SummaryStatsSnapshot,
+    snapshot_bytes_per_tick: SummaryStatsSnapshot,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct MatchLoadSnapshot {
+    nearby_radius_m: f32,
+    avg_nearby_players: f32,
+    max_nearby_players: u32,
+    websocket_players: usize,
+    webtransport_players: usize,
+    void_kills: u64,
+}
+
+#[derive(Default)]
+struct MatchIoTelemetry {
+    inbound_bytes: std::sync::atomic::AtomicU64,
+    outbound_bytes: std::sync::atomic::AtomicU64,
+    inbound_packets: std::sync::atomic::AtomicU64,
+    outbound_packets: std::sync::atomic::AtomicU64,
+    reliable_packets_sent: std::sync::atomic::AtomicU64,
+    datagram_packets_sent: std::sync::atomic::AtomicU64,
+    datagram_fallbacks: std::sync::atomic::AtomicU64,
+    malformed_packets: std::sync::atomic::AtomicU64,
+}
+
+impl MatchIoTelemetry {
+    fn observe_inbound(&self, bytes: usize) {
+        self.inbound_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+        self.inbound_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observe_outbound_reliable(&self, bytes: usize) {
+        let bytes = bytes as u64;
+        self.outbound_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.outbound_packets.fetch_add(1, Ordering::Relaxed);
+        self.reliable_packets_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observe_outbound_datagram(&self, bytes: usize) {
+        let bytes = bytes as u64;
+        self.outbound_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.outbound_packets.fetch_add(1, Ordering::Relaxed);
+        self.datagram_packets_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observe_datagram_fallback(&self) {
+        self.datagram_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observe_malformed_packet(&self) {
+        self.malformed_packets.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct IoSnapshot {
+    inbound_bytes: u64,
+    outbound_bytes: u64,
+    inbound_packets: u64,
+    outbound_packets: u64,
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct PlayerStatsSnapshot {
     id: u32,
+    identity: String,
+    transport: String,
     one_way_ms: u32,
     pending_inputs: usize,
     hp: u8,
@@ -91,11 +267,15 @@ struct PlayerStatsSnapshot {
 #[derive(serde::Serialize, Clone, Default)]
 struct MatchStatsSnapshot {
     id: String,
+    scenario_tag: String,
     server_tick: u32,
     player_count: usize,
     dynamic_body_count: usize,
     vehicle_count: usize,
     chunk_count: usize,
+    load: MatchLoadSnapshot,
+    timings: MatchTimingSnapshot,
+    network: MatchNetworkSnapshot,
     players: Vec<PlayerStatsSnapshot>,
 }
 
@@ -114,17 +294,19 @@ struct SharedAppState {
 }
 
 struct AppState {
-    matches: RwLock<HashMap<String, MatchHandle>>,
+    matches: AsyncRwLock<HashMap<String, MatchHandle>>,
     next_player_id: AtomicU32,
     verifier: SpacetimeVerifier,
     cert_hash_hex: String,
     wt_base_url: String,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
+    stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
 
 #[derive(Clone)]
 struct MatchHandle {
     tx: mpsc::UnboundedSender<MatchEvent>,
+    telemetry: Arc<MatchIoTelemetry>,
 }
 
 struct SpacetimeVerifier {
@@ -156,6 +338,7 @@ struct SessionConfig {
 struct PlayerConnection {
     player_id: u32,
     identity: String,
+    transport: ClientTransport,
     tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
@@ -172,6 +355,7 @@ enum MatchEvent {
 
 struct PlayerRuntime {
     identity: String,
+    transport: ClientTransport,
     tx: mpsc::UnboundedSender<Vec<u8>>,
     pending_inputs: VecDeque<InputCmd>,
     last_applied_input: InputCmd,
@@ -205,6 +389,12 @@ struct MatchState {
     queued_shots: Vec<QueuedShot>,
     server_tick: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
+    io: Arc<MatchIoTelemetry>,
+    last_io_snapshot: Option<(Instant, IoSnapshot)>,
+    timings: MatchTimingStats,
+    snapshot_stats: MatchSnapshotStats,
+    void_kills: u64,
+    stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
 
 #[tokio::main]
@@ -253,7 +443,7 @@ async fn main() -> Result<()> {
 
     let state = SharedAppState {
         inner: Arc::new(AppState {
-            matches: RwLock::new(HashMap::new()),
+            matches: AsyncRwLock::new(HashMap::new()),
             next_player_id: AtomicU32::new(1),
             verifier: SpacetimeVerifier {
                 http: reqwest::Client::new(),
@@ -263,6 +453,7 @@ async fn main() -> Result<()> {
             cert_hash_hex,
             wt_base_url,
             stats_tx,
+            stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
     };
 
@@ -388,12 +579,14 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
         identity: format!("wt-player-{player_id}"),
+        transport: ClientTransport::WebTransport,
         tx: out_tx,
     }))?;
 
     // Writer: prefer datagrams for snapshots/pings; fall back to reliable stream
     // if the datagram is too large for the current QUIC path MTU.
     let conn_write = connection.clone();
+    let telemetry = handle.telemetry.clone();
     let writer = tokio::spawn(async move {
         let mut buf = bytes::BytesMut::with_capacity(4096);
         while let Some(bytes) = out_rx.recv().await {
@@ -404,6 +597,9 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
             let use_datagram = (first == PKT_SNAPSHOT || first == PKT_PING)
                 && conn_write.send_datagram(bytes.as_slice()).is_ok();
             if !use_datagram {
+                if first == PKT_SNAPSHOT || first == PKT_PING {
+                    telemetry.observe_datagram_fallback();
+                }
                 // Reliable stream: 4-byte LE length prefix
                 buf.clear();
                 buf.put_u32_le(bytes.len() as u32);
@@ -411,17 +607,22 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                 if send_stream.write_all(&buf).await.is_err() {
                     break;
                 }
+                telemetry.observe_outbound_reliable(bytes.len());
+            } else {
+                telemetry.observe_outbound_datagram(bytes.len());
             }
         }
     });
 
     // Reader: receive client datagrams → route to match
     let tx_to_match = handle.tx.clone();
+    let telemetry = handle.telemetry.clone();
     let reader = tokio::spawn(async move {
         loop {
             match connection.receive_datagram().await {
                 Ok(datagram) => {
                     let payload = datagram.payload();
+                    telemetry.observe_inbound(payload.len());
                     match decode_client_datagram(&payload) {
                         Ok(dgram) => {
                             let packet = client_datagram_to_packet(dgram);
@@ -433,6 +634,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                             }
                         }
                         Err(err) => {
+                            telemetry.observe_malformed_packet();
                             warn!(player_id, error = ?err, "dropping malformed WT datagram")
                         }
                     }
@@ -478,35 +680,46 @@ async fn handle_socket(
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
         identity: query.identity.clone(),
+        transport: ClientTransport::WebSocket,
         tx: out_tx.clone(),
     }))?;
 
+    let telemetry = handle.telemetry.clone();
     let writer = tokio::spawn(async move {
         while let Some(packet) = out_rx.recv().await {
+            let packet_len = packet.len();
             if ws_tx.send(Message::Binary(packet.into())).await.is_err() {
                 break;
             }
+            telemetry.observe_outbound_reliable(packet_len);
         }
     });
 
     let tx_to_match = handle.tx.clone();
+    let telemetry = handle.telemetry.clone();
     let reader = tokio::spawn(async move {
         while let Some(result) = ws_rx.next().await {
             let Ok(message) = result else {
                 break;
             };
             match message {
-                Message::Binary(bytes) => match decode_client_packet(&bytes) {
-                    Ok(packet) => {
-                        if tx_to_match
-                            .send(MatchEvent::Packet { player_id, packet })
-                            .is_err()
-                        {
-                            break;
+                Message::Binary(bytes) => {
+                    telemetry.observe_inbound(bytes.len());
+                    match decode_client_packet(&bytes) {
+                        Ok(packet) => {
+                            if tx_to_match
+                                .send(MatchEvent::Packet { player_id, packet })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            telemetry.observe_malformed_packet();
+                            warn!(player_id, error = ?err, "dropping malformed packet")
                         }
                     }
-                    Err(err) => warn!(player_id, error = ?err, "dropping malformed packet"),
-                },
+                }
                 Message::Close(_) => break,
                 _ => {}
             }
@@ -529,9 +742,19 @@ async fn get_or_create_match(app: Arc<AppState>, match_id: String) -> MatchHandl
     }
 
     let (tx, rx) = mpsc::unbounded_channel();
-    let handle = MatchHandle { tx: tx.clone() };
+    let telemetry = Arc::new(MatchIoTelemetry::default());
+    let handle = MatchHandle {
+        tx: tx.clone(),
+        telemetry: telemetry.clone(),
+    };
     write.insert(match_id.clone(), handle.clone());
-    tokio::spawn(run_match_loop(match_id, rx, app.stats_tx.clone()));
+    tokio::spawn(run_match_loop(
+        match_id,
+        rx,
+        app.stats_tx.clone(),
+        telemetry,
+        app.stats_registry.clone(),
+    ));
     handle
 }
 
@@ -539,6 +762,8 @@ async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
+    telemetry: Arc<MatchIoTelemetry>,
+    stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
     let mut world = VoxelWorld::new();
@@ -563,6 +788,12 @@ async fn run_match_loop(
         queued_shots: Vec::new(),
         server_tick: 0,
         stats_tx,
+        io: telemetry,
+        last_io_snapshot: None,
+        timings: MatchTimingStats::default(),
+        snapshot_stats: MatchSnapshotStats::default(),
+        void_kills: 0,
+        stats_registry,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -579,6 +810,15 @@ async fn run_match_loop(
             else => break,
         }
     }
+
+    {
+        let mut registry = state
+            .stats_registry
+            .write()
+            .expect("stats registry poisoned");
+        registry.remove(&state.id);
+        let _ = state.stats_tx.send(global_stats_from_registry(&registry));
+    }
 }
 
 impl MatchState {
@@ -590,6 +830,7 @@ impl MatchState {
                     conn.player_id,
                     PlayerRuntime {
                         identity: conn.identity,
+                        transport: conn.transport,
                         tx: conn.tx.clone(),
                         pending_inputs: VecDeque::new(),
                         last_applied_input: InputCmd::default(),
@@ -725,6 +966,7 @@ impl MatchState {
     }
 
     fn tick(&mut self) {
+        let tick_started = Instant::now();
         self.server_tick += 1;
         let dt = 1.0 / SIM_HZ as f32;
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
@@ -732,6 +974,7 @@ impl MatchState {
         self.process_respawns(server_time_ms);
 
         let ids: Vec<u32> = self.players.keys().copied().collect();
+        let player_sim_started = Instant::now();
         for player_id in ids.iter().copied() {
             let input = self
                 .players
@@ -743,24 +986,54 @@ impl MatchState {
             if let Some((pos, _vel, _yaw, _pitch, hp, _flags)) =
                 self.arena.snapshot_player(player_id)
             {
+                if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
+                    self.kill_player(player_id, server_time_ms);
+                    self.void_kills += 1;
+                }
+                let alive = self
+                    .arena
+                    .snapshot_player(player_id)
+                    .map(|(_, _, _, _, hp, flags)| hp > 0 && (flags & 0x4) == 0)
+                    .unwrap_or(false);
+                let center = self
+                    .arena
+                    .snapshot_player(player_id)
+                    .map(|(pos, _, _, _, _, _)| pos)
+                    .unwrap_or(pos);
                 self.history.record(
                     player_id,
                     HistoricalCapsule {
                         server_tick: self.server_tick,
                         server_time_ms,
-                        center: pos,
+                        center,
                         radius: self.arena.config().capsule_radius,
                         half_segment: self.arena.config().capsule_half_segment,
-                        alive: hp > 0,
+                        alive,
                     },
                 );
             }
         }
+        self.timings
+            .player_sim_ms
+            .record(player_sim_started.elapsed().as_secs_f32() * 1000.0);
 
+        let vehicle_started = Instant::now();
         self.arena.step_vehicles(dt);
-        self.arena.step_dynamics(dt);
+        self.timings
+            .vehicle_ms
+            .record(vehicle_started.elapsed().as_secs_f32() * 1000.0);
 
+        let dynamics_started = Instant::now();
+        self.arena.step_dynamics(dt);
+        self.timings
+            .dynamics_ms
+            .record(dynamics_started.elapsed().as_secs_f32() * 1000.0);
+
+        let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
+        self.timings
+            .hitscan_ms
+            .record(hitscan_started.elapsed().as_secs_f32() * 1000.0);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
             self.broadcast_snapshot();
@@ -770,6 +1043,10 @@ impl MatchState {
             self.send_server_latency_pings();
             self.publish_stats();
         }
+
+        self.timings
+            .total_ms
+            .record(tick_started.elapsed().as_secs_f32() * 1000.0);
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -782,16 +1059,20 @@ impl MatchState {
         }
     }
 
-    fn publish_stats(&self) {
-        // Only do work if there are receivers (stats page connected)
-        if self.stats_tx.receiver_count() == 0 {
-            return;
-        }
+    fn publish_stats(&mut self) {
+        let websocket_players = self
+            .players
+            .values()
+            .filter(|runtime| runtime.transport == ClientTransport::WebSocket)
+            .count();
+        let webtransport_players = self.players.len().saturating_sub(websocket_players);
 
         let mut player_snapshots = Vec::with_capacity(self.players.len());
+        let mut positions = Vec::with_capacity(self.players.len());
         for (&player_id, runtime) in &self.players {
             if let Some((pos, vel, _yaw, _pitch, hp, flags)) = self.arena.snapshot_player(player_id)
             {
+                positions.push(pos);
                 // Jitter = stddev of inter-arrival intervals
                 let input_jitter_ms = {
                     let ivs = &runtime.bundle_intervals_ms;
@@ -812,6 +1093,8 @@ impl MatchState {
                 };
                 player_snapshots.push(PlayerStatsSnapshot {
                     id: player_id,
+                    identity: runtime.identity.clone(),
+                    transport: runtime.transport.as_str().to_string(),
                     one_way_ms: runtime.estimated_one_way_ms,
                     pending_inputs: runtime.pending_inputs.len(),
                     hp,
@@ -829,20 +1112,82 @@ impl MatchState {
         }
         player_snapshots.sort_by_key(|p| p.id);
 
+        let (avg_nearby_players, max_nearby_players) = compute_density_metrics(&positions);
+        let now = Instant::now();
+        let io_snapshot = IoSnapshot {
+            inbound_bytes: self.io.inbound_bytes.load(Ordering::Relaxed),
+            outbound_bytes: self.io.outbound_bytes.load(Ordering::Relaxed),
+            inbound_packets: self.io.inbound_packets.load(Ordering::Relaxed),
+            outbound_packets: self.io.outbound_packets.load(Ordering::Relaxed),
+        };
+        let (inbound_bps, outbound_bps, inbound_packets_per_sec, outbound_packets_per_sec) =
+            if let Some((last_at, last_io)) = self.last_io_snapshot.replace((now, io_snapshot)) {
+                let elapsed_s = now.saturating_duration_since(last_at).as_secs_f64().max(0.001);
+                (
+                    ((io_snapshot.inbound_bytes.saturating_sub(last_io.inbound_bytes)) as f64
+                        / elapsed_s)
+                        .round() as u64,
+                    ((io_snapshot.outbound_bytes.saturating_sub(last_io.outbound_bytes)) as f64
+                        / elapsed_s)
+                        .round() as u64,
+                    ((io_snapshot
+                        .inbound_packets
+                        .saturating_sub(last_io.inbound_packets)) as f64
+                        / elapsed_s)
+                        .round() as u64,
+                    ((io_snapshot
+                        .outbound_packets
+                        .saturating_sub(last_io.outbound_packets)) as f64
+                        / elapsed_s)
+                        .round() as u64,
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
+
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
+            scenario_tag: self.id.clone(),
             server_tick: self.server_tick,
             player_count: self.players.len(),
             dynamic_body_count: self.arena.dynamic.dynamic_bodies.len(),
             vehicle_count: self.arena.vehicles.len(),
             chunk_count: self.world.chunks.len(),
+            load: MatchLoadSnapshot {
+                nearby_radius_m: NEARBY_PLAYER_RADIUS_M,
+                avg_nearby_players,
+                max_nearby_players,
+                websocket_players,
+                webtransport_players,
+                void_kills: self.void_kills,
+            },
+            timings: self.timings.snapshot(),
+            network: MatchNetworkSnapshot {
+                inbound_bps,
+                outbound_bps,
+                inbound_packets_per_sec,
+                outbound_packets_per_sec,
+                total_inbound_bytes: io_snapshot.inbound_bytes,
+                total_outbound_bytes: io_snapshot.outbound_bytes,
+                total_inbound_packets: io_snapshot.inbound_packets,
+                total_outbound_packets: io_snapshot.outbound_packets,
+                reliable_packets_sent: self.io.reliable_packets_sent.load(Ordering::Relaxed),
+                datagram_packets_sent: self.io.datagram_packets_sent.load(Ordering::Relaxed),
+                datagram_fallbacks: self.io.datagram_fallbacks.load(Ordering::Relaxed),
+                malformed_packets: self.io.malformed_packets.load(Ordering::Relaxed),
+                snapshot_bytes_per_client: self.snapshot_stats.bytes_per_client.snapshot(),
+                snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
+            },
             players: player_snapshots,
         };
 
-        let global = GlobalStatsSnapshot {
-            sim_hz: SIM_HZ,
-            snapshot_hz: SNAPSHOT_HZ,
-            matches: vec![match_stats],
+        let global = {
+            let mut registry = self
+                .stats_registry
+                .write()
+                .expect("stats registry poisoned");
+            registry.insert(self.id.clone(), match_stats);
+            global_stats_from_registry(&registry)
         };
 
         let _ = self.stats_tx.send(global);
@@ -1034,7 +1379,8 @@ impl MatchState {
         }
     }
 
-    fn broadcast_snapshot(&self) {
+    fn broadcast_snapshot(&mut self) {
+        let snapshot_started = Instant::now();
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
         let mut states = Vec::with_capacity(self.players.len());
         for &player_id in self.players.keys() {
@@ -1056,18 +1402,36 @@ impl MatchState {
 
         let vehicle_states = self.arena.snapshot_vehicles();
 
-        for runtime in self.players.values() {
+        let recipients: Vec<_> = self
+            .players
+            .values()
+            .map(|runtime| (runtime.tx.clone(), runtime.last_ack_input_seq))
+            .collect();
+
+        let mut snapshot_bytes_this_tick = 0usize;
+        for (tx, ack_input_seq) in recipients {
             let packet = ServerPacket::Snapshot(SnapshotPacket {
                 server_time_us,
                 server_tick: self.server_tick,
-                ack_input_seq: runtime.last_ack_input_seq,
+                ack_input_seq,
                 player_states: states.clone(),
                 projectile_states: Vec::new(),
                 dynamic_body_states: dynamic_body_states.clone(),
                 vehicle_states: vehicle_states.clone(),
             });
-            let _ = runtime.tx.send(encode_server_packet(&packet));
+            let encoded = encode_server_packet(&packet);
+            snapshot_bytes_this_tick += encoded.len();
+            self.snapshot_stats
+                .bytes_per_client
+                .record(encoded.len() as f32);
+            let _ = tx.send(encoded);
         }
+        self.snapshot_stats
+            .bytes_per_tick
+            .record(snapshot_bytes_this_tick as f32);
+        self.timings
+            .snapshot_ms
+            .record(snapshot_started.elapsed().as_secs_f32() * 1000.0);
     }
 }
 
@@ -1097,6 +1461,47 @@ fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
     }
 }
 
+fn compute_density_metrics(positions: &[[f32; 3]]) -> (f32, u32) {
+    if positions.is_empty() {
+        return (0.0, 0);
+    }
+
+    let radius_sq = NEARBY_PLAYER_RADIUS_M * NEARBY_PLAYER_RADIUS_M;
+    let mut total = 0u32;
+    let mut max = 0u32;
+
+    for (i, pos) in positions.iter().enumerate() {
+        let mut nearby = 0u32;
+        for (j, other) in positions.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let dx = pos[0] - other[0];
+            let dy = pos[1] - other[1];
+            let dz = pos[2] - other[2];
+            if dx * dx + dy * dy + dz * dz <= radius_sq {
+                nearby += 1;
+            }
+        }
+        total += nearby;
+        max = max.max(nearby);
+    }
+
+    (total as f32 / positions.len() as f32, max)
+}
+
+fn global_stats_from_registry(
+    registry: &HashMap<String, MatchStatsSnapshot>,
+) -> GlobalStatsSnapshot {
+    let mut matches: Vec<_> = registry.values().cloned().collect();
+    matches.sort_by(|a, b| a.id.cmp(&b.id));
+    GlobalStatsSnapshot {
+        sim_hz: SIM_HZ,
+        snapshot_hz: SNAPSHOT_HZ,
+        matches,
+    }
+}
+
 use vibe_land_shared::seq::seq_is_newer;
 
 impl SpacetimeVerifier {
@@ -1123,10 +1528,10 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_inputs, rifle_damage, take_input_for_tick, HitZone, InputCmd, PlayerRuntime,
-        RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE, MAX_PENDING_INPUTS,
+        compute_density_metrics, enqueue_inputs, rifle_damage, take_input_for_tick, HitZone,
+        InputCmd, PlayerRuntime, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE, MAX_PENDING_INPUTS,
     };
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use tokio::sync::mpsc;
     use vibe_land_shared::seq::seq_is_newer;
 
@@ -1134,6 +1539,7 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         PlayerRuntime {
             identity: "test-player".to_string(),
+            transport: super::ClientTransport::WebSocket,
             tx,
             pending_inputs: VecDeque::new(),
             last_applied_input: InputCmd::default(),
@@ -1217,5 +1623,39 @@ mod tests {
         assert_eq!(rifle_damage(HitZone::Body), RIFLE_BODY_DAMAGE);
         assert_eq!(rifle_damage(HitZone::Head), RIFLE_HEAD_DAMAGE);
         assert!(rifle_damage(HitZone::Head) > rifle_damage(HitZone::Body));
+    }
+
+    #[test]
+    fn density_metrics_count_nearby_players() {
+        let (avg, max) = compute_density_metrics(&[
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [30.0, 0.0, 0.0],
+        ]);
+        assert!(avg > 0.0);
+        assert_eq!(max, 1);
+    }
+
+    #[test]
+    fn global_stats_aggregates_multiple_matches() {
+        let mut registry = HashMap::new();
+        registry.insert(
+            "b".to_string(),
+            super::MatchStatsSnapshot {
+                id: "b".to_string(),
+                ..Default::default()
+            },
+        );
+        registry.insert(
+            "a".to_string(),
+            super::MatchStatsSnapshot {
+                id: "a".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let global = super::global_stats_from_registry(&registry);
+        let ids: Vec<_> = global.matches.into_iter().map(|match_stats| match_stats.id).collect();
+        assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
     }
 }

@@ -11,6 +11,7 @@ use crate::{
 };
 
 pub const CHUNK_SIZE: i32 = 16;
+const DEFAULT_DEMO_GROUND_RADIUS: i32 = 24;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkKey {
@@ -39,8 +40,9 @@ impl VoxelWorld {
     }
 
     pub fn seed_demo_world(&mut self, arena: &mut PhysicsArena) {
-        for x in -24..24 {
-            for z in -24..24 {
+        let ground_radius = demo_ground_radius();
+        for x in -ground_radius..ground_radius {
+            for z in -ground_radius..ground_radius {
                 self.set_block_deferred(world_to_chunk_and_local(x, 0, z), 1);
             }
         }
@@ -325,6 +327,14 @@ impl VoxelWorld {
 
         Ok(())
     }
+}
+
+fn demo_ground_radius() -> i32 {
+    std::env::var("DEMO_GROUND_RADIUS")
+        .ok()
+        .and_then(|value| value.parse::<i32>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_DEMO_GROUND_RADIUS)
 }
 
 fn encode_block_user_data(key: ChunkKey, idx: u16, material: u16) -> u128 {
@@ -713,6 +723,18 @@ mod tests {
 mod ball_pit_tests {
     use super::*;
     use crate::movement::MoveConfig;
+
+    #[test]
+    fn demo_world_ground_is_large_enough_for_load_tests() {
+        std::env::set_var("DEMO_GROUND_RADIUS", "96");
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut world = VoxelWorld::new();
+        world.seed_demo_world(&mut arena);
+
+        assert!(world.chunks.contains_key(&ChunkKey { x: -6, y: 0, z: -6 }));
+        assert!(world.chunks.contains_key(&ChunkKey { x: 5, y: 0, z: 5 }));
+        std::env::remove_var("DEMO_GROUND_RADIUS");
+    }
 
     #[test]
     fn ball_pit_spawns_balls() {
