@@ -33,11 +33,21 @@ export class GameSocket {
       return;
     }
 
+    console.info('[websocket] connecting to', url);
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => this.handlers.onOpen?.();
-    ws.onerror = (event) => this.handlers.onError?.(event);
-    ws.onclose = (event) => this.handlers.onClose?.(event);
+    ws.onopen = () => {
+      console.info('[websocket] ✓ connected to', url);
+      this.handlers.onOpen?.();
+    };
+    ws.onerror = (event) => {
+      console.error('[websocket] error on', url, event);
+      this.handlers.onError?.(event);
+    };
+    ws.onclose = (event) => {
+      console.warn(`[websocket] closed — url=${url} code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`);
+      this.handlers.onClose?.(event);
+    };
     ws.onmessage = (event) => this.handleMessage(event.data);
     this.ws = ws;
   }
@@ -118,7 +128,7 @@ export class GameSocket {
     this.handlers.onPacket?.(packet);
   }
 
-  private sendRaw(packet: Uint8Array): void {
+  sendRaw(packet: Uint8Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }

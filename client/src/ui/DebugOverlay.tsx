@@ -8,12 +8,14 @@ export type DebugStats = {
   textures: number;
 
   // Network
+  transport: string;
   pingMs: number;
   serverTick: number;
   interpolationDelayMs: number;
   clockOffsetUs: number;
   remotePlayers: number;
   snapshotsPerSec: number;
+  jitterMs: number;
 
   // Physics / Prediction
   pendingInputs: number;
@@ -22,7 +24,18 @@ export type DebugStats = {
   physicsStepMs: number;
 
   // Player
+  playerId: number;
   position: [number, number, number];
+  velocity: [number, number, number];
+  speedMs: number;
+  hp: number;
+  onGround: boolean;
+  inVehicle: boolean;
+  dead: boolean;
+
+  // System
+  heapUsedMb: number;
+  heapTotalMb: number;
 };
 
 export const DEFAULT_STATS: DebugStats = {
@@ -32,27 +45,47 @@ export const DEFAULT_STATS: DebugStats = {
   triangles: 0,
   geometries: 0,
   textures: 0,
+  transport: 'connecting',
   pingMs: 0,
   serverTick: 0,
   interpolationDelayMs: 0,
   clockOffsetUs: 0,
   remotePlayers: 0,
   snapshotsPerSec: 0,
+  jitterMs: 0,
   pendingInputs: 0,
   predictionTicks: 0,
   correctionMagnitude: 0,
   physicsStepMs: 0,
+  playerId: 0,
   position: [0, 0, 0],
+  velocity: [0, 0, 0],
+  speedMs: 0,
+  hp: 100,
+  onGround: false,
+  inVehicle: false,
+  dead: false,
+  heapUsedMb: -1,
+  heapTotalMb: -1,
 };
 
 function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
 
+function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string {
+  const parts: string[] = [];
+  if (onGround) parts.push('ground');
+  if (inVehicle) parts.push('vehicle');
+  if (dead) parts.push('DEAD');
+  return parts.length > 0 ? parts.join(' | ') : 'airborne';
+}
+
 export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: boolean }) {
   if (!visible) return null;
 
   const p = stats.position;
+  const v = stats.velocity;
 
   return (
     <div
@@ -70,7 +103,7 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         borderRadius: 4,
         pointerEvents: 'none',
         whiteSpace: 'pre',
-        minWidth: 220,
+        minWidth: 240,
       }}
     >
       <Section title="Rendering">
@@ -80,7 +113,8 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
       </Section>
 
       <Section title="Network">
-        {`Ping: ${fmt(stats.pingMs)}ms`}
+        {`Transport: ${stats.transport}`}
+        {`Ping: ${fmt(stats.pingMs)}ms  Jitter: ±${fmt(stats.jitterMs)}ms`}
         {`Server tick: ${stats.serverTick}`}
         {`Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
         {`Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
@@ -96,8 +130,18 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
       </Section>
 
       <Section title="Player">
+        {`ID: ${stats.playerId}  HP: ${stats.hp}`}
+        {`Status: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`}
         {`Pos: ${fmt(p[0], 2)}, ${fmt(p[1], 2)}, ${fmt(p[2], 2)}`}
+        {`Vel: ${fmt(v[0], 2)}, ${fmt(v[1], 2)}, ${fmt(v[2], 2)}`}
+        {`Speed: ${fmt(stats.speedMs, 2)} m/s`}
       </Section>
+
+      {stats.heapUsedMb >= 0 && (
+        <Section title="System">
+          {`Heap: ${fmt(stats.heapUsedMb)} / ${fmt(stats.heapTotalMb)} MB`}
+        </Section>
+      )}
     </div>
   );
 }

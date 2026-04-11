@@ -21,6 +21,7 @@ pub enum ClientPacket {
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
+    DebugStats { correction_m: f32, physics_ms: f32 },
 }
 
 #[derive(Clone, Debug)]
@@ -38,12 +39,19 @@ pub enum ServerPacket {
 pub enum ClientDatagram {
     InputBundle(Vec<InputFrame>),
     Fire(FireCmd),
+    BlockEdit(BlockEditCmd),
+    VehicleEnter(VehicleEnterCmd),
+    VehicleExit(VehicleExitCmd),
+    Ping(u32),
+    DebugStats { correction_m: f32, physics_ms: f32 },
 }
 
 #[derive(Clone, Debug)]
 pub enum ServerReliablePacket {
     Welcome(WelcomePacket),
     ShotResult(ShotResultPacket),
+    ChunkFull(ChunkFullPacket),
+    ChunkDiff(ChunkDiffPacket),
 }
 
 #[derive(Clone, Debug)]
@@ -93,8 +101,51 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 dir,
             })
         }
+        PKT_BLOCK_EDIT => {
+            ensure!(buf.remaining() >= 14, "short block edit datagram");
+            let chunk = [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()];
+            let expected_version = buf.get_u32_le();
+            let local = [buf.get_u8(), buf.get_u8(), buf.get_u8()];
+            let op = buf.get_u8();
+            let material = buf.get_u16_le();
+            ClientDatagram::BlockEdit(BlockEditCmd { chunk, expected_version, local, op, material })
+        }
+        PKT_VEHICLE_ENTER => {
+            ensure!(buf.remaining() >= 5, "short vehicle enter datagram");
+            let vehicle_id = buf.get_u32_le();
+            let seat = buf.get_u8();
+            ClientDatagram::VehicleEnter(VehicleEnterCmd { vehicle_id, seat })
+        }
+        PKT_VEHICLE_EXIT => {
+            ensure!(buf.remaining() >= 4, "short vehicle exit datagram");
+            let vehicle_id = buf.get_u32_le();
+            ClientDatagram::VehicleExit(VehicleExitCmd { vehicle_id })
+        }
+        PKT_PING => {
+            ensure!(buf.remaining() >= 4, "short ping datagram");
+            ClientDatagram::Ping(buf.get_u32_le())
+        }
+        PKT_DEBUG_STATS => {
+            ensure!(buf.remaining() >= 8, "short debug stats datagram");
+            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientDatagram::DebugStats { correction_m, physics_ms }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
+}
+
+/// Convert a [`ClientDatagram`] (WebTransport) to a [`ClientPacket`] (match event).
+pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
+    match d {
+        ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
+        ClientDatagram::Fire(cmd) => ClientPacket::Fire(cmd),
+        ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
+        ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
+        ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
+        ClientDatagram::Ping(n) => ClientPacket::Ping(n),
+        ClientDatagram::DebugStats { correction_m, physics_ms } => ClientPacket::DebugStats { correction_m, physics_ms },
+    }
 }
 
 pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
@@ -114,6 +165,35 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u8(pkt.weapon);
             out.put_u8(pkt.confirmed as u8);
             out.put_u32_le(pkt.hit_player_id);
+        }
+        ServerReliablePacket::ChunkFull(pkt) => {
+            out.put_u8(PKT_CHUNK_FULL);
+            out.put_i16_le(pkt.chunk[0]);
+            out.put_i16_le(pkt.chunk[1]);
+            out.put_i16_le(pkt.chunk[2]);
+            out.put_u32_le(pkt.version);
+            out.put_u16_le(pkt.blocks.len() as u16);
+            for b in &pkt.blocks {
+                out.put_u8(b.x);
+                out.put_u8(b.y);
+                out.put_u8(b.z);
+                out.put_u16_le(b.material);
+            }
+        }
+        ServerReliablePacket::ChunkDiff(pkt) => {
+            out.put_u8(PKT_CHUNK_DIFF);
+            out.put_i16_le(pkt.chunk[0]);
+            out.put_i16_le(pkt.chunk[1]);
+            out.put_i16_le(pkt.chunk[2]);
+            out.put_u32_le(pkt.version);
+            out.put_u8(pkt.edits.len() as u8);
+            for e in &pkt.edits {
+                out.put_u8(e.x);
+                out.put_u8(e.y);
+                out.put_u8(e.z);
+                out.put_u8(e.op);
+                out.put_u16_le(e.material);
+            }
         }
     }
     out.to_vec()
@@ -234,6 +314,12 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             ensure!(buf.remaining() >= 4, "short vehicle exit packet");
             let vehicle_id = buf.get_u32_le();
             ClientPacket::VehicleExit(VehicleExitCmd { vehicle_id })
+        }
+        PKT_DEBUG_STATS => {
+            ensure!(buf.remaining() >= 8, "short debug stats packet");
+            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientPacket::DebugStats { correction_m, physics_ms }
         }
         other => bail!("unknown client packet kind {other}"),
     })

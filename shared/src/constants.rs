@@ -21,6 +21,7 @@ pub const PKT_FIRE: u8 = 3;
 pub const PKT_BLOCK_EDIT: u8 = 4;
 pub const PKT_VEHICLE_ENTER: u8 = 5;
 pub const PKT_VEHICLE_EXIT: u8 = 6;
+pub const PKT_DEBUG_STATS: u8 = 7;
 
 pub const PKT_WELCOME: u8 = 101;
 pub const PKT_SNAPSHOT: u8 = 102;

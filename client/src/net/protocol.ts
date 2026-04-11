@@ -8,6 +8,7 @@ import {
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
+  PKT_DEBUG_STATS,
   PKT_WELCOME,
   PKT_SNAPSHOT,
   PKT_SHOT_RESULT,
@@ -156,7 +157,7 @@ export type ShotResultPacket = {
   hitPlayerId: number;
 };
 
-export type ServerReliablePacket = WelcomePacket | ShotResultPacket;
+export type ServerReliablePacket = WelcomePacket | ShotResultPacket | ChunkFullPacket | ChunkDiffPacket | SnapshotPacket;
 export type ServerDatagramPacket = SnapshotPacket;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
@@ -322,9 +323,124 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         hitPlayerId,
       };
     }
+    case PKT_CHUNK_FULL:
+      return decodeChunkFullPacket(data);
+    case PKT_CHUNK_DIFF:
+      return decodeChunkDiffPacket(data);
+    case PKT_SNAPSHOT:
+      // Snapshots fall back to the reliable stream when too large for a QUIC datagram
+      return decodeSnapshotPacket(view, o);
     default:
       throw new Error(`unknown reliable packet kind: ${kind}`);
   }
+}
+
+/** Decode the snapshot body starting at byte offset `o` (after the type byte). */
+export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket {
+  const serverTimeUs = getUint64(view, o); o += 8;
+  const serverTick = view.getUint32(o, true); o += 4;
+  const ackInputSeq = view.getUint16(o, true); o += 2;
+  const playerCount = view.getUint16(o, true); o += 2;
+  const projectileCount = view.getUint16(o, true); o += 2;
+  const dynamicBodyCount = view.getUint16(o, true); o += 2;
+  const vehicleCount = view.getUint16(o, true); o += 2;
+
+  const playerStates: NetPlayerState[] = [];
+  for (let i = 0; i < playerCount; i += 1) {
+    playerStates.push({
+      id: view.getUint32(o, true),
+      pxMm: view.getInt32(o + 4, true),
+      pyMm: view.getInt32(o + 8, true),
+      pzMm: view.getInt32(o + 12, true),
+      vxCms: view.getInt16(o + 16, true),
+      vyCms: view.getInt16(o + 18, true),
+      vzCms: view.getInt16(o + 20, true),
+      yawI16: view.getInt16(o + 22, true),
+      pitchI16: view.getInt16(o + 24, true),
+      flags: view.getUint16(o + 26, true),
+    });
+    o += 28;
+  }
+
+  const projectileStates: NetProjectileState[] = [];
+  for (let i = 0; i < projectileCount; i += 1) {
+    projectileStates.push({
+      id: view.getUint32(o, true),
+      ownerId: view.getUint32(o + 4, true),
+      sourceShotId: view.getUint32(o + 8, true),
+      kind: view.getUint8(o + 12),
+      pxMm: view.getInt32(o + 13, true),
+      pyMm: view.getInt32(o + 17, true),
+      pzMm: view.getInt32(o + 21, true),
+      vxCms: view.getInt16(o + 25, true),
+      vyCms: view.getInt16(o + 27, true),
+      vzCms: view.getInt16(o + 29, true),
+    });
+    o += 31;
+  }
+
+  const dynamicBodyStates: NetDynamicBodyState[] = [];
+  for (let i = 0; i < dynamicBodyCount; i += 1) {
+    dynamicBodyStates.push({
+      id: view.getUint32(o, true),
+      shapeType: view.getUint8(o + 4),
+      pxMm: view.getInt32(o + 5, true),
+      pyMm: view.getInt32(o + 9, true),
+      pzMm: view.getInt32(o + 13, true),
+      qxSnorm: view.getInt16(o + 17, true),
+      qySnorm: view.getInt16(o + 19, true),
+      qzSnorm: view.getInt16(o + 21, true),
+      qwSnorm: view.getInt16(o + 23, true),
+      hxCm: view.getUint16(o + 25, true),
+      hyCm: view.getUint16(o + 27, true),
+      hzCm: view.getUint16(o + 29, true),
+      vxCms: view.getInt16(o + 31, true),
+      vyCms: view.getInt16(o + 33, true),
+      vzCms: view.getInt16(o + 35, true),
+    });
+    o += 37;
+  }
+
+  const vehicleStates: NetVehicleState[] = [];
+  for (let i = 0; i < vehicleCount; i += 1) {
+    vehicleStates.push({
+      id: view.getUint32(o, true),
+      vehicleType: view.getUint8(o + 4),
+      flags: view.getUint8(o + 5),
+      driverId: view.getUint32(o + 6, true),
+      pxMm: view.getInt32(o + 10, true),
+      pyMm: view.getInt32(o + 14, true),
+      pzMm: view.getInt32(o + 18, true),
+      qxSnorm: view.getInt16(o + 22, true),
+      qySnorm: view.getInt16(o + 24, true),
+      qzSnorm: view.getInt16(o + 26, true),
+      qwSnorm: view.getInt16(o + 28, true),
+      vxCms: view.getInt16(o + 30, true),
+      vyCms: view.getInt16(o + 32, true),
+      vzCms: view.getInt16(o + 34, true),
+      wxMrads: view.getInt16(o + 36, true),
+      wyMrads: view.getInt16(o + 38, true),
+      wzMrads: view.getInt16(o + 40, true),
+      wheelData: [
+        view.getUint16(o + 42, true),
+        view.getUint16(o + 44, true),
+        view.getUint16(o + 46, true),
+        view.getUint16(o + 48, true),
+      ],
+    });
+    o += 50;
+  }
+
+  return {
+    type: 'snapshot',
+    serverTimeUs,
+    serverTick,
+    ackInputSeq,
+    playerStates,
+    projectileStates,
+    dynamicBodyStates,
+    vehicleStates,
+  };
 }
 
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
@@ -334,112 +450,8 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
   const kind = view.getUint8(o++);
 
   switch (kind) {
-    case PKT_SNAPSHOT: {
-      const serverTimeUs = getUint64(view, o); o += 8;
-      const serverTick = view.getUint32(o, true); o += 4;
-      const ackInputSeq = view.getUint16(o, true); o += 2;
-      const playerCount = view.getUint16(o, true); o += 2;
-      const projectileCount = view.getUint16(o, true); o += 2;
-      const dynamicBodyCount = view.getUint16(o, true); o += 2;
-      const vehicleCount = view.getUint16(o, true); o += 2;
-
-      const playerStates: NetPlayerState[] = [];
-      for (let i = 0; i < playerCount; i += 1) {
-        playerStates.push({
-          id: view.getUint32(o, true),
-          pxMm: view.getInt32(o + 4, true),
-          pyMm: view.getInt32(o + 8, true),
-          pzMm: view.getInt32(o + 12, true),
-          vxCms: view.getInt16(o + 16, true),
-          vyCms: view.getInt16(o + 18, true),
-          vzCms: view.getInt16(o + 20, true),
-          yawI16: view.getInt16(o + 22, true),
-          pitchI16: view.getInt16(o + 24, true),
-          flags: view.getUint16(o + 26, true),
-        });
-        o += 28;
-      }
-
-      const projectileStates: NetProjectileState[] = [];
-      for (let i = 0; i < projectileCount; i += 1) {
-        projectileStates.push({
-          id: view.getUint32(o, true),
-          ownerId: view.getUint32(o + 4, true),
-          sourceShotId: view.getUint32(o + 8, true),
-          kind: view.getUint8(o + 12),
-          pxMm: view.getInt32(o + 13, true),
-          pyMm: view.getInt32(o + 17, true),
-          pzMm: view.getInt32(o + 21, true),
-          vxCms: view.getInt16(o + 25, true),
-          vyCms: view.getInt16(o + 27, true),
-          vzCms: view.getInt16(o + 29, true),
-        });
-        o += 31;
-      }
-
-      const dynamicBodyStates: NetDynamicBodyState[] = [];
-      for (let i = 0; i < dynamicBodyCount; i += 1) {
-        dynamicBodyStates.push({
-          id: view.getUint32(o, true),
-          shapeType: view.getUint8(o + 4),
-          pxMm: view.getInt32(o + 5, true),
-          pyMm: view.getInt32(o + 9, true),
-          pzMm: view.getInt32(o + 13, true),
-          qxSnorm: view.getInt16(o + 17, true),
-          qySnorm: view.getInt16(o + 19, true),
-          qzSnorm: view.getInt16(o + 21, true),
-          qwSnorm: view.getInt16(o + 23, true),
-          hxCm: view.getUint16(o + 25, true),
-          hyCm: view.getUint16(o + 27, true),
-          hzCm: view.getUint16(o + 29, true),
-          vxCms: view.getInt16(o + 31, true),
-          vyCms: view.getInt16(o + 33, true),
-          vzCms: view.getInt16(o + 35, true),
-        });
-        o += 37;
-      }
-
-      const vehicleStates: NetVehicleState[] = [];
-      for (let i = 0; i < vehicleCount; i += 1) {
-        vehicleStates.push({
-          id: view.getUint32(o, true),
-          vehicleType: view.getUint8(o + 4),
-          flags: view.getUint8(o + 5),
-          driverId: view.getUint32(o + 6, true),
-          pxMm: view.getInt32(o + 10, true),
-          pyMm: view.getInt32(o + 14, true),
-          pzMm: view.getInt32(o + 18, true),
-          qxSnorm: view.getInt16(o + 22, true),
-          qySnorm: view.getInt16(o + 24, true),
-          qzSnorm: view.getInt16(o + 26, true),
-          qwSnorm: view.getInt16(o + 28, true),
-          vxCms: view.getInt16(o + 30, true),
-          vyCms: view.getInt16(o + 32, true),
-          vzCms: view.getInt16(o + 34, true),
-          wxMrads: view.getInt16(o + 36, true),
-          wyMrads: view.getInt16(o + 38, true),
-          wzMrads: view.getInt16(o + 40, true),
-          wheelData: [
-            view.getUint16(o + 42, true),
-            view.getUint16(o + 44, true),
-            view.getUint16(o + 46, true),
-            view.getUint16(o + 48, true),
-          ],
-        });
-        o += 50; // 4+1+1+4+4+4+4+2*4+2*3+2*3+2*4 = 50 bytes
-      }
-
-      return {
-        type: 'snapshot',
-        serverTimeUs,
-        serverTick,
-        ackInputSeq,
-        playerStates,
-        projectileStates,
-        dynamicBodyStates,
-        vehicleStates,
-      };
-    }
+    case PKT_SNAPSHOT:
+      return decodeSnapshotPacket(view, o);
     default:
       throw new Error(`unknown datagram packet kind: ${kind}`);
   }
@@ -776,6 +788,16 @@ export function encodePingPacket(nonce: number): Uint8Array {
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_PING);
   view.setUint32(1, nonce >>> 0, true);
+  return out;
+}
+
+/** Send rolling-average client debug stats to the server (1 Hz). 9 bytes total. */
+export function encodeDebugStatsPacket(correctionM: number, physicsStepMs: number): Uint8Array {
+  const out = new Uint8Array(9);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_DEBUG_STATS);
+  view.setFloat32(1, correctionM, true);
+  view.setFloat32(5, physicsStepMs, true);
   return out;
 }
 

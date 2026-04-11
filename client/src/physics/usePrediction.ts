@@ -231,13 +231,14 @@ export function usePrediction() {
 
   const getDebugStats = useCallback(() => {
     const m = managerRef.current;
-    if (!m) return { pendingInputs: 0, predictionTicks: 0, correctionMagnitude: 0, physicsStepMs: 0 };
+    if (!m) return { pendingInputs: 0, predictionTicks: 0, correctionMagnitude: 0, physicsStepMs: 0, velocity: [0, 0, 0] as [number, number, number] };
     const offset = m.getCorrectionOffset();
     return {
       pendingInputs: m.getPendingInputCount(),
       predictionTicks: m.getTickCount(),
       correctionMagnitude: Math.hypot(offset[0], offset[1], offset[2]),
       physicsStepMs: m.getLastPhysicsStepMs(),
+      velocity: m.getVelocity(),
     };
   }, []);
 

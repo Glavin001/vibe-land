@@ -205,6 +205,16 @@ export class PredictionManager {
     return this._lastPhysicsStepMs;
   }
 
+  getVelocity(): [number, number, number] {
+    if (!this.initialized) return [0, 0, 0];
+    // Derived from last physics step's position delta (FIXED_DT interval)
+    return [
+      (this.currPosition[0] - this.prevPosition[0]) / FIXED_DT,
+      (this.currPosition[1] - this.prevPosition[1]) / FIXED_DT,
+      (this.currPosition[2] - this.prevPosition[2]) / FIXED_DT,
+    ];
+  }
+
   getNextSeq(): number {
     return this.nextSeq;
   }

@@ -1,12 +1,18 @@
 import {
+  PKT_PING,
   bytesFromHex,
   decodeServerDatagramPacket,
   decodeServerReliablePacket,
+  encodeBlockEditPacket,
   encodeClientHello,
   encodeFirePacket,
   encodeInputBundle,
+  encodePingPacket,
+  encodeVehicleEnterPacket,
+  encodeVehicleExitPacket,
   frameReliablePacket,
   parseFramedReliablePackets,
+  type BlockEditCmd,
   type FireCmd,
   type InputFrame,
   type ServerDatagramPacket,
@@ -77,7 +83,16 @@ export class WebTransportGameClient {
   }
 
   static async connect(options: WebTransportGameClientOptions): Promise<WebTransportGameClient> {
+    console.info('[webtransport] fetching session config for match:', options.matchId);
     const sessionConfig = await fetchSessionConfig(options.matchId);
+    console.info('[webtransport] session config:', {
+      url: sessionConfig.url,
+      certMode: sessionConfig.server_certificate_hash_hex ? 'self-signed (pinned hash)' : 'CA-signed',
+      certHash: sessionConfig.server_certificate_hash_hex || '(none — CA cert)',
+      simHz: sessionConfig.sim_hz,
+      snapshotHz: sessionConfig.snapshot_hz,
+      interpolationDelayMs: sessionConfig.interpolation_delay_ms,
+    });
     const client = new WebTransportGameClient(sessionConfig, options);
     await client.open();
     return client;
@@ -89,18 +104,31 @@ export class WebTransportGameClient {
       throw new Error('WebTransport is not available in this browser');
     }
 
-    const transport = new WebTransportCtor(this.sessionConfig.url, {
+    // Use certificate pinning only for self-signed certs (dev mode).
+    // CA-signed certs (production) use normal TLS validation — no hash needed.
+    const certHash = this.sessionConfig.server_certificate_hash_hex;
+    const transportOptions: WebTransportOptionsLike = {
       allowPooling: false,
       requireUnreliable: true,
       congestionControl: 'low-latency',
-      serverCertificateHashes: [{
-        algorithm: 'sha-256',
-        value: bytesFromHex(this.sessionConfig.server_certificate_hash_hex),
-      }],
+      ...(certHash ? {
+        serverCertificateHashes: [{
+          algorithm: 'sha-256',
+          value: bytesFromHex(certHash),
+        }],
+      } : {}),
+    };
+
+    console.info(`[webtransport] connecting to ${this.sessionConfig.url}`, {
+      certPinning: !!certHash,
+      options: { allowPooling: false, requireUnreliable: true, congestionControl: 'low-latency' },
     });
+    const t0 = performance.now();
+    const transport = new WebTransportCtor(this.sessionConfig.url, transportOptions);
 
     this.transport = transport;
     await transport.ready;
+    console.info(`[webtransport] QUIC connection ready (${(performance.now() - t0).toFixed(1)}ms handshake)`);
 
     const datagramWriter = transport.datagrams.writable.getWriter();
     this.datagramWriter = datagramWriter;
@@ -109,6 +137,7 @@ export class WebTransportGameClient {
     const controlWriter = control.writable.getWriter();
     await controlWriter.write(frameReliablePacket(encodeClientHello({ matchId: this.options.matchId })));
     await controlWriter.close();
+    console.info('[webtransport] ClientHello sent, waiting for Welcome...');
 
     this.startReliableReader(control.readable);
     this.startDatagramReader(transport.datagrams.readable);
@@ -129,6 +158,34 @@ export class WebTransportGameClient {
       return;
     }
     void this.datagramWriter.write(encodeFirePacket(command)).catch((error) => this.handleClosed(error));
+  }
+
+  sendBlockEdit(cmd: BlockEditCmd): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeBlockEditPacket(cmd)).catch((error) => this.handleClosed(error));
+  }
+
+  sendVehicleEnter(vehicleId: number, seat = 0): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeVehicleEnterPacket(vehicleId, seat)).catch((error) => this.handleClosed(error));
+  }
+
+  sendVehicleExit(vehicleId: number): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeVehicleExitPacket(vehicleId)).catch((error) => this.handleClosed(error));
+  }
+
+  sendRawDatagram(packet: Uint8Array): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(packet).catch((error) => this.handleClosed(error));
   }
 
   close(reason = 'client closed'): void {
@@ -157,10 +214,14 @@ export class WebTransportGameClient {
           buffer = parsed.buffer;
           for (const packetBytes of parsed.packets) {
             const packet = decodeServerReliablePacket(packetBytes);
-            this.options.onReliablePacket?.(packet);
             if (packet.type === 'welcome') {
+              console.info('[webtransport] Welcome received — playerId:', packet.playerId, {
+                simHz: packet.simHz,
+                interpolationDelayMs: packet.interpolationDelayMs,
+              });
               this.options.onWelcome?.(packet);
             }
+            this.options.onReliablePacket?.(packet);
           }
         }
       } catch (error) {
@@ -180,6 +241,14 @@ export class WebTransportGameClient {
           const { value, done } = await reader.read();
           if (done) break;
           if (!value) continue;
+
+          // Auto-respond to server-initiated latency pings (PKT_PING = 110)
+          if (value[0] === PKT_PING && value.length >= 5) {
+            const nonce = new DataView(value.buffer, value.byteOffset, value.byteLength).getUint32(1, true);
+            void this.datagramWriter?.write(encodePingPacket(nonce))?.catch(() => {});
+            continue;
+          }
+
           const packet = decodeServerDatagramPacket(value);
           this.options.onDatagramPacket?.(packet, performance.now() * 1000);
         }
@@ -202,14 +271,21 @@ export class WebTransportGameClient {
       return;
     }
     this.closeNotified = true;
+    if (reason !== undefined && reason !== null) {
+      console.warn('[webtransport] connection closed:', reason);
+    } else {
+      console.info('[webtransport] connection closed (clean)');
+    }
     this.options.onClose?.(reason);
   }
 }
 
 async function fetchSessionConfig(matchId: string): Promise<SessionConfigResponse> {
-  const response = await fetch(`/session-config?match_id=${encodeURIComponent(matchId)}`);
+  const url = `/session-config?match_id=${encodeURIComponent(matchId)}`;
+  console.info('[webtransport] GET', url);
+  const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`failed to fetch session config: ${response.status}`);
+    throw new Error(`failed to fetch session config: HTTP ${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<SessionConfigResponse>;
 }

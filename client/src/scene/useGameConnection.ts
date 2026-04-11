@@ -107,9 +107,9 @@ export function useGameConnection(
     const matchId = 'default';
     const identity = 'player-' + Math.random().toString(36).slice(2, 8);
     const token = 'mvp-token';
-    const wsUrl = `ws://${window.location.hostname}:${window.location.port || '5183'}/ws/${matchId}?identity=${identity}&token=${token}`;
-    console.log('[game] Connecting to', wsUrl);
-    client.connect(wsUrl);
+    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsUrl = `${wsProto}://${window.location.hostname}:${window.location.port || '5555'}/ws/${matchId}?identity=${identity}&token=${token}`;
+    void client.connectWithFallback(matchId, wsUrl);
 
     return () => {
       clearInterval(pingInterval);

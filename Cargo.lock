@@ -339,6 +339,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotenvy"
+version = "0.15.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
+
+[[package]]
 name = "downcast-rs"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2739,6 +2745,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "dotenvy",
  "futures-util",
  "hex",
  "nalgebra",
@@ -2746,6 +2753,7 @@ dependencies = [
  "rcgen",
  "reqwest",
  "serde",
+ "serde_json",
  "sha2",
  "tokio",
  "tower-http",
