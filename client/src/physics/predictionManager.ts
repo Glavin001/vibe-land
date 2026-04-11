@@ -1,4 +1,4 @@
-import type { WasmSimWorld } from '../wasm/sharedPhysics';
+import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
@@ -39,7 +39,7 @@ export class PredictionManager {
   private _lastPhysicsStepMs = 0;
   readonly isLocalPreview = IS_LOCAL_PREVIEW;
 
-  constructor(private readonly sim: WasmSimWorld) {
+  constructor(private readonly sim: WasmSimWorldInstance) {
     this.voxelWorld = new ClientVoxelWorld(sim, !IS_LOCAL_PREVIEW);
   }
 

@@ -5,9 +5,20 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { initSync, WasmSimWorld } from './pkg/vibe_land_shared.js';
+import { initSync, WasmSimWorld as RawWasmSimWorld } from './pkg/vibe_land_shared.js';
+import { installWasmSimWorldCompat } from './compat';
 
 let initialized = false;
+type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
+  seedDemoTerrain(): number;
+};
+type WasmSimWorldCtor = {
+  new (): WasmSimWorldInstance;
+  prototype: WasmSimWorldInstance;
+};
+
+installWasmSimWorldCompat(RawWasmSimWorld);
+const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
 
 export function initWasmForTests(): void {
   if (initialized) return;
@@ -19,3 +30,4 @@ export function initWasmForTests(): void {
 }
 
 export { WasmSimWorld };
+export type { WasmSimWorldInstance };
