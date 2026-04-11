@@ -75,6 +75,7 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
         avg_bundle_size: 1,
         correction_m: 0,
         physics_ms: 0,
+        has_debug_stats: true,
       },
     ],
     ...overrides,
@@ -100,11 +101,22 @@ describe('serverStats heuristics', () => {
     expect(describeTransport(match)).toContain('WT mixed delivery');
   });
 
-  it('reports CPU-limited when tick p95 is near budget', () => {
+  it('reports near tick budget when headroom is small but still positive', () => {
     const match = makeMatch({
       timings: {
         ...makeMatch().timings,
-        total_ms: { avg: 14, p95: 16.2, max: 18 },
+        total_ms: { avg: 14, p95: 15.8, max: 18 },
+        dynamics_ms: { avg: 9, p95: 11, max: 12 },
+      },
+    });
+    expect(describeBottleneck(match, 60)).toContain('Near tick budget');
+  });
+
+  it('reports CPU-limited when tick p95 exceeds budget', () => {
+    const match = makeMatch({
+      timings: {
+        ...makeMatch().timings,
+        total_ms: { avg: 15, p95: 16.8, max: 18.5 },
         dynamics_ms: { avg: 9, p95: 11, max: 12 },
       },
     });

@@ -313,6 +313,7 @@ struct PlayerStatsSnapshot {
     // Client-reported experience metrics (1 Hz)
     correction_m: f32,
     physics_ms: f32,
+    has_debug_stats: bool,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -421,6 +422,7 @@ struct PlayerRuntime {
     // Client-reported debug stats (1 Hz)
     client_correction_m: f32,
     client_physics_ms: f32,
+    client_debug_seen: bool,
     last_processed_shot_id: Option<u32>,
     next_allowed_fire_ms: u32,
     respawn_at_ms: Option<u32>,
@@ -907,6 +909,7 @@ impl MatchState {
                         bundle_sizes: VecDeque::new(),
                         client_correction_m: 0.0,
                         client_physics_ms: 0.0,
+                        client_debug_seen: false,
                         last_processed_shot_id: None,
                         next_allowed_fire_ms: 0,
                         respawn_at_ms: None,
@@ -1023,6 +1026,7 @@ impl MatchState {
                     } => {
                         runtime.client_correction_m = correction_m;
                         runtime.client_physics_ms = physics_ms;
+                        runtime.client_debug_seen = true;
                     }
                 }
             }
@@ -1171,6 +1175,7 @@ impl MatchState {
                     avg_bundle_size,
                     correction_m: runtime.client_correction_m,
                     physics_ms: runtime.client_physics_ms,
+                    has_debug_stats: runtime.client_debug_seen,
                 });
             }
         }
@@ -1743,6 +1748,7 @@ mod tests {
             bundle_sizes: VecDeque::new(),
             client_correction_m: 0.0,
             client_physics_ms: 0.0,
+            client_debug_seen: false,
             last_processed_shot_id: None,
             next_allowed_fire_ms: 0,
             respawn_at_ms: None,

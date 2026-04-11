@@ -63,6 +63,7 @@ export interface PlayerStatsSnapshot {
   avg_bundle_size: number;
   correction_m: number;
   physics_ms: number;
+  has_debug_stats: boolean;
 }
 
 export interface MatchStatsSnapshot {
@@ -152,8 +153,11 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
   const wtFallbackRatio = webTransportSnapshotFallbackRatio(match);
   const pendingMax = maxPendingInputs(match);
 
-  if (budgetMs > 0 && match.timings.total_ms.p95 >= budgetMs * 0.95) {
+  if (budgetMs > 0 && headroomMs <= 0) {
     return `CPU-limited: ${timingName} ${timingMs.toFixed(1)}ms, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms / ${budgetMs.toFixed(1)}ms budget`;
+  }
+  if (budgetMs > 0 && headroomMs <= 4.0) {
+    return `Near tick budget: ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
     return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
