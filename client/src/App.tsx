@@ -16,7 +16,14 @@ export function App() {
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
-  const { visible: debugVisible, displayStats, updateFrame, recordSnapshot, getStatsSnapshot } = useDebugStats();
+  const {
+    visible: debugVisible,
+    displayStats,
+    updateFrame,
+    recordSnapshot,
+    getStatsSnapshot,
+    rapierDebugModeBits,
+  } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
@@ -223,6 +230,7 @@ export function App() {
           onInputFrame={updateInputFrame}
           inputFamilyMode={inputFamilyMode}
           onSnapshot={recordSnapshot}
+          rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
         />

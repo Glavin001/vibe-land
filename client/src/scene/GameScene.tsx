@@ -13,6 +13,7 @@ type GameSceneProps = {
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
   onSnapshot?: () => void;
+  rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
 };
@@ -27,6 +28,7 @@ export function GameScene({
   onInputFrame,
   inputFamilyMode,
   onSnapshot,
+  rapierDebugModeBits = 0,
   showRenderStats,
   renderStatsParent,
 }: GameSceneProps) {
@@ -55,6 +57,7 @@ export function GameScene({
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
           onSnapshot={onSnapshot}
+          rapierDebugModeBits={rapierDebugModeBits}
         />
       </Suspense>
     </Canvas>

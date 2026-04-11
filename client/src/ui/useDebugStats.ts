@@ -5,10 +5,17 @@ import { DEFAULT_STATS } from './DebugOverlay';
 const FPS_SAMPLE_COUNT = 60;
 const OVERLAY_UPDATE_INTERVAL_MS = 100; // 10Hz UI refresh
 const JITTER_SAMPLE_COUNT = 30; // rolling window of snapshot intervals
+const RAPIER_DEBUG_MODES = [
+  { bits: 0, label: 'off' },
+  { bits: 0b11, label: 'shapes' },
+  { bits: 0b1111, label: 'joints' },
+  { bits: 0b1111111, label: 'full' },
+] as const;
 
 export function useDebugStats() {
   const [visible, setVisible] = useState(false);
   const [displayStats, setDisplayStats] = useState<DebugStats>({ ...DEFAULT_STATS });
+  const [rapierDebugPresetIndex, setRapierDebugPresetIndex] = useState(0);
   const statsRef = useRef<DebugStats>({ ...DEFAULT_STATS });
   const frameTimes = useRef<number[]>([]);
   const snapshotTimestamps = useRef<number[]>([]);
@@ -25,6 +32,16 @@ export function useDebugStats() {
         setVisible((v) => {
           visibleRef.current = !v;
           return !v;
+        });
+        return;
+      }
+      if (e.code === 'F6') {
+        e.preventDefault();
+        setRapierDebugPresetIndex((index) => {
+          if (e.shiftKey) {
+            return (index + 1) % RAPIER_DEBUG_MODES.length;
+          }
+          return index === 0 ? 1 : 0;
         });
       }
     };
@@ -50,6 +67,7 @@ export function useDebugStats() {
     frameTimeMs: number,
     rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
     network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
+    debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
     physics: {
       pendingInputs: number;
       predictionTicks: number;
@@ -123,6 +141,8 @@ export function useDebugStats() {
     s.snapshotsPerSec = snapshotsPerSec;
     s.jitterMs = jitterMs;
     s.playerId = network.playerId;
+    s.rapierDebugLabel = debug.rapierDebugLabel;
+    s.rapierDebugModeBits = debug.rapierDebugModeBits;
     s.pendingInputs = physics.pendingInputs;
     s.predictionTicks = physics.predictionTicks;
     s.playerCorrectionMagnitude = physics.playerCorrectionMagnitude;
@@ -162,5 +182,13 @@ export function useDebugStats() {
 
   const getStatsSnapshot = useCallback((): DebugStats => ({ ...statsRef.current }), []);
 
-  return { visible, displayStats, updateFrame, recordSnapshot, getStatsSnapshot };
+  return {
+    visible,
+    displayStats,
+    updateFrame,
+    recordSnapshot,
+    getStatsSnapshot,
+    rapierDebugModeBits: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].bits,
+    rapierDebugLabel: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].label,
+  };
 }

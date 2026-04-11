@@ -60,7 +60,7 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
-  private static readonly DYNAMIC_BODY_STALE_TICKS = 45;
+  private static readonly DYNAMIC_BODY_STALE_TICKS = 90;
 
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;

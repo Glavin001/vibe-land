@@ -46,9 +46,11 @@ export class DynamicBodyPredictionManager {
 
   syncAuthoritativeBodies(bodies: DynamicBodyStateMeters[]): void {
     const activeIds = new Set<number>();
+    const nowMs = performance.now();
     for (const body of bodies) {
       activeIds.add(body.id);
       const currentState = this.readPhysicsState(body.id);
+      const shouldProxyReconcile = this.hasRecentInteraction(body.id, nowMs);
       if (!currentState) {
         this.lastCorrectionMagnitude.set(body.id, 0);
         this.sim.syncDynamicBody(
@@ -71,7 +73,7 @@ export class DynamicBodyPredictionManager {
           body.angularVelocity[1],
           body.angularVelocity[2],
         );
-      } else {
+      } else if (shouldProxyReconcile) {
         const correctionMagnitude = Math.hypot(
           body.position[0] - currentState.position[0],
           body.position[1] - currentState.position[1],
@@ -102,6 +104,31 @@ export class DynamicBodyPredictionManager {
           DYNAMIC_BODY_HARD_SNAP_DISTANCE_M,
           DYNAMIC_BODY_HARD_SNAP_ROT_RAD,
           DYNAMIC_BODY_CORRECTION_TIME_S,
+        );
+      } else {
+        // For non-interacted bodies, keep the local collider world aligned to
+        // the latest authoritative snapshot instead of leaving a lagging proxy
+        // trail behind the buffered render pose.
+        this.lastCorrectionMagnitude.set(body.id, 0);
+        this.sim.syncDynamicBody(
+          body.id,
+          body.shapeType,
+          body.halfExtents[0],
+          body.halfExtents[1],
+          body.halfExtents[2],
+          body.position[0],
+          body.position[1],
+          body.position[2],
+          body.quaternion[0],
+          body.quaternion[1],
+          body.quaternion[2],
+          body.quaternion[3],
+          body.velocity[0],
+          body.velocity[1],
+          body.velocity[2],
+          body.angularVelocity[0],
+          body.angularVelocity[1],
+          body.angularVelocity[2],
         );
       }
       this.latestMeta.set(body.id, { shapeType: body.shapeType, halfExtents: body.halfExtents });

@@ -16,6 +16,8 @@ export type DebugStats = {
   remotePlayers: number;
   snapshotsPerSec: number;
   jitterMs: number;
+  rapierDebugLabel: string;
+  rapierDebugModeBits: number;
 
   // Physics / Prediction
   pendingInputs: number;
@@ -71,6 +73,8 @@ export const DEFAULT_STATS: DebugStats = {
   remotePlayers: 0,
   snapshotsPerSec: 0,
   jitterMs: 0,
+  rapierDebugLabel: 'off',
+  rapierDebugModeBits: 0,
   pendingInputs: 0,
   predictionTicks: 0,
   playerCorrectionMagnitude: 0,
@@ -152,6 +156,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- clock_offset_ms: ${fmt(stats.clockOffsetUs / 1000, 2)}`,
     `- remote_players: ${stats.remotePlayers}`,
     `- snapshots_per_sec: ${fmt(stats.snapshotsPerSec, 0)}`,
+    `- rapier_debug: ${stats.rapierDebugLabel} (${stats.rapierDebugModeBits})`,
     '',
     '## Physics',
     `- pending_inputs: ${stats.pendingInputs}`,
@@ -237,6 +242,7 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         {`Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
         {`Remote players: ${stats.remotePlayers}`}
         {`Snapshots/s: ${fmt(stats.snapshotsPerSec, 0)}`}
+        {`Rapier debug: ${stats.rapierDebugLabel}`}
       </Section>
 
       <Section title="Physics">

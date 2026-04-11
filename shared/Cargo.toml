@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 vibe-netcode = { path = "../netcode" }
 bytes = "1"
 nalgebra = "0.34"
-rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32"] }
+rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32", "debug-render"] }
 
 [features]
 default = []

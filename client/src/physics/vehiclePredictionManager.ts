@@ -225,6 +225,10 @@ export class VehiclePredictionManager {
   reconcile(vehicleState: NetVehicleState, ackInputSeq: number): void {
     if (this.vehicleId === null) return;
 
+    const oldPosition: [number, number, number] = [...this.currPosition];
+    const oldQuat = this.currQuaternion;
+    const oldCorrectionQuat = this.correctionQuatOffset;
+
     const serverPos: [number, number, number] = [
       vehicleState.pxMm / 1000,
       vehicleState.pyMm / 1000,
@@ -263,8 +267,6 @@ export class VehiclePredictionManager {
     const didCorrect = result[13] !== 0;
     if (!didCorrect) return;
 
-    const oldQuat = this.currQuaternion;
-
     const dx = result[10] as number;
     const dy = result[11] as number;
     const dz = result[12] as number;
@@ -285,13 +287,19 @@ export class VehiclePredictionManager {
       this.currQuaternion = newQuat;
       this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     } else {
-      this.correctionOffset = [-dx, -dy, -dz];
+      this.correctionOffset = [
+        this.correctionOffset[0] - dx,
+        this.correctionOffset[1] - dy,
+        this.correctionOffset[2] - dz,
+      ];
       this.currPosition = [result[0], result[1], result[2]];
-      this.prevPosition = [...this.currPosition];
-      this.prevQuaternion = newQuat;
+      this.prevPosition = oldPosition;
+      this.prevQuaternion = oldQuat;
       this.currQuaternion = newQuat;
-      // Correction quat offset = oldQuat * inverse(newQuat) — the delta to decay away
-      this.correctionQuatOffset = quatNormalize(quatMultiply(oldQuat, quatInvert(newQuat)));
+      // Preserve the current rendered orientation, then decay smoothly toward
+      // the newly reconciled simulation orientation.
+      const oldRenderedQuat = quatNormalize(quatMultiply(oldCorrectionQuat, oldQuat));
+      this.correctionQuatOffset = quatNormalize(quatMultiply(oldRenderedQuat, quatInvert(newQuat)));
     }
   }
 

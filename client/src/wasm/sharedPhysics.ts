@@ -3,8 +3,14 @@ import { provideWasmClockSync } from '../net/interpolation';
 import { installWasmSimWorldCompat } from './compat';
 
 let initialized = false;
+type WasmDebugRenderBuffers = {
+  vertices: Float32Array;
+  colors: Float32Array;
+};
+
 type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   seedDemoTerrain(): number;
+  syncBroadPhase(): void;
   syncDynamicBody(
     id: number,
     shapeType: number,
@@ -71,6 +77,20 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   ): boolean;
   stepDynamics(dt: number): void;
   getVehicleDebug(id: number): number[];
+  debugRender(modeBits: number): WasmDebugRenderBuffers;
+  syncRemoteVehicle(
+    id: number,
+    px: number,
+    py: number,
+    pz: number,
+    qx: number,
+    qy: number,
+    qz: number,
+    qw: number,
+    vx: number,
+    vy: number,
+    vz: number,
+  ): void;
 };
 type WasmSimWorldCtor = {
   new (): WasmSimWorldInstance;
@@ -88,4 +108,4 @@ export async function initSharedPhysics(): Promise<void> {
 }
 
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };
-export type { WasmSimWorldInstance };
+export type { WasmDebugRenderBuffers, WasmSimWorldInstance };

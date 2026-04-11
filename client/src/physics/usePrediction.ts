@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
-import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
+import type { WasmDebugRenderBuffers, WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from './dynamicBodyPredictionManager';
@@ -260,6 +260,21 @@ export function usePrediction() {
     simRef.current?.removeVehicle(id);
   }, []);
 
+  const syncRemoteVehicle = useCallback((
+    id: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+  ): void => {
+    if (IS_LOCAL_PREVIEW) return;
+    simRef.current?.syncRemoteVehicle(id, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
+  }, []);
+
+  const syncBroadPhase = useCallback((): void => {
+    if (IS_LOCAL_PREVIEW) return;
+    simRef.current?.syncBroadPhase();
+  }, []);
+
   const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
     const vm = vehicleManagerRef.current;
     if (!vm) return;
@@ -393,6 +408,12 @@ export function usePrediction() {
     return managerRef.current?.getNextSeq() ?? 0;
   }, []);
 
+  const getDebugRenderBuffers = useCallback((modeBits: number): WasmDebugRenderBuffers | null => {
+    const sim = simRef.current;
+    if (!sim || modeBits === 0) return null;
+    return sim.debugRender(modeBits);
+  }, []);
+
   const getDebugStats = useCallback(() => {
     const m = managerRef.current;
     const vm = vehicleManagerRef.current;
@@ -456,9 +477,12 @@ export function usePrediction() {
     raycastScene,
     classifyHitscanPlayer,
     getNextSeq,
+    getDebugRenderBuffers,
     getDebugStats,
     spawnVehicle,
     removeVehicle,
+    syncRemoteVehicle,
+    syncBroadPhase,
     enterVehicle,
     exitVehicle,
     updateVehicle,

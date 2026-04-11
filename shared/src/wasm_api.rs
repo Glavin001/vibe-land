@@ -7,6 +7,9 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::debug_render::{
+    default_debug_pipeline, render_debug_buffers, DebugLineBuffers,
+};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
@@ -21,6 +24,34 @@ struct WasmVehicle {
     chassis_body: RigidBodyHandle,
     chassis_collider: ColliderHandle,
     controller: DynamicRayCastVehicleController,
+}
+
+#[wasm_bindgen]
+pub struct DebugRenderBuffers {
+    vertices: Box<[f32]>,
+    colors: Box<[f32]>,
+}
+
+impl DebugRenderBuffers {
+    fn from_line_buffers(buffers: DebugLineBuffers) -> Self {
+        Self {
+            vertices: buffers.vertices.into_boxed_slice(),
+            colors: buffers.colors.into_boxed_slice(),
+        }
+    }
+}
+
+#[wasm_bindgen]
+impl DebugRenderBuffers {
+    #[wasm_bindgen(getter)]
+    pub fn vertices(&self) -> Box<[f32]> {
+        self.vertices.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn colors(&self) -> Box<[f32]> {
+        self.colors.clone()
+    }
 }
 
 /// Client-side physics simulation exposed to JavaScript via WASM.
@@ -58,6 +89,7 @@ pub struct WasmSimWorld {
     local_vehicle_id: Option<u32>,
     vehicle_pending_inputs: Vec<InputCmd>,
     gravity: Vector3<f32>,
+    debug_pipeline: DebugRenderPipeline,
 }
 
 #[wasm_bindgen]
@@ -84,6 +116,7 @@ impl WasmSimWorld {
             local_vehicle_id: None,
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
+            debug_pipeline: default_debug_pipeline(),
         }
     }
 
@@ -793,6 +826,30 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = stepDynamics)]
     pub fn step_dynamics(&mut self, dt: f32) {
         self.step_vehicle_pipeline(dt);
+    }
+
+    #[wasm_bindgen(js_name = debugRender)]
+    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
+        // Keep collider world-poses in sync with any rigid bodies we moved
+        // manually from snapshots/reconciliation. This updates attached collider
+        // transforms without advancing the simulation.
+        self.sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut self.sim.colliders);
+        // Observer clients may update collider transforms from snapshots without
+        // advancing local physics. Flush those pending collider changes so the
+        // debug draw reflects current proxy positions rather than stale AABBs.
+        self.sim.sync_broad_phase();
+        let buffers = render_debug_buffers(
+            &mut self.debug_pipeline,
+            mode_bits,
+            &self.sim.rigid_bodies,
+            &self.sim.colliders,
+            &self.vehicle_joints,
+            &self.vehicle_multibody_joints,
+            &self.sim.narrow_phase,
+        );
+        DebugRenderBuffers::from_line_buffers(buffers)
     }
 
     // ── Vehicle simulation (driver-side prediction) ──────────────────────────

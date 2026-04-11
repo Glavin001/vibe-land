@@ -42,16 +42,18 @@ const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
-const LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M = 12.0;
 const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
-const LOCAL_VEHICLE_RENDER_POS_SMOOTH_RATE = 24.0;
-const LOCAL_VEHICLE_RENDER_ROT_SMOOTH_RATE = 20.0;
+const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
+const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
+const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
+const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
   network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
+  debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
   physics: {
     pendingInputs: number;
     predictionTicks: number;
@@ -89,6 +91,7 @@ type GameWorldProps = {
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
   onSnapshot?: () => void;
+  rapierDebugModeBits?: number;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -107,6 +110,7 @@ type LocalVehicleVisualPoseState = {
   vehicleId: number | null;
   position: THREE.Vector3;
   quaternion: THREE.Quaternion;
+  euler: THREE.Euler;
 };
 
 export function GameWorld({
@@ -117,6 +121,7 @@ export function GameWorld({
   onInputFrame,
   inputFamilyMode = 'auto',
   onSnapshot,
+  rapierDebugModeBits = 0,
 }: GameWorldProps) {
   const prediction = usePrediction();
   const onDebugFrameRef = useRef(onDebugFrame);
@@ -188,6 +193,7 @@ export function GameWorld({
     vehicleId: null,
     position: new THREE.Vector3(),
     quaternion: new THREE.Quaternion(),
+    euler: new THREE.Euler(0, 0, 0, 'YXZ'),
   });
   const vehicleCameraYawOffsetRef = useRef(0);
   const vehicleCameraPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
@@ -233,28 +239,38 @@ export function GameWorld({
             quaternion: localPreviewVehicleEntry[1].quaternion,
           }
         : null);
-    let localVehicleCameraPose = localControlledVehiclePose;
+    let localVehicleVisualPose = localControlledVehiclePose;
     if (localControlledVehiclePose && drivenVehicleId != null) {
       const visualPose = localVehicleVisualPoseRef.current;
       const targetPosition = localControlledVehiclePose.position;
       const targetQuaternion = localControlledVehiclePose.quaternion;
+      const targetQuat = new THREE.Quaternion(
+        targetQuaternion[0],
+        targetQuaternion[1],
+        targetQuaternion[2],
+        targetQuaternion[3],
+      );
+      const targetEuler = new THREE.Euler().setFromQuaternion(targetQuat, 'YXZ');
+      const speedMs = localVehicleDebug?.speedMs ?? 0;
+      const planarRate = LOCAL_VEHICLE_RENDER_PLANAR_RATE;
+      const verticalRate = LOCAL_VEHICLE_RENDER_VERTICAL_RATE + Math.min(speedMs * 0.25, 8.0);
+      const yawRate = LOCAL_VEHICLE_RENDER_YAW_RATE + Math.min(speedMs * 0.2, 10.0);
+      const tiltRate = LOCAL_VEHICLE_RENDER_TILT_RATE + Math.min(speedMs * 0.12, 5.0);
       if (visualPose.vehicleId !== drivenVehicleId) {
         visualPose.vehicleId = drivenVehicleId;
         visualPose.position.set(targetPosition[0], targetPosition[1], targetPosition[2]);
-        visualPose.quaternion.set(targetQuaternion[0], targetQuaternion[1], targetQuaternion[2], targetQuaternion[3]);
+        visualPose.quaternion.copy(targetQuat);
+        visualPose.euler.copy(targetEuler);
       } else {
-        const posAlpha = Math.min(frameDelta * LOCAL_VEHICLE_RENDER_POS_SMOOTH_RATE, 1);
-        const rotAlpha = Math.min(frameDelta * LOCAL_VEHICLE_RENDER_ROT_SMOOTH_RATE, 1);
-        visualPose.position.lerp(
-          new THREE.Vector3(targetPosition[0], targetPosition[1], targetPosition[2]),
-          posAlpha,
-        );
-        visualPose.quaternion.slerp(
-          new THREE.Quaternion(targetQuaternion[0], targetQuaternion[1], targetQuaternion[2], targetQuaternion[3]),
-          rotAlpha,
-        );
+        visualPose.position.x = THREE.MathUtils.damp(visualPose.position.x, targetPosition[0], planarRate, frameDelta);
+        visualPose.position.y = THREE.MathUtils.damp(visualPose.position.y, targetPosition[1], verticalRate, frameDelta);
+        visualPose.position.z = THREE.MathUtils.damp(visualPose.position.z, targetPosition[2], planarRate, frameDelta);
+        visualPose.euler.x = dampAngle(visualPose.euler.x, targetEuler.x, tiltRate, frameDelta);
+        visualPose.euler.y = dampAngle(visualPose.euler.y, targetEuler.y, yawRate, frameDelta);
+        visualPose.euler.z = dampAngle(visualPose.euler.z, targetEuler.z, tiltRate, frameDelta);
+        visualPose.quaternion.setFromEuler(visualPose.euler);
       }
-      localVehicleCameraPose = {
+      localVehicleVisualPose = {
         position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
         quaternion: [visualPose.quaternion.x, visualPose.quaternion.y, visualPose.quaternion.z, visualPose.quaternion.w],
       };
@@ -314,6 +330,28 @@ export function GameWorld({
           knownVehicleIds.current.delete(id);
           prediction.removeVehicle(id);
         }
+      }
+
+      const remoteVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+      let syncedRemoteVehicles = false;
+      for (const [id, vs] of serverVehicles) {
+        if (prediction.isInVehicle() && prediction.getDrivenVehicleId() === id) {
+          continue;
+        }
+        const sample = client.sampleRemoteVehicle(id, remoteVehicleRenderTimeUs);
+        const position = sample?.position ?? vs.position;
+        const quaternion = sample?.quaternion ?? vs.quaternion;
+        const linearVelocity = sample?.linearVelocity ?? vs.linearVelocity;
+        prediction.syncRemoteVehicle(
+          id,
+          position[0], position[1], position[2],
+          quaternion[0], quaternion[1], quaternion[2], quaternion[3],
+          linearVelocity[0], linearVelocity[1], linearVelocity[2],
+        );
+        syncedRemoteVehicles = true;
+      }
+      if (syncedRemoteVehicles) {
+        prediction.syncBroadPhase();
       }
     }
 
@@ -469,7 +507,7 @@ export function GameWorld({
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
-    const vehiclePoseForCamera = localVehicleCameraPose;
+    const vehiclePoseForCamera = localVehicleVisualPose;
     const predictedPos = IS_LOCAL_PREVIEW ? null : prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
@@ -559,6 +597,10 @@ export function GameWorld({
           remotePlayers: state.remotePlayers.size,
           transport: client?.transport ?? 'connecting',
           playerId: state.playerId,
+        },
+        {
+          rapierDebugLabel: rapierDebugModeLabel(rapierDebugModeBits),
+          rapierDebugModeBits,
         },
         physStats,
         {
@@ -703,13 +745,7 @@ export function GameWorld({
         activeBodies.add(id);
         const proxyBody = prediction.getDynamicBodyRenderState(id);
         const remoteSample = client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
-        let useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
-        if (!useProxyBody && isDrivingNow && localControlledVehiclePose && proxyBody) {
-          const dx = proxyBody.position[0] - localControlledVehiclePose.position[0];
-          const dy = proxyBody.position[1] - localControlledVehiclePose.position[1];
-          const dz = proxyBody.position[2] - localControlledVehiclePose.position[2];
-          useProxyBody = dx * dx + dy * dy + dz * dz <= LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M * LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M;
-        }
+        const useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
         const renderBody = useProxyBody && proxyBody
           ? proxyBody
           : (remoteSample
@@ -781,7 +817,7 @@ export function GameWorld({
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
-      const localVehiclePos = localControlledVehiclePose;
+      const localVehiclePos = localVehicleVisualPose;
 
       // Find nearest unoccupied vehicle for proximity indicator
       let nearest: number | null = null;
@@ -879,6 +915,8 @@ export function GameWorld({
         />
       ))}
 
+      <RapierDebugLines prediction={prediction} modeBits={rapierDebugModeBits} />
+
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
 
@@ -916,6 +954,88 @@ function WorldBlock({
       <boxGeometry args={[1, 1, 1]} />
       <meshStandardMaterial color={color} />
     </mesh>
+  );
+}
+
+function rapierDebugModeLabel(modeBits: number): string {
+  switch (modeBits) {
+    case 0:
+      return 'off';
+    case 0b11:
+      return 'shapes';
+    case 0b1111:
+      return 'joints';
+    case 0b1111111:
+      return 'full';
+    default:
+      return `custom(${modeBits})`;
+  }
+}
+
+function RapierDebugLines({
+  prediction,
+  modeBits,
+}: {
+  prediction: ReturnType<typeof usePrediction>;
+  modeBits: number;
+}) {
+  const geometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const materialRef = useRef<THREE.LineBasicMaterial | null>(null);
+
+  useEffect(() => {
+    return () => {
+      const geometry = geometryRef.current;
+      const material = materialRef.current;
+      if (geometry) {
+        geometry.dispose();
+      }
+      if (material) {
+        material.dispose();
+      }
+    };
+  }, []);
+
+  useFrame(() => {
+    const geometry = geometryRef.current;
+    if (!geometry) return;
+
+    if (modeBits === 0) {
+      geometry.setDrawRange(0, 0);
+      return;
+    }
+
+    const buffers = prediction.getDebugRenderBuffers(modeBits);
+    if (!buffers) {
+      geometry.setDrawRange(0, 0);
+      return;
+    }
+
+    const positionArray = buffers.vertices;
+    const rgbaArray = buffers.colors;
+    const rgbArray = new Float32Array((rgbaArray.length / 4) * 3);
+    for (let src = 0, dst = 0; src + 3 < rgbaArray.length; src += 4, dst += 3) {
+      rgbArray[dst] = rgbaArray[src];
+      rgbArray[dst + 1] = rgbaArray[src + 1];
+      rgbArray[dst + 2] = rgbaArray[src + 2];
+    }
+
+    const positionAttribute = new THREE.Float32BufferAttribute(positionArray, 3);
+    positionAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('position', positionAttribute);
+
+    const colorAttribute = new THREE.Float32BufferAttribute(rgbArray, 3);
+    colorAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('color', colorAttribute);
+
+    geometry.setDrawRange(0, positionArray.length / 3);
+    geometry.computeBoundingSphere();
+  });
+
+  return (
+    <lineSegments frustumCulled={false} renderOrder={999}>
+      <bufferGeometry ref={geometryRef} />
+      <lineBasicMaterial ref={materialRef} vertexColors transparent opacity={1} depthWrite={false} />
+    </lineSegments>
   );
 }
 
@@ -1135,6 +1255,12 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
+}
+
+function dampAngle(current: number, target: number, lambda: number, dt: number): number {
+  const delta = THREE.MathUtils.euclideanModulo(target - current + Math.PI, Math.PI * 2) - Math.PI;
+  const alpha = 1 - Math.exp(-lambda * dt);
+  return current + delta * alpha;
 }
 
 function createPlayerMesh(id: number): THREE.Group {
