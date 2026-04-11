@@ -25,6 +25,7 @@ Or run manually:
 
 ```bash
 cp .env.example .env   # edit WT_HOST, cert paths, etc.
+                       # for local WT on macOS, prefer WT_HOST=127.0.0.1 to avoid localhost resolving to ::1 first
 
 # Build shared WASM module (once, or after changes to shared/)
 cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg && cd ..
