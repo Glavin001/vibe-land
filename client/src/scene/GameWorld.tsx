@@ -15,7 +15,7 @@ import {
   resolveVehicleInput,
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
-import type { InputSample } from '../input/types';
+import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
 import {
   aimDirectionFromAngles,
@@ -56,12 +56,21 @@ type GameWorldProps = {
   onAimStateChange?: (state: CrosshairAimState) => void;
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
+  inputFamilyMode?: InputFamilyMode;
   onSnapshot?: () => void;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
 
-export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFrame, onInputFrame, onSnapshot }: GameWorldProps) {
+export function GameWorld({
+  onWelcome,
+  onDisconnect,
+  onAimStateChange,
+  onDebugFrame,
+  onInputFrame,
+  inputFamilyMode = 'auto',
+  onSnapshot,
+}: GameWorldProps) {
   const prediction = usePrediction();
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
@@ -170,7 +179,7 @@ export function GameWorld({ onWelcome, onDisconnect, onAimStateChange, onDebugFr
         : null);
     const isDrivingNow = localControlledVehiclePose !== null;
     const pointerLocked = document.pointerLockElement === gl.domElement;
-    const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot')
+    const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot', inputFamilyMode)
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
 

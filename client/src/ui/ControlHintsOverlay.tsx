@@ -1,9 +1,11 @@
-import type { ActionSnapshot, DeviceFamily, InputContext } from '../input/types';
+import type { ActionSnapshot, DeviceFamily, InputContext, InputFamilyMode } from '../input/types';
 import type { ControlHintsState } from './useControlHints';
 
 type ControlHintsOverlayProps = {
   state: ControlHintsState;
   visible: boolean;
+  inputFamilyMode: InputFamilyMode;
+  onInputFamilyModeChange: (mode: InputFamilyMode) => void;
 };
 
 type RowSpec = {
@@ -76,7 +78,18 @@ function buildRows(family: DeviceFamily, context: InputContext, action: ActionSn
   ];
 }
 
-export function ControlHintsOverlay({ state, visible }: ControlHintsOverlayProps) {
+const MODE_OPTIONS: Array<{ mode: InputFamilyMode; label: string }> = [
+  { mode: 'auto', label: 'Auto' },
+  { mode: 'keyboardMouse', label: 'Keyboard' },
+  { mode: 'gamepad', label: 'Gamepad' },
+];
+
+export function ControlHintsOverlay({
+  state,
+  visible,
+  inputFamilyMode,
+  onInputFamilyModeChange,
+}: ControlHintsOverlayProps) {
   if (!visible) return null;
 
   const family = state.activeFamily ?? 'keyboardMouse';
@@ -104,8 +117,37 @@ export function ControlHintsOverlay({ state, visible }: ControlHintsOverlayProps
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-        <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
-        <div style={{ fontSize: 11, opacity: 0.5 }}>live mapping monitor</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
+          <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
+            {MODE_OPTIONS.map((option) => {
+              const selected = option.mode === inputFamilyMode;
+              return (
+                <button
+                  key={option.mode}
+                  type="button"
+                  onClick={() => onInputFamilyModeChange(option.mode)}
+                  style={{
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    background: selected ? 'rgba(149, 233, 255, 0.24)' : 'rgba(255,255,255,0.06)',
+                    color: selected ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.65)',
+                    borderRadius: 999,
+                    padding: '5px 10px',
+                    fontSize: 11,
+                    letterSpacing: '0.06em',
+                    textTransform: 'uppercase',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.5 }}>
+          {inputFamilyMode === 'auto' ? 'last used wins' : `${inputFamilyMode === 'gamepad' ? 'gamepad' : 'keyboard'} locked`}
+        </div>
       </div>
       <div
         style={{

@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
+import type { InputFamilyMode } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
@@ -13,6 +14,7 @@ export function App() {
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState('Click to join');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
+  const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
@@ -125,7 +127,12 @@ export function App() {
           />
         </div>
       )}
-      <ControlHintsOverlay state={controlHintsState} visible={connected && isDesktop} />
+      <ControlHintsOverlay
+        state={controlHintsState}
+        visible={connected && isDesktop}
+        inputFamilyMode={inputFamilyMode}
+        onInputFamilyModeChange={setInputFamilyMode}
+      />
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
         <div
@@ -146,6 +153,7 @@ export function App() {
           playerId={playerId}
           onDebugFrame={updateFrame}
           onInputFrame={updateInputFrame}
+          inputFamilyMode={inputFamilyMode}
           onSnapshot={recordSnapshot}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}

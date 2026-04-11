@@ -1,4 +1,4 @@
-import type { ActionSnapshot, DeviceFamily } from './types';
+import type { ActionSnapshot, DeviceFamily, InputFamilyMode } from './types';
 
 export function hasMeaningfulInput(snapshot: ActionSnapshot | null): boolean {
   if (!snapshot) return false;
@@ -50,4 +50,16 @@ export function pickActiveFamily(
   }
 
   return (keyboardMouse?.activityId ?? 0) >= (gamepad?.activityId ?? 0) ? 'keyboardMouse' : 'gamepad';
+}
+
+export function resolveActiveFamily(
+  mode: InputFamilyMode,
+  current: DeviceFamily | null,
+  keyboardMouse: ActionSnapshot | null,
+  gamepad: ActionSnapshot | null,
+): DeviceFamily | null {
+  if (mode !== 'auto') {
+    return mode;
+  }
+  return pickActiveFamily(current, keyboardMouse, gamepad);
 }

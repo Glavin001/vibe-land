@@ -1,4 +1,5 @@
 export type DeviceFamily = 'keyboardMouse' | 'gamepad';
+export type InputFamilyMode = DeviceFamily | 'auto';
 
 export type InputContext = 'onFoot' | 'vehicle';
 

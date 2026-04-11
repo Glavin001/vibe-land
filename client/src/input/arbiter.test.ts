@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pickActiveFamily } from './arbiter';
+import { pickActiveFamily, resolveActiveFamily } from './arbiter';
 import type { ActionSnapshot } from './types';
 
 function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
@@ -44,5 +44,25 @@ describe('pickActiveFamily', () => {
     const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 4 });
     const gamepad = snapshot({ family: 'gamepad', moveX: 1, activityId: 5 });
     expect(pickActiveFamily('keyboardMouse', keyboardMouse, gamepad)).toBe('gamepad');
+  });
+});
+
+describe('resolveActiveFamily', () => {
+  it('uses explicit keyboardMouse mode even when gamepad is active', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', activityId: 1 });
+    const gamepad = snapshot({ family: 'gamepad', moveX: 1, activityId: 5 });
+    expect(resolveActiveFamily('keyboardMouse', null, keyboardMouse, gamepad)).toBe('keyboardMouse');
+  });
+
+  it('uses explicit gamepad mode even when keyboard is active', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 5 });
+    const gamepad = snapshot({ family: 'gamepad', activityId: 1 });
+    expect(resolveActiveFamily('gamepad', null, keyboardMouse, gamepad)).toBe('gamepad');
+  });
+
+  it('falls back to auto arbitration in auto mode', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 2 });
+    const gamepad = snapshot({ family: 'gamepad', moveX: 1, activityId: 3 });
+    expect(resolveActiveFamily('auto', null, keyboardMouse, gamepad)).toBe('gamepad');
   });
 });
