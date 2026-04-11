@@ -157,6 +157,7 @@ export type ShotResultPacket = {
   weapon: number;
   confirmed: boolean;
   hitPlayerId: number;
+  hitZone: number;
 };
 
 export type ServerReliablePacket = WelcomePacket | ShotResultPacket | ChunkFullPacket | ChunkDiffPacket | SnapshotPacket;
@@ -318,13 +319,15 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       const shotId = view.getUint32(o, true); o += 4;
       const weapon = view.getUint8(o++);
       const confirmed = view.getUint8(o++) !== 0;
-      const hitPlayerId = view.getUint32(o, true);
+      const hitPlayerId = view.getUint32(o, true); o += 4;
+      const hitZone = view.getUint8(o++);
       return {
         type: 'shotResult',
         shotId,
         weapon,
         confirmed,
         hitPlayerId,
+        hitZone,
       };
     }
     case PKT_CHUNK_FULL:

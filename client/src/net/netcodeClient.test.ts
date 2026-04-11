@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { NetcodeClient } from './netcodeClient';
 import {
   type SnapshotPacket,
+  type ShotResultPacket,
   type WelcomePacket,
   type NetPlayerState,
   metersToMm,
@@ -246,6 +247,31 @@ describe('NetcodeClient', () => {
       });
 
       expect(received).toBe(true);
+    });
+  });
+
+  describe('shot results', () => {
+    it('routes authoritative hit zone to onShotResult callback', () => {
+      let received: ShotResultPacket | null = null;
+      const client = new NetcodeClient({
+        onShotResult: (packet) => {
+          if (packet.type === 'shotResult') {
+            received = packet;
+          }
+        },
+      });
+
+      client.handlePacket({
+        type: 'shotResult',
+        shotId: 7,
+        weapon: 1,
+        confirmed: true,
+        hitPlayerId: 9,
+        hitZone: 2,
+      });
+
+      expect(received).not.toBeNull();
+      expect(received?.hitZone).toBe(2);
     });
   });
 

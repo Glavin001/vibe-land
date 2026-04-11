@@ -184,6 +184,7 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u8(pkt.weapon);
             out.put_u8(pkt.confirmed as u8);
             out.put_u32_le(pkt.hit_player_id);
+            out.put_u8(pkt.hit_zone);
         }
         ServerReliablePacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -464,6 +465,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u8(pkt.weapon);
             out.put_u8(pkt.confirmed as u8);
             out.put_u32_le(pkt.hit_player_id);
+            out.put_u8(pkt.hit_zone);
         }
         ServerPacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -620,6 +622,7 @@ mod tests {
             weapon: 1,
             confirmed: true,
             hit_player_id: 5,
+            hit_zone: HIT_ZONE_HEAD,
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SHOT_RESULT);
@@ -627,6 +630,7 @@ mod tests {
             u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
             123
         );
+        assert_eq!(encoded[11], HIT_ZONE_HEAD);
     }
 
     #[test]

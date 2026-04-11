@@ -379,8 +379,9 @@ function buildShotResultBinary(opts: {
   weapon?: number;
   confirmed?: boolean;
   hitPlayerId?: number;
+  hitZone?: number;
 }): Uint8Array {
-  const size = 1 + 4 + 1 + 1 + 4;
+  const size = 1 + 4 + 1 + 1 + 4 + 1;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -389,7 +390,8 @@ function buildShotResultBinary(opts: {
   view.setUint32(o, opts.shotId ?? 1, true); o += 4;
   view.setUint8(o++, opts.weapon ?? 1);
   view.setUint8(o++, (opts.confirmed ?? true) ? 1 : 0);
-  view.setUint32(o, opts.hitPlayerId ?? 2, true);
+  view.setUint32(o, opts.hitPlayerId ?? 2, true); o += 4;
+  view.setUint8(o++, opts.hitZone ?? 1);
 
   return buf;
 }
@@ -410,14 +412,24 @@ describe('shotResult packet decode', () => {
       expect(packet.weapon).toBe(1);
       expect(packet.confirmed).toBe(true);
       expect(packet.hitPlayerId).toBe(5);
+      expect(packet.hitZone).toBe(1);
     }
   });
 
   it('decodes unconfirmed hit', () => {
-    const binary = buildShotResultBinary({ confirmed: false });
+    const binary = buildShotResultBinary({ confirmed: false, hitZone: 0 });
     const packet = decodeServerReliablePacket(binary);
     if (packet.type === 'shotResult') {
       expect(packet.confirmed).toBe(false);
+      expect(packet.hitZone).toBe(0);
+    }
+  });
+
+  it('decodes authoritative headshot zone', () => {
+    const binary = buildShotResultBinary({ confirmed: true, hitZone: 2 });
+    const packet = decodeServerReliablePacket(binary);
+    if (packet.type === 'shotResult') {
+      expect(packet.hitZone).toBe(2);
     }
   });
 });

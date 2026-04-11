@@ -138,6 +138,7 @@ pub struct ShotResultPacket {
     pub weapon: u8,
     pub confirmed: bool,
     pub hit_player_id: u32,
+    pub hit_zone: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

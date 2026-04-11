@@ -723,6 +723,88 @@ describe('Category C (continued): Latency', () => {
     expect(pos[2]).toBeGreaterThan(1.0);
     expect(isFinite(pos[0]) && isFinite(pos[1]) && isFinite(pos[2])).toBe(true);
   });
+
+  it('C13: cellular conditions (180ms RTT, jitter, packet loss) stay bounded', () => {
+    const s = createScenario({ latencyMs: 90, jitterMs: 35, packetLossRate: 0.03, seed: 777 });
+
+    for (let i = 0; i < 360; i++) {
+      const buttons = i % 120 < 40
+        ? BTN_FORWARD
+        : i % 120 < 80
+          ? BTN_FORWARD | BTN_RIGHT
+          : BTN_FORWARD | BTN_LEFT;
+      const yaw = (i % 90) * (Math.PI / 180);
+
+      s.runClientFrames(1, { buttons, yaw });
+      s.runServerTicks(1);
+
+      if (i % 3 === 0) {
+        s.clientClock.advance(180);
+        s.serverClock.advance(90);
+        s.deliverServerToClient();
+      }
+    }
+
+    assertInvariants(s, 'C13 cellular');
+
+    const pos = s.getClientPosition();
+    expect(pos[2]).toBeGreaterThan(1.0);
+    expect(s.getPendingInputCount()).toBeLessThan(220);
+    expect(s.getClientServerDivergence()).toBeLessThan(6.0);
+  });
+
+  it('C14: degraded cellular burst recovers after network improves', () => {
+    const s = createScenario({ latencyMs: 30, jitterMs: 5, packetLossRate: 0, seed: 909 });
+
+    for (let i = 0; i < 90; i++) {
+      s.runClientFrames(1, { buttons: BTN_FORWARD, yaw: 0.15 });
+      s.runServerTicks(1);
+      if (i % 3 === 0) {
+        s.clientClock.advance(60);
+        s.serverClock.advance(30);
+        s.deliverServerToClient();
+      }
+    }
+
+    const divergenceBeforeBurst = s.getClientServerDivergence();
+
+    s.setClientToServerConfig({ latencyMs: 120, jitterMs: 60, packetLossRate: 0.08 });
+    s.setServerToClientConfig({ latencyMs: 140, jitterMs: 80, packetLossRate: 0.08 });
+
+    for (let i = 0; i < 120; i++) {
+      s.runClientFrames(1, {
+        buttons: i % 20 < 10 ? BTN_FORWARD | BTN_SPRINT : BTN_FORWARD,
+        yaw: 0.35,
+      });
+      s.runServerTicks(1);
+      if (i % 4 === 0) {
+        s.clientClock.advance(220);
+        s.serverClock.advance(110);
+        s.deliverServerToClient();
+      }
+    }
+
+    assertInvariants(s, 'C14 during burst');
+
+    s.setClientToServerConfig({ latencyMs: 30, jitterMs: 5, packetLossRate: 0 });
+    s.setServerToClientConfig({ latencyMs: 30, jitterMs: 5, packetLossRate: 0 });
+
+    for (let i = 0; i < 120; i++) {
+      s.runClientFrames(1, { buttons: BTN_FORWARD, yaw: 0.1 });
+      s.runServerTicks(1);
+      if (i % 2 === 0) {
+        s.clientClock.advance(60);
+        s.serverClock.advance(30);
+        s.deliverServerToClient();
+      }
+    }
+
+    assertInvariants(s, 'C14 after recovery');
+
+    expect(s.getClientPosition()[2]).toBeGreaterThan(1.0);
+    expect(s.getClientServerDivergence()).toBeLessThan(4.0);
+    expect(s.getClientServerDivergence()).toBeLessThanOrEqual(divergenceBeforeBurst + 3.0);
+  });
 });
 
 // ═══════════════════════════════════════════════

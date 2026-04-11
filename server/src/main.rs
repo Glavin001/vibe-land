@@ -38,7 +38,8 @@ use crate::{
         client_datagram_to_packet, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, make_net_dynamic_body_state,
         make_net_player_state, ClientPacket, FireCmd, InputCmd, ServerPacket, ShotResultPacket,
-        SnapshotPacket, WelcomePacket, PKT_PING, PKT_SNAPSHOT,
+        SnapshotPacket, WelcomePacket, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_PING,
+        PKT_SNAPSHOT,
     },
     voxel_world::VoxelWorld,
 };
@@ -887,12 +888,19 @@ impl MatchState {
         requested_ms.clamp(min_time, max_time)
     }
 
-    fn build_shot_result(&self, shot_id: u32, weapon: u8, victim_id: Option<u32>) -> ServerPacket {
+    fn build_shot_result(
+        &self,
+        shot_id: u32,
+        weapon: u8,
+        victim_id: Option<u32>,
+        hit_zone: u8,
+    ) -> ServerPacket {
         ServerPacket::ShotResult(ShotResultPacket {
             shot_id,
             weapon,
             hit_player_id: victim_id.unwrap_or(0),
             confirmed: victim_id.is_some(),
+            hit_zone,
         })
     }
 
@@ -986,10 +994,18 @@ impl MatchState {
                 if victim_killed {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
-                self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, Some(hit.victim_id))
+                self.build_shot_result(
+                    queued.cmd.shot_id,
+                    queued.cmd.weapon,
+                    Some(hit.victim_id),
+                    match hit.zone {
+                        HitZone::Body => HIT_ZONE_BODY,
+                        HitZone::Head => HIT_ZONE_HEAD,
+                    },
+                )
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None)
+                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
                 } else {
                     let impact_point = [
                         origin[0] + queued.cmd.dir[0] * dynamic_toi,
@@ -1006,10 +1022,10 @@ impl MatchState {
                         impulse,
                         impact_point,
                     );
-                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None)
+                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
                 }
             } else {
-                self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None)
+                self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
             };
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
