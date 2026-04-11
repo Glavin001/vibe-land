@@ -1,4 +1,4 @@
-import type { WasmSimWorld } from '../wasm/sharedPhysics';
+import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 
 import {
   BLOCK_ADD,
@@ -37,7 +37,7 @@ export class ClientVoxelWorld {
   private readonly chunks = new Map<string, ChunkState>();
 
   constructor(
-    private readonly sim: WasmSimWorld,
+    private readonly sim: WasmSimWorldInstance,
     private readonly syncColliders = true,
   ) {}
 

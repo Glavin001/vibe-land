@@ -1,4 +1,4 @@
-import type { WasmSimWorld } from '../wasm/sharedPhysics';
+import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { InputCmd, NetVehicleState } from '../net/protocol';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 
@@ -93,7 +93,7 @@ export class VehiclePredictionManager {
   private correctionOffset: [number, number, number] = [0, 0, 0];
   private correctionQuatOffset: [number, number, number, number] = [0, 0, 0, 1]; // identity
 
-  constructor(private readonly sim: WasmSimWorld) {}
+  constructor(private readonly sim: WasmSimWorldInstance) {}
 
   isActive(): boolean {
     return this.vehicleId !== null;

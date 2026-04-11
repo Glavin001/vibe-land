@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
+import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
@@ -30,7 +31,7 @@ type PlayerAimHit = {
 export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
-  const simRef = useRef<WasmSimWorld | null>(null);
+  const simRef = useRef<WasmSimWorldInstance | null>(null);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
   const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
