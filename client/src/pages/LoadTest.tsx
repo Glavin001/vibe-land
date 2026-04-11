@@ -104,7 +104,7 @@ export function LoadTestPage() {
         const snapshot = JSON.parse(event.data as string) as GlobalStatsSnapshot;
         const match = snapshot.matches.find((candidate) => candidate.id === matchId);
         if (match) {
-          setBottleneck(describeBottleneck(match));
+          setBottleneck(describeBottleneck(match, snapshot.sim_hz));
         }
       } catch {
         // ignore parse errors

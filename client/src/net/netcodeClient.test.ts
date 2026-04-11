@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { NetcodeClient } from './netcodeClient';
 import {
+  type NetDynamicBodyState,
   type SnapshotPacket,
   type ShotResultPacket,
   type WelcomePacket,
@@ -51,6 +52,7 @@ function makeSnapshot(opts: {
   serverTick?: number;
   ackInputSeq?: number;
   players: NetPlayerState[];
+  dynamicBodyStates?: NetDynamicBodyState[];
 }): SnapshotPacket {
   const serverTick = opts.serverTick ?? 1;
   return {
@@ -60,8 +62,37 @@ function makeSnapshot(opts: {
     ackInputSeq: opts.ackInputSeq ?? 0,
     playerStates: opts.players,
     projectileStates: [],
-    dynamicBodyStates: [],
+    dynamicBodyStates: opts.dynamicBodyStates ?? [],
     vehicleStates: [],
+  };
+}
+
+function makeDynamicBodyState(opts: {
+  id?: number;
+  position?: [number, number, number];
+  halfExtents?: [number, number, number];
+  velocity?: [number, number, number];
+  shapeType?: number;
+}): NetDynamicBodyState {
+  const pos = opts.position ?? [0, 0, 0];
+  const halfExtents = opts.halfExtents ?? [0.5, 0.5, 0.5];
+  const vel = opts.velocity ?? [0, 0, 0];
+  return {
+    id: opts.id ?? 1,
+    shapeType: opts.shapeType ?? 1,
+    pxMm: metersToMm(pos[0]),
+    pyMm: metersToMm(pos[1]),
+    pzMm: metersToMm(pos[2]),
+    qxSnorm: 0,
+    qySnorm: 0,
+    qzSnorm: 0,
+    qwSnorm: 32767,
+    hxCm: Math.round(halfExtents[0] * 100),
+    hyCm: Math.round(halfExtents[1] * 100),
+    hzCm: Math.round(halfExtents[2] * 100),
+    vxCms: Math.round(vel[0] * 100),
+    vyCms: Math.round(vel[1] * 100),
+    vzCms: Math.round(vel[2] * 100),
   };
 }
 
@@ -195,6 +226,43 @@ describe('NetcodeClient', () => {
 
       expect(client.localPlayerHp).toBe(60);
       expect(client.remotePlayers.get(2)?.hp).toBe(25);
+    });
+
+    it('retains dynamic bodies across partial snapshots', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [1, 2, 3] })],
+      }));
+      expect(client.dynamicBodies.has(7)).toBe(true);
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 20,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [],
+      }));
+      expect(client.dynamicBodies.has(7)).toBe(true);
+    });
+
+    it('expires dynamic bodies after prolonged absence', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7 })],
+      }));
+      client.handlePacket(makeSnapshot({
+        serverTick: 131,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [],
+      }));
+
+      expect(client.dynamicBodies.has(7)).toBe(false);
     });
   });
 

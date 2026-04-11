@@ -52,6 +52,8 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
+  private static readonly DYNAMIC_BODY_STALE_TICKS = 120;
+
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
   readonly vehicleInterpolator: VehicleInterpolator;
@@ -65,6 +67,7 @@ export class NetcodeClient {
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
+  private readonly dynamicBodyLastSeenTick = new Map<number, number>();
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
@@ -274,9 +277,15 @@ export class NetcodeClient {
 
         // Update dynamic bodies BEFORE reconciliation so that input replay
         // collides with the correct (same-tick) collider positions.
-        this.dynamicBodies.clear();
         for (const db of packet.dynamicBodyStates) {
           this.dynamicBodies.set(db.id, netDynamicBodyStateToMeters(db));
+          this.dynamicBodyLastSeenTick.set(db.id, packet.serverTick);
+        }
+        for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
+          if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
+            this.dynamicBodyLastSeenTick.delete(id);
+            this.dynamicBodies.delete(id);
+          }
         }
 
         const knownIds = new Set<number>();
@@ -389,6 +398,7 @@ export class NetcodeClient {
     this.interpolationDelayMs = 100;
     this.remotePlayers.clear();
     this.dynamicBodies.clear();
+    this.dynamicBodyLastSeenTick.clear();
     this.vehicles.clear();
   }
 }

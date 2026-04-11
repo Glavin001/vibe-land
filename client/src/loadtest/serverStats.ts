@@ -26,8 +26,16 @@ export interface MatchNetworkSnapshot {
   datagram_packets_sent: number;
   datagram_fallbacks: number;
   malformed_packets: number;
+  snapshot_reliable_sent: number;
+  snapshot_datagram_sent: number;
+  websocket_snapshot_reliable_sent: number;
+  webtransport_snapshot_reliable_sent: number;
+  webtransport_snapshot_datagram_sent: number;
   snapshot_bytes_per_client: SummaryStatsSnapshot;
   snapshot_bytes_per_tick: SummaryStatsSnapshot;
+  snapshot_players_per_client: SummaryStatsSnapshot;
+  snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot;
+  snapshot_vehicles_per_client: SummaryStatsSnapshot;
 }
 
 export interface MatchLoadSnapshot {
@@ -77,11 +85,56 @@ export interface GlobalStatsSnapshot {
   matches: MatchStatsSnapshot[];
 }
 
+export function tickBudgetMs(simHz: number): number {
+  return simHz > 0 ? 1000 / simHz : 0;
+}
+
 export function totalPhysicsP95(match: MatchStatsSnapshot): number {
   return match.timings.player_sim_ms.p95 + match.timings.vehicle_ms.p95 + match.timings.dynamics_ms.p95;
 }
 
-export function describeBottleneck(match: MatchStatsSnapshot): string {
+export function tickHeadroomMs(match: MatchStatsSnapshot, simHz: number): number {
+  return tickBudgetMs(simHz) - match.timings.total_ms.p95;
+}
+
+export function maxPendingInputs(match: MatchStatsSnapshot): number {
+  return match.players.reduce((max, player) => Math.max(max, player.pending_inputs), 0);
+}
+
+export function avgPendingInputs(match: MatchStatsSnapshot): number {
+  if (match.players.length === 0) return 0;
+  return match.players.reduce((sum, player) => sum + player.pending_inputs, 0) / match.players.length;
+}
+
+export function webTransportSnapshotFallbackRatio(match: MatchStatsSnapshot): number {
+  const total =
+    match.network.webtransport_snapshot_datagram_sent + match.network.webtransport_snapshot_reliable_sent;
+  if (total <= 0) return 0;
+  return match.network.webtransport_snapshot_reliable_sent / total;
+}
+
+export function webTransportSnapshotDatagramRatio(match: MatchStatsSnapshot): number {
+  const total =
+    match.network.webtransport_snapshot_datagram_sent + match.network.webtransport_snapshot_reliable_sent;
+  if (total <= 0) return 0;
+  return match.network.webtransport_snapshot_datagram_sent / total;
+}
+
+export function describeTransport(match: MatchStatsSnapshot): string {
+  if (match.load.webtransport_players === 0) {
+    if (match.load.websocket_players === 0) return 'no clients';
+    return 'websocket-only';
+  }
+  const total =
+    match.network.webtransport_snapshot_datagram_sent + match.network.webtransport_snapshot_reliable_sent;
+  if (total <= 0) return 'WT awaiting snapshot samples';
+  const datagramRatio = webTransportSnapshotDatagramRatio(match);
+  if (datagramRatio >= 0.95) return `WT mostly datagrams (${(datagramRatio * 100).toFixed(1)}%)`;
+  if (datagramRatio >= 0.8) return `WT mixed delivery (${(datagramRatio * 100).toFixed(1)}% datagram)`;
+  return `WT fallback-heavy (${(datagramRatio * 100).toFixed(1)}% datagram)`;
+}
+
+export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): string {
   const timingCandidates = [
     ['player movement', match.timings.player_sim_ms.p95],
     ['dynamic bodies', match.timings.dynamics_ms.p95],
@@ -93,10 +146,27 @@ export function describeBottleneck(match: MatchStatsSnapshot): string {
     current[1] > best[1] ? current : best,
   );
 
+  const budgetMs = tickBudgetMs(simHz);
+  const headroomMs = tickHeadroomMs(match, simHz);
   const snapshotBytes = match.network.snapshot_bytes_per_client.p95;
-  if (snapshotBytes > 1_000 || match.network.datagram_fallbacks > 0) {
-    const mode = match.network.datagram_fallbacks > 0 ? 'WT datagram overflow' : 'network-heavy snapshots';
+  const wtFallbackRatio = webTransportSnapshotFallbackRatio(match);
+  const pendingMax = maxPendingInputs(match);
+
+  if (budgetMs > 0 && match.timings.total_ms.p95 >= budgetMs * 0.95) {
+    return `CPU-limited: ${timingName} ${timingMs.toFixed(1)}ms, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms / ${budgetMs.toFixed(1)}ms budget`;
+  }
+  if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
+    return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
+  }
+  if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.05) {
+    return `WT occasional fallback: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
+  }
+  if (snapshotBytes > 1_000) {
+    const mode = match.load.webtransport_players > 0 ? 'large WT snapshots' : 'large snapshots';
     return `${mode}: ${timingName} ${timingMs.toFixed(1)}ms, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
   }
-  return `${timingName} p95 ${timingMs.toFixed(1)}ms`;
+  if (pendingMax >= 20) {
+    return `Input backlog: max in-buf ${pendingMax}, ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
+  }
+  return `Healthy: ${timingName} ${timingMs.toFixed(1)}ms, headroom ${headroomMs.toFixed(1)}ms`;
 }

@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  avgPendingInputs,
   describeBottleneck,
+  describeTransport,
+  maxPendingInputs,
+  tickBudgetMs,
+  tickHeadroomMs,
   totalPhysicsP95,
   type GlobalStatsSnapshot,
   type MatchStatsSnapshot,
   type PlayerStatsSnapshot,
+  webTransportSnapshotFallbackRatio,
 } from '../loadtest/serverStats';
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -189,7 +195,8 @@ function ConnBadge({ state }: { state: ConnState }) {
   return <span style={styles.connBadge(state)}>{label}</span>;
 }
 
-function MatchPanel({ match }: { match: MatchStatsSnapshot }) {
+function MatchPanel({ match, simHz }: { match: MatchStatsSnapshot; simHz: number }) {
+  const wtFallbackRatio = webTransportSnapshotFallbackRatio(match);
   return (
     <div style={styles.matchBox}>
       <div style={styles.matchSummary}>
@@ -199,10 +206,18 @@ function MatchPanel({ match }: { match: MatchStatsSnapshot }) {
         <SummaryCard
           title="Bottleneck"
           lines={[
-            describeBottleneck(match),
+            describeBottleneck(match, simHz),
             `tick p95 ${fmt(match.timings.total_ms.p95, 2)}ms`,
             `total physics p95 ${fmt(totalPhysicsP95(match), 2)}ms`,
             `snapshot p95 ${(match.network.snapshot_bytes_per_client.p95 / 1024).toFixed(2)} KiB/client`,
+          ]}
+        />
+        <SummaryCard
+          title="Health"
+          lines={[
+            `tick budget ${fmt(tickBudgetMs(simHz), 2)}ms`,
+            `headroom ${fmt(tickHeadroomMs(match, simHz), 2)}ms`,
+            `max in-buf ${maxPendingInputs(match)}  avg ${fmt(avgPendingInputs(match), 1)}`,
           ]}
         />
         <SummaryCard
@@ -218,7 +233,19 @@ function MatchPanel({ match }: { match: MatchStatsSnapshot }) {
           lines={[
             `in ${fmtRate(match.network.inbound_bps)}  out ${fmtRate(match.network.outbound_bps)}`,
             `pkts ${match.network.inbound_packets_per_sec}/${match.network.outbound_packets_per_sec} per sec`,
+            `${describeTransport(match)}`,
+            `ws snap ${match.network.websocket_snapshot_reliable_sent}  wt dgram ${match.network.webtransport_snapshot_datagram_sent}  wt rel ${match.network.webtransport_snapshot_reliable_sent}`,
             `fallbacks ${match.network.datagram_fallbacks}  malformed ${match.network.malformed_packets}`,
+          ]}
+        />
+        <SummaryCard
+          title="Snapshot Shape"
+          lines={[
+            `players/client p95 ${fmt(match.network.snapshot_players_per_client.p95, 1)}`,
+            `bodies/client p95 ${fmt(match.network.snapshot_dynamic_bodies_per_client.p95, 1)}`,
+            `vehicles/client p95 ${fmt(match.network.snapshot_vehicles_per_client.p95, 1)}`,
+            `wt reliable ${(wtFallbackRatio * 100).toFixed(1)}%`,
+            `bytes/tick p95 ${(match.network.snapshot_bytes_per_tick.p95 / 1024).toFixed(2)} KiB`,
           ]}
         />
         <SummaryCard
@@ -333,7 +360,7 @@ export function ServerStats() {
       {stats && stats.matches.map((m) => (
         <div key={m.id}>
           <div style={styles.sectionTitle}>{`Match: ${m.id}`}</div>
-          <MatchPanel match={m} />
+          <MatchPanel match={m} simHz={stats.sim_hz} />
         </div>
       ))}
     </div>
