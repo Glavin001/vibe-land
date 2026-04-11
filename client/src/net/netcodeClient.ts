@@ -248,7 +248,7 @@ export class NetcodeClient {
         for (const ps of packet.playerStates) {
           knownIds.add(ps.id);
           if (ps.id === this.playerId) {
-            this.localPlayerHp = (ps.flags & 0x4) ? 0 : 100; // FLAG_DEAD = 1<<2
+            this.localPlayerHp = ps.hp;
             this.localPlayerFlags = ps.flags;
             this.config.onLocalSnapshot?.(packet.ackInputSeq, ps);
           } else {
@@ -259,6 +259,7 @@ export class NetcodeClient {
               velocity: m.velocity,
               yaw: m.yaw,
               pitch: m.pitch,
+              hp: m.hp,
               flags: ps.flags,
             });
             this.remotePlayers.set(ps.id, {
@@ -266,7 +267,7 @@ export class NetcodeClient {
               position: m.position,
               yaw: m.yaw,
               pitch: m.pitch,
-              hp: 100,
+              hp: m.hp,
             });
           }
         }

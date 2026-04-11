@@ -29,6 +29,7 @@ function makeNetState(opts: {
   velocity?: [number, number, number];
   yaw?: number;
   pitch?: number;
+  hp?: number;
   flags?: number;
 }): NetPlayerState {
   const pos = opts.position ?? [0, 0, 0];
@@ -43,6 +44,7 @@ function makeNetState(opts: {
     vzCms: Math.round(vel[2] * 100),
     yawI16: angleToI16(opts.yaw ?? 0),
     pitchI16: angleToI16(opts.pitch ?? 0),
+    hp: opts.hp ?? 100,
     flags: opts.flags ?? 0,
   };
 }

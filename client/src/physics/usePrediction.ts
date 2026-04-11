@@ -12,6 +12,15 @@ type BlockRayHit = {
   placeCell: [number, number, number];
 };
 
+type SceneRayHit = {
+  toi: number;
+};
+
+type PlayerAimHit = {
+  distance: number;
+  kind: number;
+};
+
 /**
  * Thin React wrapper around PredictionManager.
  * Handles shared WASM init and lifecycle only.
@@ -155,6 +164,49 @@ export function usePrediction() {
     };
   }, []);
 
+  const raycastScene = useCallback((
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance = 1000,
+  ): SceneRayHit | null => {
+    const sim = simRef.current;
+    const m = managerRef.current;
+    if (!sim || !m || !m.isWorldLoaded()) return null;
+
+    const result = sim.castRayAndGetNormal(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      maxDistance,
+    );
+    if (result.length === 0) return null;
+    return {
+      toi: result[0],
+    };
+  }, []);
+
+  const classifyHitscanPlayer = useCallback((
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): PlayerAimHit | null => {
+    const sim = simRef.current;
+    const m = managerRef.current;
+    if (!sim || !m || !m.isWorldLoaded()) return null;
+
+    const result = sim.classifyHitscanPlayer(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      bodyCenter[0], bodyCenter[1], bodyCenter[2],
+      blockerDistance ?? Number.POSITIVE_INFINITY,
+    );
+    if (result.length === 0) return null;
+    return {
+      distance: result[0],
+      kind: result[1],
+    };
+  }, []);
+
   const buildBlockEdit = useCallback((
     cell: [number, number, number],
     op: number,
@@ -229,6 +281,10 @@ export function usePrediction() {
     m.updateDynamicBodies(bodies);
   }, []);
 
+  const getNextSeq = useCallback((): number => {
+    return managerRef.current?.getNextSeq() ?? 0;
+  }, []);
+
   const getDebugStats = useCallback(() => {
     const m = managerRef.current;
     if (!m) return { pendingInputs: 0, predictionTicks: 0, correctionMagnitude: 0, physicsStepMs: 0, velocity: [0, 0, 0] as [number, number, number] };
@@ -254,6 +310,9 @@ export function usePrediction() {
     applyOptimisticEdit,
     getBlockMaterial,
     updateDynamicBodies,
+    raycastScene,
+    classifyHitscanPlayer,
+    getNextSeq,
     getDebugStats,
     spawnVehicle,
     removeVehicle,

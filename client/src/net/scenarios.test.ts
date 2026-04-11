@@ -886,7 +886,7 @@ describe('Category G: Interpolation Edge Cases', () => {
       serverTimeUs: 1_000_000,
       position: [5, 0, 5],
       velocity: [0, 0, 0],
-      yaw: 0, pitch: 0, flags: 1,
+      yaw: 0, pitch: 0, hp: 100, flags: 1,
     });
 
     // Request a time far in the future (buffer starved)

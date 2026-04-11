@@ -51,8 +51,7 @@ impl RttEstimator {
 
         let prev_srtt = self.srtt_us;
         self.srtt_us = (1.0 - ALPHA) * self.srtt_us + ALPHA * rtt_us;
-        self.rttvar_us =
-            (1.0 - BETA) * self.rttvar_us + BETA * (rtt_us - prev_srtt).abs();
+        self.rttvar_us = (1.0 - BETA) * self.rttvar_us + BETA * (rtt_us - prev_srtt).abs();
     }
 
     /// Smoothed RTT in microseconds.
@@ -279,7 +278,11 @@ mod tests {
         // Huge jump — should Resync
         c.observe_server_time(2_000_000, 950_000);
         // offset should have snapped close to the new raw value
-        assert!(c.clock_offset_us() > 900_000.0, "offset={}", c.clock_offset_us());
+        assert!(
+            c.clock_offset_us() > 900_000.0,
+            "offset={}",
+            c.clock_offset_us()
+        );
     }
 
     #[test]

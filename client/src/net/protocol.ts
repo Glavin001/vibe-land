@@ -39,6 +39,7 @@ export type FireCmd = {
   seq: number;
   shotId: number;
   weapon: number;
+  clientFireTimeUs: number;
   clientInterpMs: number;
   dir: [number, number, number];
 };
@@ -53,6 +54,7 @@ export type NetPlayerState = {
   vzCms: number;
   yawI16: number;
   pitchI16: number;
+  hp: number;
   flags: number;
 };
 
@@ -216,6 +218,7 @@ export type PlayerStateMeters = {
   velocity: [number, number, number];
   yaw: number;
   pitch: number;
+  hp: number;
   flags: number;
 };
 
@@ -266,13 +269,14 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
 }
 
 export function encodeFirePacket(packet: FireCmd): Uint8Array {
-  const out = new Uint8Array(1 + 2 + 4 + 1 + 2 + 2 + 2 + 2);
+  const out = new Uint8Array(1 + 2 + 4 + 1 + 8 + 2 + 2 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_FIRE);
   view.setUint16(o, packet.seq & 0xffff, true); o += 2;
   view.setUint32(o, packet.shotId >>> 0, true); o += 4;
   view.setUint8(o++, packet.weapon & 0xff);
+  setUint64(view, o, packet.clientFireTimeUs); o += 8;
   view.setUint16(o, packet.clientInterpMs & 0xffff, true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[0]), true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[1]), true); o += 2;
@@ -357,9 +361,10 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
       vzCms: view.getInt16(o + 20, true),
       yawI16: view.getInt16(o + 22, true),
       pitchI16: view.getInt16(o + 24, true),
-      flags: view.getUint16(o + 26, true),
+      hp: view.getUint8(o + 26),
+      flags: view.getUint16(o + 27, true),
     });
-    o += 28;
+    o += 29;
   }
 
   const projectileStates: NetProjectileState[] = [];
@@ -503,6 +508,7 @@ export function netPlayerStateToMeters(state: NetPlayerState): PlayerStateMeters
     velocity: [cmsToMetersPerSecond(state.vxCms), cmsToMetersPerSecond(state.vyCms), cmsToMetersPerSecond(state.vzCms)],
     yaw: i16ToAngle(state.yawI16),
     pitch: i16ToAngle(state.pitchI16),
+    hp: state.hp,
     flags: state.flags,
   };
 }
@@ -648,6 +654,14 @@ function getUint64(view: DataView, offset: number): number {
   const low = view.getUint32(offset, true);
   const high = view.getUint32(offset + 4, true);
   return high * 2 ** 32 + low;
+}
+
+function setUint64(view: DataView, offset: number, value: number): void {
+  const normalized = Math.max(0, Math.floor(value));
+  const low = normalized >>> 0;
+  const high = Math.floor(normalized / 2 ** 32) >>> 0;
+  view.setUint32(offset, low, true);
+  view.setUint32(offset + 4, high, true);
 }
 
 function decodeChunkFullPacket(data: ArrayBuffer | Uint8Array): ChunkFullPacket {

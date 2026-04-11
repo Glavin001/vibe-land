@@ -4,6 +4,7 @@ import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import type {
   BlockEditCmd,
   DynamicBodyStateMeters,
+  FireCmd,
   InputCmd,
   NetPlayerState,
   NetVehicleState,
@@ -122,6 +123,10 @@ export function useGameConnection(
     clientRef.current?.sendInputs(cmds);
   }, []);
 
+  const sendFire = useCallback((cmd: FireCmd) => {
+    clientRef.current?.sendFire(cmd);
+  }, []);
+
   const sendBlockEdit = useCallback((cmd: BlockEditCmd) => {
     clientRef.current?.sendBlockEdit(cmd);
   }, []);
@@ -134,5 +139,5 @@ export function useGameConnection(
     clientRef.current?.sendVehicleExit(vehicleId);
   }, []);
 
-  return { stateRef, ready, sendInputs, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
+  return { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
 }

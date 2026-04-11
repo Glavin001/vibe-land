@@ -1,3 +1,7 @@
+pub mod clock_sync;
+pub mod lag_comp;
+pub mod movement;
+pub mod physics_arena;
 /// Generic physics-enabled netcode library for vibe-land.
 ///
 /// Provides reusable building blocks:
@@ -7,11 +11,6 @@
 /// - `sim_world`     — Rapier3D KCC collision world (SimWorld)
 /// - `physics_arena` — dynamic rigid-body simulation (DynamicArena, DynamicBody)
 /// - `lag_comp`      — server-side lag-compensated hitscan (LagCompHistory)
-
 pub mod seq;
-pub mod unit_conv;
-pub mod movement;
 pub mod sim_world;
-pub mod physics_arena;
-pub mod lag_comp;
-pub mod clock_sync;
+pub mod unit_conv;

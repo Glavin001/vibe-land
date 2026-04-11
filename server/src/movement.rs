@@ -8,8 +8,8 @@ use crate::protocol::*;
 pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
-use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_land_shared::simulation::simulate_player_tick;
+use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -31,6 +31,7 @@ pub struct PlayerMotorState {
     pub pitch: f64,
     pub on_ground: bool,
     pub hp: u8,
+    pub dead: bool,
     pub last_input: InputCmd,
 }
 
@@ -90,6 +91,7 @@ impl PhysicsArena {
                 pitch: 0.0,
                 on_ground: false,
                 hp: 100,
+                dead: false,
                 last_input: InputCmd::default(),
             },
         );
@@ -103,8 +105,14 @@ impl PhysicsArena {
         }
     }
 
-    pub fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) -> ColliderHandle {
-        self.dynamic.add_static_cuboid(center, half_extents, user_data)
+    pub fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid(center, half_extents, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -129,7 +137,14 @@ impl PhysicsArena {
             return;
         }
 
-        let Some(state) = self.players.get_mut(&player_id) else { return; };
+        let Some(state) = self.players.get_mut(&player_id) else {
+            return;
+        };
+        if state.dead {
+            state.last_input = InputCmd::default();
+            state.velocity = Vec3d::zeros();
+            return;
+        }
         state.last_input = input.clone();
 
         let collisions = simulate_player_tick(
@@ -143,23 +158,34 @@ impl PhysicsArena {
             input,
             dt,
         );
-        self.dynamic.sim.sync_player_collider(state.collider, &state.position);
+        self.dynamic
+            .sim
+            .sync_player_collider(state.collider, &state.position);
 
         // Use Rapier's built-in impulse solver for natural dynamic body pushing.
         if !collisions.is_empty() {
             let state = self.players.get(&player_id).unwrap();
             let character_mass = 80.0; // ~80kg player
             self.dynamic.sim.solve_character_collision_impulses(
-                state.collider, character_mass, &collisions, dt,
+                state.collider,
+                character_mass,
+                &collisions,
+                dt,
             );
         }
     }
 
-    pub fn snapshot_player(&self, player_id: u32) -> Option<([f32; 3], [f32; 3], f32, f32, u8, u16)> {
+    pub fn snapshot_player(
+        &self,
+        player_id: u32,
+    ) -> Option<([f32; 3], [f32; 3], f32, f32, u8, u16)> {
         let state = self.players.get(&player_id)?;
         let mut flags = 0u16;
         if state.on_ground {
             flags |= FLAG_ON_GROUND;
+        }
+        if state.dead {
+            flags |= FLAG_DEAD;
         }
 
         // When driving, report chassis position so client can keep player in vehicle.
@@ -182,8 +208,16 @@ impl PhysicsArena {
         }
 
         Some((
-            [state.position.x as f32, state.position.y as f32, state.position.z as f32],
-            [state.velocity.x as f32, state.velocity.y as f32, state.velocity.z as f32],
+            [
+                state.position.x as f32,
+                state.position.y as f32,
+                state.position.z as f32,
+            ],
+            [
+                state.velocity.x as f32,
+                state.velocity.y as f32,
+                state.velocity.z as f32,
+            ],
             state.yaw as f32,
             state.pitch as f32,
             state.hp,
@@ -202,6 +236,97 @@ impl PhysicsArena {
             .and_then(|pid| self.players.get(&pid))
             .map(|p| p.collider);
         self.dynamic.sim.cast_ray(origin, dir, max_toi, exclude)
+    }
+
+    pub fn cast_dynamic_body_ray(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_toi: f32,
+        exclude_player: Option<u32>,
+    ) -> Option<(u32, f32, [f32; 3])> {
+        let exclude = exclude_player
+            .and_then(|pid| self.players.get(&pid))
+            .map(|p| p.collider);
+        let ray = rapier3d::prelude::Ray::new(
+            nalgebra::point![origin[0], origin[1], origin[2]],
+            vector![dir[0], dir[1], dir[2]],
+        );
+        let mut best: Option<(u32, f32, [f32; 3])> = None;
+        for (&id, db) in &self.dynamic.dynamic_bodies {
+            if Some(db.collider_handle) == exclude {
+                continue;
+            }
+            let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
+                continue;
+            };
+            let Some(hit) =
+                collider
+                    .shape()
+                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+            else {
+                continue;
+            };
+            if best
+                .map(|(_, toi, _)| hit.time_of_impact < toi)
+                .unwrap_or(true)
+            {
+                let n = hit.normal;
+                best = Some((id, hit.time_of_impact, [n.x, n.y, n.z]));
+            }
+        }
+        best
+    }
+
+    pub fn apply_dynamic_body_impulse(
+        &mut self,
+        dynamic_body_id: u32,
+        impulse: [f32; 3],
+        contact_point: [f32; 3],
+    ) -> bool {
+        let Some(db) = self.dynamic.dynamic_bodies.get(&dynamic_body_id) else {
+            return false;
+        };
+        let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(db.body_handle) else {
+            return false;
+        };
+        let world_com = *rb.center_of_mass();
+        let impulse = vector![impulse[0], impulse[1], impulse[2]];
+        let point = nalgebra::point![contact_point[0], contact_point[1], contact_point[2]];
+        let torque = (point - world_com).cross(&impulse);
+        rb.apply_impulse(impulse, true);
+        rb.apply_torque_impulse(torque, true);
+        true
+    }
+
+    pub fn set_player_dead(&mut self, player_id: u32, dead: bool) {
+        if let Some(state) = self.players.get_mut(&player_id) {
+            state.dead = dead;
+            if dead {
+                state.hp = 0;
+                state.velocity = Vec3d::zeros();
+                state.on_ground = false;
+            }
+        }
+    }
+
+    pub fn respawn_player(&mut self, player_id: u32) -> Option<[f32; 3]> {
+        let lane = self.next_spawn_index % 8;
+        self.next_spawn_index += 1;
+        let spawn = Vector3::<f64>::new(lane as f64 * 2.0, 2.0, 0.0);
+        let state = self.players.get_mut(&player_id)?;
+        state.position = spawn;
+        state.velocity = Vec3d::zeros();
+        state.yaw = 0.0;
+        state.pitch = 0.0;
+        state.on_ground = false;
+        state.hp = 100;
+        state.dead = false;
+        state.last_input = InputCmd::default();
+        self.dynamic
+            .sim
+            .sync_player_collider(state.collider, &state.position);
+        Some([spawn.x as f32, spawn.y as f32, spawn.z as f32])
     }
 
     // ── Dynamic body delegation ──────────────────────────────────────────────
@@ -225,13 +350,16 @@ impl PhysicsArena {
         let (chassis_body, chassis_collider, controller) =
             create_vehicle_physics(&mut self.dynamic.sim, pose);
 
-        self.vehicles.insert(id, Vehicle {
-            chassis_body,
-            chassis_collider,
-            controller,
-            vehicle_type,
-            driver_id: None,
-        });
+        self.vehicles.insert(
+            id,
+            Vehicle {
+                chassis_body,
+                chassis_collider,
+                controller,
+                vehicle_type,
+                driver_id: None,
+            },
+        );
 
         id
     }
@@ -247,10 +375,14 @@ impl PhysicsArena {
         for vid in vehicle_ids {
             // Collect driver input from the player driving this vehicle.
             let (steering, engine_force, brake) = {
-                let vehicle = match self.vehicles.get(&vid) { Some(v) => v, None => continue };
+                let vehicle = match self.vehicles.get(&vid) {
+                    Some(v) => v,
+                    None => continue,
+                };
                 if let Some(driver_id) = vehicle.driver_id {
                     if let Some(player) = self.players.get(&driver_id) {
-                        let (steering, engine_force, brake) = vehicle_wheel_params(&player.last_input);
+                        let (steering, engine_force, brake) =
+                            vehicle_wheel_params(&player.last_input);
                         (steering, engine_force, brake)
                     } else {
                         (0.0, 0.0, 0.0)
@@ -306,11 +438,14 @@ impl PhysicsArena {
                 if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
                     let p = *rb.translation();
                     if let Some(state) = self.players.get_mut(&player_id) {
-                        state.position = Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
+                        state.position =
+                            Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
                         if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
                             c.set_collision_groups(InteractionGroups::all());
                         }
-                        self.dynamic.sim.sync_player_collider(state.collider, &state.position);
+                        self.dynamic
+                            .sim
+                            .sync_player_collider(state.collider, &state.position);
                     }
                 }
             }
@@ -319,40 +454,46 @@ impl PhysicsArena {
 
     /// Snapshot all vehicles for broadcasting.
     pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
-        self.vehicles.iter().filter_map(|(&id, vehicle)| {
-            let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
-            let p = rb.translation();
-            let r = rb.rotation();
-            let lv = rb.linvel();
-            let av = rb.angvel();
+        self.vehicles
+            .iter()
+            .filter_map(|(&id, vehicle)| {
+                let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
+                let p = rb.translation();
+                let r = rb.rotation();
+                let lv = rb.linvel();
+                let av = rb.angvel();
 
-            let mut wheel_data = [0u16; 4];
-            for (i, wheel) in vehicle.controller.wheels().iter().enumerate().take(4) {
-                let spin = ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
-                let steer = (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0)
-                    .clamp(-127.0, 127.0) as i8 as u8;
-                wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
-            }
+                let mut wheel_data = [0u16; 4];
+                for (i, wheel) in vehicle.controller.wheels().iter().enumerate().take(4) {
+                    let spin =
+                        ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
+                    let steer = (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0)
+                        .clamp(-127.0, 127.0) as i8 as u8;
+                    wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
+                }
 
-            Some(make_net_vehicle_state(
-                id,
-                vehicle.vehicle_type,
-                0,
-                vehicle.driver_id.unwrap_or(0),
-                [p.x, p.y, p.z],
-                [r.i, r.j, r.k, r.w],
-                [lv.x, lv.y, lv.z],
-                [av.x, av.y, av.z],
-                wheel_data,
-            ))
-        }).collect()
+                Some(make_net_vehicle_state(
+                    id,
+                    vehicle.vehicle_type,
+                    0,
+                    vehicle.driver_id.unwrap_or(0),
+                    [p.x, p.y, p.z],
+                    [r.i, r.j, r.k, r.w],
+                    [lv.x, lv.y, lv.z],
+                    [av.x, av.y, av.z],
+                    wheel_data,
+                ))
+            })
+            .collect()
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
         self.dynamic.step_dynamics(dt);
     }
 
-    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
+    pub fn snapshot_dynamic_bodies(
+        &self,
+    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
 }
@@ -360,6 +501,7 @@ impl PhysicsArena {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vibe_land_shared::movement::build_wish_dir;
 
     fn input() -> InputCmd {
         InputCmd {
@@ -448,7 +590,11 @@ mod tests {
         }
 
         let (pos, _vel, _, _, _, _) = arena.snapshot_player(1).unwrap();
-        assert!(pos[2] > 0.5, "should have moved forward (z > 0.5), got {}", pos[2]);
+        assert!(
+            pos[2] > 0.5,
+            "should have moved forward (z > 0.5), got {}",
+            pos[2]
+        );
     }
 
     #[test]
@@ -476,7 +622,10 @@ mod tests {
 
         let (walk_pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
         let (sprint_pos, _, _, _, _, _) = arena.snapshot_player(2).unwrap();
-        assert!(sprint_pos[2] > walk_pos[2], "sprint should be faster than walk");
+        assert!(
+            sprint_pos[2] > walk_pos[2],
+            "sprint should be faster than walk"
+        );
     }
 
     #[test]
@@ -516,7 +665,11 @@ mod tests {
             arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
         }
         let (pre_pos, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
-        assert!(flags & 1 != 0, "should be grounded after settling, pos y={}", pre_pos[1]);
+        assert!(
+            flags & 1 != 0,
+            "should be grounded after settling, pos y={}",
+            pre_pos[1]
+        );
 
         let mut jump_cmd = input();
         jump_cmd.buttons = BTN_JUMP;
@@ -550,7 +703,10 @@ mod tests {
         arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
         let (_, vel2, _, _, _, _) = arena.snapshot_player(1).unwrap();
 
-        assert!(vel2[1] < vel1[1], "velocity should decrease (more negative) with gravity");
+        assert!(
+            vel2[1] < vel1[1],
+            "velocity should decrease (more negative) with gravity"
+        );
     }
 
     #[test]
@@ -576,7 +732,11 @@ mod tests {
         }
         let (_, vel_stopped, _, _, _, _) = arena.snapshot_player(1).unwrap();
         let speed_stopped = (vel_stopped[0].powi(2) + vel_stopped[2].powi(2)).sqrt();
-        assert!(speed_stopped < 0.1, "friction should stop player, got {}", speed_stopped);
+        assert!(
+            speed_stopped < 0.1,
+            "friction should stop player, got {}",
+            speed_stopped
+        );
     }
 
     // ──────────────────────────────────────────────
@@ -589,24 +749,27 @@ mod tests {
         cmd.move_y = 127;
         cmd.buttons = BTN_SPRINT;
 
-        let positions: Vec<[f32; 3]> = (0..2).map(|_| {
-            let mut arena = arena_with_ground();
-            arena.spawn_player(1);
-            for _ in 0..60 {
-                arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
-            }
-            for _ in 0..60 {
-                arena.simulate_player_tick(1, &cmd, 1.0 / 60.0);
-            }
-            let (pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
-            pos
-        }).collect();
+        let positions: Vec<[f32; 3]> = (0..2)
+            .map(|_| {
+                let mut arena = arena_with_ground();
+                arena.spawn_player(1);
+                for _ in 0..60 {
+                    arena.simulate_player_tick(1, &input(), 1.0 / 60.0);
+                }
+                for _ in 0..60 {
+                    arena.simulate_player_tick(1, &cmd, 1.0 / 60.0);
+                }
+                let (pos, _, _, _, _, _) = arena.snapshot_player(1).unwrap();
+                pos
+            })
+            .collect();
 
         for i in 0..3 {
             assert!(
                 (positions[0][i] - positions[1][i]).abs() < 1e-6,
                 "position[{i}] should be deterministic: {} vs {}",
-                positions[0][i], positions[1][i],
+                positions[0][i],
+                positions[1][i],
             );
         }
     }
@@ -660,10 +823,7 @@ mod tests {
         let mut world = VoxelWorld::new();
         world.seed_demo_world(&mut arena);
 
-        let ball_id = arena.spawn_dynamic_ball(
-            vector![5.0, 2.0, 5.0],
-            0.3,
-        );
+        let ball_id = arena.spawn_dynamic_ball(vector![5.0, 2.0, 5.0], 0.3);
         arena.rebuild_broad_phase();
 
         for _ in 0..120 {
@@ -688,7 +848,11 @@ mod tests {
         let snap_after = arena.snapshot_dynamic_bodies();
         let ball = snap_after.iter().find(|s| s.0 == ball_id).unwrap();
         eprintln!("Ball after push: y={:.3}", ball.1[1]);
-        assert!(ball.1[1] > 0.5, "Ball tunneled through ground after push! y={}", ball.1[1]);
+        assert!(
+            ball.1[1] > 0.5,
+            "Ball tunneled through ground after push! y={}",
+            ball.1[1]
+        );
     }
 
     #[test]
@@ -713,29 +877,29 @@ mod tests {
 
             if (tick + 1) % 120 == 0 {
                 let snap = arena.snapshot_dynamic_bodies();
-                let fallen: Vec<_> = snap.iter()
-                    .filter(|s| s.4 == 1 && s.1[1] < 0.0)
-                    .collect();
+                let fallen: Vec<_> = snap.iter().filter(|s| s.5 == 1 && s.1[1] < 0.0).collect();
                 if !fallen.is_empty() {
                     eprintln!(
                         "tick {}: {} / {} balls below y=0",
                         tick + 1,
                         fallen.len(),
-                        snap.iter().filter(|s| s.4 == 1).count(),
+                        snap.iter().filter(|s| s.5 == 1).count(),
                     );
                 }
             }
         }
 
         let snapshot = arena.snapshot_dynamic_bodies();
-        let balls: Vec<_> = snapshot.iter().filter(|s| s.4 == 1).collect();
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.5 == 1).collect();
         assert!(!balls.is_empty(), "expected ball-pit balls");
 
         let fallen: Vec<_> = balls.iter().filter(|b| b.1[1] < 0.0).collect();
         assert_eq!(
-            fallen.len(), 0,
+            fallen.len(),
+            0,
             "{} / {} balls fell through the ground with interleaved player+dynamics!",
-            fallen.len(), balls.len(),
+            fallen.len(),
+            balls.len(),
         );
     }
 
@@ -747,14 +911,8 @@ mod tests {
         let mut world = VoxelWorld::new();
         world.seed_demo_world(&mut arena);
 
-        let box_id = arena.spawn_dynamic_box(
-            vector![4.0, 8.0, 4.0],
-            vector![0.5, 0.5, 0.5],
-        );
-        let ball_id = arena.spawn_dynamic_ball(
-            vector![6.0, 8.0, 4.0],
-            0.5,
-        );
+        let box_id = arena.spawn_dynamic_box(vector![4.0, 8.0, 4.0], vector![0.5, 0.5, 0.5]);
+        let ball_id = arena.spawn_dynamic_ball(vector![6.0, 8.0, 4.0], 0.5);
 
         arena.rebuild_broad_phase();
 
@@ -766,16 +924,32 @@ mod tests {
         let box_state = snapshot.iter().find(|s| s.0 == box_id).unwrap();
         let ball_state = snapshot.iter().find(|s| s.0 == ball_id).unwrap();
 
-        assert!(box_state.1[1] > 0.5, "Box fell through ground! y={}", box_state.1[1]);
-        assert!(box_state.1[1] < 3.0, "Box is floating too high! y={}", box_state.1[1]);
-        assert!(ball_state.1[1] > 0.5, "Ball fell through ground! y={}", ball_state.1[1]);
-        assert!(ball_state.1[1] < 3.0, "Ball is floating too high! y={}", ball_state.1[1]);
+        assert!(
+            box_state.1[1] > 0.5,
+            "Box fell through ground! y={}",
+            box_state.1[1]
+        );
+        assert!(
+            box_state.1[1] < 3.0,
+            "Box is floating too high! y={}",
+            box_state.1[1]
+        );
+        assert!(
+            ball_state.1[1] > 0.5,
+            "Ball fell through ground! y={}",
+            ball_state.1[1]
+        );
+        assert!(
+            ball_state.1[1] < 3.0,
+            "Ball is floating too high! y={}",
+            ball_state.1[1]
+        );
     }
 
     #[test]
     fn block_edit_does_not_break_ball_physics() {
-        use crate::voxel_world::{world_to_chunk_and_local, VoxelWorld};
         use crate::protocol::{BlockEditCmd, BLOCK_REMOVE};
+        use crate::voxel_world::{world_to_chunk_and_local, VoxelWorld};
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
         let mut world = VoxelWorld::new();
@@ -789,7 +963,7 @@ mod tests {
         }
 
         let pre_snap = arena.snapshot_dynamic_bodies();
-        let pre_balls: Vec<_> = pre_snap.iter().filter(|s| s.4 == 1).collect();
+        let pre_balls: Vec<_> = pre_snap.iter().filter(|s| s.5 == 1).collect();
         assert!(!pre_balls.is_empty(), "expected ball-pit balls");
         let pre_fallen: Vec<_> = pre_balls.iter().filter(|b| b.1[1] < 0.0).collect();
         assert_eq!(pre_fallen.len(), 0, "balls fell before edit");
@@ -810,19 +984,21 @@ mod tests {
         }
 
         let post_snap = arena.snapshot_dynamic_bodies();
-        let post_balls: Vec<_> = post_snap.iter().filter(|s| s.4 == 1).collect();
+        let post_balls: Vec<_> = post_snap.iter().filter(|s| s.5 == 1).collect();
         let post_fallen: Vec<_> = post_balls.iter().filter(|b| b.1[1] < 0.0).collect();
         assert_eq!(
-            post_fallen.len(), 0,
+            post_fallen.len(),
+            0,
             "{} / {} balls fell through ground after block edit!",
-            post_fallen.len(), post_balls.len(),
+            post_fallen.len(),
+            post_balls.len(),
         );
     }
 
     #[test]
     fn ball_falls_through_deleted_floor_block() {
-        use crate::voxel_world::{world_to_chunk_and_local, VoxelWorld};
         use crate::protocol::{BlockEditCmd, BLOCK_ADD, BLOCK_REMOVE};
+        use crate::voxel_world::{world_to_chunk_and_local, VoxelWorld};
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
         let mut world = VoxelWorld::new();
@@ -851,7 +1027,10 @@ mod tests {
         let pre_snap = arena.snapshot_dynamic_bodies();
         let pre_ball = pre_snap.iter().find(|s| s.0 == ball_id).unwrap();
         let pre_y = pre_ball.1[1];
-        assert!(pre_y > 0.5 && pre_y < 2.0, "ball should be resting on ground, y={pre_y}");
+        assert!(
+            pre_y > 0.5 && pre_y < 2.0,
+            "ball should be resting on ground, y={pre_y}"
+        );
 
         let (key, local) = world_to_chunk_and_local(4, 0, 4);
         let chunk_version = world.chunks.get(&key).map(|c| c.version).unwrap_or(0);
@@ -874,7 +1053,11 @@ mod tests {
         let fresh_ball_id = arena.spawn_dynamic_ball(vector![4.5, 5.0, 4.5], 0.3);
         {
             let db = arena.dynamic.dynamic_bodies.get(&ball_id).unwrap();
-            arena.dynamic.sim.island_manager.wake_up(&mut arena.dynamic.sim.rigid_bodies, db.body_handle, true);
+            arena.dynamic.sim.island_manager.wake_up(
+                &mut arena.dynamic.sim.rigid_bodies,
+                db.body_handle,
+                true,
+            );
         }
 
         for _ in 0..180 {
@@ -887,7 +1070,8 @@ mod tests {
         assert!(
             post_ball.1[1] < pre_y - 0.5,
             "Ball should have fallen after floor removed! pre_y={:.3}, post_y={:.3}",
-            pre_y, post_ball.1[1],
+            pre_y,
+            post_ball.1[1],
         );
     }
 
@@ -909,22 +1093,35 @@ mod tests {
         let floor = colliders.insert(
             ColliderBuilder::cuboid(5.0, 0.5, 5.0)
                 .translation(vector![0.0, -0.5, 0.0])
-                .build()
+                .build(),
         );
 
         let ball_body = bodies.insert(
             RigidBodyBuilder::dynamic()
                 .translation(vector![0.0, 3.0, 0.0])
-                .build()
+                .build(),
         );
         colliders.insert_with_parent(
             ColliderBuilder::ball(0.3).restitution(0.0).build(),
-            ball_body, &mut bodies
+            ball_body,
+            &mut bodies,
         );
 
         for _ in 0..300 {
-            pipeline.step(&gravity, &params, &mut islands, &mut broad, &mut narrow,
-                &mut bodies, &mut colliders, &mut joints, &mut multi_joints, &mut ccd, &(), &());
+            pipeline.step(
+                &gravity,
+                &params,
+                &mut islands,
+                &mut broad,
+                &mut narrow,
+                &mut bodies,
+                &mut colliders,
+                &mut joints,
+                &mut multi_joints,
+                &mut ccd,
+                &(),
+                &(),
+            );
         }
 
         let pre_y = bodies.get(ball_body).unwrap().translation().y;
@@ -933,13 +1130,27 @@ mod tests {
         islands.wake_up(&mut bodies, ball_body, true);
 
         for _ in 0..120 {
-            pipeline.step(&gravity, &params, &mut islands, &mut broad, &mut narrow,
-                &mut bodies, &mut colliders, &mut joints, &mut multi_joints, &mut ccd, &(), &());
+            pipeline.step(
+                &gravity,
+                &params,
+                &mut islands,
+                &mut broad,
+                &mut narrow,
+                &mut bodies,
+                &mut colliders,
+                &mut joints,
+                &mut multi_joints,
+                &mut ccd,
+                &(),
+                &(),
+            );
         }
 
         let post_y = bodies.get(ball_body).unwrap().translation().y;
-        assert!(post_y < pre_y - 1.0,
-            "Ball should fall after orphan floor removed! pre={pre_y:.4}, post={post_y:.4}");
+        assert!(
+            post_y < pre_y - 1.0,
+            "Ball should fall after orphan floor removed! pre={pre_y:.4}, post={post_y:.4}"
+        );
     }
 
     #[test]
@@ -964,8 +1175,11 @@ mod tests {
         for _ in 0..60 {
             arena.step_dynamics(dt);
         }
-        let ball_before = arena.snapshot_dynamic_bodies()
-            .into_iter().find(|s| s.0 == ball_id).unwrap();
+        let ball_before = arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|s| s.0 == ball_id)
+            .unwrap();
         let ball_z_before = ball_before.1[2];
 
         let mut fwd = input();
@@ -975,12 +1189,16 @@ mod tests {
             arena.step_dynamics(dt);
         }
 
-        let ball_after = arena.snapshot_dynamic_bodies()
-            .into_iter().find(|s| s.0 == ball_id).unwrap();
+        let ball_after = arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|s| s.0 == ball_id)
+            .unwrap();
         assert!(
             ball_after.1[2] > ball_z_before + 0.3,
             "Ball should be pushed forward: before z={:.3}, after z={:.3}",
-            ball_z_before, ball_after.1[2],
+            ball_z_before,
+            ball_after.1[2],
         );
     }
 
@@ -1017,7 +1235,8 @@ mod tests {
         assert!(
             player_end[2] > player_start[2] + 1.0,
             "Player should advance past ball: start z={:.3}, end z={:.3}",
-            player_start[2], player_end[2],
+            player_start[2],
+            player_end[2],
         );
     }
 }

@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, BytesMut};
 
 // Re-export all shared types, constants, and utilities
 pub use vibe_land_shared::constants::*;
-pub use vibe_land_shared::unit_conv::*;
 pub use vibe_land_shared::protocol::*;
+pub use vibe_land_shared::unit_conv::*;
 
 // ── Server-only types ───────────────────────────
 
@@ -83,10 +83,11 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             ClientDatagram::InputBundle(frames)
         }
         PKT_FIRE => {
-            ensure!(buf.remaining() >= 15, "short fire packet");
+            ensure!(buf.remaining() >= 23, "short fire packet");
             let seq = buf.get_u16_le();
             let shot_id = buf.get_u32_le();
             let weapon = buf.get_u8();
+            let client_fire_time_us = buf.get_u64_le();
             let client_interp_ms = buf.get_u16_le();
             let dir = [
                 snorm16_to_f32(buf.get_i16_le()),
@@ -97,6 +98,7 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 seq,
                 shot_id,
                 weapon,
+                client_fire_time_us,
                 client_interp_ms,
                 dir,
             })
@@ -108,7 +110,13 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             let local = [buf.get_u8(), buf.get_u8(), buf.get_u8()];
             let op = buf.get_u8();
             let material = buf.get_u16_le();
-            ClientDatagram::BlockEdit(BlockEditCmd { chunk, expected_version, local, op, material })
+            ClientDatagram::BlockEdit(BlockEditCmd {
+                chunk,
+                expected_version,
+                local,
+                op,
+                material,
+            })
         }
         PKT_VEHICLE_ENTER => {
             ensure!(buf.remaining() >= 5, "short vehicle enter datagram");
@@ -127,9 +135,14 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
         }
         PKT_DEBUG_STATS => {
             ensure!(buf.remaining() >= 8, "short debug stats datagram");
-            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
-            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
-            ClientDatagram::DebugStats { correction_m, physics_ms }
+            let correction_m =
+                f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms =
+                f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientDatagram::DebugStats {
+                correction_m,
+                physics_ms,
+            }
         }
         other => bail!("unknown client datagram packet kind {other}"),
     })
@@ -144,7 +157,13 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
         ClientDatagram::Ping(n) => ClientPacket::Ping(n),
-        ClientDatagram::DebugStats { correction_m, physics_ms } => ClientPacket::DebugStats { correction_m, physics_ms },
+        ClientDatagram::DebugStats {
+            correction_m,
+            physics_ms,
+        } => ClientPacket::DebugStats {
+            correction_m,
+            physics_ms,
+        },
     }
 }
 
@@ -221,6 +240,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(p.vz_cms);
                 out.put_i16_le(p.yaw_i16);
                 out.put_i16_le(p.pitch_i16);
+                out.put_u8(p.hp);
                 out.put_u16_le(p.flags);
             }
             for p in &pkt.projectile_states {
@@ -263,14 +283,13 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
     let mut buf = bytes;
     let kind = buf.get_u8();
     Ok(match kind {
-        PKT_INPUT_BUNDLE => {
-            ClientPacket::InputBundle(decode_input_bundle_frames(&mut buf)?)
-        }
+        PKT_INPUT_BUNDLE => ClientPacket::InputBundle(decode_input_bundle_frames(&mut buf)?),
         PKT_FIRE => {
-            ensure!(buf.remaining() >= 15, "short fire packet");
+            ensure!(buf.remaining() >= 23, "short fire packet");
             let seq = buf.get_u16_le();
             let shot_id = buf.get_u32_le();
             let weapon = buf.get_u8();
+            let client_fire_time_us = buf.get_u64_le();
             let client_interp_ms = buf.get_u16_le();
             let dir = [
                 snorm16_to_f32(buf.get_i16_le()),
@@ -281,6 +300,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 seq,
                 shot_id,
                 weapon,
+                client_fire_time_us,
                 client_interp_ms,
                 dir,
             })
@@ -317,9 +337,14 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
         }
         PKT_DEBUG_STATS => {
             ensure!(buf.remaining() >= 8, "short debug stats packet");
-            let correction_m = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
-            let physics_ms = f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
-            ClientPacket::DebugStats { correction_m, physics_ms }
+            let correction_m =
+                f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            let physics_ms =
+                f32::from_le_bytes([buf.get_u8(), buf.get_u8(), buf.get_u8(), buf.get_u8()]);
+            ClientPacket::DebugStats {
+                correction_m,
+                physics_ms,
+            }
         }
         other => bail!("unknown client packet kind {other}"),
     })
@@ -399,6 +424,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(p.vz_cms);
                 out.put_i16_le(p.yaw_i16);
                 out.put_i16_le(p.pitch_i16);
+                out.put_u8(p.hp);
                 out.put_u16_le(p.flags);
             }
             for p in &pkt.projectile_states {
@@ -487,9 +513,29 @@ mod tests {
     #[test]
     fn decode_client_packet_preserves_full_input_bundle() {
         let bytes = [
-            PKT_INPUT_BUNDLE, 2,
-            1, 0, 1, 0, 127u8, 0, 0, 0, 0, 0,
-            2, 0, 3, 0, 0, 127u8, 0, 0, 0, 0, 0,
+            PKT_INPUT_BUNDLE,
+            2,
+            1,
+            0,
+            1,
+            0,
+            127u8,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            0,
+            3,
+            0,
+            0,
+            127u8,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         let packet = decode_client_packet(&bytes).expect("bundle should decode");
         match packet {
@@ -509,8 +555,11 @@ mod tests {
     #[test]
     fn welcome_encode_decode_roundtrip() {
         let packet = ServerPacket::Welcome(WelcomePacket {
-            player_id: 42, sim_hz: 60, snapshot_hz: 30,
-            server_time_us: 5_000_000, interpolation_delay_ms: 100,
+            player_id: 42,
+            sim_hz: 60,
+            snapshot_hz: 30,
+            server_time_us: 5_000_000,
+            interpolation_delay_ms: 100,
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_WELCOME);
@@ -522,13 +571,25 @@ mod tests {
     #[test]
     fn snapshot_encode_preserves_player_state() {
         let packet = ServerPacket::Snapshot(SnapshotPacket {
-            server_time_us: 1_000_000, server_tick: 60, ack_input_seq: 42,
+            server_time_us: 1_000_000,
+            server_tick: 60,
+            ack_input_seq: 42,
             player_states: vec![NetPlayerState {
-                id: 1, px_mm: 5000, py_mm: 1000, pz_mm: -3000,
-                vx_cms: 100, vy_cms: -50, vz_cms: 200,
-                yaw_i16: 1000, pitch_i16: -500, flags: 1,
+                id: 1,
+                px_mm: 5000,
+                py_mm: 1000,
+                pz_mm: -3000,
+                vx_cms: 100,
+                vy_cms: -50,
+                vz_cms: 200,
+                yaw_i16: 1000,
+                pitch_i16: -500,
+                hp: 88,
+                flags: 1,
             }],
-            projectile_states: vec![], dynamic_body_states: vec![], vehicle_states: vec![],
+            projectile_states: vec![],
+            dynamic_body_states: vec![],
+            vehicle_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT);
@@ -539,8 +600,13 @@ mod tests {
     #[test]
     fn snapshot_encode_empty_no_players() {
         let packet = ServerPacket::Snapshot(SnapshotPacket {
-            server_time_us: 0, server_tick: 0, ack_input_seq: 0,
-            player_states: vec![], projectile_states: vec![], dynamic_body_states: vec![], vehicle_states: vec![],
+            server_time_us: 0,
+            server_tick: 0,
+            ack_input_seq: 0,
+            player_states: vec![],
+            projectile_states: vec![],
+            dynamic_body_states: vec![],
+            vehicle_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];
@@ -550,18 +616,22 @@ mod tests {
     #[test]
     fn shot_result_encode() {
         let packet = ServerPacket::ShotResult(ShotResultPacket {
-            shot_id: 123, weapon: 1, confirmed: true, hit_player_id: 5,
+            shot_id: 123,
+            weapon: 1,
+            confirmed: true,
+            hit_player_id: 5,
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SHOT_RESULT);
-        assert_eq!(u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]), 123);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            123
+        );
     }
 
     #[test]
     fn decode_single_input_frame() {
-        let bytes = [
-            PKT_INPUT_BUNDLE, 1, 42, 0, 17, 0, 127, 0, 0, 0, 0, 0,
-        ];
+        let bytes = [PKT_INPUT_BUNDLE, 1, 42, 0, 17, 0, 127, 0, 0, 0, 0, 0];
         let packet = decode_client_packet(&bytes).unwrap();
         match packet {
             ClientPacket::InputBundle(frames) => {
@@ -602,10 +672,21 @@ mod tests {
     #[test]
     fn chunk_full_encode() {
         let packet = ServerPacket::ChunkFull(ChunkFullPacket {
-            chunk: [1, -2, 3], version: 5,
+            chunk: [1, -2, 3],
+            version: 5,
             blocks: vec![
-                BlockCell { x: 0, y: 0, z: 0, material: 1 },
-                BlockCell { x: 1, y: 2, z: 3, material: 2 },
+                BlockCell {
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    material: 1,
+                },
+                BlockCell {
+                    x: 1,
+                    y: 2,
+                    z: 3,
+                    material: 2,
+                },
             ],
         });
         let encoded = encode_server_packet(&packet);
@@ -617,8 +698,15 @@ mod tests {
     #[test]
     fn chunk_diff_encode() {
         let packet = ServerPacket::ChunkDiff(ChunkDiffPacket {
-            chunk: [0, 0, 0], version: 2,
-            edits: vec![BlockEditNet { x: 5, y: 10, z: 15, op: 1, material: 3 }],
+            chunk: [0, 0, 0],
+            version: 2,
+            edits: vec![BlockEditNet {
+                x: 5,
+                y: 10,
+                z: 15,
+                op: 1,
+                material: 3,
+            }],
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_CHUNK_DIFF);
@@ -630,6 +718,9 @@ mod tests {
         let packet = ServerPacket::Ping(0xDEAD_BEEF);
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_PING);
-        assert_eq!(u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]), 0xDEAD_BEEF);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            0xDEAD_BEEF
+        );
     }
 }

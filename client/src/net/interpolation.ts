@@ -4,6 +4,7 @@ export type PlayerSample = {
   velocity: [number, number, number];
   yaw: number;
   pitch: number;
+  hp: number;
   flags: number;
 };
 
@@ -285,6 +286,7 @@ export class PlayerInterpolator {
           velocity: lerpVec3(prev.velocity, next.velocity, alpha),
           yaw: lerpAngle(prev.yaw, next.yaw, alpha),
           pitch: lerpAngle(prev.pitch, next.pitch, alpha),
+          hp: alpha < 0.5 ? prev.hp : next.hp,
           flags: alpha < 0.5 ? prev.flags : next.flags,
         };
       }

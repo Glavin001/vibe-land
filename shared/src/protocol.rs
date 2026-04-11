@@ -25,6 +25,7 @@ pub struct NetPlayerState {
     pub vz_cms: i16,
     pub yaw_i16: i16,
     pub pitch_i16: i16,
+    pub hp: u8,
     pub flags: u16,
 }
 
@@ -66,6 +67,7 @@ pub struct FireCmd {
     pub seq: u16,
     pub shot_id: u32,
     pub weapon: u8,
+    pub client_fire_time_us: u64,
     pub client_interp_ms: u16,
     pub dir: [f32; 3],
 }
@@ -180,6 +182,7 @@ pub fn make_net_player_state(
     vel: [f32; 3],
     yaw: f32,
     pitch: f32,
+    hp: u8,
     flags: u16,
 ) -> NetPlayerState {
     NetPlayerState {
@@ -192,6 +195,7 @@ pub fn make_net_player_state(
         vz_cms: meters_to_cms_i16(vel[2]),
         yaw_i16: angle_to_i16(yaw),
         pitch_i16: angle_to_i16(pitch),
+        hp,
         flags,
     }
 }

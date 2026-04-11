@@ -73,8 +73,12 @@ impl SimWorld {
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
-        self.colliders
-            .remove(handle, &mut self.island_manager, &mut self.rigid_bodies, true);
+        self.colliders.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.rigid_bodies,
+            true,
+        );
     }
 
     pub fn collider_user_data(&self, handle: ColliderHandle) -> Option<u128> {
@@ -118,7 +122,11 @@ impl SimWorld {
             self.config.capsule_half_segment,
             self.config.capsule_radius,
         )
-        .translation(vector![position.x as f32, position.y as f32, position.z as f32])
+        .translation(vector![
+            position.x as f32,
+            position.y as f32,
+            position.z as f32
+        ])
         .friction(0.0)
         .active_collision_types(
             ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_FIXED,
@@ -130,8 +138,12 @@ impl SimWorld {
 
     pub fn remove_player_collider(&mut self, handle: ColliderHandle) {
         self.removed_colliders.push(handle);
-        self.colliders
-            .remove(handle, &mut self.island_manager, &mut self.rigid_bodies, true);
+        self.colliders.remove(
+            handle,
+            &mut self.island_manager,
+            &mut self.rigid_bodies,
+            true,
+        );
     }
 
     // ── KCC movement ─────────────────────────────────
@@ -155,15 +167,15 @@ impl SimWorld {
         let dt64 = dt as f64;
 
         let desired = *velocity * dt64;
-        let desired_translation_f32 =
-            vector![desired.x as f32, desired.y as f32, desired.z as f32];
-        let position_f32 =
-            vector![position.x as f32, position.y as f32, position.z as f32];
+        let desired_translation_f32 = vector![desired.x as f32, desired.y as f32, desired.z as f32];
+        let position_f32 = vector![position.x as f32, position.y as f32, position.z as f32];
 
-        let collider = self.colliders.get(collider_handle).expect("missing player collider");
+        let collider = self
+            .colliders
+            .get(collider_handle)
+            .expect("missing player collider");
         let character_shape = collider.shape();
-        let character_pos =
-            Isometry3::translation(position_f32.x, position_f32.y, position_f32.z);
+        let character_pos = Isometry3::translation(position_f32.x, position_f32.y, position_f32.z);
 
         let filter = QueryFilter::default().exclude_collider(collider_handle);
         let query_pipeline = self.broad_phase.as_query_pipeline(
@@ -220,7 +232,9 @@ impl SimWorld {
         collisions: &[CharacterCollision],
         dt: f32,
     ) {
-        let character_shape = self.colliders.get(collider_handle)
+        let character_shape = self
+            .colliders
+            .get(collider_handle)
             .map(|c| c.shape().clone_dyn())
             .expect("missing player collider");
         let filter = QueryFilter::default().exclude_collider(collider_handle);
@@ -304,11 +318,7 @@ mod tests {
 
     fn sim_with_ground() -> SimWorld {
         let mut sim = SimWorld::new(MoveConfig::default());
-        sim.add_static_cuboid(
-            vector![0.0, -0.5, 0.0],
-            vector![50.0, 0.5, 50.0],
-            0,
-        );
+        sim.add_static_cuboid(vector![0.0, -0.5, 0.0], vector![50.0, 0.5, 50.0], 0);
         sim.rebuild_broad_phase();
         sim
     }

@@ -4,7 +4,10 @@ use rapier3d::prelude::ColliderHandle;
 
 use crate::{
     movement::{PhysicsArena, Vec3},
-    protocol::{BlockCell, BlockEditCmd, BlockEditNet, ChunkDiffPacket, ChunkFullPacket, BLOCK_ADD, BLOCK_REMOVE},
+    protocol::{
+        BlockCell, BlockEditCmd, BlockEditNet, ChunkDiffPacket, ChunkFullPacket, BLOCK_ADD,
+        BLOCK_REMOVE,
+    },
 };
 
 pub const CHUNK_SIZE: i32 = 16;
@@ -30,7 +33,9 @@ pub struct VoxelWorld {
 
 impl VoxelWorld {
     pub fn new() -> Self {
-        Self { chunks: HashMap::new() }
+        Self {
+            chunks: HashMap::new(),
+        }
     }
 
     pub fn seed_demo_world(&mut self, arena: &mut PhysicsArena) {
@@ -65,13 +70,19 @@ impl VoxelWorld {
         for y in 1..=wall_h {
             for i in 0..pit_w {
                 // Back wall (z = pit_z + pit_d - 1)
-                self.set_block_deferred(world_to_chunk_and_local(pit_x + i, y, pit_z + pit_d - 1), 3);
+                self.set_block_deferred(
+                    world_to_chunk_and_local(pit_x + i, y, pit_z + pit_d - 1),
+                    3,
+                );
             }
             for j in 0..pit_d {
                 // Left wall (x = pit_x)
                 self.set_block_deferred(world_to_chunk_and_local(pit_x, y, pit_z + j), 3);
                 // Right wall (x = pit_x + pit_w - 1)
-                self.set_block_deferred(world_to_chunk_and_local(pit_x + pit_w - 1, y, pit_z + j), 3);
+                self.set_block_deferred(
+                    world_to_chunk_and_local(pit_x + pit_w - 1, y, pit_z + j),
+                    3,
+                );
             }
         }
 
@@ -90,10 +101,7 @@ impl VoxelWorld {
                     let x = inner_min_x + col as f32 * spacing;
                     let y = 2.0 + layer as f32 * 0.8;
                     let z = inner_min_z + row as f32 * spacing;
-                    arena.spawn_dynamic_ball(
-                        Vec3::new(x, y, z),
-                        radius,
-                    );
+                    arena.spawn_dynamic_ball(Vec3::new(x, y, z), radius);
                 }
             }
         }
@@ -145,7 +153,11 @@ impl VoxelWorld {
         })
     }
 
-    pub fn apply_edit(&mut self, arena: &mut PhysicsArena, cmd: &BlockEditCmd) -> Result<ChunkDiffPacket, String> {
+    pub fn apply_edit(
+        &mut self,
+        arena: &mut PhysicsArena,
+        cmd: &BlockEditCmd,
+    ) -> Result<ChunkDiffPacket, String> {
         let key = ChunkKey {
             x: cmd.chunk[0] as i32,
             y: cmd.chunk[1] as i32,
@@ -192,7 +204,10 @@ impl VoxelWorld {
 
             match cmd.op {
                 BLOCK_ADD => {
-                    let world = chunk_local_to_world_center(key, [cmd.local[0], cmd.local[1], cmd.local[2]]);
+                    let world = chunk_local_to_world_center(
+                        key,
+                        [cmd.local[0], cmd.local[1], cmd.local[2]],
+                    );
                     let handle = arena.add_static_cuboid(
                         world,
                         Vec3::new(0.5, 0.5, 0.5),
@@ -205,14 +220,19 @@ impl VoxelWorld {
                     // Match on chunk+idx portion of user_data (ignore 16-bit material field)
                     let mask: u128 = !0xffff_u128;
                     if let Some(pos) = chunk.colliders.iter().position(|&h| {
-                        arena.collider_user_data(h).map_or(false, |ud| (ud & mask) == (user_data & mask))
+                        arena
+                            .collider_user_data(h)
+                            .map_or(false, |ud| (ud & mask) == (user_data & mask))
                     }) {
                         let handle = chunk.colliders.swap_remove(pos);
                         arena.remove_collider(handle);
                     }
                     // Wake sleeping dynamic bodies near the removed block so they
                     // notice the gap and fall through.
-                    let world = chunk_local_to_world_center(key, [cmd.local[0], cmd.local[1], cmd.local[2]]);
+                    let world = chunk_local_to_world_center(
+                        key,
+                        [cmd.local[0], cmd.local[1], cmd.local[2]],
+                    );
                     arena.wake_bodies_near(world, 2.0);
                 }
                 _ => {}
@@ -243,9 +263,16 @@ impl VoxelWorld {
         out
     }
 
-    fn set_block(&mut self, arena: &mut PhysicsArena, (key, local): (ChunkKey, [u8; 3]), material: u16) {
+    fn set_block(
+        &mut self,
+        arena: &mut PhysicsArena,
+        (key, local): (ChunkKey, [u8; 3]),
+        material: u16,
+    ) {
         let chunk = self.chunks.entry(key).or_default();
-        chunk.blocks.insert(pack_local_index(local[0], local[1], local[2]), material);
+        chunk
+            .blocks
+            .insert(pack_local_index(local[0], local[1], local[2]), material);
         chunk.version += 1;
         let _ = self.rebuild_chunk_colliders(arena, key);
     }
@@ -254,7 +281,9 @@ impl VoxelWorld {
     /// after bulk placement is complete.
     fn set_block_deferred(&mut self, (key, local): (ChunkKey, [u8; 3]), material: u16) {
         let chunk = self.chunks.entry(key).or_default();
-        chunk.blocks.insert(pack_local_index(local[0], local[1], local[2]), material);
+        chunk
+            .blocks
+            .insert(pack_local_index(local[0], local[1], local[2]), material);
         chunk.version += 1;
     }
 
@@ -267,7 +296,11 @@ impl VoxelWorld {
         }
     }
 
-    fn rebuild_chunk_colliders(&mut self, arena: &mut PhysicsArena, key: ChunkKey) -> Result<(), String> {
+    fn rebuild_chunk_colliders(
+        &mut self,
+        arena: &mut PhysicsArena,
+        key: ChunkKey,
+    ) -> Result<(), String> {
         let Some(chunk) = self.chunks.get_mut(&key) else {
             return Ok(());
         };
@@ -282,7 +315,11 @@ impl VoxelWorld {
             }
             let [lx, ly, lz] = unpack_local_index(idx);
             let world = chunk_local_to_world_center(key, [lx, ly, lz]);
-            let handle = arena.add_static_cuboid(world, Vec3::new(0.5, 0.5, 0.5), encode_block_user_data(key, idx, material));
+            let handle = arena.add_static_cuboid(
+                world,
+                Vec3::new(0.5, 0.5, 0.5),
+                encode_block_user_data(key, idx, material),
+            );
             chunk.colliders.push(handle);
         }
 
@@ -334,7 +371,11 @@ fn pack_local_index(x: u8, y: u8, z: u8) -> u16 {
 }
 
 fn unpack_local_index(v: u16) -> [u8; 3] {
-    [((v >> 8) & 0x0f) as u8, ((v >> 4) & 0x0f) as u8, (v & 0x0f) as u8]
+    [
+        ((v >> 8) & 0x0f) as u8,
+        ((v >> 4) & 0x0f) as u8,
+        (v & 0x0f) as u8,
+    ]
 }
 
 fn div_floor(a: i32, b: i32) -> i32 {
@@ -348,14 +389,18 @@ fn div_floor(a: i32, b: i32) -> i32 {
 
 fn mod_floor(a: i32, b: i32) -> i32 {
     let r = a % b;
-    if r < 0 { r + b } else { r }
+    if r < 0 {
+        r + b
+    } else {
+        r
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{BLOCK_ADD, BLOCK_REMOVE, BlockEditCmd};
     use crate::movement::MoveConfig;
+    use crate::protocol::{BlockEditCmd, BLOCK_ADD, BLOCK_REMOVE};
 
     fn make_arena() -> PhysicsArena {
         PhysicsArena::new(MoveConfig::default())
@@ -443,7 +488,14 @@ mod tests {
     #[test]
     fn world_to_chunk_and_local_negative_minus_one() {
         let (key, local) = world_to_chunk_and_local(-1, -1, -1);
-        assert_eq!(key, ChunkKey { x: -1, y: -1, z: -1 });
+        assert_eq!(
+            key,
+            ChunkKey {
+                x: -1,
+                y: -1,
+                z: -1
+            }
+        );
         assert_eq!(local, [15, 15, 15]);
     }
 
@@ -465,10 +517,7 @@ mod tests {
 
     #[test]
     fn chunk_local_to_world_center_origin_chunk() {
-        let center = chunk_local_to_world_center(
-            ChunkKey { x: 0, y: 0, z: 0 },
-            [0, 0, 0],
-        );
+        let center = chunk_local_to_world_center(ChunkKey { x: 0, y: 0, z: 0 }, [0, 0, 0]);
         assert!((center.x - 0.5).abs() < 1e-5);
         assert!((center.y - 0.5).abs() < 1e-5);
         assert!((center.z - 0.5).abs() < 1e-5);
@@ -476,10 +525,7 @@ mod tests {
 
     #[test]
     fn chunk_local_to_world_center_offset_chunk() {
-        let center = chunk_local_to_world_center(
-            ChunkKey { x: 1, y: 0, z: -1 },
-            [3, 5, 7],
-        );
+        let center = chunk_local_to_world_center(ChunkKey { x: 1, y: 0, z: -1 }, [3, 5, 7]);
         // world x = 1*16 + 3 + 0.5 = 19.5
         assert!((center.x - 19.5).abs() < 1e-5);
         // world y = 0*16 + 5 + 0.5 = 5.5
@@ -498,7 +544,9 @@ mod tests {
         // Insert a block to create chunk at (0,0,0) with version 1
         let (key, local) = world_to_chunk_and_local(0, 0, 0);
         let chunk = world.chunks.entry(key).or_default();
-        chunk.blocks.insert(pack_local_index(local[0], local[1], local[2]), 1);
+        chunk
+            .blocks
+            .insert(pack_local_index(local[0], local[1], local[2]), 1);
         chunk.version = 1;
 
         let cmd = BlockEditCmd {
@@ -628,14 +676,22 @@ mod tests {
         };
         world.apply_edit(&mut arena, &cmd2).unwrap();
 
-        let packet = world.chunk_full_packet(ChunkKey { x: 0, y: 0, z: 0 }).unwrap();
+        let packet = world
+            .chunk_full_packet(ChunkKey { x: 0, y: 0, z: 0 })
+            .unwrap();
         assert_eq!(packet.chunk, [0, 0, 0]);
         assert_eq!(packet.version, 2);
         assert_eq!(packet.blocks.len(), 2);
 
         // Check both blocks are present (order may vary)
-        let has_block_1 = packet.blocks.iter().any(|b| b.x == 1 && b.y == 2 && b.z == 3 && b.material == 10);
-        let has_block_2 = packet.blocks.iter().any(|b| b.x == 4 && b.y == 5 && b.z == 6 && b.material == 20);
+        let has_block_1 = packet
+            .blocks
+            .iter()
+            .any(|b| b.x == 1 && b.y == 2 && b.z == 3 && b.material == 10);
+        let has_block_2 = packet
+            .blocks
+            .iter()
+            .any(|b| b.x == 4 && b.y == 5 && b.z == 6 && b.material == 20);
         assert!(has_block_1, "first block missing");
         assert!(has_block_2, "second block missing");
     }
@@ -643,7 +699,13 @@ mod tests {
     #[test]
     fn chunk_full_packet_missing_chunk_returns_none() {
         let world = VoxelWorld::new();
-        assert!(world.chunk_full_packet(ChunkKey { x: 99, y: 99, z: 99 }).is_none());
+        assert!(world
+            .chunk_full_packet(ChunkKey {
+                x: 99,
+                y: 99,
+                z: 99
+            })
+            .is_none());
     }
 }
 
@@ -660,16 +722,20 @@ mod ball_pit_tests {
 
         let snapshot = arena.snapshot_dynamic_bodies();
         eprintln!("Dynamic bodies count: {}", snapshot.len());
-        for (id, pos, _quat, he, shape_type) in &snapshot {
+        for (id, pos, _quat, he, _vel, shape_type) in &snapshot {
             if *shape_type == 1 {
                 eprintln!("Ball {}: pos={:?} he={:?}", id, pos, he);
             }
         }
         // Should have balls (128 = 8*8*2) + possibly the existing box
-        assert!(snapshot.len() > 10, "Expected many dynamic bodies, got {}", snapshot.len());
+        assert!(
+            snapshot.len() > 10,
+            "Expected many dynamic bodies, got {}",
+            snapshot.len()
+        );
 
         // Check balls are above ground
-        for (_, pos, _, _, shape_type) in &snapshot {
+        for (_, pos, _, _, _, shape_type) in &snapshot {
             if *shape_type == 1 {
                 assert!(pos[1] > 0.5, "Ball at y={} is below ground", pos[1]);
             }
@@ -694,10 +760,16 @@ mod ball_pit_physics_tests {
         }
 
         let snapshot = arena.snapshot_dynamic_bodies();
-        let balls: Vec<_> = snapshot.iter().filter(|s| s.4 == 1).collect();
-        eprintln!("After 5s: {} balls remain above y=0", balls.iter().filter(|b| b.1[1] > 0.0).count());
-        eprintln!("Balls below y=0: {}", balls.iter().filter(|b| b.1[1] < 0.0).count());
-        
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.5 == 1).collect();
+        eprintln!(
+            "After 5s: {} balls remain above y=0",
+            balls.iter().filter(|b| b.1[1] > 0.0).count()
+        );
+        eprintln!(
+            "Balls below y=0: {}",
+            balls.iter().filter(|b| b.1[1] < 0.0).count()
+        );
+
         // Sample some positions
         for b in balls.iter().take(5) {
             eprintln!("Ball {}: y={:.3}", b.0, b.1[1]);

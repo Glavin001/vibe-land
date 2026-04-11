@@ -204,6 +204,27 @@ describe('encodeInputBundle', () => {
   });
 });
 
+describe('encodeFirePacket', () => {
+  it('encodes fire timing and direction', () => {
+    const fire: FireCmd = {
+      seq: 9,
+      shotId: 1234,
+      weapon: 1,
+      clientFireTimeUs: 9_876_543,
+      clientInterpMs: 66,
+      dir: [0, 0, 1],
+    };
+    const encoded = encodeFirePacket(fire);
+    const view = new DataView(encoded.buffer);
+    expect(encoded.length).toBe(24);
+    expect(view.getUint16(1, true)).toBe(9);
+    expect(view.getUint32(3, true)).toBe(1234);
+    expect(view.getUint8(7)).toBe(1);
+    expect(view.getUint32(8, true)).toBe(9_876_543);
+    expect(view.getUint16(16, true)).toBe(66);
+  });
+});
+
 // ──────────────────────────────────────────────
 // Snapshot encoding helpers (build binary manually)
 // ──────────────────────────────────────────────
@@ -215,7 +236,7 @@ function buildSnapshotBinary(opts: {
   players?: NetPlayerState[];
 }): Uint8Array {
   const players = opts.players ?? [];
-  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + players.length * 28;
+  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + 2 + players.length * 29;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -233,6 +254,7 @@ function buildSnapshotBinary(opts: {
   view.setUint16(o, players.length, true); o += 2;
   view.setUint16(o, 0, true); o += 2; // projectile count
   view.setUint16(o, 0, true); o += 2; // dynamic body count
+  view.setUint16(o, 0, true); o += 2; // vehicle count
 
   for (const p of players) {
     view.setUint32(o, p.id, true); o += 4;
@@ -244,6 +266,7 @@ function buildSnapshotBinary(opts: {
     view.setInt16(o, p.vzCms, true); o += 2;
     view.setInt16(o, p.yawI16, true); o += 2;
     view.setInt16(o, p.pitchI16, true); o += 2;
+    view.setUint8(o, p.hp); o += 1;
     view.setUint16(o, p.flags, true); o += 2;
   }
 
@@ -260,8 +283,8 @@ describe('snapshot decode', () => {
 
   it('decodes snapshot with multiple players', () => {
     const players: NetPlayerState[] = [
-      { id: 1, pxMm: 5000, pyMm: 1000, pzMm: 3000, vxCms: 100, vyCms: 0, vzCms: 200, yawI16: 1000, pitchI16: -500, flags: 1 },
-      { id: 2, pxMm: -5000, pyMm: 2000, pzMm: -3000, vxCms: -100, vyCms: 50, vzCms: -200, yawI16: -1000, pitchI16: 500, flags: 0 },
+      { id: 1, pxMm: 5000, pyMm: 1000, pzMm: 3000, vxCms: 100, vyCms: 0, vzCms: 200, yawI16: 1000, pitchI16: -500, hp: 90, flags: 1 },
+      { id: 2, pxMm: -5000, pyMm: 2000, pzMm: -3000, vxCms: -100, vyCms: 50, vzCms: -200, yawI16: -1000, pitchI16: 500, hp: 55, flags: 0 },
     ];
     const binary = buildSnapshotBinary({
       serverTick: 42,
@@ -276,6 +299,7 @@ describe('snapshot decode', () => {
     expect(packet.playerStates).toHaveLength(2);
     expect(packet.playerStates[0].id).toBe(1);
     expect(packet.playerStates[0].pxMm).toBe(5000);
+    expect(packet.playerStates[0].hp).toBe(90);
     expect(packet.playerStates[1].id).toBe(2);
     expect(packet.playerStates[1].pxMm).toBe(-5000);
   });
@@ -283,7 +307,7 @@ describe('snapshot decode', () => {
   it('preserves position precision (millimeters)', () => {
     const player: NetPlayerState = {
       id: 1, pxMm: 12345, pyMm: -6789, pzMm: 1, vxCms: 0, vyCms: 0, vzCms: 0,
-      yawI16: 0, pitchI16: 0, flags: 0,
+      yawI16: 0, pitchI16: 0, hp: 77, flags: 0,
     };
     const binary = buildSnapshotBinary({ players: [player] });
     const packet = decodeServerDatagramPacket(binary);
@@ -291,6 +315,7 @@ describe('snapshot decode', () => {
     expect(packet.playerStates[0].pxMm).toBe(12345);
     expect(packet.playerStates[0].pyMm).toBe(-6789);
     expect(packet.playerStates[0].pzMm).toBe(1);
+    expect(packet.playerStates[0].hp).toBe(77);
   });
 });
 

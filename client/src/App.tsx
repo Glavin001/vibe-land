@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { GameScene } from './scene/GameScene';
+import type { CrosshairAimState } from './scene/aimTargeting';
 import { DebugOverlay } from './ui/DebugOverlay';
 import { useDebugStats } from './ui/useDebugStats';
 
@@ -7,23 +8,39 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState('Click to join');
+  const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
 
   const handleConnect = useCallback(() => {
     setConnected(true);
+    setCrosshairState('idle');
     setStatus('Connecting...');
   }, []);
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`Player #${id} — WASD move, mouse look, Space jump, left click remove, right click place, 1/2 switch block`);
+    setStatus(`Player #${id} — WASD move, mouse look, hold left click fire, Q remove, F place, 1/2 switch block`);
   }, []);
 
   const handleDisconnect = useCallback(() => {
     setStatus('Disconnected — click to rejoin');
     setConnected(false);
     setPlayerId(0);
+    setCrosshairState('idle');
   }, []);
+
+  const crosshairColor =
+    crosshairState === 'head'
+      ? 'rgba(255, 36, 36, 0.98)'
+      : crosshairState === 'body'
+        ? 'rgba(255, 92, 92, 0.96)'
+        : 'rgba(255, 255, 255, 0.9)';
+  const crosshairGlow =
+    crosshairState === 'idle'
+      ? 'rgba(255, 255, 255, 0.18)'
+      : crosshairState === 'head'
+        ? 'rgba(255, 48, 48, 0.55)'
+        : 'rgba(255, 96, 96, 0.45)';
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -73,6 +90,7 @@ export function App() {
             transform: 'translate(-50%, -50%)',
             pointerEvents: 'none',
             zIndex: 6,
+            filter: `drop-shadow(0 0 6px ${crosshairGlow})`,
           }}
         >
           <div
@@ -83,7 +101,7 @@ export function App() {
               width: 2,
               height: '100%',
               transform: 'translateX(-50%)',
-              background: 'rgba(255,255,255,0.9)',
+              background: crosshairColor,
             }}
           />
           <div
@@ -94,7 +112,7 @@ export function App() {
               width: '100%',
               height: 2,
               transform: 'translateY(-50%)',
-              background: 'rgba(255,255,255,0.9)',
+              background: crosshairColor,
             }}
           />
         </div>
@@ -104,6 +122,7 @@ export function App() {
         <GameScene
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
+          onAimStateChange={setCrosshairState}
           playerId={playerId}
           onDebugFrame={updateFrame}
           onSnapshot={recordSnapshot}
