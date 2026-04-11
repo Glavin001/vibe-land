@@ -36,7 +36,10 @@ type ChunkState = {
 export class ClientVoxelWorld {
   private readonly chunks = new Map<string, ChunkState>();
 
-  constructor(private readonly sim: WasmSimWorld) {}
+  constructor(
+    private readonly sim: WasmSimWorld,
+    private readonly syncColliders = true,
+  ) {}
 
   getChunkVersion(chunk: ChunkKey): number {
     return this.chunks.get(keyToString(chunk))?.version ?? 0;
@@ -69,7 +72,7 @@ export class ClientVoxelWorld {
     const key = packet.chunk;
     const id = keyToString(key);
     const existing = this.chunks.get(id);
-    if (existing) {
+    if (existing && this.syncColliders) {
       for (const colId of existing.blockColliders.values()) {
         this.sim.removeCuboid(colId);
       }
@@ -87,13 +90,17 @@ export class ClientVoxelWorld {
       if (block.material === 0) continue;
       const idx = packLocalIndex(block.x, block.y, block.z);
       chunk.blocks.set(idx, block.material);
-      const center = chunkLocalToWorldCenter(key, [block.x, block.y, block.z]);
-      const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
-      chunk.blockColliders.set(idx, colId);
+      if (this.syncColliders) {
+        const center = chunkLocalToWorldCenter(key, [block.x, block.y, block.z]);
+        const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
+        chunk.blockColliders.set(idx, colId);
+      }
     }
 
     this.chunks.set(id, chunk);
-    this.sim.rebuildBroadPhase();
+    if (this.syncColliders) {
+      this.sim.rebuildBroadPhase();
+    }
   }
 
   applyChunkDiff(packet: ChunkDiffPacket): void {
@@ -149,7 +156,9 @@ export class ClientVoxelWorld {
     }
 
     this.chunks.set(id, chunk);
-    this.sim.rebuildBroadPhase();
+    if (this.syncColliders) {
+      this.sim.rebuildBroadPhase();
+    }
   }
 
   /**
@@ -171,7 +180,9 @@ export class ClientVoxelWorld {
     this._applySingleEdit(chunk, cmd.op, idx, cmd.local, cmd.material);
     chunk.pending.push({ cmd, prevMaterial });
 
-    this.sim.rebuildBroadPhase();
+    if (this.syncColliders) {
+      this.sim.rebuildBroadPhase();
+    }
   }
 
   buildEditRequest(worldX: number, worldY: number, worldZ: number, op: number, material: number): BlockEditCmd {
@@ -207,14 +218,16 @@ export class ClientVoxelWorld {
   ): void {
     if (op === BLOCK_REMOVE) {
       chunk.blocks.delete(idx);
-      const colId = chunk.blockColliders.get(idx);
-      if (colId !== undefined) {
-        this.sim.removeCuboid(colId);
-        chunk.blockColliders.delete(idx);
+      if (this.syncColliders) {
+        const colId = chunk.blockColliders.get(idx);
+        if (colId !== undefined) {
+          this.sim.removeCuboid(colId);
+          chunk.blockColliders.delete(idx);
+        }
       }
     } else if (op === BLOCK_ADD) {
       chunk.blocks.set(idx, material);
-      if (!chunk.blockColliders.has(idx)) {
+      if (this.syncColliders && !chunk.blockColliders.has(idx)) {
         const center = chunkLocalToWorldCenter(chunk.key, local);
         const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
         chunk.blockColliders.set(idx, colId);
@@ -229,15 +242,17 @@ export class ClientVoxelWorld {
       if (prevMaterial === 0) {
         // Block did not exist before — remove the optimistically-added block.
         chunk.blocks.delete(idx);
-        const colId = chunk.blockColliders.get(idx);
-        if (colId !== undefined) {
-          this.sim.removeCuboid(colId);
-          chunk.blockColliders.delete(idx);
+        if (this.syncColliders) {
+          const colId = chunk.blockColliders.get(idx);
+          if (colId !== undefined) {
+            this.sim.removeCuboid(colId);
+            chunk.blockColliders.delete(idx);
+          }
         }
       } else {
         // Block existed before — restore it.
         chunk.blocks.set(idx, prevMaterial);
-        if (!chunk.blockColliders.has(idx)) {
+        if (this.syncColliders && !chunk.blockColliders.has(idx)) {
           const center = chunkLocalToWorldCenter(chunk.key, cmd.local);
           const colId = this.sim.addCuboid(center.x, center.y, center.z, 0.5, 0.5, 0.5);
           chunk.blockColliders.set(idx, colId);

@@ -492,6 +492,7 @@ export class NetcodeTestScenario {
         vzCms: Math.round(player.velocity[2] * 100),
         yawI16: angleToI16(player.yaw),
         pitchI16: angleToI16(player.pitch),
+        hp: 100,
         flags: player.onGround ? FLAG_ON_GROUND : 0,
       });
     }
@@ -505,6 +506,7 @@ export class NetcodeTestScenario {
       playerStates,
       projectileStates: [],
       dynamicBodyStates: [],
+      vehicleStates: [],
     };
   }
 
@@ -552,6 +554,7 @@ export function makeNetState(opts: {
   velocity?: [number, number, number];
   yaw?: number;
   pitch?: number;
+  hp?: number;
   flags?: number;
 }): NetPlayerState {
   const pos = opts.position ?? [0, 0, 0];
@@ -566,6 +569,7 @@ export function makeNetState(opts: {
     vzCms: Math.round(vel[2] * 100),
     yawI16: angleToI16(opts.yaw ?? 0),
     pitchI16: angleToI16(opts.pitch ?? 0),
+    hp: opts.hp ?? 100,
     flags: opts.flags ?? 0,
   };
 }
@@ -584,6 +588,7 @@ export function makeSnapshot(opts: {
     playerStates: opts.players,
     projectileStates: [],
     dynamicBodyStates: [],
+    vehicleStates: [],
   };
 }
 

@@ -38,6 +38,11 @@ export const PKT_PONG = 111;
 export const WEAPON_HITSCAN = 1;
 export const WEAPON_ROCKET = 2;
 
+// ── Hit zones ───────────────────────────────────
+export const HIT_ZONE_NONE = 0;
+export const HIT_ZONE_BODY = 1;
+export const HIT_ZONE_HEAD = 2;
+
 // ── Block operations ────────────────────────────
 export const BLOCK_ADD = 1;
 export const BLOCK_REMOVE = 2;

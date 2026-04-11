@@ -65,7 +65,12 @@ impl DynamicArena {
         self.sim.rebuild_broad_phase();
     }
 
-    pub fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) -> ColliderHandle {
+    pub fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
         self.sim.add_static_cuboid(center, half_extents, user_data)
     }
 
@@ -88,7 +93,11 @@ impl DynamicArena {
                 let dy = pos.y - center.y;
                 let dz = pos.z - center.z;
                 if dx * dx + dy * dy + dz * dz < r2 {
-                    self.sim.island_manager.wake_up(&mut self.sim.rigid_bodies, db.body_handle, true);
+                    self.sim.island_manager.wake_up(
+                        &mut self.sim.rigid_bodies,
+                        db.body_handle,
+                        true,
+                    );
                 }
             }
         }
@@ -111,11 +120,16 @@ impl DynamicArena {
             .restitution(0.3)
             .friction(0.6)
             .density(2.0)
-            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2))
+            .collision_groups(InteractionGroups::new(
+                Group::GROUP_2,
+                Group::GROUP_1 | Group::GROUP_2,
+            ))
             .build();
-        let collider_handle =
-            self.sim.colliders
-                .insert_with_parent(collider, body_handle, &mut self.sim.rigid_bodies);
+        let collider_handle = self.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.sim.rigid_bodies,
+        );
 
         self.dynamic_bodies.insert(
             id,
@@ -145,11 +159,16 @@ impl DynamicArena {
             .restitution(0.6)
             .friction(0.2)
             .density(1.0)
-            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2))
+            .collision_groups(InteractionGroups::new(
+                Group::GROUP_2,
+                Group::GROUP_1 | Group::GROUP_2,
+            ))
             .build();
-        let collider_handle =
-            self.sim.colliders
-                .insert_with_parent(collider, body_handle, &mut self.sim.rigid_bodies);
+        let collider_handle = self.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.sim.rigid_bodies,
+        );
 
         self.dynamic_bodies.insert(
             id,
@@ -184,7 +203,9 @@ impl DynamicArena {
 
     /// Returns `(id, position, quaternion [x,y,z,w], half_extents, linvel, shape_type)`
     /// for each dynamic body.
-    pub fn snapshot_dynamic_bodies(&self) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
+    pub fn snapshot_dynamic_bodies(
+        &self,
+    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
         let mut out = Vec::with_capacity(self.dynamic_bodies.len());
         for (&id, db) in &self.dynamic_bodies {
             if let Some(rb) = self.sim.rigid_bodies.get(db.body_handle) {

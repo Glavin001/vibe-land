@@ -4,13 +4,17 @@ import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import type {
   BlockEditCmd,
   DynamicBodyStateMeters,
+  FireCmd,
   InputCmd,
   NetPlayerState,
   NetVehicleState,
   ServerPacket,
 } from '../net/protocol';
+import { netPlayerStateToMeters } from '../net/protocol';
 
 export type { RemotePlayer };
+
+const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
 
 export type ConnectionState = {
   socket: unknown;
@@ -75,6 +79,7 @@ export function useGameConnection(
       },
       onDisconnect: () => onDisconnectRef.current(),
       onLocalSnapshot: (ackInputSeq, state) => {
+        stateRef.current.localPosition = netPlayerStateToMeters(state).position;
         onLocalSnapshotRef.current?.(ackInputSeq, state);
       },
       onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
@@ -84,7 +89,9 @@ export function useGameConnection(
         onServerPacketRef.current?.(packet);
       },
       onPacket: (packet) => {
-        onServerPacketRef.current?.(packet);
+        if (packet.type !== 'chunkFull' && packet.type !== 'chunkDiff') {
+          onServerPacketRef.current?.(packet);
+        }
         // Sync ConnectionState ref for GameWorld backward compat
         stateRef.current.latestServerTick = client.latestServerTick;
         stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
@@ -100,19 +107,27 @@ export function useGameConnection(
     clientRef.current = client;
 
     // Periodic ping for RTT measurement
-    const pingInterval = setInterval(() => {
-      client.ping();
-    }, 2000);
+    const pingInterval = IS_LOCAL_PREVIEW
+      ? null
+      : setInterval(() => {
+          client.ping();
+        }, 2000);
 
-    const matchId = 'default';
-    const identity = 'player-' + Math.random().toString(36).slice(2, 8);
-    const token = 'mvp-token';
-    const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsUrl = `${wsProto}://${window.location.hostname}:${window.location.port || '5555'}/ws/${matchId}?identity=${identity}&token=${token}`;
-    void client.connectWithFallback(matchId, wsUrl);
+    if (IS_LOCAL_PREVIEW) {
+      void client.connectLocalPreview();
+    } else {
+      const matchId = 'default';
+      const identity = 'player-' + Math.random().toString(36).slice(2, 8);
+      const token = 'mvp-token';
+      const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const wsUrl = `${wsProto}://${window.location.hostname}:${window.location.port || '5555'}/ws/${matchId}?identity=${identity}&token=${token}`;
+      void client.connectWithFallback(matchId, wsUrl);
+    }
 
     return () => {
-      clearInterval(pingInterval);
+      if (pingInterval) {
+        clearInterval(pingInterval);
+      }
       client.disconnect();
       clientRef.current = null;
     };
@@ -120,6 +135,10 @@ export function useGameConnection(
 
   const sendInputs = useCallback((cmds: InputCmd[]) => {
     clientRef.current?.sendInputs(cmds);
+  }, []);
+
+  const sendFire = useCallback((cmd: FireCmd) => {
+    clientRef.current?.sendFire(cmd);
   }, []);
 
   const sendBlockEdit = useCallback((cmd: BlockEditCmd) => {
@@ -134,5 +153,5 @@ export function useGameConnection(
     clientRef.current?.sendVehicleExit(vehicleId);
   }, []);
 
-  return { stateRef, ready, sendInputs, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
+  return { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
 }

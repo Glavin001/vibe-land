@@ -1,5 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 
+use rapier3d::prelude::{point, Ball, Capsule, Isometry, Ray, RayCast, Vector};
+
+const HEAD_CENTER_OFFSET_Y: f32 = 0.75;
+const HEAD_RADIUS: f32 = 0.22;
+
 #[derive(Clone, Copy, Debug)]
 pub struct HistoricalCapsule {
     pub server_tick: u32,
@@ -21,6 +26,19 @@ pub struct InterpolatedCapsule {
 pub struct HitResult {
     pub victim_id: u32,
     pub distance: f32,
+    pub zone: HitZone,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HitZone {
+    Body,
+    Head,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlayerHit {
+    pub distance: f32,
+    pub zone: HitZone,
 }
 
 pub struct LagCompHistory {
@@ -57,52 +75,67 @@ impl LagCompHistory {
         shooter_id: u32,
         origin: [f32; 3],
         dir: [f32; 3],
-        estimated_one_way_ms: u32,
-        server_time_ms: u32,
-        client_interp_ms: u32,
-        world_toi: Option<f32>,
+        target_time_ms: u32,
+        blocker_toi: Option<f32>,
     ) -> Option<HitResult> {
         let mut dir = dir;
         normalize_in_place(&mut dir);
-
-        let rewind_time_ms = server_time_ms
-            .saturating_sub(estimated_one_way_ms)
-            .saturating_sub(client_interp_ms);
 
         let mut best: Option<HitResult> = None;
         for (&victim_id, history) in &self.per_player {
             if victim_id == shooter_id {
                 continue;
             }
-            let Some(capsule) = sample_capsule(history, rewind_time_ms) else {
+            let Some(capsule) = sample_capsule(history, target_time_ms) else {
                 continue;
             };
-            if let Some(toi) = ray_capsule_intersection(origin, dir, capsule.center, capsule.half_segment, capsule.radius) {
-                if toi < 0.0 {
-                    continue;
-                }
-                if world_toi.map(|value| value < toi).unwrap_or(false) {
-                    continue;
-                }
-                if best.map(|best_hit| toi < best_hit.distance).unwrap_or(true) {
-                    best = Some(HitResult {
-                        victim_id,
-                        distance: toi,
-                    });
-                }
+            let Some(hit) = classify_player_hitscan(
+                origin,
+                dir,
+                capsule.center,
+                capsule.half_segment,
+                capsule.radius,
+                blocker_toi,
+            ) else {
+                continue;
+            };
+            if best
+                .map(|best_hit| hit.distance < best_hit.distance)
+                .unwrap_or(true)
+            {
+                best = Some(HitResult {
+                    victim_id,
+                    distance: hit.distance,
+                    zone: hit.zone,
+                });
             }
         }
 
         best
     }
+
+    pub fn sample_player(
+        &self,
+        player_id: u32,
+        target_time_ms: u32,
+    ) -> Option<InterpolatedCapsule> {
+        let history = self.per_player.get(&player_id)?;
+        sample_capsule(history, target_time_ms)
+    }
 }
 
-fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_ms: u32) -> Option<InterpolatedCapsule> {
+fn sample_capsule(
+    queue: &VecDeque<HistoricalCapsule>,
+    target_time_ms: u32,
+) -> Option<InterpolatedCapsule> {
     if queue.is_empty() {
         return None;
     }
     if queue.len() == 1 {
         let only = queue[0];
+        if !only.alive {
+            return None;
+        }
         return Some(InterpolatedCapsule {
             center: only.center,
             radius: only.radius,
@@ -114,6 +147,9 @@ fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_ms: u32) -> O
     for &next in queue.iter().skip(1) {
         if target_time_ms <= next.server_time_ms {
             if next.server_time_ms == prev.server_time_ms {
+                if !next.alive {
+                    return None;
+                }
                 return Some(InterpolatedCapsule {
                     center: next.center,
                     radius: next.radius,
@@ -121,7 +157,11 @@ fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_ms: u32) -> O
                 });
             }
             let span = (next.server_time_ms - prev.server_time_ms) as f32;
-            let t = ((target_time_ms.saturating_sub(prev.server_time_ms)) as f32 / span).clamp(0.0, 1.0);
+            let t = ((target_time_ms.saturating_sub(prev.server_time_ms)) as f32 / span)
+                .clamp(0.0, 1.0);
+            if (!prev.alive && t < 0.5) || (!next.alive && t >= 0.5) {
+                return None;
+            }
             return Some(InterpolatedCapsule {
                 center: lerp3(prev.center, next.center, t),
                 radius: prev.radius + (next.radius - prev.radius) * t,
@@ -131,6 +171,9 @@ fn sample_capsule(queue: &VecDeque<HistoricalCapsule>, target_time_ms: u32) -> O
         prev = next;
     }
 
+    if !prev.alive {
+        return None;
+    }
     Some(InterpolatedCapsule {
         center: prev.center,
         radius: prev.radius,
@@ -165,53 +208,59 @@ pub fn ray_capsule_intersection(
     half_segment: f32,
     radius: f32,
 ) -> Option<f32> {
-    let a = [center[0], center[1] - half_segment, center[2]];
-    let b = [center[0], center[1] + half_segment, center[2]];
-    let ba = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let oa = [origin[0] - a[0], origin[1] - a[1], origin[2] - a[2]];
-
-    let baba = dot(ba, ba);
-    let bard = dot(ba, dir);
-    let baoa = dot(ba, oa);
-    let rdoa = dot(dir, oa);
-    let oaoa = dot(oa, oa);
-
-    let qa = baba - bard * bard;
-    let qb = baba * rdoa - baoa * bard;
-    let qc = baba * oaoa - baoa * baoa - radius * radius * baba;
-    let h = qb * qb - qa * qc;
-
-    if h >= 0.0 {
-        let t = (-qb - h.sqrt()) / qa.max(1e-6);
-        let y = baoa + t * bard;
-        if t >= 0.0 && y > 0.0 && y < baba {
-            return Some(t);
-        }
-
-        let oc = if y <= 0.0 {
-            oa
-        } else {
-            [origin[0] - b[0], origin[1] - b[1], origin[2] - b[2]]
-        };
-        return ray_sphere_intersection(oc, dir, radius);
-    }
-
-    None
+    let mut dir = dir;
+    normalize_in_place(&mut dir);
+    let ray = Ray::new(
+        point![origin[0], origin[1], origin[2]],
+        Vector::new(dir[0], dir[1], dir[2]),
+    );
+    let shape = Capsule::new_y(half_segment, radius);
+    let pose = Isometry::translation(center[0], center[1], center[2]);
+    shape
+        .cast_ray_and_get_normal(&pose, &ray, f32::MAX, false)
+        .map(|hit| hit.time_of_impact)
 }
 
-fn ray_sphere_intersection(offset_origin: [f32; 3], dir: [f32; 3], radius: f32) -> Option<f32> {
-    let b = dot(offset_origin, dir);
-    let c = dot(offset_origin, offset_origin) - radius * radius;
-    let h = b * b - c;
-    if h < 0.0 {
-        return None;
-    }
-    let t = -b - h.sqrt();
-    (t >= 0.0).then_some(t)
-}
+pub fn classify_player_hitscan(
+    origin: [f32; 3],
+    dir: [f32; 3],
+    center: [f32; 3],
+    half_segment: f32,
+    radius: f32,
+    blocker_toi: Option<f32>,
+) -> Option<PlayerHit> {
+    let mut dir = dir;
+    normalize_in_place(&mut dir);
 
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    let max_toi = blocker_toi.unwrap_or(f32::MAX);
+    let ray = Ray::new(
+        point![origin[0], origin[1], origin[2]],
+        Vector::new(dir[0], dir[1], dir[2]),
+    );
+
+    let body_pose = Isometry::translation(center[0], center[1], center[2]);
+    let body_shape = Capsule::new_y(half_segment, radius);
+    let body_hit = body_shape.cast_ray_and_get_normal(&body_pose, &ray, max_toi, false);
+
+    let head_pose = Isometry::translation(center[0], center[1] + HEAD_CENTER_OFFSET_Y, center[2]);
+    let head_shape = Ball::new(HEAD_RADIUS);
+    let head_hit = head_shape.cast_ray_and_get_normal(&head_pose, &ray, max_toi, false);
+
+    match (body_hit, head_hit) {
+        (None, None) => None,
+        (Some(body), None) => Some(PlayerHit {
+            distance: body.time_of_impact,
+            zone: HitZone::Body,
+        }),
+        (None, Some(head)) => Some(PlayerHit {
+            distance: head.time_of_impact,
+            zone: HitZone::Head,
+        }),
+        (Some(body), Some(head)) => Some(PlayerHit {
+            distance: body.time_of_impact.min(head.time_of_impact),
+            zone: HitZone::Head,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -269,7 +318,11 @@ mod tests {
         queue.push_back(capsule(2, 200, [10.0, 0.0, 0.0]));
 
         let result = sample_capsule(&queue, 150).unwrap();
-        assert!((result.center[0] - 5.0).abs() < 0.01, "midpoint should be 5.0, got {}", result.center[0]);
+        assert!(
+            (result.center[0] - 5.0).abs() < 0.01,
+            "midpoint should be 5.0, got {}",
+            result.center[0]
+        );
     }
 
     #[test]
@@ -278,7 +331,7 @@ mod tests {
         hist.record(1, capsule(1, 100, [0.0, 0.0, 0.0]));
         hist.record(2, capsule(1, 100, [5.0, 0.0, 0.0]));
 
-        let result = hist.resolve_hitscan(1, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0, 100, 0, None);
+        let result = hist.resolve_hitscan(1, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100, None);
         assert!(result.is_some());
         assert_eq!(result.unwrap().victim_id, 2);
     }
@@ -289,26 +342,77 @@ mod tests {
         hist.record(1, capsule(1, 100, [0.0, 0.0, 0.0]));
         hist.record(2, capsule(1, 100, [10.0, 0.0, 0.0]));
 
-        let result = hist.resolve_hitscan(1, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 0, 100, 0, Some(3.0));
+        let result = hist.resolve_hitscan(1, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100, Some(3.0));
         assert!(result.is_none());
     }
 
     #[test]
     fn ray_hits_capsule_body() {
         let result = ray_capsule_intersection(
-            [-5.0, 0.0, 0.0], [1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0], 0.45, 0.35,
+            [-5.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
         );
         assert!(result.is_some());
         let toi = result.unwrap();
-        assert!(toi > 4.0 && toi < 5.0, "toi should be near 4.65, got {}", toi);
+        assert!(
+            toi > 4.0 && toi < 5.0,
+            "toi should be near 4.65, got {}",
+            toi
+        );
     }
 
     #[test]
     fn ray_misses_capsule() {
         let result = ray_capsule_intersection(
-            [-5.0, 10.0, 0.0], [1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0], 0.45, 0.35,
+            [-5.0, 10.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn classify_hitscan_body() {
+        let result = classify_player_hitscan(
+            [0.0, 0.0, -5.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.zone, HitZone::Body);
+    }
+
+    #[test]
+    fn classify_hitscan_head() {
+        let result = classify_player_hitscan(
+            [0.0, 0.75, -5.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.zone, HitZone::Head);
+    }
+
+    #[test]
+    fn classify_hitscan_respects_blocker() {
+        let result = classify_player_hitscan(
+            [0.0, 0.75, -5.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            0.45,
+            0.35,
+            Some(4.0),
         );
         assert!(result.is_none());
     }

@@ -5,6 +5,7 @@ import { GameWorld } from './GameWorld';
 type GameSceneProps = {
   onWelcome: (id: number) => void;
   onDisconnect: () => void;
+  onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
   onSnapshot?: () => void;
@@ -12,7 +13,7 @@ type GameSceneProps = {
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
 
-export function GameScene({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }: GameSceneProps) {
+export function GameScene({ onWelcome, onDisconnect, onAimStateChange, onDebugFrame, onSnapshot }: GameSceneProps) {
   return (
     <Canvas
       style={{ width: '100%', height: '100%' }}
@@ -25,6 +26,7 @@ export function GameScene({ onWelcome, onDisconnect, onDebugFrame, onSnapshot }:
         <GameWorld
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
+          onAimStateChange={onAimStateChange}
           onDebugFrame={onDebugFrame}
           onSnapshot={onSnapshot}
         />

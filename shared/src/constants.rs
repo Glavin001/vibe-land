@@ -35,6 +35,11 @@ pub const PKT_PONG: u8 = 111;
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
 
+// ── Hit zones ───────────────────────────────────
+pub const HIT_ZONE_NONE: u8 = 0;
+pub const HIT_ZONE_BODY: u8 = 1;
+pub const HIT_ZONE_HEAD: u8 = 2;
+
 // ── Block operations ────────────────────────────
 pub const BLOCK_ADD: u8 = 1;
 pub const BLOCK_REMOVE: u8 = 2;

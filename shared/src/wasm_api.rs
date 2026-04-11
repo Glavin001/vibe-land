@@ -7,12 +7,14 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
 use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use vibe_netcode::clock_sync::ServerClockEstimator;
+use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 struct WasmVehicle {
     chassis_body: RigidBodyHandle,
@@ -116,6 +118,12 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = rebuildBroadPhase)]
     pub fn rebuild_broad_phase(&mut self) {
         self.sim.rebuild_broad_phase();
+    }
+
+    /// Flush incremental collider changes into the broad-phase BVH.
+    #[wasm_bindgen(js_name = syncBroadPhase)]
+    pub fn sync_broad_phase(&mut self) {
+        self.sim.sync_broad_phase();
     }
 
     // ── Player management ────────────────────────────
@@ -356,6 +364,49 @@ impl WasmSimWorld {
             self.player_collider,
         ) {
             Some((toi, normal)) => Box::new([toi, normal[0], normal[1], normal[2]]),
+            None => Box::new([]),
+        }
+    }
+
+    /// Classify a ray against a single remote player using the same Rust logic
+    /// the server uses for authoritative body/head resolution.
+    ///
+    /// Returns `[distance, kind]`, where `kind` is `1` for body and `2` for
+    /// head, or an empty array on miss.
+    #[wasm_bindgen(js_name = classifyHitscanPlayer)]
+    pub fn classify_hitscan_player(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        body_x: f32,
+        body_y: f32,
+        body_z: f32,
+        blocker_toi: f32,
+    ) -> Box<[f32]> {
+        let blocker = if blocker_toi.is_finite() {
+            Some(blocker_toi)
+        } else {
+            None
+        };
+        match classify_player_hitscan(
+            [ox, oy, oz],
+            [dx, dy, dz],
+            [body_x, body_y, body_z],
+            self.sim.config.capsule_half_segment,
+            self.sim.config.capsule_radius,
+            blocker,
+        ) {
+            Some(hit) => Box::new([
+                hit.distance,
+                match hit.zone {
+                    HitZone::Body => 1.0,
+                    HitZone::Head => 2.0,
+                },
+            ]),
             None => Box::new([]),
         }
     }
@@ -766,6 +817,45 @@ impl WasmSimWorld {
             r.i as f64, r.j as f64, r.k as f64, r.w as f64,
             v.x as f64, v.y as f64, v.z as f64,
         ])
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmLocalSession {
+    inner: LocalPreviewSession,
+}
+
+#[wasm_bindgen]
+impl WasmLocalSession {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Self {
+        Self {
+            inner: LocalPreviewSession::new(),
+        }
+    }
+
+    pub fn connect(&mut self) {
+        self.inner.connect();
+    }
+
+    pub fn disconnect(&mut self) {
+        self.inner.disconnect();
+    }
+
+    #[wasm_bindgen(js_name = handleClientPacket)]
+    pub fn handle_client_packet(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .handle_client_packet(bytes)
+            .map_err(|err| JsValue::from_str(&err))
+    }
+
+    pub fn tick(&mut self, dt: f32) {
+        self.inner.tick(dt);
+    }
+
+    #[wasm_bindgen(js_name = drainPackets)]
+    pub fn drain_packets(&mut self) -> Box<[u8]> {
+        self.inner.drain_packet_blob().into_boxed_slice()
     }
 }
 

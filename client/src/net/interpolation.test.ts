@@ -82,6 +82,7 @@ describe('PlayerInterpolator', () => {
       velocity: [0, 0, 0],
       yaw,
       pitch: 0,
+      hp: 100,
       flags: 0,
     };
   }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { NetcodeClient } from './netcodeClient';
 import {
   type SnapshotPacket,
+  type ShotResultPacket,
   type WelcomePacket,
   type NetPlayerState,
   metersToMm,
@@ -15,6 +16,7 @@ function makeNetState(opts: {
   velocity?: [number, number, number];
   yaw?: number;
   pitch?: number;
+  hp?: number;
   flags?: number;
 }): NetPlayerState {
   const pos = opts.position ?? [0, 0, 0];
@@ -29,6 +31,7 @@ function makeNetState(opts: {
     vzCms: Math.round(vel[2] * 100),
     yawI16: angleToI16(opts.yaw ?? 0),
     pitchI16: angleToI16(opts.pitch ?? 0),
+    hp: opts.hp ?? 100,
     flags: opts.flags ?? 0,
   };
 }
@@ -58,6 +61,7 @@ function makeSnapshot(opts: {
     playerStates: opts.players,
     projectileStates: [],
     dynamicBodyStates: [],
+    vehicleStates: [],
   };
 }
 
@@ -176,6 +180,22 @@ describe('NetcodeClient', () => {
 
       expect(client.latestServerTick).toBe(100);
     });
+
+    it('stores replicated hp for local and remote players', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 5,
+        players: [
+          makeNetState({ id: 1, hp: 60 }),
+          makeNetState({ id: 2, hp: 25 }),
+        ],
+      }));
+
+      expect(client.localPlayerHp).toBe(60);
+      expect(client.remotePlayers.get(2)?.hp).toBe(25);
+    });
   });
 
   // ──────────────────────────────────────────────
@@ -227,6 +247,31 @@ describe('NetcodeClient', () => {
       });
 
       expect(received).toBe(true);
+    });
+  });
+
+  describe('shot results', () => {
+    it('routes authoritative hit zone to onShotResult callback', () => {
+      let received: ShotResultPacket | null = null;
+      const client = new NetcodeClient({
+        onShotResult: (packet) => {
+          if (packet.type === 'shotResult') {
+            received = packet;
+          }
+        },
+      });
+
+      client.handlePacket({
+        type: 'shotResult',
+        shotId: 7,
+        weapon: 1,
+        confirmed: true,
+        hitPlayerId: 9,
+        hitZone: 2,
+      });
+
+      expect(received).not.toBeNull();
+      expect(received?.hitZone).toBe(2);
     });
   });
 
