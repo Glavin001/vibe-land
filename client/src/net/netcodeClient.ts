@@ -1,7 +1,15 @@
 import { GameSocket } from './gameSocket';
 import { LocalPreviewTransport } from './localPreviewTransport';
 import { WebTransportGameClient } from './webTransportClient';
-import { PlayerInterpolator, ServerClockEstimator, VehicleInterpolator, type PlayerSample, type VehicleSample } from './interpolation';
+import {
+  DynamicBodyInterpolator,
+  PlayerInterpolator,
+  ServerClockEstimator,
+  VehicleInterpolator,
+  type DynamicBodySample,
+  type PlayerSample,
+  type VehicleSample,
+} from './interpolation';
 import {
   encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
@@ -52,11 +60,12 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
-  private static readonly DYNAMIC_BODY_STALE_TICKS = 120;
+  private static readonly DYNAMIC_BODY_STALE_TICKS = 45;
 
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
   readonly vehicleInterpolator: VehicleInterpolator;
+  readonly dynamicBodyInterpolator: DynamicBodyInterpolator;
 
   playerId = 0;
   interpolationDelayMs = 100;
@@ -93,6 +102,7 @@ export class NetcodeClient {
     this.interpolator = new PlayerInterpolator();
     this.serverClock = new ServerClockEstimator();
     this.vehicleInterpolator = new VehicleInterpolator();
+    this.dynamicBodyInterpolator = new DynamicBodyInterpolator();
   }
 
   connect(wsUrl: string): void {
@@ -278,13 +288,24 @@ export class NetcodeClient {
         // Update dynamic bodies BEFORE reconciliation so that input replay
         // collides with the correct (same-tick) collider positions.
         for (const db of packet.dynamicBodyStates) {
-          this.dynamicBodies.set(db.id, netDynamicBodyStateToMeters(db));
+          const meters = netDynamicBodyStateToMeters(db);
+          this.dynamicBodies.set(db.id, meters);
+          this.dynamicBodyInterpolator.push(db.id, {
+            serverTimeUs: packet.serverTimeUs,
+            position: meters.position,
+            quaternion: meters.quaternion,
+            halfExtents: meters.halfExtents,
+            velocity: meters.velocity,
+            angularVelocity: meters.angularVelocity,
+            shapeType: meters.shapeType,
+          });
           this.dynamicBodyLastSeenTick.set(db.id, packet.serverTick);
         }
         for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
           if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
             this.dynamicBodyLastSeenTick.delete(id);
             this.dynamicBodies.delete(id);
+            this.dynamicBodyInterpolator.remove(id);
           }
         }
 
@@ -391,6 +412,11 @@ export class NetcodeClient {
     return this.vehicleInterpolator.sample(id, t);
   }
 
+  sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {
+    const t = renderTimeUs ?? this.getRenderTimeUs();
+    return this.dynamicBodyInterpolator.sample(id, t);
+  }
+
   /** Reset all state (for reconnection). */
   reset(): void {
     this.playerId = 0;
@@ -399,6 +425,7 @@ export class NetcodeClient {
     this.remotePlayers.clear();
     this.dynamicBodies.clear();
     this.dynamicBodyLastSeenTick.clear();
+    this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
   }
 }

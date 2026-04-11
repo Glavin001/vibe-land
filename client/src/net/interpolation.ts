@@ -19,6 +19,16 @@ export type VehicleSample = {
   flags: number;
 };
 
+export type DynamicBodySample = {
+  serverTimeUs: number;
+  position: [number, number, number];
+  quaternion: [number, number, number, number];
+  halfExtents: [number, number, number];
+  velocity: [number, number, number];
+  angularVelocity: [number, number, number];
+  shapeType: number;
+};
+
 export class VehicleInterpolator {
   private readonly byEntity = new Map<number, VehicleSample[]>();
 
@@ -114,6 +124,97 @@ export class VehicleInterpolator {
       ];
     }
     return { ...latest, position: pos, quaternion: quat };
+  }
+}
+
+export class DynamicBodyInterpolator {
+  private readonly byEntity = new Map<number, DynamicBodySample[]>();
+
+  constructor(private readonly maxSamples = 32) {}
+
+  push(entityId: number, sample: DynamicBodySample): void {
+    const queue = this.byEntity.get(entityId) ?? [];
+    queue.push(sample);
+    queue.sort((a, b) => a.serverTimeUs - b.serverTimeUs);
+    while (queue.length > this.maxSamples) {
+      queue.shift();
+    }
+    this.byEntity.set(entityId, queue);
+  }
+
+  remove(entityId: number): void {
+    this.byEntity.delete(entityId);
+  }
+
+  retainOnly(activeIds: Set<number>): void {
+    for (const id of this.byEntity.keys()) {
+      if (!activeIds.has(id)) {
+        this.byEntity.delete(id);
+      }
+    }
+  }
+
+  sample(entityId: number, targetTimeUs: number): DynamicBodySample | null {
+    const queue = this.byEntity.get(entityId);
+    if (!queue || queue.length === 0) return null;
+    if (queue.length === 1 || targetTimeUs <= queue[0].serverTimeUs) {
+      return { ...queue[0] };
+    }
+
+    for (let i = 1; i < queue.length; i += 1) {
+      const prev = queue[i - 1];
+      const next = queue[i];
+      if (targetTimeUs <= next.serverTimeUs) {
+        if (next.serverTimeUs === prev.serverTimeUs) return { ...next };
+        const alpha = clamp01((targetTimeUs - prev.serverTimeUs) / (next.serverTimeUs - prev.serverTimeUs));
+        return {
+          serverTimeUs: targetTimeUs,
+          position: lerpVec3(prev.position, next.position, alpha),
+          quaternion: slerpQuat(prev.quaternion, next.quaternion, alpha),
+          halfExtents: alpha < 0.5 ? prev.halfExtents : next.halfExtents,
+          velocity: lerpVec3(prev.velocity, next.velocity, alpha),
+          angularVelocity: lerpVec3(prev.angularVelocity, next.angularVelocity, alpha),
+          shapeType: alpha < 0.5 ? prev.shapeType : next.shapeType,
+        };
+      }
+    }
+
+    const latest = queue[queue.length - 1];
+    const maxExtrapolateSecs = 0.25;
+    const extrapolateSecs = Math.min(
+      (targetTimeUs - latest.serverTimeUs) / 1_000_000,
+      maxExtrapolateSecs,
+    );
+    if (extrapolateSecs <= 0) return { ...latest };
+
+    const lv = latest.velocity;
+    const av = latest.angularVelocity;
+    const position: [number, number, number] = [
+      latest.position[0] + lv[0] * extrapolateSecs,
+      latest.position[1] + lv[1] * extrapolateSecs,
+      latest.position[2] + lv[2] * extrapolateSecs,
+    ];
+
+    const angSpeed = Math.sqrt(av[0] * av[0] + av[1] * av[1] + av[2] * av[2]);
+    let quaternion = latest.quaternion;
+    if (angSpeed > 0.0001) {
+      const angle = angSpeed * extrapolateSecs;
+      const ax = av[0] / angSpeed;
+      const ay = av[1] / angSpeed;
+      const az = av[2] / angSpeed;
+      const s = Math.sin(angle / 2);
+      const dq: [number, number, number, number] = [ax * s, ay * s, az * s, Math.cos(angle / 2)];
+      const [qx, qy, qz, qw] = quaternion;
+      const [dx, dy, dz, dw] = dq;
+      quaternion = [
+        dw * qx + dx * qw + dy * qz - dz * qy,
+        dw * qy - dx * qz + dy * qw + dz * qx,
+        dw * qz + dx * qy - dy * qx + dz * qw,
+        dw * qw - dx * qx - dy * qy - dz * qz,
+      ];
+    }
+
+    return { ...latest, position, quaternion };
   }
 }
 

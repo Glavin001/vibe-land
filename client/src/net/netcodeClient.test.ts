@@ -93,6 +93,9 @@ function makeDynamicBodyState(opts: {
     vxCms: Math.round(vel[0] * 100),
     vyCms: Math.round(vel[1] * 100),
     vzCms: Math.round(vel[2] * 100),
+    wxMrads: 0,
+    wyMrads: 0,
+    wzMrads: 0,
   };
 }
 
@@ -263,6 +266,7 @@ describe('NetcodeClient', () => {
       }));
 
       expect(client.dynamicBodies.has(7)).toBe(false);
+      expect(client.sampleRemoteDynamicBody(7)).toBeNull();
     });
   });
 
@@ -293,6 +297,30 @@ describe('NetcodeClient', () => {
       client.handlePacket(makeWelcome(1));
 
       expect(client.sampleRemotePlayer(999)).toBeNull();
+    });
+
+    it('interpolates dynamic body samples between snapshots', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [0, 0, 0], velocity: [6, 0, 0] })],
+      }));
+      client.handlePacket(makeSnapshot({
+        serverTick: 12,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [0.2, 0, 0], velocity: [6, 0, 0] })],
+      }));
+
+      const t0 = 10 * Math.round(1_000_000 / 60);
+      const t1 = 12 * Math.round(1_000_000 / 60);
+      const sample = client.sampleRemoteDynamicBody(7, Math.round((t0 + t1) / 2));
+
+      expect(sample).not.toBeNull();
+      expect(sample!.position[0]).toBeGreaterThan(0.05);
+      expect(sample!.position[0]).toBeLessThan(0.15);
     });
   });
 

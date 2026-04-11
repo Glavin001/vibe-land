@@ -266,8 +266,8 @@ impl LocalPreviewSession {
             .arena
             .snapshot_dynamic_bodies()
             .into_iter()
-            .map(|(id, pos, quat, he, vel, shape_type)| {
-                make_net_dynamic_body_state(id, pos, quat, he, vel, shape_type)
+            .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
+                make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type)
             })
             .collect();
         let vehicle_states = self.arena.snapshot_vehicles();
@@ -505,6 +505,9 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
         out.put_i16_le(d.vx_cms);
         out.put_i16_le(d.vy_cms);
         out.put_i16_le(d.vz_cms);
+        out.put_i16_le(d.wx_mrads);
+        out.put_i16_le(d.wy_mrads);
+        out.put_i16_le(d.wz_mrads);
     }
     for v in &pkt.vehicle_states {
         out.put_u32_le(v.id);

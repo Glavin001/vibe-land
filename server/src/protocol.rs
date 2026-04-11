@@ -272,6 +272,9 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(d.vx_cms);
                 out.put_i16_le(d.vy_cms);
                 out.put_i16_le(d.vz_cms);
+                out.put_i16_le(d.wx_mrads);
+                out.put_i16_le(d.wy_mrads);
+                out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
         }
@@ -456,6 +459,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(d.vx_cms);
                 out.put_i16_le(d.vy_cms);
                 out.put_i16_le(d.vz_cms);
+                out.put_i16_le(d.wx_mrads);
+                out.put_i16_le(d.wy_mrads);
+                out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
         }

@@ -744,7 +744,7 @@ mod ball_pit_tests {
 
         let snapshot = arena.snapshot_dynamic_bodies();
         eprintln!("Dynamic bodies count: {}", snapshot.len());
-        for (id, pos, _quat, he, _vel, shape_type) in &snapshot {
+        for (id, pos, _quat, he, _vel, _angvel, shape_type) in &snapshot {
             if *shape_type == 1 {
                 eprintln!("Ball {}: pos={:?} he={:?}", id, pos, he);
             }
@@ -757,7 +757,7 @@ mod ball_pit_tests {
         );
 
         // Check balls are above ground
-        for (_, pos, _, _, _, shape_type) in &snapshot {
+        for (_, pos, _, _, _, _, shape_type) in &snapshot {
             if *shape_type == 1 {
                 assert!(pos[1] > 0.5, "Ball at y={} is below ground", pos[1]);
             }
@@ -782,7 +782,7 @@ mod ball_pit_physics_tests {
         }
 
         let snapshot = arena.snapshot_dynamic_bodies();
-        let balls: Vec<_> = snapshot.iter().filter(|s| s.5 == 1).collect();
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.6 == 1).collect();
         eprintln!(
             "After 5s: {} balls remain above y=0",
             balls.iter().filter(|b| b.1[1] > 0.0).count()

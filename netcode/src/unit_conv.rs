@@ -16,6 +16,14 @@ pub fn cms_to_mps(value: i16) -> f32 {
     value as f32 / 100.0
 }
 
+pub fn rads_to_mrads_i16(value: f32) -> i16 {
+    (value.clamp(-32.767, 32.767) * 1000.0).round() as i16
+}
+
+pub fn mrads_to_rads(value: i16) -> f32 {
+    value as f32 / 1000.0
+}
+
 pub fn angle_to_i16(angle_rad: f32) -> i16 {
     let normalized = angle_rad.rem_euclid(TAU) / TAU;
     let u16_val = (normalized * 65535.0).round() as u16;

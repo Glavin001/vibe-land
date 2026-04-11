@@ -1,4 +1,5 @@
 import { useRef, useEffect } from 'react';
+import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CrosshairAimState } from './aimTargeting';
@@ -22,11 +23,12 @@ import {
   BLOCK_ADD,
   BLOCK_REMOVE,
   FLAG_DEAD,
+  FLAG_IN_VEHICLE,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { InputCmd, NetVehicleState } from '../net/protocol';
+import type { InputCmd, NetVehicleState, VehicleStateMeters } from '../net/protocol';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
@@ -40,12 +42,41 @@ const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
+const LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M = 12.0;
+const VEHICLE_WHEEL_RADIUS_M = 0.35;
+const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
+const LOCAL_VEHICLE_RENDER_POS_SMOOTH_RATE = 24.0;
+const LOCAL_VEHICLE_RENDER_ROT_SMOOTH_RATE = 20.0;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
   network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
-  physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number; velocity: [number, number, number] },
+  physics: {
+    pendingInputs: number;
+    predictionTicks: number;
+    playerCorrectionMagnitude: number;
+    vehicleCorrectionMagnitude: number;
+    dynamicGlobalMaxCorrectionMagnitude: number;
+    dynamicNearPlayerMaxCorrectionMagnitude: number;
+    dynamicInteractiveMaxCorrectionMagnitude: number;
+    dynamicOverThresholdCount: number;
+    dynamicTrackedBodies: number;
+    dynamicInteractiveBodies: number;
+    physicsStepMs: number;
+    velocity: [number, number, number];
+  },
+  vehicle: {
+    id: number;
+    driverConfirmed: boolean;
+    localSpeedMs: number;
+    serverSpeedMs: number;
+    posDeltaM: number;
+    groundedWheels: number;
+    steering: number;
+    engineForce: number;
+    brake: number;
+  },
   position: [number, number, number],
   player: { velocity: [number, number, number]; hp: number; localFlags: number },
 ) => void;
@@ -61,6 +92,22 @@ type GameWorldProps = {
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
+
+type VehicleWheelVisualState = {
+  spinAngle: number;
+  steerAngle: number;
+};
+
+type VehicleRenderState = {
+  lastBodyPosition: [number, number, number] | null;
+  wheels: VehicleWheelVisualState[];
+};
+
+type LocalVehicleVisualPoseState = {
+  vehicleId: number | null;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+};
 
 export function GameWorld({
   onWelcome,
@@ -136,6 +183,12 @@ export function GameWorld({
   const knownVehicleIds = useRef<Set<number>>(new Set());
   const nearestVehicleIdRef = useRef<number | null>(null);
   const smoothCamPos = useRef(new THREE.Vector3()); // smoothed chase camera position
+  const smoothVehicleFocus = useRef(new THREE.Vector3()); // smoothed look-at target for vehicle camera
+  const localVehicleVisualPoseRef = useRef<LocalVehicleVisualPoseState>({
+    vehicleId: null,
+    position: new THREE.Vector3(),
+    quaternion: new THREE.Quaternion(),
+  });
   const vehicleCameraYawOffsetRef = useRef(0);
   const vehicleCameraPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
   const lastVehicleLookAtMsRef = useRef(performance.now());
@@ -170,6 +223,9 @@ export function GameWorld({
       ? [...client.vehicles.entries()].find(([, vs]) => vs.driverId === client.playerId) ?? null
       : null;
     const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
+    const drivenVehicleId = prediction.getDrivenVehicleId();
+    const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
+    const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
     const localControlledVehiclePose = predictedVehiclePose
       ?? (localPreviewVehicleEntry
         ? {
@@ -177,11 +233,40 @@ export function GameWorld({
             quaternion: localPreviewVehicleEntry[1].quaternion,
           }
         : null);
+    let localVehicleRenderPose = localControlledVehiclePose;
+    if (localControlledVehiclePose && drivenVehicleId != null) {
+      const visualPose = localVehicleVisualPoseRef.current;
+      const targetPosition = localControlledVehiclePose.position;
+      const targetQuaternion = localControlledVehiclePose.quaternion;
+      if (visualPose.vehicleId !== drivenVehicleId) {
+        visualPose.vehicleId = drivenVehicleId;
+        visualPose.position.set(targetPosition[0], targetPosition[1], targetPosition[2]);
+        visualPose.quaternion.set(targetQuaternion[0], targetQuaternion[1], targetQuaternion[2], targetQuaternion[3]);
+      } else {
+        const posAlpha = Math.min(frameDelta * LOCAL_VEHICLE_RENDER_POS_SMOOTH_RATE, 1);
+        const rotAlpha = Math.min(frameDelta * LOCAL_VEHICLE_RENDER_ROT_SMOOTH_RATE, 1);
+        visualPose.position.lerp(
+          new THREE.Vector3(targetPosition[0], targetPosition[1], targetPosition[2]),
+          posAlpha,
+        );
+        visualPose.quaternion.slerp(
+          new THREE.Quaternion(targetQuaternion[0], targetQuaternion[1], targetQuaternion[2], targetQuaternion[3]),
+          rotAlpha,
+        );
+      }
+      localVehicleRenderPose = {
+        position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
+        quaternion: [visualPose.quaternion.x, visualPose.quaternion.y, visualPose.quaternion.z, visualPose.quaternion.w],
+      };
+    } else {
+      localVehicleVisualPoseRef.current.vehicleId = null;
+    }
     const isDrivingNow = localControlledVehiclePose !== null;
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot', inputFamilyMode)
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
+    prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -282,6 +367,7 @@ export function GameWorld({
             sendVehicleEnter(vehicleId, 0);
             // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
             smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
+            smoothVehicleFocus.current.set(vs.position[0], vs.position[1] + 1.0, vs.position[2]);
             vehicleCameraYawOffsetRef.current = 0;
             vehicleCameraPitchRef.current = VEHICLE_CAMERA_DEFAULT_PITCH;
             lastVehicleLookAtMsRef.current = now;
@@ -323,10 +409,24 @@ export function GameWorld({
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
+        const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
+        const sceneHit = prediction.raycastScene(
+          [camera.position.x, camera.position.y, camera.position.z],
+          fireDir,
+          CROSSHAIR_MAX_DISTANCE,
+        );
+        if (lastAimStateRef.current === 'idle') {
+          prediction.predictDynamicBodyShot(
+            [camera.position.x, camera.position.y, camera.position.z],
+            fireDir,
+            CROSSHAIR_MAX_DISTANCE,
+            sceneHit?.toi ?? null,
+          );
+        }
         localShotTraceRef.current = createLocalShotTrace(
           camera,
           now,
-          aimDirectionFromAngles(yawRef.current, pitchRef.current),
+          fireDir,
           state.remotePlayers,
           state.remoteInterpolator,
           state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
@@ -338,7 +438,7 @@ export function GameWorld({
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),
           clientInterpMs: Math.round(state.interpolationDelayMs),
-          dir: aimDirectionFromAngles(yawRef.current, pitchRef.current),
+          dir: fireDir,
         });
       }
 
@@ -369,7 +469,7 @@ export function GameWorld({
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
-    const vehiclePoseForCamera = localControlledVehiclePose;
+    const vehiclePoseForCamera = localVehicleRenderPose;
     const predictedPos = IS_LOCAL_PREVIEW ? null : prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
@@ -388,18 +488,24 @@ export function GameWorld({
       const orbitPitch = vehicleCameraPitchRef.current;
       const focusY = chassisPos[1] + 1.0;
       const followDistance = 6.0;
-      const targetX = chassisPos[0] - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
-      const targetY = focusY + Math.sin(orbitPitch) * followDistance + 1.0;
-      const targetZ = chassisPos[2] - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+      const focusSmoothRate = Math.min(frameDelta * 12.0, 1.0);
+      smoothVehicleFocus.current.set(
+        smoothVehicleFocus.current.x + (chassisPos[0] - smoothVehicleFocus.current.x) * focusSmoothRate,
+        smoothVehicleFocus.current.y + (focusY - smoothVehicleFocus.current.y) * focusSmoothRate,
+        smoothVehicleFocus.current.z + (chassisPos[2] - smoothVehicleFocus.current.z) * focusSmoothRate,
+      );
+      const targetX = smoothVehicleFocus.current.x - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+      const targetY = smoothVehicleFocus.current.y + Math.sin(orbitPitch) * followDistance + 1.0;
+      const targetZ = smoothVehicleFocus.current.z - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
 
-      const smoothRate = Math.min(frameDelta * 20.0, 1.0);
+      const smoothRate = Math.min(frameDelta * 18.0, 1.0);
       smoothCamPos.current.set(
         smoothCamPos.current.x + (targetX - smoothCamPos.current.x) * smoothRate,
         smoothCamPos.current.y + (targetY - smoothCamPos.current.y) * smoothRate,
         smoothCamPos.current.z + (targetZ - smoothCamPos.current.z) * smoothRate,
       );
       camera.position.copy(smoothCamPos.current);
-      camera.lookAt(chassisPos[0], focusY, chassisPos[2]);
+      camera.lookAt(smoothVehicleFocus.current);
     } else {
       const eyeHeight = PLAYER_EYE_HEIGHT;
       camera.position.set(pos[0], pos[1] + eyeHeight, pos[2]);
@@ -417,7 +523,7 @@ export function GameWorld({
 
     // Report per-frame debug stats to server (aggregated to 1 Hz)
     const physStats = prediction.getDebugStats();
-    client?.accumulateDebugStats(physStats.correctionMagnitude, physStats.physicsStepMs);
+    client?.accumulateDebugStats(physStats.playerCorrectionMagnitude, physStats.physicsStepMs);
 
     updateLocalShotTraceVisuals(
       localShotTraceRef.current,
@@ -428,6 +534,20 @@ export function GameWorld({
 
     // Debug overlay stats
     if (onDebugFrameRef.current) {
+      const vehicleServerSpeedMs = drivenVehicleState
+        ? Math.hypot(
+            drivenVehicleState.linearVelocity[0],
+            drivenVehicleState.linearVelocity[1],
+            drivenVehicleState.linearVelocity[2],
+          )
+        : 0;
+      const vehiclePosDeltaM = localControlledVehiclePose && drivenVehicleState
+        ? Math.hypot(
+            localControlledVehiclePose.position[0] - drivenVehicleState.position[0],
+            localControlledVehiclePose.position[1] - drivenVehicleState.position[1],
+            localControlledVehiclePose.position[2] - drivenVehicleState.position[2],
+          )
+        : 0;
       onDebugFrameRef.current(
         frameDelta * 1000,
         gl.info,
@@ -441,6 +561,17 @@ export function GameWorld({
           playerId: state.playerId,
         },
         physStats,
+        {
+          id: drivenVehicleId ?? 0,
+          driverConfirmed: Boolean(drivenVehicleState && client && drivenVehicleState.driverId === client.playerId),
+          localSpeedMs: localVehicleDebug?.speedMs ?? 0,
+          serverSpeedMs: vehicleServerSpeedMs,
+          posDeltaM: vehiclePosDeltaM,
+          groundedWheels: localVehicleDebug?.groundedWheels ?? 0,
+          steering: localVehicleDebug?.steering ?? 0,
+          engineForce: localVehicleDebug?.engineForce ?? 0,
+          brake: localVehicleDebug?.brake ?? 0,
+        },
         pos as [number, number, number],
         {
           velocity: physStats.velocity,
@@ -497,8 +628,9 @@ export function GameWorld({
         console.log('[game] Created mesh for remote player', id);
       }
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
-      const position = sample?.position ?? rp.position;
-      const yaw = sample?.yaw ?? rp.yaw;
+      const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
+      let position = sample?.position ?? rp.position;
+      let yaw = sample?.yaw ?? rp.yaw;
       const hp = sample?.hp ?? rp.hp;
       const replicatedHp = rp.hp;
       const previousHp = remoteLastHpRef.current.get(id);
@@ -506,10 +638,35 @@ export function GameWorld({
         remoteHitFlashUntilRef.current.set(id, now + REMOTE_HIT_FLASH_MS);
       }
       remoteLastHpRef.current.set(id, replicatedHp);
-      const isDead = ((sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0)) & FLAG_DEAD) !== 0;
+      const isDead = (remoteFlags & FLAG_DEAD) !== 0;
+      const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
+      if (isInVehicle && client) {
+        for (const [vehicleId, vehicleState] of client.vehicles) {
+          if (vehicleState.driverId !== id) continue;
+          const vehicleSample = client.sampleRemoteVehicle(vehicleId, renderTimeUs);
+          const vehiclePosition = vehicleSample?.position ?? vehicleState.position;
+          const vehicleQuaternion = vehicleSample?.quaternion ?? vehicleState.quaternion;
+          position = [vehiclePosition[0], vehiclePosition[1] + 0.8, vehiclePosition[2]];
+          yaw = new THREE.Euler().setFromQuaternion(
+            new THREE.Quaternion(
+              vehicleQuaternion[0],
+              vehicleQuaternion[1],
+              vehicleQuaternion[2],
+              vehicleQuaternion[3],
+            ),
+            'YXZ',
+          ).y;
+          break;
+        }
+      }
       playerGroup.position.set(position[0], position[1], position[2]);
       playerGroup.rotation.y = yaw;
       const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
+      const head = playerGroup.getObjectByName('head');
+      const nose = playerGroup.getObjectByName('nose');
+      if (body) body.visible = !isInVehicle;
+      if (head) head.visible = !isInVehicle;
+      if (nose) nose.visible = !isInVehicle;
       if (body && body.material instanceof THREE.MeshStandardMaterial) {
         const baseColor = body.userData.baseColor as THREE.Color | undefined;
         const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
@@ -541,14 +698,37 @@ export function GameWorld({
     const dbGroup = dynamicBodyGroupRef.current;
     if (dbGroup) {
       const activeBodies = new Set<number>();
+      const dynamicRenderTimeUs = client?.getRenderTimeUs() ?? 0;
       for (const [id, body] of state.dynamicBodies) {
         activeBodies.add(id);
+        const proxyBody = prediction.getDynamicBodyRenderState(id);
+        const remoteSample = client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
+        let useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
+        if (!useProxyBody && isDrivingNow && localControlledVehiclePose && proxyBody) {
+          const dx = proxyBody.position[0] - localControlledVehiclePose.position[0];
+          const dy = proxyBody.position[1] - localControlledVehiclePose.position[1];
+          const dz = proxyBody.position[2] - localControlledVehiclePose.position[2];
+          useProxyBody = dx * dx + dy * dy + dz * dz <= LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M * LOCAL_DYNAMIC_BODY_PROXY_RADIUS_M;
+        }
+        const renderBody = useProxyBody && proxyBody
+          ? proxyBody
+          : (remoteSample
+            ? {
+                id,
+                shapeType: remoteSample.shapeType,
+                position: remoteSample.position,
+                quaternion: remoteSample.quaternion,
+                halfExtents: remoteSample.halfExtents,
+                velocity: remoteSample.velocity,
+                angularVelocity: remoteSample.angularVelocity,
+              }
+            : body);
         let mesh = dynamicBodyMeshes.current.get(id);
         if (!mesh) {
           let geom: THREE.BufferGeometry;
           let mat: THREE.MeshStandardMaterial;
-          if (body.shapeType === 1) {
-            const radius = body.halfExtents[0];
+          if (renderBody.shapeType === 1) {
+            const radius = renderBody.halfExtents[0];
             geom = new THREE.SphereGeometry(radius, 16, 12);
             mat = new THREE.MeshStandardMaterial({
               color: BALL_COLORS[id % BALL_COLORS.length],
@@ -557,9 +737,9 @@ export function GameWorld({
             });
           } else {
             geom = new THREE.BoxGeometry(
-              body.halfExtents[0] * 2,
-              body.halfExtents[1] * 2,
-              body.halfExtents[2] * 2,
+              renderBody.halfExtents[0] * 2,
+              renderBody.halfExtents[1] * 2,
+              renderBody.halfExtents[2] * 2,
             );
             mat = new THREE.MeshStandardMaterial({
               color: 0xcc6622,
@@ -570,19 +750,23 @@ export function GameWorld({
           mesh = new THREE.Mesh(geom, mat);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
+          mesh.position.set(renderBody.position[0], renderBody.position[1], renderBody.position[2]);
+          mesh.quaternion.set(
+            renderBody.quaternion[0],
+            renderBody.quaternion[1],
+            renderBody.quaternion[2],
+            renderBody.quaternion[3],
+          );
           dbGroup.add(mesh);
           dynamicBodyMeshes.current.set(id, mesh);
         }
-        // Smoothly interpolate toward server position (like Rocket League / The Finals)
-        const lerpRate = 1.0 - Math.pow(0.001, delta);
-        mesh.position.lerp(
-          new THREE.Vector3(body.position[0], body.position[1], body.position[2]),
-          lerpRate,
+        mesh.position.set(renderBody.position[0], renderBody.position[1], renderBody.position[2]);
+        mesh.quaternion.set(
+          renderBody.quaternion[0],
+          renderBody.quaternion[1],
+          renderBody.quaternion[2],
+          renderBody.quaternion[3],
         );
-        const targetQuat = new THREE.Quaternion(
-          body.quaternion[0], body.quaternion[1], body.quaternion[2], body.quaternion[3],
-        );
-        mesh.quaternion.slerp(targetQuat, lerpRate);
       }
       // Remove stale dynamic body meshes
       for (const [id, mesh] of dynamicBodyMeshes.current) {
@@ -597,7 +781,7 @@ export function GameWorld({
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
-      const localVehiclePos = localControlledVehiclePose;
+      const localVehiclePos = localVehicleRenderPose;
 
       // Find nearest unoccupied vehicle for proximity indicator
       let nearest: number | null = null;
@@ -612,7 +796,7 @@ export function GameWorld({
           vehicleMeshes.current.set(id, vehicleMeshGroup);
         }
 
-        const isLocalVehicle = isDrivingNow && localVehiclePos !== null && client.vehicles.get(id)?.driverId === client.playerId;
+        const isLocalVehicle = isDrivingNow && localVehiclePos !== null && drivenVehicleId === id;
 
         let vPos: [number, number, number];
         let vQuat: [number, number, number, number];
@@ -629,18 +813,7 @@ export function GameWorld({
         vehicleMeshGroup.position.set(vPos[0], vPos[1], vPos[2]);
         vehicleMeshGroup.quaternion.set(vQuat[0], vQuat[1], vQuat[2], vQuat[3]);
 
-        // Update wheel visuals from wheelData
-        const wheelData = vs.wheelData;
-        for (let wi = 0; wi < 4 && wi < wheelData.length; wi++) {
-          const wheel = vehicleMeshGroup.getObjectByName(`wheel_${wi}`) as THREE.Mesh | undefined;
-          if (wheel) {
-            const spinAngle = ((wheelData[wi] >> 8) & 0xff) / 255 * Math.PI * 2;
-            const steerByte = (wheelData[wi] & 0xff) as number;
-            const steer = ((steerByte > 127 ? steerByte - 256 : steerByte) / 127);
-            wheel.rotation.x = spinAngle;
-            if (wi < 2) wheel.rotation.y = steer * 0.5; // front wheels steer
-          }
-        }
+        updateVehicleWheelVisuals(vehicleMeshGroup, vs, isLocalVehicle ? localVehicleDebug : null, vPos, vQuat, frameDelta);
 
         // Proximity check (only when not driving)
         if (!isDrivingNow && vs.driverId === 0) {
@@ -667,9 +840,35 @@ export function GameWorld({
 
   return (
     <>
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[20, 30, 10]} intensity={1} />
-      <hemisphereLight args={[0x8888ff, 0x444422, 0.4]} />
+      <color attach="background" args={['#d7e3f0']} />
+      <fog attach="fog" args={['#d7e3f0', 80, 220]} />
+      <Sky
+        distance={450000}
+        sunPosition={[120, 28, 40]}
+        turbidity={7}
+        rayleigh={2.2}
+        mieCoefficient={0.008}
+        mieDirectionalG={0.86}
+      />
+      <ambientLight intensity={0.18} color={0xfdf6eb} />
+      <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
+      <directionalLight
+        castShadow
+        position={[48, 42, 18]}
+        intensity={2.4}
+        color={0xfff2d6}
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-near={1}
+        shadow-camera-far={180}
+        shadow-camera-left={-90}
+        shadow-camera-right={90}
+        shadow-camera-top={90}
+        shadow-camera-bottom={-90}
+        shadow-bias={-0.00015}
+        shadow-normalBias={0.03}
+      />
+      <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       {!IS_LOCAL_PREVIEW && <DemoTerrain />}
 
       {prediction.renderBlocks.map((block) => (
@@ -812,6 +1011,10 @@ function updateLocalShotTraceVisuals(
 
 function createVehicleMesh(_id: number): THREE.Group {
   const group = new THREE.Group();
+  group.userData.renderState = {
+    lastBodyPosition: null,
+    wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
+  } satisfies VehicleRenderState;
 
   // Chassis body
   const chassisGeom = new THREE.BoxGeometry(1.8, 0.5, 3.6);
@@ -839,15 +1042,99 @@ function createVehicleMesh(_id: number): THREE.Group {
     [-0.9, -0.15, -1.1],
   ];
   for (let i = 0; i < 4; i++) {
+    const pivot = new THREE.Group();
+    pivot.position.set(...wheelPositions[i]);
+    pivot.name = `wheel_pivot_${i}`;
+    group.add(pivot);
+
+    const spinGroup = new THREE.Group();
+    spinGroup.name = `wheel_spin_${i}`;
+    pivot.add(spinGroup);
+
     const wheel = new THREE.Mesh(wheelGeom, wheelMat);
     wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(...wheelPositions[i]);
     wheel.name = `wheel_${i}`;
     wheel.castShadow = true;
-    group.add(wheel);
+    spinGroup.add(wheel);
   }
 
   return group;
+}
+
+function updateVehicleWheelVisuals(
+  vehicleMeshGroup: THREE.Group,
+  vehicleState: Pick<NetVehicleState, 'wheelData'> | Pick<VehicleStateMeters, 'wheelData'>,
+  localVehicleDebug: {
+    speedMs: number;
+    groundedWheels: number;
+    steering: number;
+    engineForce: number;
+    brake: number;
+  } | null,
+  position: [number, number, number],
+  quaternion: [number, number, number, number],
+  frameDeltaSec: number,
+): void {
+  const renderState = vehicleMeshGroup.userData.renderState as VehicleRenderState | undefined;
+  if (!renderState) return;
+
+  const bodySpeed = estimateVehicleForwardSpeed(renderState.lastBodyPosition, position, quaternion, frameDeltaSec);
+  renderState.lastBodyPosition = [...position];
+
+  const fallbackSignedSpeed = Math.abs(bodySpeed) > 0.05
+    ? bodySpeed
+    : (localVehicleDebug
+      ? Math.sign(localVehicleDebug.engineForce || 1) * localVehicleDebug.speedMs
+      : bodySpeed);
+
+  for (let wi = 0; wi < 4 && wi < vehicleState.wheelData.length; wi++) {
+    const pivot = vehicleMeshGroup.getObjectByName(`wheel_pivot_${wi}`) as THREE.Group | undefined;
+    const spinGroup = vehicleMeshGroup.getObjectByName(`wheel_spin_${wi}`) as THREE.Group | undefined;
+    if (!pivot || !spinGroup) continue;
+
+    const wheelState = renderState.wheels[wi];
+    const packed = vehicleState.wheelData[wi];
+    const steerByte = (packed & 0xff) as number;
+    const replicatedSteer = (steerByte > 127 ? steerByte - 256 : steerByte) / 127;
+    const targetSteer = wi < 2
+      ? ((localVehicleDebug?.steering ?? replicatedSteer) * 0.5)
+      : 0;
+
+    wheelState.steerAngle = THREE.MathUtils.damp(
+      wheelState.steerAngle,
+      targetSteer,
+      VEHICLE_WHEEL_VISUAL_STEER_RATE,
+      frameDeltaSec,
+    );
+
+    // Wheel spin is integrated locally from chassis motion instead of directly
+    // snapping to low-rate replicated wheel angles, which causes visible wobble.
+    wheelState.spinAngle += (fallbackSignedSpeed / VEHICLE_WHEEL_RADIUS_M) * frameDeltaSec;
+    pivot.rotation.y = wheelState.steerAngle;
+    spinGroup.rotation.x = wheelState.spinAngle;
+  }
+}
+
+function estimateVehicleForwardSpeed(
+  lastPosition: [number, number, number] | null,
+  position: [number, number, number],
+  quaternion: [number, number, number, number],
+  frameDeltaSec: number,
+): number {
+  if (!lastPosition || frameDeltaSec <= 0.0001) return 0;
+  const forward = new THREE.Vector3(0, 0, 1);
+  forward.applyQuaternion(new THREE.Quaternion(
+    quaternion[0],
+    quaternion[1],
+    quaternion[2],
+    quaternion[3],
+  ));
+  const velocity = new THREE.Vector3(
+    (position[0] - lastPosition[0]) / frameDeltaSec,
+    (position[1] - lastPosition[1]) / frameDeltaSec,
+    (position[2] - lastPosition[2]) / frameDeltaSec,
+  );
+  return velocity.dot(forward);
 }
 
 function createPlayerMesh(id: number): THREE.Group {
@@ -867,6 +1154,7 @@ function createPlayerMesh(id: number): THREE.Group {
   const headGeom = new THREE.SphereGeometry(0.22, 12, 8);
   const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
   const head = new THREE.Mesh(headGeom, headMat);
+  head.name = 'head';
   head.position.y = 0.75;
   group.add(head);
 
@@ -874,6 +1162,7 @@ function createPlayerMesh(id: number): THREE.Group {
   const noseGeom = new THREE.ConeGeometry(0.1, 0.25, 6);
   const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
   const nose = new THREE.Mesh(noseGeom, noseMat);
+  nose.name = 'nose';
   nose.rotation.x = -Math.PI / 2;
   nose.position.set(0, 0.75, 0.3);
   group.add(nose);

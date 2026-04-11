@@ -3,11 +3,14 @@ import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
+import { DynamicBodyPredictionManager } from './dynamicBodyPredictionManager';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import type { RenderBlock } from '../world/voxelWorld';
 
 const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+const PREDICTED_DYNAMIC_BODY_IMPULSE = 6.0;
+const FIXED_DT = 1 / 60;
 
 type BlockRayHit = {
   point: [number, number, number];
@@ -32,6 +35,7 @@ type PlayerAimHit = {
 export function usePrediction() {
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
+  const dynamicBodyManagerRef = useRef<DynamicBodyPredictionManager | null>(null);
   const simRef = useRef<WasmSimWorldInstance | null>(null);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
@@ -62,6 +66,7 @@ export function usePrediction() {
       }
       managerRef.current = manager;
       vehicleManagerRef.current = new VehiclePredictionManager(sim);
+      dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
       simRef.current = sim;
 
       // Apply any world packets that arrived before WASM was ready.
@@ -89,6 +94,8 @@ export function usePrediction() {
       }
       vehicleManagerRef.current?.dispose();
       vehicleManagerRef.current = null;
+      dynamicBodyManagerRef.current?.clear();
+      dynamicBodyManagerRef.current = null;
       simRef.current = null;
     };
   }, []);
@@ -254,11 +261,17 @@ export function usePrediction() {
   }, []);
 
   const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
-    vehicleManagerRef.current?.enterVehicle(vehicleId, initState);
+    const vm = vehicleManagerRef.current;
+    if (!vm) return;
+    vm.setNextSeq(managerRef.current?.getNextSeq() ?? vm.getNextSeq());
+    vm.enterVehicle(vehicleId, initState);
   }, []);
 
   const exitVehicle = useCallback((): void => {
-    vehicleManagerRef.current?.exitVehicle();
+    const vm = vehicleManagerRef.current;
+    if (!vm) return;
+    managerRef.current?.setNextSeq(vm.getNextSeq());
+    vm.exitVehicle();
   }, []);
 
   const updateVehicle = useCallback((
@@ -269,6 +282,7 @@ export function usePrediction() {
     const vm = vehicleManagerRef.current;
     if (!vm) return;
     const cmds = vm.update(frameDeltaSec, input);
+    managerRef.current?.setNextSeq(vm.getNextSeq());
     if (cmds.length > 0) sendInputs(cmds);
   }, []);
 
@@ -280,15 +294,99 @@ export function usePrediction() {
     return vehicleManagerRef.current?.getInterpolatedChassisPose() ?? null;
   }, []);
 
+  const getDrivenVehicleId = useCallback((): number | null => {
+    return vehicleManagerRef.current?.getVehicleId() ?? null;
+  }, []);
+
+  const getLocalVehicleDebug = useCallback((vehicleId: number): {
+    speedMs: number;
+    groundedWheels: number;
+    steering: number;
+    engineForce: number;
+    brake: number;
+  } | null => {
+    const sim = simRef.current;
+    if (!sim || IS_LOCAL_PREVIEW) return null;
+    const raw = sim.getVehicleDebug(vehicleId);
+    if (raw.length < 5) return null;
+    return {
+      speedMs: raw[0],
+      groundedWheels: raw[1],
+      steering: raw[2],
+      engineForce: raw[3],
+      brake: raw[4],
+    };
+  }, []);
+
   const isInVehicle = useCallback((): boolean => {
     return vehicleManagerRef.current?.isActive() ?? false;
   }, []);
 
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
-    const m = managerRef.current;
-    if (!m) return;
+    const dynamicManager = dynamicBodyManagerRef.current;
+    if (!dynamicManager) return;
     if (IS_LOCAL_PREVIEW) return;
-    m.updateDynamicBodies(bodies);
+    dynamicManager.syncAuthoritativeBodies(bodies);
+  }, []);
+
+  const advanceDynamicBodies = useCallback((frameDeltaSec: number, allowProxyStep: boolean): void => {
+    if (IS_LOCAL_PREVIEW) return;
+    dynamicBodyManagerRef.current?.advance(frameDeltaSec, allowProxyStep);
+  }, []);
+
+  const getDynamicBodyRenderState = useCallback((id: number): DynamicBodyStateMeters | null => {
+    if (IS_LOCAL_PREVIEW) return null;
+    return dynamicBodyManagerRef.current?.getRenderedBodyState(id) ?? null;
+  }, []);
+
+  const predictDynamicBodyShot = useCallback((
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance = 1000,
+    blockerDistance: number | null = null,
+  ): number | null => {
+    const sim = simRef.current;
+    if (!sim || IS_LOCAL_PREVIEW) return null;
+
+    const hit = sim.castDynamicBodyRay(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      maxDistance,
+    );
+    if (hit.length < 5) return null;
+
+    const bodyId = hit[0];
+    const toi = hit[1];
+    if (blockerDistance != null && blockerDistance < toi) {
+      return null;
+    }
+    const impactPoint: [number, number, number] = [
+      origin[0] + direction[0] * toi,
+      origin[1] + direction[1] * toi,
+      origin[2] + direction[2] * toi,
+    ];
+    const impulse: [number, number, number] = [
+      direction[0] * PREDICTED_DYNAMIC_BODY_IMPULSE + hit[2] * 0.5,
+      direction[1] * PREDICTED_DYNAMIC_BODY_IMPULSE + hit[3] * 0.5,
+      direction[2] * PREDICTED_DYNAMIC_BODY_IMPULSE + hit[4] * 0.5,
+    ];
+    const applied = sim.applyDynamicBodyImpulse(
+      bodyId,
+      impulse[0], impulse[1], impulse[2],
+      impactPoint[0], impactPoint[1], impactPoint[2],
+    );
+    if (applied) {
+      dynamicBodyManagerRef.current?.markRecentInteraction(bodyId);
+      // Advance one fixed step so the locally-predicted impact is visible
+      // immediately without free-running all dynamic bodies every on-foot tick.
+      sim.stepDynamics(FIXED_DT);
+    }
+    return applied ? bodyId : null;
+  }, []);
+
+  const hasRecentDynamicBodyInteraction = useCallback((id: number): boolean => {
+    if (IS_LOCAL_PREVIEW) return false;
+    return dynamicBodyManagerRef.current?.hasRecentInteraction(id) ?? false;
   }, []);
 
   const getNextSeq = useCallback((): number => {
@@ -297,12 +395,43 @@ export function usePrediction() {
 
   const getDebugStats = useCallback(() => {
     const m = managerRef.current;
-    if (!m) return { pendingInputs: 0, predictionTicks: 0, correctionMagnitude: 0, physicsStepMs: 0, velocity: [0, 0, 0] as [number, number, number] };
+    const vm = vehicleManagerRef.current;
+    const dm = dynamicBodyManagerRef.current;
+    if (!m) {
+      return {
+        pendingInputs: 0,
+        predictionTicks: 0,
+        playerCorrectionMagnitude: 0,
+        vehicleCorrectionMagnitude: 0,
+        dynamicGlobalMaxCorrectionMagnitude: 0,
+        dynamicNearPlayerMaxCorrectionMagnitude: 0,
+        dynamicInteractiveMaxCorrectionMagnitude: 0,
+        dynamicOverThresholdCount: 0,
+        dynamicTrackedBodies: 0,
+        dynamicInteractiveBodies: 0,
+        physicsStepMs: 0,
+        velocity: [0, 0, 0] as [number, number, number],
+      };
+    }
     const offset = m.getCorrectionOffset();
+    const playerPosition = m.getPosition();
+    const dynamicStats = dm?.getDebugCorrectionStats(playerPosition, 16) ?? {
+      globalMax: 0,
+      nearPlayerMax: 0,
+      interactiveMax: 0,
+      overThresholdCount: 0,
+    };
     return {
       pendingInputs: m.getPendingInputCount(),
       predictionTicks: m.getTickCount(),
-      correctionMagnitude: Math.hypot(offset[0], offset[1], offset[2]),
+      playerCorrectionMagnitude: Math.hypot(offset[0], offset[1], offset[2]),
+      vehicleCorrectionMagnitude: vm?.getCorrectionMagnitude() ?? 0,
+      dynamicGlobalMaxCorrectionMagnitude: dynamicStats.globalMax,
+      dynamicNearPlayerMaxCorrectionMagnitude: dynamicStats.nearPlayerMax,
+      dynamicInteractiveMaxCorrectionMagnitude: dynamicStats.interactiveMax,
+      dynamicOverThresholdCount: dynamicStats.overThresholdCount,
+      dynamicTrackedBodies: dm?.getTrackedBodyCount() ?? 0,
+      dynamicInteractiveBodies: dm?.getRecentInteractionCount() ?? 0,
       physicsStepMs: m.getLastPhysicsStepMs(),
       velocity: m.getVelocity(),
     };
@@ -320,6 +449,10 @@ export function usePrediction() {
     applyOptimisticEdit,
     getBlockMaterial,
     updateDynamicBodies,
+    advanceDynamicBodies,
+    getDynamicBodyRenderState,
+    predictDynamicBodyShot,
+    hasRecentDynamicBodyInteraction,
     raycastScene,
     classifyHitscanPlayer,
     getNextSeq,
@@ -331,6 +464,8 @@ export function usePrediction() {
     updateVehicle,
     reconcileVehicle,
     getVehiclePose,
+    getDrivenVehicleId,
+    getLocalVehicleDebug,
     isInVehicle,
   };
 }

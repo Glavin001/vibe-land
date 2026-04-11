@@ -1,9 +1,9 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { InputFamilyMode } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
-import { DebugOverlay } from './ui/DebugOverlay';
+import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 
@@ -13,11 +13,13 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState('Click to join');
+  const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
-  const { visible: debugVisible, displayStats, updateFrame, recordSnapshot } = useDebugStats();
+  const { visible: debugVisible, displayStats, updateFrame, recordSnapshot, getStatsSnapshot } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
+  const copyNoticeTimerRef = useRef<number | null>(null);
 
   const handleConnect = useCallback(() => {
     setConnected(true);
@@ -36,6 +38,54 @@ export function App() {
     setPlayerId(0);
     setCrosshairState('idle');
   }, []);
+
+  useEffect(() => {
+    const setTimedCopyNotice = (message: string) => {
+      setCopyNotice(message);
+      if (copyNoticeTimerRef.current != null) {
+        window.clearTimeout(copyNoticeTimerRef.current);
+      }
+      copyNoticeTimerRef.current = window.setTimeout(() => {
+        setCopyNotice('');
+        copyNoticeTimerRef.current = null;
+      }, 2000);
+    };
+
+    const handleCopyDebug = async () => {
+      const markdown = debugStatsToMarkdown(getStatsSnapshot(), {
+        connected,
+        status,
+        path: window.location.pathname,
+        userAgent: navigator.userAgent,
+        renderStatsText: renderStatsParentRef.current?.innerText ?? '',
+      });
+      try {
+        await navigator.clipboard.writeText(markdown);
+        setTimedCopyNotice('Copied debug markdown');
+      } catch {
+        setTimedCopyNotice('Clipboard copy failed');
+      }
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const isMac = navigator.platform.includes('Mac');
+      const modPressed = isMac ? event.metaKey : event.ctrlKey;
+      const wantsCopyDebug =
+        event.code === 'F4'
+        || (modPressed && event.shiftKey && event.code === 'KeyD');
+      if (!wantsCopyDebug) return;
+      event.preventDefault();
+      void handleCopyDebug();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      if (copyNoticeTimerRef.current != null) {
+        window.clearTimeout(copyNoticeTimerRef.current);
+      }
+    };
+  }, [connected, getStatsSnapshot, status]);
 
   const crosshairColor =
     crosshairState === 'head'
@@ -89,6 +139,24 @@ export function App() {
       >
         {status}
       </div>
+      {copyNotice && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 44,
+            left: 8,
+            zIndex: 6,
+            background: 'rgba(0,0,0,0.72)',
+            padding: '4px 10px',
+            borderRadius: 4,
+            fontSize: 13,
+            color: '#9ef79e',
+            pointerEvents: 'none',
+          }}
+        >
+          {copyNotice}
+        </div>
+      )}
       {connected && (
         <div
           style={{

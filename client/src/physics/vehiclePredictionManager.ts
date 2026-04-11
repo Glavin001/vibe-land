@@ -88,6 +88,7 @@ export class VehiclePredictionManager {
   // Current chassis pose (from physics)
   private currPosition: [number, number, number] = [0, 0, 0];
   private prevPosition: [number, number, number] = [0, 0, 0];
+  private prevQuaternion: [number, number, number, number] = [0, 0, 0, 1];
   private currQuaternion: [number, number, number, number] = [0, 0, 0, 1];
 
   // Visual smoothing correction offsets (applied to rendered pose)
@@ -102,6 +103,14 @@ export class VehiclePredictionManager {
 
   getVehicleId(): number | null {
     return this.vehicleId;
+  }
+
+  getNextSeq(): number {
+    return this.nextSeq;
+  }
+
+  setNextSeq(seq: number): void {
+    this.nextSeq = seq;
   }
 
   /**
@@ -129,10 +138,17 @@ export class VehiclePredictionManager {
     this.sim.syncRemoteVehicle(vehicleId, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
 
     this.sim.setLocalVehicle(vehicleId);
+    // Match reconcile_vehicle's contact warm-up on first enter so suspension
+    // constraints are initialized from the authoritative pose before the first
+    // predicted input tick.
+    for (let i = 0; i < 3; i++) {
+      this.sim.stepDynamics(FIXED_DT);
+    }
 
     const pos: [number, number, number] = [px, py, pz];
     this.currPosition = [...pos];
     this.prevPosition = [...pos];
+    this.prevQuaternion = [qx, qy, qz, qw];
     this.currQuaternion = [qx, qy, qz, qw];
   }
 
@@ -177,6 +193,7 @@ export class VehiclePredictionManager {
       pendingInputs.push(input);
 
       this.prevPosition = [...this.currPosition] as [number, number, number];
+      this.prevQuaternion = [...this.currQuaternion] as [number, number, number, number];
       this.currPosition = [result[0], result[1], result[2]];
       this.currQuaternion = [result[3], result[4], result[5], result[6]];
 
@@ -264,12 +281,14 @@ export class VehiclePredictionManager {
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
       this.correctionOffset = [0, 0, 0];
+      this.prevQuaternion = newQuat;
       this.currQuaternion = newQuat;
       this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     } else {
       this.correctionOffset = [-dx, -dy, -dz];
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
+      this.prevQuaternion = newQuat;
       this.currQuaternion = newQuat;
       // Correction quat offset = oldQuat * inverse(newQuat) — the delta to decay away
       this.correctionQuatOffset = quatNormalize(quatMultiply(oldQuat, quatInvert(newQuat)));
@@ -291,9 +310,18 @@ export class VehiclePredictionManager {
       this.prevPosition[1] + (this.currPosition[1] - this.prevPosition[1]) * alpha + this.correctionOffset[1],
       this.prevPosition[2] + (this.currPosition[2] - this.prevPosition[2]) * alpha + this.correctionOffset[2],
     ];
+    const simQuat = quatSlerp(this.prevQuaternion, this.currQuaternion, alpha);
     // Apply orientation correction: render_quat = correctionQuatOffset * simulation_quat
-    const renderQuat = quatNormalize(quatMultiply(this.correctionQuatOffset, this.currQuaternion));
+    const renderQuat = quatNormalize(quatMultiply(this.correctionQuatOffset, simQuat));
     return { position, quaternion: renderQuat };
+  }
+
+  getCorrectionMagnitude(): number {
+    return Math.hypot(
+      this.correctionOffset[0],
+      this.correctionOffset[1],
+      this.correctionOffset[2],
+    );
   }
 
   dispose(): void {

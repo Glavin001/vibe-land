@@ -76,7 +76,7 @@ impl WasmSimWorld {
             next_collider_id: 1,
             collider_ids: HashMap::new(),
             dynamic_colliders: HashMap::new(),
-            vehicle_pipeline: None,
+            vehicle_pipeline: Some(PhysicsPipeline::new()),
             vehicle_joints: ImpulseJointSet::new(),
             vehicle_multibody_joints: MultibodyJointSet::new(),
             vehicle_ccd: CCDSolver::new(),
@@ -197,7 +197,7 @@ impl WasmSimWorld {
         }
 
         let collider = self.player_collider.expect("spawn_player not called");
-        let _tick = simulate_player_tick(
+        let tick = simulate_player_tick(
             &self.sim,
             collider,
             &mut self.position,
@@ -208,7 +208,29 @@ impl WasmSimWorld {
             &input,
             dt,
         );
+        for impulse in &tick.dynamic_impulses {
+            let _ = self.apply_dynamic_body_impulse(
+                impulse.body_id,
+                impulse.impulse[0],
+                impulse.impulse[1],
+                impulse.impulse[2],
+                impulse.contact_point[0],
+                impulse.contact_point[1],
+                impulse.contact_point[2],
+            );
+        }
         self.sim.sync_player_collider(collider, &self.position);
+        // Do not free-run the full rigid-body world every on-foot prediction
+        // tick. That makes nearby dynamic bodies diverge locally between sparse
+        // authoritative snapshots, which shows up as local-only jitter and
+        // props briefly falling through the ground before being corrected.
+        //
+        // Keep stepping when a local vehicle is active, or when this KCC tick
+        // actually applied dynamic-body impulses so the contact response starts
+        // immediately for the local player.
+        if self.local_vehicle_id.is_some() || !tick.dynamic_impulses.is_empty() {
+            self.step_vehicle_pipeline(dt);
+        }
 
         Box::new([
             self.position.x,
@@ -315,7 +337,7 @@ impl WasmSimWorld {
         let collider = self.player_collider.expect("spawn_player not called");
         let inputs: Vec<InputCmd> = self.pending_inputs.clone();
         for input in &inputs {
-            let _tick = simulate_player_tick(
+            let tick = simulate_player_tick(
                 &self.sim,
                 collider,
                 &mut self.position,
@@ -326,7 +348,21 @@ impl WasmSimWorld {
                 input,
                 dt,
             );
+            for impulse in &tick.dynamic_impulses {
+                let _ = self.apply_dynamic_body_impulse(
+                    impulse.body_id,
+                    impulse.impulse[0],
+                    impulse.impulse[1],
+                    impulse.impulse[2],
+                    impulse.contact_point[0],
+                    impulse.contact_point[1],
+                    impulse.contact_point[2],
+                );
+            }
             self.sim.sync_player_collider(collider, &self.position);
+            if self.local_vehicle_id.is_some() || !tick.dynamic_impulses.is_empty() {
+                self.step_vehicle_pipeline(dt);
+            }
         }
 
         let dx = self.position.x - before_x;
@@ -449,6 +485,9 @@ impl WasmSimWorld {
         vx: f32,
         vy: f32,
         vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
     ) {
         if let Some(&body_handle) = self.dynamic_colliders.get(&id) {
             // Update existing rigid body state and mark colliders modified so
@@ -457,6 +496,7 @@ impl WasmSimWorld {
                 rb.set_translation(vector![px, py, pz], true);
                 rb.set_rotation(UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz)), true);
                 rb.set_linvel(vector![vx, vy, vz], true);
+                rb.set_angvel(vector![wx, wy, wz], true);
             }
             if let Some(rb) = self.sim.rigid_bodies.get(body_handle) {
                 for ch in rb.colliders() {
@@ -472,16 +512,17 @@ impl WasmSimWorld {
                     iso,
                 ))
                 .linvel(vector![vx, vy, vz])
+                .angvel(vector![wx, wy, wz])
                 .linear_damping(0.3)
                 .angular_damping(0.5)
                 .can_sleep(false)
                 .build();
             let body_handle = self.sim.rigid_bodies.insert(body);
 
-            // GROUP_2 = dynamic-body proxies; chassis (GROUP_1/filter=GROUP_1) won't
-            // physically contact them, preventing spawn-time penetration freezes.
-            // Balls still collide with terrain (GROUP_1) for realistic settling.
-            let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1);
+            // GROUP_2 = dynamic-body proxies. They collide with terrain/chassis
+            // (GROUP_1) and other dynamic proxies (GROUP_2) so local contacts
+            // feel immediate for both walking and driving.
+            let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
             let collider = if shape_type == 1 {
                 ColliderBuilder::ball(hx)
                     .density(1.0)
@@ -540,6 +581,220 @@ impl WasmSimWorld {
         }
     }
 
+    #[wasm_bindgen(js_name = getDynamicBodyState)]
+    pub fn get_dynamic_body_state(&self, id: u32) -> Box<[f64]> {
+        let Some(&body_handle) = self.dynamic_colliders.get(&id) else {
+            return Box::new([]);
+        };
+        let Some(rb) = self.sim.rigid_bodies.get(body_handle) else {
+            return Box::new([]);
+        };
+        let p = rb.translation();
+        let r = rb.rotation();
+        let lv = rb.linvel();
+        let av = rb.angvel();
+        Box::new([
+            p.x as f64,
+            p.y as f64,
+            p.z as f64,
+            r.i as f64,
+            r.j as f64,
+            r.k as f64,
+            r.w as f64,
+            lv.x as f64,
+            lv.y as f64,
+            lv.z as f64,
+            av.x as f64,
+            av.y as f64,
+            av.z as f64,
+        ])
+    }
+
+    #[wasm_bindgen(js_name = reconcileDynamicBody)]
+    pub fn reconcile_dynamic_body(
+        &mut self,
+        id: u32,
+        shape_type: u8,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+        pos_threshold: f32,
+        rot_threshold: f32,
+        hard_snap_distance: f32,
+        hard_snap_rot_rad: f32,
+        correction_time: f32,
+    ) -> bool {
+        let Some(&body_handle) = self.dynamic_colliders.get(&id) else {
+            self.sync_dynamic_body(
+                id, shape_type, hx, hy, hz,
+                px, py, pz,
+                qx, qy, qz, qw,
+                vx, vy, vz,
+                wx, wy, wz,
+            );
+            return true;
+        };
+
+        let Some(rb) = self.sim.rigid_bodies.get_mut(body_handle) else {
+            self.sync_dynamic_body(
+                id, shape_type, hx, hy, hz,
+                px, py, pz,
+                qx, qy, qz, qw,
+                vx, vy, vz,
+                wx, wy, wz,
+            );
+            return true;
+        };
+
+        let target_rot = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let current_pos = *rb.translation();
+        let current_rot = *rb.rotation();
+        let pos_error = vector![px - current_pos.x, py - current_pos.y, pz - current_pos.z];
+        let pos_error_mag = pos_error.norm();
+        let rot_delta = target_rot * current_rot.inverse();
+        let rot_error = rot_delta.angle();
+
+        if pos_error_mag > hard_snap_distance || rot_error > hard_snap_rot_rad {
+            rb.set_position(
+                nalgebra::Isometry3::from_parts(
+                    nalgebra::Translation3::new(px, py, pz),
+                    target_rot,
+                ),
+                true,
+            );
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![wx, wy, wz], true);
+            if let Some(rb_ro) = self.sim.rigid_bodies.get(body_handle) {
+                for ch in rb_ro.colliders() {
+                    self.sim.modified_colliders.push(*ch);
+                }
+            }
+            return true;
+        }
+
+        let correction_horizon = correction_time.max(0.001);
+        let desired_linvel = if pos_error_mag > pos_threshold {
+            vector![vx, vy, vz] + pos_error / correction_horizon
+        } else {
+            vector![vx, vy, vz]
+        };
+        rb.set_linvel(desired_linvel, true);
+
+        let desired_angvel = if rot_error > rot_threshold {
+            let bias = rot_delta
+                .axis()
+                .map(|axis| axis.into_inner() * (rot_error / correction_horizon))
+                .unwrap_or_else(Vector3::zeros);
+            vector![wx, wy, wz] + bias
+        } else {
+            vector![wx, wy, wz]
+        };
+        rb.set_angvel(desired_angvel, true);
+
+        if let Some(rb_ro) = self.sim.rigid_bodies.get(body_handle) {
+            for ch in rb_ro.colliders() {
+                self.sim.modified_colliders.push(*ch);
+            }
+        }
+        false
+    }
+
+    #[wasm_bindgen(js_name = castDynamicBodyRay)]
+    pub fn cast_dynamic_body_ray(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        max_toi: f32,
+    ) -> Box<[f64]> {
+        let ray = rapier3d::prelude::Ray::new(
+            nalgebra::point![ox, oy, oz],
+            vector![dx, dy, dz],
+        );
+        let mut best: Option<(u32, f32, [f32; 3])> = None;
+        for (&id, &body_handle) in &self.dynamic_colliders {
+            let Some(rb) = self.sim.rigid_bodies.get(body_handle) else {
+                continue;
+            };
+            for collider_handle in rb.colliders() {
+                let Some(collider) = self.sim.colliders.get(*collider_handle) else {
+                    continue;
+                };
+                let Some(hit) = collider
+                    .shape()
+                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                else {
+                    continue;
+                };
+                if best
+                    .map(|(_, toi, _)| hit.time_of_impact < toi)
+                    .unwrap_or(true)
+                {
+                    let n = hit.normal;
+                    best = Some((id, hit.time_of_impact, [n.x, n.y, n.z]));
+                }
+            }
+        }
+
+        let Some((id, toi, normal)) = best else {
+            return Box::new([]);
+        };
+        Box::new([
+            id as f64,
+            toi as f64,
+            normal[0] as f64,
+            normal[1] as f64,
+            normal[2] as f64,
+        ])
+    }
+
+    #[wasm_bindgen(js_name = applyDynamicBodyImpulse)]
+    pub fn apply_dynamic_body_impulse(
+        &mut self,
+        id: u32,
+        ix: f32,
+        iy: f32,
+        iz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+    ) -> bool {
+        let Some(&body_handle) = self.dynamic_colliders.get(&id) else {
+            return false;
+        };
+        let Some(rb) = self.sim.rigid_bodies.get_mut(body_handle) else {
+            return false;
+        };
+        let world_com = *rb.center_of_mass();
+        let impulse = vector![ix, iy, iz];
+        let point = nalgebra::point![px, py, pz];
+        let torque = (point - world_com).cross(&impulse);
+        rb.apply_impulse(impulse, true);
+        rb.apply_torque_impulse(torque, true);
+        true
+    }
+
+    #[wasm_bindgen(js_name = stepDynamics)]
+    pub fn step_dynamics(&mut self, dt: f32) {
+        self.step_vehicle_pipeline(dt);
+    }
+
     // ── Vehicle simulation (driver-side prediction) ──────────────────────────
 
     /// Spawn a vehicle chassis in the shared physics world.
@@ -587,7 +842,6 @@ impl WasmSimWorld {
             );
             if self.local_vehicle_id == Some(id) {
                 self.local_vehicle_id = None;
-                self.vehicle_pipeline = None;
                 self.vehicle_pending_inputs.clear();
             }
         }
@@ -597,7 +851,6 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = setLocalVehicle)]
     pub fn set_local_vehicle(&mut self, vehicle_id: u32) {
         self.local_vehicle_id = Some(vehicle_id);
-        self.vehicle_pipeline = Some(PhysicsPipeline::new());
         self.vehicle_pending_inputs.clear();
     }
 
@@ -605,7 +858,6 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = clearLocalVehicle)]
     pub fn clear_local_vehicle(&mut self) {
         self.local_vehicle_id = None;
-        self.vehicle_pipeline = None;
         self.vehicle_pending_inputs.clear();
     }
 
@@ -770,6 +1022,49 @@ impl WasmSimWorld {
         out.extend_from_slice(&[dx, dy, dz, 1.0]);
         out.into_boxed_slice()
     }
+
+    #[wasm_bindgen(js_name = getVehicleDebug)]
+    pub fn get_vehicle_debug(&self, vid: u32) -> Box<[f64]> {
+        let Some(vehicle) = self.vehicles.get(&vid) else {
+            return Box::new([]);
+        };
+        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+            return Box::new([]);
+        };
+
+        let linvel = rb.linvel();
+        let speed = linvel.norm() as f64;
+        let grounded_wheels = vehicle
+            .controller
+            .wheels()
+            .iter()
+            .filter(|wheel| wheel.raycast_info().is_in_contact)
+            .count() as f64;
+        let steering = vehicle
+            .controller
+            .wheels()
+            .iter()
+            .take(2)
+            .map(|wheel| wheel.steering as f64)
+            .sum::<f64>()
+            / 2.0;
+        let engine_force = vehicle
+            .controller
+            .wheels()
+            .iter()
+            .skip(2)
+            .map(|wheel| wheel.engine_force as f64)
+            .sum::<f64>()
+            / 2.0;
+        let brake = vehicle
+            .controller
+            .wheels()
+            .iter()
+            .map(|wheel| wheel.brake as f64)
+            .fold(0.0, f64::max);
+
+        Box::new([speed, grounded_wheels, steering, engine_force, brake])
+    }
 }
 
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
@@ -837,6 +1132,7 @@ impl WasmSimWorld {
             v.x as f64, v.y as f64, v.z as f64,
         ])
     }
+
 }
 
 #[wasm_bindgen]

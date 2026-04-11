@@ -262,6 +262,7 @@ export class PredictionManager {
         body.position[0], body.position[1], body.position[2],
         body.quaternion[0], body.quaternion[1], body.quaternion[2], body.quaternion[3],
         body.velocity[0], body.velocity[1], body.velocity[2],
+        body.angularVelocity[0], body.angularVelocity[1], body.angularVelocity[2],
       );
     }
     // Remove stale dynamic bodies

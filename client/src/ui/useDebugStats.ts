@@ -50,7 +50,31 @@ export function useDebugStats() {
     frameTimeMs: number,
     rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
     network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
-    physics: { pendingInputs: number; predictionTicks: number; correctionMagnitude: number; physicsStepMs: number; velocity: [number, number, number] },
+    physics: {
+      pendingInputs: number;
+      predictionTicks: number;
+      playerCorrectionMagnitude: number;
+      vehicleCorrectionMagnitude: number;
+      dynamicGlobalMaxCorrectionMagnitude: number;
+      dynamicNearPlayerMaxCorrectionMagnitude: number;
+      dynamicInteractiveMaxCorrectionMagnitude: number;
+      dynamicOverThresholdCount: number;
+      dynamicTrackedBodies: number;
+      dynamicInteractiveBodies: number;
+      physicsStepMs: number;
+      velocity: [number, number, number];
+    },
+    vehicle: {
+      id: number;
+      driverConfirmed: boolean;
+      localSpeedMs: number;
+      serverSpeedMs: number;
+      posDeltaM: number;
+      groundedWheels: number;
+      steering: number;
+      engineForce: number;
+      brake: number;
+    },
     position: [number, number, number],
     player: { velocity: [number, number, number]; hp: number; localFlags: number },
   ) => {
@@ -101,8 +125,24 @@ export function useDebugStats() {
     s.playerId = network.playerId;
     s.pendingInputs = physics.pendingInputs;
     s.predictionTicks = physics.predictionTicks;
-    s.correctionMagnitude = physics.correctionMagnitude;
+    s.playerCorrectionMagnitude = physics.playerCorrectionMagnitude;
+    s.vehicleCorrectionMagnitude = physics.vehicleCorrectionMagnitude;
+    s.dynamicGlobalMaxCorrectionMagnitude = physics.dynamicGlobalMaxCorrectionMagnitude;
+    s.dynamicNearPlayerMaxCorrectionMagnitude = physics.dynamicNearPlayerMaxCorrectionMagnitude;
+    s.dynamicInteractiveMaxCorrectionMagnitude = physics.dynamicInteractiveMaxCorrectionMagnitude;
+    s.dynamicOverThresholdCount = physics.dynamicOverThresholdCount;
+    s.dynamicTrackedBodies = physics.dynamicTrackedBodies;
+    s.dynamicInteractiveBodies = physics.dynamicInteractiveBodies;
     s.physicsStepMs = physics.physicsStepMs;
+    s.vehicleDebugId = vehicle.id;
+    s.vehicleDriverConfirmed = vehicle.driverConfirmed;
+    s.vehicleLocalSpeedMs = vehicle.localSpeedMs;
+    s.vehicleServerSpeedMs = vehicle.serverSpeedMs;
+    s.vehiclePosDeltaM = vehicle.posDeltaM;
+    s.vehicleGroundedWheels = vehicle.groundedWheels;
+    s.vehicleSteering = vehicle.steering;
+    s.vehicleEngineForce = vehicle.engineForce;
+    s.vehicleBrake = vehicle.brake;
     s.position = position;
     s.velocity = player.velocity;
     s.speedMs = speedMs;
@@ -120,5 +160,7 @@ export function useDebugStats() {
     }
   }, []);
 
-  return { visible, displayStats, updateFrame, recordSnapshot };
+  const getStatsSnapshot = useCallback((): DebugStats => ({ ...statsRef.current }), []);
+
+  return { visible, displayStats, updateFrame, recordSnapshot, getStatsSnapshot };
 }

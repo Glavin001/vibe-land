@@ -97,6 +97,7 @@ impl PhysicsArena {
     }
 
     pub fn remove_player(&mut self, player_id: u32) {
+        self.detach_player_from_vehicles(player_id);
         if let Some(player) = self.players.remove(&player_id) {
             self.dynamic.sim.remove_player_collider(player.collider);
         }
@@ -366,6 +367,15 @@ impl PhysicsArena {
 
         let vehicle_ids: Vec<u32> = self.vehicles.keys().copied().collect();
         for vid in vehicle_ids {
+            if let Some(driver_id) = self.vehicles.get(&vid).and_then(|vehicle| vehicle.driver_id)
+            {
+                if !self.players.contains_key(&driver_id) {
+                    self.detach_player_from_vehicles(driver_id);
+                } else if self.vehicle_of_player.get(&driver_id) != Some(&vid) {
+                    self.vehicle_of_player.insert(driver_id, vid);
+                }
+            }
+
             let (steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
@@ -404,6 +414,26 @@ impl PhysicsArena {
     }
 
     pub fn enter_vehicle(&mut self, player_id: u32, vehicle_id: u32) {
+        if !self.players.contains_key(&player_id) || !self.vehicles.contains_key(&vehicle_id) {
+            return;
+        }
+
+        self.detach_player_from_vehicles(player_id);
+
+        if let Some(current_driver_id) = self
+            .vehicles
+            .get(&vehicle_id)
+            .and_then(|vehicle| vehicle.driver_id)
+        {
+            if current_driver_id != player_id {
+                if self.players.contains_key(&current_driver_id) {
+                    self.vehicle_of_player.insert(current_driver_id, vehicle_id);
+                    return;
+                }
+                self.detach_player_from_vehicles(current_driver_id);
+            }
+        }
+
         if let Some(player) = self.players.get(&player_id) {
             if let Some(c) = self.dynamic.sim.colliders.get_mut(player.collider) {
                 c.set_collision_groups(InteractionGroups::none());
@@ -416,9 +446,8 @@ impl PhysicsArena {
     }
 
     pub fn exit_vehicle(&mut self, player_id: u32) {
-        if let Some(vehicle_id) = self.vehicle_of_player.remove(&player_id) {
+        if let Some(vehicle_id) = self.detach_player_from_vehicles(player_id) {
             if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
-                vehicle.driver_id = None;
                 if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
                     let p = *rb.translation();
                     if let Some(state) = self.players.get_mut(&player_id) {
@@ -434,6 +463,26 @@ impl PhysicsArena {
                 }
             }
         }
+    }
+
+    fn detach_player_from_vehicles(&mut self, player_id: u32) -> Option<u32> {
+        self.vehicle_of_player.remove(&player_id);
+
+        let vehicle_ids: Vec<u32> = self
+            .vehicles
+            .iter()
+            .filter_map(|(&vehicle_id, vehicle)| {
+                (vehicle.driver_id == Some(player_id)).then_some(vehicle_id)
+            })
+            .collect();
+
+        for vehicle_id in &vehicle_ids {
+            if let Some(vehicle) = self.vehicles.get_mut(vehicle_id) {
+                vehicle.driver_id = None;
+            }
+        }
+
+        vehicle_ids.into_iter().next()
     }
 
     pub fn snapshot_vehicles(&self) -> Vec<NetVehicleState> {
@@ -476,7 +525,7 @@ impl PhysicsArena {
 
     pub fn snapshot_dynamic_bodies(
         &self,
-    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
+    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
 }

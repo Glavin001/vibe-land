@@ -60,6 +60,9 @@ pub struct NetDynamicBodyState {
     pub vx_cms: i16,
     pub vy_cms: i16,
     pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +232,7 @@ pub fn make_net_dynamic_body_state(
     quat: [f32; 4],
     half_extents: [f32; 3],
     vel: [f32; 3],
+    angvel: [f32; 3],
     shape_type: u8,
 ) -> NetDynamicBodyState {
     NetDynamicBodyState {
@@ -247,6 +251,9 @@ pub fn make_net_dynamic_body_state(
         vx_cms: meters_to_cms_i16(vel[0]),
         vy_cms: meters_to_cms_i16(vel[1]),
         vz_cms: meters_to_cms_i16(vel[2]),
+        wx_mrads: rads_to_mrads_i16(angvel[0]),
+        wy_mrads: rads_to_mrads_i16(angvel[1]),
+        wz_mrads: rads_to_mrads_i16(angvel[2]),
     }
 }
 

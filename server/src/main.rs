@@ -5,7 +5,7 @@ mod protocol;
 mod voxel_world;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -67,6 +67,7 @@ const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 const PLAYER_AOI_RADIUS_M: f32 = 48.0;
 const DYNAMIC_BODY_AOI_RADIUS_M: f32 = 24.0;
+const DYNAMIC_BODY_AOI_EXIT_RADIUS_M: f32 = 32.0;
 const VEHICLE_AOI_RADIUS_M: f32 = 64.0;
 const DYNAMIC_BODY_ACTIVE_SPEED_MPS: f32 = 0.15;
 const SETTLED_DYNAMIC_REPLICATION_INTERVAL_SNAPSHOTS: u32 = 10;
@@ -446,6 +447,7 @@ struct PlayerRuntime {
     last_processed_shot_id: Option<u32>,
     next_allowed_fire_ms: u32,
     respawn_at_ms: Option<u32>,
+    visible_dynamic_bodies: HashSet<u32>,
 }
 
 struct QueuedShot {
@@ -933,6 +935,7 @@ impl MatchState {
                         last_processed_shot_id: None,
                         next_allowed_fire_ms: 0,
                         respawn_at_ms: None,
+                        visible_dynamic_bodies: HashSet::new(),
                     },
                 );
 
@@ -1544,13 +1547,13 @@ impl MatchState {
             .arena
             .snapshot_dynamic_bodies()
             .into_iter()
-            .map(|(id, pos, quat, he, vel, shape_type)| {
+            .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
                 let speed_sq = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
                 (
                     id,
                     pos,
                     speed_sq,
-                    make_net_dynamic_body_state(id, pos, quat, he, vel, shape_type),
+                    make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type),
                 )
             })
             .collect();
@@ -1572,20 +1575,21 @@ impl MatchState {
             })
             .collect();
 
-        let recipients: Vec<_> = self
-            .players
-            .iter()
-            .map(|(&player_id, runtime)| (player_id, runtime.tx.clone(), runtime.last_ack_input_seq))
-            .collect();
+        let recipient_ids: Vec<u32> = self.players.keys().copied().collect();
 
         let mut snapshot_bytes_this_tick = 0usize;
-        for (recipient_id, tx, ack_input_seq) in recipients {
+        for recipient_id in recipient_ids {
             let Some(recipient_pos) = player_states
                 .iter()
                 .find_map(|(player_id, pos, _)| (*player_id == recipient_id).then_some(*pos))
             else {
                 continue;
             };
+            let Some(runtime) = self.players.get_mut(&recipient_id) else {
+                continue;
+            };
+            let tx = runtime.tx.clone();
+            let ack_input_seq = runtime.last_ack_input_seq;
 
             let filtered_players: Vec<_> = player_states
                 .iter()
@@ -1596,19 +1600,28 @@ impl MatchState {
                 .map(|(_, _, state)| *state)
                 .collect();
 
-            let filtered_dynamic_bodies: Vec<_> = dynamic_body_states
-                .iter()
-                .filter(|(body_id, pos, speed_sq, _)| {
-                    if distance_sq(*pos, recipient_pos)
-                        > DYNAMIC_BODY_AOI_RADIUS_M * DYNAMIC_BODY_AOI_RADIUS_M
-                    {
-                        return false;
-                    }
-                    *speed_sq >= DYNAMIC_BODY_ACTIVE_SPEED_MPS * DYNAMIC_BODY_ACTIVE_SPEED_MPS
-                        || dynamic_body_replication_due(self.server_tick, *body_id)
-                })
-                .map(|(_, _, _, state)| *state)
-                .collect();
+            let mut filtered_dynamic_bodies = Vec::new();
+            let mut next_visible_dynamic_bodies = HashSet::new();
+            for (body_id, pos, speed_sq, state) in &dynamic_body_states {
+                let dist_sq = distance_sq(*pos, recipient_pos);
+                let was_visible = runtime.visible_dynamic_bodies.contains(body_id);
+                let within_aoi = if was_visible {
+                    dist_sq <= DYNAMIC_BODY_AOI_EXIT_RADIUS_M * DYNAMIC_BODY_AOI_EXIT_RADIUS_M
+                } else {
+                    dist_sq <= DYNAMIC_BODY_AOI_RADIUS_M * DYNAMIC_BODY_AOI_RADIUS_M
+                };
+                if !within_aoi {
+                    continue;
+                }
+                next_visible_dynamic_bodies.insert(*body_id);
+                if !was_visible
+                    || *speed_sq >= DYNAMIC_BODY_ACTIVE_SPEED_MPS * DYNAMIC_BODY_ACTIVE_SPEED_MPS
+                    || dynamic_body_replication_due(self.server_tick, *body_id)
+                {
+                    filtered_dynamic_bodies.push(*state);
+                }
+            }
+            runtime.visible_dynamic_bodies = next_visible_dynamic_bodies;
 
             let filtered_vehicles: Vec<_> = vehicle_states
                 .iter()
@@ -1783,7 +1796,7 @@ mod tests {
         compute_density_metrics, enqueue_inputs, rifle_damage, take_input_for_tick, HitZone,
         InputCmd, PlayerRuntime, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE, MAX_PENDING_INPUTS,
     };
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::sync::mpsc;
     use vibe_land_shared::seq::seq_is_newer;
 
@@ -1808,6 +1821,7 @@ mod tests {
             last_processed_shot_id: None,
             next_allowed_fire_ms: 0,
             respawn_at_ms: None,
+            visible_dynamic_bodies: HashSet::new(),
         }
     }
 

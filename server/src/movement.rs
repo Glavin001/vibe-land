@@ -101,6 +101,7 @@ impl PhysicsArena {
     }
 
     pub fn remove_player(&mut self, player_id: u32) {
+        self.detach_player_from_vehicles(player_id);
         if let Some(player) = self.players.remove(&player_id) {
             self.dynamic.sim.remove_player_collider(player.collider);
         }
@@ -389,6 +390,15 @@ impl PhysicsArena {
 
         let vehicle_ids: Vec<u32> = self.vehicles.keys().copied().collect();
         for vid in vehicle_ids {
+            if let Some(driver_id) = self.vehicles.get(&vid).and_then(|vehicle| vehicle.driver_id)
+            {
+                if !self.players.contains_key(&driver_id) {
+                    self.detach_player_from_vehicles(driver_id);
+                } else if self.vehicle_of_player.get(&driver_id) != Some(&vid) {
+                    self.vehicle_of_player.insert(driver_id, vid);
+                }
+            }
+
             // Collect driver input from the player driving this vehicle.
             let (steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
@@ -433,6 +443,26 @@ impl PhysicsArena {
 
     /// Put `player_id` into `vehicle_id`.
     pub fn enter_vehicle(&mut self, player_id: u32, vehicle_id: u32) {
+        if !self.players.contains_key(&player_id) || !self.vehicles.contains_key(&vehicle_id) {
+            return;
+        }
+
+        self.detach_player_from_vehicles(player_id);
+
+        if let Some(current_driver_id) = self
+            .vehicles
+            .get(&vehicle_id)
+            .and_then(|vehicle| vehicle.driver_id)
+        {
+            if current_driver_id != player_id {
+                if self.players.contains_key(&current_driver_id) {
+                    self.vehicle_of_player.insert(current_driver_id, vehicle_id);
+                    return;
+                }
+                self.detach_player_from_vehicles(current_driver_id);
+            }
+        }
+
         if let Some(player) = self.players.get(&player_id) {
             // Ghost the player collider so it doesn't interfere with the chassis.
             if let Some(c) = self.dynamic.sim.colliders.get_mut(player.collider) {
@@ -447,9 +477,8 @@ impl PhysicsArena {
 
     /// Remove `player_id` from their current vehicle.
     pub fn exit_vehicle(&mut self, player_id: u32) {
-        if let Some(vehicle_id) = self.vehicle_of_player.remove(&player_id) {
+        if let Some(vehicle_id) = self.detach_player_from_vehicles(player_id) {
             if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
-                vehicle.driver_id = None;
                 // Teleport player 2.5 m to the right of the chassis.
                 if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
                     let p = *rb.translation();
@@ -466,6 +495,26 @@ impl PhysicsArena {
                 }
             }
         }
+    }
+
+    fn detach_player_from_vehicles(&mut self, player_id: u32) -> Option<u32> {
+        self.vehicle_of_player.remove(&player_id);
+
+        let vehicle_ids: Vec<u32> = self
+            .vehicles
+            .iter()
+            .filter_map(|(&vehicle_id, vehicle)| {
+                (vehicle.driver_id == Some(player_id)).then_some(vehicle_id)
+            })
+            .collect();
+
+        for vehicle_id in &vehicle_ids {
+            if let Some(vehicle) = self.vehicles.get_mut(vehicle_id) {
+                vehicle.driver_id = None;
+            }
+        }
+
+        vehicle_ids.into_iter().next()
     }
 
     /// Snapshot all vehicles for broadcasting.
@@ -509,7 +558,7 @@ impl PhysicsArena {
 
     pub fn snapshot_dynamic_bodies(
         &self,
-    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], u8)> {
+    ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
 }
@@ -805,6 +854,53 @@ mod tests {
     }
 
     #[test]
+    fn removing_driver_releases_vehicle() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        let vehicle_id = arena.spawn_vehicle(0, vector![0.0, 2.0, 0.0]);
+
+        arena.enter_vehicle(1, vehicle_id);
+        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
+
+        arena.remove_player(1);
+
+        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), None);
+        assert!(!arena.vehicle_of_player.contains_key(&1));
+    }
+
+    #[test]
+    fn stale_vehicle_driver_does_not_block_entry() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        let vehicle_id = arena.spawn_vehicle(0, vector![0.0, 2.0, 0.0]);
+
+        if let Some(vehicle) = arena.vehicles.get_mut(&vehicle_id) {
+            vehicle.driver_id = Some(99);
+        }
+
+        arena.enter_vehicle(1, vehicle_id);
+
+        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
+    }
+
+    #[test]
+    fn occupied_vehicle_stays_locked_for_other_players() {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena.spawn_player(2);
+        let vehicle_id = arena.spawn_vehicle(0, vector![0.0, 2.0, 0.0]);
+
+        arena.enter_vehicle(1, vehicle_id);
+        arena.enter_vehicle(2, vehicle_id);
+
+        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
+        assert!(!arena.vehicle_of_player.contains_key(&2));
+    }
+
+    #[test]
     fn wall_collision_stops_horizontal_movement() {
         let mut arena = arena_with_ground();
         arena.add_static_cuboid(
@@ -893,20 +989,20 @@ mod tests {
 
             if (tick + 1) % 120 == 0 {
                 let snap = arena.snapshot_dynamic_bodies();
-                let fallen: Vec<_> = snap.iter().filter(|s| s.5 == 1 && s.1[1] < 0.0).collect();
+                let fallen: Vec<_> = snap.iter().filter(|s| s.6 == 1 && s.1[1] < 0.0).collect();
                 if !fallen.is_empty() {
                     eprintln!(
                         "tick {}: {} / {} balls below y=0",
                         tick + 1,
                         fallen.len(),
-                        snap.iter().filter(|s| s.5 == 1).count(),
+                        snap.iter().filter(|s| s.6 == 1).count(),
                     );
                 }
             }
         }
 
         let snapshot = arena.snapshot_dynamic_bodies();
-        let balls: Vec<_> = snapshot.iter().filter(|s| s.5 == 1).collect();
+        let balls: Vec<_> = snapshot.iter().filter(|s| s.6 == 1).collect();
         assert!(!balls.is_empty(), "expected ball-pit balls");
 
         let fallen: Vec<_> = balls.iter().filter(|b| b.1[1] < 0.0).collect();
@@ -979,7 +1075,7 @@ mod tests {
         }
 
         let pre_snap = arena.snapshot_dynamic_bodies();
-        let pre_balls: Vec<_> = pre_snap.iter().filter(|s| s.5 == 1).collect();
+        let pre_balls: Vec<_> = pre_snap.iter().filter(|s| s.6 == 1).collect();
         assert!(!pre_balls.is_empty(), "expected ball-pit balls");
         let pre_fallen: Vec<_> = pre_balls.iter().filter(|b| b.1[1] < 0.0).collect();
         assert_eq!(pre_fallen.len(), 0, "balls fell before edit");
@@ -1000,7 +1096,7 @@ mod tests {
         }
 
         let post_snap = arena.snapshot_dynamic_bodies();
-        let post_balls: Vec<_> = post_snap.iter().filter(|s| s.5 == 1).collect();
+        let post_balls: Vec<_> = post_snap.iter().filter(|s| s.6 == 1).collect();
         let post_fallen: Vec<_> = post_balls.iter().filter(|b| b.1[1] < 0.0).collect();
         assert_eq!(
             post_fallen.len(),
