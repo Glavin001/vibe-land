@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::time::Instant;
 
 use nalgebra::Vector3;
 use rapier3d::control::DynamicRayCastVehicleController;
@@ -15,6 +14,27 @@ use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_marker() -> Instant {
+    Instant::now()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_marker() {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn elapsed_ms(started: Instant) -> f32 {
+    started.elapsed().as_secs_f32() * 1000.0
+}
+
+#[cfg(target_arch = "wasm32")]
+fn elapsed_ms(_: ()) -> f32 {
+    0.0
+}
 
 pub struct Vehicle {
     pub chassis_body: RigidBodyHandle,
@@ -159,12 +179,11 @@ impl PhysicsArena {
             input,
             dt,
         );
-        let sync_started = Instant::now();
+        let sync_started = now_marker();
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
-        tick_result.timings.collider_sync_ms =
-            sync_started.elapsed().as_secs_f32() * 1000.0;
+        tick_result.timings.collider_sync_ms = elapsed_ms(sync_started);
 
         for impulse in &tick_result.dynamic_impulses {
             let _ = self.apply_dynamic_body_impulse(

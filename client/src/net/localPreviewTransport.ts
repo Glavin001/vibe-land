@@ -14,6 +14,7 @@ import {
 } from './protocol';
 
 const FIXED_DT = 1 / 60;
+const MAX_CATCHUP_TICKS = 4;
 
 export type LocalPreviewTransportHandlers = {
   onPacket?: (packet: ServerPacket) => void;
@@ -24,6 +25,8 @@ export class LocalPreviewTransport {
   private session: WasmLocalSession | null = null;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private closed = false;
+  private tickAccumulatorSec = 0;
+  private lastTickTimeMs = 0;
 
   private constructor(private readonly handlers: LocalPreviewTransportHandlers = {}) {}
 
@@ -35,11 +38,24 @@ export class LocalPreviewTransport {
     transport.session = new WasmLocalSession();
     transport.session.connect();
     transport.flushPackets();
+    transport.lastTickTimeMs = performance.now();
     transport.tickHandle = setInterval(() => {
       if (!transport.session || transport.closed) {
         return;
       }
-      transport.session.tick(FIXED_DT);
+      const nowMs = performance.now();
+      const elapsedSec = Math.min(Math.max((nowMs - transport.lastTickTimeMs) / 1000, 0), 0.1);
+      transport.lastTickTimeMs = nowMs;
+      transport.tickAccumulatorSec += elapsedSec;
+      let ticks = 0;
+      while (transport.tickAccumulatorSec >= FIXED_DT && ticks < MAX_CATCHUP_TICKS) {
+        transport.session.tick(FIXED_DT);
+        transport.tickAccumulatorSec -= FIXED_DT;
+        ticks += 1;
+      }
+      if (transport.tickAccumulatorSec > FIXED_DT) {
+        transport.tickAccumulatorSec = FIXED_DT;
+      }
       transport.flushPackets();
     }, 1000 / 60);
     return transport;
@@ -50,6 +66,8 @@ export class LocalPreviewTransport {
       return;
     }
     this.closed = true;
+    this.tickAccumulatorSec = 0;
+    this.lastTickTimeMs = 0;
     if (this.tickHandle) {
       clearInterval(this.tickHandle);
       this.tickHandle = null;

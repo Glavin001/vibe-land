@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
+import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { InputFamilyMode } from './input/types';
@@ -7,9 +8,13 @@ import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 
-const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
+type AppProps = {
+  mode: GameMode;
+};
 
-export function App() {
+export function App({ mode }: AppProps) {
+  const practiceMode = isPracticeMode(mode);
+  const modeLabel = gameModeLabel(mode);
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState('Click to join');
@@ -31,20 +36,20 @@ export function App() {
   const handleConnect = useCallback(() => {
     setConnected(true);
     setCrosshairState('idle');
-    setStatus(IS_LOCAL_PREVIEW ? 'Starting local preview...' : 'Connecting...');
-  }, []);
+    setStatus(practiceMode ? 'Starting firing range...' : 'Connecting...');
+  }, [practiceMode]);
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview' : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
-  }, []);
+    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
+  }, [modeLabel, practiceMode]);
 
   const handleDisconnect = useCallback(() => {
-    setStatus(`${IS_LOCAL_PREVIEW ? 'Local preview stopped' : 'Disconnected'} — click to rejoin`);
+    setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
     setConnected(false);
     setPlayerId(0);
     setCrosshairState('idle');
-  }, []);
+  }, [modeLabel, practiceMode]);
 
   useEffect(() => {
     const setTimedCopyNotice = (message: string) => {
@@ -125,8 +130,11 @@ export function App() {
         >
           <div style={{ textAlign: 'center' }}>
             <h1 style={{ fontSize: 48, marginBottom: 16 }}>vibe-land</h1>
+            <p style={{ fontSize: 14, opacity: 0.5, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.18em' }}>
+              {mode === 'multiplayer' ? '/play' : '/practice'}
+            </p>
             <p style={{ fontSize: 20, opacity: 0.7 }}>
-              {IS_LOCAL_PREVIEW ? 'Click anywhere to launch local preview' : 'Click anywhere to join'}
+              {practiceMode ? 'Click anywhere to launch the firing range' : 'Click anywhere to join multiplayer'}
             </p>
           </div>
         </div>
@@ -145,6 +153,23 @@ export function App() {
         }}
       >
         {status}
+      </div>
+      <div
+        style={{
+          position: 'absolute',
+          top: 8,
+          right: 8,
+          zIndex: 5,
+          display: 'flex',
+          gap: 8,
+        }}
+      >
+        <a href="/" style={navLinkStyle}>
+          Home
+        </a>
+        <a href={practiceMode ? '/play' : '/practice'} style={navLinkStyle}>
+          {practiceMode ? 'Multiplayer' : 'Firing range'}
+        </a>
       </div>
       {copyNotice && (
         <div
@@ -222,6 +247,7 @@ export function App() {
       )}
       {connected && (
         <GameScene
+          mode={mode}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
@@ -238,3 +264,12 @@ export function App() {
     </div>
   );
 }
+
+const navLinkStyle: CSSProperties = {
+  background: 'rgba(0,0,0,0.6)',
+  color: '#fff',
+  textDecoration: 'none',
+  padding: '6px 10px',
+  borderRadius: 4,
+  fontSize: 13,
+};

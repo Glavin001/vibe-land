@@ -3,6 +3,7 @@ import { provideWasmClockSync } from '../net/interpolation';
 import { installWasmSimWorldCompat } from './compat';
 
 let initialized = false;
+let initPromise: Promise<void> | null = null;
 type WasmDebugRenderBuffers = {
   vertices: Float32Array;
   colors: Float32Array;
@@ -102,9 +103,17 @@ const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
 
 export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;
-  await init();
-  provideWasmClockSync(WasmClockSync);
-  initialized = true;
+  if (!initPromise) {
+    initPromise = (async () => {
+      await init();
+      provideWasmClockSync(WasmClockSync);
+      initialized = true;
+    })().catch((error) => {
+      initPromise = null;
+      throw error;
+    });
+  }
+  await initPromise;
 }
 
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };

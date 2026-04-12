@@ -1,4 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import type { GameMode } from '../app/gameMode';
+import { isPracticeMode } from '../app/gameMode';
 import { initSharedPhysics, WasmSimWorld } from '../wasm/sharedPhysics';
 import type { WasmDebugRenderBuffers, WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { PredictionManager } from './predictionManager';
@@ -8,7 +10,6 @@ import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, Ne
 import type { SemanticInputState } from '../input/types';
 import type { RenderBlock } from '../world/voxelWorld';
 
-const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
 const PREDICTED_DYNAMIC_BODY_IMPULSE = 6.0;
 const FIXED_DT = 1 / 60;
 
@@ -32,7 +33,8 @@ type PlayerAimHit = {
  * Thin React wrapper around PredictionManager.
  * Handles shared WASM init and lifecycle only.
  */
-export function usePrediction() {
+export function usePrediction(mode: GameMode) {
+  const practiceMode = isPracticeMode(mode);
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const dynamicBodyManagerRef = useRef<DynamicBodyPredictionManager | null>(null);
@@ -48,12 +50,12 @@ export function usePrediction() {
       if (disposed) return;
 
       const sim = new WasmSimWorld();
-      if (!IS_LOCAL_PREVIEW) {
+      if (!practiceMode) {
         sim.seedDemoTerrain();
       }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
-      if (IS_LOCAL_PREVIEW) {
+      if (practiceMode) {
         // Local preview skips per-block collider sync; seed a simple ground plane
         // directly so movement works without waiting on network-style world packets.
         sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
@@ -61,9 +63,7 @@ export function usePrediction() {
       sim.rebuildBroadPhase();
 
       const manager = new PredictionManager(sim);
-      if (!IS_LOCAL_PREVIEW) {
-        manager.enableTerrainWorld();
-      }
+      manager.enableTerrainWorld();
       managerRef.current = manager;
       vehicleManagerRef.current = new VehiclePredictionManager(sim);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
@@ -98,7 +98,7 @@ export function usePrediction() {
       dynamicBodyManagerRef.current = null;
       simRef.current = null;
     };
-  }, []);
+  }, [practiceMode]);
 
   const applyWorldPacket = useCallback((packet: ServerWorldPacket) => {
     const m = managerRef.current;
@@ -266,14 +266,14 @@ export function usePrediction() {
     qx: number, qy: number, qz: number, qw: number,
     vx: number, vy: number, vz: number,
   ): void => {
-    if (IS_LOCAL_PREVIEW) return;
+    if (practiceMode) return;
     simRef.current?.syncRemoteVehicle(id, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
-  }, []);
+  }, [practiceMode]);
 
   const syncBroadPhase = useCallback((): void => {
-    if (IS_LOCAL_PREVIEW) return;
+    if (practiceMode) return;
     simRef.current?.syncBroadPhase();
-  }, []);
+  }, [practiceMode]);
 
   const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
     const vm = vehicleManagerRef.current;
@@ -321,7 +321,7 @@ export function usePrediction() {
     brake: number;
   } | null => {
     const sim = simRef.current;
-    if (!sim || IS_LOCAL_PREVIEW) return null;
+    if (!sim) return null;
     const raw = sim.getVehicleDebug(vehicleId);
     if (raw.length < 5) return null;
     return {
@@ -340,17 +340,14 @@ export function usePrediction() {
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const dynamicManager = dynamicBodyManagerRef.current;
     if (!dynamicManager) return;
-    if (IS_LOCAL_PREVIEW) return;
     dynamicManager.syncAuthoritativeBodies(bodies);
   }, []);
 
   const advanceDynamicBodies = useCallback((frameDeltaSec: number, allowProxyStep: boolean): void => {
-    if (IS_LOCAL_PREVIEW) return;
     dynamicBodyManagerRef.current?.advance(frameDeltaSec, allowProxyStep);
   }, []);
 
   const getDynamicBodyRenderState = useCallback((id: number): DynamicBodyStateMeters | null => {
-    if (IS_LOCAL_PREVIEW) return null;
     return dynamicBodyManagerRef.current?.getRenderedBodyState(id) ?? null;
   }, []);
 
@@ -361,7 +358,7 @@ export function usePrediction() {
     blockerDistance: number | null = null,
   ): number | null => {
     const sim = simRef.current;
-    if (!sim || IS_LOCAL_PREVIEW) return null;
+    if (!sim) return null;
 
     const hit = sim.castDynamicBodyRay(
       origin[0], origin[1], origin[2],
@@ -400,7 +397,6 @@ export function usePrediction() {
   }, []);
 
   const hasRecentDynamicBodyInteraction = useCallback((id: number): boolean => {
-    if (IS_LOCAL_PREVIEW) return false;
     return dynamicBodyManagerRef.current?.hasRecentInteraction(id) ?? false;
   }, []);
 

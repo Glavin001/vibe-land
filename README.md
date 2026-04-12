@@ -19,34 +19,44 @@ make dev     # start server + client in parallel
 
 Open `https://localhost:5555` and click to join.
 
-## Local Preview Mode
+## Unified Web App
 
-To run the game entirely in one browser tab with no Rust server, WebSocket, or WebTransport dependency:
+The client now ships as one SPA build with multiple entry routes:
+
+- `/` launcher
+- `/play` multiplayer
+- `/practice` firing range (browser-only single-player)
+- `/stats` server stats
+- `/loadtest` browser load test
+
+To run the firing range entirely in one browser tab with no Rust server, WebSocket, or WebTransport dependency:
 
 ```bash
 cd client
-npm run dev:local-preview
+npm run dev:practice
 ```
 
-To build the static browser-only preview bundle:
+To build the deployable web app bundle:
 
 ```bash
 cd client
-npm run build:local-preview
+npm run build
 ```
 
-This mode keeps the normal client prediction/render path, but swaps the remote server transport for an in-browser authoritative WASM session seeded with the demo world, vehicle, and dynamic bodies.
+`/practice` keeps the normal client prediction/render path, but swaps the remote server transport for an in-browser authoritative WASM session seeded with the demo world, vehicle, and dynamic bodies.
 
 ## Vercel Deployment
 
-The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the static `local-preview` client bundle.
+The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the unified static client bundle.
 
 - Vercel build target: `client/dist`
-- Vercel build command: `npm --prefix client run build:vercel-local-preview`
-- Local/full multiplayer dev remains unchanged:
-  use `make dev` or `cd client && npm run dev` plus the Rust server
+- Vercel build command: `npm --prefix client run build`
+- Static assets under `/assets/*` are cached as immutable hashed files
+- SPA routes revalidate on each request so browsers can reuse cached assets quickly after checking freshness
 
-This means Vercel preview deployments host the browser-only single-player preview, while local development can still run the full multiplayer stack.
+If the web app and Rust backend share the same origin, no extra client config is needed. If the SPA is hosted separately, set `VITE_MULTIPLAYER_HTTP_ORIGIN` to the public backend origin so `/play`, `/stats`, and `/loadtest` target the multiplayer server correctly.
+
+This means one deploy can serve both multiplayer and single-player routes.
 
 > **HTTPS is required** — WebTransport only works in secure contexts. When `WT_CERT_PEM`/`WT_KEY_PEM` are set in `.env`, Vite serves HTTPS automatically using those certs. In dev (no certs set), the server generates a self-signed cert; Chrome/Edge accept it via hash pinning.
 
@@ -54,6 +64,7 @@ Or run manually:
 
 ```bash
 cp .env.example .env   # edit WT_HOST, cert paths, etc.
+                       # optionally set VITE_MULTIPLAYER_HTTP_ORIGIN when the SPA and game backend use different origins
                        # for local WT on macOS, prefer WT_HOST=127.0.0.1 to avoid localhost resolving to ::1 first
 
 # Build shared WASM module (once, or after changes to shared/)

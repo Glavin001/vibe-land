@@ -1,14 +1,24 @@
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { resolveAppRoute } from './app/routes';
 import { LoadTestPage } from './pages/LoadTest';
+import { HomePage } from './pages/Home';
 import { ServerStats } from './pages/ServerStats';
 
 const root = createRoot(document.getElementById('root')!);
+const route = resolveAppRoute(window.location.pathname);
 
-if (window.location.pathname === '/stats') {
-  root.render(<ServerStats />);
-} else if (window.location.pathname === '/loadtest') {
-  root.render(<LoadTestPage />);
-} else {
-  root.render(<App />);
+switch (route.kind) {
+  case 'stats':
+    root.render(<ServerStats />);
+    break;
+  case 'loadtest':
+    root.render(<LoadTestPage />);
+    break;
+  case 'game':
+    root.render(<App mode={route.mode} />);
+    break;
+  case 'launcher':
+  default:
+    root.render(<HomePage />);
 }

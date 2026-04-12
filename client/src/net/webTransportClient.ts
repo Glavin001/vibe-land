@@ -61,6 +61,7 @@ export type SessionConfigResponse = {
 
 export type WebTransportGameClientOptions = {
   matchId: string;
+  sessionConfigEndpoint?: string;
   onReliablePacket?: (packet: ServerReliablePacket) => void;
   onDatagramPacket?: (packet: ServerDatagramPacket, receivedLocalUs: number) => void;
   onWelcome?: (packet: WelcomePacket) => void;
@@ -84,7 +85,7 @@ export class WebTransportGameClient {
 
   static async connect(options: WebTransportGameClientOptions): Promise<WebTransportGameClient> {
     console.info('[webtransport] fetching session config for match:', options.matchId);
-    const sessionConfig = await fetchSessionConfig(options.matchId);
+    const sessionConfig = await fetchSessionConfig(options.matchId, options.sessionConfigEndpoint);
     console.info('[webtransport] session config:', {
       url: sessionConfig.url,
       certMode: sessionConfig.server_certificate_hash_hex ? 'self-signed (pinned hash)' : 'CA-signed',
@@ -280,9 +281,10 @@ export class WebTransportGameClient {
   }
 }
 
-async function fetchSessionConfig(matchId: string): Promise<SessionConfigResponse> {
-  const url = `/session-config?match_id=${encodeURIComponent(matchId)}`;
-  console.info('[webtransport] GET', url);
+async function fetchSessionConfig(matchId: string, endpoint = '/session-config'): Promise<SessionConfigResponse> {
+  const url = new URL(endpoint, window.location.href);
+  url.searchParams.set('match_id', matchId);
+  console.info('[webtransport] GET', url.toString());
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`failed to fetch session config: HTTP ${response.status} ${response.statusText}`);

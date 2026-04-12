@@ -19,6 +19,7 @@ Or step by step:
 
 ```bash
 cp .env.example .env   # edit WT_HOST, cert paths, ports as needed
+                       # set VITE_MULTIPLAYER_HTTP_ORIGIN only when the SPA points at a different multiplayer origin
 
 # Build the shared WASM module (required before running the client;
 # re-run after any change to shared/)
@@ -55,7 +56,7 @@ make client
 - Port and allowed hosts come from `.env` (default: 5555).
 - Vite proxies `/ws/*`, `/healthz`, and `/session-config` to the Rust server.
 - When `WT_CERT_PEM`/`WT_KEY_PEM` are set, Vite serves **HTTPS** automatically (required for WebTransport).
-- Open `https://localhost:5555` in browser, click to join.
+- Open `https://localhost:5555` in browser, then use `/play` for multiplayer or `/practice` for the firing range.
 - Press **F3** to toggle the debug overlay (shows transport, ping, FPS, physics stats).
 
 ### Lint / type check
@@ -72,7 +73,7 @@ make check-client  # tsc --noEmit
 
 - **Server:** `cd server && cargo build`
 - **Client (WASM):** `cd shared && wasm-pack build --target web --out-dir ../client/pkg`
-- **Client:** `cd client && npx vite build`
+- **Client:** `cd client && npm run build`
 
 ### WebTransport infrastructure (infra/)
 
@@ -115,6 +116,8 @@ Firewall requirements for WebTransport:
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.
 - The shared WASM crate (`shared/`) is compiled separately with `wasm-pack` and output to `client/pkg/`. This must be rebuilt whenever `shared/` changes.
+- The web client is a single SPA build. Runtime route selection decides between `/play` multiplayer and `/practice` firing range; build mode no longer selects that behavior.
+- `VITE_MULTIPLAYER_HTTP_ORIGIN` is optional. Leave it unset for same-origin deployments; set it when the SPA is hosted separately from the Rust/WebTransport backend.
 - The `rapier3d` 0.30 API is used. Key notes: `KinematicCharacterController` is in `rapier3d::control`.
 - The client's old files (`GameRuntime.ts`, `predictedFpsController.ts`, `voxelWorld.ts`, `connectSpacetime.ts`) depend on `@dimforge/rapier3d-compat` and SpacetimeDB bindings which are excluded from tsconfig for the MVP. The active client entry point is `src/main.tsx`.
 - Remote player rendering uses imperative Three.js mesh creation inside a `useFrame` loop on a `<group ref>`. The meshes are colored capsules with player ID labels.

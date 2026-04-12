@@ -130,7 +130,7 @@ export class NetcodeClient {
   /**
    * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
    */
-  async connectWithFallback(matchId: string, wsUrl: string): Promise<void> {
+  async connectWithFallback(matchId: string, wsUrl: string, sessionConfigEndpoint?: string): Promise<void> {
     const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
     console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
 
@@ -139,6 +139,7 @@ export class NetcodeClient {
       try {
         const wt = await WebTransportGameClient.connect({
           matchId,
+          sessionConfigEndpoint,
           onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket),
           onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket),
           onClose: () => { this.config.onDisconnect?.(); },

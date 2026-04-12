@@ -1,6 +1,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use std::collections::HashMap;
+use std::sync::Once;
 
 use nalgebra::{vector, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
@@ -19,6 +20,12 @@ use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
+
+static PANIC_HOOK: Once = Once::new();
+
+fn install_panic_hook_once() {
+    PANIC_HOOK.call_once(console_error_panic_hook::set_once);
+}
 
 struct WasmVehicle {
     chassis_body: RigidBodyHandle,
@@ -96,6 +103,7 @@ pub struct WasmSimWorld {
 impl WasmSimWorld {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        install_panic_hook_once();
         Self {
             sim: SimWorld::new(MoveConfig::default()),
             player_collider: None,
@@ -1201,6 +1209,7 @@ pub struct WasmLocalSession {
 impl WasmLocalSession {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
+        install_panic_hook_once();
         Self {
             inner: LocalPreviewSession::new(),
         }

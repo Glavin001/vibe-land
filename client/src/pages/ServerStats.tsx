@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import {
   avgPendingInputs,
   describeBottleneck,
@@ -23,15 +24,14 @@ function useServerStats() {
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statsWebSocketUrl = resolveMultiplayerBackend().statsWebSocketUrl;
 
   useEffect(() => {
     let cancelled = false;
 
     function connect() {
       if (cancelled) return;
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url = `${proto}//${window.location.host}/ws/stats`;
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(statsWebSocketUrl);
       wsRef.current = ws;
       setConnState('connecting');
 
@@ -68,7 +68,7 @@ function useServerStats() {
       if (retryTimer.current) clearTimeout(retryTimer.current);
       wsRef.current?.close();
     };
-  }, []);
+  }, [statsWebSocketUrl]);
 
   return { stats, connState, lastUpdate };
 }

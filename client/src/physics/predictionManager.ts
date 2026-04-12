@@ -5,8 +5,6 @@ import type { SemanticInputState } from '../input/types';
 import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
-const IS_LOCAL_PREVIEW = import.meta.env.MODE === 'local-preview';
-
 export const FIXED_DT = 1 / 60;
 export const MAX_CATCHUP_STEPS = 4;
 export const HARD_SNAP_DISTANCE = 3.0;
@@ -38,10 +36,11 @@ export class PredictionManager {
   private terrainLoaded = false;
   private initialized = false;
   private _lastPhysicsStepMs = 0;
-  readonly isLocalPreview = IS_LOCAL_PREVIEW;
+  readonly isLocalPreview: boolean;
 
-  constructor(private readonly sim: WasmSimWorldInstance) {
-    this.voxelWorld = new ClientVoxelWorld(sim, !IS_LOCAL_PREVIEW);
+  constructor(private readonly sim: WasmSimWorldInstance, isLocalPreview = false) {
+    this.isLocalPreview = isLocalPreview;
+    this.voxelWorld = new ClientVoxelWorld(sim, !isLocalPreview);
   }
 
   /**

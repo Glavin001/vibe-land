@@ -9,15 +9,19 @@
     "build:wasm": "npm run gen:constants && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg",
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",
+    "dev:practice": "vite --open /practice",
     "predev:local-preview": "npm run ensure:wasm-pack && npm run build:wasm",
-    "dev:local-preview": "vite --mode local-preview",
+    "dev:local-preview": "npm run dev:practice",
     "build": "npm run build:wasm && tsc -b && vite build",
-    "build:local-preview": "npm run build:wasm && tsc -b && vite build --mode local-preview",
-    "build:vercel-local-preview": "rustup target add wasm32-unknown-unknown && npm run ensure:wasm-pack && npm run build:local-preview",
+    "build:local-preview": "npm run build",
+    "build:vercel-local-preview": "rustup target add wasm32-unknown-unknown && npm run ensure:wasm-pack && npm run build",
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
-    "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts"
+    "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts",
+    "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
+    "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
+    "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local"
   },
   "dependencies": {
     "@react-three/drei": "^9.117.0",
