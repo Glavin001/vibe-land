@@ -165,6 +165,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function assertClientLoadtestAvailable(clientUrl: string): Promise<void> {
+  const loadtestUrl = new URL('/loadtest?benchmark=1', clientUrl);
+  let response: Response;
+  try {
+    response = await fetch(loadtestUrl, {
+      redirect: 'follow',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Benchmark client page is unreachable at ${loadtestUrl.toString()}. ` +
+      `Start the Vite client or pass --client-url to a reachable dev server. ` +
+      `Underlying error: ${message}`,
+    );
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Benchmark client page responded with HTTP ${response.status} at ${loadtestUrl.toString()}. ` +
+      `Start the Vite client or pass --client-url to a reachable dev server.`,
+    );
+  }
+}
+
 async function runWebTransportWorker(spec: BenchmarkScenarioSpec, clientUrl: string, headless: boolean): Promise<BrowserWorkerRun> {
   if (spec.scenario.transportMix.webtransport <= 0) {
     return { result: null, consoleErrors: [], pageErrors: [] };
@@ -338,6 +362,7 @@ async function main(): Promise<void> {
 
   if (scenarios.some((scenario) => scenario.scenario.transportMix.webtransport > 0)) {
     await assertWebTransportAutomationAvailable();
+    await assertClientLoadtestAvailable(environment.clientUrl);
   }
 
   await mkdir(args.outputDir, { recursive: true });

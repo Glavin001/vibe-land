@@ -81,6 +81,8 @@ export function LoadTestPage() {
   const completionTimerRef = useRef<number | null>(null);
   const benchmarkErrorsRef = useRef<string[]>([]);
   const runStartedAtRef = useRef<string | null>(null);
+  const peakConnectedBotsRef = useRef(0);
+  const latestBottleneckRef = useRef('waiting for server stats');
   const [scenarioText, setScenarioText] = useState(() =>
     launchConfigRef.current.scenarioText ?? JSON.stringify(PAGE_SCENARIO, null, 2),
   );
@@ -92,6 +94,10 @@ export function LoadTestPage() {
   const [bottleneck, setBottleneck] = useState('waiting for server stats');
   const botsRef = useRef<BrowserBot[]>([]);
   const statsSocketRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    latestBottleneckRef.current = bottleneck;
+  }, [bottleneck]);
 
   useEffect(() => {
     if (!launchConfigRef.current.autoStart || autoStartTriggeredRef.current) {
@@ -145,6 +151,8 @@ export function LoadTestPage() {
       stopBots(botsRef.current);
       botsRef.current = [];
       runStartedAtRef.current = new Date().toISOString();
+      peakConnectedBotsRef.current = 0;
+      latestBottleneckRef.current = 'waiting for server stats';
       if (completionTimerRef.current !== null) {
         window.clearTimeout(completionTimerRef.current);
         completionTimerRef.current = null;
@@ -240,7 +248,9 @@ export function LoadTestPage() {
 
   function updateCounters(): void {
     const bots = botsRef.current;
-    setConnectedBots(bots.filter((bot) => bot.connected).length);
+    const connected = bots.filter((bot) => bot.connected).length;
+    peakConnectedBotsRef.current = Math.max(peakConnectedBotsRef.current, connected);
+    setConnectedBots(connected);
     setSnapshotsReceived(bots.reduce((sum, bot) => sum + bot.snapshotsReceived, 0));
   }
 
@@ -254,7 +264,7 @@ export function LoadTestPage() {
       kind: 'webtransport',
       scenario,
       requestedBots: scenario.transportMix.webtransport,
-      connectedBots: botsRef.current.filter((bot) => bot.connected).length,
+      connectedBots: peakConnectedBotsRef.current,
       failedBots: Math.max(0, scenario.transportMix.webtransport - botsRef.current.length) + benchmarkErrorsRef.current.length,
       shotsFired: botsRef.current.reduce((sum, bot) => sum + bot.shotsFired, 0),
       snapshotsReceived: botsRef.current.reduce((sum, bot) => sum + bot.snapshotsReceived, 0),
@@ -263,7 +273,7 @@ export function LoadTestPage() {
       startedAt: runStartedAtRef.current ?? new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       errors: [...benchmarkErrorsRef.current],
-      bottleneck,
+      bottleneck: latestBottleneckRef.current,
     };
     stopBots(botsRef.current);
     botsRef.current = [];

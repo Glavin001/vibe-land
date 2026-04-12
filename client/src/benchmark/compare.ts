@@ -46,14 +46,29 @@ function formatDelta(value: number, suffix = ''): string {
   return `${sign}${value.toFixed(2)}${suffix}`;
 }
 
+function mostPositive<T>(items: T[], select: (item: T) => number): T | null {
+  if (items.length === 0) return null;
+  const sorted = [...items].sort((a, b) => select(b) - select(a));
+  return select(sorted[0]) > 0 ? sorted[0] : null;
+}
+
+function mostNegative<T>(items: T[], select: (item: T) => number): T | null {
+  if (items.length === 0) return null;
+  const sorted = [...items].sort((a, b) => select(a) - select(b));
+  return select(sorted[0]) < 0 ? sorted[0] : null;
+}
+
 export function renderSuiteComparisonMarkdown(
   baseline: BenchmarkSuiteResult,
   candidate: BenchmarkSuiteResult,
 ): string {
   const comparisons = pairScenarios(baseline, candidate);
-  const worstTickRegression = [...comparisons].sort((a, b) => b.tickDeltaMs - a.tickDeltaMs)[0] ?? null;
-  const worstKccRegression = [...comparisons].sort((a, b) => b.playerKccDeltaMs - a.playerKccDeltaMs)[0] ?? null;
-  const worstSnapshotRegression = [...comparisons].sort((a, b) => b.snapshotDeltaBytes - a.snapshotDeltaBytes)[0] ?? null;
+  const worstTickRegression = mostPositive(comparisons, (comparison) => comparison.tickDeltaMs);
+  const worstKccRegression = mostPositive(comparisons, (comparison) => comparison.playerKccDeltaMs);
+  const worstSnapshotRegression = mostPositive(comparisons, (comparison) => comparison.snapshotDeltaBytes);
+  const bestTickImprovement = mostNegative(comparisons, (comparison) => comparison.tickDeltaMs);
+  const bestKccImprovement = mostNegative(comparisons, (comparison) => comparison.playerKccDeltaMs);
+  const bestSnapshotImprovement = mostNegative(comparisons, (comparison) => comparison.snapshotDeltaBytes);
 
   const lines = [
     '# vibe-land benchmark comparison',
@@ -78,6 +93,19 @@ export function renderSuiteComparisonMarkdown(
     }
     if (worstSnapshotRegression) {
       lines.push(`- Snapshot/client p95: ${worstSnapshotRegression.scenarioName} (${formatDelta(worstSnapshotRegression.snapshotDeltaBytes, ' B')})`);
+    }
+  }
+
+  if (bestTickImprovement || bestKccImprovement || bestSnapshotImprovement) {
+    lines.push('', '## Biggest Improvements', '');
+    if (bestTickImprovement) {
+      lines.push(`- Tick p95: ${bestTickImprovement.scenarioName} (${formatDelta(bestTickImprovement.tickDeltaMs, 'ms')})`);
+    }
+    if (bestKccImprovement) {
+      lines.push(`- Player KCC p95: ${bestKccImprovement.scenarioName} (${formatDelta(bestKccImprovement.playerKccDeltaMs, 'ms')})`);
+    }
+    if (bestSnapshotImprovement) {
+      lines.push(`- Snapshot/client p95: ${bestSnapshotImprovement.scenarioName} (${formatDelta(bestSnapshotImprovement.snapshotDeltaBytes, ' B')})`);
     }
   }
 
