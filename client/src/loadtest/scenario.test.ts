@@ -49,4 +49,11 @@ describe('loadtest scenario', () => {
     expect(scenario.name).toBe('loadtest-10-30');
     expect(scenario.matchId).toBe('loadtest-10-30');
   });
+
+  it('fills in default combat behavior fields', () => {
+    const scenario = normalizeScenario({});
+    expect(scenario.behavior.fireMode).toBe('off');
+    expect(scenario.behavior.fireDistanceM).toBeGreaterThan(0);
+    expect(scenario.behavior.fireCooldownTicks).toBeGreaterThan(0);
+  });
 });

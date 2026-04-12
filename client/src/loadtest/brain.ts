@@ -23,6 +23,7 @@ export interface BotBrainState {
   anchor: [number, number];
   orbitDirection: -1 | 1;
   jumpCooldownTicks: number;
+  fireCooldownTicks: number;
   stuckTicks: number;
   airborneTicks: number;
   lastPosition: [number, number, number] | null;
@@ -32,8 +33,10 @@ export interface BotBrainState {
 export interface BotIntent {
   buttons: number;
   yaw: number;
+  pitch: number;
   mode: BotBrainMode;
   targetPlayerId: number | null;
+  firePrimary: boolean;
 }
 
 export function createBotBrainState(botIndex: number, scenario: LoadTestScenario): BotBrainState {
@@ -42,6 +45,7 @@ export function createBotBrainState(botIndex: number, scenario: LoadTestScenario
     anchor: anchorForBot(botIndex, scenario),
     orbitDirection: botIndex % 2 === 0 ? 1 : -1,
     jumpCooldownTicks: 0,
+    fireCooldownTicks: 0,
     stuckTicks: 0,
     airborneTicks: 0,
     lastPosition: null,
@@ -59,7 +63,7 @@ export function stepBotBrain(
     state.mode = 'dead';
     state.targetPlayerId = null;
     state.lastPosition = localState?.position ?? null;
-    return { buttons: 0, yaw: 0, mode: state.mode, targetPlayerId: null };
+    return { buttons: 0, yaw: 0, pitch: 0, mode: state.mode, targetPlayerId: null, firePrimary: false };
   }
 
   const onGround = (localState.flags & FLAG_ON_GROUND) !== 0;
@@ -83,6 +87,7 @@ export function stepBotBrain(
   }
   state.lastPosition = [...localState.position];
   state.jumpCooldownTicks = Math.max(0, state.jumpCooldownTicks - 1);
+  state.fireCooldownTicks = Math.max(0, state.fireCooldownTicks - 1);
 
   const centerDistance = Math.hypot(localState.position[0], localState.position[2]);
   const nearest = findNearestTarget(localState.position, remotePlayers);
@@ -114,7 +119,9 @@ export function stepBotBrain(
   const dx = desired[0] - localState.position[0];
   const dz = desired[2] - localState.position[2];
   const distance = Math.hypot(dx, dz);
-  const yaw = distance > 0.001 ? Math.atan2(dx, dz) : 0;
+  let yaw = distance > 0.001 ? Math.atan2(dx, dz) : 0;
+  let pitch = 0;
+  let firePrimary = false;
 
   let buttons = 0;
   if (distance > scenario.behavior.stopDistanceM) {
@@ -133,7 +140,46 @@ export function stepBotBrain(
     state.stuckTicks = 0;
   }
 
-  return { buttons, yaw, mode: state.mode, targetPlayerId };
+  const nearestDistance = nearest?.distance ?? Number.POSITIVE_INFINITY;
+  const canShoot = state.fireCooldownTicks === 0;
+  if (canShoot) {
+    let fireTarget: [number, number, number] | null = null;
+    switch (scenario.behavior.fireMode) {
+      case 'nearest_target':
+        if (nearest && nearestDistance <= scenario.behavior.fireDistanceM) {
+          fireTarget = nearest.player.state.position;
+        }
+        break;
+      case 'center':
+        if (centerDistance <= scenario.behavior.fireDistanceM) {
+          fireTarget = [0, 1.0, 0];
+        }
+        break;
+      case 'nearest_target_or_center':
+        if (nearest && nearestDistance <= scenario.behavior.fireDistanceM) {
+          fireTarget = nearest.player.state.position;
+        } else if (centerDistance <= scenario.behavior.fireDistanceM) {
+          fireTarget = [0, 1.0, 0];
+        }
+        break;
+      case 'off':
+      default:
+        break;
+    }
+
+    if (fireTarget) {
+      const fx = fireTarget[0] - localState.position[0];
+      const fy = fireTarget[1] - localState.position[1];
+      const fz = fireTarget[2] - localState.position[2];
+      const planar = Math.hypot(fx, fz);
+      yaw = planar > 0.001 ? Math.atan2(fx, fz) : yaw;
+      pitch = planar > 0.001 || Math.abs(fy) > 0.001 ? Math.atan2(-fy, planar) : 0;
+      firePrimary = true;
+      state.fireCooldownTicks = scenario.behavior.fireCooldownTicks;
+    }
+  }
+
+  return { buttons, yaw, pitch, mode: state.mode, targetPlayerId, firePrimary };
 }
 
 function findNearestTarget(

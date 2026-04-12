@@ -36,4 +36,22 @@ describe('bot brain', () => {
     expect(intent.mode).toBe('recover_center');
     expect(intent.targetPlayerId).toBeNull();
   });
+
+  it('can request fire input when combat behavior is enabled', () => {
+    const scenario = normalizeScenario({
+      botCount: 4,
+      spawnPattern: 'clustered',
+      behavior: {
+        fireMode: 'nearest_target',
+        fireDistanceM: 20,
+        fireCooldownTicks: 4,
+      },
+    });
+    const state = createBotBrainState(0, scenario);
+    const intent = stepBotBrain(state, scenario, player([0, 2, 0]), [
+      { id: 2, state: player([3, 2, 0]) },
+    ]);
+
+    expect(intent.firePrimary).toBe(true);
+  });
 });

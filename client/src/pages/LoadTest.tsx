@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { stepBotBrain, createBotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import { PacketImpairment } from '../loadtest/networkModel';
+import type { BenchmarkPageState, WebTransportWorkerResult } from '../benchmark/contracts';
 import {
   DEFAULT_SCENARIO,
   SeededRandom,
@@ -13,10 +15,12 @@ import {
 } from '../loadtest/scenario';
 import { describeBottleneck, type GlobalStatsSnapshot } from '../loadtest/serverStats';
 import {
+  aimDirectionFromAngles,
   netStateToMeters,
   type PlayerStateMeters,
   type ServerDatagramPacket,
   type ServerReliablePacket,
+  WEAPON_HITSCAN,
 } from '../net/protocol';
 import { WebTransportGameClient } from '../net/webTransportClient';
 
@@ -35,6 +39,8 @@ type BrowserBot = {
   inboundImpairment: PacketImpairment<ServerReliablePacket | ServerDatagramPacket>;
   outboundImpairment: PacketImpairment<ReturnType<typeof buildInputFromButtons>>;
   snapshotsReceived: number;
+  shotsFired: number;
+  shotId: number;
 };
 
 const PAGE_SCENARIO = normalizeScenario({
@@ -45,24 +51,88 @@ const PAGE_SCENARIO = normalizeScenario({
   transportMix: { websocket: 0, webtransport: 20 },
 });
 
+declare global {
+  interface Window {
+    __VIBE_BENCHMARK_STATE__?: BenchmarkPageState;
+    __VIBE_BENCHMARK_RESULT__?: WebTransportWorkerResult | null;
+  }
+}
+
+function readBenchmarkLaunch() {
+  const params = new URLSearchParams(window.location.search);
+  const benchmark = params.get('benchmark') === '1';
+  const autoStart = params.get('autostart') === '1';
+  const scenarioParam = params.get('scenario');
+  let scenarioText: string | null = null;
+  if (scenarioParam) {
+    try {
+      scenarioText = JSON.stringify(parseScenarioJson(scenarioParam), null, 2);
+    } catch {
+      scenarioText = null;
+    }
+  }
+  return { benchmark, autoStart, scenarioText };
+}
+
 export function LoadTestPage() {
-  const [scenarioText, setScenarioText] = useState(() => JSON.stringify(PAGE_SCENARIO, null, 2));
+  const multiplayerBackend = resolveMultiplayerBackend();
+  const launchConfigRef = useRef(readBenchmarkLaunch());
+  const autoStartTriggeredRef = useRef(false);
+  const completionTimerRef = useRef<number | null>(null);
+  const benchmarkErrorsRef = useRef<string[]>([]);
+  const runStartedAtRef = useRef<string | null>(null);
+  const [scenarioText, setScenarioText] = useState(() =>
+    launchConfigRef.current.scenarioText ?? JSON.stringify(PAGE_SCENARIO, null, 2),
+  );
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('Idle');
   const [error, setError] = useState<string | null>(null);
   const [connectedBots, setConnectedBots] = useState(0);
   const [snapshotsReceived, setSnapshotsReceived] = useState(0);
-  const [bottleneck, setBottleneck] = useState('waiting for /ws/stats');
+  const [bottleneck, setBottleneck] = useState('waiting for server stats');
   const botsRef = useRef<BrowserBot[]>([]);
   const statsSocketRef = useRef<WebSocket | null>(null);
 
+  useEffect(() => {
+    if (!launchConfigRef.current.autoStart || autoStartTriggeredRef.current) {
+      return;
+    }
+    autoStartTriggeredRef.current = true;
+    window.setTimeout(() => {
+      void start().catch((err: Error) => {
+        const message = err.message;
+        benchmarkErrorsRef.current.push(message);
+        setError(message);
+      });
+    }, 0);
+  }, []);
+
+  useEffect(() => {
+    publishBenchmarkState({
+      mode: error ? 'failed' : running ? 'running' : window.__VIBE_BENCHMARK_RESULT__ ? 'completed' : 'idle',
+      status,
+      connectedBots,
+      requestedBots: botsRef.current.length,
+      snapshotsReceived,
+      bottleneck,
+      error,
+      result: window.__VIBE_BENCHMARK_RESULT__ ?? null,
+    });
+  }, [bottleneck, connectedBots, error, running, snapshotsReceived, status]);
+
   useEffect(() => () => {
+    if (completionTimerRef.current !== null) {
+      window.clearTimeout(completionTimerRef.current);
+      completionTimerRef.current = null;
+    }
     stopBots(botsRef.current);
     statsSocketRef.current?.close();
   }, []);
 
   async function start(): Promise<void> {
     setError(null);
+    window.__VIBE_BENCHMARK_RESULT__ = null;
+    benchmarkErrorsRef.current = [];
     try {
       const scenario = parseScenarioJson(scenarioText);
       if (scenario.transportMix.webtransport <= 0) {
@@ -74,30 +144,86 @@ export function LoadTestPage() {
 
       stopBots(botsRef.current);
       botsRef.current = [];
+      runStartedAtRef.current = new Date().toISOString();
+      if (completionTimerRef.current !== null) {
+        window.clearTimeout(completionTimerRef.current);
+        completionTimerRef.current = null;
+      }
+      if (scenario.durationS > 0) {
+        completionTimerRef.current = window.setTimeout(() => {
+          void stop('completed', scenario);
+        }, scenario.durationS * 1000);
+      }
       setRunning(true);
       setStatus('Connecting WebTransport bots...');
+      publishBenchmarkState({
+        mode: 'running',
+        status: 'Connecting WebTransport bots...',
+        connectedBots: 0,
+        requestedBots: scenario.transportMix.webtransport,
+        snapshotsReceived: 0,
+        bottleneck,
+        error: null,
+        result: null,
+      });
       connectStatsSocket(scenario.matchId);
 
       const rng = new SeededRandom(scenario.seed);
-      const bots = await Promise.all(
+      const results = await Promise.allSettled(
         Array.from({ length: scenario.transportMix.webtransport }, async (_, index) => {
           const profile = chooseWeightedProfile(scenario, 'webtransport', rng);
+          const delayMs = scenario.rampUpS > 0
+            ? Math.round((scenario.rampUpS * 1000 * index) / Math.max(1, scenario.transportMix.webtransport))
+            : 0;
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
           return spawnWebTransportBot(index + 1, scenario, profile);
         }),
       );
+      const bots: BrowserBot[] = [];
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          bots.push(result.value);
+        } else {
+          benchmarkErrorsRef.current.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+        }
+      }
       botsRef.current = bots;
       setStatus(`Running ${bots.length} WebTransport bots`);
+      publishBenchmarkState({
+        mode: 'running',
+        status: `Running ${bots.length} WebTransport bots`,
+        connectedBots: bots.filter((bot) => bot.connected).length,
+        requestedBots: scenario.transportMix.webtransport,
+        snapshotsReceived: bots.reduce((sum, bot) => sum + bot.snapshotsReceived, 0),
+        bottleneck,
+        error: null,
+        result: null,
+      });
       updateCounters();
+      if (bots.length === 0) {
+        throw new Error('No WebTransport bots connected.');
+      }
     } catch (err) {
       setRunning(false);
-      throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      benchmarkErrorsRef.current.push(message);
+      publishBenchmarkState({
+        mode: 'failed',
+        status: 'Failed',
+        connectedBots,
+        requestedBots: botsRef.current.length,
+        snapshotsReceived,
+        bottleneck,
+        error: message,
+        result: null,
+      });
+      throw err instanceof Error ? err : new Error(message);
     }
   }
 
   function connectStatsSocket(matchId: string): void {
     statsSocketRef.current?.close();
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(`${proto}//${window.location.host}/ws/stats`);
+    const socket = new WebSocket(multiplayerBackend.statsWebSocketUrl);
     statsSocketRef.current = socket;
     socket.onmessage = (event) => {
       try {
@@ -118,14 +244,46 @@ export function LoadTestPage() {
     setSnapshotsReceived(bots.reduce((sum, bot) => sum + bot.snapshotsReceived, 0));
   }
 
-  async function stop(): Promise<void> {
+  async function stop(reason: 'completed' | 'manual' = 'manual', completedScenario?: LoadTestScenario): Promise<void> {
+    if (completionTimerRef.current !== null) {
+      window.clearTimeout(completionTimerRef.current);
+      completionTimerRef.current = null;
+    }
+    const scenario = completedScenario ?? tryParseScenario(scenarioText) ?? PAGE_SCENARIO;
+    const result: WebTransportWorkerResult = {
+      kind: 'webtransport',
+      scenario,
+      requestedBots: scenario.transportMix.webtransport,
+      connectedBots: botsRef.current.filter((bot) => bot.connected).length,
+      failedBots: Math.max(0, scenario.transportMix.webtransport - botsRef.current.length) + benchmarkErrorsRef.current.length,
+      shotsFired: botsRef.current.reduce((sum, bot) => sum + bot.shotsFired, 0),
+      snapshotsReceived: botsRef.current.reduce((sum, bot) => sum + bot.snapshotsReceived, 0),
+      totalInboundBytes: 0,
+      totalOutboundBytes: 0,
+      startedAt: runStartedAtRef.current ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      errors: [...benchmarkErrorsRef.current],
+      bottleneck,
+    };
     stopBots(botsRef.current);
     botsRef.current = [];
     statsSocketRef.current?.close();
     statsSocketRef.current = null;
     setRunning(false);
-    setStatus('Stopped');
+    setStatus(reason === 'completed' ? 'Completed' : 'Stopped');
     updateCounters();
+    window.__VIBE_BENCHMARK_RESULT__ = result;
+    runStartedAtRef.current = null;
+    publishBenchmarkState({
+      mode: reason === 'completed' ? 'completed' : 'idle',
+      status: reason === 'completed' ? 'Completed' : 'Stopped',
+      connectedBots: result.connectedBots,
+      requestedBots: result.requestedBots,
+      snapshotsReceived: result.snapshotsReceived,
+      bottleneck,
+      error,
+      result,
+    });
   }
 
   return (
@@ -146,7 +304,7 @@ export function LoadTestPage() {
         <button style={styles.button} disabled={running} onClick={() => void start().catch((err: Error) => setError(err.message))}>
           Start
         </button>
-        <button style={styles.button} disabled={!running} onClick={() => void stop()}>
+        <button style={styles.button} disabled={!running} onClick={() => void stop('manual')}>
           Stop
         </button>
         <button style={styles.button} onClick={() => setScenarioText(JSON.stringify(PAGE_SCENARIO, null, 2))}>
@@ -181,6 +339,7 @@ export function LoadTestPage() {
 
     const client = await WebTransportGameClient.connect({
       matchId: scenario.matchId,
+      sessionConfigEndpoint: multiplayerBackend.sessionConfigEndpoint,
       onReliablePacket: (packet) => inboundImpairment.enqueue(packet),
       onDatagramPacket: (packet) => inboundImpairment.enqueue(packet),
       onClose: () => {
@@ -200,6 +359,7 @@ export function LoadTestPage() {
       connected: false,
       playerId: 0,
       seq: 0,
+      shotId: 1,
       tickHandle: null,
       localState: null,
       remotePlayers: new Map<number, ObservedPlayer>(),
@@ -214,6 +374,7 @@ export function LoadTestPage() {
         },
       ),
       snapshotsReceived: 0,
+      shotsFired: 0,
     } satisfies Partial<BrowserBot>);
 
     bot.tickHandle = window.setInterval(() => {
@@ -223,7 +384,18 @@ export function LoadTestPage() {
       bot.seq = (bot.seq + 1) & 0xffff;
       const intent = stepBotBrain(bot.brainState, scenario, bot.localState, Array.from(bot.remotePlayers.values()));
       bot.currentTargetPlayerId = intent.targetPlayerId;
-      bot.outboundImpairment.enqueue(buildInputFromButtons(bot.seq, 0, intent.buttons, intent.yaw, 0));
+      bot.outboundImpairment.enqueue(buildInputFromButtons(bot.seq, 0, intent.buttons, intent.yaw, intent.pitch));
+      if (intent.firePrimary) {
+        bot.shotsFired += 1;
+        client.sendFire({
+          seq: bot.seq,
+          shotId: bot.shotId++ >>> 0,
+          weapon: WEAPON_HITSCAN,
+          clientFireTimeUs: Date.now() * 1000,
+          clientInterpMs: client.sessionConfig.interpolation_delay_ms,
+          dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
+        });
+      }
     }, 1000 / scenario.inputHz);
 
     return bot;
@@ -270,6 +442,18 @@ function stopBots(bots: BrowserBot[]): void {
     bot.client.close();
     bot.connected = false;
   }
+}
+
+function tryParseScenario(json: string): LoadTestScenario | null {
+  try {
+    return parseScenarioJson(json);
+  } catch {
+    return null;
+  }
+}
+
+function publishBenchmarkState(state: BenchmarkPageState): void {
+  window.__VIBE_BENCHMARK_STATE__ = state;
 }
 
 const styles: Record<string, CSSProperties> = {

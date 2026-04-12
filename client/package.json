@@ -21,7 +21,8 @@
     "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts",
     "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
-    "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local"
+    "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local",
+    "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts"
   },
   "dependencies": {
     "@react-three/drei": "^9.117.0",

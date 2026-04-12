@@ -1,0 +1,233 @@
+import { createScenarioSpec, type BenchmarkSuiteSpec, type BenchmarkThresholds } from './spec';
+
+const smokeThresholds: BenchmarkThresholds = {
+  tickP95Ms: { comparator: 'upper', warn: 14, fail: 16.67 },
+  playerKccP95Ms: { comparator: 'upper', warn: 10, fail: 13 },
+  dynamicsP95Ms: { comparator: 'upper', warn: 8, fail: 12 },
+  snapshotBytesPerClientP95: { comparator: 'upper', warn: 1100, fail: 1500 },
+  wtReliableRatio: { comparator: 'upper', warn: 0.1, fail: 0.25 },
+  maxPendingInputs: { comparator: 'upper', warn: 16, fail: 28 },
+  connectedRatio: { comparator: 'lower', warn: 0.98, fail: 0.9 },
+  voidKills: { comparator: 'upper', warn: 0, fail: 1 },
+};
+
+const scaleThresholds: BenchmarkThresholds = {
+  tickP95Ms: { comparator: 'upper', warn: 15, fail: 16.67 },
+  playerKccP95Ms: { comparator: 'upper', warn: 12, fail: 14.5 },
+  dynamicsP95Ms: { comparator: 'upper', warn: 8, fail: 12 },
+  snapshotBytesPerClientP95: { comparator: 'upper', warn: 1000, fail: 1400 },
+  wtReliableRatio: { comparator: 'upper', warn: 0.08, fail: 0.2 },
+  maxPendingInputs: { comparator: 'upper', warn: 18, fail: 30 },
+  connectedRatio: { comparator: 'lower', warn: 0.96, fail: 0.9 },
+  voidKills: { comparator: 'upper', warn: 0, fail: 1 },
+};
+
+function mixedProfile(networkScale: 'smoke' | 'scale') {
+  const botCount = networkScale === 'smoke' ? 12 : 50;
+  return {
+    botCount,
+    transportMix: {
+      websocket: Math.floor(botCount * 0.3),
+      webtransport: botCount - Math.floor(botCount * 0.3),
+    },
+    networkProfiles: [
+      {
+        name: 'lan',
+        weight: 0.15,
+        transport: 'any' as const,
+        uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+        downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+      },
+      {
+        name: 'wifi',
+        weight: 0.55,
+        transport: 'any' as const,
+        uplink: { latencyMs: 28, jitterMs: 10, packetLossRate: 0.01 },
+        downlink: { latencyMs: 28, jitterMs: 10, packetLossRate: 0.01 },
+      },
+      {
+        name: 'cellular',
+        weight: 0.3,
+        transport: 'any' as const,
+        uplink: { latencyMs: 85, jitterMs: 32, packetLossRate: 0.025 },
+        downlink: { latencyMs: 85, jitterMs: 32, packetLossRate: 0.025 },
+      },
+    ],
+  };
+}
+
+export const SMOKE_SUITE: BenchmarkSuiteSpec = {
+  name: 'smoke',
+  scenarios: [
+    createScenarioSpec({
+      name: 'spread_wt_8',
+      environment: 'local',
+      warmupS: 8,
+      measureS: 12,
+      thresholds: smokeThresholds,
+      scenario: {
+        botCount: 8,
+        rampUpS: 4,
+        inputHz: 20,
+        transportMix: { websocket: 0, webtransport: 8 },
+        spawnPattern: 'spread',
+      },
+    }),
+    createScenarioSpec({
+      name: 'clustered_wt_8',
+      environment: 'local',
+      warmupS: 8,
+      measureS: 12,
+      thresholds: smokeThresholds,
+      scenario: {
+        botCount: 8,
+        rampUpS: 4,
+        inputHz: 20,
+        transportMix: { websocket: 0, webtransport: 8 },
+        spawnPattern: 'clustered',
+      },
+    }),
+    createScenarioSpec({
+      name: 'active_ballpit_mixed_12',
+      environment: 'local',
+      warmupS: 10,
+      measureS: 15,
+      thresholds: smokeThresholds,
+      scenario: {
+        ...mixedProfile('smoke'),
+        rampUpS: 5,
+        inputHz: 20,
+        spawnPattern: 'clustered',
+        behavior: {
+          targetAcquireDistanceM: 28,
+          recoveryDistanceM: 18,
+          orbitDistanceM: 3.5,
+          stopDistanceM: 1.25,
+          sprintDistanceM: 7,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 22,
+          fireCooldownTicks: 5,
+        },
+      },
+    }),
+  ],
+};
+
+export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
+  name: 'default',
+  scenarios: [
+    createScenarioSpec({
+      name: 'spread_wt_25',
+      environment: 'local',
+      warmupS: 12,
+      measureS: 20,
+      thresholds: scaleThresholds,
+      scenario: {
+        botCount: 25,
+        rampUpS: 8,
+        inputHz: 20,
+        transportMix: { websocket: 0, webtransport: 25 },
+        spawnPattern: 'spread',
+      },
+    }),
+    createScenarioSpec({
+      name: 'clustered_wt_25',
+      environment: 'local',
+      warmupS: 12,
+      measureS: 20,
+      thresholds: scaleThresholds,
+      scenario: {
+        botCount: 25,
+        rampUpS: 8,
+        inputHz: 20,
+        transportMix: { websocket: 0, webtransport: 25 },
+        spawnPattern: 'clustered',
+      },
+    }),
+    createScenarioSpec({
+      name: 'active_ballpit_wt_25',
+      environment: 'local',
+      warmupS: 12,
+      measureS: 20,
+      thresholds: scaleThresholds,
+      scenario: {
+        botCount: 25,
+        rampUpS: 8,
+        inputHz: 20,
+        transportMix: { websocket: 0, webtransport: 25 },
+        spawnPattern: 'clustered',
+        behavior: {
+          targetAcquireDistanceM: 24,
+          recoveryDistanceM: 16,
+          orbitDistanceM: 3,
+          stopDistanceM: 1.2,
+          sprintDistanceM: 6,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 22,
+          fireCooldownTicks: 5,
+        },
+      },
+    }),
+    createScenarioSpec({
+      name: 'spread_mixed_50',
+      environment: 'server-box',
+      warmupS: 18,
+      measureS: 25,
+      thresholds: scaleThresholds,
+      scenario: {
+        ...mixedProfile('scale'),
+        rampUpS: 10,
+        inputHz: 20,
+        spawnPattern: 'spread',
+      },
+    }),
+    createScenarioSpec({
+      name: 'clustered_mixed_50',
+      environment: 'server-box',
+      warmupS: 18,
+      measureS: 25,
+      thresholds: scaleThresholds,
+      scenario: {
+        ...mixedProfile('scale'),
+        rampUpS: 10,
+        inputHz: 20,
+        spawnPattern: 'clustered',
+      },
+    }),
+    createScenarioSpec({
+      name: 'active_ballpit_mixed_50',
+      environment: 'server-box',
+      warmupS: 18,
+      measureS: 25,
+      thresholds: scaleThresholds,
+      scenario: {
+        ...mixedProfile('scale'),
+        rampUpS: 10,
+        inputHz: 20,
+        spawnPattern: 'clustered',
+        behavior: {
+          targetAcquireDistanceM: 24,
+          recoveryDistanceM: 16,
+          orbitDistanceM: 3,
+          stopDistanceM: 1.2,
+          sprintDistanceM: 6,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 22,
+          fireCooldownTicks: 5,
+        },
+      },
+    }),
+  ],
+};
+
+export function resolveSuite(name: string): BenchmarkSuiteSpec {
+  if (name === 'smoke') return SMOKE_SUITE;
+  if (name === 'default') return DEFAULT_SUITE;
+  throw new Error(`Unknown benchmark suite: ${name}`);
+}

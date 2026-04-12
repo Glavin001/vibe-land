@@ -23,6 +23,9 @@ export interface BehaviorConfig {
   targetAcquireDistanceM: number;
   stuckTickThreshold: number;
   jumpCooldownTicks: number;
+  fireMode: 'off' | 'nearest_target' | 'center' | 'nearest_target_or_center';
+  fireDistanceM: number;
+  fireCooldownTicks: number;
 }
 
 export interface LoadTestScenario {
@@ -80,6 +83,9 @@ export const DEFAULT_SCENARIO: LoadTestScenario = {
     targetAcquireDistanceM: 40,
     stuckTickThreshold: 24,
     jumpCooldownTicks: 30,
+    fireMode: 'off',
+    fireDistanceM: 18,
+    fireCooldownTicks: 8,
   },
   networkProfiles: [
     {

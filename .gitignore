@@ -7,3 +7,4 @@ tsconfig.tsbuildinfo
 debug*.log
 inspiration/
 loadtest-results/
+client/benchmark-results/
