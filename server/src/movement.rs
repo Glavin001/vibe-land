@@ -11,7 +11,9 @@ pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
 pub use vibe_land_shared::simulation::{simulate_player_tick, PlayerTickResult};
-use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
+use vibe_land_shared::vehicle::{
+    create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
+};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -453,7 +455,7 @@ impl PhysicsArena {
             }
 
             // Collect driver input from the player driving this vehicle.
-            let (steering, engine_force, brake) = {
+            let (reset_requested, steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
                     None => continue,
@@ -462,23 +464,38 @@ impl PhysicsArena {
                     if let Some(player) = self.players.get(&driver_id) {
                         let (steering, engine_force, brake) =
                             vehicle_wheel_params(&player.last_input);
-                        (steering, engine_force, brake)
+                        (
+                            player.last_input.buttons & BTN_RELOAD != 0,
+                            steering,
+                            engine_force,
+                            brake,
+                        )
                     } else {
-                        (0.0, 0.0, 0.0)
+                        (false, 0.0, 0.0, 0.0)
                     }
                 } else {
-                    (0.0, 0.0, 0.0)
+                    (false, 0.0, 0.0, 0.0)
                 }
             };
 
             // Apply inputs to wheels.
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
+            if reset_requested {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
+                    reset_vehicle_body(rb);
+                }
+            }
             for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
                 if i < 2 {
-                    wheel.steering = steering; // front-wheel steering
+                    wheel.steering = if reset_requested { 0.0 } else { steering };
+                    // front-wheel steering
                 }
-                wheel.engine_force = if i >= 2 { engine_force } else { 0.0 }; // RWD
-                wheel.brake = brake;
+                wheel.engine_force = if !reset_requested && i >= 2 {
+                    engine_force
+                } else {
+                    0.0
+                }; // RWD
+                wheel.brake = if reset_requested { 0.0 } else { brake };
             }
 
             // Run suspension + traction.

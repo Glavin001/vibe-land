@@ -1,9 +1,19 @@
 import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import {
+  DEFAULT_INPUT_BINDINGS,
+  loadInputBindings,
+  resetAllInputBindings,
+  saveInputBindings,
+  type GamepadBindings,
+  type InputBindings,
+  type KeyboardBindings,
+} from './input/bindings';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { InputFamilyMode } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
+import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -39,6 +49,8 @@ export function App({
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
     displayStats,
@@ -51,6 +63,42 @@ export function App({
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
 
+  useEffect(() => {
+    saveInputBindings(inputBindings);
+  }, [inputBindings]);
+
+  const updateKeyboardBinding = useCallback(<K extends keyof KeyboardBindings>(key: K, value: KeyboardBindings[K]) => {
+    setInputBindings((current) => ({
+      ...current,
+      keyboard: {
+        ...current.keyboard,
+        [key]: value,
+      },
+    }));
+  }, []);
+
+  const updateGamepadBinding = useCallback(<K extends keyof GamepadBindings>(key: K, value: GamepadBindings[K]) => {
+    setInputBindings((current) => ({
+      ...current,
+      gamepad: {
+        ...current.gamepad,
+        [key]: value,
+      },
+    }));
+  }, []);
+
+  const resetKeyboardBinding = useCallback((key: keyof KeyboardBindings) => {
+    updateKeyboardBinding(key, DEFAULT_INPUT_BINDINGS.keyboard[key]);
+  }, [updateKeyboardBinding]);
+
+  const resetGamepadBinding = useCallback((key: keyof GamepadBindings) => {
+    updateGamepadBinding(key, DEFAULT_INPUT_BINDINGS.gamepad[key]);
+  }, [updateGamepadBinding]);
+
+  const resetBindings = useCallback(() => {
+    setInputBindings(resetAllInputBindings());
+  }, []);
+
   const handleConnect = useCallback(() => {
     setConnected(true);
     setCrosshairState('idle');
@@ -59,7 +107,7 @@ export function App({
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
+    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — controls are configurable from the Controls panel`);
   }, [modeLabel, practiceMode]);
 
   const handleDisconnect = useCallback(() => {
@@ -192,7 +240,7 @@ export function App({
           position: 'absolute',
           top: 8,
           right: 8,
-          zIndex: 5,
+          zIndex: 12,
           display: 'flex',
           gap: 8,
         }}
@@ -203,6 +251,9 @@ export function App({
         <a href={practiceMode ? '/play' : '/practice'} style={navLinkStyle}>
           {practiceMode ? 'Multiplayer' : 'Firing range'}
         </a>
+        <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
+          Controls
+        </button>
       </div>
       {overlay}
       {copyNotice && (
@@ -262,10 +313,23 @@ export function App({
         </div>
       )}
       <ControlHintsOverlay
+        bindings={inputBindings}
         state={controlHintsState}
         visible={connected && isDesktop}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
+      />
+      <ControlsSettingsPanel
+        open={controlsOpen}
+        bindings={inputBindings}
+        inputFamilyMode={inputFamilyMode}
+        onClose={() => setControlsOpen(false)}
+        onInputFamilyModeChange={setInputFamilyMode}
+        onKeyboardBindingChange={updateKeyboardBinding}
+        onGamepadBindingChange={updateGamepadBinding}
+        onKeyboardBindingReset={resetKeyboardBinding}
+        onGamepadBindingReset={resetGamepadBinding}
+        onResetAll={resetBindings}
       />
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
@@ -291,6 +355,7 @@ export function App({
           onDebugFrame={updateFrame}
           onInputFrame={updateInputFrame}
           inputFamilyMode={inputFamilyMode}
+          inputBindings={inputBindings}
           onSnapshot={recordSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
@@ -308,4 +373,10 @@ const navLinkStyle: CSSProperties = {
   padding: '6px 10px',
   borderRadius: 4,
   fontSize: 13,
+};
+
+const navButtonStyle: CSSProperties = {
+  ...navLinkStyle,
+  border: 'none',
+  cursor: 'pointer',
 };

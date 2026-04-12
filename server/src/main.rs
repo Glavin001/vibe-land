@@ -68,6 +68,8 @@ const DYNAMIC_BODY_AOI_EXIT_RADIUS_M: f32 = 56.0;
 const VEHICLE_AOI_RADIUS_M: f32 = 64.0;
 const DYNAMIC_BODY_ACTIVE_SPEED_MPS: f32 = 0.08;
 const SETTLED_DYNAMIC_REPLICATION_INTERVAL_SNAPSHOTS: u32 = 5;
+const DYNAMIC_BODY_POSE_RESEND_DISTANCE_M: f32 = 0.03;
+const DYNAMIC_BODY_POSE_RESEND_QUAT_DOT: f32 = 0.999;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
@@ -445,6 +447,7 @@ struct PlayerRuntime {
     next_allowed_fire_ms: u32,
     respawn_at_ms: Option<u32>,
     visible_dynamic_bodies: HashSet<u32>,
+    last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
 }
 
 struct QueuedShot {
@@ -923,6 +926,7 @@ impl MatchState {
                         next_allowed_fire_ms: 0,
                         respawn_at_ms: None,
                         visible_dynamic_bodies: HashSet::new(),
+                        last_sent_dynamic_body_pose: HashMap::new(),
                     },
                 );
 
@@ -1554,6 +1558,7 @@ impl MatchState {
                 (
                     id,
                     pos,
+                    quat,
                     speed_sq,
                     make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type),
                 )
@@ -1605,7 +1610,8 @@ impl MatchState {
 
             let mut filtered_dynamic_bodies = Vec::new();
             let mut next_visible_dynamic_bodies = HashSet::new();
-            for (body_id, pos, speed_sq, state) in &dynamic_body_states {
+            let mut next_sent_dynamic_body_pose = HashMap::new();
+            for (body_id, pos, quat, speed_sq, state) in &dynamic_body_states {
                 let dist_sq = distance_sq(*pos, recipient_pos);
                 let was_visible = runtime.visible_dynamic_bodies.contains(body_id);
                 let within_aoi = if was_visible {
@@ -1617,14 +1623,26 @@ impl MatchState {
                     continue;
                 }
                 next_visible_dynamic_bodies.insert(*body_id);
+                let pose_changed = runtime
+                    .last_sent_dynamic_body_pose
+                    .get(body_id)
+                    .map(|(last_pos, last_quat)| {
+                        dynamic_body_pose_changed(*pos, *quat, *last_pos, *last_quat)
+                    })
+                    .unwrap_or(true);
                 if !was_visible
+                    || pose_changed
                     || *speed_sq >= DYNAMIC_BODY_ACTIVE_SPEED_MPS * DYNAMIC_BODY_ACTIVE_SPEED_MPS
                     || dynamic_body_replication_due(self.server_tick, *body_id)
                 {
                     filtered_dynamic_bodies.push(*state);
+                    next_sent_dynamic_body_pose.insert(*body_id, (*pos, *quat));
+                } else if let Some(last_pose) = runtime.last_sent_dynamic_body_pose.get(body_id) {
+                    next_sent_dynamic_body_pose.insert(*body_id, *last_pose);
                 }
             }
             runtime.visible_dynamic_bodies = next_visible_dynamic_bodies;
+            runtime.last_sent_dynamic_body_pose = next_sent_dynamic_body_pose;
 
             let filtered_vehicles: Vec<_> = vehicle_states
                 .iter()
@@ -1732,6 +1750,25 @@ fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
     dx * dx + dy * dy + dz * dz
 }
 
+fn dynamic_body_pose_changed(
+    pos: [f32; 3],
+    quat: [f32; 4],
+    last_pos: [f32; 3],
+    last_quat: [f32; 4],
+) -> bool {
+    if distance_sq(pos, last_pos)
+        > DYNAMIC_BODY_POSE_RESEND_DISTANCE_M * DYNAMIC_BODY_POSE_RESEND_DISTANCE_M
+    {
+        return true;
+    }
+
+    let quat_dot = quat[0] * last_quat[0]
+        + quat[1] * last_quat[1]
+        + quat[2] * last_quat[2]
+        + quat[3] * last_quat[3];
+    quat_dot.abs() < DYNAMIC_BODY_POSE_RESEND_QUAT_DOT
+}
+
 fn dynamic_body_replication_due(server_tick: u32, body_id: u32) -> bool {
     let snapshot_tick = server_tick / (SIM_HZ as u32 / SNAPSHOT_HZ as u32).max(1);
     (snapshot_tick + body_id) % SETTLED_DYNAMIC_REPLICATION_INTERVAL_SNAPSHOTS == 0
@@ -1796,8 +1833,9 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_density_metrics, enqueue_inputs, rifle_damage, take_input_for_tick, HitZone,
-        InputCmd, PlayerRuntime, MAX_PENDING_INPUTS, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
+        compute_density_metrics, dynamic_body_pose_changed, enqueue_inputs, rifle_damage,
+        take_input_for_tick, HitZone, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
+        RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::sync::mpsc;
@@ -1825,6 +1863,7 @@ mod tests {
             next_allowed_fire_ms: 0,
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
+            last_sent_dynamic_body_pose: HashMap::new(),
         }
     }
 
@@ -1936,5 +1975,37 @@ mod tests {
         assert!(super::dynamic_body_replication_due(first_tick, 9));
         assert!(!super::dynamic_body_replication_due(first_tick, 8));
         assert!(super::dynamic_body_replication_due(first_tick * 2, 8));
+    }
+
+    #[test]
+    fn dynamic_body_pose_change_detects_translation_threshold() {
+        assert!(!dynamic_body_pose_changed(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ));
+        assert!(dynamic_body_pose_changed(
+            [0.04, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ));
+    }
+
+    #[test]
+    fn dynamic_body_pose_change_detects_rotation_threshold() {
+        assert!(!dynamic_body_pose_changed(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.01, 0.99995],
+        ));
+        assert!(dynamic_body_pose_changed(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.1, 0.9949874],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ));
     }
 }

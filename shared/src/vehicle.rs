@@ -4,7 +4,7 @@
 /// Keeping spawn logic and filter construction here ensures the two physics
 /// worlds stay byte-for-byte identical — any tuning change made once is
 /// automatically reflected in both.
-use nalgebra::{point, Isometry3, Vector3};
+use nalgebra::{point, Isometry3, UnitQuaternion, Vector3};
 use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
 use vibe_netcode::sim_world::SimWorld;
@@ -14,6 +14,15 @@ use crate::movement::{
     VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL,
     VEHICLE_WHEEL_RADIUS,
 };
+
+pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
+pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
+    [-0.9, 0.0, 1.1],
+    [0.9, 0.0, 1.1],
+    [-0.9, 0.0, -1.1],
+    [0.9, 0.0, -1.1],
+];
+const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 
 /// Spawn a vehicle chassis rigid body + collider + configured wheel controller
 /// into `sim`.  Returns `(chassis_body, chassis_collider, controller)`.
@@ -46,12 +55,16 @@ pub fn create_vehicle_physics(
     // Suspension QueryFilter uses GROUP_1 only so the vehicle chassis box
     // pushes balls directly rather than the suspension climbing over them.
     let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2);
-    let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
-        .friction(0.3)
-        .restitution(0.1)
-        .density(VEHICLE_CHASSIS_DENSITY)
-        .collision_groups(chassis_groups)
-        .build();
+    let collider = ColliderBuilder::cuboid(
+        VEHICLE_CHASSIS_HALF_EXTENTS[0],
+        VEHICLE_CHASSIS_HALF_EXTENTS[1],
+        VEHICLE_CHASSIS_HALF_EXTENTS[2],
+    )
+    .friction(0.3)
+    .restitution(0.1)
+    .density(VEHICLE_CHASSIS_DENSITY)
+    .collision_groups(chassis_groups)
+    .build();
     let chassis_collider =
         sim.colliders
             .insert_with_parent(collider, chassis_body, &mut sim.rigid_bodies);
@@ -68,14 +81,9 @@ pub fn create_vehicle_physics(
         max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
         ..WheelTuning::default()
     };
-    for offset in [
-        point![-0.9_f32, 0.0, 1.1],
-        point![0.9_f32, 0.0, 1.1],
-        point![-0.9_f32, 0.0, -1.1],
-        point![0.9_f32, 0.0, -1.1],
-    ] {
+    for offset in VEHICLE_WHEEL_OFFSETS {
         controller.add_wheel(
-            offset,
+            point![offset[0], offset[1], offset[2]],
             -Vector3::y(),
             Vector3::x(),
             VEHICLE_SUSPENSION_REST_LENGTH,
@@ -98,4 +106,32 @@ pub fn vehicle_suspension_filter(chassis_collider: ColliderHandle) -> QueryFilte
     QueryFilter::default()
         .exclude_collider(chassis_collider)
         .groups(InteractionGroups::new(Group::GROUP_1, Group::GROUP_1))
+}
+
+/// Upright a vehicle in-place while preserving its planar heading.
+pub fn reset_vehicle_body(rb: &mut RigidBody) {
+    let translation = *rb.translation();
+    let rotation = *rb.rotation();
+    let forward = rotation * Vector3::z();
+    let planar_forward = Vector3::new(forward.x, 0.0, forward.z);
+    let yaw = if planar_forward.norm_squared() > 0.0001 {
+        planar_forward.x.atan2(planar_forward.z)
+    } else {
+        0.0
+    };
+    let upright = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), yaw);
+
+    rb.set_position(
+        Isometry3::from_parts(
+            nalgebra::Translation3::new(
+                translation.x,
+                translation.y + VEHICLE_RESET_LIFT_M,
+                translation.z,
+            ),
+            upright,
+        ),
+        true,
+    );
+    rb.set_linvel(Vector3::zeros(), true);
+    rb.set_angvel(Vector3::zeros(), true);
 }

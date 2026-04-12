@@ -155,36 +155,6 @@ export function GodModePage() {
     setLastImportNameState('');
   }, []);
 
-  useEffect(() => {
-    if (mode !== 'play') {
-      return undefined;
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement
-        || target instanceof HTMLTextAreaElement
-        || target instanceof HTMLSelectElement
-      ) {
-        return;
-      }
-      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) {
-        return;
-      }
-      if (event.code !== 'KeyR') {
-        return;
-      }
-      event.preventDefault();
-      handleResetPlayWorld();
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [handleResetPlayWorld, mode]);
-
   const addStaticCuboid = useCallback(() => {
     const nextId = getNextWorldEntityId(world);
     const baseY = sampleTerrainHeightAtWorldPosition(world, 0, 0) + 1;
@@ -343,7 +313,7 @@ export function GodModePage() {
         overlay={(
           <div style={godModePlayOverlayStyle}>
             <span>Godmode Play uses the same local-practice runtime with the current authored world.</span>
-            <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World (R)</button>
+            <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World</button>
             <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>Back To Edit</button>
           </div>
         )}

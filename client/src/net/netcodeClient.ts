@@ -69,6 +69,7 @@ export class NetcodeClient {
 
   playerId = 0;
   interpolationDelayMs = 100;
+  private baselineInterpolationDelayMs = 100;
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
@@ -277,7 +278,8 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
-        this.interpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
+        this.baselineInterpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
+        this.interpolationDelayMs = this.baselineInterpolationDelayMs;
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
@@ -287,6 +289,9 @@ export class NetcodeClient {
         this.config.onWelcome?.(packet.playerId);
         break;
       case 'snapshot': {
+        if (packet.serverTick <= this.latestServerTick) {
+          break;
+        }
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
         if (this.localTransport) {
@@ -295,7 +300,9 @@ export class NetcodeClient {
           // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
           const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
           if (adaptiveDelayMs > 0) {
-            this.interpolationDelayMs = Math.round(adaptiveDelayMs * 100) / 100;
+            this.interpolationDelayMs = Math.round(
+              Math.max(adaptiveDelayMs, this.baselineInterpolationDelayMs) * 100,
+            ) / 100;
           }
         }
 
@@ -436,6 +443,7 @@ export class NetcodeClient {
     this.playerId = 0;
     this.latestServerTick = 0;
     this.interpolationDelayMs = 100;
+    this.baselineInterpolationDelayMs = 100;
     this.remotePlayers.clear();
     this.dynamicBodies.clear();
     this.dynamicBodyLastSeenTick.clear();

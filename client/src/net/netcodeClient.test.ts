@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { NetcodeClient } from './netcodeClient';
 import {
   type NetDynamicBodyState,
+  type NetVehicleState,
   type SnapshotPacket,
   type ShotResultPacket,
   type WelcomePacket,
@@ -53,6 +54,7 @@ function makeSnapshot(opts: {
   ackInputSeq?: number;
   players: NetPlayerState[];
   dynamicBodyStates?: NetDynamicBodyState[];
+  vehicleStates?: NetVehicleState[];
 }): SnapshotPacket {
   const serverTick = opts.serverTick ?? 1;
   return {
@@ -63,7 +65,7 @@ function makeSnapshot(opts: {
     playerStates: opts.players,
     projectileStates: [],
     dynamicBodyStates: opts.dynamicBodyStates ?? [],
-    vehicleStates: [],
+    vehicleStates: opts.vehicleStates ?? [],
   };
 }
 
@@ -96,6 +98,36 @@ function makeDynamicBodyState(opts: {
     wxMrads: 0,
     wyMrads: 0,
     wzMrads: 0,
+  };
+}
+
+function makeVehicleState(opts: {
+  id?: number;
+  driverId?: number;
+  position?: [number, number, number];
+  velocity?: [number, number, number];
+}): NetVehicleState {
+  const pos = opts.position ?? [0, 0, 0];
+  const vel = opts.velocity ?? [0, 0, 0];
+  return {
+    id: opts.id ?? 200,
+    vehicleType: 0,
+    flags: 0,
+    driverId: opts.driverId ?? 0,
+    pxMm: metersToMm(pos[0]),
+    pyMm: metersToMm(pos[1]),
+    pzMm: metersToMm(pos[2]),
+    qxSnorm: 0,
+    qySnorm: 0,
+    qzSnorm: 0,
+    qwSnorm: 32767,
+    vxCms: Math.round(vel[0] * 100),
+    vyCms: Math.round(vel[1] * 100),
+    vzCms: Math.round(vel[2] * 100),
+    wxMrads: 0,
+    wyMrads: 0,
+    wzMrads: 0,
+    wheelData: [0, 0, 0, 0],
   };
 }
 
@@ -213,6 +245,61 @@ describe('NetcodeClient', () => {
       }));
 
       expect(client.latestServerTick).toBe(100);
+    });
+
+    it('does not shrink interpolation delay below the welcome baseline', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      vi.spyOn(client.serverClock, 'getInterpolationDelayMs').mockReturnValue(5);
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+      }));
+
+      expect(client.interpolationDelayMs).toBe(66);
+    });
+
+    it('ignores stale and duplicate snapshots', () => {
+      let localSnapshotCount = 0;
+      let localVehicleSnapshotCount = 0;
+      const client = new NetcodeClient({
+        onLocalSnapshot: () => {
+          localSnapshotCount += 1;
+        },
+        onLocalVehicleSnapshot: () => {
+          localVehicleSnapshotCount += 1;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        ackInputSeq: 10,
+        players: [makeNetState({ id: 1, position: [1, 0, 0] })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [1, 0, 0] })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [5, 0, 0] })],
+      }));
+      client.handlePacket(makeSnapshot({
+        serverTick: 9,
+        ackInputSeq: 9,
+        players: [makeNetState({ id: 1, position: [9, 0, 0] })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [9, 0, 0] })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [9, 0, 0] })],
+      }));
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        ackInputSeq: 10,
+        players: [makeNetState({ id: 1, position: [10, 0, 0] })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [10, 0, 0] })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [10, 0, 0] })],
+      }));
+
+      expect(client.latestServerTick).toBe(10);
+      expect(localSnapshotCount).toBe(1);
+      expect(localVehicleSnapshotCount).toBe(1);
+      expect(client.dynamicBodies.get(7)?.position[0]).toBeCloseTo(1);
+      expect(client.vehicles.get(200)?.position[0]).toBeCloseTo(5);
     });
 
     it('stores replicated hp for local and remote players', () => {

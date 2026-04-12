@@ -8,6 +8,7 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
@@ -15,7 +16,7 @@ use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
-use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
+use crate::vehicle::{create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter};
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
@@ -1201,17 +1202,27 @@ impl WasmSimWorld {
 
 impl WasmSimWorld {
     fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd) {
+        let reset_requested = input.buttons & BTN_RELOAD != 0;
         let (steering, engine_force, brake) = vehicle_wheel_params(input);
 
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
         };
+        if reset_requested {
+            if let Some(rb) = self.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
+                reset_vehicle_body(rb);
+            }
+        }
         for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
             if i < 2 {
-                wheel.steering = steering;
+                wheel.steering = if reset_requested { 0.0 } else { steering };
             }
-            wheel.engine_force = if i >= 2 { engine_force } else { 0.0 };
-            wheel.brake = brake;
+            wheel.engine_force = if !reset_requested && i >= 2 {
+                engine_force
+            } else {
+                0.0
+            };
+            wheel.brake = if reset_requested { 0.0 } else { brake };
         }
 
         let chassis_collider = vehicle.chassis_collider;

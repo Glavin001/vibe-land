@@ -1,4 +1,4 @@
-import { BTN_CROUCH, BTN_JUMP, BTN_SPRINT } from '../net/protocol';
+import { BTN_CROUCH, BTN_JUMP, BTN_RELOAD, BTN_SPRINT } from '../net/protocol';
 import type { ActionSnapshot, ResolvedGameInput } from './types';
 
 export const LOOK_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -90,6 +90,7 @@ export function resolveVehicleInput(
 ): ResolvedGameInput {
   let buttons = 0;
   if (action?.handbrake) buttons |= BTN_JUMP;
+  if (action?.resetVehiclePressed) buttons |= BTN_RELOAD;
 
   return {
     activeFamily,

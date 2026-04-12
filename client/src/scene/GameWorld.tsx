@@ -4,6 +4,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
+import type { InputBindings } from '../input/bindings';
 import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
@@ -43,6 +44,13 @@ const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
+const VEHICLE_CHASSIS_HALF_EXTENTS = { x: 0.9, y: 0.3, z: 1.8 } as const;
+const VEHICLE_WHEEL_ANCHORS: ReadonlyArray<readonly [number, number, number]> = [
+  [-0.9, 0.0, 1.1],
+  [0.9, 0.0, 1.1],
+  [-0.9, 0.0, -1.1],
+  [0.9, 0.0, -1.1],
+] as const;
 const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
@@ -93,6 +101,7 @@ type GameWorldProps = {
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
+  inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
 };
@@ -125,6 +134,7 @@ export function GameWorld({
   onDebugFrame,
   onInputFrame,
   inputFamilyMode = 'auto',
+  inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
 }: GameWorldProps) {
@@ -287,7 +297,13 @@ export function GameWorld({
     }
     const isDrivingNow = localControlledVehiclePose !== null;
     const pointerLocked = document.pointerLockElement === gl.domElement;
-    const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot', inputFamilyMode)
+    const inputSample = inputManagerRef.current?.sample(
+      frameDelta,
+      pointerLocked,
+      isDrivingNow ? 'vehicle' : 'onFoot',
+      inputBindings,
+      inputFamilyMode,
+    )
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
@@ -1129,34 +1145,39 @@ function createVehicleMesh(_id: number): THREE.Group {
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
   } satisfies VehicleRenderState;
 
-  // Chassis body
-  const chassisGeom = new THREE.BoxGeometry(1.8, 0.5, 3.6);
-  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x888899, roughness: 0.5, metalness: 0.3 });
+  // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
+  const chassisGeom = new THREE.BoxGeometry(
+    VEHICLE_CHASSIS_HALF_EXTENTS.x * 2,
+    VEHICLE_CHASSIS_HALF_EXTENTS.y * 2,
+    VEHICLE_CHASSIS_HALF_EXTENTS.z * 2,
+  );
+  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
   const chassis = new THREE.Mesh(chassisGeom, chassisMat);
   chassis.castShadow = true;
   chassis.receiveShadow = true;
   group.add(chassis);
 
-  // Cabin
-  const cabinGeom = new THREE.BoxGeometry(1.6, 0.6, 2.0);
-  const cabinMat = new THREE.MeshStandardMaterial({ color: 0x666677, roughness: 0.5, metalness: 0.2 });
-  const cabin = new THREE.Mesh(cabinGeom, cabinMat);
-  cabin.position.set(0, 0.55, 0);
-  cabin.castShadow = true;
-  group.add(cabin);
+  // Keep visual detail inside the collider bounds so the mesh reads honestly.
+  const roofGeom = new THREE.BoxGeometry(1.2, 0.18, 1.4);
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x9ba5b4, roughness: 0.46, metalness: 0.18 });
+  const roof = new THREE.Mesh(roofGeom, roofMat);
+  roof.position.set(0, 0.14, -0.05);
+  roof.castShadow = true;
+  group.add(roof);
+
+  const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
+  const nose = new THREE.Mesh(noseGeom, noseMat);
+  nose.position.set(0, 0.04, VEHICLE_CHASSIS_HALF_EXTENTS.z - 0.42);
+  nose.castShadow = true;
+  group.add(nose);
 
   // Wheels: FL, FR, RL, RR
   const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
-  const wheelPositions: [number, number, number][] = [
-    [0.9, -0.15, 1.1],
-    [-0.9, -0.15, 1.1],
-    [0.9, -0.15, -1.1],
-    [-0.9, -0.15, -1.1],
-  ];
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
-    pivot.position.set(...wheelPositions[i]);
+    pivot.position.set(...VEHICLE_WHEEL_ANCHORS[i]);
     pivot.name = `wheel_pivot_${i}`;
     group.add(pivot);
 
