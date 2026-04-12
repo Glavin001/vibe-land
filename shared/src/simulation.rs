@@ -1,6 +1,7 @@
 // Re-export the generic KCC collision world from the netcode library.
 pub use vibe_netcode::sim_world::SimWorld;
 
+use rapier3d::control::CharacterCollision;
 use rapier3d::prelude::ColliderHandle;
 
 use crate::constants::*;
@@ -103,10 +104,11 @@ fn update_player_motion(
 
 fn apply_dynamic_interaction(
     sim: &SimWorld,
-    collider_handle: ColliderHandle,
+    query_ctx: &vibe_netcode::sim_world::PlayerQueryContext<'_>,
     start_position: Vec3d,
     position: &mut Vec3d,
     velocity: &mut Vec3d,
+    contacts: &mut Vec<vibe_netcode::sim_world::DynamicBodyContact>,
 ) -> (DynamicInteractionStats, Vec<DynamicBodyImpulse>) {
     let horizontal_delta = Vec3d::new(
         position.x - start_position.x,
@@ -123,40 +125,50 @@ fn apply_dynamic_interaction(
     let player_bottom = position.y as f32
         - (sim.config.capsule_half_segment + sim.config.capsule_radius);
 
-    let contacts = sim.intersect_pushable_dynamic_bodies(collider_handle, position);
+    query_ctx.intersect_pushable_dynamic_bodies(position, contacts);
     if contacts.is_empty() {
         return (DynamicInteractionStats::default(), Vec::new());
     }
 
-    let mut filtered = Vec::new();
     let mut total_mass = 0.0f32;
-    for contact in contacts {
-        let support_like = player_bottom >= contact.aabb_max_y - SUPPORT_CONTACT_EPSILON_M
-            && player_bottom <= contact.aabb_max_y + SUPPORT_CONTACT_MARGIN_M;
+    let mut kept = 0usize;
+    for index in 0..contacts.len() {
+        let support_like = {
+            let contact = &contacts[index];
+            player_bottom >= contact.aabb_max_y - SUPPORT_CONTACT_EPSILON_M
+                && player_bottom <= contact.aabb_max_y + SUPPORT_CONTACT_MARGIN_M
+        };
         if support_like {
             continue;
         }
 
-        let to_body = Vec3d::new(
-            contact.center[0] as f64 - position.x,
-            0.0,
-            contact.center[2] as f64 - position.z,
-        );
+        let to_body = {
+            let contact = &contacts[index];
+            Vec3d::new(
+                contact.center[0] as f64 - position.x,
+                0.0,
+                contact.center[2] as f64 - position.z,
+            )
+        };
         let in_front = to_body.norm_squared() < 1e-6
             || move_dir.dot(&to_body.normalize()) >= -0.25;
         if !in_front {
             continue;
         }
 
-        total_mass += contact.mass.max(0.05);
-        filtered.push(contact);
-        if filtered.len() == MAX_PUSHED_BODIES_PER_TICK {
+        if kept != index {
+            contacts.swap(kept, index);
+        }
+        total_mass += contacts[kept].mass.max(0.05);
+        kept += 1;
+        if kept == MAX_PUSHED_BODIES_PER_TICK {
             break;
         }
     }
+    contacts.truncate(kept);
 
-    let considered_count = filtered.len();
-    if filtered.is_empty() || total_mass <= f32::EPSILON {
+    let considered_count = contacts.len();
+    if contacts.is_empty() || total_mass <= f32::EPSILON {
         return (
             DynamicInteractionStats {
                 considered_count,
@@ -178,18 +190,18 @@ fn apply_dynamic_interaction(
     let total_impulse = (PLAYER_INTERACTION_MASS as f64
         * horizontal_speed
         * (1.0 - resistance_scale)) as f32;
+    let mut weights = Vec::with_capacity(contacts.len());
     let mut total_weight = 0.0f32;
-    let mut weights = Vec::with_capacity(filtered.len());
-    for contact in &filtered {
+    for contact in contacts.iter() {
         let weight = 1.0 / (0.5 + contact.horizontal_distance_sq.sqrt());
         total_weight += weight;
         weights.push(weight);
     }
 
     let move_dir_f32 = [move_dir.x as f32, 0.0, move_dir.z as f32];
-    let impulses = filtered
-        .into_iter()
-        .zip(weights)
+    let impulses = contacts
+        .iter()
+        .zip(weights.iter().copied())
         .map(|(contact, weight)| {
             let share = if total_weight > f32::EPSILON {
                 weight / total_weight
@@ -218,19 +230,29 @@ fn apply_dynamic_interaction(
     )
 }
 
+fn support_pass_hit_dynamic_body(
+    sim: &SimWorld,
+    collisions: &[CharacterCollision],
+) -> bool {
+    collisions
+        .iter()
+        .any(|collision| sim.is_pushable_dynamic_collider(collision.handle))
+}
+
 fn stabilize_dynamic_support(
     sim: &SimWorld,
-    collider_handle: ColliderHandle,
+    query_ctx: &vibe_netcode::sim_world::PlayerQueryContext<'_>,
     position: &mut Vec3d,
     velocity: &mut Vec3d,
     on_ground: bool,
     dt: f32,
+    should_probe: bool,
 ) {
-    if !on_ground || velocity.y > 0.0 {
+    if !should_probe || !on_ground || velocity.y > 0.0 {
         return;
     }
     let max_probe = sim.config.snap_to_ground + sim.config.collision_offset + SUPPORT_SNAP_EXTRA_M;
-    let Some(support) = sim.probe_dynamic_support(collider_handle, position, max_probe) else {
+    let Some(support) = query_ctx.probe_dynamic_support(position, max_probe) else {
         return;
     };
     let support_height = sim.config.capsule_half_segment + sim.config.capsule_radius;
@@ -281,12 +303,12 @@ pub fn simulate_player_tick(
 
     let start_position = *position;
     let kcc_started = now_marker();
+    let query_ctx = sim.player_query_context(collider_handle);
 
     let mut horizontal_position = *position;
     let mut horizontal_velocity = Vec3d::new(velocity.x, 0.0, velocity.z);
     let mut horizontal_ground = *on_ground;
-    sim.move_character_horizontal(
-        collider_handle,
+    query_ctx.move_character_horizontal(
         &mut horizontal_position,
         &mut horizontal_velocity,
         &mut horizontal_ground,
@@ -297,28 +319,47 @@ pub fn simulate_player_tick(
     velocity.x = horizontal_velocity.x;
     velocity.z = horizontal_velocity.z;
 
+    let capture_support_collisions = velocity.y <= 0.0;
     let mut support_velocity = Vec3d::new(0.0, velocity.y, 0.0);
     let mut support_ground = *on_ground;
-    sim.move_character_support(
-        collider_handle,
+    let mut support_collisions = Vec::new();
+    query_ctx.move_character_support(
         position,
         &mut support_velocity,
         &mut support_ground,
         dt,
+        if capture_support_collisions {
+            Some(&mut support_collisions)
+        } else {
+            None
+        },
     );
     velocity.y = support_velocity.y;
     *on_ground = support_ground;
-    stabilize_dynamic_support(sim, collider_handle, position, velocity, *on_ground, dt);
+    let touched_dynamic_support = capture_support_collisions
+        && support_ground
+        && support_pass_hit_dynamic_body(sim, &support_collisions);
+    stabilize_dynamic_support(
+        sim,
+        &query_ctx,
+        position,
+        velocity,
+        *on_ground,
+        dt,
+        touched_dynamic_support,
+    );
 
     result.timings.kcc_query_ms = elapsed_ms(kcc_started);
 
     let dynamic_started = now_marker();
+    let mut dynamic_contacts = Vec::new();
     let (dynamic_stats, dynamic_impulses) = apply_dynamic_interaction(
         sim,
-        collider_handle,
+        &query_ctx,
         start_position,
         position,
         velocity,
+        &mut dynamic_contacts,
     );
     result.timings.dynamic_interaction_ms = elapsed_ms(dynamic_started);
     result.dynamic_stats = dynamic_stats;
