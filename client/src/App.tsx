@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import { isTouchDevice } from './device';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { InputFamilyMode } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
+import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
@@ -32,6 +34,7 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
     rapierDebugModeBits,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
+  const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
 
@@ -43,8 +46,10 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
-  }, [modeLabel, practiceMode]);
+    const desktopHint = 'KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place';
+    const touchHint = 'Touch: left thumb to move (push past ring to sprint), right thumb swipes look, tap FIRE/JUMP/RUN';
+    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — ${touchMode ? touchHint : desktopHint}`);
+  }, [modeLabel, practiceMode, touchMode]);
 
   const handleDisconnect = useCallback(() => {
     setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
@@ -231,10 +236,11 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
       )}
       <ControlHintsOverlay
         state={controlHintsState}
-        visible={connected && isDesktop}
+        visible={connected && isDesktop && !touchMode}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
+      {connected && touchMode && <MobileHUD />}
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
         <div

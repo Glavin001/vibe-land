@@ -45,6 +45,23 @@ describe('pickActiveFamily', () => {
     const gamepad = snapshot({ family: 'gamepad', moveX: 1, activityId: 5 });
     expect(pickActiveFamily('keyboardMouse', keyboardMouse, gamepad)).toBe('gamepad');
   });
+
+  it('picks touch when it is the only meaningful family', () => {
+    const touch = snapshot({ family: 'touch', moveX: 0.6, activityId: 2 });
+    expect(pickActiveFamily(null, null, null, touch)).toBe('touch');
+  });
+
+  it('prefers touch over keyboard when touch has newer activity', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 3 });
+    const touch = snapshot({ family: 'touch', moveX: 1, activityId: 9 });
+    expect(pickActiveFamily('keyboardMouse', keyboardMouse, null, touch)).toBe('touch');
+  });
+
+  it('keeps touch sticky when no family has strictly newer activity', () => {
+    const touch = snapshot({ family: 'touch', moveX: 0.5, activityId: 10 });
+    const gamepad = snapshot({ family: 'gamepad', moveX: 0.2, activityId: 8 });
+    expect(pickActiveFamily('touch', null, gamepad, touch)).toBe('touch');
+  });
 });
 
 describe('resolveActiveFamily', () => {

@@ -430,7 +430,10 @@ export function GameWorld({
       }
     }
 
-    const canUseAimActions = !isDrivingNow && !localDead && (pointerLocked || inputSample.activeFamily === 'gamepad');
+    const canUseAimActions = !isDrivingNow && !localDead
+      && (pointerLocked
+        || inputSample.activeFamily === 'gamepad'
+        || inputSample.activeFamily === 'touch');
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {

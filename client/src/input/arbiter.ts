@@ -27,29 +27,46 @@ export function pickActiveFamily(
   current: DeviceFamily | null,
   keyboardMouse: ActionSnapshot | null,
   gamepad: ActionSnapshot | null,
+  touch: ActionSnapshot | null = null,
 ): DeviceFamily | null {
-  const keyboardActive = hasMeaningfulInput(keyboardMouse);
-  const gamepadActive = hasMeaningfulInput(gamepad);
+  const candidates: Array<[DeviceFamily, ActionSnapshot | null]> = [
+    ['keyboardMouse', keyboardMouse],
+    ['gamepad', gamepad],
+    ['touch', touch],
+  ];
+  const active = candidates.filter(([, snap]) => hasMeaningfulInput(snap));
 
-  if (!keyboardActive && !gamepadActive) {
+  if (active.length === 0) {
     return current;
   }
-  if (!keyboardActive) {
-    return 'gamepad';
+  if (active.length === 1) {
+    return active[0][0];
   }
-  if (!gamepadActive) {
-    return 'keyboardMouse';
-  }
-  if (current === 'keyboardMouse' || current === 'gamepad') {
-    const currentSnapshot = current === 'keyboardMouse' ? keyboardMouse : gamepad;
-    const otherSnapshot = current === 'keyboardMouse' ? gamepad : keyboardMouse;
-    if (otherSnapshot && currentSnapshot && otherSnapshot.activityId > currentSnapshot.activityId) {
-      return current === 'keyboardMouse' ? 'gamepad' : 'keyboardMouse';
+
+  // Sticky: if the current family is still active, only switch when another
+  // family has a strictly-newer activityId (matches the previous pairwise
+  // behavior so rapid device flipping doesn't occur).
+  const currentEntry = active.find(([family]) => family === current);
+  if (currentEntry) {
+    const currentId = currentEntry[1]!.activityId;
+    let newest = currentEntry;
+    for (const entry of active) {
+      if (entry[0] === current) continue;
+      if (entry[1]!.activityId > currentId && entry[1]!.activityId > newest[1]!.activityId) {
+        newest = entry;
+      }
     }
-    return current;
+    return newest[0];
   }
 
-  return (keyboardMouse?.activityId ?? 0) >= (gamepad?.activityId ?? 0) ? 'keyboardMouse' : 'gamepad';
+  // No current (or current went inactive): pick the highest-activity family.
+  let best = active[0];
+  for (const entry of active) {
+    if (entry[1]!.activityId > best[1]!.activityId) {
+      best = entry;
+    }
+  }
+  return best[0];
 }
 
 export function resolveActiveFamily(
@@ -57,9 +74,10 @@ export function resolveActiveFamily(
   current: DeviceFamily | null,
   keyboardMouse: ActionSnapshot | null,
   gamepad: ActionSnapshot | null,
+  touch: ActionSnapshot | null = null,
 ): DeviceFamily | null {
   if (mode !== 'auto') {
     return mode;
   }
-  return pickActiveFamily(current, keyboardMouse, gamepad);
+  return pickActiveFamily(current, keyboardMouse, gamepad, touch);
 }

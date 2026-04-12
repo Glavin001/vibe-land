@@ -2,6 +2,7 @@ import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense } from 'react';
 import type { GameMode } from '../app/gameMode';
+import { isTouchDevice } from '../device';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -38,12 +39,14 @@ export function GameScene({
   renderStatsParent,
   worldDocument,
 }: GameSceneProps) {
+  const touchMode = isTouchDevice();
   return (
     <Canvas
-      style={{ width: '100%', height: '100%' }}
+      style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
       onPointerDown={(e) => {
+        if (touchMode) return;
         (e.target as HTMLCanvasElement).requestPointerLock();
       }}
     >
