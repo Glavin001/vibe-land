@@ -7,12 +7,14 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
+import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
 
 type AppProps = {
   mode: GameMode;
+  worldDocument?: WorldDocument;
 };
 
-export function App({ mode }: AppProps) {
+export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
   const [connected, setConnected] = useState(false);
@@ -248,6 +250,7 @@ export function App({ mode }: AppProps) {
       {connected && (
         <GameScene
           mode={mode}
+          worldDocument={worldDocument}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}

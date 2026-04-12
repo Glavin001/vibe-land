@@ -18,6 +18,7 @@ use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
+use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -162,6 +163,35 @@ impl WasmSimWorld {
             self.collider_ids.insert(wall_id, wall_handle);
         }
         id
+    }
+
+    #[wasm_bindgen(js_name = loadWorldDocument)]
+    pub fn load_world_document(&mut self, world_json: &str) -> Result<(), JsValue> {
+        let world: WorldDocument =
+            serde_json::from_str(world_json).map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let heights = world
+            .terrain_matrix()
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let side = world.terrain.half_extent_m * 2.0;
+        let handle = self.sim.add_static_heightfield(heights, vector![side, 1.0, side], 0);
+        let id = self.next_collider_id;
+        self.next_collider_id += 1;
+        self.collider_ids.insert(id, handle);
+
+        for prop in &world.static_props {
+            if matches!(prop.kind, StaticPropKind::Cuboid) {
+                self.add_cuboid(
+                    prop.position[0],
+                    prop.position[1],
+                    prop.position[2],
+                    prop.half_extents[0],
+                    prop.half_extents[1],
+                    prop.half_extents[2],
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove a collider by its ID (returned from `addCuboid`).
@@ -1208,11 +1238,14 @@ pub struct WasmLocalSession {
 #[wasm_bindgen]
 impl WasmLocalSession {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
+    pub fn new(world_json: Option<String>) -> Result<Self, JsValue> {
         install_panic_hook_once();
-        Self {
-            inner: LocalPreviewSession::new(),
-        }
+        let inner = match world_json {
+            Some(world_json) => LocalPreviewSession::from_world_json(&world_json)
+                .map_err(|err| JsValue::from_str(&err))?,
+            None => LocalPreviewSession::new(),
+        };
+        Ok(Self { inner })
     }
 
     pub fn connect(&mut self) {

@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { initSync, WasmSimWorld as RawWasmSimWorld } from './pkg/vibe_land_shared.js';
+import { initSync, WasmLocalSession, WasmSimWorld as RawWasmSimWorld } from './pkg/vibe_land_shared.js';
 import { installWasmSimWorldCompat } from './compat';
 
 let initialized = false;
@@ -29,5 +29,5 @@ export function initWasmForTests(): void {
   initialized = true;
 }
 
-export { WasmSimWorld };
+export { WasmLocalSession, WasmSimWorld };
 export type { WasmSimWorldInstance };

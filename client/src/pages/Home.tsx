@@ -70,6 +70,17 @@ export function HomePage() {
             </p>
             <div style={{ color: '#b9ffc3', fontSize: 14 }}>Works offline after assets are cached.</div>
           </a>
+
+          <a href="/godmode" style={cardStyle}>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
+              /godmode
+            </div>
+            <h2 style={{ margin: 0, fontSize: 30 }}>World Builder</h2>
+            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
+              Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document.
+            </p>
+            <div style={{ color: '#ffe0a2', fontSize: 14 }}>Browser-local authoring with JSON import and export.</div>
+          </a>
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 14, color: 'rgba(237, 246, 255, 0.62)' }}>

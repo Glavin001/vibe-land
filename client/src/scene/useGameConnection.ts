@@ -38,6 +38,7 @@ export function useGameConnection(
   mode: GameMode,
   onWelcome: (id: number) => void,
   onDisconnect: () => void,
+  practiceWorldJson?: string,
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
   onServerPacket?: (packet: ServerPacket) => void,
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void,
@@ -119,7 +120,7 @@ export function useGameConnection(
         }, 2000);
 
     if (practiceMode) {
-      void client.connectLocalPreview();
+      void client.connectLocalPreview(practiceWorldJson);
     } else {
       const matchId = 'default';
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
@@ -136,7 +137,7 @@ export function useGameConnection(
       clientRef.current = null;
       setReady(false);
     };
-  }, [multiplayerBackend, practiceMode]);
+  }, [multiplayerBackend, practiceMode, practiceWorldJson]);
 
   const sendInputs = useCallback((cmds: InputCmd[]) => {
     clientRef.current?.sendInputs(cmds);

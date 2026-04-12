@@ -1,14 +1,13 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
 import type { CrosshairAimState } from './aimTargeting';
-import { DemoTerrain } from './DemoTerrain';
 import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
-import { usePrediction } from '../physics/usePrediction';
+import { usePredictionWithWorld } from '../physics/usePrediction';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -30,6 +29,9 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import { WorldTerrain } from './WorldTerrain';
+import { WorldStaticProps } from './WorldStaticProps';
+import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
@@ -84,6 +86,7 @@ type FrameDebugCallback = (
 
 type GameWorldProps = {
   mode: GameMode;
+  worldDocument?: WorldDocument;
   onWelcome: (id: number) => void;
   onDisconnect: () => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
@@ -115,6 +118,7 @@ type LocalVehicleVisualPoseState = {
 
 export function GameWorld({
   mode,
+  worldDocument = DEFAULT_WORLD_DOCUMENT,
   onWelcome,
   onDisconnect,
   onAimStateChange,
@@ -125,7 +129,8 @@ export function GameWorld({
   rapierDebugModeBits = 0,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
-  const prediction = usePrediction(mode);
+  const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
+  const prediction = usePredictionWithWorld(mode, worldJson);
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
@@ -138,6 +143,7 @@ export function GameWorld({
     mode,
     onWelcome,
     onDisconnect,
+    practiceMode ? worldJson : undefined,
     prediction.ready
       ? (ackInputSeq, state) => {
           // Sync dynamic bodies BEFORE reconciliation so that input replay
@@ -224,6 +230,7 @@ export function GameWorld({
     const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
     lastFrameTime.current = now;
     const client = clientRef.current;
+    const localPreviewTransport = client?.transport === 'local-preview';
     const localFlags = client?.localPlayerFlags ?? 0;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
     const localPreviewVehicleEntry = practiceMode && client
@@ -339,7 +346,9 @@ export function GameWorld({
         if (prediction.isInVehicle() && prediction.getDrivenVehicleId() === id) {
           continue;
         }
-        const sample = client.sampleRemoteVehicle(id, remoteVehicleRenderTimeUs);
+        const sample = localPreviewTransport
+          ? null
+          : client.sampleRemoteVehicle(id, remoteVehicleRenderTimeUs);
         const position = sample?.position ?? vs.position;
         const quaternion = sample?.quaternion ?? vs.quaternion;
         const linearVelocity = sample?.linearVelocity ?? vs.linearVelocity;
@@ -723,7 +732,9 @@ export function GameWorld({
       for (const [id, body] of state.dynamicBodies) {
         activeBodies.add(id);
         const proxyBody = prediction.getDynamicBodyRenderState(id);
-        const remoteSample = client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
+        const remoteSample = localPreviewTransport
+          ? null
+          : client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
         const useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
         const renderBody = useProxyBody && proxyBody
           ? proxyBody
@@ -820,7 +831,9 @@ export function GameWorld({
           vPos = localVehiclePos.position;
           vQuat = localVehiclePos.quaternion;
         } else {
-          const sample = client.sampleRemoteVehicle(id, renderTimeUs);
+          const sample = localPreviewTransport
+            ? null
+            : client.sampleRemoteVehicle(id, renderTimeUs);
           vPos = sample?.position ?? vs.position;
           vQuat = sample?.quaternion ?? vs.quaternion;
         }
@@ -884,7 +897,8 @@ export function GameWorld({
         shadow-normalBias={0.03}
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
-      {!practiceMode && <DemoTerrain />}
+      <WorldTerrain world={worldDocument} />
+      <WorldStaticProps world={worldDocument} />
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock
@@ -955,7 +969,7 @@ function RapierDebugLines({
   prediction,
   modeBits,
 }: {
-  prediction: ReturnType<typeof usePrediction>;
+  prediction: ReturnType<typeof usePredictionWithWorld>;
   modeBits: number;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -1029,7 +1043,7 @@ function createLocalShotTrace(
   remotePlayers: Map<number, RemotePlayer>,
   remoteInterpolator: ReturnType<typeof useGameConnection>['stateRef']['current']['remoteInterpolator'],
   renderTimeUs: number,
-  prediction: ReturnType<typeof usePrediction>,
+  prediction: ReturnType<typeof usePredictionWithWorld>,
 ): LocalShotTrace {
   const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
   const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, LOCAL_SHOT_TRACE_MAX_DISTANCE);

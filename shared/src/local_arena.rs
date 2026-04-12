@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nalgebra::Vector3;
+use nalgebra::{Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
@@ -131,6 +131,15 @@ impl PhysicsArena {
     ) -> ColliderHandle {
         self.dynamic
             .add_static_cuboid(center, half_extents, user_data)
+    }
+
+    pub fn add_static_heightfield(
+        &mut self,
+        heights: nalgebra::DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic.add_static_heightfield(heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -353,15 +362,48 @@ impl PhysicsArena {
         self.dynamic.spawn_dynamic_box(position, half_extents)
     }
 
+    pub fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) -> u32 {
+        self.dynamic
+            .spawn_dynamic_box_with_id(id, position, rotation, half_extents)
+    }
+
     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
         self.dynamic.spawn_dynamic_ball(position, radius)
+    }
+
+    pub fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) -> u32 {
+        self.dynamic.spawn_dynamic_ball_with_id(id, position, radius)
     }
 
     pub fn spawn_vehicle(&mut self, vehicle_type: u8, position: Vec3) -> u32 {
         let id = self.next_vehicle_id;
         self.next_vehicle_id += 1;
+        self.spawn_vehicle_with_id(id, vehicle_type, position, [0.0, 0.0, 0.0, 1.0]);
+        id
+    }
 
-        let pose = nalgebra::Isometry3::translation(position.x, position.y, position.z);
+    pub fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vec3,
+        rotation: [f32; 4],
+    ) -> u32 {
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(position.x, position.y, position.z),
+            UnitQuaternion::from_quaternion(Quaternion::new(
+                rotation[3],
+                rotation[0],
+                rotation[1],
+                rotation[2],
+            )),
+        );
         let (chassis_body, chassis_collider, controller) =
             create_vehicle_physics(&mut self.dynamic.sim, pose);
 
@@ -376,6 +418,7 @@ impl PhysicsArena {
             },
         );
 
+        self.next_vehicle_id = self.next_vehicle_id.max(id.saturating_add(1));
         id
     }
 

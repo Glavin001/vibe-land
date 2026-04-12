@@ -11,6 +11,7 @@ type WasmDebugRenderBuffers = {
 
 type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   seedDemoTerrain(): number;
+  loadWorldDocument(worldJson: string): void;
   syncBroadPhase(): void;
   syncDynamicBody(
     id: number,

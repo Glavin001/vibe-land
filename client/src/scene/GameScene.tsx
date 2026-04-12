@@ -4,6 +4,7 @@ import { Suspense } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
+import type { WorldDocument } from '../world/worldDocument';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -18,6 +19,7 @@ type GameSceneProps = {
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
+  worldDocument?: WorldDocument;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -34,6 +36,7 @@ export function GameScene({
   rapierDebugModeBits = 0,
   showRenderStats,
   renderStatsParent,
+  worldDocument,
 }: GameSceneProps) {
   return (
     <Canvas
@@ -54,6 +57,7 @@ export function GameScene({
         )}
         <GameWorld
           mode={mode}
+          worldDocument={worldDocument}
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}

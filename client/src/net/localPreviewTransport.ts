@@ -19,6 +19,7 @@ const MAX_CATCHUP_TICKS = 4;
 export type LocalPreviewTransportHandlers = {
   onPacket?: (packet: ServerPacket) => void;
   onClose?: () => void;
+  worldJson?: string;
 };
 
 export class LocalPreviewTransport {
@@ -35,7 +36,8 @@ export class LocalPreviewTransport {
   ): Promise<LocalPreviewTransport> {
     await initSharedPhysics();
     const transport = new LocalPreviewTransport(handlers);
-    transport.session = new WasmLocalSession();
+    const LocalSessionCtor = WasmLocalSession as unknown as new (worldJson?: string) => WasmLocalSession;
+    transport.session = new LocalSessionCtor(handlers.worldJson);
     transport.session.connect();
     transport.flushPackets();
     transport.lastTickTimeMs = performance.now();

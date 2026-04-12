@@ -2615,6 +2615,8 @@ dependencies = [
  "js-sys",
  "nalgebra",
  "rapier3d",
+ "serde",
+ "serde_json",
  "vibe-netcode",
  "wasm-bindgen",
 ]

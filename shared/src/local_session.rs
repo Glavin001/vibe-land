@@ -1,24 +1,21 @@
 use std::collections::VecDeque;
 
 use bytes::{Buf, BufMut, BytesMut};
-use nalgebra::vector;
-
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_BLOCK_EDIT, PKT_CHUNK_DIFF, PKT_CHUNK_FULL, PKT_DEBUG_STATS,
-        PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT,
+        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT,
         PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
     local_arena::{MoveConfig, PhysicsArena},
-    local_world::VoxelWorld,
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
+    world_document::WorldDocument,
 };
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = SIM_HZ;
-const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const MAX_PENDING_INPUTS: usize = 120;
 const LOCAL_PLAYER_ID: u32 = 1;
 const LOCAL_RIFLE_INTERVAL_MS: u32 = 100;
@@ -37,7 +34,6 @@ struct PlayerRuntime {
 
 pub struct LocalPreviewSession {
     arena: PhysicsArena,
-    world: VoxelWorld,
     connected: bool,
     player: PlayerRuntime,
     queued_shots: Vec<FireCmd>,
@@ -47,22 +43,27 @@ pub struct LocalPreviewSession {
 
 impl LocalPreviewSession {
     pub fn new() -> Self {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
-        let mut world = VoxelWorld::new();
-        world.seed_demo_world(&mut arena);
-        arena.spawn_dynamic_box(vector![4.0, 8.0, 4.0], vector![0.5, 0.5, 0.5]);
-        arena.spawn_vehicle(0, vector![8.0, 2.0, 0.0]);
-        arena.rebuild_broad_phase();
+        Self::from_world_document(WorldDocument::demo()).expect("default world document is valid")
+    }
 
-        Self {
+    pub fn from_world_json(world_json: &str) -> Result<Self, String> {
+        let world: WorldDocument =
+            serde_json::from_str(world_json).map_err(|error| error.to_string())?;
+        Self::from_world_document(world)
+    }
+
+    pub fn from_world_document(world: WorldDocument) -> Result<Self, String> {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world.instantiate(&mut arena).map_err(|error| error.to_string())?;
+
+        Ok(Self {
             arena,
-            world,
             connected: false,
             player: PlayerRuntime::default(),
             queued_shots: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
-        }
+        })
     }
 
     pub fn connect(&mut self) {
@@ -82,14 +83,6 @@ impl LocalPreviewSession {
             server_time_us,
             interpolation_delay_ms: 0,
         }));
-
-        if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(LOCAL_PLAYER_ID) {
-            for key in self.world.visible_chunks_around(pos, CHUNK_RADIUS_ON_JOIN) {
-                if let Some(full) = self.world.chunk_full_packet(key) {
-                    self.outbound_packets.push(encode_chunk_full_packet(&full));
-                }
-            }
-        }
     }
 
     pub fn disconnect(&mut self) {
@@ -120,17 +113,6 @@ impl LocalPreviewSession {
             }
             PKT_FIRE => {
                 self.queued_shots.push(decode_fire_cmd(&mut buf)?);
-            }
-            PKT_BLOCK_EDIT => {
-                let cmd = decode_block_edit_cmd(&mut buf)?;
-                match self.world.apply_edit(&mut self.arena, &cmd) {
-                    Ok(diff) => self.outbound_packets.push(encode_chunk_diff_packet(&diff)),
-                    Err(_) => {
-                        if let Some(full) = self.world.chunk_full_for_coords(cmd.chunk) {
-                            self.outbound_packets.push(encode_chunk_full_packet(&full));
-                        }
-                    }
-                }
             }
             PKT_VEHICLE_ENTER => {
                 let vehicle_id = decode_vehicle_enter(&mut buf)?;
@@ -368,19 +350,6 @@ fn decode_fire_cmd(buf: &mut &[u8]) -> Result<FireCmd, String> {
     })
 }
 
-fn decode_block_edit_cmd(buf: &mut &[u8]) -> Result<BlockEditCmd, String> {
-    if buf.remaining() < 14 {
-        return Err("short block edit packet".to_string());
-    }
-    Ok(BlockEditCmd {
-        chunk: [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()],
-        expected_version: buf.get_u32_le(),
-        local: [buf.get_u8(), buf.get_u8(), buf.get_u8()],
-        op: buf.get_u8(),
-        material: buf.get_u16_le(),
-    })
-}
-
 fn decode_vehicle_enter(buf: &mut &[u8]) -> Result<u32, String> {
     if buf.remaining() < 5 {
         return Err("short vehicle enter packet".to_string());
@@ -416,41 +385,6 @@ fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
     out.put_u8(pkt.confirmed as u8);
     out.put_u32_le(pkt.hit_player_id);
     out.put_u8(pkt.hit_zone);
-    out.to_vec()
-}
-
-fn encode_chunk_full_packet(pkt: &ChunkFullPacket) -> Vec<u8> {
-    let mut out = BytesMut::with_capacity(13 + pkt.blocks.len() * 5);
-    out.put_u8(PKT_CHUNK_FULL);
-    out.put_i16_le(pkt.chunk[0]);
-    out.put_i16_le(pkt.chunk[1]);
-    out.put_i16_le(pkt.chunk[2]);
-    out.put_u32_le(pkt.version);
-    out.put_u16_le(pkt.blocks.len() as u16);
-    for block in &pkt.blocks {
-        out.put_u8(block.x);
-        out.put_u8(block.y);
-        out.put_u8(block.z);
-        out.put_u16_le(block.material);
-    }
-    out.to_vec()
-}
-
-fn encode_chunk_diff_packet(pkt: &ChunkDiffPacket) -> Vec<u8> {
-    let mut out = BytesMut::with_capacity(12 + pkt.edits.len() * 6);
-    out.put_u8(PKT_CHUNK_DIFF);
-    out.put_i16_le(pkt.chunk[0]);
-    out.put_i16_le(pkt.chunk[1]);
-    out.put_i16_le(pkt.chunk[2]);
-    out.put_u32_le(pkt.version);
-    out.put_u8(pkt.edits.len() as u8);
-    for edit in &pkt.edits {
-        out.put_u8(edit.x);
-        out.put_u8(edit.y);
-        out.put_u8(edit.z);
-        out.put_u8(edit.op);
-        out.put_u16_le(edit.material);
-    }
     out.to_vec()
 }
 
@@ -549,14 +483,13 @@ mod tests {
     }
 
     #[test]
-    fn connect_queues_welcome_and_world_packets() {
+    fn connect_queues_welcome_packet() {
         let mut session = LocalPreviewSession::new();
         session.connect();
 
         let packets = session.drain_packets();
         assert!(!packets.is_empty());
         assert_eq!(packets[0][0], PKT_WELCOME);
-        assert!(packets.iter().any(|pkt| pkt[0] == PKT_CHUNK_FULL));
     }
 
     #[test]

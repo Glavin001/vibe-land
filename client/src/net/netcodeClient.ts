@@ -117,8 +117,9 @@ export class NetcodeClient {
     this.socket.connect(wsUrl);
   }
 
-  async connectLocalPreview(): Promise<void> {
+  async connectLocalPreview(worldJson?: string): Promise<void> {
     this.localTransport = await LocalPreviewTransport.connect({
+      worldJson,
       onPacket: (packet) => this.handlePacket(packet),
       onClose: () => {
         this.localTransport = null;

@@ -4,7 +4,8 @@ export type AppRoute =
   | { kind: 'launcher' }
   | { kind: 'game'; mode: GameMode }
   | { kind: 'stats' }
-  | { kind: 'loadtest' };
+  | { kind: 'loadtest' }
+  | { kind: 'godmode' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -27,8 +28,9 @@ export function resolveAppRoute(pathname: string): AppRoute {
       return { kind: 'stats' };
     case '/loadtest':
       return { kind: 'loadtest' };
+    case '/godmode':
+      return { kind: 'godmode' };
     default:
       return { kind: 'launcher' };
   }
 }
-

@@ -34,6 +34,10 @@ type PlayerAimHit = {
  * Handles shared WASM init and lifecycle only.
  */
 export function usePrediction(mode: GameMode) {
+  return usePredictionWithWorld(mode);
+}
+
+export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
   const practiceMode = isPracticeMode(mode);
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
@@ -50,16 +54,13 @@ export function usePrediction(mode: GameMode) {
       if (disposed) return;
 
       const sim = new WasmSimWorld();
-      if (!practiceMode) {
+      if (worldJson) {
+        sim.loadWorldDocument(worldJson);
+      } else if (!practiceMode) {
         sim.seedDemoTerrain();
       }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
-      if (practiceMode) {
-        // Local preview skips per-block collider sync; seed a simple ground plane
-        // directly so movement works without waiting on network-style world packets.
-        sim.addCuboid(0, -0.5, 0, 500, 0.5, 500);
-      }
       sim.rebuildBroadPhase();
 
       const manager = new PredictionManager(sim);
@@ -98,7 +99,7 @@ export function usePrediction(mode: GameMode) {
       dynamicBodyManagerRef.current = null;
       simRef.current = null;
     };
-  }, [practiceMode]);
+  }, [practiceMode, worldJson]);
 
   const applyWorldPacket = useCallback((packet: ServerWorldPacket) => {
     const m = managerRef.current;

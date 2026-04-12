@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nalgebra::{vector, DMatrix, Vector3};
+use nalgebra::{vector, DMatrix, Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
 use rapier3d::prelude::*;
 
 use crate::movement::MoveConfig;
@@ -115,16 +115,38 @@ impl DynamicArena {
     pub fn spawn_dynamic_box(&mut self, position: Vec3, half_extents: Vec3) -> u32 {
         let id = self.next_dynamic_id;
         self.next_dynamic_id += 1;
+        self.spawn_dynamic_box_with_id(id, position, [0.0, 0.0, 0.0, 1.0], half_extents)
+    }
 
+    pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
+        let id = self.next_dynamic_id;
+        self.next_dynamic_id += 1;
+        self.spawn_dynamic_ball_with_id(id, position, radius)
+    }
+
+    pub fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) -> u32 {
+        let rotation = UnitQuaternion::from_quaternion(Quaternion::new(
+            rotation[3],
+            rotation[0],
+            rotation[1],
+            rotation[2],
+        ));
         let body = RigidBodyBuilder::dynamic()
-            .translation(position)
+            .pose(Isometry3::from_parts(
+                Translation3::new(position.x, position.y, position.z),
+                rotation,
+            ))
             .linear_damping(0.3)
             .angular_damping(0.5)
             .build();
         let body_handle = self.sim.rigid_bodies.insert(body);
 
-        // GROUP_2 = dynamic bodies; suspension raycasts only query GROUP_1 (terrain)
-        // so the vehicle chassis pushes boxes directly rather than climbing over them.
         let collider = ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
             .restitution(0.3)
             .friction(0.6)
@@ -147,17 +169,14 @@ impl DynamicArena {
                 body_handle,
                 collider_handle,
                 half_extents,
-                shape_type: 0, // SHAPE_BOX
+                shape_type: 0,
             },
         );
-
+        self.next_dynamic_id = self.next_dynamic_id.max(id.saturating_add(1));
         id
     }
 
-    pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
-        let id = self.next_dynamic_id;
-        self.next_dynamic_id += 1;
-
+    pub fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) -> u32 {
         let body = RigidBodyBuilder::dynamic()
             .translation(position)
             .linear_damping(0.3)
@@ -187,10 +206,10 @@ impl DynamicArena {
                 body_handle,
                 collider_handle,
                 half_extents: vector![radius, radius, radius],
-                shape_type: 1, // SHAPE_SPHERE
+                shape_type: 1,
             },
         );
-
+        self.next_dynamic_id = self.next_dynamic_id.max(id.saturating_add(1));
         id
     }
 
