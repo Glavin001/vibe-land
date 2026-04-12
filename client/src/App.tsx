@@ -50,6 +50,8 @@ import { GameScene } from './components/GameScene';
 import { JoinGameDialog } from './components/JoinGameDialog';
 import * as THREE from 'three';
 import { PlayerUI } from './components/PlayerUI';
+import { MobileControls } from './components/MobileControls';
+import { isTouchDevice } from './device';
 
 let conn: DbConnection | null = null;
 
@@ -62,6 +64,7 @@ function App() {
   const [showJoinDialog, setShowJoinDialog] = useState(false);
   const [isDebugPanelExpanded, setIsDebugPanelExpanded] = useState(false);
   const [isPointerLocked, setIsPointerLocked] = useState(false);
+  const [isTouch] = useState(() => isTouchDevice());
 
   // --- Refs for stable access in callbacks (avoid stale closures) ---
   const identityRef = useRef<Identity | null>(null);
@@ -456,8 +459,16 @@ function App() {
             onPlayerRotation={handlePlayerRotation}
             currentInputRef={currentInputRef}
             isDebugPanelVisible={isDebugPanelExpanded}
+            isTouchDevice={isTouch}
+            externalRotationRef={isTouch ? playerRotationRef : undefined}
           />
           {localPlayer && <PlayerUI playerData={localPlayer} />}
+          {isTouch && (
+            <MobileControls
+              currentInputRef={currentInputRef}
+              playerRotationRef={playerRotationRef}
+            />
+          )}
         </>
       )}
 

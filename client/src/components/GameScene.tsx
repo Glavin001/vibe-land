@@ -20,22 +20,29 @@ interface GameSceneProps {
   onPlayerRotation?: (rotation: THREE.Euler) => void; // Optional callback for player rotation
   currentInputRef?: React.MutableRefObject<InputState>; // Add input state ref prop
   isDebugPanelVisible?: boolean; // Prop to indicate if the debug panel is visible
+  isTouchDevice?: boolean; // Whether running on a touch device (skip pointer lock)
+  externalRotationRef?: React.MutableRefObject<THREE.Euler>; // Touch rotation from MobileControls
 }
 
 export const GameScene: React.FC<GameSceneProps> = ({ 
-  players, 
+  players,
   localPlayerIdentity,
   onPlayerRotation,
   currentInputRef, // Receive input state ref
-  isDebugPanelVisible = false // Destructure the new prop
+  isDebugPanelVisible = false, // Destructure the new prop
+  isTouchDevice = false,
+  externalRotationRef,
 }) => {
   // Ref for the main directional light
   const directionalLightRef = useRef<THREE.DirectionalLight>(null!); 
 
   return (
-    <Canvas 
-      camera={{ position: [0, 10, 20], fov: 60 }} 
-      style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1 }} 
+    <Canvas
+      camera={{ position: [0, 10, 20], fov: 60 }}
+      style={{
+        position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 1,
+        ...(isTouchDevice ? { touchAction: 'none' } : {}),
+      }}
       shadows // Enable shadows
     >
       {/* Remove solid color background */}
@@ -96,14 +103,16 @@ export const GameScene: React.FC<GameSceneProps> = ({
       {Array.from(players.values()).map((player) => {
         const isLocal = localPlayerIdentity?.toHexString() === player.identity.toHexString();
         return (
-          <Player 
-            key={player.identity.toHexString()} 
+          <Player
+            key={player.identity.toHexString()}
             playerData={player}
             isLocalPlayer={isLocal}
             onRotationChange={isLocal ? onPlayerRotation : undefined}
             currentInputRef={isLocal ? currentInputRef : undefined}
             isDebugArrowVisible={isLocal ? isDebugPanelVisible : false} // Pass down arrow visibility
             isDebugPanelVisible={isDebugPanelVisible} // Pass down general debug visibility
+            isTouchDevice={isTouchDevice}
+            externalRotationRef={isLocal ? externalRotationRef : undefined}
           />
         );
       })}

@@ -80,6 +80,8 @@ interface PlayerProps {
   currentInputRef?: React.MutableRefObject<InputState>; // Ref for live input access in useFrame
   isDebugArrowVisible?: boolean; // Prop to control debug arrow visibility
   isDebugPanelVisible?: boolean; // Prop to control general debug helpers visibility
+  isTouchDevice?: boolean; // Whether running on a touch device (skip pointer lock)
+  externalRotationRef?: React.MutableRefObject<THREE.Euler>; // Touch rotation from MobileControls
 }
 
 export const Player: React.FC<PlayerProps> = ({
@@ -87,8 +89,10 @@ export const Player: React.FC<PlayerProps> = ({
   isLocalPlayer,
   onRotationChange,
   currentInputRef, // Ref for live input access in useFrame
-  isDebugArrowVisible = false, 
-  isDebugPanelVisible = false // Destructure with default false
+  isDebugArrowVisible = false,
+  isDebugPanelVisible = false, // Destructure with default false
+  isTouchDevice = false,
+  externalRotationRef,
 }) => {
   const group = useRef<THREE.Group>(null!);
   const { camera } = useThree();
@@ -658,9 +662,9 @@ export const Player: React.FC<PlayerProps> = ({
 
   // }, [playerData, isLocalPlayer, modelLoaded]);
 
-  // Set up pointer lock for camera control if local player
+  // Set up pointer lock for camera control if local player (skip on touch devices)
   useEffect(() => {
-    if (!isLocalPlayer) return;
+    if (!isLocalPlayer || isTouchDevice) return;
     
     const handlePointerLockChange = () => {
       isPointerLocked.current = document.pointerLockElement === document.body;
@@ -742,7 +746,7 @@ export const Player: React.FC<PlayerProps> = ({
       document.removeEventListener('wheel', handleMouseWheel);
       document.removeEventListener('click', handleCanvasClick);
     };
-  }, [isLocalPlayer, onRotationChange, cameraMode]);
+  }, [isLocalPlayer, onRotationChange, cameraMode, isTouchDevice]);
 
   // Handle one-time animation completion
   useEffect(() => {
@@ -849,6 +853,12 @@ export const Player: React.FC<PlayerProps> = ({
       // Update latest server data ref for local player
       if (isLocalPlayer) {
           dataRef.current = playerData;
+
+          // On touch devices, sync rotation from the external ref (written by MobileControls)
+          if (isTouchDevice && externalRotationRef) {
+            localRotationRef.current.x = externalRotationRef.current.x;
+            localRotationRef.current.y = externalRotationRef.current.y;
+          }
       }
 
       if (group.current && modelLoaded) {
