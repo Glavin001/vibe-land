@@ -50,7 +50,7 @@ npm run build
 The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the unified static client bundle.
 
 - Vercel build target: `client/dist`
-- Vercel build command: `npm --prefix client run build`
+- Vercel build command: `npm --prefix client run build:vercel-local-preview`
 - Static assets under `/assets/*` are cached as immutable hashed files
 - SPA routes revalidate on each request so browsers can reuse cached assets quickly after checking freshness
 
