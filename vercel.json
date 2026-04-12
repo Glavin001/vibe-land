@@ -25,7 +25,7 @@
       ]
     },
     {
-      "source": "/index.html",
+      "source": "/index",
       "headers": [
         {
           "key": "Cache-Control",
@@ -73,7 +73,7 @@
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/index.html"
+      "destination": "/index"
     }
   ]
 }
