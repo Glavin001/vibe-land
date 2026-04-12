@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef, type CSSProperties } from 'react';
+import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
@@ -12,14 +12,30 @@ import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocumen
 type AppProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
+  overlay?: ReactNode;
+  routeLabel?: string;
+  autoConnect?: boolean;
+  sessionKey?: number;
 };
 
-export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) {
+export function App({
+  mode,
+  worldDocument = DEFAULT_WORLD_DOCUMENT,
+  overlay,
+  routeLabel,
+  autoConnect = false,
+  sessionKey = 0,
+}: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const [connected, setConnected] = useState(false);
+  const pathLabel = routeLabel ?? (mode === 'multiplayer' ? '/play' : '/practice');
+  const [connected, setConnected] = useState(autoConnect);
   const [playerId, setPlayerId] = useState(0);
-  const [status, setStatus] = useState('Click to join');
+  const [status, setStatus] = useState(
+    autoConnect
+      ? (practiceMode ? 'Starting firing range...' : 'Connecting...')
+      : 'Click to join',
+  );
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
@@ -52,6 +68,21 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
     setPlayerId(0);
     setCrosshairState('idle');
   }, [modeLabel, practiceMode]);
+
+  useEffect(() => {
+    if (!autoConnect || connected) {
+      return;
+    }
+    handleConnect();
+  }, [autoConnect, connected, handleConnect]);
+
+  useEffect(() => {
+    if (!connected || sessionKey === 0) {
+      return;
+    }
+    setCrosshairState('idle');
+    setStatus(practiceMode ? 'Starting firing range...' : 'Connecting...');
+  }, [connected, practiceMode, sessionKey]);
 
   useEffect(() => {
     const setTimedCopyNotice = (message: string) => {
@@ -133,7 +164,7 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
           <div style={{ textAlign: 'center' }}>
             <h1 style={{ fontSize: 48, marginBottom: 16 }}>vibe-land</h1>
             <p style={{ fontSize: 14, opacity: 0.5, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.18em' }}>
-              {mode === 'multiplayer' ? '/play' : '/practice'}
+              {pathLabel}
             </p>
             <p style={{ fontSize: 20, opacity: 0.7 }}>
               {practiceMode ? 'Click anywhere to launch the firing range' : 'Click anywhere to join multiplayer'}
@@ -173,6 +204,7 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
           {practiceMode ? 'Multiplayer' : 'Firing range'}
         </a>
       </div>
+      {overlay}
       {copyNotice && (
         <div
           style={{
@@ -249,6 +281,7 @@ export function App({ mode, worldDocument = DEFAULT_WORLD_DOCUMENT }: AppProps) 
       )}
       {connected && (
         <GameScene
+          key={sessionKey}
           mode={mode}
           worldDocument={worldDocument}
           onWelcome={handleWelcome}

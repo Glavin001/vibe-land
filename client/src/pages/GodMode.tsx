@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import {
+  DEFAULT_WORLD_DOCUMENT,
   applyTerrainBrush,
   cloneWorldDocument,
   getNextWorldEntityId,
@@ -22,6 +23,7 @@ import {
   type WorldDraftRevision,
 } from '../world/worldDocument';
 import {
+  clearDraftStorage,
   getInitialGodModeWorld,
   getLastImportName,
   loadRevisionHistory,
@@ -49,6 +51,7 @@ export function GodModePage() {
   const [brushStrength, setBrushStrength] = useState(0.12);
   const [brushMode, setBrushMode] = useState<'raise' | 'lower'>('raise');
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
+  const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autosaveTimerRef = useRef<number | null>(null);
@@ -93,6 +96,7 @@ export function GodModePage() {
   const handleStartPlay = useCallback(() => {
     const snapshot = cloneWorldDocument(world);
     setPlayWorldSnapshot(snapshot);
+    setPlaySessionKey((current) => current + 1);
     setMode('play');
   }, [world]);
 
@@ -100,6 +104,14 @@ export function GodModePage() {
     setMode('edit');
     setPlayWorldSnapshot(null);
   }, []);
+
+  const handleResetPlayWorld = useCallback(() => {
+    if (mode !== 'play') {
+      return;
+    }
+    setPlayWorldSnapshot(cloneWorldDocument(world));
+    setPlaySessionKey((current) => current + 1);
+  }, [mode, world]);
 
   const handleExport = useCallback(() => {
     const blob = new Blob([serializeWorldDocument(world)], { type: 'application/json' });
@@ -134,6 +146,44 @@ export function GodModePage() {
     setWorld(cloneWorldDocument(revision.world));
     setSelected(null);
   }, []);
+
+  const handleResetToDefault = useCallback(() => {
+    clearDraftStorage();
+    setWorld(cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
+    setHistory([]);
+    setSelected(null);
+    setLastImportNameState('');
+  }, []);
+
+  useEffect(() => {
+    if (mode !== 'play') {
+      return undefined;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+      if (event.code !== 'KeyR') {
+        return;
+      }
+      event.preventDefault();
+      handleResetPlayWorld();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [handleResetPlayWorld, mode]);
 
   const addStaticCuboid = useCallback(() => {
     const nextId = getNextWorldEntityId(world);
@@ -282,6 +332,25 @@ export function GodModePage() {
     />
   ), [brushMode, brushRadius, brushStrength, selected, tool, world]);
 
+  if (mode === 'play' && playWorldSnapshot) {
+    return (
+      <App
+        mode="practice"
+        worldDocument={playWorldSnapshot}
+        routeLabel="/godmode"
+        autoConnect
+        sessionKey={playSessionKey}
+        overlay={(
+          <div style={godModePlayOverlayStyle}>
+            <span>Godmode Play uses the same local-practice runtime with the current authored world.</span>
+            <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World (R)</button>
+            <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>Back To Edit</button>
+          </div>
+        )}
+      />
+    );
+  }
+
   return (
     <div style={pageStyle}>
       <input
@@ -316,6 +385,7 @@ export function GodModePage() {
           <div style={buttonRowStyle}>
             <button type="button" onClick={handleExport} style={primaryButtonStyle}>Export JSON</button>
             <button type="button" onClick={handleImportButton} style={secondaryButtonStyle}>Import JSON</button>
+            <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
           </div>
           <div style={mutedTextStyle}>
             Autosaves are stored in localStorage. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
@@ -411,13 +481,7 @@ export function GodModePage() {
       </aside>
 
       <main style={viewportStyle}>
-        {mode === 'edit' && editScene}
-        {mode === 'play' && playWorldSnapshot && (
-          <GodModePlayViewport
-            world={playWorldSnapshot}
-            onExit={handleReturnToEdit}
-          />
-        )}
+        {editScene}
       </main>
     </div>
   );
@@ -545,24 +609,6 @@ function GodModeEditorScene({
       )}
       <OrbitControls enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
     </Canvas>
-  );
-}
-
-function GodModePlayViewport({
-  world,
-  onExit,
-}: {
-  world: WorldDocument;
-  onExit: () => void;
-}) {
-  return (
-    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      <div style={playTopBarStyle}>
-        <span>Godmode Play uses the normal `/practice` runtime with the current authored world.</span>
-        <button type="button" onClick={onExit} style={secondaryButtonStyle}>Back To Edit</button>
-      </div>
-      <App mode="practice" worldDocument={world} />
-    </div>
   );
 }
 
@@ -767,11 +813,11 @@ const historyButtonStyle: CSSProperties = {
   textAlign: 'left',
 };
 
-const playTopBarStyle: CSSProperties = {
+const godModePlayOverlayStyle: CSSProperties = {
   position: 'absolute',
-  top: 12,
-  left: 12,
-  right: 12,
+  top: 44,
+  left: 8,
+  right: 8,
   zIndex: 12,
   display: 'flex',
   justifyContent: 'space-between',

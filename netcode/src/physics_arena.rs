@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 
-use nalgebra::{vector, DMatrix, Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{
+    vector, DMatrix, Isometry3, Point3, Quaternion, Translation3, UnitQuaternion, Vector3,
+};
 use rapier3d::prelude::*;
 
 use crate::movement::MoveConfig;
 use crate::sim_world::SimWorld;
 
 pub type Vec3 = Vector3<f32>;
+const DYNAMIC_SUBSTEPS: usize = 4;
 
 /// A dynamic rigid body tracked by the server-side physics pipeline.
 pub struct DynamicBody {
@@ -81,6 +84,15 @@ impl DynamicArena {
         user_data: u128,
     ) -> ColliderHandle {
         self.sim.add_static_heightfield(heights, scale, user_data)
+    }
+
+    pub fn add_static_trimesh(
+        &mut self,
+        vertices: Vec<Point3<f32>>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.sim.add_static_trimesh(vertices, indices, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -214,21 +226,25 @@ impl DynamicArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
+        let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
+        for _ in 0..DYNAMIC_SUBSTEPS {
+            self.sim.integration_parameters.dt = substep_dt;
+            self.pipeline.step(
+                &self.gravity,
+                &self.sim.integration_parameters,
+                &mut self.sim.island_manager,
+                &mut self.sim.broad_phase,
+                &mut self.sim.narrow_phase,
+                &mut self.sim.rigid_bodies,
+                &mut self.sim.colliders,
+                &mut self.impulse_joints,
+                &mut self.multibody_joints,
+                &mut self.ccd_solver,
+                &(),
+                &(),
+            );
+        }
         self.sim.integration_parameters.dt = dt;
-        self.pipeline.step(
-            &self.gravity,
-            &self.sim.integration_parameters,
-            &mut self.sim.island_manager,
-            &mut self.sim.broad_phase,
-            &mut self.sim.narrow_phase,
-            &mut self.sim.rigid_bodies,
-            &mut self.sim.colliders,
-            &mut self.impulse_joints,
-            &mut self.multibody_joints,
-            &mut self.ccd_solver,
-            &(),
-            &(),
-        );
     }
 
     /// Returns `(id, position, quaternion [x,y,z,w], half_extents, linvel, angvel, shape_type)`

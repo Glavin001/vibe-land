@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use nalgebra::{DMatrix, Vector3};
+use nalgebra::{DMatrix, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
+use vibe_land_shared::world_document::WorldDocumentArena;
 
 use crate::protocol::*;
 pub use vibe_land_shared::movement::{
@@ -123,7 +124,8 @@ impl PhysicsArena {
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
-        self.dynamic.add_static_heightfield(heights, scale, user_data)
+        self.dynamic
+            .add_static_heightfield(heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -178,8 +180,7 @@ impl PhysicsArena {
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
-        tick_result.timings.collider_sync_ms =
-            sync_started.elapsed().as_secs_f32() * 1000.0;
+        tick_result.timings.collider_sync_ms = sync_started.elapsed().as_secs_f32() * 1000.0;
 
         for impulse in &tick_result.dynamic_impulses {
             let _ = self.apply_dynamic_body_impulse(
@@ -352,8 +353,24 @@ impl PhysicsArena {
         self.dynamic.spawn_dynamic_box(position, half_extents)
     }
 
+    pub fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) -> u32 {
+        self.dynamic
+            .spawn_dynamic_box_with_id(id, position, rotation, half_extents)
+    }
+
     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
         self.dynamic.spawn_dynamic_ball(position, radius)
+    }
+
+    pub fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) -> u32 {
+        self.dynamic
+            .spawn_dynamic_ball_with_id(id, position, radius)
     }
 
     // ── Vehicle management ──────────────────────────────────────────────────
@@ -381,6 +398,39 @@ impl PhysicsArena {
         id
     }
 
+    pub fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vec3,
+        rotation: [f32; 4],
+    ) -> u32 {
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(position.x, position.y, position.z),
+            UnitQuaternion::from_quaternion(Quaternion::new(
+                rotation[3],
+                rotation[0],
+                rotation[1],
+                rotation[2],
+            )),
+        );
+        let (chassis_body, chassis_collider, controller) =
+            create_vehicle_physics(&mut self.dynamic.sim, pose);
+
+        self.vehicles.insert(
+            id,
+            Vehicle {
+                chassis_body,
+                chassis_collider,
+                controller,
+                vehicle_type,
+                driver_id: None,
+            },
+        );
+        self.next_vehicle_id = self.next_vehicle_id.max(id.saturating_add(1));
+        id
+    }
+
     /// Apply driver inputs to each vehicle and update suspension.
     /// Call BEFORE `step_dynamics` so forces are integrated in the same tick.
     pub fn step_vehicles(&mut self, dt: f32) {
@@ -390,7 +440,10 @@ impl PhysicsArena {
 
         let vehicle_ids: Vec<u32> = self.vehicles.keys().copied().collect();
         for vid in vehicle_ids {
-            if let Some(driver_id) = self.vehicles.get(&vid).and_then(|vehicle| vehicle.driver_id)
+            if let Some(driver_id) = self
+                .vehicles
+                .get(&vid)
+                .and_then(|vehicle| vehicle.driver_id)
             {
                 if !self.players.contains_key(&driver_id) {
                     self.detach_player_from_vehicles(driver_id);
@@ -560,6 +613,44 @@ impl PhysicsArena {
         &self,
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
+    }
+}
+
+impl WorldDocumentArena for PhysicsArena {
+    fn add_static_heightfield(&mut self, heights: DMatrix<f32>, scale: Vec3, user_data: u128) {
+        PhysicsArena::add_static_heightfield(self, heights, scale, user_data);
+    }
+
+    fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) {
+        PhysicsArena::add_static_cuboid(self, center, half_extents, user_data);
+    }
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) {
+        PhysicsArena::spawn_dynamic_box_with_id(self, id, position, rotation, half_extents);
+    }
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) {
+        PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
+    }
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vec3,
+        rotation: [f32; 4],
+    ) {
+        PhysicsArena::spawn_vehicle_with_id(self, id, vehicle_type, position, rotation);
+    }
+
+    fn rebuild_broad_phase(&mut self) {
+        PhysicsArena::rebuild_broad_phase(self);
     }
 }
 
@@ -860,12 +951,18 @@ mod tests {
         let vehicle_id = arena.spawn_vehicle(0, vector![0.0, 2.0, 0.0]);
 
         arena.enter_vehicle(1, vehicle_id);
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
 
         arena.remove_player(1);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), None);
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            None
+        );
         assert!(!arena.vehicle_of_player.contains_key(&1));
     }
 
@@ -881,7 +978,10 @@ mod tests {
 
         arena.enter_vehicle(1, vehicle_id);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
     }
 
@@ -895,7 +995,10 @@ mod tests {
         arena.enter_vehicle(1, vehicle_id);
         arena.enter_vehicle(2, vehicle_id);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
         assert!(!arena.vehicle_of_player.contains_key(&2));
     }

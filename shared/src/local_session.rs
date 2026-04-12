@@ -1,11 +1,9 @@
 use std::collections::VecDeque;
 
-use bytes::{Buf, BufMut, BytesMut};
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE,
-        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT,
-        PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
+        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -13,6 +11,7 @@ use crate::{
     unit_conv::{i16_to_angle, snorm16_to_f32},
     world_document::WorldDocument,
 };
+use bytes::{Buf, BufMut, BytesMut};
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = SIM_HZ;
@@ -54,7 +53,9 @@ impl LocalPreviewSession {
 
     pub fn from_world_document(world: WorldDocument) -> Result<Self, String> {
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        world.instantiate(&mut arena).map_err(|error| error.to_string())?;
+        world
+            .instantiate(&mut arena)
+            .map_err(|error| error.to_string())?;
 
         Ok(Self {
             arena,
@@ -76,13 +77,14 @@ impl LocalPreviewSession {
         self.arena.spawn_player(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
-        self.outbound_packets.push(encode_welcome_packet(&WelcomePacket {
-            player_id: LOCAL_PLAYER_ID,
-            sim_hz: SIM_HZ,
-            snapshot_hz: SNAPSHOT_HZ,
-            server_time_us,
-            interpolation_delay_ms: 0,
-        }));
+        self.outbound_packets
+            .push(encode_welcome_packet(&WelcomePacket {
+                player_id: LOCAL_PLAYER_ID,
+                sim_hz: SIM_HZ,
+                snapshot_hz: SNAPSHOT_HZ,
+                server_time_us,
+                interpolation_delay_ms: 0,
+            }));
     }
 
     pub fn disconnect(&mut self) {
@@ -215,23 +217,25 @@ impl LocalPreviewSession {
                         shot.dir[1] * DYNAMIC_BODY_IMPULSE + normal[1] * 0.5,
                         shot.dir[2] * DYNAMIC_BODY_IMPULSE + normal[2] * 0.5,
                     ];
-                    let _ = self
-                        .arena
-                        .apply_dynamic_body_impulse(dynamic_body_id, impulse, impact_point);
+                    let _ = self.arena.apply_dynamic_body_impulse(
+                        dynamic_body_id,
+                        impulse,
+                        impact_point,
+                    );
                     make_shot_result(shot.shot_id, shot.weapon)
                 }
             } else {
                 make_shot_result(shot.shot_id, shot.weapon)
             };
 
-            self.outbound_packets.push(encode_shot_result_packet(&result));
+            self.outbound_packets
+                .push(encode_shot_result_packet(&result));
         }
     }
 
     fn build_snapshot_packet(&self) -> Vec<u8> {
         let mut player_states = Vec::new();
-        if let Some((pos, vel, yaw, pitch, hp, flags)) =
-            self.arena.snapshot_player(LOCAL_PLAYER_ID)
+        if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
@@ -523,7 +527,10 @@ mod tests {
         session.tick(1.0 / 60.0);
         session.tick(1.0 / 60.0);
         let packets = session.drain_packets();
-        let snapshot = packets.into_iter().find(|pkt| pkt[0] == PKT_SNAPSHOT).unwrap();
+        let snapshot = packets
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
         assert_eq!(decode_snapshot_ack(&snapshot), 7);
     }
 }

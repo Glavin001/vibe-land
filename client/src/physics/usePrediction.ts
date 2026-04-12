@@ -63,10 +63,10 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       sim.spawnPlayer(0, 2, 0);
       sim.rebuildBroadPhase();
 
-      const manager = new PredictionManager(sim);
+      const manager = new PredictionManager(sim, practiceMode);
       manager.enableTerrainWorld();
       managerRef.current = manager;
-      vehicleManagerRef.current = new VehiclePredictionManager(sim);
+      vehicleManagerRef.current = new VehiclePredictionManager(sim, practiceMode);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
       simRef.current = sim;
 
@@ -358,6 +358,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     maxDistance = 1000,
     blockerDistance: number | null = null,
   ): number | null => {
+    if (practiceMode) return null;
     const sim = simRef.current;
     if (!sim) return null;
 
@@ -395,7 +396,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       sim.stepDynamics(FIXED_DT);
     }
     return applied ? bodyId : null;
-  }, []);
+  }, [practiceMode]);
 
   const hasRecentDynamicBodyInteraction = useCallback((id: number): boolean => {
     return dynamicBodyManagerRef.current?.hasRecentInteraction(id) ?? false;

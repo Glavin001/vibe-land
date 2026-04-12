@@ -41,8 +41,9 @@ impl DebugRenderBackend for BufferBackend {
         b: Point<Real>,
         color: DebugColor,
     ) {
-        self.vertices
-            .extend_from_slice(&[a.x as f32, a.y as f32, a.z as f32, b.x as f32, b.y as f32, b.z as f32]);
+        self.vertices.extend_from_slice(&[
+            a.x as f32, a.y as f32, a.z as f32, b.x as f32, b.y as f32, b.z as f32,
+        ]);
         let rgba = debug_color_to_rgba(color);
         self.colors.extend_from_slice(&rgba);
         self.colors.extend_from_slice(&rgba);
@@ -160,7 +161,10 @@ mod tests {
             &arena.sim.narrow_phase,
         );
 
-        assert!(!buffers.vertices.is_empty(), "expected collider debug vertices");
+        assert!(
+            !buffers.vertices.is_empty(),
+            "expected collider debug vertices"
+        );
         assert_eq!(buffers.vertices.len() % 3, 0);
         assert_eq!(buffers.colors.len(), (buffers.vertices.len() / 3) * 4);
         assert!(buffers.vertices.iter().all(|v| v.is_finite()));

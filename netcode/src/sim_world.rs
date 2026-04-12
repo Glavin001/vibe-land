@@ -1,8 +1,8 @@
-use nalgebra::{vector, DMatrix, Isometry3, Vector3};
-use rapier3d::parry::query::details::ShapeCastOptions;
+use nalgebra::{vector, DMatrix, Isometry3, Point3, Vector3};
 use rapier3d::control::{
     CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
+use rapier3d::parry::query::details::ShapeCastOptions;
 use rapier3d::prelude::*;
 
 use crate::movement::{MoveConfig, Vec3d};
@@ -195,7 +195,7 @@ impl SimWorld {
         };
 
         sim.integration_parameters.dt = 1.0 / 60.0;
-        sim.integration_parameters.num_solver_iterations = 2;
+        sim.integration_parameters.num_solver_iterations = 8;
         sim
     }
 
@@ -210,10 +210,7 @@ impl SimWorld {
         self.colliders.insert(
             ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
                 .translation(center)
-                .collision_groups(InteractionGroups::new(
-                    STATIC_WORLD_GROUP,
-                    Group::all(),
-                ))
+                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
                 .user_data(user_data)
                 .build(),
         )
@@ -227,10 +224,22 @@ impl SimWorld {
     ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::heightfield(heights, scale)
-                .collision_groups(InteractionGroups::new(
-                    STATIC_WORLD_GROUP,
-                    Group::all(),
-                ))
+                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
+                .user_data(user_data)
+                .build(),
+        )
+    }
+
+    pub fn add_static_trimesh(
+        &mut self,
+        vertices: Vec<Point3<f32>>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.colliders.insert(
+            ColliderBuilder::trimesh(vertices, indices)
+                .expect("terrain trimesh should be valid")
+                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
                 .user_data(user_data)
                 .build(),
         )
@@ -316,10 +325,7 @@ impl SimWorld {
 
     // ── KCC movement ─────────────────────────────────
 
-    pub fn player_query_context(
-        &self,
-        collider_handle: ColliderHandle,
-    ) -> PlayerQueryContext<'_> {
+    pub fn player_query_context(&self, collider_handle: ColliderHandle) -> PlayerQueryContext<'_> {
         PlayerQueryContext::new(self, collider_handle)
     }
 
@@ -502,11 +508,8 @@ impl SimWorld {
             return;
         };
         let character_shape = character_collider.shape();
-        let character_pos = Isometry3::translation(
-            position.x as f32,
-            position.y as f32,
-            position.z as f32,
-        );
+        let character_pos =
+            Isometry3::translation(position.x as f32, position.y as f32, position.z as f32);
         let player_center = vector![position.x as f32, position.y as f32, position.z as f32];
         contacts_out.clear();
         for (_handle, collider) in query_pipeline.intersect_shape(character_pos, character_shape) {
@@ -515,7 +518,10 @@ impl SimWorld {
             };
             contacts_out.push(contact);
         }
-        contacts_out.sort_by(|a, b| a.horizontal_distance_sq.total_cmp(&b.horizontal_distance_sq));
+        contacts_out.sort_by(|a, b| {
+            a.horizontal_distance_sq
+                .total_cmp(&b.horizontal_distance_sq)
+        });
     }
 
     pub fn probe_dynamic_support(
@@ -547,11 +553,8 @@ impl SimWorld {
     ) -> Option<DynamicBodyContact> {
         let character_collider = self.colliders.get(collider_handle)?;
         let character_shape = character_collider.shape();
-        let character_pos = Isometry3::translation(
-            position.x as f32,
-            position.y as f32,
-            position.z as f32,
-        );
+        let character_pos =
+            Isometry3::translation(position.x as f32, position.y as f32, position.z as f32);
         let options = ShapeCastOptions {
             max_time_of_impact: 1.0,
             target_distance: 0.0,
@@ -559,12 +562,8 @@ impl SimWorld {
             compute_impact_geometry_on_penetration: false,
         };
         let downward = vector![0.0, -max_probe_distance, 0.0];
-        let (handle, _hit) = query_pipeline.cast_shape(
-            &character_pos,
-            &downward,
-            character_shape,
-            options,
-        )?;
+        let (handle, _hit) =
+            query_pipeline.cast_shape(&character_pos, &downward, character_shape, options)?;
         let collider = self.colliders.get(handle)?;
         self.dynamic_contact_from_collider(
             collider,

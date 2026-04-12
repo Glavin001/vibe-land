@@ -28,7 +28,11 @@ use crate::movement::{
 pub fn create_vehicle_physics(
     sim: &mut SimWorld,
     pose: Isometry3<f32>,
-) -> (RigidBodyHandle, ColliderHandle, DynamicRayCastVehicleController) {
+) -> (
+    RigidBodyHandle,
+    ColliderHandle,
+    DynamicRayCastVehicleController,
+) {
     let body = RigidBodyBuilder::dynamic()
         .pose(pose)
         .linear_damping(0.1)
@@ -41,21 +45,16 @@ pub fn create_vehicle_physics(
     // GROUP_1 = terrain/chassis, GROUP_2 = dynamic bodies (balls).
     // Suspension QueryFilter uses GROUP_1 only so the vehicle chassis box
     // pushes balls directly rather than the suspension climbing over them.
-    let chassis_groups = InteractionGroups::new(
-        Group::GROUP_1,
-        Group::GROUP_1 | Group::GROUP_2,
-    );
+    let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2);
     let collider = ColliderBuilder::cuboid(0.9, 0.3, 1.8)
         .friction(0.3)
         .restitution(0.1)
         .density(VEHICLE_CHASSIS_DENSITY)
         .collision_groups(chassis_groups)
         .build();
-    let chassis_collider = sim.colliders.insert_with_parent(
-        collider,
-        chassis_body,
-        &mut sim.rigid_bodies,
-    );
+    let chassis_collider =
+        sim.colliders
+            .insert_with_parent(collider, chassis_body, &mut sim.rigid_bodies);
 
     // index_forward_axis = 2 → chassis +Z is forward.
     // Wheel layout: FL, FR, RL, RR  (x = ±0.9, y = 0, z = ±1.1)
@@ -70,10 +69,10 @@ pub fn create_vehicle_physics(
         ..WheelTuning::default()
     };
     for offset in [
-        point![-0.9_f32, 0.0,  1.1],
-        point![ 0.9_f32, 0.0,  1.1],
+        point![-0.9_f32, 0.0, 1.1],
+        point![0.9_f32, 0.0, 1.1],
         point![-0.9_f32, 0.0, -1.1],
-        point![ 0.9_f32, 0.0, -1.1],
+        point![0.9_f32, 0.0, -1.1],
     ] {
         controller.add_wheel(
             offset,

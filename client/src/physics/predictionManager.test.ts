@@ -139,6 +139,33 @@ describe('PredictionManager', () => {
       expect(result.length).toBe(4);
       expect(result[0]).toBeLessThan(5);
     });
+
+    it('local preview mode queues inputs without stepping a predicted player sim', () => {
+      const sim = createSim();
+      const mgr = new PredictionManager(sim, true);
+      mgr.enableTerrainWorld();
+
+      const before = mgr.getPosition();
+      const cmds = mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
+
+      expect(cmds).toHaveLength(1);
+      expect(mgr.getPosition()).toEqual(before);
+      mgr.dispose();
+    });
+
+    it('local preview mode applies authoritative snapshots directly', () => {
+      const sim = createSim();
+      const mgr = new PredictionManager(sim, true);
+      mgr.enableTerrainWorld();
+
+      mgr.reconcile(0, makeNetState({ position: [5, 1, 2], flags: FLAG_ON_GROUND }));
+
+      expect(mgr.isInitialized()).toBe(true);
+      expect(mgr.getPosition()).toEqual([5, 1, 2]);
+      expect(mgr.getInterpolatedPosition()).toEqual([5, 1, 2]);
+      expect(mgr.getCorrectionOffset()).toEqual([0, 0, 0]);
+      mgr.dispose();
+    });
   });
 
   // ──────────────────────────────────────────────

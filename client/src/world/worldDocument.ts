@@ -1,3 +1,5 @@
+import defaultWorldDocumentJson from '../../../world/demo-world.world.json';
+
 export const WORLD_DOCUMENT_VERSION = 1;
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;
 
@@ -44,77 +46,10 @@ export type WorldDraftRevision = {
   world: WorldDocument;
 };
 
-const DEMO_TERRAIN_GRID_SIZE = 129;
-const DEMO_TERRAIN_HALF_EXTENT_M = 80;
-const DEMO_BALL_PIT_X = 8;
-const DEMO_BALL_PIT_Z = 8;
-const DEMO_BALL_PIT_WIDTH_M = 8;
-const DEMO_BALL_PIT_DEPTH_M = 8;
-const DEMO_BALL_PIT_WALL_HEIGHT_M = 3;
-const DEMO_BALL_PIT_WALL_THICKNESS_M = 0.35;
-const FLAT_CENTER_X = 10;
-const FLAT_CENTER_Z = 8;
-const FLAT_RADIUS_M = 16;
-const BLEND_RADIUS_M = 28;
-
-export const DEFAULT_WORLD_DOCUMENT: WorldDocument = createDefaultWorldDocument();
+export const DEFAULT_WORLD_DOCUMENT: WorldDocument = parseWorldDocument(defaultWorldDocumentJson);
 
 export function createDefaultWorldDocument(): WorldDocument {
-  const heights = buildDefaultTerrainHeights();
-  const dynamicEntities: DynamicEntity[] = [];
-  let nextDynamicId = 1;
-  const innerMinX = DEMO_BALL_PIT_X + 1.5;
-  const innerMinZ = DEMO_BALL_PIT_Z + 1.5;
-  const spacing = 0.8;
-  for (let layer = 0; layer < 2; layer += 1) {
-    for (let row = 0; row < 5; row += 1) {
-      for (let col = 0; col < 5; col += 1) {
-        dynamicEntities.push({
-          id: nextDynamicId,
-          kind: 'ball',
-          position: [innerMinX + col * spacing, 2 + layer * 0.8, innerMinZ + row * spacing],
-          rotation: identityQuaternion(),
-          radius: 0.3,
-        });
-        nextDynamicId += 1;
-      }
-    }
-  }
-  dynamicEntities.push({
-    id: 100,
-    kind: 'box',
-    position: [4, 8, 4],
-    rotation: identityQuaternion(),
-    halfExtents: [0.5, 0.5, 0.5],
-  });
-  dynamicEntities.push({
-    id: 200,
-    kind: 'vehicle',
-    position: [8, 2, 0],
-    rotation: identityQuaternion(),
-    vehicleType: 0,
-  });
-
-  return {
-    version: WORLD_DOCUMENT_VERSION,
-    meta: {
-      name: 'Demo World',
-      description: 'Default authored world for practice and godmode.',
-    },
-    terrain: {
-      gridSize: DEMO_TERRAIN_GRID_SIZE,
-      halfExtentM: DEMO_TERRAIN_HALF_EXTENT_M,
-      heights,
-    },
-    staticProps: demoBallPitWallCuboids().map((wall, index) => ({
-      id: 1000 + index,
-      kind: 'cuboid',
-      position: wall.center,
-      halfExtents: wall.halfExtents,
-      material: 'pit-wall',
-    })),
-    dynamicEntities,
-  };
+  return cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
 }
 
 export function parseWorldDocument(raw: unknown): WorldDocument {
@@ -193,23 +128,22 @@ export function getTerrainWorldPosition(world: WorldDocument, row: number, col: 
 
 export function sampleTerrainHeightAtWorldPosition(world: WorldDocument, x: number, z: number): number {
   const side = world.terrain.halfExtentM * 2;
-  const normalizedCol = (x + world.terrain.halfExtentM) / side;
-  const normalizedRow = (z + world.terrain.halfExtentM) / side;
-  const col = normalizedCol * (world.terrain.gridSize - 1);
-  const row = normalizedRow * (world.terrain.gridSize - 1);
-  const col0 = clamp(Math.floor(col), 0, world.terrain.gridSize - 1);
-  const row0 = clamp(Math.floor(row), 0, world.terrain.gridSize - 1);
-  const col1 = clamp(col0 + 1, 0, world.terrain.gridSize - 1);
-  const row1 = clamp(row0 + 1, 0, world.terrain.gridSize - 1);
-  const tx = col - col0;
-  const tz = row - row0;
-  const h00 = getTerrainHeight(world, row0, col0);
-  const h10 = getTerrainHeight(world, row0, col1);
-  const h01 = getTerrainHeight(world, row1, col0);
-  const h11 = getTerrainHeight(world, row1, col1);
-  const hx0 = lerp(h00, h10, tx);
-  const hx1 = lerp(h01, h11, tx);
-  return lerp(hx0, hx1, tz);
+  const maxIndex = world.terrain.gridSize - 1;
+  const maxCell = world.terrain.gridSize - 2;
+  const col = clamp(((x + world.terrain.halfExtentM) / side) * maxIndex, 0, maxIndex);
+  const row = clamp(((z + world.terrain.halfExtentM) / side) * maxIndex, 0, maxIndex);
+  const cellCol = clamp(Math.floor(col), 0, maxCell);
+  const cellRow = clamp(Math.floor(row), 0, maxCell);
+  const u = col - cellCol;
+  const v = row - cellRow;
+  const h00 = getTerrainHeight(world, cellRow, cellCol);
+  const h10 = getTerrainHeight(world, cellRow, cellCol + 1);
+  const h01 = getTerrainHeight(world, cellRow + 1, cellCol);
+  const h11 = getTerrainHeight(world, cellRow + 1, cellCol + 1);
+  if (u + v <= 1) {
+    return h00 + (h10 - h00) * u + (h01 - h00) * v;
+  }
+  return h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
 }
 
 export function getMinimumDynamicEntityY(world: WorldDocument, entity: Pick<DynamicEntity, 'kind' | 'position' | 'halfExtents' | 'radius'>): number {
@@ -247,70 +181,6 @@ export function applyTerrainBrush(
     }
   }
   return next;
-}
-
-function buildDefaultTerrainHeights(): number[] {
-  const heights: number[] = [];
-  const side = DEMO_TERRAIN_HALF_EXTENT_M * 2;
-  const last = DEMO_TERRAIN_GRID_SIZE - 1;
-  for (let row = 0; row < DEMO_TERRAIN_GRID_SIZE; row += 1) {
-    const z = -DEMO_TERRAIN_HALF_EXTENT_M + side * (row / last);
-    for (let col = 0; col < DEMO_TERRAIN_GRID_SIZE; col += 1) {
-      const x = -DEMO_TERRAIN_HALF_EXTENT_M + side * (col / last);
-      heights.push(sampleTerrainHeight(x, z));
-    }
-  }
-  return heights;
-}
-
-function demoBallPitWallCuboids(): Array<{ center: Vec3; halfExtents: Vec3 }> {
-  const wallHalfH = DEMO_BALL_PIT_WALL_HEIGHT_M * 0.5;
-  const wallThickness = DEMO_BALL_PIT_WALL_THICKNESS_M;
-  return [
-    {
-      center: [
-        DEMO_BALL_PIT_X + DEMO_BALL_PIT_WIDTH_M * 0.5 - 0.5,
-        wallHalfH,
-        DEMO_BALL_PIT_Z + DEMO_BALL_PIT_DEPTH_M - 0.5,
-      ],
-      halfExtents: [DEMO_BALL_PIT_WIDTH_M * 0.5, wallHalfH, wallThickness],
-    },
-    {
-      center: [
-        DEMO_BALL_PIT_X,
-        wallHalfH,
-        DEMO_BALL_PIT_Z + DEMO_BALL_PIT_DEPTH_M * 0.5 - 0.5,
-      ],
-      halfExtents: [wallThickness, wallHalfH, DEMO_BALL_PIT_DEPTH_M * 0.5],
-    },
-    {
-      center: [
-        DEMO_BALL_PIT_X + DEMO_BALL_PIT_WIDTH_M - 1,
-        wallHalfH,
-        DEMO_BALL_PIT_Z + DEMO_BALL_PIT_DEPTH_M * 0.5 - 0.5,
-      ],
-      halfExtents: [wallThickness, wallHalfH, DEMO_BALL_PIT_DEPTH_M * 0.5],
-    },
-  ];
-}
-
-function sampleTerrainHeight(x: number, z: number): number {
-  const base = 0.55 * Math.sin(x * 0.05)
-    + 0.35 * Math.cos(z * 0.07)
-    + 0.18 * Math.sin((x + z) * 0.035)
-    + 0.12 * Math.cos((x - z) * 0.08);
-
-  const dx = x - FLAT_CENTER_X;
-  const dz = z - FLAT_CENTER_Z;
-  const dist = Math.hypot(dx, dz);
-  const blend = smoothstep(FLAT_RADIUS_M, BLEND_RADIUS_M, dist);
-  return clampNumber(base * blend, -1, 1);
-}
-
-function smoothstep(edge0: number, edge1: number, x: number): number {
-  if (edge1 <= edge0) return 1;
-  const t = clampNumber((x - edge0) / (edge1 - edge0), 0, 1);
-  return t * t * (3 - 2 * t);
 }
 
 function lerp(a: number, b: number, t: number): number {

@@ -9,8 +9,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
-        RwLock as StdRwLock,
+        Arc, RwLock as StdRwLock,
     },
     time::{Duration, Instant},
 };
@@ -46,8 +45,6 @@ use crate::{
     },
     voxel_world::VoxelWorld,
 };
-use nalgebra::vector;
-
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
@@ -855,17 +852,7 @@ async fn run_match_loop(
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
     let world = VoxelWorld::new();
-    seed_default_world(&mut arena);
-
-    // Spawn a dynamic box that falls from above onto the ground
-    arena.spawn_dynamic_box(vector![4.0, 8.0, 4.0], vector![0.5, 0.5, 0.5]);
-
-    // Spawn a test vehicle on the ground near spawn
-    arena.spawn_vehicle(0, vector![8.0, 2.0, 0.0]);
-
-    // Rebuild broad phase from scratch so all colliders are cleanly registered
-    // (avoids BVH corruption from stale handles accumulated during seeding)
-    arena.rebuild_broad_phase();
+    seed_default_world(&mut arena).expect("default world document should instantiate");
 
     let mut state = MatchState {
         id: match_id,
@@ -1238,12 +1225,19 @@ impl MatchState {
         };
         let (inbound_bps, outbound_bps, inbound_packets_per_sec, outbound_packets_per_sec) =
             if let Some((last_at, last_io)) = self.last_io_snapshot.replace((now, io_snapshot)) {
-                let elapsed_s = now.saturating_duration_since(last_at).as_secs_f64().max(0.001);
+                let elapsed_s = now
+                    .saturating_duration_since(last_at)
+                    .as_secs_f64()
+                    .max(0.001);
                 (
-                    ((io_snapshot.inbound_bytes.saturating_sub(last_io.inbound_bytes)) as f64
+                    ((io_snapshot
+                        .inbound_bytes
+                        .saturating_sub(last_io.inbound_bytes)) as f64
                         / elapsed_s)
                         .round() as u64,
-                    ((io_snapshot.outbound_bytes.saturating_sub(last_io.outbound_bytes)) as f64
+                    ((io_snapshot
+                        .outbound_bytes
+                        .saturating_sub(last_io.outbound_bytes)) as f64
                         / elapsed_s)
                         .round() as u64,
                     ((io_snapshot
@@ -1498,7 +1492,12 @@ impl MatchState {
                 )
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
+                    self.build_shot_result(
+                        queued.cmd.shot_id,
+                        queued.cmd.weapon,
+                        None,
+                        HIT_ZONE_NONE,
+                    )
                 } else {
                     let impact_point = [
                         origin[0] + queued.cmd.dir[0] * dynamic_toi,
@@ -1515,7 +1514,12 @@ impl MatchState {
                         impulse,
                         impact_point,
                     );
-                    self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
+                    self.build_shot_result(
+                        queued.cmd.shot_id,
+                        queued.cmd.weapon,
+                        None,
+                        HIT_ZONE_NONE,
+                    )
                 }
             } else {
                 self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
@@ -1536,9 +1540,7 @@ impl MatchState {
                 player_states.push((
                     player_id,
                     pos,
-                    make_net_player_state(
-                    player_id, pos, vel, yaw, pitch, hp, flags,
-                    ),
+                    make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags),
                 ));
             }
         }
@@ -1595,7 +1597,8 @@ impl MatchState {
                 .iter()
                 .filter(|(player_id, pos, _)| {
                     *player_id == recipient_id
-                        || distance_sq(*pos, recipient_pos) <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
+                        || distance_sq(*pos, recipient_pos)
+                            <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
                 })
                 .map(|(_, _, state)| *state)
                 .collect();
@@ -1794,7 +1797,7 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         compute_density_metrics, enqueue_inputs, rifle_damage, take_input_for_tick, HitZone,
-        InputCmd, PlayerRuntime, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE, MAX_PENDING_INPUTS,
+        InputCmd, PlayerRuntime, MAX_PENDING_INPUTS, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::sync::mpsc;
@@ -1894,11 +1897,8 @@ mod tests {
 
     #[test]
     fn density_metrics_count_nearby_players() {
-        let (avg, max) = compute_density_metrics(&[
-            [0.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [30.0, 0.0, 0.0],
-        ]);
+        let (avg, max) =
+            compute_density_metrics(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [30.0, 0.0, 0.0]]);
         assert!(avg > 0.0);
         assert_eq!(max, 1);
     }
@@ -1922,7 +1922,11 @@ mod tests {
         );
 
         let global = super::global_stats_from_registry(&registry);
-        let ids: Vec<_> = global.matches.into_iter().map(|match_stats| match_stats.id).collect();
+        let ids: Vec<_> = global
+            .matches
+            .into_iter()
+            .map(|match_stats| match_stats.id)
+            .collect();
         assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
     }
 

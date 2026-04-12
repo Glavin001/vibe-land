@@ -148,8 +148,8 @@ pub struct ShotResultPacket {
 pub struct NetVehicleState {
     pub id: u32,
     pub vehicle_type: u8,
-    pub flags: u8,              // bit0=airborne, bit1=handbrake
-    pub driver_id: u32,         // 0 = unoccupied
+    pub flags: u8,      // bit0=airborne, bit1=handbrake
+    pub driver_id: u32, // 0 = unoccupied
     pub px_mm: i32,
     pub py_mm: i32,
     pub pz_mm: i32,
@@ -160,10 +160,10 @@ pub struct NetVehicleState {
     pub vx_cms: i16,
     pub vy_cms: i16,
     pub vz_cms: i16,
-    pub wx_mrads: i16,          // angular velocity milli-rad/s
+    pub wx_mrads: i16, // angular velocity milli-rad/s
     pub wy_mrads: i16,
     pub wz_mrads: i16,
-    pub wheel_data: [u16; 4],   // upper byte = spin angle u8 (0..255→0..TAU), lower byte = steer i8 snorm
+    pub wheel_data: [u16; 4], // upper byte = spin angle u8 (0..255→0..TAU), lower byte = steer i8 snorm
 }
 
 #[derive(Clone, Debug)]

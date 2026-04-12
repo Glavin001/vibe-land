@@ -23,6 +23,9 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       https: httpsConfig,
       allowedHosts,
+      fs: {
+        allow: ['..'],
+      },
       proxy: {
         '/ws': {
           target: `http://${serverHost}:${serverPort}`,

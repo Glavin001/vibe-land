@@ -1,37 +1,77 @@
-use vibe_land_shared::terrain::{
-    build_demo_heightfield, demo_ball_pit_wall_cuboids, DEMO_BALL_PIT_X, DEMO_BALL_PIT_Z,
-};
+use vibe_land_shared::world_document::{WorldDocument, WorldDocumentError};
 
-use crate::movement::{PhysicsArena, Vec3};
+use crate::movement::PhysicsArena;
 
-pub fn seed_default_world(arena: &mut PhysicsArena) {
-    let (heights, scale) = build_demo_heightfield();
-    arena.add_static_heightfield(heights, scale, 0);
-    seed_ball_pit(arena);
+pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
+    WorldDocument::demo().instantiate(arena)
 }
 
-fn seed_ball_pit(arena: &mut PhysicsArena) {
-    for (center, half_extents) in demo_ball_pit_wall_cuboids() {
-        arena.add_static_cuboid(center, half_extents, 0);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::movement::MoveConfig;
+
+    #[test]
+    fn default_world_bootstrap_matches_demo_document_counts() {
+        let world = WorldDocument::demo();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
+
+        let expected_dynamic_bodies = world
+            .dynamic_entities
+            .iter()
+            .filter(|entity| {
+                !matches!(
+                    entity.kind,
+                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
+                )
+            })
+            .count();
+        let expected_vehicles = world
+            .dynamic_entities
+            .iter()
+            .filter(|entity| {
+                matches!(
+                    entity.kind,
+                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
+                )
+            })
+            .count();
+
+        assert_eq!(arena.dynamic.dynamic_bodies.len(), expected_dynamic_bodies);
+        assert_eq!(arena.vehicles.len(), expected_vehicles);
     }
 
-    // Spawn balls above the pit so they settle on the flat terrain inside it.
-    let radius = 0.3_f32;
-    let inner_min_x = DEMO_BALL_PIT_X + 1.5;
-    let inner_min_z = DEMO_BALL_PIT_Z + 1.5;
-    let spacing = 0.8;
-    let cols = 5;
-    let rows = 5;
-    let layers = 2;
+    #[test]
+    fn default_world_keeps_entities_supported_after_settling() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
 
-    for layer in 0..layers {
-        for row in 0..rows {
-            for col in 0..cols {
-                let x = inner_min_x + col as f32 * spacing;
-                let y = 2.0 + layer as f32 * 0.8;
-                let z = inner_min_z + row as f32 * spacing;
-                arena.spawn_dynamic_ball(Vec3::new(x, y, z), radius);
-            }
+        for _ in 0..300 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
         }
+
+        let dynamic_snapshot = arena.snapshot_dynamic_bodies();
+        assert!(
+            dynamic_snapshot
+                .iter()
+                .all(|(_, pos, _, _, _, _, _)| pos[1] > -0.25),
+            "dynamic bodies fell below expected terrain support: {:?}",
+            dynamic_snapshot
+                .iter()
+                .map(|(id, pos, _, _, _, _, _)| (*id, pos[1]))
+                .collect::<Vec<_>>()
+        );
+
+        let vehicles = arena.snapshot_vehicles();
+        assert!(
+            vehicles.iter().all(|vehicle| vehicle.py_mm > -250),
+            "vehicles fell below expected terrain support: {:?}",
+            vehicles
+                .iter()
+                .map(|vehicle| (vehicle.id, vehicle.py_mm))
+                .collect::<Vec<_>>()
+        );
     }
 }

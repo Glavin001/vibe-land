@@ -69,9 +69,13 @@ pub fn input_to_vehicle_cmd(input: &InputCmd) -> VehicleInputCmd {
 /// so positive engine_force drives in −Z.  Negating the throttle/reverse maps W→forward.
 pub fn vehicle_wheel_params(input: &InputCmd) -> (f32, f32, f32) {
     let v = input_to_vehicle_cmd(input);
-    let steering    = v.steer * VEHICLE_MAX_STEER_RAD;
+    let steering = v.steer * VEHICLE_MAX_STEER_RAD;
     let engine_force = (v.reverse - v.throttle) * VEHICLE_ENGINE_FORCE;
-    let brake       = if v.handbrake { VEHICLE_BRAKE_FORCE * 2.0 } else { 0.0 };
+    let brake = if v.handbrake {
+        VEHICLE_BRAKE_FORCE * 2.0
+    } else {
+        0.0
+    };
     (steering, engine_force, brake)
 }
 
@@ -86,10 +90,24 @@ pub fn build_wish_dir(input: &InputCmd, yaw: f64) -> Vec3d {
 
     // Fall back to button-derived movement so older callers still behave.
     if move_x.abs() <= f64::EPSILON && move_y.abs() <= f64::EPSILON {
-        move_x = (if input.buttons & BTN_RIGHT != 0 { 1.0 } else { 0.0 })
-            + (if input.buttons & BTN_LEFT != 0 { -1.0 } else { 0.0 });
-        move_y = (if input.buttons & BTN_FORWARD != 0 { 1.0 } else { 0.0 })
-            + (if input.buttons & BTN_BACK != 0 { -1.0 } else { 0.0 });
+        move_x = (if input.buttons & BTN_RIGHT != 0 {
+            1.0
+        } else {
+            0.0
+        }) + (if input.buttons & BTN_LEFT != 0 {
+            -1.0
+        } else {
+            0.0
+        });
+        move_y = (if input.buttons & BTN_FORWARD != 0 {
+            1.0
+        } else {
+            0.0
+        }) + (if input.buttons & BTN_BACK != 0 {
+            -1.0
+        } else {
+            0.0
+        });
     }
 
     let mut wish = right * move_x + forward * move_y;
@@ -141,7 +159,7 @@ mod tests {
         cmd.buttons = BTN_FORWARD | BTN_RIGHT;
         let wish = build_wish_dir(&cmd, 0.0);
         assert!(wish.x < -0.7); // RIGHT → -X at yaw=0
-        assert!(wish.z > 0.7);  // FORWARD → +Z at yaw=0
+        assert!(wish.z > 0.7); // FORWARD → +Z at yaw=0
     }
 
     #[test]
@@ -167,22 +185,38 @@ mod tests {
         let mut cmd = input();
         cmd.move_x = 127;
         let wish = build_wish_dir(&cmd, 0.0);
-        assert!(wish.x < -0.99, "D key at yaw=0 must move -X (camera right), got x={}", wish.x);
+        assert!(
+            wish.x < -0.99,
+            "D key at yaw=0 must move -X (camera right), got x={}",
+            wish.x
+        );
         assert!(wish.z.abs() < 0.01);
 
         cmd.move_x = -127;
         let wish = build_wish_dir(&cmd, 0.0);
-        assert!(wish.x > 0.99, "A key at yaw=0 must move +X (camera left), got x={}", wish.x);
+        assert!(
+            wish.x > 0.99,
+            "A key at yaw=0 must move +X (camera left), got x={}",
+            wish.x
+        );
 
         cmd.move_x = 127;
         let wish = build_wish_dir(&cmd, std::f64::consts::FRAC_PI_2);
-        assert!(wish.z > 0.99, "D key at yaw=π/2 must move +Z, got z={}", wish.z);
+        assert!(
+            wish.z > 0.99,
+            "D key at yaw=π/2 must move +Z, got z={}",
+            wish.z
+        );
         assert!(wish.x.abs() < 0.01);
 
         cmd.move_x = 0;
         cmd.move_y = 127;
         let wish = build_wish_dir(&cmd, std::f64::consts::FRAC_PI_2);
-        assert!(wish.x > 0.99, "W key at yaw=π/2 must move +X, got x={}", wish.x);
+        assert!(
+            wish.x > 0.99,
+            "W key at yaw=π/2 must move +X, got x={}",
+            wish.x
+        );
     }
 
     #[test]
@@ -197,7 +231,10 @@ mod tests {
             let wish_l = build_wish_dir(&cmd_l, yaw);
 
             let dot = wish_r.x * wish_l.x + wish_r.z * wish_l.z;
-            assert!(dot < -0.99, "Left and right must be opposite at yaw={yaw}, dot={dot}");
+            assert!(
+                dot < -0.99,
+                "Left and right must be opposite at yaw={yaw}, dot={dot}"
+            );
         }
     }
 

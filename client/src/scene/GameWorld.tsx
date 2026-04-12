@@ -423,9 +423,9 @@ export function GameWorld({
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
-        // Prediction owns seq counting, input building, and sending — all in lockstep.
-        // In practice mode this keeps local motion immediate instead of waiting on
-        // the local authoritative snapshots to move the camera.
+        // Shared input bundling lives here for both modes. In local practice mode
+        // the authoritative loopback session owns movement, so this only queues
+        // inputs and authoritative snapshots drive the rendered pose.
         prediction.update(frameDelta, resolvedInput, sendInputs);
       }
     }

@@ -95,7 +95,10 @@ export class VehiclePredictionManager {
   private correctionOffset: [number, number, number] = [0, 0, 0];
   private correctionQuatOffset: [number, number, number, number] = [0, 0, 0, 1]; // identity
 
-  constructor(private readonly sim: WasmSimWorldInstance) {}
+  constructor(
+    private readonly sim: WasmSimWorldInstance,
+    private readonly isLocalPreview = false,
+  ) {}
 
   isActive(): boolean {
     return this.vehicleId !== null;
@@ -187,6 +190,13 @@ export class VehiclePredictionManager {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
 
+      if (this.isLocalPreview) {
+        pendingInputs.push(input);
+        this.accumulator -= FIXED_DT;
+        steps++;
+        continue;
+      }
+
       const result = this.sim.tickVehicle(
         input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT,
       );
@@ -225,10 +235,6 @@ export class VehiclePredictionManager {
   reconcile(vehicleState: NetVehicleState, ackInputSeq: number): void {
     if (this.vehicleId === null) return;
 
-    const oldPosition: [number, number, number] = [...this.currPosition];
-    const oldQuat = this.currQuaternion;
-    const oldCorrectionQuat = this.correctionQuatOffset;
-
     const serverPos: [number, number, number] = [
       vehicleState.pxMm / 1000,
       vehicleState.pyMm / 1000,
@@ -250,6 +256,26 @@ export class VehiclePredictionManager {
       vehicleState.wyMrads / 1000,
       vehicleState.wzMrads / 1000,
     ];
+
+    if (this.isLocalPreview) {
+      this.sim.syncRemoteVehicle(
+        this.vehicleId,
+        serverPos[0], serverPos[1], serverPos[2],
+        serverQuat[0], serverQuat[1], serverQuat[2], serverQuat[3],
+        serverVel[0], serverVel[1], serverVel[2],
+      );
+      this.prevPosition = [...serverPos];
+      this.currPosition = [...serverPos];
+      this.prevQuaternion = [...serverQuat];
+      this.currQuaternion = [...serverQuat];
+      this.correctionOffset = [0, 0, 0];
+      this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
+      return;
+    }
+
+    const oldPosition: [number, number, number] = [...this.currPosition];
+    const oldQuat = this.currQuaternion;
+    const oldCorrectionQuat = this.correctionQuatOffset;
 
     const result = this.sim.reconcileVehicle(
       VEHICLE_CORRECTION_DISTANCE,

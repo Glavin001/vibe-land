@@ -82,6 +82,7 @@ export class NetcodeClient {
   private wtClient: WebTransportGameClient | null = null;
   private localTransport: LocalPreviewTransport | null = null;
   private config: NetcodeClientConfig;
+  private closedByClient = false;
 
   // Rolling accumulators for 1Hz debug stats report to server
   private _debugCorrectionSum = 0;
@@ -106,9 +107,10 @@ export class NetcodeClient {
   }
 
   connect(wsUrl: string): void {
+    this.closedByClient = false;
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.handlePacket(packet),
-      onClose: () => { this.config.onDisconnect?.(); },
+      onClose: () => { this.notifyDisconnect(); },
       onRttUpdated: (rttMs: number) => {
         this.rttMs = rttMs;
         this.serverClock.observeRtt(rttMs);
@@ -118,12 +120,13 @@ export class NetcodeClient {
   }
 
   async connectLocalPreview(worldJson?: string): Promise<void> {
+    this.closedByClient = false;
     this.localTransport = await LocalPreviewTransport.connect({
       worldJson,
       onPacket: (packet) => this.handlePacket(packet),
       onClose: () => {
         this.localTransport = null;
-        this.config.onDisconnect?.();
+        this.notifyDisconnect();
       },
     });
   }
@@ -132,6 +135,7 @@ export class NetcodeClient {
    * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
    */
   async connectWithFallback(matchId: string, wsUrl: string, sessionConfigEndpoint?: string): Promise<void> {
+    this.closedByClient = false;
     const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
     console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
 
@@ -143,7 +147,7 @@ export class NetcodeClient {
           sessionConfigEndpoint,
           onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket),
           onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket),
-          onClose: () => { this.config.onDisconnect?.(); },
+          onClose: () => { this.notifyDisconnect(); },
         });
         this.wtClient = wt;
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
@@ -171,12 +175,20 @@ export class NetcodeClient {
   }
 
   disconnect(): void {
+    this.closedByClient = true;
     this.localTransport?.close();
     this.localTransport = null;
     this.wtClient?.close();
     this.wtClient = null;
     this.socket?.disconnect();
     this.socket = null;
+  }
+
+  private notifyDisconnect(): void {
+    if (this.closedByClient) {
+      return;
+    }
+    this.config.onDisconnect?.();
   }
 
   sendInputs(cmds: InputCmd[]): void {
