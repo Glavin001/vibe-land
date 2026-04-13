@@ -416,8 +416,13 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     return machineManagerRef.current?.getActionChannels() ?? [];
   }, []);
 
-  const getSnapMachineBodyPoses = useCallback((): Float32Array => {
-    return machineManagerRef.current?.getBodyPoses() ?? new Float32Array(0);
+  /// Flat `[px, py, pz, qx, qy, qz, qw]` per body for any machine id
+  /// currently spawned in the wasm world (local-preview, operated, or
+  /// remote). Returns an empty array if the id is unknown. Intended for
+  /// the renderer — works for every machine in the world, not just the
+  /// operated one.
+  const getSnapMachineBodyPoses = useCallback((machineId: number): Float32Array => {
+    return simRef.current?.getSnapMachineBodyPoses(machineId) ?? new Float32Array(0);
   }, []);
 
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {

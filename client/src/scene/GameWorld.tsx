@@ -33,6 +33,7 @@ import type { NetSnapMachineState, NetVehicleState, VehicleStateMeters } from '.
 import { MAX_MACHINE_CHANNELS } from '../net/protocol';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { SnapMachines } from './SnapMachines';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
@@ -1419,6 +1420,7 @@ export function GameWorld({
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
+      <SnapMachines world={worldDocument} getBodyPoses={prediction.getSnapMachineBodyPoses} />
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock

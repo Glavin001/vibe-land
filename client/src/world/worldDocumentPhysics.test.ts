@@ -266,6 +266,74 @@ describe('WorldDocument local-preview scenarios', () => {
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, 14, 0));
   });
 
+  it('press-E machine enter sets driverId in the next snapshot', () => {
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(snapEntity).toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    // Discard the initial welcome drain + a warm-up tick so the machine
+    // is fully instantiated.
+    session.drainPackets();
+    session.tick(1 / 60);
+    session.drainPackets();
+
+    // Send PKT_MACHINE_ENTER for our machine id.
+    const enterBytes = new Uint8Array(5);
+    const enterView = new DataView(enterBytes.buffer);
+    enterView.setUint8(0, 8 /* PKT_MACHINE_ENTER */);
+    enterView.setUint32(1, snapEntity!.id >>> 0, true);
+    session.handleClientPacket(enterBytes);
+
+    // Tick once more and read the snapshot.
+    session.tick(1 / 60);
+    const blob = session.drainPackets();
+    let offset = 0;
+    let snapshot: SnapshotPacket | null = null;
+    while (offset + 4 <= blob.length) {
+      const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+      const packetLen = view.getUint32(offset, true);
+      offset += 4;
+      const packet = blob.slice(offset, offset + packetLen);
+      offset += packetLen;
+      const decoded = decodeServerPacket(packet);
+      if (decoded.type === 'snapshot') {
+        snapshot = decoded;
+      }
+    }
+    expect(snapshot).not.toBeNull();
+    const machine = snapshot!.machineStates.find((m) => m.id === snapEntity!.id);
+    expect(machine).toBeDefined();
+    // LOCAL_PLAYER_ID in LocalPreviewSession is 1.
+    expect(machine!.driverId).toBe(1);
+  });
+
+  it('default authored world includes a drivable snap-machine', () => {
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(snapEntity, 'trail.world.json should ship a snapMachine entity').toBeDefined();
+
+    const result = runLocalPreview(world, 120);
+    expect(result.snapshot.machineStates.length).toBeGreaterThan(0);
+    const machine = result.snapshot.machineStates.find((m) => m.id === snapEntity!.id);
+    expect(machine, `machine ${snapEntity!.id} should appear in snapshot.machineStates`).toBeDefined();
+    // The chassis body has more than one body entry and non-zero bodies.
+    expect(machine!.bodies.length).toBeGreaterThan(0);
+    // All bodies should be at finite positions inside a reasonable world
+    // bound (sanity — the chassis can fall a bit while settling).
+    for (const body of machine!.bodies) {
+      const x = body.pxMm / 1000;
+      const y = body.pyMm / 1000;
+      const z = body.pzMm / 1000;
+      expect(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)).toBe(true);
+      expect(Math.abs(x)).toBeLessThan(100);
+      expect(Math.abs(z)).toBeLessThan(100);
+      expect(y).toBeGreaterThan(-20);
+      expect(y).toBeLessThan(50);
+    }
+  });
+
   it('terrain brush respects lower and upper plateaus', () => {
     const world = makeFlatWorld();
     const [x, z] = getTerrainWorldPosition(world, 4, 4);
@@ -508,6 +576,11 @@ describe('WorldDocument local-preview scenarios', () => {
           vehicle!.position[1],
           `vehicle ${entity.id} final=(${vehicle!.position[0]}, ${vehicle!.position[1]}, ${vehicle!.position[2]})`,
         ).toBeGreaterThan(terrainY - 0.25);
+      } else if (entity.kind === 'snapMachine') {
+        // Snap-machines don't participate in the dynamic body map — their
+        // bodies live in the machines table. The physics round-trip is
+        // covered by the Rust `snap_machine::tests` instead.
+        continue;
       } else {
         const body = result.dynamicBodies.get(entity.id);
         expect(body).toBeDefined();
