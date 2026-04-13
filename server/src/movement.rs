@@ -120,14 +120,26 @@ impl PhysicsArena {
             .add_static_cuboid(center, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vec3,
         heights: DMatrix<f32>,
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
         self.dynamic
-            .add_static_heightfield(heights, scale, user_data)
+            .add_static_heightfield(center, heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -643,12 +655,24 @@ impl PhysicsArena {
 }
 
 impl WorldDocumentArena for PhysicsArena {
-    fn add_static_heightfield(&mut self, heights: DMatrix<f32>, scale: Vec3, user_data: u128) {
-        PhysicsArena::add_static_heightfield(self, heights, scale, user_data);
+    fn add_static_heightfield(
+        &mut self,
+        center: Vec3,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_heightfield(self, center, heights, scale, user_data);
     }
 
-    fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) {
-        PhysicsArena::add_static_cuboid(self, center, half_extents, user_data);
+    fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_cuboid_rotated(self, center, rotation, half_extents, user_data);
     }
 
     fn spawn_dynamic_box_with_id(

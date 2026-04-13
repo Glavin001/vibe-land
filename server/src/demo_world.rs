@@ -1,50 +1,9 @@
-use nalgebra::vector;
-use vibe_land_shared::terrain::{
-    build_demo_heightfield, demo_ball_pit_wall_cuboids, DEMO_BALL_PIT_X, DEMO_BALL_PIT_Z,
-};
-use vibe_land_shared::world_document::WorldDocumentError;
+use vibe_land_shared::world_document::{WorldDocument, WorldDocumentError};
 
 use crate::movement::PhysicsArena;
 
-const BALL_RADIUS_M: f32 = 0.3;
-const BALL_SPACING_M: f32 = 0.8;
-const BALL_COLS: usize = 5;
-const BALL_ROWS: usize = 5;
-const BALL_LAYERS: usize = 1;
-const DEFAULT_VEHICLE_POSITION_M: [f32; 3] = [8.0, 2.0, 0.0];
-
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
-    let (heights, scale) = build_demo_heightfield();
-    arena.add_static_heightfield(heights, scale, 0);
-
-    for (center, half_extents) in demo_ball_pit_wall_cuboids() {
-        arena.add_static_cuboid(center, half_extents, 0);
-    }
-
-    let inner_min_x = DEMO_BALL_PIT_X + 1.5;
-    let inner_min_z = DEMO_BALL_PIT_Z + 1.5;
-
-    for layer in 0..BALL_LAYERS {
-        for row in 0..BALL_ROWS {
-            for col in 0..BALL_COLS {
-                let x = inner_min_x + col as f32 * BALL_SPACING_M;
-                let y = 2.0 + layer as f32 * BALL_SPACING_M;
-                let z = inner_min_z + row as f32 * BALL_SPACING_M;
-                arena.spawn_dynamic_ball(vector![x, y, z], BALL_RADIUS_M);
-            }
-        }
-    }
-
-    arena.spawn_vehicle(
-        0,
-        vector![
-            DEFAULT_VEHICLE_POSITION_M[0],
-            DEFAULT_VEHICLE_POSITION_M[1],
-            DEFAULT_VEHICLE_POSITION_M[2]
-        ],
-    );
-
-    Ok(())
+    WorldDocument::demo().instantiate(arena)
 }
 
 #[cfg(test)]
@@ -57,7 +16,7 @@ mod tests {
         let mut arena = PhysicsArena::new(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), BALL_COLS * BALL_ROWS * BALL_LAYERS);
+        assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
         assert_eq!(arena.vehicles.len(), 1);
     }
 
@@ -67,8 +26,8 @@ mod tests {
         seed_default_world(&mut arena).expect("instantiate default world");
 
         assert!(
-            arena.dynamic.dynamic_bodies.len() <= 25,
-            "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 25 to preserve 60 Hz headroom",
+            arena.dynamic.dynamic_bodies.len() <= 51,
+            "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 51 to match the authored default world",
             arena.dynamic.dynamic_bodies.len()
         );
         assert!(

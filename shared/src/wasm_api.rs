@@ -17,8 +17,7 @@ use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics,
-    vehicle_suspension_filter,
+    create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics, vehicle_suspension_filter,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -148,7 +147,9 @@ impl WasmSimWorld {
     #[wasm_bindgen(js_name = seedDemoTerrain)]
     pub fn seed_demo_terrain(&mut self) -> u32 {
         let (heights, scale) = build_demo_heightfield();
-        let handle = self.sim.add_static_heightfield(heights, scale, 0);
+        let handle = self
+            .sim
+            .add_static_heightfield(vector![0.0, 0.0, 0.0], heights, scale, 0);
         let id = self.next_collider_id;
         self.next_collider_id += 1;
         self.collider_ids.insert(id, handle);
@@ -165,27 +166,36 @@ impl WasmSimWorld {
     pub fn load_world_document(&mut self, world_json: &str) -> Result<(), JsValue> {
         let world: WorldDocument = serde_json::from_str(world_json)
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let handle = self.sim.add_static_heightfield(
-            world
-                .terrain_matrix()
-                .map_err(|error| JsValue::from_str(&error.to_string()))?,
-            world.terrain_scale(),
-            0,
-        );
-        let id = self.next_collider_id;
-        self.next_collider_id += 1;
-        self.collider_ids.insert(id, handle);
+        for tile in &world.terrain.tiles {
+            let (center_x, center_z) = world.terrain_tile_center(tile.tile_x, tile.tile_z);
+            let handle = self.sim.add_static_heightfield(
+                vector![center_x, 0.0, center_z],
+                world
+                    .terrain_tile_matrix(tile)
+                    .map_err(|error| JsValue::from_str(&error.to_string()))?,
+                world.terrain_tile_scale(),
+                0,
+            );
+            let id = self.next_collider_id;
+            self.next_collider_id += 1;
+            self.collider_ids.insert(id, handle);
+        }
 
         for prop in &world.static_props {
             if matches!(prop.kind, StaticPropKind::Cuboid) {
-                self.add_cuboid(
-                    prop.position[0],
-                    prop.position[1],
-                    prop.position[2],
-                    prop.half_extents[0],
-                    prop.half_extents[1],
-                    prop.half_extents[2],
+                let handle = self.sim.add_static_cuboid_rotated(
+                    vector![prop.position[0], prop.position[1], prop.position[2]],
+                    prop.rotation,
+                    vector![
+                        prop.half_extents[0],
+                        prop.half_extents[1],
+                        prop.half_extents[2]
+                    ],
+                    prop.id as u128,
                 );
+                let id = self.next_collider_id;
+                self.next_collider_id += 1;
+                self.collider_ids.insert(id, handle);
             }
         }
 
@@ -810,12 +820,11 @@ impl WasmSimWorld {
                             .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
                     })
                     .unwrap_or(*collider.position());
-                let Some(hit) = collider.shape().cast_ray_and_get_normal(
-                    &collider_pose,
-                    &ray,
-                    max_toi,
-                    true,
-                ) else {
+                let Some(hit) =
+                    collider
+                        .shape()
+                        .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
+                else {
                     continue;
                 };
                 if best

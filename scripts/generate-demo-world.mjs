@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-const WORLD_DOCUMENT_VERSION = 1;
+const WORLD_DOCUMENT_VERSION = 2;
 const DEMO_TERRAIN_GRID_SIZE = 129;
 const DEMO_TERRAIN_HALF_EXTENT_M = 80;
 const DEMO_BALL_PIT_X = 8;
@@ -130,14 +130,19 @@ function createDemoWorldDocument() {
       description: 'Default authored world for practice and godmode.',
     },
     terrain: {
-      gridSize: DEMO_TERRAIN_GRID_SIZE,
-      halfExtentM: DEMO_TERRAIN_HALF_EXTENT_M,
-      heights: buildDefaultTerrainHeights(),
+      tileGridSize: DEMO_TERRAIN_GRID_SIZE,
+      tileHalfExtentM: DEMO_TERRAIN_HALF_EXTENT_M,
+      tiles: [{
+        tileX: 0,
+        tileZ: 0,
+        heights: buildDefaultTerrainHeights(),
+      }],
     },
     staticProps: demoBallPitWallCuboids().map((wall, index) => ({
       id: 1000 + index,
       kind: 'cuboid',
       position: wall.center,
+      rotation: identityQuaternion(),
       halfExtents: wall.halfExtents,
       material: 'pit-wall',
     })),

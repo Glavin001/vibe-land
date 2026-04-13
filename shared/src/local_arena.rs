@@ -132,14 +132,26 @@ impl PhysicsArena {
             .add_static_cuboid(center, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vec3,
         heights: nalgebra::DMatrix<f32>,
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
         self.dynamic
-            .add_static_heightfield(heights, scale, user_data)
+            .add_static_heightfield(center, heights, scale, user_data)
     }
 
     pub fn add_static_trimesh(

@@ -1,18 +1,17 @@
 use std::fmt;
 
 use nalgebra::{vector, DMatrix, Vector3};
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, Deserialize, Serialize};
 
-use crate::{
-    movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS},
-};
+use crate::movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 
-pub const WORLD_DOCUMENT_VERSION: u32 = 1;
+pub const WORLD_DOCUMENT_VERSION: u32 = 2;
 pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../world/demo-world.world.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldDocument {
+    #[serde(default = "world_document_version")]
     pub version: u32,
     pub meta: WorldMeta,
     pub terrain: WorldTerrain,
@@ -28,11 +27,19 @@ pub struct WorldMeta {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTerrain {
-    pub grid_size: u16,
-    pub half_extent_m: f32,
+    pub tile_grid_size: u16,
+    pub tile_half_extent_m: f32,
+    pub tiles: Vec<WorldTerrainTile>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldTerrainTile {
+    pub tile_x: i32,
+    pub tile_z: i32,
     pub heights: Vec<f32>,
 }
 
@@ -42,6 +49,8 @@ pub struct StaticProp {
     pub id: u32,
     pub kind: StaticPropKind,
     pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
     pub half_extents: [f32; 3],
     #[serde(default)]
     pub material: Option<String>,
@@ -84,7 +93,12 @@ pub enum TerrainBrushMode {
 
 #[derive(Debug)]
 pub enum WorldDocumentError {
-    InvalidTerrainHeights { expected: usize, actual: usize },
+    InvalidTerrainHeights {
+        tile_x: i32,
+        tile_z: i32,
+        expected: usize,
+        actual: usize,
+    },
     MissingHalfExtents { entity_id: u32 },
     MissingRadius { entity_id: u32 },
 }
@@ -92,10 +106,15 @@ pub enum WorldDocumentError {
 impl fmt::Display for WorldDocumentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidTerrainHeights { expected, actual } => {
+            Self::InvalidTerrainHeights {
+                tile_x,
+                tile_z,
+                expected,
+                actual,
+            } => {
                 write!(
                     f,
-                    "terrain height count mismatch: expected {expected}, got {actual}"
+                    "terrain tile ({tile_x}, {tile_z}) height count mismatch: expected {expected}, got {actual}"
                 )
             }
             Self::MissingHalfExtents { entity_id } => {
@@ -110,9 +129,80 @@ impl fmt::Display for WorldDocumentError {
 
 impl std::error::Error for WorldDocumentError {}
 
+fn world_document_version() -> u32 {
+    WORLD_DOCUMENT_VERSION
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TiledWorldTerrain {
+    tile_grid_size: u16,
+    tile_half_extent_m: f32,
+    tiles: Vec<WorldTerrainTile>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyWorldTerrain {
+    grid_size: u16,
+    half_extent_m: f32,
+    heights: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawWorldTerrain {
+    Tiled(TiledWorldTerrain),
+    Legacy(LegacyWorldTerrain),
+}
+
+impl<'de> Deserialize<'de> for WorldTerrain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawWorldTerrain::deserialize(deserializer)?;
+        Ok(match raw {
+            RawWorldTerrain::Tiled(TiledWorldTerrain {
+                tile_grid_size,
+                tile_half_extent_m,
+                mut tiles,
+            }) => {
+                if tiles.is_empty() {
+                    tiles.push(WorldTerrainTile {
+                        tile_x: 0,
+                        tile_z: 0,
+                        heights: vec![0.0; usize::from(tile_grid_size) * usize::from(tile_grid_size)],
+                    });
+                }
+                tiles.sort_by_key(|tile| (tile.tile_z, tile.tile_x));
+                Self {
+                    tile_grid_size,
+                    tile_half_extent_m,
+                    tiles,
+                }
+            }
+            RawWorldTerrain::Legacy(LegacyWorldTerrain {
+                grid_size,
+                half_extent_m,
+                heights,
+            }) => Self {
+                tile_grid_size: grid_size,
+                tile_half_extent_m: half_extent_m,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                }],
+            },
+        })
+    }
+}
+
 pub trait WorldDocumentArena {
     fn add_static_heightfield(
         &mut self,
+        center: Vector3<f32>,
         heights: DMatrix<f32>,
         scale: Vector3<f32>,
         user_data: u128,
@@ -121,6 +211,7 @@ pub trait WorldDocumentArena {
     fn add_static_cuboid(
         &mut self,
         center: Vector3<f32>,
+        rotation: [f32; 4],
         half_extents: Vector3<f32>,
         user_data: u128,
     );
@@ -149,20 +240,30 @@ pub trait WorldDocumentArena {
 impl WorldDocumentArena for crate::local_arena::PhysicsArena {
     fn add_static_heightfield(
         &mut self,
+        center: Vector3<f32>,
         heights: DMatrix<f32>,
         scale: Vector3<f32>,
         user_data: u128,
     ) {
-        crate::local_arena::PhysicsArena::add_static_heightfield(self, heights, scale, user_data);
+        crate::local_arena::PhysicsArena::add_static_heightfield(
+            self, center, heights, scale, user_data,
+        );
     }
 
     fn add_static_cuboid(
         &mut self,
         center: Vector3<f32>,
+        rotation: [f32; 4],
         half_extents: Vector3<f32>,
         user_data: u128,
     ) {
-        crate::local_arena::PhysicsArena::add_static_cuboid(self, center, half_extents, user_data);
+        crate::local_arena::PhysicsArena::add_static_cuboid_rotated(
+            self,
+            center,
+            rotation,
+            half_extents,
+            user_data,
+        );
     }
 
     fn spawn_dynamic_box_with_id(
@@ -208,26 +309,32 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
 
 impl WorldDocument {
     pub fn demo() -> Self {
-        serde_json::from_str(DEFAULT_WORLD_DOCUMENT_JSON)
-            .expect("default world document asset should deserialize")
+        let mut world: Self = serde_json::from_str(DEFAULT_WORLD_DOCUMENT_JSON)
+            .expect("default world document asset should deserialize");
+        world.version = WORLD_DOCUMENT_VERSION;
+        world
     }
 
-    pub fn terrain_matrix(&self) -> Result<DMatrix<f32>, WorldDocumentError> {
-        let side = self.terrain.grid_size as usize;
+    pub fn terrain_tile_matrix(
+        &self,
+        tile: &WorldTerrainTile,
+    ) -> Result<DMatrix<f32>, WorldDocumentError> {
+        let side = usize::from(self.terrain.tile_grid_size);
         let expected = side * side;
-        let actual = self.terrain.heights.len();
+        let actual = tile.heights.len();
         if actual != expected {
-            return Err(WorldDocumentError::InvalidTerrainHeights { expected, actual });
+            return Err(WorldDocumentError::InvalidTerrainHeights {
+                tile_x: tile.tile_x,
+                tile_z: tile.tile_z,
+                expected,
+                actual,
+            });
         }
-        Ok(DMatrix::from_row_slice(
-            side,
-            side,
-            self.terrain.heights.as_slice(),
-        ))
+        Ok(DMatrix::from_row_slice(side, side, tile.heights.as_slice()))
     }
 
-    pub fn terrain_scale(&self) -> Vector3<f32> {
-        let side = self.terrain.half_extent_m * 2.0;
+    pub fn terrain_tile_scale(&self) -> Vector3<f32> {
+        let side = self.terrain.tile_half_extent_m * 2.0;
         vector![side, 1.0, side]
     }
 
@@ -236,29 +343,49 @@ impl WorldDocument {
     }
 
     pub fn sample_heightfield_surface_at_world_position(&self, x: f32, z: f32) -> f32 {
-        let grid_size = self.terrain.grid_size as usize;
-        if grid_size < 2 || self.terrain.heights.is_empty() {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if grid_size < 2 || self.terrain.tiles.is_empty() {
             return 0.0;
         }
 
-        let side = self.terrain.half_extent_m * 2.0;
+        let side = self.terrain.tile_half_extent_m * 2.0;
         if side <= 0.0 {
             return 0.0;
         }
 
+        let (min_tile_x, max_tile_x, min_tile_z, max_tile_z, min_x, max_x, min_z, max_z) =
+            self.terrain_world_bounds();
+        let clamped_x = x.clamp(min_x, max_x);
+        let clamped_z = z.clamp(min_z, max_z);
+        let tile_x = (((clamped_x + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_x, max_tile_x);
+        let tile_z = (((clamped_z + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_z, max_tile_z);
+        let Some(tile) = self
+            .terrain_tile(tile_x, tile_z)
+            .or_else(|| self.find_nearest_terrain_tile(clamped_x, clamped_z))
+        else {
+            return 0.0;
+        };
+
+        let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
         let max_cell = (grid_size - 2) as f32;
         let max_index = (grid_size - 1) as f32;
-        let col = (((x + self.terrain.half_extent_m) / side) * max_index).clamp(0.0, max_index);
-        let row = (((z + self.terrain.half_extent_m) / side) * max_index).clamp(0.0, max_index);
+        let col =
+            (((clamped_x - center_x + self.terrain.tile_half_extent_m) / side) * max_index)
+                .clamp(0.0, max_index);
+        let row =
+            (((clamped_z - center_z + self.terrain.tile_half_extent_m) / side) * max_index)
+                .clamp(0.0, max_index);
         let cell_col = col.floor().min(max_cell) as usize;
         let cell_row = row.floor().min(max_cell) as usize;
         let u = col - cell_col as f32;
         let v = row - cell_row as f32;
 
-        let h00 = self.terrain.heights[cell_row * grid_size + cell_col];
-        let h10 = self.terrain.heights[cell_row * grid_size + cell_col + 1];
-        let h01 = self.terrain.heights[(cell_row + 1) * grid_size + cell_col];
-        let h11 = self.terrain.heights[(cell_row + 1) * grid_size + cell_col + 1];
+        let h00 = tile.heights[cell_row * grid_size + cell_col];
+        let h10 = tile.heights[cell_row * grid_size + cell_col + 1];
+        let h01 = tile.heights[(cell_row + 1) * grid_size + cell_col];
+        let h11 = tile.heights[(cell_row + 1) * grid_size + cell_col + 1];
 
         if u + v <= 1.0 {
             h00 + (h10 - h00) * u + (h01 - h00) * v
@@ -267,15 +394,104 @@ impl WorldDocument {
         }
     }
 
-    pub fn terrain_world_position(&self, row: usize, col: usize) -> (f32, f32) {
-        let last = (self.terrain.grid_size.saturating_sub(1)) as f32;
-        if last <= 0.0 {
-            return (0.0, 0.0);
+    pub fn terrain_tile_center(&self, tile_x: i32, tile_z: i32) -> (f32, f32) {
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        (tile_x as f32 * side, tile_z as f32 * side)
+    }
+
+    pub fn terrain_world_bounds(&self) -> (i32, i32, i32, i32, f32, f32, f32, f32) {
+        if self.terrain.tiles.is_empty() {
+            return (
+                0,
+                0,
+                0,
+                0,
+                -self.terrain.tile_half_extent_m,
+                self.terrain.tile_half_extent_m,
+                -self.terrain.tile_half_extent_m,
+                self.terrain.tile_half_extent_m,
+            );
         }
-        let side = self.terrain.half_extent_m * 2.0;
-        let x = -self.terrain.half_extent_m + side * (col as f32 / last);
-        let z = -self.terrain.half_extent_m + side * (row as f32 / last);
+
+        let min_tile_x = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_x)
+            .min()
+            .unwrap_or(0);
+        let max_tile_x = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_x)
+            .max()
+            .unwrap_or(0);
+        let min_tile_z = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_z)
+            .min()
+            .unwrap_or(0);
+        let max_tile_z = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_z)
+            .max()
+            .unwrap_or(0);
+        let (min_center_x, min_center_z) = self.terrain_tile_center(min_tile_x, min_tile_z);
+        let (max_center_x, max_center_z) = self.terrain_tile_center(max_tile_x, max_tile_z);
+        (
+            min_tile_x,
+            max_tile_x,
+            min_tile_z,
+            max_tile_z,
+            min_center_x - self.terrain.tile_half_extent_m,
+            max_center_x + self.terrain.tile_half_extent_m,
+            min_center_z - self.terrain.tile_half_extent_m,
+            max_center_z + self.terrain.tile_half_extent_m,
+        )
+    }
+
+    pub fn terrain_tile(&self, tile_x: i32, tile_z: i32) -> Option<&WorldTerrainTile> {
+        self.terrain
+            .tiles
+            .iter()
+            .find(|tile| tile.tile_x == tile_x && tile.tile_z == tile_z)
+    }
+
+    fn find_nearest_terrain_tile(&self, x: f32, z: f32) -> Option<&WorldTerrainTile> {
+        self.terrain.tiles.iter().min_by(|a, b| {
+            let (ax, az) = self.terrain_tile_center(a.tile_x, a.tile_z);
+            let (bx, bz) = self.terrain_tile_center(b.tile_x, b.tile_z);
+            let ad = (ax - x).powi(2) + (az - z).powi(2);
+            let bd = (bx - x).powi(2) + (bz - z).powi(2);
+            ad.partial_cmp(&bd).unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    pub fn terrain_tile_world_position(
+        &self,
+        tile_x: i32,
+        tile_z: i32,
+        row: usize,
+        col: usize,
+    ) -> (f32, f32) {
+        let last = (self.terrain.tile_grid_size.saturating_sub(1)) as f32;
+        if last <= 0.0 {
+            return self.terrain_tile_center(tile_x, tile_z);
+        }
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        let (center_x, center_z) = self.terrain_tile_center(tile_x, tile_z);
+        let x = center_x - self.terrain.tile_half_extent_m + side * (col as f32 / last);
+        let z = center_z - self.terrain.tile_half_extent_m + side * (row as f32 / last);
         (x, z)
+    }
+
+    pub fn terrain_world_position(&self, row: usize, col: usize) -> (f32, f32) {
+        self.terrain_tile_world_position(0, 0, row, col)
     }
 
     pub fn apply_terrain_brush(
@@ -286,7 +502,7 @@ impl WorldDocument {
         strength: f32,
         mode: TerrainBrushMode,
     ) {
-        let grid_size = self.terrain.grid_size as usize;
+        let grid_size = usize::from(self.terrain.tile_grid_size);
         if grid_size == 0 || radius <= 0.0 || strength <= 0.0 {
             return;
         }
@@ -295,18 +511,28 @@ impl WorldDocument {
             TerrainBrushMode::Raise => 1.0,
             TerrainBrushMode::Lower => -1.0,
         };
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        let half_extent = self.terrain.tile_half_extent_m;
+        let last = (self.terrain.tile_grid_size.saturating_sub(1)) as f32;
 
-        for row in 0..grid_size {
-            for col in 0..grid_size {
-                let (x, z) = self.terrain_world_position(row, col);
-                let distance = ((x - center_x).powi(2) + (z - center_z).powi(2)).sqrt();
-                if distance > radius {
-                    continue;
+        for tile in &mut self.terrain.tiles {
+            for row in 0..grid_size {
+                for col in 0..grid_size {
+                    let (tile_center_x, tile_center_z) =
+                        (tile.tile_x as f32 * side, tile.tile_z as f32 * side);
+                    let x = tile_center_x - half_extent
+                        + side * (col as f32 / last.max(1.0));
+                    let z = tile_center_z - half_extent
+                        + side * (row as f32 / last.max(1.0));
+                    let distance = ((x - center_x).powi(2) + (z - center_z).powi(2)).sqrt();
+                    if distance > radius {
+                        continue;
+                    }
+                    let falloff = 1.0 - distance / radius;
+                    let delta = strength * falloff * falloff * direction;
+                    let index = row * grid_size + col;
+                    tile.heights[index] = (tile.heights[index] + delta).clamp(-10.0, 50.0);
                 }
-                let falloff = 1.0 - distance / radius;
-                let delta = strength * falloff * falloff * direction;
-                let index = row * grid_size + col;
-                self.terrain.heights[index] = (self.terrain.heights[index] + delta).clamp(-10.0, 50.0);
             }
         }
     }
@@ -315,12 +541,21 @@ impl WorldDocument {
         &self,
         arena: &mut A,
     ) -> Result<(), WorldDocumentError> {
-        arena.add_static_heightfield(self.terrain_matrix()?, self.terrain_scale(), 0);
+        for tile in &self.terrain.tiles {
+            let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
+            arena.add_static_heightfield(
+                Vector3::new(center_x, 0.0, center_z),
+                self.terrain_tile_matrix(tile)?,
+                self.terrain_tile_scale(),
+                0,
+            );
+        }
 
         for prop in &self.static_props {
             if matches!(prop.kind, StaticPropKind::Cuboid) {
                 arena.add_static_cuboid(
                     Vector3::new(prop.position[0], prop.position[1], prop.position[2]),
+                    prop.rotation,
                     Vector3::new(
                         prop.half_extents[0],
                         prop.half_extents[1],
@@ -421,7 +656,12 @@ mod tests {
         40.0 - toi
     }
 
-    fn build_ball_stack(world: &WorldDocument, start_id: u32, center_x: f32, center_z: f32) -> Vec<DynamicEntity> {
+    fn build_ball_stack(
+        world: &WorldDocument,
+        start_id: u32,
+        center_x: f32,
+        center_z: f32,
+    ) -> Vec<DynamicEntity> {
         let radius = 0.3;
         let spacing = 0.8;
         let cols = 5;
@@ -470,8 +710,9 @@ mod tests {
     #[test]
     fn demo_document_has_valid_height_count() {
         let world = WorldDocument::demo();
-        let expected = usize::from(world.terrain.grid_size) * usize::from(world.terrain.grid_size);
-        assert_eq!(world.terrain.heights.len(), expected);
+        let expected =
+            usize::from(world.terrain.tile_grid_size) * usize::from(world.terrain.tile_grid_size);
+        assert_eq!(world.terrain.tiles[0].heights.len(), expected);
     }
 
     #[test]
@@ -522,7 +763,9 @@ mod tests {
     #[test]
     fn instantiate_clamps_entities_above_terrain() {
         let mut world = WorldDocument::demo();
-        world.terrain.heights.fill(4.0);
+        for tile in &mut world.terrain.tiles {
+            tile.heights.fill(4.0);
+        }
         for entity in &mut world.dynamic_entities {
             entity.position[1] = -2.0;
         }
@@ -742,7 +985,9 @@ mod tests {
     fn broken_world_keeps_authored_dynamics_supported() {
         let world = broken_world();
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        world.instantiate(&mut arena).expect("instantiate broken world");
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate broken world");
 
         for _ in 0..360 {
             arena.step_vehicles(1.0 / 60.0);
@@ -820,5 +1065,4 @@ mod tests {
             );
         }
     }
-
 }
