@@ -40,6 +40,8 @@ export function renderScenarioMarkdown(result: BenchmarkScenarioResult): string 
     `- dynamics p95: ${result.measuredWindow.peakMetrics.dynamicsP95Ms.toFixed(2)}ms`,
     `- snapshot/client p95: ${(result.measuredWindow.peakMetrics.snapshotBytesPerClientP95 / 1024).toFixed(2)} KiB`,
     `- WT reliable ratio: ${(result.measuredWindow.peakMetrics.wtReliableRatio * 100).toFixed(1)}%`,
+    `- datagram fallbacks: ${result.measuredWindow.peakMetrics.datagramFallbacks.toFixed(0)}`,
+    `- strict snapshot drops: ${result.measuredWindow.peakMetrics.strictSnapshotDrops.toFixed(0)}`,
     `- max pending inputs: ${result.measuredWindow.peakMetrics.maxPendingInputs.toFixed(0)}`,
     '',
     '### Thresholds',

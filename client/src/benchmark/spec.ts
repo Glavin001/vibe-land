@@ -14,6 +14,8 @@ export interface BenchmarkThresholds {
   dynamicsP95Ms: BenchmarkThresholdBand;
   snapshotBytesPerClientP95: BenchmarkThresholdBand;
   wtReliableRatio: BenchmarkThresholdBand;
+  datagramFallbacks: BenchmarkThresholdBand;
+  strictSnapshotDrops: BenchmarkThresholdBand;
   maxPendingInputs: BenchmarkThresholdBand;
   connectedRatio: BenchmarkThresholdBand;
   voidKills: BenchmarkThresholdBand;

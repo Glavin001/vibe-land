@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+
 use nalgebra::{
     vector, DMatrix, Isometry3, Point3, Quaternion, Translation3, UnitQuaternion, Vector3,
 };
@@ -28,8 +30,8 @@ pub struct PlayerQueryContext<'a> {
     sim: &'a SimWorld,
     collider_handle: ColliderHandle,
     static_pipeline: QueryPipeline<'a>,
-    support_pipeline: QueryPipeline<'a>,
-    dynamic_pipeline: QueryPipeline<'a>,
+    support_pipeline: OnceCell<QueryPipeline<'a>>,
+    dynamic_pipeline: OnceCell<QueryPipeline<'a>>,
 }
 
 impl<'a> PlayerQueryContext<'a> {
@@ -39,28 +41,38 @@ impl<'a> PlayerQueryContext<'a> {
             dispatcher,
             &sim.rigid_bodies,
             &sim.colliders,
-            SimWorld::player_static_filter(collider_handle),
-        );
-        let support_pipeline = sim.broad_phase.as_query_pipeline(
-            dispatcher,
-            &sim.rigid_bodies,
-            &sim.colliders,
-            SimWorld::player_support_filter(collider_handle),
-        );
-        let dynamic_pipeline = sim.broad_phase.as_query_pipeline(
-            dispatcher,
-            &sim.rigid_bodies,
-            &sim.colliders,
-            SimWorld::player_dynamic_filter(collider_handle),
+            SimWorld::shared_player_static_filter(),
         );
 
         Self {
             sim,
             collider_handle,
             static_pipeline,
-            support_pipeline,
-            dynamic_pipeline,
+            support_pipeline: OnceCell::new(),
+            dynamic_pipeline: OnceCell::new(),
         }
+    }
+
+    fn support_pipeline(&self) -> &QueryPipeline<'a> {
+        self.support_pipeline.get_or_init(|| {
+            self.sim.broad_phase.as_query_pipeline(
+                self.sim.narrow_phase.query_dispatcher(),
+                &self.sim.rigid_bodies,
+                &self.sim.colliders,
+                SimWorld::shared_player_support_filter(),
+            )
+        })
+    }
+
+    fn dynamic_pipeline(&self) -> &QueryPipeline<'a> {
+        self.dynamic_pipeline.get_or_init(|| {
+            self.sim.broad_phase.as_query_pipeline(
+                self.sim.narrow_phase.query_dispatcher(),
+                &self.sim.rigid_bodies,
+                &self.sim.colliders,
+                SimWorld::shared_player_dynamic_filter(),
+            )
+        })
     }
 
     pub fn move_character_horizontal(
@@ -95,7 +107,7 @@ impl<'a> PlayerQueryContext<'a> {
             velocity,
             on_ground,
             dt,
-            &self.support_pipeline,
+            self.support_pipeline(),
             collisions_out,
         );
     }
@@ -108,7 +120,7 @@ impl<'a> PlayerQueryContext<'a> {
         self.sim.intersect_pushable_dynamic_bodies_with_pipeline(
             self.collider_handle,
             position,
-            &self.dynamic_pipeline,
+            self.dynamic_pipeline(),
             contacts_out,
         );
     }
@@ -122,7 +134,7 @@ impl<'a> PlayerQueryContext<'a> {
             self.collider_handle,
             position,
             max_probe_distance,
-            &self.dynamic_pipeline,
+            self.dynamic_pipeline(),
         )
     }
 }
@@ -147,27 +159,24 @@ pub struct SimWorld {
 }
 
 impl SimWorld {
-    fn player_static_filter(collider_handle: ColliderHandle) -> QueryFilter<'static> {
+    fn shared_player_static_filter() -> QueryFilter<'static> {
         QueryFilter::exclude_kinematic()
             .exclude_sensors()
-            .exclude_collider(collider_handle)
             .groups(Self::player_obstacle_groups())
     }
 
-    fn player_support_filter(collider_handle: ColliderHandle) -> QueryFilter<'static> {
+    fn shared_player_support_filter() -> QueryFilter<'static> {
         QueryFilter::exclude_kinematic()
             .exclude_sensors()
-            .exclude_collider(collider_handle)
             .groups(InteractionGroups::new(
                 STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP,
                 STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP,
             ))
     }
 
-    fn player_dynamic_filter(collider_handle: ColliderHandle) -> QueryFilter<'static> {
+    fn shared_player_dynamic_filter() -> QueryFilter<'static> {
         QueryFilter::only_dynamic()
             .exclude_sensors()
-            .exclude_collider(collider_handle)
             .groups(Self::player_dynamic_groups())
     }
 
@@ -392,7 +401,7 @@ impl SimWorld {
         on_ground: &mut bool,
         dt: f32,
     ) -> Vec<CharacterCollision> {
-        let filter = Self::player_static_filter(collider_handle);
+        let filter = Self::shared_player_static_filter();
         self.move_character_with_filter(collider_handle, position, velocity, on_ground, dt, filter)
     }
 
@@ -407,7 +416,7 @@ impl SimWorld {
         on_ground: &mut bool,
         dt: f32,
     ) -> Vec<CharacterCollision> {
-        let filter = Self::player_support_filter(collider_handle);
+        let filter = Self::shared_player_support_filter();
         self.move_character_with_filter(collider_handle, position, velocity, on_ground, dt, filter)
     }
 
@@ -513,7 +522,7 @@ impl SimWorld {
             self.narrow_phase.query_dispatcher(),
             &self.rigid_bodies,
             &self.colliders,
-            Self::player_dynamic_filter(collider_handle),
+            Self::shared_player_dynamic_filter(),
         );
         let mut contacts = Vec::new();
         self.intersect_pushable_dynamic_bodies_with_pipeline(
@@ -563,7 +572,7 @@ impl SimWorld {
             self.narrow_phase.query_dispatcher(),
             &self.rigid_bodies,
             &self.colliders,
-            Self::player_dynamic_filter(collider_handle),
+            Self::shared_player_dynamic_filter(),
         );
         self.probe_dynamic_support_with_pipeline(
             collider_handle,
@@ -740,6 +749,7 @@ impl SimWorld {
 mod tests {
     use super::*;
     use nalgebra::DMatrix;
+    use rapier3d::prelude::{ColliderBuilder, Group, InteractionGroups, RigidBodyBuilder};
 
     fn sim_with_ground() -> SimWorld {
         let mut sim = SimWorld::new(MoveConfig::default());
@@ -776,5 +786,99 @@ mod tests {
         assert!(hit.is_some(), "ray should hit heightfield");
         let toi = hit.unwrap();
         assert!((toi - 5.0).abs() < 0.2, "toi should be ~5.0, got {}", toi);
+    }
+
+    #[test]
+    fn shared_static_and_support_filters_ignore_player_colliders() {
+        let mut sim = sim_with_ground();
+        let player_pos = Vec3d::new(0.0, 2.0, 0.0);
+        let player_a = sim.create_player_collider(player_pos, 1);
+        let player_b = sim.create_player_collider(player_pos, 2);
+        sim.rebuild_broad_phase();
+
+        let character_shape = sim.colliders.get(player_a).unwrap().shape();
+        let character_pos = Isometry3::translation(
+            player_pos.x as f32,
+            player_pos.y as f32,
+            player_pos.z as f32,
+        );
+
+        let static_pipeline = sim.broad_phase.as_query_pipeline(
+            sim.narrow_phase.query_dispatcher(),
+            &sim.rigid_bodies,
+            &sim.colliders,
+            SimWorld::shared_player_static_filter(),
+        );
+        let static_hits: Vec<_> = static_pipeline
+            .intersect_shape(character_pos, character_shape)
+            .map(|(handle, _)| handle)
+            .collect();
+        assert!(
+            !static_hits.contains(&player_a) && !static_hits.contains(&player_b),
+            "shared static filter should never return player colliders"
+        );
+
+        let support_pipeline = sim.broad_phase.as_query_pipeline(
+            sim.narrow_phase.query_dispatcher(),
+            &sim.rigid_bodies,
+            &sim.colliders,
+            SimWorld::shared_player_support_filter(),
+        );
+        let support_hits: Vec<_> = support_pipeline
+            .intersect_shape(character_pos, character_shape)
+            .map(|(handle, _)| handle)
+            .collect();
+        assert!(
+            !support_hits.contains(&player_a) && !support_hits.contains(&player_b),
+            "shared support filter should never return player colliders"
+        );
+    }
+
+    #[test]
+    fn shared_dynamic_filter_only_returns_pushable_dynamic_colliders() {
+        let mut sim = sim_with_ground();
+        let player_pos = Vec3d::new(0.0, 2.0, 0.0);
+        let player = sim.create_player_collider(player_pos, 1);
+        let other_player = sim.create_player_collider(player_pos, 2);
+
+        let dynamic_body = sim.rigid_bodies.insert(
+            RigidBodyBuilder::dynamic()
+                .translation(vector![0.0, 2.0, 0.0])
+                .build(),
+        );
+        let dynamic_collider = sim.colliders.insert_with_parent(
+            ColliderBuilder::ball(0.4)
+                .collision_groups(InteractionGroups::new(PUSHABLE_DYNAMIC_GROUP, Group::all()))
+                .build(),
+            dynamic_body,
+            &mut sim.rigid_bodies,
+        );
+        sim.rebuild_broad_phase();
+
+        let character_shape = sim.colliders.get(player).unwrap().shape();
+        let character_pos = Isometry3::translation(
+            player_pos.x as f32,
+            player_pos.y as f32,
+            player_pos.z as f32,
+        );
+        let dynamic_pipeline = sim.broad_phase.as_query_pipeline(
+            sim.narrow_phase.query_dispatcher(),
+            &sim.rigid_bodies,
+            &sim.colliders,
+            SimWorld::shared_player_dynamic_filter(),
+        );
+        let hits: Vec<_> = dynamic_pipeline
+            .intersect_shape(character_pos, character_shape)
+            .map(|(handle, _)| handle)
+            .collect();
+
+        assert!(
+            hits.contains(&dynamic_collider),
+            "dynamic filter should include pushable bodies"
+        );
+        assert!(
+            !hits.contains(&player) && !hits.contains(&other_player),
+            "dynamic filter should not return player colliders"
+        );
     }
 }

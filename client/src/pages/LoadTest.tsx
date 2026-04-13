@@ -15,9 +15,9 @@ import {
   type NetworkProfile,
 } from '../loadtest/scenario';
 import { describeBottleneck, type GlobalStatsSnapshot } from '../loadtest/serverStats';
+import { applyBotSnapshotState } from '../loadtest/botSnapshot';
 import {
   aimDirectionFromAngles,
-  netStateToMeters,
   type PlayerStateMeters,
   type ServerDatagramPacket,
   type ServerReliablePacket,
@@ -444,27 +444,16 @@ export function LoadTestPage() {
     _scenario: LoadTestScenario,
     packet: ServerReliablePacket | ServerDatagramPacket,
   ): void {
-    switch (packet.type) {
-      case 'welcome':
-        bot.playerId = packet.playerId;
-        bot.connected = true;
-        updateCounters();
-        break;
-      case 'snapshot':
-        bot.snapshotsReceived += 1;
-        bot.remotePlayers.clear();
-        for (const playerState of packet.playerStates) {
-          const meters = netStateToMeters(playerState);
-          if (playerState.id === bot.playerId) {
-            bot.localState = meters;
-          } else {
-            bot.remotePlayers.set(playerState.id, { id: playerState.id, state: meters });
-          }
-        }
-        updateCounters();
-        break;
-      default:
-        break;
+    if (packet.type === 'welcome') {
+      bot.playerId = packet.playerId;
+      bot.connected = true;
+      updateCounters();
+      return;
+    }
+
+    if (applyBotSnapshotState(bot, packet)) {
+      bot.snapshotsReceived += 1;
+      updateCounters();
     }
   }
 }

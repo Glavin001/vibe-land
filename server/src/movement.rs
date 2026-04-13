@@ -196,13 +196,20 @@ impl PhysicsArena {
             .sync_player_collider(state.collider, &state.position);
         tick_result.timings.collider_sync_ms = sync_started.elapsed().as_secs_f32() * 1000.0;
 
+        let impulse_started = Instant::now();
+        let mut impulses_applied_count = 0usize;
         for impulse in &tick_result.dynamic_impulses {
-            let _ = self.apply_dynamic_body_impulse(
+            if self.apply_dynamic_body_impulse(
                 impulse.body_id,
                 impulse.impulse,
                 impulse.contact_point,
-            );
+            ) {
+                impulses_applied_count += 1;
+            }
         }
+        tick_result.timings.dynamic_impulse_apply_ms =
+            impulse_started.elapsed().as_secs_f32() * 1000.0;
+        tick_result.dynamic_stats.impulses_applied_count = impulses_applied_count;
 
         Some(tick_result)
     }

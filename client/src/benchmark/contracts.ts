@@ -53,6 +53,8 @@ export interface BenchmarkObservedMetrics {
   snapshotBytesPerTickP95: number;
   bodiesPerClientP95: number;
   wtReliableRatio: number;
+  datagramFallbacks: number;
+  strictSnapshotDrops: number;
   maxPendingInputs: number;
   avgPendingInputs: number;
   voidKills: number;

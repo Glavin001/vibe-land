@@ -38,6 +38,8 @@ export function buildMeasuredWindow(
     snapshotBytesPerTickP95: maxValue(matches, (sample) => sample.network.snapshot_bytes_per_tick.p95),
     bodiesPerClientP95: maxValue(matches, (sample) => sample.network.snapshot_dynamic_bodies_per_client.p95),
     wtReliableRatio: maxValue(matches, (sample) => webTransportSnapshotFallbackRatio(sample)),
+    datagramFallbacks: maxValue(matches, (sample) => sample.network.datagram_fallbacks),
+    strictSnapshotDrops: maxValue(matches, (sample) => sample.network.strict_snapshot_drops),
     maxPendingInputs: maxValue(matches, (sample) => maxPendingInputs(sample)),
     avgPendingInputs: maxValue(matches, (sample) =>
       sample.players.length > 0
@@ -96,6 +98,8 @@ export function evaluateScenario(
       spec.thresholds.snapshotBytesPerClientP95,
     ),
     evaluateBand('wt_reliable_ratio', metrics.wtReliableRatio, spec.thresholds.wtReliableRatio),
+    evaluateBand('datagram_fallbacks', metrics.datagramFallbacks, spec.thresholds.datagramFallbacks),
+    evaluateBand('strict_snapshot_drops', metrics.strictSnapshotDrops, spec.thresholds.strictSnapshotDrops),
     evaluateBand('max_pending_inputs', metrics.maxPendingInputs, spec.thresholds.maxPendingInputs),
     evaluateBand('connected_ratio', connectedRatio, spec.thresholds.connectedRatio),
     evaluateBand('void_kills', metrics.voidKills, spec.thresholds.voidKills),
