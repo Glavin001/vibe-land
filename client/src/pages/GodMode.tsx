@@ -46,6 +46,13 @@ import {
   setLastImportName,
   shouldCreateAutosaveBackup,
 } from '../world/worldDraftStore';
+import {
+  createEmptyWorldEditHistory,
+  commitWorldEdit,
+  redoWorldEdit,
+  undoWorldEdit,
+  type WorldEditHistory,
+} from './godModeHistory';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
@@ -73,6 +80,7 @@ export function GodModePage() {
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
   const [world, setWorld] = useState<WorldDocument>(() => getInitialGodModeWorld());
   const [history, setHistory] = useState<WorldDraftRevision[]>([]);
+  const [editHistory, setEditHistory] = useState<WorldEditHistory>(() => createEmptyWorldEditHistory());
   const [storageReady, setStorageReady] = useState(false);
   const [selected, setSelected] = useState<SelectedTarget>(null);
   const [brushRadius, setBrushRadius] = useState(8);
@@ -98,6 +106,96 @@ export function GodModePage() {
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+  const worldRef = useRef(world);
+  const editHistoryRef = useRef(editHistory);
+  const editTransactionRef = useRef<WorldDocument | null>(null);
+
+  useEffect(() => {
+    worldRef.current = world;
+  }, [world]);
+
+  useEffect(() => {
+    editHistoryRef.current = editHistory;
+  }, [editHistory]);
+
+  const replaceWorldState = useCallback((nextWorld: WorldDocument) => {
+    worldRef.current = nextWorld;
+    setWorld(nextWorld);
+  }, []);
+
+  const replaceEditHistoryState = useCallback((nextHistory: WorldEditHistory) => {
+    editHistoryRef.current = nextHistory;
+    setEditHistory(nextHistory);
+  }, []);
+
+  const applyPreviewWorldEdit = useCallback((updater: (current: WorldDocument) => WorldDocument) => {
+    const current = worldRef.current;
+    const next = updater(current);
+    if (next === current) {
+      return false;
+    }
+    replaceWorldState(next);
+    return true;
+  }, [replaceWorldState]);
+
+  const applyCommittedWorldEdit = useCallback((updater: (current: WorldDocument) => WorldDocument) => {
+    const current = worldRef.current;
+    const next = updater(current);
+    if (next === current) {
+      return false;
+    }
+    const transition = commitWorldEdit(editHistoryRef.current, current, next);
+    if (!transition.changed) {
+      return false;
+    }
+    replaceEditHistoryState(transition.history);
+    replaceWorldState(next);
+    return true;
+  }, [replaceEditHistoryState, replaceWorldState]);
+
+  const beginTrackedWorldEdit = useCallback(() => {
+    if (!editTransactionRef.current) {
+      editTransactionRef.current = cloneWorldDocument(worldRef.current);
+    }
+  }, []);
+
+  const commitTrackedWorldEdit = useCallback(() => {
+    const startWorld = editTransactionRef.current;
+    editTransactionRef.current = null;
+    if (!startWorld) {
+      return false;
+    }
+    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current);
+    if (!transition.changed) {
+      return false;
+    }
+    replaceEditHistoryState(transition.history);
+    return true;
+  }, [replaceEditHistoryState]);
+
+  const cancelTrackedWorldEdit = useCallback(() => {
+    editTransactionRef.current = null;
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    cancelTrackedWorldEdit();
+    const transition = undoWorldEdit(editHistoryRef.current, worldRef.current);
+    if (!transition.changed) {
+      return;
+    }
+    replaceEditHistoryState(transition.history);
+    replaceWorldState(transition.world);
+  }, [cancelTrackedWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleRedo = useCallback(() => {
+    cancelTrackedWorldEdit();
+    const transition = redoWorldEdit(editHistoryRef.current, worldRef.current);
+    if (!transition.changed) {
+      return;
+    }
+    replaceEditHistoryState(transition.history);
+    replaceWorldState(transition.world);
+  }, [cancelTrackedWorldEdit, replaceEditHistoryState, replaceWorldState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,16 +208,17 @@ export function GodModePage() {
         return;
       }
       if (draft) {
-        setWorld(cloneWorldDocument(draft));
+        replaceWorldState(cloneWorldDocument(draft));
       }
       setHistory(revisionHistory);
+      replaceEditHistoryState(createEmptyWorldEditHistory());
       setStorageReady(true);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [replaceEditHistoryState, replaceWorldState]);
 
   useEffect(() => {
     if (!storageReady) {
@@ -147,6 +246,19 @@ export function GodModePage() {
       }
     };
   }, [storageReady, world]);
+
+  useEffect(() => {
+    if (!selected) {
+      return;
+    }
+    if (selected.kind === 'static' && !world.staticProps.some((entity) => entity.id === selected.id)) {
+      setSelected(null);
+      return;
+    }
+    if (selected.kind === 'dynamic' && !world.dynamicEntities.some((entity) => entity.id === selected.id)) {
+      setSelected(null);
+    }
+  }, [selected, world.dynamicEntities, world.staticProps]);
 
   const selectedStatic = selected?.kind === 'static'
     ? world.staticProps.find((entity) => entity.id === selected.id) ?? null
@@ -199,9 +311,6 @@ export function GodModePage() {
       return;
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (tool !== 'select') {
-        return;
-      }
       if (event.target instanceof HTMLElement && (
         event.target.tagName === 'INPUT'
         || event.target.tagName === 'TEXTAREA'
@@ -209,26 +318,46 @@ export function GodModePage() {
       )) {
         return;
       }
-      if (event.key.toLowerCase() === 'w') {
+      const isMac = navigator.platform.includes('Mac');
+      const modPressed = isMac ? event.metaKey : event.ctrlKey;
+      const key = event.key.toLowerCase();
+      if (modPressed && key === 'z') {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      if (modPressed && key === 'y') {
+        event.preventDefault();
+        handleRedo();
+        return;
+      }
+      if (tool !== 'select') {
+        return;
+      }
+      if (key === 'w') {
         setTransformMode('translate');
       }
-      if (event.key.toLowerCase() === 'e' && selectedTransformEntity?.canRotate) {
+      if (key === 'e' && selectedTransformEntity?.canRotate) {
         setTransformMode('rotate');
       }
-      if (event.key.toLowerCase() === 'r' && selectedTransformEntity?.canResize) {
+      if (key === 'r' && selectedTransformEntity?.canResize) {
         setTransformMode('scale');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mode, selectedTransformEntity, tool]);
+  }, [handleRedo, handleUndo, mode, selectedTransformEntity, tool]);
 
   const handleStartPlay = useCallback(() => {
-    const snapshot = cloneWorldDocument(world);
+    const snapshot = cloneWorldDocument(worldRef.current);
     setPlayWorldSnapshot(snapshot);
     setPlaySessionKey((current) => current + 1);
     setMode('play');
-  }, [world]);
+  }, []);
 
   const handleReturnToEdit = useCallback(() => {
     setMode('edit');
@@ -239,9 +368,9 @@ export function GodModePage() {
     if (mode !== 'play') {
       return;
     }
-    setPlayWorldSnapshot(cloneWorldDocument(world));
+    setPlayWorldSnapshot(cloneWorldDocument(worldRef.current));
     setPlaySessionKey((current) => current + 1);
-  }, [mode, world]);
+  }, [mode]);
 
   const handleExport = useCallback(() => {
     const blob = new Blob([serializeWorldDocument(world)], { type: 'application/json' });
@@ -264,70 +393,82 @@ export function GodModePage() {
     }
     const text = await file.text();
     const nextWorld = parseWorldDocument(JSON.parse(text));
-    setWorld(cloneWorldDocument(nextWorld));
+    applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
     setSelected(null);
     setLastImportName(file.name);
     setLastImportNameState(file.name);
     setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
     event.target.value = '';
-  }, []);
+  }, [applyCommittedWorldEdit]);
 
   const handleRestoreRevision = useCallback((revision: WorldDraftRevision) => {
-    setWorld(cloneWorldDocument(revision.world));
+    applyCommittedWorldEdit(() => cloneWorldDocument(revision.world));
     setSelected(null);
-  }, []);
+  }, [applyCommittedWorldEdit]);
 
   const handleResetToDefault = useCallback(() => {
     void clearDraftStorage();
-    setWorld(cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
+    applyCommittedWorldEdit(() => cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
     setHistory([]);
     setSelected(null);
     setLastImportName('');
     setLastImportNameState('');
-  }, []);
+  }, [applyCommittedWorldEdit]);
 
   const addStaticCuboid = useCallback(() => {
-    const nextId = getNextWorldEntityId(world);
-    const baseY = sampleTerrainHeightAtWorldPosition(world, 0, 0) + 1;
-    const nextStatic: StaticProp = {
-      id: nextId,
-      kind: 'cuboid',
-      position: [0, baseY, 0],
-      rotation: identityQuaternion(),
-      halfExtents: [2, 1, 2],
-      material: 'editor-static',
-    };
-    setWorld((current) => ({
-      ...current,
-      staticProps: [...current.staticProps, nextStatic],
-    }));
-    setSelected({ kind: 'static', id: nextId });
-  }, [world]);
+    let nextId = 0;
+    const changed = applyCommittedWorldEdit((current) => {
+      nextId = getNextWorldEntityId(current);
+      const baseY = sampleTerrainHeightAtWorldPosition(current, 0, 0) + 1;
+      const nextStatic: StaticProp = {
+        id: nextId,
+        kind: 'cuboid',
+        position: [0, baseY, 0],
+        rotation: identityQuaternion(),
+        halfExtents: [2, 1, 2],
+        material: 'editor-static',
+      };
+      return {
+        ...current,
+        staticProps: [...current.staticProps, nextStatic],
+      };
+    });
+    if (changed) {
+      setSelected({ kind: 'static', id: nextId });
+    }
+  }, [applyCommittedWorldEdit]);
 
   const addDynamicEntity = useCallback((kind: DynamicEntity['kind']) => {
-    const nextId = getNextWorldEntityId(world);
-    const common = {
-      id: nextId,
-      kind,
-      position: [0, 0, 0] as [number, number, number],
-      rotation: identityQuaternion() as Quaternion,
-    };
-    const entity: DynamicEntity = kind === 'box'
-      ? { ...common, halfExtents: [0.7, 0.7, 0.7] }
-      : kind === 'ball'
-        ? { ...common, radius: 0.6 }
-        : { ...common, vehicleType: 0 };
-    entity.position = [0, getMinimumDynamicEntityY(world, entity), 0];
-    setWorld((current) => ({
-      ...current,
-      dynamicEntities: [...current.dynamicEntities, entity],
-    }));
-    setSelected({ kind: 'dynamic', id: nextId });
-  }, [world]);
+    let nextId = 0;
+    const changed = applyCommittedWorldEdit((current) => {
+      nextId = getNextWorldEntityId(current);
+      const common = {
+        id: nextId,
+        kind,
+        position: [0, 0, 0] as [number, number, number],
+        rotation: identityQuaternion() as Quaternion,
+      };
+      const entity: DynamicEntity = kind === 'box'
+        ? { ...common, halfExtents: [0.7, 0.7, 0.7] }
+        : kind === 'ball'
+          ? { ...common, radius: 0.6 }
+          : { ...common, vehicleType: 0 };
+      entity.position = [0, getMinimumDynamicEntityY(current, entity), 0];
+      return {
+        ...current,
+        dynamicEntities: [...current.dynamicEntities, entity],
+      };
+    });
+    if (changed) {
+      setSelected({ kind: 'dynamic', id: nextId });
+    }
+  }, [applyCommittedWorldEdit]);
 
   const removeSelected = useCallback(() => {
-    if (!selected) return;
-    setWorld((current) => {
+    if (!selected) {
+      return;
+    }
+    const changed = applyCommittedWorldEdit((current) => {
       if (selected.kind === 'static') {
         return {
           ...current,
@@ -339,11 +480,13 @@ export function GodModePage() {
         dynamicEntities: current.dynamicEntities.filter((entity) => entity.id !== selected.id),
       };
     });
-    setSelected(null);
-  }, [selected]);
+    if (changed) {
+      setSelected(null);
+    }
+  }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedPosition = useCallback((axis: 0 | 1 | 2, value: number) => {
-    setWorld((current) => {
+    applyCommittedWorldEdit((current) => {
       if (!selected) return current;
       if (selected.kind === 'static') {
         return {
@@ -364,10 +507,10 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedPositionVector = useCallback((nextPosition: Vec3) => {
-    setWorld((current) => {
+    applyPreviewWorldEdit((current) => {
       if (!selected) {
         return current;
       }
@@ -390,11 +533,11 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedHalfExtent = useCallback((axis: 0 | 1 | 2, value: number) => {
     const nextValue = clampDimension(value * 2) / 2;
-    setWorld((current) => {
+    applyCommittedWorldEdit((current) => {
       if (!selected) return current;
       if (selected.kind === 'static') {
         return {
@@ -415,11 +558,11 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedHalfExtentsVector = useCallback((nextHalfExtents: Vec3) => {
     const clampedHalfExtents = nextHalfExtents.map((value) => clampDimension(value * 2) / 2) as Vec3;
-    setWorld((current) => {
+    applyPreviewWorldEdit((current) => {
       if (!selected) {
         return current;
       }
@@ -442,14 +585,14 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedRadius = useCallback((value: number) => {
     if (selected?.kind !== 'dynamic') {
       return;
     }
     const nextRadius = clampDimension(value);
-    setWorld((current) => ({
+    applyCommittedWorldEdit((current) => ({
       ...current,
       dynamicEntities: current.dynamicEntities.map((entity) => (
         entity.id === selected.id
@@ -457,12 +600,27 @@ export function GodModePage() {
           : entity
       )),
     }));
-  }, [selected]);
+  }, [applyCommittedWorldEdit, selected]);
+
+  const updateSelectedRadiusPreview = useCallback((value: number) => {
+    if (selected?.kind !== 'dynamic') {
+      return;
+    }
+    const nextRadius = clampDimension(value);
+    applyPreviewWorldEdit((current) => ({
+      ...current,
+      dynamicEntities: current.dynamicEntities.map((entity) => (
+        entity.id === selected.id
+          ? { ...entity, radius: nextRadius }
+          : entity
+      )),
+    }));
+  }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
     const yawRadians = (yawDegrees * Math.PI) / 180;
     const nextRotation = quaternionFromYaw(yawRadians);
-    setWorld((current) => {
+    applyCommittedWorldEdit((current) => {
       if (!selected) {
         return current;
       }
@@ -485,10 +643,10 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedRotationQuaternion = useCallback((nextRotation: Quaternion) => {
-    setWorld((current) => {
+    applyPreviewWorldEdit((current) => {
       if (!selected) {
         return current;
       }
@@ -511,7 +669,10 @@ export function GodModePage() {
         )),
       };
     });
-  }, [selected]);
+  }, [applyPreviewWorldEdit, selected]);
+
+  const canUndo = editHistory.undoStack.length > 0;
+  const canRedo = editHistory.redoStack.length > 0;
 
   const editScene = useMemo(() => (
     <GodModeEditorScene
@@ -537,24 +698,31 @@ export function GodModePage() {
       rampStartFalloff={rampStartFalloff}
       rampEndFalloff={rampEndFalloff}
       onSelect={setSelected}
+      onTerrainEditStart={beginTrackedWorldEdit}
+      onTerrainEditEnd={commitTrackedWorldEdit}
+      onTransformStart={beginTrackedWorldEdit}
+      onTransformEnd={commitTrackedWorldEdit}
       onTransformPositionChange={updateSelectedPositionVector}
       onTransformRotationChange={updateSelectedRotationQuaternion}
       onTransformHalfExtentsChange={updateSelectedHalfExtentsVector}
-      onTransformRadiusChange={updateSelectedRadius}
+      onTransformRadiusChange={updateSelectedRadiusPreview}
       onPaint={(x, z) => {
-        setWorld((current) => applyTerrainBrush(current, x, z, brushRadius, brushStrength, brushMode, {
+        applyPreviewWorldEdit((current) => applyTerrainBrush(current, x, z, brushRadius, brushStrength, brushMode, {
           minHeight: brushMinHeight,
           maxHeight: brushMaxHeight,
         }));
       }}
       onDeleteTile={(tileX, tileZ) => {
-        setWorld((current) => removeTerrainTile(current, tileX, tileZ));
+        if (worldRef.current.terrain.tiles.length <= 1) {
+          return;
+        }
+        applyCommittedWorldEdit((current) => removeTerrainTile(current, tileX, tileZ));
       }}
       onAddTile={(tileX, tileZ) => {
-        setWorld((current) => addTerrainTile(current, tileX, tileZ));
+        applyCommittedWorldEdit((current) => addTerrainTile(current, tileX, tileZ));
       }}
       onApplyRamp={(x, z) => {
-        setWorld((current) => applyTerrainRampStencil(current, {
+        applyPreviewWorldEdit((current) => applyTerrainRampStencil(current, {
           centerX: x,
           centerZ: z,
           width: rampWidth,
@@ -591,13 +759,17 @@ export function GodModePage() {
     rampWidth,
     rampYawDegrees,
     terrainToolMode,
+    beginTrackedWorldEdit,
+    commitTrackedWorldEdit,
     selected,
     selectedTransformEntity,
     tool,
     transformMode,
+    applyCommittedWorldEdit,
+    applyPreviewWorldEdit,
     updateSelectedHalfExtentsVector,
     updateSelectedPositionVector,
-    updateSelectedRadius,
+    updateSelectedRadiusPreview,
     updateSelectedRotationQuaternion,
     world,
   ]);
@@ -659,6 +831,17 @@ export function GodModePage() {
           </div>
           <div style={mutedTextStyle}>
             Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
+          </div>
+        </div>
+
+        <div style={sectionStyle}>
+          <div style={sectionTitleStyle}>Undo / Redo</div>
+          <div style={buttonRowStyle}>
+            <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
+            <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
+          </div>
+          <div style={mutedTextStyle}>
+            Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>
         </div>
 
@@ -924,6 +1107,12 @@ export function GodModePage() {
             <span>R resize</span>
           </div>
         )}
+        {mode === 'edit' && (
+          <div style={undoRedoViewportOverlayStyle}>
+            <span>{canUndo ? `${editHistory.undoStack.length} undo` : 'No undo history'}</span>
+            <span>{canRedo ? `${editHistory.redoStack.length} redo` : 'No redo history'}</span>
+          </div>
+        )}
         {editScene}
       </main>
     </div>
@@ -953,6 +1142,10 @@ function GodModeEditorScene({
   rampStartFalloff,
   rampEndFalloff,
   onSelect,
+  onTerrainEditStart,
+  onTerrainEditEnd,
+  onTransformStart,
+  onTransformEnd,
   onTransformPositionChange,
   onTransformRotationChange,
   onTransformHalfExtentsChange,
@@ -984,6 +1177,10 @@ function GodModeEditorScene({
   rampStartFalloff: number;
   rampEndFalloff: number;
   onSelect: (next: SelectedTarget) => void;
+  onTerrainEditStart: () => void;
+  onTerrainEditEnd: () => void;
+  onTransformStart: () => void;
+  onTransformEnd: () => void;
   onTransformPositionChange: (nextPosition: Vec3) => void;
   onTransformRotationChange: (nextRotation: Quaternion) => void;
   onTransformHalfExtentsChange: (nextHalfExtents: Vec3) => void;
@@ -1037,11 +1234,13 @@ function GodModeEditorScene({
     const tileX = event.object.userData?.terrainTileX;
     const tileZ = event.object.userData?.terrainTileZ;
     if (tool === 'terrain' && terrainToolMode === 'sculpt') {
+      onTerrainEditStart();
       paintingRef.current = true;
       onPaint(event.point.x, event.point.z);
       return;
     }
     if (tool === 'terrain' && terrainToolMode === 'ramp') {
+      onTerrainEditStart();
       setIsRampApplying(true);
       setTerrainPointerPoint(nextPoint);
       onApplyRamp(event.point.x, event.point.z);
@@ -1054,22 +1253,31 @@ function GodModeEditorScene({
       return;
     }
     onSelect(null);
-  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, terrainToolMode, tool]);
+  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
+    const wasEditing = paintingRef.current || isRampApplying;
     paintingRef.current = false;
     setIsRampApplying(false);
-  }, []);
+    if (wasEditing) {
+      onTerrainEditEnd();
+    }
+  }, [isRampApplying, onTerrainEditEnd]);
 
   const handleTerrainPointerOut = useCallback(() => {
     if (terrainToolMode === 'delete-tile') {
       return;
     }
+    const wasEditing = paintingRef.current || isRampApplying;
     setHoveredTerrainTile(null);
     setTerrainPointerPoint(null);
     terrainPointerRef.current = null;
+    paintingRef.current = false;
     setIsRampApplying(false);
-  }, [terrainToolMode]);
+    if (wasEditing) {
+      onTerrainEditEnd();
+    }
+  }, [isRampApplying, onTerrainEditEnd, terrainToolMode]);
 
   const registerSelectableObject = useCallback((key: string, object: THREE.Object3D | null) => {
     if (object) {
@@ -1080,6 +1288,7 @@ function GodModeEditorScene({
   }, []);
 
   const handleTransformMouseDown = useCallback(() => {
+    onTransformStart();
     if (transformMode !== 'scale' || !selectedTransformEntity) {
       resizeOriginRef.current = null;
       return;
@@ -1088,7 +1297,7 @@ function GodModeEditorScene({
       halfExtents: selectedTransformEntity.halfExtents ? [...selectedTransformEntity.halfExtents] as Vec3 : undefined,
       radius: selectedTransformEntity.radius,
     };
-  }, [selectedTransformEntity, transformMode]);
+  }, [onTransformStart, selectedTransformEntity, transformMode]);
 
   const handleTransformObjectChange = useCallback(() => {
     if (!selectedObject || !selectedTransformEntity) {
@@ -1113,6 +1322,7 @@ function GodModeEditorScene({
   const handleTransformMouseUp = useCallback(() => {
     if (!selectedObject || !selectedTransformEntity || transformMode !== 'scale') {
       resizeOriginRef.current = null;
+      onTransformEnd();
       return;
     }
     if (selectedTransformEntity.halfExtents) {
@@ -1133,7 +1343,9 @@ function GodModeEditorScene({
     }
     selectedObject.scale.set(1, 1, 1);
     resizeOriginRef.current = null;
+    onTransformEnd();
   }, [
+    onTransformEnd,
     onTransformHalfExtentsChange,
     onTransformRadiusChange,
     selectedObject,
@@ -1143,7 +1355,8 @@ function GodModeEditorScene({
 
   useEffect(() => () => {
     paintingRef.current = false;
-  }, []);
+    onTerrainEditEnd();
+  }, [onTerrainEditEnd]);
 
   useEffect(() => {
     if (tool !== 'terrain') {
@@ -1188,11 +1401,15 @@ function GodModeEditorScene({
       style={{ width: '100%', height: '100%' }}
       onPointerUp={handleTerrainPointerUp}
       onPointerMissed={() => {
+        const wasEditing = paintingRef.current || isRampApplying;
         setHoveredTerrainTile(null);
         setTerrainPointerPoint(null);
         terrainPointerRef.current = null;
         paintingRef.current = false;
         setIsRampApplying(false);
+        if (wasEditing) {
+          onTerrainEditEnd();
+        }
       }}
     >
       <ambientLight intensity={0.55} />
@@ -1873,4 +2090,21 @@ const editorViewportOverlayStyle: CSSProperties = {
   borderRadius: 12,
   color: '#eef7ff',
   fontSize: 13,
+};
+
+const undoRedoViewportOverlayStyle: CSSProperties = {
+  position: 'absolute',
+  top: 16,
+  right: 16,
+  zIndex: 10,
+  display: 'flex',
+  gap: 12,
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  background: 'rgba(5, 9, 16, 0.68)',
+  padding: '10px 12px',
+  borderRadius: 12,
+  color: '#eef7ff',
+  fontSize: 13,
+  pointerEvents: 'none',
 };
