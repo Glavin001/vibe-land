@@ -400,9 +400,15 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
   );
 
   const syncRemoteSnapMachine = useCallback((state: NetSnapMachineState): void => {
-    if (practiceMode) return;
+    // Unlike vehicles, which are rendered from `client.vehicles`
+    // snapshot state in `GameWorld.tsx`, snap-machines are rendered
+    // from the client wasm world via `getSnapMachineBodyPoses`. That
+    // means we MUST push server snapshots into wasm even in practice
+    // mode — otherwise a parked machine that's been shoved by a
+    // vehicle stays frozen at its spawn pose on screen while the
+    // server physics happily updates it.
     machineManagerRef.current?.syncRemoteMachine(state);
-  }, [practiceMode]);
+  }, []);
 
   const isOperatingSnapMachine = useCallback((): boolean => {
     return machineManagerRef.current?.isActive() ?? false;

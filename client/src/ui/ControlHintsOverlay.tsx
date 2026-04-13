@@ -178,6 +178,15 @@ export function ControlHintsOverlay({
         ? 'Vehicle'
         : 'On Foot';
   const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${contextLabel}`;
+  // When operating a snap-machine, surface the raw live channel
+  // values alongside the title. This gives us an at-a-glance
+  // diagnostic — if the user presses E / W / etc. and the string
+  // reads `ch=[0,0,0,...]`, the key isn't reaching the resolver; if
+  // it reads `ch=[127,0,0,...]` but the machine still doesn't move,
+  // the physics pipeline is the problem.
+  const machineDebug = context === 'snapMachine'
+    ? `ch=[${Array.from(state.machineChannels).slice(0, state.machineBindings.length || 1).join(',')}]`
+    : '';
 
   return (
     <div
@@ -201,6 +210,11 @@ export function ControlHintsOverlay({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
+          {machineDebug && (
+            <div style={{ fontSize: 10, fontFamily: 'monospace', opacity: 0.7, color: 'rgba(129, 255, 191, 0.85)' }}>
+              {machineDebug}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
             {MODE_OPTIONS.map((option) => {
               const selected = option.mode === inputFamilyMode;

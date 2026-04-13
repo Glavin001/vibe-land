@@ -71,7 +71,13 @@ export function useControlHints() {
       machineChannels: sample.machineChannels ?? new Int8Array(0),
     };
 
-    if (now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
+    // Always bypass the UI throttle in snap-machine context: the
+    // overlay shows live per-frame channel values there, and the
+    // user needs immediate visual feedback to trust that the keys
+    // are reaching the resolver. Throttling here was causing
+    // "I pressed a key and nothing changed" reports even when the
+    // underlying resolve pipeline was working correctly.
+    if (sample.context !== 'snapMachine' && now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
       return;
     }
     lastUiUpdate.current = now;
