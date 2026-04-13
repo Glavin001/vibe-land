@@ -1,7 +1,8 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
+import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
@@ -23,6 +24,7 @@ type GameSceneProps = {
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
+  sceneExtras?: ReactNode;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -42,13 +44,16 @@ export function GameScene({
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
+  sceneExtras,
 }: GameSceneProps) {
+  const touchMode = isTouchDevice();
   return (
     <Canvas
-      style={{ width: '100%', height: '100%' }}
+      style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
       onPointerDown={(e) => {
+        if (touchMode) return;
         (e.target as HTMLCanvasElement).requestPointerLock();
       }}
     >
@@ -73,6 +78,7 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           benchmarkAutopilot={benchmarkAutopilot}
+          sceneExtras={sceneExtras}
         />
       </Suspense>
     </Canvas>
