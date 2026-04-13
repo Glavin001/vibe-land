@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import { isTouchDevice } from './device';
 import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
 import {
   DEFAULT_INPUT_BINDINGS,
@@ -16,6 +17,7 @@ import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
+import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
@@ -74,6 +76,7 @@ export function App({
     rapierDebugModeBits,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
+  const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
 
@@ -178,8 +181,10 @@ export function App({
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
     hasEverConnectedRef.current = true;
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — controls are configurable from the Controls panel`);
-  }, [modeLabel, practiceMode]);
+    const touchHint = 'Touch: left thumb moves (push past ring to sprint), right thumb swipes look, tap FIRE/JUMP/RUN';
+    const desktopHint = 'controls are configurable from the Controls panel';
+    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — ${touchMode ? touchHint : desktopHint}`);
+  }, [modeLabel, practiceMode, touchMode]);
 
   const handleDisconnect = useCallback(() => {
     setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
@@ -409,10 +414,11 @@ export function App({
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}
-        visible={connected && isDesktop}
+        visible={connected && isDesktop && !touchMode}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
+      {connected && touchMode && <MobileHUD />}
       <ControlsSettingsPanel
         open={controlsOpen}
         bindings={inputBindings}
