@@ -247,7 +247,7 @@ describe('NetcodeClient', () => {
       expect(client.latestServerTick).toBe(100);
     });
 
-    it('does not shrink interpolation delay below the welcome baseline', () => {
+    it('keeps remote-player interpolation at least half a snapshot interval behind', () => {
       const client = new NetcodeClient({});
       client.handlePacket(makeWelcome(1));
       vi.spyOn(client.serverClock, 'getInterpolationDelayMs').mockReturnValue(5);
@@ -257,7 +257,35 @@ describe('NetcodeClient', () => {
         players: [makeNetState({ id: 1 })],
       }));
 
-      expect(client.interpolationDelayMs).toBe(66);
+      expect(client.interpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
+    });
+
+    it('keeps dynamic body render delay responsive even when player interpolation stays buffered', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      vi.spyOn(client.serverClock, 'getInterpolationDelayMs').mockReturnValue(5);
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+        dynamicBodyStates: [makeDynamicBodyState({ id: 7, position: [1, 0, 0] })],
+      }));
+
+      expect(client.interpolationDelayMs).toBeCloseTo((1000 / 30) * 0.5, 2);
+      expect(client.dynamicBodyInterpolationDelayMs).toBe(5);
+    });
+
+    it('still uses larger adaptive delays when jitter requires more buffering', () => {
+      const client = new NetcodeClient({});
+      client.handlePacket(makeWelcome(1));
+      vi.spyOn(client.serverClock, 'getInterpolationDelayMs').mockReturnValue(48);
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        players: [makeNetState({ id: 1 })],
+      }));
+
+      expect(client.interpolationDelayMs).toBe(48);
     });
 
     it('ignores stale and duplicate snapshots', () => {
@@ -451,6 +479,10 @@ describe('NetcodeClient', () => {
         confirmed: true,
         hitPlayerId: 9,
         hitZone: 2,
+        serverResolution: 1,
+        serverDynamicBodyId: 0,
+        serverDynamicHitToiCm: 0,
+        serverDynamicImpulseCenti: 0,
       });
 
       expect(received).not.toBeNull();

@@ -14,9 +14,13 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/practice')).toEqual({ kind: 'game', mode: 'practice' });
   });
 
+  it('preserves the godmode page', () => {
+    expect(resolveAppRoute('/godmode')).toEqual({ kind: 'godmode' });
+    expect(resolveAppRoute('/godmode/')).toEqual({ kind: 'godmode' });
+  });
+
   it('preserves diagnostics pages', () => {
     expect(resolveAppRoute('/stats')).toEqual({ kind: 'stats' });
     expect(resolveAppRoute('/loadtest')).toEqual({ kind: 'loadtest' });
   });
 });
-

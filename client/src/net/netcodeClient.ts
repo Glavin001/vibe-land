@@ -1,4 +1,5 @@
 import { GameSocket } from './gameSocket';
+import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { LocalPreviewTransport } from './localPreviewTransport';
 import { WebTransportGameClient } from './webTransportClient';
 import {
@@ -61,6 +62,8 @@ export type NetcodeClientConfig = {
  */
 export class NetcodeClient {
   private static readonly DYNAMIC_BODY_STALE_TICKS = 90;
+  static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
+  static readonly REMOTE_PLAYER_BUFFER_RATIO = 0.5;
 
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
@@ -69,7 +72,9 @@ export class NetcodeClient {
 
   playerId = 0;
   interpolationDelayMs = 100;
+  dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
   private baselineInterpolationDelayMs = 100;
+  private minRemoteInterpolationDelayMs = 0;
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
@@ -78,6 +83,8 @@ export class NetcodeClient {
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
+  private readonly dynamicBodyServerTimeUs = new Map<number, number>();
+  private readonly debugTelemetry = new NetDebugTelemetry();
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
@@ -110,7 +117,7 @@ export class NetcodeClient {
   connect(wsUrl: string): void {
     this.closedByClient = false;
     this.socket = new GameSocket({
-      onPacket: (packet: ServerPacket) => this.handlePacket(packet),
+      onPacket: (packet: ServerPacket) => this.handlePacket(packet, 'websocket'),
       onClose: () => { this.notifyDisconnect(); },
       onRttUpdated: (rttMs: number) => {
         this.rttMs = rttMs;
@@ -122,9 +129,9 @@ export class NetcodeClient {
 
   async connectLocalPreview(worldJson?: string): Promise<void> {
     this.closedByClient = false;
-    this.localTransport = await LocalPreviewTransport.connect({
+      this.localTransport = await LocalPreviewTransport.connect({
       worldJson,
-      onPacket: (packet) => this.handlePacket(packet),
+      onPacket: (packet) => this.handlePacket(packet, 'local'),
       onClose: () => {
         this.localTransport = null;
         this.notifyDisconnect();
@@ -146,8 +153,8 @@ export class NetcodeClient {
         const wt = await WebTransportGameClient.connect({
           matchId,
           sessionConfigEndpoint,
-          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket),
-          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket),
+          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-reliable'),
+          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-datagram'),
           onClose: () => { this.notifyDisconnect(); },
         });
         this.wtClient = wt;
@@ -274,12 +281,24 @@ export class NetcodeClient {
    * Process a server packet directly (for testing without a real socket).
    * In production, packets arrive via the socket; in tests, call this directly.
    */
-  handlePacket(packet: ServerPacket): void {
+  handlePacket(
+    packet: ServerPacket,
+    source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct' = 'direct',
+  ): void {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
         this.baselineInterpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
+        this.minRemoteInterpolationDelayMs = this.localTransport
+          ? 0
+          : (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
         this.interpolationDelayMs = this.baselineInterpolationDelayMs;
+        this.dynamicBodyInterpolationDelayMs = this.localTransport
+          ? 0
+          : Math.min(
+              packet.interpolationDelayMs,
+              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+            );
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
@@ -290,27 +309,42 @@ export class NetcodeClient {
         break;
       case 'snapshot': {
         if (packet.serverTick <= this.latestServerTick) {
+          this.debugTelemetry.observeDroppedSnapshot(source, packet.serverTick, this.latestServerTick);
           break;
         }
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
         if (this.localTransport) {
           this.interpolationDelayMs = 0;
+          this.dynamicBodyInterpolationDelayMs = 0;
         } else {
           // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
           const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
           if (adaptiveDelayMs > 0) {
             this.interpolationDelayMs = Math.round(
-              Math.max(adaptiveDelayMs, this.baselineInterpolationDelayMs) * 100,
+              Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
+            ) / 100;
+            this.dynamicBodyInterpolationDelayMs = Math.round(
+              Math.min(
+                adaptiveDelayMs,
+                NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+              ) * 100,
             ) / 100;
           }
         }
+        this.debugTelemetry.observeAcceptedSnapshot(
+          source,
+          packet.serverTick,
+          packet.playerStates.length,
+          packet.dynamicBodyStates.length,
+        );
 
         // Update dynamic bodies BEFORE reconciliation so that input replay
         // collides with the correct (same-tick) collider positions.
         for (const db of packet.dynamicBodyStates) {
           const meters = netDynamicBodyStateToMeters(db);
           this.dynamicBodies.set(db.id, meters);
+          this.dynamicBodyServerTimeUs.set(db.id, packet.serverTimeUs);
           this.dynamicBodyInterpolator.push(db.id, {
             serverTimeUs: packet.serverTimeUs,
             position: meters.position,
@@ -326,9 +360,11 @@ export class NetcodeClient {
           if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
             this.dynamicBodyLastSeenTick.delete(id);
             this.dynamicBodies.delete(id);
+            this.dynamicBodyServerTimeUs.delete(id);
             this.dynamicBodyInterpolator.remove(id);
           }
         }
+        this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
         for (const ps of packet.playerStates) {
@@ -405,6 +441,16 @@ export class NetcodeClient {
         this.config.onWorldPacket?.(packet);
         break;
       case 'shotResult':
+        this.debugTelemetry.observeShotResult(
+          packet.shotId,
+          packet.confirmed,
+          packet.hitPlayerId,
+          packet.hitZone,
+          packet.serverResolution,
+          packet.serverDynamicBodyId,
+          packet.serverDynamicHitToiCm,
+          packet.serverDynamicImpulseCenti,
+        );
         this.config.onShotResult?.(packet);
         break;
       default:
@@ -434,8 +480,51 @@ export class NetcodeClient {
   }
 
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {
-    const t = renderTimeUs ?? this.getRenderTimeUs();
+    const t = renderTimeUs ?? this.getDynamicBodyRenderTimeUs();
     return this.dynamicBodyInterpolator.sample(id, t);
+  }
+
+  getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
+    return this.serverClock.renderTimeUs(
+      this.dynamicBodyInterpolationDelayMs * 1000,
+      localTimeUs,
+    );
+  }
+
+  getDynamicBodyObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+    const sampleServerTimeUs = this.dynamicBodyServerTimeUs.get(id);
+    if (sampleServerTimeUs == null) return null;
+    return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
+  }
+
+  recordFrameDebugMetrics(
+    playerCorrectionMagnitude: number,
+    vehicleCorrectionMagnitude: number,
+    dynamicCorrectionMagnitude: number,
+    pendingInputCount: number,
+  ): void {
+    this.debugTelemetry.observeFrameMetrics(
+      playerCorrectionMagnitude,
+      vehicleCorrectionMagnitude,
+      dynamicCorrectionMagnitude,
+      pendingInputCount,
+    );
+  }
+
+  recordLocalShotFired(
+    shotId: number,
+    shot: Omit<LocalShotTelemetry, 'baselineBodyPosition'>,
+  ): void {
+    this.debugTelemetry.observeLocalShotFired(shotId, {
+      ...shot,
+      baselineBodyPosition: shot.predictedDynamicBodyId != null
+        ? this.dynamicBodies.get(shot.predictedDynamicBodyId)?.position ?? null
+        : null,
+    });
+  }
+
+  getDebugTelemetrySnapshot() {
+    return this.debugTelemetry.snapshot();
   }
 
   /** Reset all state (for reconnection). */
@@ -443,9 +532,12 @@ export class NetcodeClient {
     this.playerId = 0;
     this.latestServerTick = 0;
     this.interpolationDelayMs = 100;
+    this.dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
     this.baselineInterpolationDelayMs = 100;
+    this.minRemoteInterpolationDelayMs = 0;
     this.remotePlayers.clear();
     this.dynamicBodies.clear();
+    this.dynamicBodyServerTimeUs.clear();
     this.dynamicBodyLastSeenTick.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();

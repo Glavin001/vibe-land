@@ -1,9 +1,50 @@
-use vibe_land_shared::world_document::{WorldDocument, WorldDocumentError};
+use nalgebra::vector;
+use vibe_land_shared::terrain::{
+    build_demo_heightfield, demo_ball_pit_wall_cuboids, DEMO_BALL_PIT_X, DEMO_BALL_PIT_Z,
+};
+use vibe_land_shared::world_document::WorldDocumentError;
 
 use crate::movement::PhysicsArena;
 
+const BALL_RADIUS_M: f32 = 0.3;
+const BALL_SPACING_M: f32 = 0.8;
+const BALL_COLS: usize = 5;
+const BALL_ROWS: usize = 5;
+const BALL_LAYERS: usize = 1;
+const DEFAULT_VEHICLE_POSITION_M: [f32; 3] = [8.0, 2.0, 0.0];
+
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
-    WorldDocument::demo().instantiate(arena)
+    let (heights, scale) = build_demo_heightfield();
+    arena.add_static_heightfield(heights, scale, 0);
+
+    for (center, half_extents) in demo_ball_pit_wall_cuboids() {
+        arena.add_static_cuboid(center, half_extents, 0);
+    }
+
+    let inner_min_x = DEMO_BALL_PIT_X + 1.5;
+    let inner_min_z = DEMO_BALL_PIT_Z + 1.5;
+
+    for layer in 0..BALL_LAYERS {
+        for row in 0..BALL_ROWS {
+            for col in 0..BALL_COLS {
+                let x = inner_min_x + col as f32 * BALL_SPACING_M;
+                let y = 2.0 + layer as f32 * BALL_SPACING_M;
+                let z = inner_min_z + row as f32 * BALL_SPACING_M;
+                arena.spawn_dynamic_ball(vector![x, y, z], BALL_RADIUS_M);
+            }
+        }
+    }
+
+    arena.spawn_vehicle(
+        0,
+        vector![
+            DEFAULT_VEHICLE_POSITION_M[0],
+            DEFAULT_VEHICLE_POSITION_M[1],
+            DEFAULT_VEHICLE_POSITION_M[2]
+        ],
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -12,34 +53,29 @@ mod tests {
     use crate::movement::MoveConfig;
 
     #[test]
-    fn default_world_bootstrap_matches_demo_document_counts() {
-        let world = WorldDocument::demo();
+    fn default_world_bootstrap_matches_expected_multiplayer_counts() {
         let mut arena = PhysicsArena::new(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
-        let expected_dynamic_bodies = world
-            .dynamic_entities
-            .iter()
-            .filter(|entity| {
-                !matches!(
-                    entity.kind,
-                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
-                )
-            })
-            .count();
-        let expected_vehicles = world
-            .dynamic_entities
-            .iter()
-            .filter(|entity| {
-                matches!(
-                    entity.kind,
-                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
-                )
-            })
-            .count();
+        assert_eq!(arena.dynamic.dynamic_bodies.len(), BALL_COLS * BALL_ROWS * BALL_LAYERS);
+        assert_eq!(arena.vehicles.len(), 1);
+    }
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), expected_dynamic_bodies);
-        assert_eq!(arena.vehicles.len(), expected_vehicles);
+    #[test]
+    fn default_world_stays_within_multiplayer_dynamic_budget() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
+
+        assert!(
+            arena.dynamic.dynamic_bodies.len() <= 25,
+            "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 25 to preserve 60 Hz headroom",
+            arena.dynamic.dynamic_bodies.len()
+        );
+        assert!(
+            arena.vehicles.len() <= 1,
+            "default multiplayer world spawned {} vehicles; keep it at or under 1",
+            arena.vehicles.len()
+        );
     }
 
     #[test]

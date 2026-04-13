@@ -75,11 +75,12 @@ describe('PlayerInterpolator', () => {
     serverTimeUs: number,
     position: [number, number, number],
     yaw = 0,
+    velocity: [number, number, number] = [0, 0, 0],
   ): PlayerSample {
     return {
       serverTimeUs,
       position,
-      velocity: [0, 0, 0],
+      velocity,
       yaw,
       pitch: 0,
       hp: 100,
@@ -123,6 +124,24 @@ describe('PlayerInterpolator', () => {
 
     const sample = interp.sample(1, 2_000_000);
     expect(sample!.position[0]).toBeCloseTo(10);
+  });
+
+  it('extrapolates remote player position using velocity when ahead of latest sample', () => {
+    const interp = new PlayerInterpolator();
+    interp.push(1, makeSample(900_000, [0, 0, 0], 0, [4, 0, 0]));
+    interp.push(1, makeSample(1_000_000, [1, 0, 0], 0, [4, 0, 0]));
+
+    const sample = interp.sample(1, 1_050_000);
+    expect(sample!.position[0]).toBeCloseTo(1.2);
+  });
+
+  it('caps remote player extrapolation at 100ms', () => {
+    const interp = new PlayerInterpolator();
+    interp.push(1, makeSample(900_000, [0, 0, 0], 0, [10, 0, 0]));
+    interp.push(1, makeSample(1_000_000, [1, 0, 0], 0, [10, 0, 0]));
+
+    const sample = interp.sample(1, 1_500_000);
+    expect(sample!.position[0]).toBeCloseTo(2);
   });
 
   it('handles exactly matching timestamps', () => {

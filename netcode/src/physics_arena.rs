@@ -9,7 +9,7 @@ use crate::movement::MoveConfig;
 use crate::sim_world::SimWorld;
 
 pub type Vec3 = Vector3<f32>;
-const DYNAMIC_SUBSTEPS: usize = 4;
+pub const DYNAMIC_SUBSTEPS: usize = 1;
 
 /// A dynamic rigid body tracked by the server-side physics pipeline.
 pub struct DynamicBody {

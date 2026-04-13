@@ -195,7 +195,7 @@ impl SimWorld {
         };
 
         sim.integration_parameters.dt = 1.0 / 60.0;
-        sim.integration_parameters.num_solver_iterations = 8;
+        sim.integration_parameters.num_solver_iterations = 2;
         sim
     }
 

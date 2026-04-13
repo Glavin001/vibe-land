@@ -41,6 +41,7 @@ export type FireCmd = {
   weapon: number;
   clientFireTimeUs: number;
   clientInterpMs: number;
+  clientDynamicInterpMs: number;
   dir: [number, number, number];
 };
 
@@ -162,6 +163,10 @@ export type ShotResultPacket = {
   confirmed: boolean;
   hitPlayerId: number;
   hitZone: number;
+  serverResolution: number;
+  serverDynamicBodyId: number;
+  serverDynamicHitToiCm: number;
+  serverDynamicImpulseCenti: number;
 };
 
 export type ServerReliablePacket = WelcomePacket | ShotResultPacket | ChunkFullPacket | ChunkDiffPacket | SnapshotPacket;
@@ -274,7 +279,7 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
 }
 
 export function encodeFirePacket(packet: FireCmd): Uint8Array {
-  const out = new Uint8Array(1 + 2 + 4 + 1 + 8 + 2 + 2 + 2 + 2);
+  const out = new Uint8Array(1 + 2 + 4 + 1 + 8 + 2 + 2 + 2 + 2 + 2);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_FIRE);
@@ -283,6 +288,7 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
   view.setUint8(o++, packet.weapon & 0xff);
   setUint64(view, o, packet.clientFireTimeUs); o += 8;
   view.setUint16(o, packet.clientInterpMs & 0xffff, true); o += 2;
+  view.setUint16(o, packet.clientDynamicInterpMs & 0xffff, true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[0]), true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[1]), true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[2]), true); o += 2;
@@ -325,6 +331,10 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       const confirmed = view.getUint8(o++) !== 0;
       const hitPlayerId = view.getUint32(o, true); o += 4;
       const hitZone = view.getUint8(o++);
+      const serverResolution = view.getUint8(o++);
+      const serverDynamicBodyId = view.getUint32(o, true); o += 4;
+      const serverDynamicHitToiCm = view.getUint16(o, true); o += 2;
+      const serverDynamicImpulseCenti = view.getUint16(o, true); o += 2;
       return {
         type: 'shotResult',
         shotId,
@@ -332,6 +342,10 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         confirmed,
         hitPlayerId,
         hitZone,
+        serverResolution,
+        serverDynamicBodyId,
+        serverDynamicHitToiCm,
+        serverDynamicImpulseCenti,
       };
     }
     case PKT_CHUNK_FULL:

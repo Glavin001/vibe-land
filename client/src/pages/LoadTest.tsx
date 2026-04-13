@@ -403,6 +403,7 @@ export function LoadTestPage() {
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: Date.now() * 1000,
           clientInterpMs: client.sessionConfig.interpolation_delay_ms,
+          clientDynamicInterpMs: Math.min(client.sessionConfig.interpolation_delay_ms, 16),
           dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
         });
       }

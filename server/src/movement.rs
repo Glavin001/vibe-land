@@ -280,10 +280,19 @@ impl PhysicsArena {
             let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
                 continue;
             };
+            let collider_pose = collider
+                .parent()
+                .and_then(|parent| self.dynamic.sim.rigid_bodies.get(parent))
+                .and_then(|parent_rb| {
+                    collider
+                        .position_wrt_parent()
+                        .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                })
+                .unwrap_or(*collider.position());
             let Some(hit) =
                 collider
                     .shape()
-                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                    .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
             else {
                 continue;
             };
@@ -1305,6 +1314,43 @@ mod tests {
             pre_y,
             post_ball.1[1],
         );
+    }
+
+    #[test]
+    fn cast_dynamic_body_ray_uses_current_authoritative_body_pose() {
+        let mut arena = arena_with_ground();
+        let ball_id = arena.spawn_dynamic_ball(vector![0.0, 1.0, 6.0], 0.3);
+        arena.rebuild_broad_phase();
+
+        let origin = [0.0, 1.0, 0.0];
+        let dir = [0.0, 0.0, 1.0];
+        let first_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert_eq!(first_hit.map(|(id, _, _)| id), Some(ball_id));
+
+        let db = arena.dynamic.dynamic_bodies.get(&ball_id).unwrap();
+        let rb = arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get_mut(db.body_handle)
+            .unwrap();
+        rb.set_translation(vector![3.0, 1.0, 6.0], true);
+        arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut arena.dynamic.sim.colliders);
+        arena.sync_broad_phase();
+
+        let stale_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert!(
+            stale_hit.is_none(),
+            "raycast should miss the old position after the authoritative body moved"
+        );
+
+        let moved_origin = [3.0, 1.0, 0.0];
+        let moved_hit = arena.cast_dynamic_body_ray(moved_origin, dir, 20.0, None);
+        assert_eq!(moved_hit.map(|(id, _, _)| id), Some(ball_id));
     }
 
     #[test]

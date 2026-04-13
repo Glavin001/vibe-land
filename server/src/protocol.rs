@@ -83,12 +83,13 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             ClientDatagram::InputBundle(frames)
         }
         PKT_FIRE => {
-            ensure!(buf.remaining() >= 23, "short fire packet");
+            ensure!(buf.remaining() >= 25, "short fire packet");
             let seq = buf.get_u16_le();
             let shot_id = buf.get_u32_le();
             let weapon = buf.get_u8();
             let client_fire_time_us = buf.get_u64_le();
             let client_interp_ms = buf.get_u16_le();
+            let client_dynamic_interp_ms = buf.get_u16_le();
             let dir = [
                 snorm16_to_f32(buf.get_i16_le()),
                 snorm16_to_f32(buf.get_i16_le()),
@@ -100,6 +101,7 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 weapon,
                 client_fire_time_us,
                 client_interp_ms,
+                client_dynamic_interp_ms,
                 dir,
             })
         }
@@ -185,6 +187,10 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u8(pkt.confirmed as u8);
             out.put_u32_le(pkt.hit_player_id);
             out.put_u8(pkt.hit_zone);
+            out.put_u8(pkt.server_resolution);
+            out.put_u32_le(pkt.server_dynamic_body_id);
+            out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
+            out.put_u16_le(pkt.server_dynamic_impulse_centi);
         }
         ServerReliablePacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -289,12 +295,13 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
     Ok(match kind {
         PKT_INPUT_BUNDLE => ClientPacket::InputBundle(decode_input_bundle_frames(&mut buf)?),
         PKT_FIRE => {
-            ensure!(buf.remaining() >= 23, "short fire packet");
+            ensure!(buf.remaining() >= 25, "short fire packet");
             let seq = buf.get_u16_le();
             let shot_id = buf.get_u32_le();
             let weapon = buf.get_u8();
             let client_fire_time_us = buf.get_u64_le();
             let client_interp_ms = buf.get_u16_le();
+            let client_dynamic_interp_ms = buf.get_u16_le();
             let dir = [
                 snorm16_to_f32(buf.get_i16_le()),
                 snorm16_to_f32(buf.get_i16_le()),
@@ -306,6 +313,7 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 weapon,
                 client_fire_time_us,
                 client_interp_ms,
+                client_dynamic_interp_ms,
                 dir,
             })
         }
@@ -472,6 +480,10 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u8(pkt.confirmed as u8);
             out.put_u32_le(pkt.hit_player_id);
             out.put_u8(pkt.hit_zone);
+            out.put_u8(pkt.server_resolution);
+            out.put_u32_le(pkt.server_dynamic_body_id);
+            out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
+            out.put_u16_le(pkt.server_dynamic_impulse_centi);
         }
         ServerPacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -629,6 +641,10 @@ mod tests {
             confirmed: true,
             hit_player_id: 5,
             hit_zone: HIT_ZONE_HEAD,
+            server_resolution: 1,
+            server_dynamic_body_id: 9,
+            server_dynamic_hit_toi_cm: 842,
+            server_dynamic_impulse_centi: 650,
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SHOT_RESULT);
@@ -637,6 +653,11 @@ mod tests {
             123
         );
         assert_eq!(encoded[11], HIT_ZONE_HEAD);
+        assert_eq!(encoded[12], 1);
+        assert_eq!(
+            u32::from_le_bytes([encoded[13], encoded[14], encoded[15], encoded[16]]),
+            9
+        );
     }
 
     #[test]

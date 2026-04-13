@@ -23,6 +23,7 @@ export type ConnectionState = {
   remoteInterpolator: PlayerInterpolator;
   serverClock: ServerClockEstimator;
   interpolationDelayMs: number;
+  dynamicBodyInterpolationDelayMs: number;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
@@ -67,6 +68,7 @@ export function useGameConnection(
     remoteInterpolator: new PlayerInterpolator(),
     serverClock: new ServerClockEstimator(),
     interpolationDelayMs: 100,
+    dynamicBodyInterpolationDelayMs: 16,
     latestServerTick: 0,
     remotePlayers: new Map(),
     dynamicBodies: new Map(),
@@ -101,12 +103,14 @@ export function useGameConnection(
         // Sync ConnectionState ref for GameWorld backward compat
         stateRef.current.latestServerTick = client.latestServerTick;
         stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
+        stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
       },
     });
 
     // Wire the ConnectionState ref to point at client internals
     stateRef.current.remoteInterpolator = client.interpolator;
     stateRef.current.serverClock = client.serverClock;
+    stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
     stateRef.current.remotePlayers = client.remotePlayers;
     stateRef.current.dynamicBodies = client.dynamicBodies;
 

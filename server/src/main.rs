@@ -34,14 +34,15 @@ use wtransport::{Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     demo_world::seed_default_world,
-    lag_comp::{HistoricalCapsule, HitZone, LagCompHistory},
+    lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena},
     protocol::{
         client_datagram_to_packet, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, make_net_dynamic_body_state,
         make_net_player_state, mm_to_meters, ClientPacket, FireCmd, InputCmd, ServerPacket,
         ShotResultPacket, SnapshotPacket, WelcomePacket, HIT_ZONE_BODY, HIT_ZONE_HEAD,
-        HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT,
+        HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -66,10 +67,6 @@ const PLAYER_AOI_RADIUS_M: f32 = 48.0;
 const DYNAMIC_BODY_AOI_RADIUS_M: f32 = 40.0;
 const DYNAMIC_BODY_AOI_EXIT_RADIUS_M: f32 = 56.0;
 const VEHICLE_AOI_RADIUS_M: f32 = 64.0;
-const DYNAMIC_BODY_ACTIVE_SPEED_MPS: f32 = 0.08;
-const SETTLED_DYNAMIC_REPLICATION_INTERVAL_SNAPSHOTS: u32 = 5;
-const DYNAMIC_BODY_POSE_RESEND_DISTANCE_M: f32 = 0.03;
-const DYNAMIC_BODY_POSE_RESEND_QUAT_DOT: f32 = 0.999;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
@@ -1131,6 +1128,22 @@ impl MatchState {
 
         let dynamics_started = Instant::now();
         self.arena.step_dynamics(dt);
+        for (body_id, pos, quat, half_extents, _vel, _angvel, shape_type) in
+            self.arena.snapshot_dynamic_bodies()
+        {
+            self.history.record_dynamic_body(
+                body_id,
+                HistoricalDynamicBody {
+                    server_tick: self.server_tick,
+                    server_time_ms,
+                    position: pos,
+                    quaternion: quat,
+                    half_extents,
+                    shape_type,
+                    alive: true,
+                },
+            );
+        }
         self.timings
             .dynamics_ms
             .record(dynamics_started.elapsed().as_secs_f32() * 1000.0);
@@ -1385,6 +1398,10 @@ impl MatchState {
         weapon: u8,
         victim_id: Option<u32>,
         hit_zone: u8,
+        server_resolution: u8,
+        server_dynamic_body_id: u32,
+        server_dynamic_hit_toi_m: f32,
+        server_dynamic_impulse_mag: f32,
     ) -> ServerPacket {
         ServerPacket::ShotResult(ShotResultPacket {
             shot_id,
@@ -1392,6 +1409,14 @@ impl MatchState {
             hit_player_id: victim_id.unwrap_or(0),
             confirmed: victim_id.is_some(),
             hit_zone,
+            server_resolution,
+            server_dynamic_body_id,
+            server_dynamic_hit_toi_cm: (server_dynamic_hit_toi_m.max(0.0) * 100.0)
+                .round()
+                .clamp(0.0, u16::MAX as f32) as u16,
+            server_dynamic_impulse_centi: (server_dynamic_impulse_mag.max(0.0) * 100.0)
+                .round()
+                .clamp(0.0, u16::MAX as f32) as u16,
         })
     }
 
@@ -1493,6 +1518,10 @@ impl MatchState {
                         HitZone::Body => HIT_ZONE_BODY,
                         HitZone::Head => HIT_ZONE_HEAD,
                     },
+                    SHOT_RESOLUTION_PLAYER,
+                    0,
+                    0.0,
+                    0.0,
                 )
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
@@ -1501,6 +1530,10 @@ impl MatchState {
                         queued.cmd.weapon,
                         None,
                         HIT_ZONE_NONE,
+                        SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+                        dynamic_body_id,
+                        dynamic_toi,
+                        0.0,
                     )
                 } else {
                     let impact_point = [
@@ -1513,6 +1546,9 @@ impl MatchState {
                         queued.cmd.dir[1] * DYNAMIC_BODY_IMPULSE + normal[1] * 0.5,
                         queued.cmd.dir[2] * DYNAMIC_BODY_IMPULSE + normal[2] * 0.5,
                     ];
+                    let impulse_mag =
+                        (impulse[0] * impulse[0] + impulse[1] * impulse[1] + impulse[2] * impulse[2])
+                            .sqrt();
                     let _ = self.arena.apply_dynamic_body_impulse(
                         dynamic_body_id,
                         impulse,
@@ -1523,10 +1559,23 @@ impl MatchState {
                         queued.cmd.weapon,
                         None,
                         HIT_ZONE_NONE,
+                        SHOT_RESOLUTION_DYNAMIC,
+                        dynamic_body_id,
+                        dynamic_toi,
+                        impulse_mag,
                     )
                 }
             } else {
-                self.build_shot_result(queued.cmd.shot_id, queued.cmd.weapon, None, HIT_ZONE_NONE)
+                self.build_shot_result(
+                    queued.cmd.shot_id,
+                    queued.cmd.weapon,
+                    None,
+                    HIT_ZONE_NONE,
+                    SHOT_RESOLUTION_MISS,
+                    0,
+                    0.0,
+                    0.0,
+                )
             };
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
@@ -1554,12 +1603,10 @@ impl MatchState {
             .snapshot_dynamic_bodies()
             .into_iter()
             .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
-                let speed_sq = vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2];
                 (
                     id,
                     pos,
                     quat,
-                    speed_sq,
                     make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type),
                 )
             })
@@ -1611,35 +1658,17 @@ impl MatchState {
             let mut filtered_dynamic_bodies = Vec::new();
             let mut next_visible_dynamic_bodies = HashSet::new();
             let mut next_sent_dynamic_body_pose = HashMap::new();
-            for (body_id, pos, quat, speed_sq, state) in &dynamic_body_states {
-                let dist_sq = distance_sq(*pos, recipient_pos);
-                let was_visible = runtime.visible_dynamic_bodies.contains(body_id);
-                let within_aoi = if was_visible {
-                    dist_sq <= DYNAMIC_BODY_AOI_EXIT_RADIUS_M * DYNAMIC_BODY_AOI_EXIT_RADIUS_M
-                } else {
-                    dist_sq <= DYNAMIC_BODY_AOI_RADIUS_M * DYNAMIC_BODY_AOI_RADIUS_M
-                };
-                if !within_aoi {
+            for (body_id, pos, quat, state) in &dynamic_body_states {
+                if !dynamic_body_within_aoi(
+                    runtime.visible_dynamic_bodies.contains(body_id),
+                    *pos,
+                    recipient_pos,
+                ) {
                     continue;
                 }
                 next_visible_dynamic_bodies.insert(*body_id);
-                let pose_changed = runtime
-                    .last_sent_dynamic_body_pose
-                    .get(body_id)
-                    .map(|(last_pos, last_quat)| {
-                        dynamic_body_pose_changed(*pos, *quat, *last_pos, *last_quat)
-                    })
-                    .unwrap_or(true);
-                if !was_visible
-                    || pose_changed
-                    || *speed_sq >= DYNAMIC_BODY_ACTIVE_SPEED_MPS * DYNAMIC_BODY_ACTIVE_SPEED_MPS
-                    || dynamic_body_replication_due(self.server_tick, *body_id)
-                {
-                    filtered_dynamic_bodies.push(*state);
-                    next_sent_dynamic_body_pose.insert(*body_id, (*pos, *quat));
-                } else if let Some(last_pose) = runtime.last_sent_dynamic_body_pose.get(body_id) {
-                    next_sent_dynamic_body_pose.insert(*body_id, *last_pose);
-                }
+                filtered_dynamic_bodies.push(*state);
+                next_sent_dynamic_body_pose.insert(*body_id, (*pos, *quat));
             }
             runtime.visible_dynamic_bodies = next_visible_dynamic_bodies;
             runtime.last_sent_dynamic_body_pose = next_sent_dynamic_body_pose;
@@ -1750,28 +1779,13 @@ fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
     dx * dx + dy * dy + dz * dz
 }
 
-fn dynamic_body_pose_changed(
-    pos: [f32; 3],
-    quat: [f32; 4],
-    last_pos: [f32; 3],
-    last_quat: [f32; 4],
-) -> bool {
-    if distance_sq(pos, last_pos)
-        > DYNAMIC_BODY_POSE_RESEND_DISTANCE_M * DYNAMIC_BODY_POSE_RESEND_DISTANCE_M
-    {
-        return true;
+fn dynamic_body_within_aoi(was_visible: bool, body_pos: [f32; 3], recipient_pos: [f32; 3]) -> bool {
+    let dist_sq = distance_sq(body_pos, recipient_pos);
+    if was_visible {
+        dist_sq <= DYNAMIC_BODY_AOI_EXIT_RADIUS_M * DYNAMIC_BODY_AOI_EXIT_RADIUS_M
+    } else {
+        dist_sq <= DYNAMIC_BODY_AOI_RADIUS_M * DYNAMIC_BODY_AOI_RADIUS_M
     }
-
-    let quat_dot = quat[0] * last_quat[0]
-        + quat[1] * last_quat[1]
-        + quat[2] * last_quat[2]
-        + quat[3] * last_quat[3];
-    quat_dot.abs() < DYNAMIC_BODY_POSE_RESEND_QUAT_DOT
-}
-
-fn dynamic_body_replication_due(server_tick: u32, body_id: u32) -> bool {
-    let snapshot_tick = server_tick / (SIM_HZ as u32 / SNAPSHOT_HZ as u32).max(1);
-    (snapshot_tick + body_id) % SETTLED_DYNAMIC_REPLICATION_INTERVAL_SNAPSHOTS == 0
 }
 
 fn packet_player_count(packet: &ServerPacket) -> usize {
@@ -1833,7 +1847,7 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_density_metrics, dynamic_body_pose_changed, enqueue_inputs, rifle_damage,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, rifle_damage,
         take_input_for_tick, HitZone, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
         RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
@@ -1970,42 +1984,25 @@ mod tests {
     }
 
     #[test]
-    fn settled_dynamic_body_replication_is_staggered_by_body_id() {
-        let first_tick = super::SIM_HZ as u32 / super::SNAPSHOT_HZ as u32;
-        assert!(super::dynamic_body_replication_due(first_tick, 9));
-        assert!(!super::dynamic_body_replication_due(first_tick, 8));
-        assert!(super::dynamic_body_replication_due(first_tick * 2, 8));
-    }
-
-    #[test]
-    fn dynamic_body_pose_change_detects_translation_threshold() {
-        assert!(!dynamic_body_pose_changed(
+    fn visible_dynamic_body_within_aoi_stays_replicated() {
+        assert!(dynamic_body_within_aoi(
+            true,
+            [super::DYNAMIC_BODY_AOI_RADIUS_M + 8.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.01, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ));
-        assert!(dynamic_body_pose_changed(
-            [0.04, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
         ));
     }
 
     #[test]
-    fn dynamic_body_pose_change_detects_rotation_threshold() {
-        assert!(!dynamic_body_pose_changed(
+    fn newly_visible_dynamic_body_must_be_inside_entry_aoi() {
+        assert!(dynamic_body_within_aoi(
+            false,
+            [super::DYNAMIC_BODY_AOI_RADIUS_M - 0.1, 0.0, 0.0],
             [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.01, 0.99995],
         ));
-        assert!(dynamic_body_pose_changed(
+        assert!(!dynamic_body_within_aoi(
+            false,
+            [super::DYNAMIC_BODY_AOI_RADIUS_M + 0.1, 0.0, 0.0],
             [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.1, 0.9949874],
-            [0.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
         ));
     }
 }

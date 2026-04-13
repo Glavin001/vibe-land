@@ -16,7 +16,10 @@ use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
-use crate::vehicle::{create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter};
+use crate::vehicle::{
+    create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics,
+    vehicle_suspension_filter,
+};
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
@@ -775,7 +778,7 @@ impl WasmSimWorld {
 
     #[wasm_bindgen(js_name = castDynamicBodyRay)]
     pub fn cast_dynamic_body_ray(
-        &self,
+        &mut self,
         ox: f32,
         oy: f32,
         oz: f32,
@@ -784,6 +787,10 @@ impl WasmSimWorld {
         dz: f32,
         max_toi: f32,
     ) -> Box<[f64]> {
+        self.sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut self.sim.colliders);
+        self.sim.sync_broad_phase();
         let ray = rapier3d::prelude::Ray::new(nalgebra::point![ox, oy, oz], vector![dx, dy, dz]);
         let mut best: Option<(u32, f32, [f32; 3])> = None;
         for (&id, &body_handle) in &self.dynamic_colliders {
@@ -794,8 +801,17 @@ impl WasmSimWorld {
                 let Some(collider) = self.sim.colliders.get(*collider_handle) else {
                     continue;
                 };
+                let collider_pose = collider
+                    .parent()
+                    .and_then(|parent| self.sim.rigid_bodies.get(parent))
+                    .and_then(|parent_rb| {
+                        collider
+                            .position_wrt_parent()
+                            .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                    })
+                    .unwrap_or(*collider.position());
                 let Some(hit) = collider.shape().cast_ray_and_get_normal(
-                    collider.position(),
+                    &collider_pose,
                     &ray,
                     max_toi,
                     true,
@@ -1196,6 +1212,11 @@ impl WasmSimWorld {
 
         Box::new([speed, grounded_wheels, steering, engine_force, brake])
     }
+
+    #[wasm_bindgen(js_name = getVehiclePendingCount)]
+    pub fn get_vehicle_pending_count(&self) -> u32 {
+        self.vehicle_pending_inputs.len() as u32
+    }
 }
 
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
@@ -1245,23 +1266,14 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
-        // Use the same integration parameters as the server (num_solver_iterations=2)
-        // so client and server produce identical physics outputs.
-        let mut params = self.sim.integration_parameters;
-        params.dt = dt;
-        pipeline.step(
+        step_vehicle_dynamics(
+            &mut self.sim,
             &self.gravity,
-            &params,
-            &mut self.sim.island_manager,
-            &mut self.sim.broad_phase,
-            &mut self.sim.narrow_phase,
-            &mut self.sim.rigid_bodies,
-            &mut self.sim.colliders,
+            pipeline,
             &mut self.vehicle_joints,
             &mut self.vehicle_multibody_joints,
             &mut self.vehicle_ccd,
-            &(),
-            &(),
+            dt,
         );
     }
 

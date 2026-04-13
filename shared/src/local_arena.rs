@@ -299,10 +299,19 @@ impl PhysicsArena {
             let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
                 continue;
             };
+            let collider_pose = collider
+                .parent()
+                .and_then(|parent| self.dynamic.sim.rigid_bodies.get(parent))
+                .and_then(|parent_rb| {
+                    collider
+                        .position_wrt_parent()
+                        .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                })
+                .unwrap_or(*collider.position());
             let Some(hit) =
                 collider
                     .shape()
-                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                    .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
             else {
                 continue;
             };

@@ -212,11 +212,12 @@ describe('encodeFirePacket', () => {
       weapon: 1,
       clientFireTimeUs: 9_876_543,
       clientInterpMs: 66,
+      clientDynamicInterpMs: 5,
       dir: [0, 0, 1],
     };
     const encoded = encodeFirePacket(fire);
     const view = new DataView(encoded.buffer);
-    expect(encoded.length).toBe(24);
+    expect(encoded.length).toBe(26);
     expect(view.getUint16(1, true)).toBe(9);
     expect(view.getUint32(3, true)).toBe(1234);
     expect(view.getUint8(7)).toBe(1);
