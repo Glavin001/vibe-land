@@ -39,12 +39,48 @@ function formatKeyboardMoveBinding(bindings: InputBindings['keyboard']): string 
   return `${keyboardCodeLabel(bindings.moveForward)} ${keyboardCodeLabel(bindings.moveLeft)} ${keyboardCodeLabel(bindings.moveBackward)} ${keyboardCodeLabel(bindings.moveRight)}`;
 }
 
+/**
+ * Label a DOM `KeyboardEvent.code` string for the hints overlay.
+ * Snap-machine envelopes ship raw codes (like "KeyE" / "Space" / "KeyR")
+ * that aren't constrained to our fixed `KeyboardCodeBinding` union, so
+ * we format them inline instead of round-tripping through
+ * `keyboardCodeLabel`.
+ */
+function formatDomKey(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  return code;
+}
+
 function buildRows(
   family: DeviceFamily,
   context: InputContext,
   action: ActionSnapshot | null,
   bindings: InputBindings,
+  machineBindings: ReadonlyArray<{
+    action: string;
+    posKey: string;
+    negKey: string | null;
+    scale: number;
+  }>,
 ): RowSpec[] {
+  if (context === 'snapMachine') {
+    // Snap-machine hints: one row per action channel, using each
+    // binding's own key pair. Works on both keyboard and gamepad
+    // families — gamepad users see the keyboard fallback. The key
+    // strings come straight from the envelope so we format them
+    // generically (not via the fixed `KeyboardCodeBinding` union).
+    if (machineBindings.length === 0) {
+      return [];
+    }
+    return machineBindings.map((binding) => ({
+      command: binding.action,
+      binding: binding.negKey
+        ? `${formatDomKey(binding.negKey)} / ${formatDomKey(binding.posKey)}`
+        : formatDomKey(binding.posKey),
+      value: 0,
+    }));
+  }
   if (context === 'vehicle') {
     if (family === 'gamepad') {
       const gamepad = bindings.gamepad;
@@ -118,8 +154,14 @@ export function ControlHintsOverlay({
 
   const family = state.activeFamily ?? 'keyboardMouse';
   const context = state.context;
-  const rows = buildRows(family, context, state.action, bindings);
-  const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${context === 'vehicle' ? 'Vehicle' : 'On Foot'}`;
+  const rows = buildRows(family, context, state.action, bindings, state.machineBindings);
+  const contextLabel =
+    context === 'snapMachine'
+      ? state.machineDisplayName ?? 'Machine'
+      : context === 'vehicle'
+        ? 'Vehicle'
+        : 'On Foot';
+  const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${contextLabel}`;
 
   return (
     <div

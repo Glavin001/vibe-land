@@ -8,6 +8,13 @@ export type ControlHintsState = {
   activeFamily: InputSample['activeFamily'];
   context: InputSample['context'];
   action: InputSample['action'];
+  machineDisplayName: string | null;
+  machineBindings: ReadonlyArray<{
+    action: string;
+    posKey: string;
+    negKey: string | null;
+    scale: number;
+  }>;
 };
 
 function createDefaultState(): ControlHintsState {
@@ -15,6 +22,8 @@ function createDefaultState(): ControlHintsState {
     activeFamily: null,
     context: 'onFoot',
     action: null,
+    machineDisplayName: null,
+    machineBindings: [],
   };
 }
 
@@ -48,7 +57,13 @@ export function useControlHints() {
     if (action?.materialSlot1Pressed) flashUntilRef.current.materialSlot1Pressed = now + FLASH_MS;
     if (action?.materialSlot2Pressed) flashUntilRef.current.materialSlot2Pressed = now + FLASH_MS;
 
-    stateRef.current = sample;
+    stateRef.current = {
+      activeFamily: sample.activeFamily,
+      context: sample.context,
+      action: sample.action,
+      machineDisplayName: sample.machineDisplayName ?? null,
+      machineBindings: sample.machineBindings ?? [],
+    };
 
     if (now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
       return;
@@ -69,6 +84,8 @@ export function useControlHints() {
             materialSlot2Pressed: action.materialSlot2Pressed || flashUntilRef.current.materialSlot2Pressed > now,
           }
         : null,
+      machineDisplayName: sample.machineDisplayName ?? null,
+      machineBindings: sample.machineBindings ?? [],
     });
   }, []);
 

@@ -1,5 +1,12 @@
-import { BTN_CROUCH, BTN_JUMP, BTN_RELOAD, BTN_SPRINT } from '../net/protocol';
+import { BTN_CROUCH, BTN_JUMP, BTN_RELOAD, BTN_SPRINT, MAX_MACHINE_CHANNELS } from '../net/protocol';
 import type { ActionSnapshot, ResolvedGameInput } from './types';
+
+export type SnapMachineBinding = {
+  action: string;
+  posKey: string;
+  negKey: string | null;
+  scale: number;
+};
 
 export const LOOK_PITCH_MIN = -Math.PI / 2 + 0.01;
 export const LOOK_PITCH_MAX = Math.PI / 2 - 0.01;
@@ -105,5 +112,54 @@ export function resolveVehicleInput(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+  };
+}
+
+/**
+ * Build a `ResolvedGameInput` for a player operating a snap-machine.
+ *
+ * - `buttons` is clean — we don't repurpose the on-foot BTN_FORWARD
+ *   bits, since they aren't meaningful while inside a machine.
+ * - `machineChannels` is populated by reading raw key-down state
+ *   through `keyDownQuery`, scaled to `-127..127`. Index order matches
+ *   `actionChannels` (same order as `derive_action_channels` on the
+ *   Rust side), which is what `InputCmd.machine_channels` expects.
+ * - `interactPressed` still rides the action snapshot so the player
+ *   can press E to exit.
+ */
+export function resolveSnapMachineInput(
+  action: ActionSnapshot | null,
+  yaw: number,
+  pitch: number,
+  activeFamily: ResolvedGameInput['activeFamily'],
+  actionChannels: readonly string[],
+  bindings: readonly SnapMachineBinding[],
+  keyDownQuery: (code: string) => boolean,
+): ResolvedGameInput {
+  const channels = new Int8Array(MAX_MACHINE_CHANNELS);
+  for (let idx = 0; idx < actionChannels.length && idx < MAX_MACHINE_CHANNELS; idx += 1) {
+    const actionName = actionChannels[idx];
+    const binding = bindings.find((b) => b.action === actionName);
+    if (!binding) continue;
+    let value = 0;
+    if (keyDownQuery(binding.posKey)) value += 1;
+    if (binding.negKey && keyDownQuery(binding.negKey)) value -= 1;
+    channels[idx] = Math.max(-127, Math.min(127, Math.round(value * 127)));
+  }
+
+  return {
+    activeFamily,
+    moveX: 0,
+    moveY: 0,
+    yaw,
+    pitch,
+    buttons: 0,
+    firePrimary: false,
+    interactPressed: action?.interactPressed ?? false,
+    blockRemovePressed: false,
+    blockPlacePressed: false,
+    materialSlot1Pressed: false,
+    materialSlot2Pressed: false,
+    machineChannels: channels,
   };
 }

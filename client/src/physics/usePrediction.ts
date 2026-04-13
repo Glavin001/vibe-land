@@ -416,6 +416,18 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     return machineManagerRef.current?.getActionChannels() ?? [];
   }, []);
 
+  /// Human-readable machine name (preset), or `null` if we're not
+  /// operating a machine.
+  const getSnapMachineDisplayName = useCallback((): string | null => {
+    return machineManagerRef.current?.getDisplayName() ?? null;
+  }, []);
+
+  /// Keyboard bindings for the operated machine's action channels.
+  /// Empty when not operating one.
+  const getSnapMachineBindings = useCallback(() => {
+    return machineManagerRef.current?.getBindings() ?? [];
+  }, []);
+
   /// Flat `[px, py, pz, qx, qy, qz, qw]` per body for any machine id
   /// currently spawned in the wasm world (local-preview, operated, or
   /// remote). Returns an empty array if the id is unknown. Intended for
@@ -673,6 +685,8 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     isOperatingSnapMachine,
     getOperatedSnapMachineId,
     getSnapMachineActionChannels,
+    getSnapMachineDisplayName,
+    getSnapMachineBindings,
     getSnapMachineBodyPoses,
   };
 }

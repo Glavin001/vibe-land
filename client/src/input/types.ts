@@ -31,6 +31,18 @@ export type InputSample = {
   context: InputContext;
   activeFamily: DeviceFamily | null;
   action: ActionSnapshot | null;
+  /// Human-readable name of the snap-machine the player is operating.
+  /// Present only when `context === 'snapMachine'`.
+  machineDisplayName?: string | null;
+  /// Parsed snap-machine action → key bindings for the currently
+  /// operated machine, so the HUD can render one hint row per action.
+  /// Present only when `context === 'snapMachine'`.
+  machineBindings?: ReadonlyArray<{
+    action: string;
+    posKey: string;
+    negKey: string | null;
+    scale: number;
+  }>;
 };
 
 export type SemanticInputState = {

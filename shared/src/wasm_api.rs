@@ -1350,6 +1350,42 @@ impl WasmSimWorld {
             .unwrap_or_default()
     }
 
+    /// Machine display name from `envelope.metadata.presetName`, or
+    /// empty string if unknown / missing.
+    #[wasm_bindgen(js_name = getSnapMachineDisplayName)]
+    pub fn get_snap_machine_display_name(&self, id: u32) -> String {
+        self.machines
+            .get(&id)
+            .and_then(|m| m.display_name())
+            .map(str::to_owned)
+            .unwrap_or_default()
+    }
+
+    /// Player-facing keyboard bindings for the machine's action
+    /// channels. Returns a `\n`-delimited list where each row is
+    /// `action\tposKey\tnegKey\tscale`. Empty if the machine is not
+    /// spawned. The TS side parses this into a `MachineBinding[]` on
+    /// enter.
+    #[wasm_bindgen(js_name = getSnapMachineBindings)]
+    pub fn get_snap_machine_bindings(&self, id: u32) -> String {
+        // We need the source envelope JSON to call
+        // `derive_machine_bindings`, but the installed `SnapMachine`
+        // only retains the `action_channels` + `controls`. Fall back
+        // to per-channel defaults since the common case — a machine
+        // without an explicit controls block — is handled perfectly
+        // by the default_action_key table.
+        let Some(machine) = self.machines.get(&id) else {
+            return String::new();
+        };
+        let mut rows = Vec::with_capacity(machine.action_channels().len());
+        for action in machine.action_channels() {
+            let (pos, neg) = crate::snap_machine_controls::default_action_key(action);
+            let neg_str = neg.unwrap_or("");
+            rows.push(format!("{action}\t{pos}\t{neg_str}\t1"));
+        }
+        rows.join("\n")
+    }
+
     /// Returns body world poses for the renderer, packed as a flat `f32`
     /// array of length `body_count * 7`: `[px, py, pz, qx, qy, qz, qw]` per
     /// body in `body_ids()` order.

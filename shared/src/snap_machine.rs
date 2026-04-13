@@ -34,6 +34,22 @@ pub const NET_SNAP_BODY_STATE_BYTES: usize = 2 + 12 + 8 + 6 + 6;
 /// snapshot framing predictable for AOI-filtering.
 pub const MAX_MACHINE_BODIES: usize = 32;
 
+/// Multiplier applied to every joint motor's `max_force` at install
+/// time. The shipped snap-machines viewer fixtures are tuned for the
+/// library's default gravity (−9.81 m/s²), while vibe-land runs
+/// `−20 m/s²` and a heavier vehicle fleet. Multiplying at install
+/// keeps the fixture JSON byte-identical to upstream while letting
+/// motors overcome weight + friction without wheelying the machine.
+/// If a machine feels sluggish this is the first knob to tune.
+pub const MOTOR_MAX_FORCE_MULTIPLIER: f32 = 10.0;
+
+/// Matches [`MOTOR_MAX_FORCE_MULTIPLIER`] — applied to every joint
+/// motor's `damping` so the solver tightens the control loop at the
+/// same rate as the force ceiling. Necessary for symmetric vehicles
+/// (4-wheel car / rover) where the default damping lets only two of
+/// four motors engage per step.
+pub const MOTOR_DAMPING_MULTIPLIER: f32 = 10.0;
+
 #[derive(Debug)]
 pub enum SnapMachineError {
     InvalidEnvelope(String),
@@ -81,6 +97,11 @@ pub struct SnapMachine {
     /// Optional control profile from the envelope (for client-side keybind
     /// derivation). Cloned so the envelope JSON can be dropped after install.
     controls: Option<snap_machines_rapier::MachineControls>,
+    /// Human-readable name captured from `envelope.metadata.presetName`
+    /// (falls back to `displayName`, then `None`). Surfaced in the HUD so
+    /// the player sees "4-Wheel Car" / "Crane" instead of "On Foot" while
+    /// operating the machine.
+    display_name: Option<String>,
 }
 
 impl SnapMachine {
@@ -119,7 +140,37 @@ impl SnapMachine {
             }
         }
 
+        // Scale every joint motor's max_force so the machine can fight
+        // vibe-land's stronger gravity, and bump damping the same
+        // amount so the Rapier 0.30 acceleration-based motor solver
+        // converges fast enough for all 4 wheels of a symmetric
+        // vehicle to engage on every tick. Without the damping bump
+        // the solver settles into a diagonal-pair cooperation where
+        // only two wheels spin (observed directly in the
+        // `raw_rapier_simulation_drives_4_wheel_car` control test).
+        for joint in &mut envelope.plan.joints {
+            if let Some(motor) = joint.motor.as_mut() {
+                if let Some(max_force) = motor.max_force.as_mut() {
+                    *max_force *= MOTOR_MAX_FORCE_MULTIPLIER;
+                }
+                motor.damping *= MOTOR_DAMPING_MULTIPLIER;
+            }
+        }
+
         retransform_plan_bodies(&mut envelope.plan, pose);
+
+        // Capture the display name before `envelope` is moved into the
+        // runtime installer. The metadata field is an optional JSON
+        // object on `SerializedMachineEnvelope`.
+        let display_name = envelope
+            .metadata
+            .as_ref()
+            .and_then(|meta| {
+                meta.get("presetName")
+                    .or_else(|| meta.get("displayName"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            });
 
         let plan_for_meta = envelope.plan.clone();
         let controls = envelope.controls.take();
@@ -137,7 +188,14 @@ impl SnapMachine {
             body_ids,
             action_channels,
             controls,
+            display_name,
         })
+    }
+
+    /// Machine display name from `envelope.metadata.presetName`, if
+    /// present.
+    pub fn display_name(&self) -> Option<&str> {
+        self.display_name.as_deref()
     }
 
     pub fn body_ids(&self) -> &[String] {
@@ -158,6 +216,10 @@ impl SnapMachine {
 
     pub fn body_handle(&self, body_id: &str) -> Option<RigidBodyHandle> {
         self.runtime.body_handle(body_id)
+    }
+
+    pub fn joint_handle(&self, joint_id: &str) -> Option<rapier3d::dynamics::ImpulseJointHandle> {
+        self.runtime.joint_handle(joint_id)
     }
 
     /// Step the machine one tick. Caller is responsible for stepping the
@@ -338,6 +400,19 @@ fn envelope_min_y(plan: &MachinePlan) -> f32 {
         }
     }
     if min_y.is_finite() { min_y } else { 0.0 }
+}
+
+/// Read `envelope.metadata.presetName` / `displayName` out of a raw
+/// JSON envelope without deserializing the whole plan. Used by the
+/// client HUD so it can show the name before a full install.
+pub fn machine_display_name(envelope: &Value) -> Option<String> {
+    envelope
+        .get("metadata")?
+        .as_object()?
+        .get("presetName")
+        .or_else(|| envelope.get("metadata")?.as_object()?.get("displayName"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
 }
 
 /// Single source of truth for the wire-format channel ordering. Both
@@ -545,65 +620,136 @@ mod tests {
         );
     }
 
+    /// End-to-end drivability: spawn a 4-wheel-car, attach a driver,
+    /// hold `motorSpin` at maximum for 6 s, and assert the chassis
+    /// has driven at least 3 m along the X/Z plane. This is the real
+    /// check that `MOTOR_MAX_FORCE_MULTIPLIER` is tuned sensibly for
+    /// vibe-land's stronger gravity — if a future change drops the
+    /// multiplier too low, or breaks the driver→channel wiring, this
+    /// test catches it before the live game does.
     #[test]
-    fn install_4_wheel_car_into_physics_arena() {
+    fn chassis_drives_forward_under_motor_input() {
         let mut arena = PhysicsArena::new(MoveConfig::default());
         let _envelope = spawn_test_car(&mut arena, 2.0);
 
-        // Drive `motorSpin` for half a second.
-        let machine = arena.machines.get_mut(&42).expect("machine present");
-        let action_channels = machine.machine.action_channels().to_vec();
-        assert!(
-            action_channels.iter().any(|a| a == "motorSpin"),
-            "4-wheel car should expose `motorSpin` channel; got {action_channels:?}"
-        );
+        let action_channels = arena
+            .machines
+            .get(&42)
+            .expect("machine present")
+            .machine
+            .action_channels()
+            .to_vec();
         let motor_spin_idx = action_channels
             .iter()
             .position(|a| a == "motorSpin")
-            .unwrap();
+            .expect("4-wheel car exposes motorSpin action channel");
 
-        let starting_z = arena
+        // Grab the starting chassis XZ position.
+        let start = arena
             .machines
             .get(&42)
             .and_then(|m| m.machine.body_handle("body:0"))
             .and_then(|h| arena.dynamic.sim.rigid_bodies.get(h))
-            .map(|rb| rb.translation().z)
-            .unwrap_or(0.0);
+            .map(|rb| *rb.translation())
+            .expect("chassis body");
+        let (start_x, start_z) = (start.x, start.z);
 
-        // Inject driver input via a fake player.
+        // Spawn a driver *without* any motor input so the chassis can
+        // settle onto its wheels cleanly. Only then flip motorSpin to
+        // max — this isolates "driving distance" from "falling and
+        // settling distance" and keeps the assert tight.
         arena.spawn_player(1);
+        arena.enter_machine(1, 42);
+        for _ in 0..60 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
         if let Some(player) = arena.players.get_mut(&1) {
             let mut channels = MachineChannels::default();
             channels[motor_spin_idx] = 127;
             player.last_input.machine_channels = channels;
         }
-        arena.enter_machine(1, 42);
-
-        for _ in 0..360 {
-            arena.step_machines(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+        // Rapier lets dynamic bodies fall asleep after settling; the
+        // motor constraint alone does not wake them, so force-wake
+        // every machine body before the drive phase.
+        for bid in ["body:0", "body:1", "body:2", "body:3", "body:4"] {
+            if let Some(h) = arena
+                .machines
+                .get(&42)
+                .and_then(|m| m.machine.body_handle(bid))
+            {
+                if let Some(rb) = arena.dynamic.sim.rigid_bodies.get_mut(h) {
+                    rb.wake_up(true);
+                }
+            }
         }
-
-        let ending_z = arena
+        let settled = arena
             .machines
             .get(&42)
             .and_then(|m| m.machine.body_handle("body:0"))
             .and_then(|h| arena.dynamic.sim.rigid_bodies.get(h))
-            .map(|rb| rb.translation().z)
-            .unwrap_or(0.0);
+            .map(|rb| *rb.translation())
+            .expect("chassis body");
+        let (settled_x, settled_z) = (settled.x, settled.z);
 
-        // The 4-wheel car drives under positive motor input. We just assert
-        // the chassis moved meaningfully relative to its start — exactly how
-        // far isn't important, only that the actuator → motor → physics path
-        // is end-to-end functional.
-        // Even a small displacement proves the actuator → motor → physics
-        // path is wired up end-to-end. The exact distance depends on
-        // wheel/ground friction defaults which aren't important here.
+        // Now drive for 6 more seconds.
+        for _ in 0..360 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let end = arena
+            .machines
+            .get(&42)
+            .and_then(|m| m.machine.body_handle("body:0"))
+            .and_then(|h| arena.dynamic.sim.rigid_bodies.get(h))
+            .map(|rb| *rb.translation())
+            .expect("chassis body");
+        let (end_x, end_z) = (end.x, end.z);
+
+        // Motion from settling is usually sub-metre; motion from
+        // driving should be many metres. Use the settled pose as the
+        // reference so we only measure the driving phase.
+        let dist_driving = ((end_x - settled_x).powi(2) + (end_z - settled_z).powi(2)).sqrt();
+        let dist_total = ((end_x - start_x).powi(2) + (end_z - start_z).powi(2)).sqrt();
         assert!(
-            (ending_z - starting_z).abs() > 0.1,
-            "expected chassis to drive; starting_z={starting_z:.3}, ending_z={ending_z:.3}"
+            dist_driving >= 3.0,
+            "chassis should drive at least 3 m during the 6 s input hold; \
+             settled=({settled_x:.3},{settled_z:.3}) end=({end_x:.3},{end_z:.3}) \
+             distance={dist_driving:.3} m (total from spawn={dist_total:.3} m)"
         );
     }
+
+    #[test]
+    fn crane_installs_and_reports_display_name() {
+        let envelope: serde_json::Value = serde_json::from_str(CRANE_ENVELOPE).expect("crane parses");
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.add_static_cuboid(
+            Vector3::new(0.0, -0.5, 0.0),
+            Vector3::new(50.0, 0.5, 50.0),
+            0,
+        );
+        arena
+            .spawn_snap_machine_with_id(
+                99,
+                Vector3::new(0.0, 0.5, 0.0),
+                [0.0, 0.0, 0.0, 1.0],
+                &envelope,
+            )
+            .expect("crane installs clean");
+        arena.rebuild_broad_phase();
+
+        let machine = arena.machines.get(&99).expect("crane in arena");
+        assert_eq!(machine.machine.display_name(), Some("Crane"));
+        // The crane fixture has `armPitch` and `armYaw` channels (confirmed
+        // by inspecting the envelope). Order is alphabetical.
+        assert_eq!(
+            machine.machine.action_channels(),
+            &["armPitch".to_string(), "armYaw".to_string()]
+        );
+    }
+
+    const CRANE_ENVELOPE: &str = include_str!("../test-fixtures/crane.envelope.json");
+
 
     #[test]
     fn snapshot_round_trips_through_apply_body_snapshot() {

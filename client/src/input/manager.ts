@@ -17,6 +17,15 @@ export class GameInputManager {
     this.keyboardMouse.detach();
   }
 
+  /**
+   * Raw key-down query passed through to `KeyboardMouseInputSource`.
+   * Used by the snap-machine resolver so it can read keys (Q, R, F,
+   * etc.) that aren't mapped to any on-foot / vehicle semantic binding.
+   */
+  isCodeDown(code: string): boolean {
+    return this.keyboardMouse.isCodeDown(code);
+  }
+
   sample(
     deltaSec: number,
     pointerLocked: boolean,

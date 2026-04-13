@@ -14,6 +14,7 @@ import {
   advanceLookAngles,
   advanceVehicleCamera,
   resolveOnFootInput,
+  resolveSnapMachineInput,
   resolveVehicleInput,
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
@@ -30,7 +31,6 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetSnapMachineState, NetVehicleState, VehicleStateMeters } from '../net/protocol';
-import { MAX_MACHINE_CHANNELS } from '../net/protocol';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { SnapMachines } from './SnapMachines';
@@ -442,8 +442,6 @@ export function GameWorld({
   // Snap-machine refs
   const knownMachineIds = useRef<Set<number>>(new Set());
   const nearestMachineIdRef = useRef<number | null>(null);
-  // Persistent buffer for machine input channels passed to prediction.
-  const machineChannelsRef = useRef<Int8Array>(new Int8Array(MAX_MACHINE_CHANNELS));
 
   useEffect(() => {
     const manager = new GameInputManager();
@@ -550,15 +548,37 @@ export function GameWorld({
       localVehicleVisualPoseRef.current.vehicleId = null;
     }
     const isDrivingNow = localControlledVehiclePose !== null;
+    const isOperatingMachineNow = prediction.isOperatingSnapMachine();
+    const activeInputContext = isOperatingMachineNow
+      ? 'snapMachine'
+      : isDrivingNow
+        ? 'vehicle'
+        : 'onFoot';
     const pointerLocked = document.pointerLockElement === gl.domElement;
-    const inputSample = inputManagerRef.current?.sample(
+    const rawInputSample = inputManagerRef.current?.sample(
       frameDelta,
       pointerLocked,
-      isDrivingNow ? 'vehicle' : 'onFoot',
+      activeInputContext,
       inputBindings,
       inputFamilyMode,
     )
-      ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
+      ?? { activeFamily: null, action: null, context: activeInputContext };
+    // Enrich the input sample with snap-machine metadata so the HUD
+    // can render the machine's preset name and hint rows without
+    // reaching into the prediction manager itself.
+    const machineDisplayName = isOperatingMachineNow
+      ? prediction.getSnapMachineDisplayName()
+      : null;
+    const machineBindings = isOperatingMachineNow
+      ? prediction.getSnapMachineBindings()
+      : [];
+    const inputSample = isOperatingMachineNow
+      ? {
+          ...rawInputSample,
+          machineDisplayName,
+          machineBindings,
+        }
+      : rawInputSample;
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
 
@@ -584,9 +604,34 @@ export function GameWorld({
       pitchRef.current = look.pitch;
     }
 
-    const resolvedInput = isDrivingNow
-      ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
-      : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily);
+    let resolvedInput;
+    if (isOperatingMachineNow) {
+      const actionChannels = prediction.getSnapMachineActionChannels();
+      const keyDownQuery = (code: string) => inputManagerRef.current?.isCodeDown(code) ?? false;
+      resolvedInput = resolveSnapMachineInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+        actionChannels,
+        machineBindings,
+        keyDownQuery,
+      );
+    } else if (isDrivingNow) {
+      resolvedInput = resolveVehicleInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+      );
+    } else {
+      resolvedInput = resolveOnFootInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+      );
+    }
 
     // --- Vehicle spawn/despawn sync ---
     if (client && prediction.ready) {
@@ -636,7 +681,6 @@ export function GameWorld({
     }
 
     // --- Enter/Exit vehicle or snap-machine on E press ---
-    const isOperatingMachineNow = prediction.isOperatingSnapMachine();
     if (resolvedInput.interactPressed) {
       if (isOperatingMachineNow) {
         const operatedMachineId = prediction.getOperatedSnapMachineId();
@@ -706,31 +750,11 @@ export function GameWorld({
       if (prediction.isInVehicle()) {
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
-      } else if (prediction.isOperatingSnapMachine()) {
-        // Snap-machine prediction — derive actuator-channel input from
-        // the player's current keyboard mapping (W/S = ch0, A/D = ch1,
-        // Q/E = ch2, Shift/Space = ch3 by default). The keys are read
-        // from `resolvedInput.buttons` since they pass through the same
-        // input bindings as on-foot movement.
-        const channels = machineChannelsRef.current;
-        channels.fill(0);
-        // Default 4-channel WASD/QE mapping until per-machine bindings ship.
-        // Channel 0: forward (W) / back (S)
-        if (resolvedInput.buttons & 0x0001) channels[0] = 127;  // BTN_FORWARD
-        else if (resolvedInput.buttons & 0x0002) channels[0] = -127; // BTN_BACK
-        // Channel 1: left (A) / right (D) — note client move axes use camera
-        // convention so we map move_x directly here.
-        if (resolvedInput.buttons & 0x0008) channels[1] = 127;  // BTN_RIGHT
-        else if (resolvedInput.buttons & 0x0004) channels[1] = -127; // BTN_LEFT
-        // Channel 2: jump (Space)
-        if (resolvedInput.buttons & 0x0010) channels[2] = 127;  // BTN_JUMP
-        // Channel 3: sprint (Shift)
-        if (resolvedInput.buttons & 0x0040) channels[3] = 127;  // BTN_SPRINT
-        const semantic: typeof resolvedInput = {
-          ...resolvedInput,
-          machineChannels: channels,
-        };
-        prediction.updateSnapMachine(frameDelta, semantic, sendInputs);
+      } else if (isOperatingMachineNow) {
+        // Snap-machine prediction — `resolvedInput.machineChannels`
+        // is already populated by `resolveSnapMachineInput` using
+        // the envelope-derived key bindings. No more hardcoded WASD.
+        prediction.updateSnapMachine(frameDelta, resolvedInput, sendInputs);
       } else {
         // Shared input bundling lives here for both modes. In local practice mode
         // the authoritative loopback session owns movement, so this only queues

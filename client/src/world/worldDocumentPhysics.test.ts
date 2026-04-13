@@ -453,27 +453,168 @@ describe('WorldDocument local-preview scenarios', () => {
 
   it('default authored world includes a drivable snap-machine', () => {
     const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
-    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
-    expect(snapEntity, 'trail.world.json should ship a snapMachine entity').toBeDefined();
+    const snapMachines = world.dynamicEntities.filter((e) => e.kind === 'snapMachine');
+    expect(snapMachines.length, 'trail.world.json should ship snapMachine entities').toBeGreaterThan(0);
 
     const result = runLocalPreview(world, 120);
     expect(result.snapshot.machineStates.length).toBeGreaterThan(0);
-    const machine = result.snapshot.machineStates.find((m) => m.id === snapEntity!.id);
-    expect(machine, `machine ${snapEntity!.id} should appear in snapshot.machineStates`).toBeDefined();
-    // The chassis body has more than one body entry and non-zero bodies.
-    expect(machine!.bodies.length).toBeGreaterThan(0);
-    // All bodies should be at finite positions inside a reasonable world
-    // bound (sanity — the chassis can fall a bit while settling).
-    for (const body of machine!.bodies) {
-      const x = body.pxMm / 1000;
-      const y = body.pyMm / 1000;
-      const z = body.pzMm / 1000;
-      expect(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)).toBe(true);
-      expect(Math.abs(x)).toBeLessThan(100);
-      expect(Math.abs(z)).toBeLessThan(100);
-      expect(y).toBeGreaterThan(-20);
-      expect(y).toBeLessThan(50);
+    for (const snapEntity of snapMachines) {
+      const machine = result.snapshot.machineStates.find((m) => m.id === snapEntity.id);
+      expect(machine, `machine ${snapEntity.id} should appear in snapshot.machineStates`).toBeDefined();
+      expect(machine!.bodies.length).toBeGreaterThan(0);
+      for (const body of machine!.bodies) {
+        const x = body.pxMm / 1000;
+        const y = body.pyMm / 1000;
+        const z = body.pzMm / 1000;
+        expect(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)).toBe(true);
+        expect(Math.abs(x)).toBeLessThan(100);
+        expect(Math.abs(z)).toBeLessThan(100);
+        expect(y).toBeGreaterThan(-20);
+        expect(y).toBeLessThan(50);
+      }
     }
+  });
+
+  it('4-wheel-car actually drives when motorSpin is held', () => {
+    // Sanity for the player experience: after entering the car and
+    // holding +motorSpin for 3 seconds, the chassis should have moved
+    // at least 3 metres along the XZ plane. This mirrors the Rust
+    // `chassis_drives_forward_under_motor_input` test but exercises
+    // the full loopback (InputBundle → PhysicsArena.step_machines →
+    // snapshot encode → TS decode). Catches any future regression in
+    // `MOTOR_MAX_FORCE_MULTIPLIER` / `MOTOR_DAMPING_MULTIPLIER` or
+    // the input→channel plumbing.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const car = world.dynamicEntities.find(
+      (e) => e.kind === 'snapMachine'
+        && typeof e.envelope === 'object'
+        && e.envelope !== null
+        && 'metadata' in e.envelope
+        && (e.envelope as { metadata?: { presetName?: string } }).metadata?.presetName === '4-Wheel Car',
+    );
+    expect(car, 'trail.world.json should ship the 4-wheel car').toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    session.drainPackets();
+
+    function decodeMachineChassisXZ(blob: Uint8Array): [number, number] | null {
+      let offset = 0;
+      let xz: [number, number] | null = null;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === car!.id);
+          if (machine && machine.bodies.length > 0) {
+            const body0 = machine.bodies[0];
+            xz = [body0.pxMm / 1000, body0.pzMm / 1000];
+          }
+        }
+      }
+      return xz;
+    }
+
+    // Settle the chassis before we start driving so the measured
+    // distance reflects motor-driven motion, not falling.
+    for (let i = 0; i < 60; i += 1) {
+      session.tick(1 / 60);
+    }
+    const settled = decodeMachineChassisXZ(session.drainPackets());
+    expect(settled, 'machine snapshot should be present after settling').not.toBeNull();
+
+    // Enter the machine (the local preview session treats player 1
+    // as the operator) and send an InputBundle with motorSpin = +1.0.
+    const enterBytes = new Uint8Array(5);
+    new DataView(enterBytes.buffer).setUint8(0, 8 /* PKT_MACHINE_ENTER */);
+    new DataView(enterBytes.buffer).setUint32(1, car!.id >>> 0, true);
+    session.handleClientPacket(enterBytes);
+
+    // Build a per-tick InputBundle with `machineChannels[0] = 127`
+    // (the car has one action channel, `motorSpin`). Wire layout
+    // matches `encodeInputBundle` — 1-byte kind, 1-byte count, then
+    // per-frame `seq u16, buttons u16, mx i8, my i8, yaw i16, pitch
+    // i16, channels[8] i8`. One frame is enough for the session to
+    // pick up the channel value since it re-plays the last input.
+    function buildInputBundlePacket(seq: number, channel0: number): Uint8Array {
+      const frameSize = 10 + 8;
+      const out = new Uint8Array(2 + frameSize);
+      const view = new DataView(out.buffer);
+      view.setUint8(0, 2 /* PKT_INPUT_BUNDLE */);
+      view.setUint8(1, 1);
+      view.setUint16(2, seq, true);
+      view.setUint16(4, 0, true);
+      view.setInt8(6, 0);
+      view.setInt8(7, 0);
+      view.setInt16(8, 0, true);
+      view.setInt16(10, 0, true);
+      view.setInt8(12, channel0);
+      // channels 1..7 stay zero.
+      return out;
+    }
+
+    for (let i = 0; i < 360; i += 1) {
+      session.handleClientPacket(buildInputBundlePacket(i + 1, 127));
+      session.tick(1 / 60);
+    }
+
+    const end = decodeMachineChassisXZ(session.drainPackets());
+    expect(end, 'machine snapshot should be present after driving').not.toBeNull();
+
+    const dx = end![0] - settled![0];
+    const dz = end![1] - settled![1];
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    // 6 s of +motorSpin through the real client wire path. The Rust
+    // test asserts ≥ 3 m on a flat ground; the TS e2e sees a bit
+    // more variance from heightfield friction + the single-substep
+    // pipeline the loopback uses, so we assert ≥ 2 m here — still
+    // well above the <0.2 m baseline we had before the motor tuning
+    // fix landed.
+    expect(
+      dist,
+      `car should drive at least 2 m (settled=${JSON.stringify(settled)}, end=${JSON.stringify(end)})`,
+    ).toBeGreaterThanOrEqual(2.0);
+  });
+
+  it('crane is shipped with a unique display name and 3 distinct actions', () => {
+    // The crane fixture has 3 revolute joints; we uniquify the
+    // duplicated `armPitch` into `armPitchElbow` at inline time so
+    // the operator can control each joint independently. Verify the
+    // world document carries those 3 distinct actions.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const crane = world.dynamicEntities.find(
+      (e) => e.kind === 'snapMachine'
+        && typeof e.envelope === 'object'
+        && e.envelope !== null
+        && 'metadata' in e.envelope
+        && (e.envelope as { metadata?: { presetName?: string } }).metadata?.presetName === 'Crane',
+    );
+    expect(crane, 'trail.world.json should ship a Crane snap-machine').toBeDefined();
+
+    const envelope = crane!.envelope as {
+      plan: {
+        joints: Array<{ motor?: { input?: { action: string } } }>;
+      };
+    };
+    const actions = new Set<string>();
+    for (const joint of envelope.plan.joints) {
+      const action = joint.motor?.input?.action;
+      if (action) actions.add(action);
+    }
+    expect(actions.has('armPitch')).toBe(true);
+    expect(actions.has('armPitchElbow')).toBe(true);
+    expect(actions.has('armYaw')).toBe(true);
+    expect(actions.size).toBeGreaterThanOrEqual(3);
+
+    // And verify the physics runtime installs the crane cleanly.
+    const result = runLocalPreview(world, 60);
+    const craneState = result.snapshot.machineStates.find((m) => m.id === crane!.id);
+    expect(craneState, 'crane must be present in snapshot').toBeDefined();
+    expect(craneState!.bodies.length).toBeGreaterThan(0);
   });
 
   it('terrain brush respects lower and upper plateaus', () => {

@@ -113,6 +113,14 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   getSnapMachineBodyCount(id: number): number;
   /** \n-delimited list of action channel names in deterministic order. */
   getSnapMachineActionChannels(id: number): string;
+  /** Machine display name (from `envelope.metadata.presetName`), empty if unknown. */
+  getSnapMachineDisplayName(id: number): string;
+  /**
+   * Player-facing keyboard bindings for this machine's actions, one row per
+   * action as `action\tposKey\tnegKey\tscale`. Empty if the machine is
+   * unknown. The TS side parses this into `MachineBinding[]` on enter.
+   */
+  getSnapMachineBindings(id: number): string;
   /** Flat `[px, py, pz, qx, qy, qz, qw]` per body. */
   getSnapMachineBodyPoses(id: number): Float32Array;
   /** Flat `[index, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]` per body. */

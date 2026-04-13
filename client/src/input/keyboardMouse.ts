@@ -11,6 +11,15 @@ export class KeyboardMouseInputSource {
   private pointerDeltaY = 0;
   private activityId = 0;
 
+  /**
+   * Raw key-down query used by the snap-machine resolver to read keys
+   * that aren't part of the on-foot / vehicle binding tables (Q, R, F,
+   * etc.). Accepts a DOM `KeyboardEvent.code`.
+   */
+  isCodeDown(code: string): boolean {
+    return this.keys.has(code);
+  }
+
   private readonly onKeyDown = (event: KeyboardEvent) => {
     if (!this.keys.has(event.code)) {
       this.activityId += 1;

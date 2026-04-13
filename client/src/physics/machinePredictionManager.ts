@@ -8,6 +8,33 @@ export const MAX_CATCHUP_STEPS = 4;
 export const MACHINE_INPUT_REDUNDANCY = 4;
 
 /**
+ * One player-facing binding for a single named action channel. Mirrors
+ * the Rust `snap_machine_controls::MachineBinding` shape.
+ */
+export type MachineBinding = {
+  action: string;
+  posKey: string;
+  negKey: string | null;
+  scale: number;
+};
+
+function parseBindings(raw: string): MachineBinding[] {
+  if (!raw) return [];
+  return raw
+    .split('\n')
+    .filter(Boolean)
+    .map((row) => {
+      const parts = row.split('\t');
+      return {
+        action: parts[0] ?? '',
+        posKey: parts[1] ?? 'KeyE',
+        negKey: parts[2] && parts[2].length > 0 ? parts[2] : null,
+        scale: Number(parts[3] ?? '1') || 1,
+      };
+    });
+}
+
+/**
  * Operator-side client prediction for one snap-machine.
  *
  * Mirrors `VehiclePredictionManager` but addresses an arbitrary set of
@@ -21,6 +48,8 @@ export class MachinePredictionManager {
   private accumulator = 0;
   private nextSeq = 1;
   private actionChannels: string[] = [];
+  private bindings: MachineBinding[] = [];
+  private displayName: string | null = null;
 
   /// Per-body world poses (px, py, pz, qx, qy, qz, qw) in body-id order.
   private bodyPoses: Float32Array = new Float32Array(0);
@@ -53,6 +82,18 @@ export class MachinePredictionManager {
     return this.actionChannels;
   }
 
+  /// Player-facing keyboard bindings for this machine's actions.
+  /// Populated from wasm `getSnapMachineBindings` on `enterMachine`.
+  getBindings(): MachineBinding[] {
+    return this.bindings;
+  }
+
+  /// Display name from `envelope.metadata.presetName` (e.g. "4-Wheel
+  /// Car", "Crane"). `null` if the envelope had no metadata.
+  getDisplayName(): string | null {
+    return this.displayName;
+  }
+
   getBodyCount(): number {
     return this.bodyCount;
   }
@@ -73,6 +114,9 @@ export class MachinePredictionManager {
 
     const channelsRaw = this.sim.getSnapMachineActionChannels(machineId);
     this.actionChannels = channelsRaw ? channelsRaw.split('\n').filter(Boolean) : [];
+    this.bindings = parseBindings(this.sim.getSnapMachineBindings(machineId));
+    const name = this.sim.getSnapMachineDisplayName(machineId);
+    this.displayName = name && name.length > 0 ? name : null;
     this.bodyCount = this.sim.getSnapMachineBodyCount(machineId);
     this.refreshBodyPoses();
   }
@@ -84,6 +128,8 @@ export class MachinePredictionManager {
     this.machineId = null;
     this.accumulator = 0;
     this.actionChannels = [];
+    this.bindings = [];
+    this.displayName = null;
     this.bodyCount = 0;
     this.bodyPoses = new Float32Array(0);
   }
