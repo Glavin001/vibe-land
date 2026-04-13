@@ -10,6 +10,7 @@ import { useDebugStats } from './ui/useDebugStats';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
 import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
+import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -64,6 +65,14 @@ export function App({
   const [calibrationActiveFamily, setCalibrationActiveFamily] = useState<DeviceFamily | null>(null);
   const [calibrationSceneExtras, setCalibrationSceneExtras] = useState<ReactNode>(null);
   const lastKnownFamilyRef = useRef<DeviceFamily | null>(null);
+  // In practice mode, once the user has connected at least once, we auto-
+  // reconnect after any disconnect (e.g. from swapping worlds when calibration
+  // opens/closes). This avoids the player seeing "click to rejoin" mid-wizard.
+  const hasEverConnectedRef = useRef(false);
+
+  // While the wizard is open, render a deliberately-empty flat world so
+  // drill targets aren't fighting terrain or props for visibility.
+  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
 
   const handleInputFrame = useCallback((sample: InputSample) => {
     updateInputFrame(sample);
@@ -114,6 +123,7 @@ export function App({
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
+    hasEverConnectedRef.current = true;
     setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
   }, [modeLabel, practiceMode]);
 
@@ -130,6 +140,15 @@ export function App({
     }
     handleConnect();
   }, [autoConnect, connected, handleConnect]);
+
+  // Auto-reconnect in practice mode after a disconnect that was triggered by
+  // swapping the world document (calibration open/close). Without this the
+  // player would have to click "rejoin" every time the wizard toggled.
+  useEffect(() => {
+    if (!practiceMode || connected) return;
+    if (!hasEverConnectedRef.current) return;
+    handleConnect();
+  }, [practiceMode, connected, handleConnect]);
 
   useEffect(() => {
     if (!connected || sessionKey === 0) {
@@ -200,9 +219,14 @@ export function App({
         ? 'rgba(255, 48, 48, 0.55)'
         : 'rgba(255, 96, 96, 0.45)';
 
+  // Suppress the click-to-join overlay during auto-reconnect transitions in
+  // practice mode so the player doesn't see it flash when the calibration
+  // wizard opens or closes (which triggers a brief disconnect + reconnect).
+  const clickToJoinVisible = !connected && !(practiceMode && hasEverConnectedRef.current);
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {!connected && (
+      {clickToJoinVisible && (
         <div
           style={{
             position: 'absolute',
@@ -362,7 +386,7 @@ export function App({
         <GameScene
           key={sessionKey}
           mode={mode}
-          worldDocument={worldDocument}
+          worldDocument={effectiveWorldDocument}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}

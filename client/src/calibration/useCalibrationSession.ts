@@ -32,6 +32,7 @@ export type CalibrationPhase =
   | 'betweenAB'
   | 'drillB'
   | 'ask'
+  | 'betweenRounds'
   | 'result'
   | 'done';
 
@@ -241,9 +242,14 @@ export function useCalibrationSession(): UseCalibrationSessionReturn {
           lastWarning: step.warning ?? null,
         };
       }
+      // Non-done → set up the next bracket and move into the betweenRounds
+      // phase. That phase shows a "Start next comparison" button which
+      // kicks off drillA with the NEW `a` value. Previously this set phase
+      // to 'betweenAB' by mistake, which left the user stuck in a loop
+      // seeing only "Start drill B" prompts after every answer.
       return {
         ...prev,
-        phase: 'betweenAB',
+        phase: 'betweenRounds',
         bracket: step.bracket,
         a: step.a,
         b: step.b,

@@ -50,7 +50,7 @@ export function TrackDrill({ runKey, running, onComplete, kind }: TrackDrillProp
     framesOnTarget: 0,
     completed: false,
   });
-  const meshRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
     anchorRef.current = null;
@@ -87,8 +87,8 @@ export function TrackDrill({ runKey, running, onComplete, kind }: TrackDrillProp
       .copy(anchorRef.current.position)
       .addScaledVector(dir, TARGET_DISTANCE);
 
-    if (meshRef.current) {
-      meshRef.current.position.copy(targetPos.current);
+    if (groupRef.current) {
+      groupRef.current.position.copy(targetPos.current);
     }
 
     camera.getWorldDirection(forward.current);
@@ -119,15 +119,30 @@ export function TrackDrill({ runKey, running, onComplete, kind }: TrackDrillProp
   });
 
   const material = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#6cf0a0', emissive: '#19aa4b', emissiveIntensity: 0.85 }),
+    () => new THREE.MeshStandardMaterial({ color: '#6cf0a0', emissive: '#19aa4b', emissiveIntensity: 1.4 }),
+    [],
+  );
+  const haloMaterial = useMemo(
+    () => new THREE.MeshBasicMaterial({
+      color: '#b8ffd0',
+      transparent: true,
+      opacity: 0.3,
+      depthWrite: false,
+      depthTest: false,
+    }),
     [],
   );
 
   if (!running) return null;
 
   return (
-    <mesh ref={meshRef} material={material}>
-      <sphereGeometry args={[TARGET_RADIUS, 16, 16]} />
-    </mesh>
+    <group ref={groupRef}>
+      <mesh material={haloMaterial} renderOrder={999}>
+        <sphereGeometry args={[TARGET_RADIUS * 2, 20, 16]} />
+      </mesh>
+      <mesh material={material}>
+        <sphereGeometry args={[TARGET_RADIUS, 24, 20]} />
+      </mesh>
+    </group>
   );
 }

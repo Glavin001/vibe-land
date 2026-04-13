@@ -96,15 +96,16 @@ const rowStyle: CSSProperties = {
 
 const smallMutedStyle: CSSProperties = { fontSize: 12, opacity: 0.68 };
 
-function phaseTitle(phase: CalibrationPhase, knobLabel: string): string {
+function phaseTitle(phase: CalibrationPhase, knobLabel: string, round: number, maxRounds: number): string {
   switch (phase) {
-    case 'intro':      return `Next up: ${knobLabel}`;
-    case 'drillA':     return 'Config A — go!';
-    case 'betweenAB':  return 'Ready for Config B';
-    case 'drillB':     return 'Config B — go!';
-    case 'ask':        return 'Which felt better?';
-    case 'result':     return 'Got it — saved.';
-    case 'done':       return "You're calibrated.";
+    case 'intro':          return `Next up: ${knobLabel}`;
+    case 'drillA':         return `Config A — round ${round + 1} of up to ${maxRounds}`;
+    case 'betweenAB':      return 'Ready for Config B';
+    case 'drillB':         return `Config B — round ${round + 1} of up to ${maxRounds}`;
+    case 'ask':            return 'Which felt better?';
+    case 'betweenRounds':  return `Narrowing in — round ${round + 1} of up to ${maxRounds}`;
+    case 'result':         return 'Got it — saved.';
+    case 'done':           return "You're calibrated.";
   }
 }
 
@@ -221,7 +222,9 @@ export function CalibrationOverlay({
 
       <div style={bottomPanelStyle}>
         <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 6 }}>
-          {knob ? phaseTitle(state.phase, knob.label) : phaseTitle(state.phase, '')}
+          {knob
+            ? phaseTitle(state.phase, knob.label, state.round, knob.maxRounds)
+            : phaseTitle(state.phase, '', 0, 0)}
         </div>
         {knob && state.phase === 'intro' && (
           <IntroPhase
@@ -244,6 +247,13 @@ export function CalibrationOverlay({
             onAnswer={session.answerPreference}
             aResult={state.aResult}
             bResult={state.bResult}
+            onAccept={session.acceptCurrentBracket}
+            onSkip={session.skipCurrentKnob}
+          />
+        )}
+        {knob && state.phase === 'betweenRounds' && (
+          <BetweenRoundsPhase
+            onStart={session.beginDrillA}
             onAccept={session.acceptCurrentBracket}
             onSkip={session.skipCurrentKnob}
           />
@@ -302,6 +312,35 @@ function BetweenPhase({ onStart }: { onStart: () => void }) {
       <div style={rowStyle}>
         <button type="button" style={primaryPillStyle} onClick={onStart}>
           Start drill B
+        </button>
+      </div>
+    </>
+  );
+}
+
+function BetweenRoundsPhase({
+  onStart,
+  onAccept,
+  onSkip,
+}: {
+  onStart: () => void;
+  onAccept: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <>
+      <p style={{ fontSize: 13, opacity: 0.82, margin: '4px 0 16px' }}>
+        Good. Let's narrow in with a new pair of settings — same drill, new values.
+      </p>
+      <div style={rowStyle}>
+        <button type="button" style={primaryPillStyle} onClick={onStart}>
+          Start next comparison
+        </button>
+        <button type="button" style={pillButtonStyle} onClick={onAccept}>
+          Accept current
+        </button>
+        <button type="button" style={pillButtonStyle} onClick={onSkip}>
+          Skip knob
         </button>
       </div>
     </>

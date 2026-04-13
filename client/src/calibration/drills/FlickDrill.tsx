@@ -10,31 +10,55 @@ import * as THREE from 'three';
 import type { DrillKind, DrillProps, DrillResult } from './drillTypes';
 
 const DRILL_TIMEOUT_MS = 15_000;
-const HIT_ANGLE_RAD = 0.0209; // ~1.2 degrees
+const HIT_ANGLE_RAD = 0.0262; // ~1.5 degrees
 const TARGET_DISTANCE = 12;
-const TARGET_RADIUS = 0.45;
+const TARGET_RADIUS = 0.55;
 
+// Horizontal-only flicks are centered on eye level.
 const HORIZONTAL_OFFSETS_DEG = [-25, 35, -15, 55, -45, 20];
-const VERTICAL_BIAS_DEG = [-18, 22, -10, 28, -22, 15];
 
-type TargetPose = { yawOffset: number; pitchOffset: number };
+// Vertical-biased flicks: targets placed at fixed world-Y offsets ABOVE the
+// anchor's eye height (all positive, guaranteed above ground regardless of
+// terrain). Paired with smaller horizontal offsets so the drill actually
+// exercises vertical aim.
+const VERTICAL_YAW_OFFSETS_DEG = [-10, 18, -20, 25, -5, 12];
+const VERTICAL_Y_OFFSETS_M = [1.4, 3.2, 0.8, 4.0, 2.2, 2.6];
+
+type TargetPose = {
+  yawOffset: number;
+  // For horizontal: pitchOffset is used with the direction formula.
+  // For vertical: yOffset (meters above anchor eye height) is used directly.
+  pitchOffset: number;
+  yOffset: number;
+  isVertical: boolean;
+};
 
 function buildTargets(kind: DrillKind, seed: number): TargetPose[] {
-  const horizontal = HORIZONTAL_OFFSETS_DEG.map((deg, i) => ({
-    yawOffset: THREE.MathUtils.degToRad(deg),
-    pitchOffset: kind === 'flickVertical' ? THREE.MathUtils.degToRad(VERTICAL_BIAS_DEG[i] ?? 0) : 0,
-  }));
+  const poses: TargetPose[] = kind === 'flickVertical'
+    ? VERTICAL_YAW_OFFSETS_DEG.map((deg, i) => ({
+        yawOffset: THREE.MathUtils.degToRad(deg),
+        pitchOffset: 0,
+        yOffset: VERTICAL_Y_OFFSETS_M[i] ?? 2.0,
+        isVertical: true,
+      }))
+    : HORIZONTAL_OFFSETS_DEG.map((deg) => ({
+        yawOffset: THREE.MathUtils.degToRad(deg),
+        pitchOffset: 0,
+        yOffset: 0,
+        isVertical: false,
+      }));
+
   // Cheap seed-driven shuffle so successive runs aren't identical but each
   // run is reproducible given its seed (not used for correctness, only as a
   // fallback if we ever want A and B to see the same target order).
   const rng = mulberry32(seed);
-  for (let i = horizontal.length - 1; i > 0; i--) {
+  for (let i = poses.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
-    const tmp = horizontal[i];
-    horizontal[i] = horizontal[j];
-    horizontal[j] = tmp;
+    const tmp = poses[i];
+    poses[i] = poses[j];
+    poses[j] = tmp;
   }
-  return horizontal;
+  return poses;
 }
 
 function mulberry32(seed: number): () => number {
@@ -48,13 +72,14 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+const TOTAL_TARGETS = HORIZONTAL_OFFSETS_DEG.length; // always 6 for both modes
+
 function scoreFlick(hits: number, attempts: number, totalTimeMs: number): number {
   if (attempts === 0) return 0;
   const misses = Math.max(0, attempts - hits);
   const meanSec = Math.max(0.3, totalTimeMs / 1000 / Math.max(1, hits));
   const raw = hits / (1 + misses) - 0.1 * meanSec;
-  const max = HORIZONTAL_OFFSETS_DEG.length; // denominator for normalization
-  return Math.max(0, Math.min(1, raw / max + 0.5 * (hits / max)));
+  return Math.max(0, Math.min(1, raw / TOTAL_TARGETS + 0.5 * (hits / TOTAL_TARGETS)));
 }
 
 type FlickDrillProps = DrillProps & { kind: 'flick' | 'flickVertical' };
@@ -149,6 +174,15 @@ export function FlickDrill({ runKey, running, onComplete, kind }: FlickDrillProp
       const anchorPos = camera.position.clone();
       const targets = poses.map((p) => {
         const yaw = baseYaw + p.yawOffset;
+        if (p.isVertical) {
+          // Horizontal direction only; vertical component comes from yOffset
+          // (world meters above anchor eye height). Guarantees the target is
+          // above ground regardless of terrain.
+          const horiz = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+          return anchorPos.clone()
+            .addScaledVector(horiz, TARGET_DISTANCE)
+            .add(new THREE.Vector3(0, p.yOffset, 0));
+        }
         const pitch = p.pitchOffset;
         const v = new THREE.Vector3(
           -Math.sin(yaw) * Math.cos(pitch),
@@ -183,12 +217,28 @@ export function FlickDrill({ runKey, running, onComplete, kind }: FlickDrillProp
 
   const anchor = anchorRef.current;
   const currentIndex = stateRef.current.index;
-  const material = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#ff5a3c', emissive: '#ff3010', emissiveIntensity: 0.9 }),
+  const activeMaterial = useMemo(
+    () => new THREE.MeshStandardMaterial({ color: '#ff5a3c', emissive: '#ff4010', emissiveIntensity: 1.6 }),
+    [],
+  );
+  const haloMaterial = useMemo(
+    () => new THREE.MeshBasicMaterial({
+      color: '#ffb070',
+      transparent: true,
+      opacity: 0.35,
+      depthWrite: false,
+      depthTest: false,
+    }),
     [],
   );
   const dimMaterial = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: '#3a4656', emissive: '#1a2230', emissiveIntensity: 0.2, transparent: true, opacity: 0.55 }),
+    () => new THREE.MeshStandardMaterial({
+      color: '#3a4656',
+      emissive: '#1a2230',
+      emissiveIntensity: 0.2,
+      transparent: true,
+      opacity: 0.5,
+    }),
     [],
   );
 
@@ -201,9 +251,23 @@ export function FlickDrill({ runKey, running, onComplete, kind }: FlickDrillProp
         const isCurrent = i === currentIndex;
         const isUpcoming = i > currentIndex;
         if (!isCurrent && !isUpcoming) return null;
+        if (isCurrent) {
+          return (
+            <group key={i} position={[pos.x, pos.y, pos.z]}>
+              {/* Depth-disabled halo so the target is visible even through
+                  terrain or props — no more losing sight of it. */}
+              <mesh material={haloMaterial} renderOrder={999}>
+                <sphereGeometry args={[TARGET_RADIUS * 2.1, 20, 16]} />
+              </mesh>
+              <mesh material={activeMaterial}>
+                <sphereGeometry args={[TARGET_RADIUS, 24, 20]} />
+              </mesh>
+            </group>
+          );
+        }
         return (
-          <mesh key={i} position={[pos.x, pos.y, pos.z]} material={isCurrent ? material : dimMaterial}>
-            <sphereGeometry args={[TARGET_RADIUS, 16, 16]} />
+          <mesh key={i} position={[pos.x, pos.y, pos.z]} material={dimMaterial}>
+            <sphereGeometry args={[TARGET_RADIUS * 0.9, 16, 12]} />
           </mesh>
         );
       })}
