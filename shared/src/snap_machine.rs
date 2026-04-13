@@ -290,6 +290,41 @@ impl SnapMachine {
         out
     }
 
+    /// Convert every rigid-body owned by this machine to
+    /// `KinematicPositionBased` and zero out linear + angular velocity.
+    ///
+    /// Used exclusively by the **client** wasm world (see
+    /// `WasmSimWorld::spawn_snap_machine`). On the client, the server's
+    /// `PhysicsArena` is the authoritative physics owner; the client
+    /// wasm world only mirrors server snapshots via
+    /// `apply_body_snapshot`. If the client bodies stayed dynamic, the
+    /// dynamic-body proxy pipeline (`step_vehicle_pipeline`, triggered
+    /// whenever balls or vehicles are nearby) would integrate machine
+    /// bodies forward under gravity between snapshots, causing a
+    /// tug-of-war with incoming server state that users see as a
+    /// visible flicker between two poses. Flipping to
+    /// `KinematicPositionBased` makes the integrator ignore these
+    /// bodies — only explicit `set_position` / `apply_body_snapshot`
+    /// calls move them — so the client renders a stable mirror of the
+    /// authoritative server state.
+    ///
+    /// Safe to call on the server side too, but do NOT — the server
+    /// needs dynamic bodies so the motor solver can actually drive the
+    /// joints.
+    pub fn freeze_to_kinematic(&self, bodies: &mut RigidBodySet) {
+        for id in &self.body_ids {
+            let Some(handle) = self.runtime.body_handle(id) else {
+                continue;
+            };
+            let Some(rb) = bodies.get_mut(handle) else {
+                continue;
+            };
+            rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
+            rb.set_linvel(Vector3::zeros(), false);
+            rb.set_angvel(Vector3::zeros(), false);
+        }
+    }
+
     /// Server → client reconcile: overwrite each body's pose/velocity from
     /// an authoritative snapshot. `bodies_by_index` is parallel to
     /// `body_ids()`.
@@ -1071,5 +1106,163 @@ mod tests {
         assert_eq!(snapshot_b.len(), 1);
         // Body counts and indices should match exactly.
         assert_eq!(snapshot_b[0].bodies.len(), snapshot[0].bodies.len());
+    }
+
+    /// Regression for the practice-mode flicker bug: after
+    /// `SnapMachine::freeze_to_kinematic`, the machine's rigid bodies
+    /// must not drift under gravity even when the surrounding dynamics
+    /// pipeline is stepped repeatedly. The client wasm world calls
+    /// this inside `spawn_snap_machine` specifically so the
+    /// dynamic-body proxy pipeline (`step_vehicle_pipeline`, triggered
+    /// whenever balls / vehicles are nearby) does not tug-of-war with
+    /// incoming authoritative snapshots from the server. If this ever
+    /// regresses, the user sees the crane collapse and the car
+    /// "shuffle" between two flickering poses in practice mode.
+    #[test]
+    fn freeze_to_kinematic_stops_bodies_from_drifting_under_gravity() {
+        // Use PhysicsArena purely as a convenient Rapier-world host —
+        // we are *not* calling `step_machines`, just `step_dynamics`,
+        // to mimic the client wasm's `stepDynamics` → `step_vehicle_pipeline`
+        // call chain that was causing the flicker.
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let _envelope = spawn_test_car(&mut arena, 5.0);
+
+        // Capture the pose of every machine body immediately after
+        // install, then freeze them.
+        let machine_id = 42;
+        let body_ids_and_start: Vec<(String, Vector3<f32>)> = {
+            let machine = arena
+                .machines
+                .get(&machine_id)
+                .expect("machine present");
+            machine
+                .machine
+                .body_ids()
+                .iter()
+                .filter_map(|id| {
+                    let handle = machine.machine.body_handle(id)?;
+                    let rb = arena.dynamic.sim.rigid_bodies.get(handle)?;
+                    Some((id.clone(), *rb.translation()))
+                })
+                .collect()
+        };
+        assert!(!body_ids_and_start.is_empty(), "car has at least one body");
+
+        {
+            let machine = arena
+                .machines
+                .get(&machine_id)
+                .expect("machine present");
+            machine
+                .machine
+                .freeze_to_kinematic(&mut arena.dynamic.sim.rigid_bodies);
+        }
+
+        // Step the dynamics pipeline for 2 s — exactly the scenario the
+        // client wasm world was hitting under the old bug: dynamic
+        // bodies nearby forced `step_vehicle_pipeline` to run every
+        // proxy tick, which integrated the machine bodies forward
+        // under gravity.
+        for _ in 0..120 {
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        // Verify every body is still within 1 cm of its frozen pose.
+        // Without the fix, the chassis would drop ≈ 40 m in 2 s under
+        // vibe-land's `-20 m/s²` gravity, so this bound is far from
+        // noisy.
+        let body_ids: Vec<String> = body_ids_and_start.iter().map(|(id, _)| id.clone()).collect();
+        for (body_id, start) in body_ids_and_start {
+            let handle = arena
+                .machines
+                .get(&machine_id)
+                .and_then(|m| m.machine.body_handle(&body_id))
+                .unwrap_or_else(|| panic!("body {body_id} missing after freeze"));
+            let rb = arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(handle)
+                .unwrap_or_else(|| panic!("body {body_id} handle unresolved after freeze"));
+            let now = *rb.translation();
+            let drift = (now - start).norm();
+            assert!(
+                drift < 0.01,
+                "kinematic-frozen body {body_id} drifted {drift:.4} m (start={start:?} \
+                 now={now:?}); all body ids: {body_ids:?}"
+            );
+            assert_eq!(
+                rb.body_type(),
+                RigidBodyType::KinematicPositionBased,
+                "body {body_id} should still be kinematic after stepping"
+            );
+            // Velocities should still read as zero — kinematic bodies
+            // ignore linvel updates from the integrator.
+            assert!(
+                rb.linvel().norm() < 1e-4,
+                "kinematic body {body_id} linvel should stay zero, got {:?}",
+                rb.linvel()
+            );
+        }
+    }
+
+    /// After freezing, `apply_body_snapshot` must still be able to
+    /// teleport every body to the incoming server pose. This is the
+    /// path that keeps the client wasm's rendered machine synced to
+    /// the authoritative `LocalPreviewSession` or remote server.
+    #[test]
+    fn apply_body_snapshot_still_teleports_frozen_bodies() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let _envelope = spawn_test_car(&mut arena, 5.0);
+
+        {
+            let machine = arena.machines.get(&42).expect("machine present");
+            machine
+                .machine
+                .freeze_to_kinematic(&mut arena.dynamic.sim.rigid_bodies);
+        }
+
+        // Build a synthetic snapshot that translates body:0 by 10 m.
+        let body0_handle = arena
+            .machines
+            .get(&42)
+            .and_then(|m| m.machine.body_handle("body:0"))
+            .expect("body:0");
+        let before = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body0_handle)
+            .expect("body:0")
+            .translation();
+        let target = MachineBodySnapshot {
+            index: 0,
+            position: [before.x + 10.0, before.y, before.z],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            linvel: [0.0, 0.0, 0.0],
+            angvel: [0.0, 0.0, 0.0],
+        };
+
+        let mut modified = Vec::new();
+        {
+            let machine = arena.machines.get_mut(&42).expect("machine present");
+            machine.machine.apply_body_snapshot(
+                &mut arena.dynamic.sim.rigid_bodies,
+                &mut modified,
+                &[target],
+            );
+        }
+
+        let after = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body0_handle)
+            .expect("body:0 after snapshot")
+            .translation();
+        assert!(
+            (after.x - (before.x + 10.0)).abs() < 1e-4,
+            "expected body:0 to teleport +10 m in X after snapshot, before={before:?} after={after:?}"
+        );
     }
 }

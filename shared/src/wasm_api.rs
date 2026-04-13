@@ -1280,6 +1280,11 @@ impl WasmSimWorld {
                 .map_err(|e| JsValue::from_str(&e.to_string()))?
         };
 
+        // Client wasm bodies must be kinematic so the integrator
+        // doesn't tug-of-war with incoming server snapshots. See
+        // `SnapMachine::freeze_to_kinematic` for the full rationale.
+        machine.freeze_to_kinematic(&mut self.sim.rigid_bodies);
+
         // Mark every body's colliders modified so the broad-phase BVH picks
         // them up on the next sync.
         let body_handles: Vec<RigidBodyHandle> = machine

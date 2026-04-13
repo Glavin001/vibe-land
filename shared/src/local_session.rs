@@ -657,6 +657,241 @@ mod tests {
         assert_eq!(decode_snapshot_ack(&snapshot), 7);
     }
 
+    /// Encode a `PKT_MACHINE_ENTER` packet — the TS client's
+    /// `enterSnapMachine` call wire format. Mirrors
+    /// `encode_vehicle_enter_packet_for_test`.
+    fn encode_machine_enter_packet_for_test(machine_id: u32) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(5);
+        out.put_u8(PKT_MACHINE_ENTER);
+        out.put_u32_le(machine_id);
+        out.to_vec()
+    }
+
+    /// One snap-machine body's decoded pose + velocities from a
+    /// snapshot packet. Parallel to the inner struct of
+    /// `encode_snapshot_packet`'s machine loop.
+    #[derive(Clone, Copy, Debug)]
+    struct DecodedMachineBody {
+        index: u16,
+        px_mm: i32,
+        py_mm: i32,
+        pz_mm: i32,
+    }
+
+    /// One decoded snap-machine from a snapshot packet — `id`,
+    /// `driver_id`, `flags`, and the full body list.
+    #[derive(Clone, Debug)]
+    struct DecodedMachine {
+        id: u32,
+        driver_id: u32,
+        bodies: Vec<DecodedMachineBody>,
+    }
+
+    /// Decode the `machine_states` trailer of a `PKT_SNAPSHOT` packet.
+    /// Skips past player / projectile / dynamic / vehicle state blocks
+    /// to land on the machine section, then pulls every machine and
+    /// every body.
+    fn decode_snapshot_machine_states(bytes: &[u8]) -> Vec<DecodedMachine> {
+        let mut buf = bytes;
+        assert_eq!(buf.get_u8(), PKT_SNAPSHOT);
+        let _server_time = buf.get_u64_le();
+        let _server_tick = buf.get_u32_le();
+        let _ack = buf.get_u16_le();
+        let player_count = buf.get_u16_le() as usize;
+        let projectile_count = buf.get_u16_le() as usize;
+        let dynamic_count = buf.get_u16_le() as usize;
+        let vehicle_count = buf.get_u16_le() as usize;
+        let machine_count = buf.get_u16_le() as usize;
+
+        // Sizes mirror `encode_snapshot_packet`:
+        //   player  = 29 bytes
+        //   projectile = 31 bytes
+        //   dynamic = 43 bytes
+        //   vehicle = 50 bytes (4 id + 1 type + 1 flags + 4 driver +
+        //             12 pos + 8 quat + 6 linvel + 6 angvel + 8 wheels)
+        for _ in 0..player_count {
+            buf.advance(29);
+        }
+        for _ in 0..projectile_count {
+            buf.advance(31);
+        }
+        for _ in 0..dynamic_count {
+            buf.advance(43);
+        }
+        for _ in 0..vehicle_count {
+            buf.advance(50);
+        }
+
+        let mut out = Vec::with_capacity(machine_count);
+        for _ in 0..machine_count {
+            let id = buf.get_u32_le();
+            let driver_id = buf.get_u32_le();
+            let _flags = buf.get_u8();
+            let body_count = buf.get_u8() as usize;
+            let mut bodies = Vec::with_capacity(body_count);
+            for _ in 0..body_count {
+                let index = buf.get_u16_le();
+                let px_mm = buf.get_i32_le();
+                let py_mm = buf.get_i32_le();
+                let pz_mm = buf.get_i32_le();
+                // 4 i16 quat + 3 i16 linvel + 3 i16 angvel = 20 bytes
+                buf.advance(20);
+                bodies.push(DecodedMachineBody {
+                    index,
+                    px_mm,
+                    py_mm,
+                    pz_mm,
+                });
+            }
+            out.push(DecodedMachine {
+                id,
+                driver_id,
+                bodies,
+            });
+        }
+        out
+    }
+
+    /// Regression test for the "machine doesn't respond to my input"
+    /// bug report. Proves the entire single-player practice pipeline
+    /// (InputBundle → `handle_client_packet` → `decode_input_bundle_frames`
+    /// → `player.last_input.machine_channels` → `arena.step_machines` →
+    /// `SnapMachine::apply_input` → motor solver → snapshot) actually
+    /// drives the car when the operator holds the motor channel at
+    /// full positive. If this ever fails, snap-machines are effectively
+    /// unusable in practice mode, exactly matching the user's report.
+    #[test]
+    fn practice_session_moves_machine_when_driver_holds_motor_channel() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        // The default LocalPreviewSession loads the trail world
+        // document, which ships two authored snap-machines (the
+        // 4-wheel-car at id 70001, the crane at id 70002). We target
+        // the car because its single `motorSpin` channel maps to
+        // channel 0 with zero ambiguity.
+        const CAR_MACHINE_ID: u32 = 70001;
+
+        // First tick → initial snapshot → grab the car's starting
+        // body-0 pose so we can measure the delta after driving.
+        session.tick(1.0 / 60.0);
+        let initial_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("initial preview snapshot");
+        let initial_machines = decode_snapshot_machine_states(&initial_snapshot);
+        assert!(
+            !initial_machines.is_empty(),
+            "trail.world.json ships snap-machines — initial snapshot is empty"
+        );
+        let car_initial = initial_machines
+            .iter()
+            .find(|m| m.id == CAR_MACHINE_ID)
+            .unwrap_or_else(|| {
+                panic!(
+                    "4-wheel-car (id {CAR_MACHINE_ID}) missing from initial snapshot; \
+                     got ids: {:?}",
+                    initial_machines.iter().map(|m| m.id).collect::<Vec<_>>()
+                )
+            });
+        let body0_start = car_initial
+            .bodies
+            .iter()
+            .find(|b| b.index == 0)
+            .copied()
+            .expect("car body 0 present");
+        assert_eq!(
+            car_initial.driver_id, 0,
+            "authored car should start unoccupied"
+        );
+
+        // Send MACHINE_ENTER and tick enough for the car to settle on
+        // its wheels before we start driving — the `step_machines`
+        // test in `snap_machine.rs` uses the same 60-tick settle
+        // phase and proves that motor torque only reliably
+        // accelerates the chassis once the wheels are grounded.
+        session
+            .handle_client_packet(&encode_machine_enter_packet_for_test(CAR_MACHINE_ID))
+            .unwrap();
+        for _ in 0..60 {
+            session.tick(1.0 / 60.0);
+        }
+        let _ = session.drain_packets();
+
+        // Drive for 6 s with `motorSpin = 127`. The 4-wheel-car
+        // exposes exactly one actuator channel (`motorSpin`) and the
+        // deterministic alphabetical sort in `derive_action_channels`
+        // puts it at channel 0 — `chassis_drives_forward_under_motor_input`
+        // in `snap_machine.rs` relies on the same indexing.
+        let mut seq: u16 = 100;
+        let mut last_snapshot: Option<Vec<u8>> = None;
+        for _ in 0..360 {
+            let mut channels = MachineChannels::default();
+            channels[0] = 127;
+            let input = InputCmd {
+                seq,
+                buttons: 0,
+                move_x: 0,
+                move_y: 0,
+                yaw: 0.0,
+                pitch: 0.0,
+                machine_channels: channels,
+            };
+            seq = seq.wrapping_add(1);
+            let bytes = encode_single_input_bundle(&input);
+            session.handle_client_packet(&bytes).unwrap();
+            session.tick(1.0 / 60.0);
+            for pkt in session.drain_packets() {
+                if pkt[0] == PKT_SNAPSHOT {
+                    last_snapshot = Some(pkt);
+                }
+            }
+        }
+        let latest = last_snapshot.expect("at least one snapshot during drive phase");
+        let machines = decode_snapshot_machine_states(&latest);
+        let car_end = machines
+            .iter()
+            .find(|m| m.id == CAR_MACHINE_ID)
+            .expect("car still in arena after drive phase");
+        assert_eq!(
+            car_end.driver_id, LOCAL_PLAYER_ID,
+            "local player should still be driving after 6 s"
+        );
+        let body0_end = car_end
+            .bodies
+            .iter()
+            .find(|b| b.index == 0)
+            .copied()
+            .expect("car body 0 in final snapshot");
+
+        // mm → m for the assert.
+        let dx = (body0_end.px_mm - body0_start.px_mm) as f32 / 1000.0;
+        let dy = (body0_end.py_mm - body0_start.py_mm) as f32 / 1000.0;
+        let dz = (body0_end.pz_mm - body0_start.pz_mm) as f32 / 1000.0;
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        // 2 m is deliberately conservative: the isolated
+        // `chassis_drives_forward_under_motor_input` test in
+        // `snap_machine.rs` hits ≥ 3 m in 6 s on perfectly flat
+        // ground, but trail.world.json's authored terrain is rolling
+        // (the car routinely pitches into a dip around the spawn
+        // area) and the car's authored rotation is not identity, so
+        // roughly 2.5 m is a realistic ceiling here. Anything below
+        // ~0.5 m means the input never reached `apply_input`, which
+        // is the failure mode we're guarding against — the gap
+        // between "working" and "broken" is an order of magnitude.
+        assert!(
+            dist >= 2.0,
+            "4-wheel-car chassis should drive ≥ 2 m under sustained motorSpin=127 input, \
+             got {dist:.3} m (delta = {dx:.3}, {dy:.3}, {dz:.3}). \
+             Settling drift alone is sub-metre, so this shortfall \
+             almost certainly means the InputBundle → \
+             player.last_input.machine_channels pipeline is dropping \
+             channels somewhere."
+        );
+    }
+
     #[test]
     fn local_preview_can_enter_authored_vehicle() {
         let mut session = LocalPreviewSession::new();
@@ -670,12 +905,18 @@ mod tests {
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
             .expect("initial local preview snapshot");
         let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
-        assert_eq!(
-            initial_vehicle.len(),
-            1,
-            "demo local preview should expose one vehicle"
+        // The trail world document now ships more than one authored
+        // vehicle, so pick any unoccupied one instead of insisting on
+        // exactly one.
+        assert!(
+            !initial_vehicle.is_empty(),
+            "demo local preview should expose at least one vehicle"
         );
-        let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
+        let (vehicle_id, driver_id, _, _, _) = initial_vehicle
+            .iter()
+            .copied()
+            .find(|(_, driver_id, _, _, _)| *driver_id == 0)
+            .expect("at least one authored vehicle should start unoccupied");
         assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
 
         session
@@ -690,8 +931,11 @@ mod tests {
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
             .expect("latest local preview snapshot");
         let latest_vehicle = decode_snapshot_vehicle_states(&latest_snapshot);
-        assert_eq!(latest_vehicle.len(), 1);
-        let (_, latest_driver_id, _, _, _) = latest_vehicle[0];
+        let (_, latest_driver_id, _, _, _) = latest_vehicle
+            .iter()
+            .copied()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("entered vehicle should still be in snapshot");
         assert_eq!(
             latest_driver_id, LOCAL_PLAYER_ID,
             "local preview vehicle should be driven by the local player after enter"
