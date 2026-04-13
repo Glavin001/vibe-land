@@ -84,6 +84,13 @@ export class VehiclePredictionManager {
   private vehicleId: number | null = null;
   private accumulator = 0;
   private nextSeq = 1;
+  private lastAckSeq = 0;
+  private lastReplayErrorM = 0;
+  private lastPosErrorM = 0;
+  private lastVelErrorMs = 0;
+  private lastAngVelErrorRadPs = 0;
+  private lastRotErrorRad = 0;
+  private lastCorrectionAtMs = -1;
 
   // Current chassis pose (from physics)
   private currPosition: [number, number, number] = [0, 0, 0];
@@ -125,6 +132,13 @@ export class VehiclePredictionManager {
     this.accumulator = 0;
     this.correctionOffset = [0, 0, 0];
     this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
+    this.lastAckSeq = 0;
+    this.lastReplayErrorM = 0;
+    this.lastPosErrorM = 0;
+    this.lastVelErrorMs = 0;
+    this.lastAngVelErrorRadPs = 0;
+    this.lastRotErrorRad = 0;
+    this.lastCorrectionAtMs = -1;
 
     // Sync WASM chassis to authoritative server state BEFORE activating prediction
     // so the first tick starts from the correct position, not a stale spawn position.
@@ -164,6 +178,13 @@ export class VehiclePredictionManager {
     this.accumulator = 0;
     this.correctionOffset = [0, 0, 0];
     this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
+    this.lastAckSeq = 0;
+    this.lastReplayErrorM = 0;
+    this.lastPosErrorM = 0;
+    this.lastVelErrorMs = 0;
+    this.lastAngVelErrorRadPs = 0;
+    this.lastRotErrorRad = 0;
+    this.lastCorrectionAtMs = -1;
   }
 
   /**
@@ -234,6 +255,7 @@ export class VehiclePredictionManager {
    */
   reconcile(vehicleState: NetVehicleState, ackInputSeq: number): void {
     if (this.vehicleId === null) return;
+    this.lastAckSeq = ackInputSeq;
 
     const serverPos: [number, number, number] = [
       vehicleState.pxMm / 1000,
@@ -276,6 +298,11 @@ export class VehiclePredictionManager {
     const oldPosition: [number, number, number] = [...this.currPosition];
     const oldQuat = this.currQuaternion;
     const oldCorrectionQuat = this.correctionQuatOffset;
+    this.lastPosErrorM = Math.hypot(
+      this.currPosition[0] - serverPos[0],
+      this.currPosition[1] - serverPos[1],
+      this.currPosition[2] - serverPos[2],
+    );
 
     const result = this.sim.reconcileVehicle(
       VEHICLE_CORRECTION_DISTANCE,
@@ -297,6 +324,17 @@ export class VehiclePredictionManager {
     const dy = result[11] as number;
     const dz = result[12] as number;
     const replayError = Math.hypot(dx, dy, dz);
+    this.lastReplayErrorM = replayError;
+    this.lastVelErrorMs = Math.hypot(
+      (result[7] as number) - serverVel[0],
+      (result[8] as number) - serverVel[1],
+      (result[9] as number) - serverVel[2],
+    );
+    this.lastAngVelErrorRadPs = Math.hypot(
+      serverAngVel[0],
+      serverAngVel[1],
+      serverAngVel[2],
+    );
 
     const newQuat: [number, number, number, number] = [
       result[3] as number,
@@ -304,6 +342,14 @@ export class VehiclePredictionManager {
       result[5] as number,
       result[6] as number,
     ];
+    const dot = Math.abs(
+      oldQuat[0] * serverQuat[0]
+      + oldQuat[1] * serverQuat[1]
+      + oldQuat[2] * serverQuat[2]
+      + oldQuat[3] * serverQuat[3],
+    );
+    this.lastRotErrorRad = 2 * Math.acos(Math.min(1, dot));
+    this.lastCorrectionAtMs = performance.now();
 
     if (replayError > VEHICLE_HARD_SNAP_DISTANCE) {
       this.currPosition = [result[0], result[1], result[2]];
@@ -356,6 +402,28 @@ export class VehiclePredictionManager {
       this.correctionOffset[1],
       this.correctionOffset[2],
     );
+  }
+
+  getDebugState(): {
+    pendingInputs: number;
+    ackSeq: number;
+    lastReplayErrorM: number;
+    lastPosErrorM: number;
+    lastVelErrorMs: number;
+    lastAngVelErrorRadPs: number;
+    lastRotErrorRad: number;
+    lastCorrectionAgeMs: number;
+  } {
+    return {
+      pendingInputs: this.sim.getVehiclePendingCount(),
+      ackSeq: this.lastAckSeq,
+      lastReplayErrorM: this.lastReplayErrorM,
+      lastPosErrorM: this.lastPosErrorM,
+      lastVelErrorMs: this.lastVelErrorMs,
+      lastAngVelErrorRadPs: this.lastAngVelErrorRadPs,
+      lastRotErrorRad: this.lastRotErrorRad,
+      lastCorrectionAgeMs: this.lastCorrectionAtMs >= 0 ? performance.now() - this.lastCorrectionAtMs : -1,
+    };
   }
 
   dispose(): void {

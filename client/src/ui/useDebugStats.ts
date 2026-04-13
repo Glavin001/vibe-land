@@ -66,7 +66,16 @@ export function useDebugStats() {
   const updateFrame = useCallback((
     frameTimeMs: number,
     rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
-    network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
+    network: {
+      pingMs: number;
+      serverTick: number;
+      interpolationDelayMs: number;
+      dynamicBodyInterpolationDelayMs: number;
+      clockOffsetUs: number;
+      remotePlayers: number;
+      transport: string;
+      playerId: number;
+    },
     debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
     physics: {
       pendingInputs: number;
@@ -79,6 +88,15 @@ export function useDebugStats() {
       dynamicOverThresholdCount: number;
       dynamicTrackedBodies: number;
       dynamicInteractiveBodies: number;
+      lastDynamicShotBodyId: number;
+      lastDynamicShotAgeMs: number;
+      vehiclePendingInputs: number;
+      vehicleAckSeq: number;
+      vehicleReplayErrorM: number;
+      vehiclePosErrorM: number;
+      vehicleVelErrorMs: number;
+      vehicleRotErrorRad: number;
+      vehicleCorrectionAgeMs: number;
       physicsStepMs: number;
       velocity: [number, number, number];
     },
@@ -92,6 +110,54 @@ export function useDebugStats() {
       steering: number;
       engineForce: number;
       brake: number;
+    },
+    telemetry: {
+      lastSnapshotGapMs: number;
+      snapshotGapP95Ms: number;
+      snapshotGapMaxMs: number;
+      lastSnapshotSource: string;
+      staleSnapshotsDropped: number;
+      reliableSnapshotsReceived: number;
+      datagramSnapshotsReceived: number;
+      localSnapshotsReceived: number;
+      directSnapshotsReceived: number;
+      playerCorrectionPeak5sM: number;
+      vehicleCorrectionPeak5sM: number;
+      dynamicCorrectionPeak5sM: number;
+      pendingInputsPeak5s: number;
+      shotsFired: number;
+      shotsPending: number;
+      shotAuthoritativeMoves: number;
+      shotMismatches: number;
+      lastShotOutcome: string;
+      lastShotOutcomeAgeMs: number;
+      lastShotPredictedBodyId: number;
+      lastShotProxyHitBodyId: number;
+      lastShotProxyHitToi: number;
+      lastShotBlockedByBlocker: boolean;
+      lastShotLocalPredictedDeltaM: number;
+      lastShotDynamicSampleAgeMs: number;
+      lastShotPredictedBodyRecentInteraction: boolean;
+      lastShotBlockerDistance: number;
+      lastShotRenderedBodyId: number;
+      lastShotRenderedBodyToi: number;
+      lastShotRenderProxyDeltaM: number;
+      lastShotRenderedBodyProxyPresent: boolean;
+      lastShotRenderedBodyProxyToi: number;
+      lastShotRenderedBodyProxyCenterDeltaM: number;
+      lastShotNearestProxyBodyId: number;
+      lastShotNearestProxyBodyToi: number;
+      lastShotNearestProxyBodyMissDistanceM: number;
+      lastShotNearestProxyBodyRadiusM: number;
+      lastShotNearestRenderedBodyId: number;
+      lastShotNearestRenderedBodyToi: number;
+      lastShotNearestRenderedBodyMissDistanceM: number;
+      lastShotNearestRenderedBodyRadiusM: number;
+      lastShotServerResolution: number;
+      lastShotServerDynamicBodyId: number;
+      lastShotServerDynamicHitToiM: number;
+      lastShotServerDynamicImpulseMag: number;
+      recentEvents: string[];
     },
     position: [number, number, number],
     player: { velocity: [number, number, number]; hp: number; localFlags: number },
@@ -136,10 +202,20 @@ export function useDebugStats() {
     s.pingMs = network.pingMs;
     s.serverTick = network.serverTick;
     s.interpolationDelayMs = network.interpolationDelayMs;
+    s.dynamicBodyInterpolationDelayMs = network.dynamicBodyInterpolationDelayMs;
     s.clockOffsetUs = network.clockOffsetUs;
     s.remotePlayers = network.remotePlayers;
     s.snapshotsPerSec = snapshotsPerSec;
     s.jitterMs = jitterMs;
+    s.lastSnapshotGapMs = telemetry.lastSnapshotGapMs;
+    s.snapshotGapP95Ms = telemetry.snapshotGapP95Ms;
+    s.snapshotGapMaxMs = telemetry.snapshotGapMaxMs;
+    s.lastSnapshotSource = telemetry.lastSnapshotSource;
+    s.staleSnapshotsDropped = telemetry.staleSnapshotsDropped;
+    s.reliableSnapshotsReceived = telemetry.reliableSnapshotsReceived;
+    s.datagramSnapshotsReceived = telemetry.datagramSnapshotsReceived;
+    s.localSnapshotsReceived = telemetry.localSnapshotsReceived;
+    s.directSnapshotsReceived = telemetry.directSnapshotsReceived;
     s.playerId = network.playerId;
     s.rapierDebugLabel = debug.rapierDebugLabel;
     s.rapierDebugModeBits = debug.rapierDebugModeBits;
@@ -153,7 +229,53 @@ export function useDebugStats() {
     s.dynamicOverThresholdCount = physics.dynamicOverThresholdCount;
     s.dynamicTrackedBodies = physics.dynamicTrackedBodies;
     s.dynamicInteractiveBodies = physics.dynamicInteractiveBodies;
+    s.lastDynamicShotBodyId = physics.lastDynamicShotBodyId;
+    s.lastDynamicShotAgeMs = physics.lastDynamicShotAgeMs;
+    s.vehiclePendingInputs = physics.vehiclePendingInputs;
+    s.vehicleAckSeq = physics.vehicleAckSeq;
+    s.vehicleReplayErrorM = physics.vehicleReplayErrorM;
+    s.vehiclePosErrorM = physics.vehiclePosErrorM;
+    s.vehicleVelErrorMs = physics.vehicleVelErrorMs;
+    s.vehicleRotErrorRad = physics.vehicleRotErrorRad;
+    s.vehicleCorrectionAgeMs = physics.vehicleCorrectionAgeMs;
+    s.playerCorrectionPeak5sM = telemetry.playerCorrectionPeak5sM;
+    s.vehicleCorrectionPeak5sM = telemetry.vehicleCorrectionPeak5sM;
+    s.dynamicCorrectionPeak5sM = telemetry.dynamicCorrectionPeak5sM;
+    s.pendingInputsPeak5s = telemetry.pendingInputsPeak5s;
     s.physicsStepMs = physics.physicsStepMs;
+    s.shotsFired = telemetry.shotsFired;
+    s.shotsPending = telemetry.shotsPending;
+    s.shotAuthoritativeMoves = telemetry.shotAuthoritativeMoves;
+    s.shotMismatches = telemetry.shotMismatches;
+    s.lastShotOutcome = telemetry.lastShotOutcome;
+    s.lastShotOutcomeAgeMs = telemetry.lastShotOutcomeAgeMs;
+    s.lastShotPredictedBodyId = telemetry.lastShotPredictedBodyId;
+    s.lastShotProxyHitBodyId = telemetry.lastShotProxyHitBodyId;
+    s.lastShotProxyHitToi = telemetry.lastShotProxyHitToi;
+    s.lastShotBlockedByBlocker = telemetry.lastShotBlockedByBlocker;
+    s.lastShotLocalPredictedDeltaM = telemetry.lastShotLocalPredictedDeltaM;
+    s.lastShotDynamicSampleAgeMs = telemetry.lastShotDynamicSampleAgeMs;
+    s.lastShotPredictedBodyRecentInteraction = telemetry.lastShotPredictedBodyRecentInteraction;
+    s.lastShotBlockerDistance = telemetry.lastShotBlockerDistance;
+    s.lastShotRenderedBodyId = telemetry.lastShotRenderedBodyId;
+    s.lastShotRenderedBodyToi = telemetry.lastShotRenderedBodyToi;
+    s.lastShotRenderProxyDeltaM = telemetry.lastShotRenderProxyDeltaM;
+    s.lastShotRenderedBodyProxyPresent = telemetry.lastShotRenderedBodyProxyPresent;
+    s.lastShotRenderedBodyProxyToi = telemetry.lastShotRenderedBodyProxyToi;
+    s.lastShotRenderedBodyProxyCenterDeltaM = telemetry.lastShotRenderedBodyProxyCenterDeltaM;
+    s.lastShotNearestProxyBodyId = telemetry.lastShotNearestProxyBodyId;
+    s.lastShotNearestProxyBodyToi = telemetry.lastShotNearestProxyBodyToi;
+    s.lastShotNearestProxyBodyMissDistanceM = telemetry.lastShotNearestProxyBodyMissDistanceM;
+    s.lastShotNearestProxyBodyRadiusM = telemetry.lastShotNearestProxyBodyRadiusM;
+    s.lastShotNearestRenderedBodyId = telemetry.lastShotNearestRenderedBodyId;
+    s.lastShotNearestRenderedBodyToi = telemetry.lastShotNearestRenderedBodyToi;
+    s.lastShotNearestRenderedBodyMissDistanceM = telemetry.lastShotNearestRenderedBodyMissDistanceM;
+    s.lastShotNearestRenderedBodyRadiusM = telemetry.lastShotNearestRenderedBodyRadiusM;
+    s.lastShotServerResolution = telemetry.lastShotServerResolution;
+    s.lastShotServerDynamicBodyId = telemetry.lastShotServerDynamicBodyId;
+    s.lastShotServerDynamicHitToiM = telemetry.lastShotServerDynamicHitToiM;
+    s.lastShotServerDynamicImpulseMag = telemetry.lastShotServerDynamicImpulseMag;
+    s.recentEvents = telemetry.recentEvents;
     s.vehicleDebugId = vehicle.id;
     s.vehicleDriverConfirmed = vehicle.driverConfirmed;
     s.vehicleLocalSpeedMs = vehicle.localSpeedMs;

@@ -12,34 +12,29 @@ mod tests {
     use crate::movement::MoveConfig;
 
     #[test]
-    fn default_world_bootstrap_matches_demo_document_counts() {
-        let world = WorldDocument::demo();
+    fn default_world_bootstrap_matches_expected_multiplayer_counts() {
         let mut arena = PhysicsArena::new(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
-        let expected_dynamic_bodies = world
-            .dynamic_entities
-            .iter()
-            .filter(|entity| {
-                !matches!(
-                    entity.kind,
-                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
-                )
-            })
-            .count();
-        let expected_vehicles = world
-            .dynamic_entities
-            .iter()
-            .filter(|entity| {
-                matches!(
-                    entity.kind,
-                    vibe_land_shared::world_document::DynamicEntityKind::Vehicle
-                )
-            })
-            .count();
+        assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
+        assert_eq!(arena.vehicles.len(), 1);
+    }
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), expected_dynamic_bodies);
-        assert_eq!(arena.vehicles.len(), expected_vehicles);
+    #[test]
+    fn default_world_stays_within_multiplayer_dynamic_budget() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
+
+        assert!(
+            arena.dynamic.dynamic_bodies.len() <= 51,
+            "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 51 to match the authored default world",
+            arena.dynamic.dynamic_bodies.len()
+        );
+        assert!(
+            arena.vehicles.len() <= 1,
+            "default multiplayer world spawned {} vehicles; keep it at or under 1",
+            arena.vehicles.len()
+        );
     }
 
     #[test]

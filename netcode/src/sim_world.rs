@@ -1,4 +1,6 @@
-use nalgebra::{vector, DMatrix, Isometry3, Point3, Vector3};
+use nalgebra::{
+    vector, DMatrix, Isometry3, Point3, Quaternion, Translation3, UnitQuaternion, Vector3,
+};
 use rapier3d::control::{
     CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
 };
@@ -195,7 +197,7 @@ impl SimWorld {
         };
 
         sim.integration_parameters.dt = 1.0 / 60.0;
-        sim.integration_parameters.num_solver_iterations = 8;
+        sim.integration_parameters.num_solver_iterations = 2;
         sim
     }
 
@@ -216,14 +218,41 @@ impl SimWorld {
         )
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+    ) -> ColliderHandle {
+        let orientation = UnitQuaternion::from_quaternion(Quaternion::new(
+            rotation[3],
+            rotation[0],
+            rotation[1],
+            rotation[2],
+        ));
+        self.colliders.insert(
+            ColliderBuilder::cuboid(half_extents.x, half_extents.y, half_extents.z)
+                .position(Isometry3::from_parts(
+                    Translation3::from(center),
+                    orientation,
+                ))
+                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
+                .user_data(user_data)
+                .build(),
+        )
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vector3<f32>,
         heights: DMatrix<f32>,
         scale: Vector3<f32>,
         user_data: u128,
     ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::heightfield(heights, scale)
+                .translation(center)
                 .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
                 .user_data(user_data)
                 .build(),
@@ -740,7 +769,7 @@ mod tests {
     fn raycast_hits_heightfield_ground() {
         let mut sim = SimWorld::new(MoveConfig::default());
         let heights = DMatrix::from_element(4, 4, 0.0);
-        sim.add_static_heightfield(heights, vector![20.0, 1.0, 20.0], 0);
+        sim.add_static_heightfield(vector![0.0, 0.0, 0.0], heights, vector![20.0, 1.0, 20.0], 0);
         sim.rebuild_broad_phase();
 
         let hit = sim.cast_ray([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 100.0, None);

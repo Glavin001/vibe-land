@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
+import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
@@ -23,6 +24,7 @@ export type ConnectionState = {
   remoteInterpolator: PlayerInterpolator;
   serverClock: ServerClockEstimator;
   interpolationDelayMs: number;
+  dynamicBodyInterpolationDelayMs: number;
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
@@ -45,6 +47,7 @@ export function useGameConnection(
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
+  const multiplayerMatchId = useMemo(() => resolveRequestedMatchId(window.location.search), []);
   const clientRef = useRef<NetcodeClient | null>(null);
 
   // Keep callbacks in refs so the NetcodeClient doesn't need to be recreated
@@ -67,6 +70,7 @@ export function useGameConnection(
     remoteInterpolator: new PlayerInterpolator(),
     serverClock: new ServerClockEstimator(),
     interpolationDelayMs: 100,
+    dynamicBodyInterpolationDelayMs: 16,
     latestServerTick: 0,
     remotePlayers: new Map(),
     dynamicBodies: new Map(),
@@ -101,12 +105,14 @@ export function useGameConnection(
         // Sync ConnectionState ref for GameWorld backward compat
         stateRef.current.latestServerTick = client.latestServerTick;
         stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
+        stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
       },
     });
 
     // Wire the ConnectionState ref to point at client internals
     stateRef.current.remoteInterpolator = client.interpolator;
     stateRef.current.serverClock = client.serverClock;
+    stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
     stateRef.current.remotePlayers = client.remotePlayers;
     stateRef.current.dynamicBodies = client.dynamicBodies;
 
@@ -122,11 +128,10 @@ export function useGameConnection(
     if (practiceMode) {
       void client.connectLocalPreview(practiceWorldJson);
     } else {
-      const matchId = 'default';
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
-      const wsUrl = multiplayerBackend.createMatchWebSocketUrl(matchId, identity, token);
-      void client.connectWithFallback(matchId, wsUrl, multiplayerBackend.sessionConfigEndpoint);
+      const wsUrl = multiplayerBackend.createMatchWebSocketUrl(multiplayerMatchId, identity, token);
+      void client.connectWithFallback(multiplayerMatchId, wsUrl, multiplayerBackend.sessionConfigEndpoint);
     }
 
     return () => {
@@ -137,7 +142,7 @@ export function useGameConnection(
       clientRef.current = null;
       setReady(false);
     };
-  }, [multiplayerBackend, practiceMode, practiceWorldJson]);
+  }, [multiplayerBackend, multiplayerMatchId, practiceMode, practiceWorldJson]);
 
   const sendInputs = useCallback((cmds: InputCmd[]) => {
     clientRef.current?.sendInputs(cmds);

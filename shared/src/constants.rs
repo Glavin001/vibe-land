@@ -30,6 +30,9 @@ pub const PKT_CHUNK_FULL: u8 = 104;
 pub const PKT_CHUNK_DIFF: u8 = 105;
 pub const PKT_PING: u8 = 110;
 pub const PKT_PONG: u8 = 111;
+pub const PKT_SNAPSHOT_V2: u8 = 112;
+pub const PKT_PLAYER_ROSTER: u8 = 113;
+pub const PKT_DYNAMIC_BODY_META: u8 = 114;
 
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;

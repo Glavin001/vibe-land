@@ -79,6 +79,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   ): boolean;
   stepDynamics(dt: number): void;
   getVehicleDebug(id: number): number[];
+  getVehiclePendingCount(): number;
   debugRender(modeBits: number): WasmDebugRenderBuffers;
   syncRemoteVehicle(
     id: number,

@@ -10,6 +10,9 @@ const DYNAMIC_BODY_DEBUG_THRESHOLD_M = 0.25;
 const DYNAMIC_BODY_INTERACTION_WINDOW_MS = 500;
 const DYNAMIC_BODY_PROXY_STEP_DT = 1 / 60;
 const MAX_PROXY_CATCHUP_STEPS = 4;
+const DYNAMIC_BODY_SETTLED_LINEAR_SPEED_MPS = 0.15;
+const DYNAMIC_BODY_SETTLED_ANGULAR_SPEED_RADPS = 0.5;
+const DYNAMIC_BODY_MISMATCH_SNAP_DISTANCE_M = 0.08;
 
 export class DynamicBodyPredictionManager {
   private readonly latestMeta = new Map<number, Pick<DynamicBodyStateMeters, 'shapeType' | 'halfExtents'>>();
@@ -22,7 +25,12 @@ export class DynamicBodyPredictionManager {
   advance(frameDeltaSec: number, allowProxyStep: boolean): void {
     const now = performance.now();
     for (const [id, untilMs] of this.recentInteractionUntilMs) {
-      if (untilMs <= now) {
+      if (untilMs > now) {
+        continue;
+      }
+      if (this.isBodyStillMoving(id)) {
+        this.recentInteractionUntilMs.set(id, now + DYNAMIC_BODY_INTERACTION_WINDOW_MS);
+      } else {
         this.recentInteractionUntilMs.delete(id);
       }
     }
@@ -79,32 +87,72 @@ export class DynamicBodyPredictionManager {
           body.position[1] - currentState.position[1],
           body.position[2] - currentState.position[2],
         );
-        this.lastCorrectionMagnitude.set(body.id, correctionMagnitude);
-        this.sim.reconcileDynamicBody(
-          body.id,
-          body.shapeType,
-          body.halfExtents[0],
-          body.halfExtents[1],
-          body.halfExtents[2],
-          body.position[0],
-          body.position[1],
-          body.position[2],
-          body.quaternion[0],
-          body.quaternion[1],
-          body.quaternion[2],
-          body.quaternion[3],
+        const authoritativeLinearSpeed = Math.hypot(
           body.velocity[0],
           body.velocity[1],
           body.velocity[2],
+        );
+        const authoritativeAngularSpeed = Math.hypot(
           body.angularVelocity[0],
           body.angularVelocity[1],
           body.angularVelocity[2],
-          DYNAMIC_BODY_POS_THRESHOLD_M,
-          DYNAMIC_BODY_ROT_THRESHOLD_RAD,
-          DYNAMIC_BODY_HARD_SNAP_DISTANCE_M,
-          DYNAMIC_BODY_HARD_SNAP_ROT_RAD,
-          DYNAMIC_BODY_CORRECTION_TIME_S,
         );
+        this.lastCorrectionMagnitude.set(body.id, correctionMagnitude);
+        const authoritativeSettled =
+          authoritativeLinearSpeed <= DYNAMIC_BODY_SETTLED_LINEAR_SPEED_MPS
+          && authoritativeAngularSpeed <= DYNAMIC_BODY_SETTLED_ANGULAR_SPEED_RADPS;
+        if (
+          correctionMagnitude >= DYNAMIC_BODY_MISMATCH_SNAP_DISTANCE_M
+          && authoritativeSettled
+        ) {
+          this.sim.syncDynamicBody(
+            body.id,
+            body.shapeType,
+            body.halfExtents[0],
+            body.halfExtents[1],
+            body.halfExtents[2],
+            body.position[0],
+            body.position[1],
+            body.position[2],
+            body.quaternion[0],
+            body.quaternion[1],
+            body.quaternion[2],
+            body.quaternion[3],
+            body.velocity[0],
+            body.velocity[1],
+            body.velocity[2],
+            body.angularVelocity[0],
+            body.angularVelocity[1],
+            body.angularVelocity[2],
+          );
+          this.recentInteractionUntilMs.delete(body.id);
+        } else {
+          this.sim.reconcileDynamicBody(
+            body.id,
+            body.shapeType,
+            body.halfExtents[0],
+            body.halfExtents[1],
+            body.halfExtents[2],
+            body.position[0],
+            body.position[1],
+            body.position[2],
+            body.quaternion[0],
+            body.quaternion[1],
+            body.quaternion[2],
+            body.quaternion[3],
+            body.velocity[0],
+            body.velocity[1],
+            body.velocity[2],
+            body.angularVelocity[0],
+            body.angularVelocity[1],
+            body.angularVelocity[2],
+            DYNAMIC_BODY_POS_THRESHOLD_M,
+            DYNAMIC_BODY_ROT_THRESHOLD_RAD,
+            DYNAMIC_BODY_HARD_SNAP_DISTANCE_M,
+            DYNAMIC_BODY_HARD_SNAP_ROT_RAD,
+            DYNAMIC_BODY_CORRECTION_TIME_S,
+          );
+        }
       } else {
         // For non-interacted bodies, keep the local collider world aligned to
         // the latest authoritative snapshot instead of leaving a lagging proxy
@@ -252,6 +300,21 @@ export class DynamicBodyPredictionManager {
     };
   }
 
+  getPhysicsBodyState(id: number): DynamicBodyStateMeters | null {
+    const physicsState = this.readPhysicsState(id);
+    const meta = this.latestMeta.get(id);
+    if (!physicsState || !meta) return null;
+    return {
+      ...physicsState,
+      shapeType: meta.shapeType,
+      halfExtents: meta.halfExtents,
+    };
+  }
+
+  getCorrectionMagnitudeForBody(id: number): number {
+    return this.lastCorrectionMagnitude.get(id) ?? 0;
+  }
+
   clear(): void {
     this.latestMeta.clear();
     this.recentInteractionUntilMs.clear();
@@ -271,5 +334,18 @@ export class DynamicBodyPredictionManager {
       angularVelocity: [state[10], state[11], state[12]],
       halfExtents: [0, 0, 0],
     };
+  }
+
+  private isBodyStillMoving(id: number): boolean {
+    const state = this.readPhysicsState(id);
+    if (!state) return false;
+    const linearSpeed = Math.hypot(state.velocity[0], state.velocity[1], state.velocity[2]);
+    const angularSpeed = Math.hypot(
+      state.angularVelocity[0],
+      state.angularVelocity[1],
+      state.angularVelocity[2],
+    );
+    return linearSpeed > DYNAMIC_BODY_SETTLED_LINEAR_SPEED_MPS
+      || angularSpeed > DYNAMIC_BODY_SETTLED_ANGULAR_SPEED_RADPS;
   }
 }

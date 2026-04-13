@@ -11,7 +11,9 @@ pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
 pub use vibe_land_shared::simulation::{simulate_player_tick, PlayerTickResult};
-use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
+use vibe_land_shared::vehicle::{
+    create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
+};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -118,14 +120,26 @@ impl PhysicsArena {
             .add_static_cuboid(center, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vec3,
         heights: DMatrix<f32>,
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
         self.dynamic
-            .add_static_heightfield(heights, scale, user_data)
+            .add_static_heightfield(center, heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -278,10 +292,19 @@ impl PhysicsArena {
             let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
                 continue;
             };
+            let collider_pose = collider
+                .parent()
+                .and_then(|parent| self.dynamic.sim.rigid_bodies.get(parent))
+                .and_then(|parent_rb| {
+                    collider
+                        .position_wrt_parent()
+                        .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                })
+                .unwrap_or(*collider.position());
             let Some(hit) =
                 collider
                     .shape()
-                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                    .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
             else {
                 continue;
             };
@@ -453,7 +476,7 @@ impl PhysicsArena {
             }
 
             // Collect driver input from the player driving this vehicle.
-            let (steering, engine_force, brake) = {
+            let (reset_requested, steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
                     None => continue,
@@ -462,23 +485,38 @@ impl PhysicsArena {
                     if let Some(player) = self.players.get(&driver_id) {
                         let (steering, engine_force, brake) =
                             vehicle_wheel_params(&player.last_input);
-                        (steering, engine_force, brake)
+                        (
+                            player.last_input.buttons & BTN_RELOAD != 0,
+                            steering,
+                            engine_force,
+                            brake,
+                        )
                     } else {
-                        (0.0, 0.0, 0.0)
+                        (false, 0.0, 0.0, 0.0)
                     }
                 } else {
-                    (0.0, 0.0, 0.0)
+                    (false, 0.0, 0.0, 0.0)
                 }
             };
 
             // Apply inputs to wheels.
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
+            if reset_requested {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
+                    reset_vehicle_body(rb);
+                }
+            }
             for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
                 if i < 2 {
-                    wheel.steering = steering; // front-wheel steering
+                    wheel.steering = if reset_requested { 0.0 } else { steering };
+                    // front-wheel steering
                 }
-                wheel.engine_force = if i >= 2 { engine_force } else { 0.0 }; // RWD
-                wheel.brake = brake;
+                wheel.engine_force = if !reset_requested && i >= 2 {
+                    engine_force
+                } else {
+                    0.0
+                }; // RWD
+                wheel.brake = if reset_requested { 0.0 } else { brake };
             }
 
             // Run suspension + traction.
@@ -617,12 +655,24 @@ impl PhysicsArena {
 }
 
 impl WorldDocumentArena for PhysicsArena {
-    fn add_static_heightfield(&mut self, heights: DMatrix<f32>, scale: Vec3, user_data: u128) {
-        PhysicsArena::add_static_heightfield(self, heights, scale, user_data);
+    fn add_static_heightfield(
+        &mut self,
+        center: Vec3,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_heightfield(self, center, heights, scale, user_data);
     }
 
-    fn add_static_cuboid(&mut self, center: Vec3, half_extents: Vec3, user_data: u128) {
-        PhysicsArena::add_static_cuboid(self, center, half_extents, user_data);
+    fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_cuboid_rotated(self, center, rotation, half_extents, user_data);
     }
 
     fn spawn_dynamic_box_with_id(
@@ -1288,6 +1338,43 @@ mod tests {
             pre_y,
             post_ball.1[1],
         );
+    }
+
+    #[test]
+    fn cast_dynamic_body_ray_uses_current_authoritative_body_pose() {
+        let mut arena = arena_with_ground();
+        let ball_id = arena.spawn_dynamic_ball(vector![0.0, 1.0, 6.0], 0.3);
+        arena.rebuild_broad_phase();
+
+        let origin = [0.0, 1.0, 0.0];
+        let dir = [0.0, 0.0, 1.0];
+        let first_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert_eq!(first_hit.map(|(id, _, _)| id), Some(ball_id));
+
+        let db = arena.dynamic.dynamic_bodies.get(&ball_id).unwrap();
+        let rb = arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get_mut(db.body_handle)
+            .unwrap();
+        rb.set_translation(vector![3.0, 1.0, 6.0], true);
+        arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut arena.dynamic.sim.colliders);
+        arena.sync_broad_phase();
+
+        let stale_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert!(
+            stale_hit.is_none(),
+            "raycast should miss the old position after the authoritative body moved"
+        );
+
+        let moved_origin = [3.0, 1.0, 0.0];
+        let moved_hit = arena.cast_dynamic_body_ray(moved_origin, dir, 20.0, None);
+        assert_eq!(moved_hit.map(|(id, _, _)| id), Some(ball_id));
     }
 
     #[test]

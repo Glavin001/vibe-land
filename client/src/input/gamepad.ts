@@ -1,3 +1,4 @@
+import type { InputBindings } from './bindings';
 import type { ActionSnapshot, InputContext } from './types';
 
 const LEFT_STICK_DEADZONE = 0.18;
@@ -55,22 +56,31 @@ export class GamepadInputSource {
     }
   }
 
-  sample(deltaSec: number, context: InputContext): ActionSnapshot | null {
+  sample(deltaSec: number, context: InputContext, bindings: InputBindings): ActionSnapshot | null {
     const pads = navigator.getGamepads?.() ?? [];
     const gamepad = pads.find((pad) => Boolean(pad && pad.connected && pad.mapping === 'standard'))
       ?? pads.find((pad) => Boolean(pad && pad.connected))
       ?? null;
     if (!gamepad) return null;
 
+    const gamepadBindings = bindings.gamepad;
     const previous = this.previous;
     this.noteActivityIfChanged(gamepad, previous);
 
-    const [moveX, moveYRaw] = applyRadialDeadzone(gamepad.axes[0] ?? 0, gamepad.axes[1] ?? 0, LEFT_STICK_DEADZONE);
-    const [lookXRaw, lookYRaw] = applyRadialDeadzone(gamepad.axes[2] ?? 0, gamepad.axes[3] ?? 0, RIGHT_STICK_DEADZONE);
+    const [moveX, moveYRaw] = applyRadialDeadzone(
+      gamepad.axes[gamepadBindings.moveXAxis] ?? 0,
+      gamepad.axes[gamepadBindings.moveYAxis] ?? 0,
+      LEFT_STICK_DEADZONE,
+    );
+    const [lookXRaw, lookYRaw] = applyRadialDeadzone(
+      gamepad.axes[gamepadBindings.lookXAxis] ?? 0,
+      gamepad.axes[gamepadBindings.lookYAxis] ?? 0,
+      RIGHT_STICK_DEADZONE,
+    );
     const lookX = -shapeLookAxis(lookXRaw) * GAMEPAD_YAW_SPEED * deltaSec;
     const lookY = shapeLookAxis(lookYRaw) * GAMEPAD_PITCH_SPEED * deltaSec;
-    const rt = buttonValue(gamepad, 7);
-    const lt = buttonValue(gamepad, 6);
+    const rt = buttonValue(gamepad, gamepadBindings.throttleButton);
+    const lt = buttonValue(gamepad, gamepadBindings.brakeButton);
     const steer = moveX;
     const throttle = context === 'vehicle' ? rt : Math.max(0, -moveYRaw);
     const brake = context === 'vehicle' ? lt : 0;
@@ -85,17 +95,18 @@ export class GamepadInputSource {
       steer,
       throttle,
       brake,
-      jump: context === 'onFoot' && buttonPressed(gamepad, 0),
-      sprint: context === 'onFoot' && buttonPressed(gamepad, 10),
-      crouch: context === 'onFoot' && buttonPressed(gamepad, 1),
-      firePrimary: context === 'onFoot' && rt > PRESSED_EPSILON,
-      firePrimaryValue: context === 'onFoot' ? rt : 0,
-      handbrake: context === 'vehicle' && buttonPressed(gamepad, 0),
-      interactPressed: buttonJustPressed(gamepad, previous, 2),
-      blockRemovePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 4),
-      blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 5),
-      materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 14),
-      materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 15),
+      jump: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.jumpButton),
+      sprint: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.sprintButton),
+      crouch: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.crouchButton),
+      firePrimary: context === 'onFoot' && buttonValue(gamepad, gamepadBindings.firePrimaryButton) > PRESSED_EPSILON,
+      firePrimaryValue: context === 'onFoot' ? buttonValue(gamepad, gamepadBindings.firePrimaryButton) : 0,
+      handbrake: context === 'vehicle' && buttonPressed(gamepad, gamepadBindings.handbrakeButton),
+      interactPressed: buttonJustPressed(gamepad, previous, gamepadBindings.interactButton),
+      resetVehiclePressed: context === 'vehicle' && buttonJustPressed(gamepad, previous, gamepadBindings.resetVehicleButton),
+      blockRemovePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockRemoveButton),
+      blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockPlaceButton),
+      materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot1Button),
+      materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot2Button),
     };
 
     this.previous = {

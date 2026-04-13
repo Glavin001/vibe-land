@@ -1,7 +1,15 @@
+import {
+  gamepadAxisLabel,
+  gamepadButtonLabel,
+  keyboardCodeLabel,
+  mouseButtonLabel,
+  type InputBindings,
+} from '../input/bindings';
 import type { ActionSnapshot, DeviceFamily, InputContext, InputFamilyMode } from '../input/types';
 import type { ControlHintsState } from './useControlHints';
 
 type ControlHintsOverlayProps = {
+  bindings: InputBindings;
   state: ControlHintsState;
   visible: boolean;
   inputFamilyMode: InputFamilyMode;
@@ -27,54 +35,69 @@ function boolValue(value: boolean): number {
   return value ? 1 : 0;
 }
 
-function buildRows(family: DeviceFamily, context: InputContext, action: ActionSnapshot | null): RowSpec[] {
+function formatKeyboardMoveBinding(bindings: InputBindings['keyboard']): string {
+  return `${keyboardCodeLabel(bindings.moveForward)} ${keyboardCodeLabel(bindings.moveLeft)} ${keyboardCodeLabel(bindings.moveBackward)} ${keyboardCodeLabel(bindings.moveRight)}`;
+}
+
+function buildRows(
+  family: DeviceFamily,
+  context: InputContext,
+  action: ActionSnapshot | null,
+  bindings: InputBindings,
+): RowSpec[] {
   if (context === 'vehicle') {
     if (family === 'gamepad') {
+      const gamepad = bindings.gamepad;
       return [
-        { command: 'Steer', binding: 'Left Stick', value: clamp01(Math.abs(action?.steer ?? 0)) },
-        { command: 'Throttle', binding: 'RT', value: clamp01(action?.throttle ?? 0) },
-        { command: 'Brake / Reverse', binding: 'LT', value: clamp01(action?.brake ?? 0) },
-        { command: 'Camera', binding: 'Right Stick', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
-        { command: 'Handbrake', binding: 'A', value: boolValue(action?.handbrake ?? false), active: action?.handbrake ?? false },
-        { command: 'Exit Vehicle', binding: 'X', value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
+        { command: 'Steer', binding: gamepadAxisLabel(gamepad.moveXAxis), value: clamp01(Math.abs(action?.steer ?? 0)) },
+        { command: 'Throttle', binding: gamepadButtonLabel(gamepad.throttleButton), value: clamp01(action?.throttle ?? 0) },
+        { command: 'Brake / Reverse', binding: gamepadButtonLabel(gamepad.brakeButton), value: clamp01(action?.brake ?? 0) },
+        { command: 'Camera', binding: gamepadAxisLabel(gamepad.lookXAxis), value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
+        { command: 'Handbrake', binding: gamepadButtonLabel(gamepad.handbrakeButton), value: boolValue(action?.handbrake ?? false), active: action?.handbrake ?? false },
+        { command: 'Reset Vehicle', binding: gamepadButtonLabel(gamepad.resetVehicleButton), value: boolValue(action?.resetVehiclePressed ?? false), active: action?.resetVehiclePressed ?? false },
+        { command: 'Exit Vehicle', binding: gamepadButtonLabel(gamepad.interactButton), value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
       ];
     }
+    const keyboard = bindings.keyboard;
     return [
-      { command: 'Steer', binding: 'A / D', value: clamp01(Math.abs(action?.steer ?? action?.moveX ?? 0)) },
-      { command: 'Throttle', binding: 'W', value: clamp01(action?.throttle ?? 0) },
-      { command: 'Brake / Reverse', binding: 'S', value: clamp01(action?.brake ?? 0) },
+      { command: 'Steer', binding: `${keyboardCodeLabel(keyboard.moveLeft)} / ${keyboardCodeLabel(keyboard.moveRight)}`, value: clamp01(Math.abs(action?.steer ?? action?.moveX ?? 0)) },
+      { command: 'Throttle', binding: keyboardCodeLabel(keyboard.moveForward), value: clamp01(action?.throttle ?? 0) },
+      { command: 'Brake / Reverse', binding: keyboardCodeLabel(keyboard.moveBackward), value: clamp01(action?.brake ?? 0) },
       { command: 'Camera', binding: 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
-      { command: 'Handbrake', binding: 'Space', value: boolValue(action?.handbrake ?? false), active: action?.handbrake ?? false },
-      { command: 'Exit Vehicle', binding: 'E', value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
+      { command: 'Handbrake', binding: keyboardCodeLabel(keyboard.handbrake), value: boolValue(action?.handbrake ?? false), active: action?.handbrake ?? false },
+      { command: 'Reset Vehicle', binding: keyboardCodeLabel(keyboard.resetVehicle), value: boolValue(action?.resetVehiclePressed ?? false), active: action?.resetVehiclePressed ?? false },
+      { command: 'Exit Vehicle', binding: keyboardCodeLabel(keyboard.interact), value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
     ];
   }
 
   if (family === 'gamepad') {
+    const gamepad = bindings.gamepad;
     return [
-      { command: 'Move', binding: 'Left Stick', value: axisStrength(action?.moveX ?? 0, action?.moveY ?? 0) },
-      { command: 'Look', binding: 'Right Stick', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
-      { command: 'Shoot', binding: 'RT', value: clamp01(action?.firePrimaryValue ?? 0), active: action?.firePrimary ?? false },
-      { command: 'Jump', binding: 'A', value: boolValue(action?.jump ?? false), active: action?.jump ?? false },
-      { command: 'Sprint', binding: 'L3', value: boolValue(action?.sprint ?? false), active: action?.sprint ?? false },
-      { command: 'Crouch', binding: 'B', value: boolValue(action?.crouch ?? false), active: action?.crouch ?? false },
-      { command: 'Interact / Car', binding: 'X', value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
-      { command: 'Remove Block', binding: 'LB', value: boolValue(action?.blockRemovePressed ?? false), active: action?.blockRemovePressed ?? false },
-      { command: 'Place Block', binding: 'RB', value: boolValue(action?.blockPlacePressed ?? false), active: action?.blockPlacePressed ?? false },
-      { command: 'Material 1 / 2', binding: 'D-Pad L / R', value: boolValue(Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed)), active: Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed) },
+      { command: 'Move', binding: gamepadAxisLabel(gamepad.moveXAxis), value: axisStrength(action?.moveX ?? 0, action?.moveY ?? 0) },
+      { command: 'Look', binding: gamepadAxisLabel(gamepad.lookXAxis), value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
+      { command: 'Shoot', binding: gamepadButtonLabel(gamepad.firePrimaryButton), value: clamp01(action?.firePrimaryValue ?? 0), active: action?.firePrimary ?? false },
+      { command: 'Jump', binding: gamepadButtonLabel(gamepad.jumpButton), value: boolValue(action?.jump ?? false), active: action?.jump ?? false },
+      { command: 'Sprint', binding: gamepadButtonLabel(gamepad.sprintButton), value: boolValue(action?.sprint ?? false), active: action?.sprint ?? false },
+      { command: 'Crouch', binding: gamepadButtonLabel(gamepad.crouchButton), value: boolValue(action?.crouch ?? false), active: action?.crouch ?? false },
+      { command: 'Interact / Car', binding: gamepadButtonLabel(gamepad.interactButton), value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
+      { command: 'Remove Block', binding: gamepadButtonLabel(gamepad.blockRemoveButton), value: boolValue(action?.blockRemovePressed ?? false), active: action?.blockRemovePressed ?? false },
+      { command: 'Place Block', binding: gamepadButtonLabel(gamepad.blockPlaceButton), value: boolValue(action?.blockPlacePressed ?? false), active: action?.blockPlacePressed ?? false },
+      { command: 'Material 1 / 2', binding: `${gamepadButtonLabel(gamepad.materialSlot1Button)} / ${gamepadButtonLabel(gamepad.materialSlot2Button)}`, value: boolValue(Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed)), active: Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed) },
     ];
   }
 
+  const keyboard = bindings.keyboard;
   return [
-    { command: 'Move', binding: 'WASD / Arrows', value: axisStrength(action?.moveX ?? 0, action?.moveY ?? 0) },
+    { command: 'Move', binding: formatKeyboardMoveBinding(keyboard), value: axisStrength(action?.moveX ?? 0, action?.moveY ?? 0) },
     { command: 'Look', binding: 'Mouse / Trackpad', value: axisStrength(action?.lookX ?? 0, action?.lookY ?? 0, 0.03) },
-    { command: 'Shoot', binding: 'Mouse 1', value: clamp01(action?.firePrimaryValue ?? 0), active: action?.firePrimary ?? false },
-    { command: 'Jump', binding: 'Space', value: boolValue(action?.jump ?? false), active: action?.jump ?? false },
-    { command: 'Sprint', binding: 'Shift', value: boolValue(action?.sprint ?? false), active: action?.sprint ?? false },
-    { command: 'Crouch', binding: 'Ctrl / C', value: boolValue(action?.crouch ?? false), active: action?.crouch ?? false },
-    { command: 'Interact / Car', binding: 'E', value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
-    { command: 'Remove Block', binding: 'Q', value: boolValue(action?.blockRemovePressed ?? false), active: action?.blockRemovePressed ?? false },
-    { command: 'Place Block', binding: 'F', value: boolValue(action?.blockPlacePressed ?? false), active: action?.blockPlacePressed ?? false },
-    { command: 'Material 1 / 2', binding: '1 / 2', value: boolValue(Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed)), active: Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed) },
+    { command: 'Shoot', binding: mouseButtonLabel(keyboard.firePrimaryMouseButton), value: clamp01(action?.firePrimaryValue ?? 0), active: action?.firePrimary ?? false },
+    { command: 'Jump', binding: keyboardCodeLabel(keyboard.jump), value: boolValue(action?.jump ?? false), active: action?.jump ?? false },
+    { command: 'Sprint', binding: keyboardCodeLabel(keyboard.sprint), value: boolValue(action?.sprint ?? false), active: action?.sprint ?? false },
+    { command: 'Crouch', binding: keyboardCodeLabel(keyboard.crouch), value: boolValue(action?.crouch ?? false), active: action?.crouch ?? false },
+    { command: 'Interact / Car', binding: keyboardCodeLabel(keyboard.interact), value: boolValue(action?.interactPressed ?? false), active: action?.interactPressed ?? false },
+    { command: 'Remove Block', binding: keyboardCodeLabel(keyboard.blockRemove), value: boolValue(action?.blockRemovePressed ?? false), active: action?.blockRemovePressed ?? false },
+    { command: 'Place Block', binding: keyboardCodeLabel(keyboard.blockPlace), value: boolValue(action?.blockPlacePressed ?? false), active: action?.blockPlacePressed ?? false },
+    { command: 'Material 1 / 2', binding: `${keyboardCodeLabel(keyboard.materialSlot1)} / ${keyboardCodeLabel(keyboard.materialSlot2)}`, value: boolValue(Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed)), active: Boolean(action?.materialSlot1Pressed || action?.materialSlot2Pressed) },
   ];
 }
 
@@ -85,6 +108,7 @@ const MODE_OPTIONS: Array<{ mode: InputFamilyMode; label: string }> = [
 ];
 
 export function ControlHintsOverlay({
+  bindings,
   state,
   visible,
   inputFamilyMode,
@@ -94,7 +118,7 @@ export function ControlHintsOverlay({
 
   const family = state.activeFamily ?? 'keyboardMouse';
   const context = state.context;
-  const rows = buildRows(family, context, state.action);
+  const rows = buildRows(family, context, state.action, bindings);
   const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${context === 'vehicle' ? 'Vehicle' : 'On Foot'}`;
 
   return (
