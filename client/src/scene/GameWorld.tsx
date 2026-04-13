@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, type ReactNode } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -170,6 +170,11 @@ type GameWorldProps = {
   inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
+  // Optional children rendered inside the R3F scene. Used by the calibration
+  // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
+  // firing-range scene, so the player's feel during drills is identical to
+  // normal play.
+  sceneExtras?: ReactNode;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -339,6 +344,7 @@ export function GameWorld({
   inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
+  sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
@@ -1342,6 +1348,8 @@ export function GameWorld({
 
       {/* Crosshair */}
       <CrosshairHUD />
+
+      {sceneExtras}
     </>
   );
 }

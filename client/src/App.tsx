@@ -12,13 +12,21 @@ import {
 } from './input/bindings';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
-import type { InputFamilyMode } from './input/types';
+import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
+import { CalibrationOverlay } from './calibration/CalibrationOverlay';
+import { FirstRunPrompt } from './calibration/FirstRunPrompt';
+import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
+import {
+  getInputSettings,
+  hasStoredInputSettings,
+  updateInputSettings,
+} from './input/inputSettingsStore';
 
 type AppProps = {
   mode: GameMode;
@@ -69,6 +77,21 @@ export function App({
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
 
+  // Calibration wizard state (firing range only).
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
+  const [firstRunPromptVisible, setFirstRunPromptVisible] = useState(false);
+  const [calibrationActiveFamily, setCalibrationActiveFamily] = useState<DeviceFamily | null>(null);
+  const [calibrationSceneExtras, setCalibrationSceneExtras] = useState<ReactNode>(null);
+  const lastKnownFamilyRef = useRef<DeviceFamily | null>(null);
+  // In practice mode, once the user has connected at least once, we auto-
+  // reconnect after any disconnect (e.g. from swapping worlds when calibration
+  // opens/closes). This avoids the player seeing "click to rejoin" mid-wizard.
+  const hasEverConnectedRef = useRef(false);
+
+  // While the wizard is open, render a deliberately-empty flat world so
+  // drill targets aren't fighting terrain or props for visibility.
+  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
+
   useEffect(() => {
     saveInputBindings(inputBindings);
   }, [inputBindings]);
@@ -105,6 +128,47 @@ export function App({
     setInputBindings(resetAllInputBindings());
   }, []);
 
+  const handleInputFrame = useCallback((sample: InputSample) => {
+    updateInputFrame(sample);
+    if (sample.activeFamily && sample.activeFamily !== lastKnownFamilyRef.current) {
+      lastKnownFamilyRef.current = sample.activeFamily;
+    }
+  }, [updateInputFrame]);
+
+  // First-run prompt: show it only in practice mode, only once per user, and
+  // only when no stored input settings exist yet.
+  useEffect(() => {
+    if (!practiceMode) return;
+    const stored = hasStoredInputSettings();
+    const settings = getInputSettings();
+    if (!stored && !settings.meta.firstRunPromptDismissed) {
+      setFirstRunPromptVisible(true);
+    }
+  }, [practiceMode]);
+
+  const openCalibration = useCallback(() => {
+    setFirstRunPromptVisible(false);
+    // Snapshot the active family at the moment the wizard opens. If we don't
+    // have a known family yet (e.g. player just loaded the page), default to
+    // keyboardMouse — the input arbiter will update it if they use a gamepad
+    // first.
+    setCalibrationActiveFamily(lastKnownFamilyRef.current ?? 'keyboardMouse');
+    setCalibrationOpen(true);
+  }, []);
+
+  const dismissFirstRunPrompt = useCallback(() => {
+    setFirstRunPromptVisible(false);
+    updateInputSettings((draft) => {
+      draft.meta.firstRunPromptDismissed = true;
+      return draft;
+    });
+  }, []);
+
+  const closeCalibration = useCallback(() => {
+    setCalibrationOpen(false);
+    setCalibrationSceneExtras(null);
+  }, []);
+
   const handleConnect = useCallback(() => {
     setConnected(true);
     setCrosshairState('idle');
@@ -113,6 +177,7 @@ export function App({
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
+    hasEverConnectedRef.current = true;
     setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — controls are configurable from the Controls panel`);
   }, [modeLabel, practiceMode]);
 
@@ -129,6 +194,15 @@ export function App({
     }
     handleConnect();
   }, [autoConnect, connected, handleConnect]);
+
+  // Auto-reconnect in practice mode after a disconnect that was triggered by
+  // swapping the world document (calibration open/close). Without this the
+  // player would have to click "rejoin" every time the wizard toggled.
+  useEffect(() => {
+    if (!practiceMode || connected) return;
+    if (!hasEverConnectedRef.current) return;
+    handleConnect();
+  }, [practiceMode, connected, handleConnect]);
 
   useEffect(() => {
     if (!connected || sessionKey === 0) {
@@ -199,9 +273,14 @@ export function App({
         ? 'rgba(255, 48, 48, 0.55)'
         : 'rgba(255, 96, 96, 0.45)';
 
+  // Suppress the click-to-join overlay during auto-reconnect transitions in
+  // practice mode so the player doesn't see it flash when the calibration
+  // wizard opens or closes (which triggers a brief disconnect + reconnect).
+  const clickToJoinVisible = !connected && !(practiceMode && hasEverConnectedRef.current);
+
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {!connected && (
+      {clickToJoinVisible && (
         <div
           style={{
             position: 'absolute',
@@ -260,6 +339,15 @@ export function App({
         <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
           Controls
         </button>
+        {practiceMode && connected && (
+          <button
+            type="button"
+            onClick={openCalibration}
+            style={calibrateButtonStyle}
+          >
+            Calibrate
+          </button>
+        )}
       </div>
       {overlay}
       {copyNotice && (
@@ -337,6 +425,21 @@ export function App({
         onGamepadBindingReset={resetGamepadBinding}
         onResetAll={resetBindings}
       />
+      {practiceMode && (
+        <FirstRunPrompt
+          visible={firstRunPromptVisible && connected}
+          onStart={openCalibration}
+          onDismiss={dismissFirstRunPrompt}
+        />
+      )}
+      {practiceMode && (
+        <CalibrationOverlay
+          visible={calibrationOpen}
+          activeFamily={calibrationActiveFamily}
+          onRequestClose={closeCalibration}
+          onRenderSceneExtras={setCalibrationSceneExtras}
+        />
+      )}
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
         <div
@@ -353,19 +456,20 @@ export function App({
         <GameScene
           key={sessionKey}
           mode={mode}
-          worldDocument={worldDocument}
+          worldDocument={effectiveWorldDocument}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
           playerId={playerId}
           onDebugFrame={updateFrame}
-          onInputFrame={updateInputFrame}
+          onInputFrame={handleInputFrame}
           inputFamilyMode={inputFamilyMode}
           inputBindings={inputBindings}
           onSnapshot={recordSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
+          sceneExtras={calibrationSceneExtras}
         />
       )}
     </div>
@@ -385,4 +489,15 @@ const navButtonStyle: CSSProperties = {
   ...navLinkStyle,
   border: 'none',
   cursor: 'pointer',
+};
+
+const calibrateButtonStyle: CSSProperties = {
+  background: 'rgba(149, 233, 255, 0.22)',
+  border: '1px solid rgba(149, 233, 255, 0.45)',
+  color: '#edf6ff',
+  padding: '6px 12px',
+  borderRadius: 999,
+  fontSize: 13,
+  cursor: 'pointer',
+  fontWeight: 600,
 };

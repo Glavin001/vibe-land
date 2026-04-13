@@ -1,6 +1,6 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
 import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
@@ -22,6 +22,7 @@ type GameSceneProps = {
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
+  sceneExtras?: ReactNode;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -40,6 +41,7 @@ export function GameScene({
   showRenderStats,
   renderStatsParent,
   worldDocument,
+  sceneExtras,
 }: GameSceneProps) {
   return (
     <Canvas
@@ -70,6 +72,7 @@ export function GameScene({
           inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
+          sceneExtras={sceneExtras}
         />
       </Suspense>
     </Canvas>
