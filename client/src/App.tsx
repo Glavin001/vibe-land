@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
 import {
   DEFAULT_INPUT_BINDINGS,
   loadInputBindings,
@@ -38,7 +39,12 @@ export function App({
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const pathLabel = routeLabel ?? (mode === 'multiplayer' ? '/play' : '/practice');
+  const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const pathLabel = routeLabel ?? (
+    mode === 'multiplayer'
+      ? buildMatchHref('/play', multiplayerMatchId)
+      : '/practice'
+  );
   const [connected, setConnected] = useState(autoConnect);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState(
@@ -248,7 +254,7 @@ export function App({
         <a href="/" style={navLinkStyle}>
           Home
         </a>
-        <a href={practiceMode ? '/play' : '/practice'} style={navLinkStyle}>
+        <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
           {practiceMode ? 'Multiplayer' : 'Firing range'}
         </a>
         <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>

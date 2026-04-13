@@ -5,8 +5,10 @@ mod protocol;
 mod voxel_world;
 
 use std::{
+    backtrace::Backtrace,
     collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, RwLock as StdRwLock,
@@ -25,7 +27,7 @@ use axum::{
     Router,
 };
 use bytes::BufMut;
-use futures_util::{sink::SinkExt, stream::StreamExt};
+use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
@@ -67,6 +69,8 @@ const PLAYER_AOI_RADIUS_M: f32 = 48.0;
 const DYNAMIC_BODY_AOI_RADIUS_M: f32 = 40.0;
 const DYNAMIC_BODY_AOI_EXIT_RADIUS_M: f32 = 56.0;
 const VEHICLE_AOI_RADIUS_M: f32 = 64.0;
+const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 64;
+const MATCH_HEALTH_LOG_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 10;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
@@ -206,6 +210,9 @@ struct MatchNetworkSnapshot {
     websocket_snapshot_reliable_sent: u64,
     webtransport_snapshot_reliable_sent: u64,
     webtransport_snapshot_datagram_sent: u64,
+    strict_snapshot_drops: u64,
+    dropped_outbound_packets: u64,
+    dropped_outbound_snapshots: u64,
     snapshot_bytes_per_client: SummaryStatsSnapshot,
     snapshot_bytes_per_tick: SummaryStatsSnapshot,
     snapshot_players_per_client: SummaryStatsSnapshot,
@@ -238,9 +245,12 @@ struct MatchIoTelemetry {
     malformed_packets: std::sync::atomic::AtomicU64,
     snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     snapshot_datagram_sent: std::sync::atomic::AtomicU64,
+    strict_snapshot_drops: std::sync::atomic::AtomicU64,
     websocket_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_datagram_sent: std::sync::atomic::AtomicU64,
+    dropped_outbound_packets: std::sync::atomic::AtomicU64,
+    dropped_outbound_snapshots: std::sync::atomic::AtomicU64,
 }
 
 impl MatchIoTelemetry {
@@ -300,6 +310,18 @@ impl MatchIoTelemetry {
 
     fn observe_malformed_packet(&self) {
         self.malformed_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn observe_outbound_drop(&self, is_snapshot: bool) {
+        self.dropped_outbound_packets.fetch_add(1, Ordering::Relaxed);
+        if is_snapshot {
+            self.dropped_outbound_snapshots
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn observe_strict_snapshot_drop(&self) {
+        self.strict_snapshot_drops.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -368,6 +390,7 @@ struct AppState {
     verifier: SpacetimeVerifier,
     cert_hash_hex: String,
     wt_base_url: String,
+    strict_snapshot_datagrams: bool,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
@@ -408,7 +431,7 @@ struct PlayerConnection {
     player_id: u32,
     identity: String,
     transport: ClientTransport,
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::Sender<Vec<u8>>,
 }
 
 enum MatchEvent {
@@ -425,7 +448,7 @@ enum MatchEvent {
 struct PlayerRuntime {
     identity: String,
     transport: ClientTransport,
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::Sender<Vec<u8>>,
     pending_inputs: VecDeque<InputCmd>,
     last_applied_input: InputCmd,
     last_received_input_seq: Option<u16>,
@@ -466,17 +489,20 @@ struct MatchState {
     timings: MatchTimingStats,
     snapshot_stats: MatchSnapshotStats,
     void_kills: u64,
+    strict_snapshot_datagrams: bool,
+    last_logged_datagram_fallbacks: u64,
+    last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env from repo root (one level up from server/)
-    dotenvy::from_path("../.env").ok();
+    load_repo_env();
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    install_panic_hook();
 
     // Build TLS identity for WebTransport.
     // If WT_CERT_PEM + WT_KEY_PEM are set, load a CA-signed cert (production).
@@ -507,8 +533,16 @@ async fn main() -> Result<()> {
         .parse()?;
     let wt_host = std::env::var("WT_HOST").unwrap_or_else(|_| "localhost".to_string());
     let wt_base_url = format!("https://{}:{}", wt_host, wt_addr.port());
+    let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false);
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
+    info!(
+        strict_snapshot_datagrams,
+        "WebTransport snapshot transport policy loaded"
+    );
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
@@ -524,6 +558,7 @@ async fn main() -> Result<()> {
             },
             cert_hash_hex,
             wt_base_url,
+            strict_snapshot_datagrams,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
@@ -588,6 +623,14 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+fn load_repo_env() {
+    let repo_env = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
+    match dotenvy::from_path(&repo_env) {
+        Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
+        Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
+    }
+}
+
 async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
@@ -646,7 +689,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
 
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -659,6 +702,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     // if the datagram is too large for the current QUIC path MTU.
     let conn_write = connection.clone();
     let telemetry = handle.telemetry.clone();
+    let strict_snapshot_datagrams = app.strict_snapshot_datagrams;
     let writer = tokio::spawn(async move {
         let mut buf = bytes::BytesMut::with_capacity(4096);
         while let Some(bytes) = out_rx.recv().await {
@@ -666,17 +710,23 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                 continue;
             }
             let first = bytes[0];
-            let use_datagram = (first == PKT_SNAPSHOT || first == PKT_PING)
+            let wants_datagram = first == PKT_SNAPSHOT || first == PKT_PING;
+            let use_datagram = wants_datagram
                 && conn_write.send_datagram(bytes.as_slice()).is_ok();
             if !use_datagram {
-                if first == PKT_SNAPSHOT || first == PKT_PING {
+                if first == PKT_SNAPSHOT && strict_snapshot_datagrams {
+                    telemetry.observe_strict_snapshot_drop();
+                    continue;
+                }
+                if wants_datagram {
                     telemetry.observe_datagram_fallback();
                 }
                 // Reliable stream: 4-byte LE length prefix
                 buf.clear();
                 buf.put_u32_le(bytes.len() as u32);
                 buf.put_slice(&bytes);
-                if send_stream.write_all(&buf).await.is_err() {
+                if let Err(err) = send_stream.write_all(&buf).await {
+                    warn!(player_id, error = ?err, "WT reliable writer stopped");
                     break;
                 }
                 telemetry.observe_outbound_reliable(
@@ -692,6 +742,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                 );
             }
         }
+        info!(player_id, "WT writer task exited");
     });
 
     // Reader: receive client datagrams → route to match
@@ -719,10 +770,14 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                         }
                     }
                 }
-                Err(_) => break,
+                Err(err) => {
+                    warn!(player_id, error = ?err, "WT datagram reader stopped");
+                    break;
+                }
             }
         }
         let _ = tx_to_match.send(MatchEvent::Disconnect { player_id });
+        info!(player_id, "WT reader task exited");
     });
 
     let _ = tokio::join!(writer, reader);
@@ -755,7 +810,7 @@ async fn handle_socket(
     let handle = get_or_create_match(app.clone(), match_id.clone()).await;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
         player_id,
@@ -769,7 +824,8 @@ async fn handle_socket(
         while let Some(packet) = out_rx.recv().await {
             let packet_len = packet.len();
             let is_snapshot = packet.first().copied() == Some(PKT_SNAPSHOT);
-            if ws_tx.send(Message::Binary(packet.into())).await.is_err() {
+            if let Err(err) = ws_tx.send(Message::Binary(packet.into())).await {
+                warn!(player_id, error = ?err, "websocket writer stopped");
                 break;
             }
             telemetry.observe_outbound_reliable(
@@ -778,14 +834,19 @@ async fn handle_socket(
                 is_snapshot,
             );
         }
+        info!(player_id, "websocket writer task exited");
     });
 
     let tx_to_match = handle.tx.clone();
     let telemetry = handle.telemetry.clone();
     let reader = tokio::spawn(async move {
         while let Some(result) = ws_rx.next().await {
-            let Ok(message) = result else {
-                break;
+            let message = match result {
+                Ok(message) => message,
+                Err(err) => {
+                    warn!(player_id, error = ?err, "websocket reader stopped");
+                    break;
+                }
             };
             match message {
                 Message::Binary(bytes) => {
@@ -810,6 +871,7 @@ async fn handle_socket(
             }
         }
         let _ = tx_to_match.send(MatchEvent::Disconnect { player_id });
+        info!(player_id, "websocket reader task exited");
     });
 
     let _ = tokio::join!(writer, reader);
@@ -818,12 +880,19 @@ async fn handle_socket(
 
 async fn get_or_create_match(app: Arc<AppState>, match_id: String) -> MatchHandle {
     if let Some(existing) = app.matches.read().await.get(&match_id).cloned() {
-        return existing;
+        if !existing.tx.is_closed() {
+            return existing;
+        }
+        warn!(%match_id, "dropping stale closed match handle from read cache");
     }
 
     let mut write = app.matches.write().await;
     if let Some(existing) = write.get(&match_id).cloned() {
-        return existing;
+        if !existing.tx.is_closed() {
+            return existing;
+        }
+        warn!(%match_id, "dropping stale closed match handle before recreating match");
+        write.remove(&match_id);
     }
 
     let (tx, rx) = mpsc::unbounded_channel();
@@ -833,19 +902,15 @@ async fn get_or_create_match(app: Arc<AppState>, match_id: String) -> MatchHandl
         telemetry: telemetry.clone(),
     };
     write.insert(match_id.clone(), handle.clone());
-    tokio::spawn(run_match_loop(
-        match_id,
-        rx,
-        app.stats_tx.clone(),
-        telemetry,
-        app.stats_registry.clone(),
-    ));
+    drop(write);
+    spawn_match_loop(app, match_id, handle.clone(), rx, telemetry);
     handle
 }
 
 async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
+    strict_snapshot_datagrams: bool,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -868,6 +933,9 @@ async fn run_match_loop(
         timings: MatchTimingStats::default(),
         snapshot_stats: MatchSnapshotStats::default(),
         void_kills: 0,
+        strict_snapshot_datagrams,
+        last_logged_datagram_fallbacks: 0,
+        last_logged_dropped_outbound_packets: 0,
         stats_registry,
     };
 
@@ -896,11 +964,68 @@ async fn run_match_loop(
     }
 }
 
+fn spawn_match_loop(
+    app: Arc<AppState>,
+    match_id: String,
+    handle: MatchHandle,
+    rx: mpsc::UnboundedReceiver<MatchEvent>,
+    telemetry: Arc<MatchIoTelemetry>,
+) {
+    info!(%match_id, "spawning match loop");
+    tokio::spawn(async move {
+        let outcome = std::panic::AssertUnwindSafe(run_match_loop(
+            match_id.clone(),
+            rx,
+            app.strict_snapshot_datagrams,
+            app.stats_tx.clone(),
+            telemetry,
+            app.stats_registry.clone(),
+        ))
+        .catch_unwind()
+        .await;
+
+        match outcome {
+            Ok(()) => {
+                warn!(%match_id, "match loop exited");
+            }
+            Err(payload) => {
+                error!(
+                    %match_id,
+                    panic = %describe_panic_payload(&payload),
+                    "match loop panicked"
+                );
+            }
+        }
+
+        let removed = {
+            let mut matches = app.matches.write().await;
+            matches
+                .get(&match_id)
+                .map(|existing| existing.tx.same_channel(&handle.tx))
+                .unwrap_or(false)
+                .then(|| matches.remove(&match_id))
+                .flatten()
+                .is_some()
+        };
+        if removed {
+            warn!(%match_id, "removed dead match handle after match loop termination");
+        }
+
+        {
+            let mut registry = app.stats_registry.write().expect("stats registry poisoned");
+            registry.remove(&match_id);
+            let _ = app.stats_tx.send(global_stats_from_registry(&registry));
+        }
+    });
+}
+
 impl MatchState {
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
             MatchEvent::Connect(conn) => {
                 self.arena.spawn_player(conn.player_id);
+                let identity = conn.identity.clone();
+                let transport = conn.transport.as_str();
                 self.players.insert(
                     conn.player_id,
                     PlayerRuntime {
@@ -926,6 +1051,14 @@ impl MatchState {
                         last_sent_dynamic_body_pose: HashMap::new(),
                     },
                 );
+                info!(
+                    match_id = %self.id,
+                    player_id = conn.player_id,
+                    %identity,
+                    transport,
+                    active_players = self.players.len(),
+                    "player connected to match"
+                );
 
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
@@ -935,14 +1068,16 @@ impl MatchState {
                     server_time_us,
                     interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
                 });
-                let _ = conn.tx.send(encode_server_packet(&welcome));
+                let _ = try_queue_packet(&conn.tx, encode_server_packet(&welcome), &self.io);
 
                 if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
                     for key in self.world.visible_chunks_around(pos, CHUNK_RADIUS_ON_JOIN) {
                         if let Some(full) = self.world.chunk_full_packet(key) {
-                            let _ = conn
-                                .tx
-                                .send(encode_server_packet(&ServerPacket::ChunkFull(full)));
+                            let _ = try_queue_packet(
+                                &conn.tx,
+                                encode_server_packet(&ServerPacket::ChunkFull(full)),
+                                &self.io,
+                            );
                         }
                     }
                 }
@@ -951,6 +1086,12 @@ impl MatchState {
                 self.players.remove(&player_id);
                 self.arena.remove_player(player_id);
                 self.history.remove_player(player_id);
+                info!(
+                    match_id = %self.id,
+                    player_id,
+                    active_players = self.players.len(),
+                    "player disconnected from match"
+                );
             }
             MatchEvent::Packet { player_id, packet } => {
                 let Some(runtime) = self.players.get_mut(&player_id) else {
@@ -995,15 +1136,17 @@ impl MatchState {
                             Ok(diff) => {
                                 let packet = encode_server_packet(&ServerPacket::ChunkDiff(diff));
                                 for player in self.players.values() {
-                                    let _ = player.tx.send(packet.clone());
+                                    let _ = try_queue_packet(&player.tx, packet.clone(), &self.io);
                                 }
                             }
                             Err(err) => {
                                 warn!(player_id, error = %err, "block edit rejected");
                                 if let Some(full) = self.world.chunk_full_for_coords(cmd.chunk) {
-                                    let _ = runtime
-                                        .tx
-                                        .send(encode_server_packet(&ServerPacket::ChunkFull(full)));
+                                    let _ = try_queue_packet(
+                                        &runtime.tx,
+                                        encode_server_packet(&ServerPacket::ChunkFull(full)),
+                                        &self.io,
+                                    );
                                 }
                             }
                         }
@@ -1017,9 +1160,11 @@ impl MatchState {
                                 return;
                             }
                         }
-                        let _ = runtime
-                            .tx
-                            .send(encode_server_packet(&ServerPacket::Pong(value)));
+                        let _ = try_queue_packet(
+                            &runtime.tx,
+                            encode_server_packet(&ServerPacket::Pong(value)),
+                            &self.io,
+                        );
                     }
                     ClientPacket::VehicleEnter(cmd) => {
                         if !is_dead && self.arena.vehicles.contains_key(&cmd.vehicle_id) {
@@ -1172,9 +1317,11 @@ impl MatchState {
         for (&player_id, runtime) in &mut self.players {
             let nonce = ((self.server_tick & 0xffff) << 16) | (player_id & 0xffff);
             runtime.pending_server_ping = Some((nonce, Instant::now()));
-            let _ = runtime
-                .tx
-                .send(encode_server_packet(&ServerPacket::Ping(nonce)));
+            let _ = try_queue_packet(
+                &runtime.tx,
+                encode_server_packet(&ServerPacket::Ping(nonce)),
+                &self.io,
+            );
         }
     }
 
@@ -1316,6 +1463,18 @@ impl MatchState {
                     .io
                     .webtransport_snapshot_datagram_sent
                     .load(Ordering::Relaxed),
+                strict_snapshot_drops: self
+                    .io
+                    .strict_snapshot_drops
+                    .load(Ordering::Relaxed),
+                dropped_outbound_packets: self
+                    .io
+                    .dropped_outbound_packets
+                    .load(Ordering::Relaxed),
+                dropped_outbound_snapshots: self
+                    .io
+                    .dropped_outbound_snapshots
+                    .load(Ordering::Relaxed),
                 snapshot_bytes_per_client: self.snapshot_stats.bytes_per_client.snapshot(),
                 snapshot_bytes_per_tick: self.snapshot_stats.bytes_per_tick.snapshot(),
                 snapshot_players_per_client: self.snapshot_stats.players_per_client.snapshot(),
@@ -1345,9 +1504,79 @@ impl MatchState {
                 .stats_registry
                 .write()
                 .expect("stats registry poisoned");
-            registry.insert(self.id.clone(), match_stats);
+            registry.insert(self.id.clone(), match_stats.clone());
             global_stats_from_registry(&registry)
         };
+
+        let datagram_fallbacks = self.io.datagram_fallbacks.load(Ordering::Relaxed);
+        if datagram_fallbacks > self.last_logged_datagram_fallbacks {
+            warn!(
+                match_id = %self.id,
+                newly_added = datagram_fallbacks - self.last_logged_datagram_fallbacks,
+                total = datagram_fallbacks,
+                "match observed WebTransport datagram fallback"
+            );
+            self.last_logged_datagram_fallbacks = datagram_fallbacks;
+        }
+
+        let dropped_outbound_packets = self.io.dropped_outbound_packets.load(Ordering::Relaxed);
+        let strict_snapshot_drops = self.io.strict_snapshot_drops.load(Ordering::Relaxed);
+        if dropped_outbound_packets > self.last_logged_dropped_outbound_packets {
+            warn!(
+                match_id = %self.id,
+                newly_added = dropped_outbound_packets - self.last_logged_dropped_outbound_packets,
+                total = dropped_outbound_packets,
+                dropped_snapshots = self.io.dropped_outbound_snapshots.load(Ordering::Relaxed),
+                "match dropped outbound packets because client queues were full"
+            );
+            self.last_logged_dropped_outbound_packets = dropped_outbound_packets;
+        }
+
+        if !self.players.is_empty() && self.server_tick % MATCH_HEALTH_LOG_INTERVAL_TICKS == 0 {
+            info!(
+                match_id = %self.id,
+                server_tick = self.server_tick,
+                players = self.players.len(),
+                websocket_players,
+                webtransport_players,
+                inbound_bytes_per_sec = inbound_bps,
+                outbound_bytes_per_sec = outbound_bps,
+                reliable_packets_sent = self.io.reliable_packets_sent.load(Ordering::Relaxed),
+                datagram_packets_sent = self.io.datagram_packets_sent.load(Ordering::Relaxed),
+                datagram_fallbacks,
+                strict_snapshot_drops,
+                dropped_outbound_packets,
+                snapshot_reliable_sent = self.io.snapshot_reliable_sent.load(Ordering::Relaxed),
+                snapshot_datagram_sent = self.io.snapshot_datagram_sent.load(Ordering::Relaxed),
+                snapshot_bytes_per_client_avg = match_stats.network.snapshot_bytes_per_client.avg,
+                snapshot_bytes_per_client_p95 = match_stats.network.snapshot_bytes_per_client.p95,
+                snapshot_bytes_per_client_max = match_stats.network.snapshot_bytes_per_client.max,
+                snapshot_bytes_per_tick_avg = match_stats.network.snapshot_bytes_per_tick.avg,
+                snapshot_bytes_per_tick_p95 = match_stats.network.snapshot_bytes_per_tick.p95,
+                snapshot_bytes_per_tick_max = match_stats.network.snapshot_bytes_per_tick.max,
+                snapshot_players_per_client_avg = match_stats.network.snapshot_players_per_client.avg,
+                snapshot_players_per_client_p95 = match_stats.network.snapshot_players_per_client.p95,
+                snapshot_dynamic_bodies_per_client_avg = match_stats.network.snapshot_dynamic_bodies_per_client.avg,
+                snapshot_dynamic_bodies_per_client_p95 = match_stats.network.snapshot_dynamic_bodies_per_client.p95,
+                snapshot_vehicles_per_client_avg = match_stats.network.snapshot_vehicles_per_client.avg,
+                player_sim_ms_avg = match_stats.timings.player_sim_ms.avg,
+                player_sim_ms_p95 = match_stats.timings.player_sim_ms.p95,
+                move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
+                kcc_ms_avg = match_stats.timings.player_kcc_ms.avg,
+                collider_sync_ms_avg = match_stats.timings.player_collider_sync_ms.avg,
+                player_dynamic_interaction_ms_avg = match_stats.timings.player_dynamic_interaction_ms.avg,
+                vehicle_ms_avg = match_stats.timings.vehicle_ms.avg,
+                dynamics_ms_avg = match_stats.timings.dynamics_ms.avg,
+                hitscan_ms_avg = match_stats.timings.hitscan_ms.avg,
+                snapshot_ms_avg = match_stats.timings.snapshot_ms.avg,
+                snapshot_ms_p95 = match_stats.timings.snapshot_ms.p95,
+                snapshot_ms_max = match_stats.timings.snapshot_ms.max,
+                tick_ms_avg = match_stats.timings.total_ms.avg,
+                tick_ms_p95 = match_stats.timings.total_ms.p95,
+                tick_ms_max = match_stats.timings.total_ms.max,
+                "match health"
+            );
+        }
 
         let _ = self.stats_tx.send(global);
     }
@@ -1579,7 +1808,7 @@ impl MatchState {
             };
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
-                let _ = shooter.tx.send(encode_server_packet(&result));
+                let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
             }
         }
     }
@@ -1598,36 +1827,42 @@ impl MatchState {
             }
         }
 
-        let dynamic_body_states: Vec<_> = self
-            .arena
-            .snapshot_dynamic_bodies()
-            .into_iter()
-            .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
-                (
-                    id,
-                    pos,
-                    quat,
-                    make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type),
-                )
-            })
-            .collect();
+        let dynamic_body_states: Vec<_> = if self.strict_snapshot_datagrams {
+            Vec::new()
+        } else {
+            self.arena
+                .snapshot_dynamic_bodies()
+                .into_iter()
+                .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
+                    (
+                        id,
+                        pos,
+                        quat,
+                        make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type),
+                    )
+                })
+                .collect()
+        };
 
-        let vehicle_states: Vec<_> = self
-            .arena
-            .snapshot_vehicles()
-            .into_iter()
-            .map(|state| {
-                (
-                    state.id,
-                    [
-                        mm_to_meters(state.px_mm),
-                        mm_to_meters(state.py_mm),
-                        mm_to_meters(state.pz_mm),
-                    ],
-                    state,
-                )
-            })
-            .collect();
+        let vehicle_states: Vec<_> = if self.strict_snapshot_datagrams {
+            Vec::new()
+        } else {
+            self.arena
+                .snapshot_vehicles()
+                .into_iter()
+                .map(|state| {
+                    (
+                        state.id,
+                        [
+                            mm_to_meters(state.px_mm),
+                            mm_to_meters(state.py_mm),
+                            mm_to_meters(state.pz_mm),
+                        ],
+                        state,
+                    )
+                })
+                .collect()
+        };
 
         let recipient_ids: Vec<u32> = self.players.keys().copied().collect();
 
@@ -1706,7 +1941,7 @@ impl MatchState {
             self.snapshot_stats
                 .vehicles_per_client
                 .record(packet_vehicle_count(&packet) as f32);
-            let _ = tx.send(encoded);
+            let _ = try_queue_packet(&tx, encoded, &self.io);
         }
         self.snapshot_stats
             .bytes_per_tick
@@ -1809,6 +2044,58 @@ fn packet_vehicle_count(packet: &ServerPacket) -> usize {
     }
 }
 
+fn try_queue_packet(
+    tx: &mpsc::Sender<Vec<u8>>,
+    packet: Vec<u8>,
+    telemetry: &MatchIoTelemetry,
+) -> bool {
+    let is_snapshot = packet
+        .first()
+        .copied()
+        .is_some_and(|kind| kind == PKT_SNAPSHOT);
+    let is_droppable = is_snapshot
+        || packet
+            .first()
+            .copied()
+            .is_some_and(|kind| kind == PKT_PING);
+    match tx.try_send(packet) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {
+            if is_droppable {
+                telemetry.observe_outbound_drop(is_snapshot);
+            } else {
+                warn!(
+                    packet_kind = packet.first().copied().unwrap_or_default(),
+                    "dropping non-droppable outbound packet because client queue is full"
+                );
+                telemetry.observe_outbound_drop(is_snapshot);
+            }
+            false
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let backtrace = Backtrace::force_capture();
+        eprintln!("panic: {panic_info}\n{backtrace}");
+        error!(panic = %panic_info, backtrace = %backtrace, "panic hook triggered");
+        default_hook(panic_info);
+    }));
+}
+
+fn describe_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    "non-string panic payload".to_string()
+}
+
 fn global_stats_from_registry(
     registry: &HashMap<String, MatchStatsSnapshot>,
 ) -> GlobalStatsSnapshot {
@@ -1848,7 +2135,8 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, rifle_damage,
-        take_input_for_tick, HitZone, InputCmd, PlayerRuntime, MAX_PENDING_INPUTS,
+        take_input_for_tick, try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, PlayerRuntime,
+        MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PLAYER_OUTBOUND_QUEUE_CAPACITY,
         RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -1856,7 +2144,7 @@ mod tests {
     use vibe_land_shared::seq::seq_is_newer;
 
     fn runtime() -> PlayerRuntime {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
         PlayerRuntime {
             identity: "test-player".to_string(),
             transport: super::ClientTransport::WebSocket,
@@ -1946,6 +2234,22 @@ mod tests {
         assert_eq!(rifle_damage(HitZone::Body), RIFLE_BODY_DAMAGE);
         assert_eq!(rifle_damage(HitZone::Head), RIFLE_HEAD_DAMAGE);
         assert!(rifle_damage(HitZone::Head) > rifle_damage(HitZone::Body));
+    }
+
+    #[test]
+    fn try_queue_packet_drops_snapshot_when_queue_is_full() {
+        let telemetry = MatchIoTelemetry::default();
+        let (tx, mut rx) = mpsc::channel(1);
+
+        assert!(try_queue_packet(&tx, vec![PKT_PING, 1, 2, 3, 4], &telemetry));
+        assert!(!try_queue_packet(&tx, vec![PKT_SNAPSHOT, 0], &telemetry));
+        assert_eq!(
+            telemetry
+                .dropped_outbound_snapshots
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(rx.try_recv().ok(), Some(vec![PKT_PING, 1, 2, 3, 4]));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
+import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
@@ -46,6 +47,7 @@ export function useGameConnection(
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
+  const multiplayerMatchId = useMemo(() => resolveRequestedMatchId(window.location.search), []);
   const clientRef = useRef<NetcodeClient | null>(null);
 
   // Keep callbacks in refs so the NetcodeClient doesn't need to be recreated
@@ -126,11 +128,10 @@ export function useGameConnection(
     if (practiceMode) {
       void client.connectLocalPreview(practiceWorldJson);
     } else {
-      const matchId = 'default';
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
-      const wsUrl = multiplayerBackend.createMatchWebSocketUrl(matchId, identity, token);
-      void client.connectWithFallback(matchId, wsUrl, multiplayerBackend.sessionConfigEndpoint);
+      const wsUrl = multiplayerBackend.createMatchWebSocketUrl(multiplayerMatchId, identity, token);
+      void client.connectWithFallback(multiplayerMatchId, wsUrl, multiplayerBackend.sessionConfigEndpoint);
     }
 
     return () => {
@@ -141,7 +142,7 @@ export function useGameConnection(
       clientRef.current = null;
       setReady(false);
     };
-  }, [multiplayerBackend, practiceMode, practiceWorldJson]);
+  }, [multiplayerBackend, multiplayerMatchId, practiceMode, practiceWorldJson]);
 
   const sendInputs = useCallback((cmds: InputCmd[]) => {
     clientRef.current?.sendInputs(cmds);

@@ -393,9 +393,17 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         lineHeight: 1.5,
         padding: '8px 12px',
         borderRadius: 4,
-        pointerEvents: 'none',
-        whiteSpace: 'pre',
+        pointerEvents: 'auto',
         minWidth: 240,
+        maxWidth: 'calc((100vw - 16px) / 3)',
+        maxHeight: 'calc(100vh - 16px)',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+        boxSizing: 'border-box',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        overscrollBehavior: 'contain',
       }}
     >
       <Section title="Rendering">
@@ -492,8 +500,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div style={{ marginBottom: 4 }}>
       <div style={{ color: '#ff0', fontWeight: 'bold' }}>{`— ${title} —`}</div>
       {Array.isArray(children)
-        ? children.map((line, i) => <div key={i}>{line}</div>)
-        : <div>{children}</div>
+        ? children.map((line, i) => <div key={i} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{line}</div>)
+        : <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{children}</div>
       }
     </div>
   );
