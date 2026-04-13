@@ -112,6 +112,30 @@ impl<'a> PlayerQueryContext<'a> {
         );
     }
 
+    pub fn move_character_with_support_predicate<'b, F>(
+        &self,
+        position: &mut Vec3d,
+        velocity: &mut Vec3d,
+        on_ground: &mut bool,
+        dt: f32,
+        predicate: &'b F,
+        collisions_out: Option<&mut Vec<CharacterCollision>>,
+    )
+    where
+        F: Fn(ColliderHandle, &Collider) -> bool,
+    {
+        let filter = SimWorld::shared_player_support_filter().predicate(predicate);
+        self.sim.move_character_with_custom_filter(
+            self.collider_handle,
+            position,
+            velocity,
+            on_ground,
+            dt,
+            filter,
+            collisions_out,
+        );
+    }
+
     pub fn intersect_pushable_dynamic_bodies(
         &self,
         position: &Vec3d,
@@ -429,13 +453,35 @@ impl SimWorld {
         dt: f32,
         filter: QueryFilter,
     ) -> Vec<CharacterCollision> {
+        let mut collisions = Vec::new();
+        self.move_character_with_custom_filter(
+            collider_handle,
+            position,
+            velocity,
+            on_ground,
+            dt,
+            filter,
+            Some(&mut collisions),
+        );
+        collisions
+    }
+
+    pub fn move_character_with_custom_filter<'a>(
+        &self,
+        collider_handle: ColliderHandle,
+        position: &mut Vec3d,
+        velocity: &mut Vec3d,
+        on_ground: &mut bool,
+        dt: f32,
+        filter: QueryFilter<'a>,
+        collisions_out: Option<&mut Vec<CharacterCollision>>,
+    ) {
         let query_pipeline = self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.rigid_bodies,
             &self.colliders,
             filter,
         );
-        let mut collisions = Vec::new();
         self.move_character_with_query_pipeline(
             collider_handle,
             position,
@@ -443,9 +489,8 @@ impl SimWorld {
             on_ground,
             dt,
             &query_pipeline,
-            Some(&mut collisions),
+            collisions_out,
         );
-        collisions
     }
 
     fn move_character_with_query_pipeline(

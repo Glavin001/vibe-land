@@ -29,6 +29,8 @@ import {
   PKT_SHOT_RESULT,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
+  PKT_PING,
+  PKT_PONG,
 } from './protocol';
 
 // ──────────────────────────────────────────────
@@ -578,6 +580,28 @@ describe('shotResult packet decode', () => {
     if (packet.type === 'shotResult') {
       expect(packet.hitZone).toBe(2);
     }
+  });
+});
+
+describe('reliable ping/pong decode', () => {
+  it('decodes server ping packets on the reliable path', () => {
+    const binary = new Uint8Array(5);
+    const view = new DataView(binary.buffer);
+    view.setUint8(0, PKT_PING);
+    view.setUint32(1, 0xdeadbeef, true);
+
+    const packet = decodeServerReliablePacket(binary);
+    expect(packet).toEqual({ type: 'serverPing', value: 0xdeadbeef });
+  });
+
+  it('decodes pong packets on the reliable path', () => {
+    const binary = new Uint8Array(5);
+    const view = new DataView(binary.buffer);
+    view.setUint8(0, PKT_PONG);
+    view.setUint32(1, 0x12345678, true);
+
+    const packet = decodeServerReliablePacket(binary);
+    expect(packet).toEqual({ type: 'pong', value: 0x12345678 });
   });
 });
 

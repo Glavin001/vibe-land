@@ -28,6 +28,7 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
       player_kcc_ms: { avg: 4, p95: 5, max: 6 },
       player_kcc_horizontal_ms: { avg: 2, p95: 2.5, max: 3 },
       player_kcc_support_ms: { avg: 1.5, p95: 2, max: 2.5 },
+      player_kcc_merged_ms: { avg: 0, p95: 0, max: 0 },
       player_support_probe_ms: { avg: 0.1, p95: 0.2, max: 0.3 },
       player_collider_sync_ms: { avg: 0, p95: 0.01, max: 0.02 },
       player_dynamic_contact_query_ms: { avg: 0.05, p95: 0.1, max: 0.2 },
@@ -58,6 +59,10 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
       webtransport_snapshot_reliable_sent: 5,
       webtransport_snapshot_datagram_sent: 95,
       strict_snapshot_drops: 0,
+      strict_snapshot_drop_oversize: 0,
+      strict_snapshot_drop_connection_closed: 0,
+      strict_snapshot_drop_unsupported_peer: 0,
+      strict_snapshot_drop_other: 0,
       dropped_outbound_packets: 0,
       dropped_outbound_snapshots: 0,
       snapshot_bytes_per_client: { avg: 500, p95: 700, max: 900 },
@@ -132,5 +137,43 @@ describe('benchmark evaluation', () => {
     const evaluation = evaluateScenario(spec, measured, 0.9, [], [], []);
     expect(evaluation.verdict).toBe('warn');
     expect(evaluation.thresholdOutcomes.find((outcome) => outcome.metric === 'connected_ratio')?.verdict).toBe('warn');
+  });
+
+  it('uses measurement-window deltas for cumulative counters', () => {
+    const base = makeMatch({
+      network: {
+        ...makeMatch().network,
+        datagram_fallbacks: 7,
+        strict_snapshot_drops: 11,
+      },
+      load: {
+        ...makeMatch().load,
+        void_kills: 2,
+      },
+    });
+    const later = makeMatch({
+      network: {
+        ...base.network,
+        datagram_fallbacks: 9,
+        strict_snapshot_drops: 14,
+      },
+      load: {
+        ...base.load,
+        void_kills: 3,
+      },
+    });
+
+    const measured = buildMeasuredWindow(
+      'test',
+      [
+        { at: new Date().toISOString(), match: base },
+        { at: new Date(Date.now() + 1000).toISOString(), match: later },
+      ],
+      60,
+    );
+
+    expect(measured.peakMetrics.datagramFallbacks).toBe(2);
+    expect(measured.peakMetrics.strictSnapshotDrops).toBe(3);
+    expect(measured.peakMetrics.voidKills).toBe(1);
   });
 });

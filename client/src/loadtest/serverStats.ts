@@ -12,6 +12,7 @@ export interface MatchTimingSnapshot {
   player_kcc_ms: SummaryStatsSnapshot;
   player_kcc_horizontal_ms: SummaryStatsSnapshot;
   player_kcc_support_ms: SummaryStatsSnapshot;
+  player_kcc_merged_ms: SummaryStatsSnapshot;
   player_support_probe_ms: SummaryStatsSnapshot;
   player_collider_sync_ms: SummaryStatsSnapshot;
   player_dynamic_contact_query_ms: SummaryStatsSnapshot;
@@ -43,6 +44,10 @@ export interface MatchNetworkSnapshot {
   webtransport_snapshot_reliable_sent: number;
   webtransport_snapshot_datagram_sent: number;
   strict_snapshot_drops: number;
+  strict_snapshot_drop_oversize: number;
+  strict_snapshot_drop_connection_closed: number;
+  strict_snapshot_drop_unsupported_peer: number;
+  strict_snapshot_drop_other: number;
   dropped_outbound_packets: number;
   dropped_outbound_snapshots: number;
   snapshot_bytes_per_client: SummaryStatsSnapshot;
@@ -169,6 +174,7 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
     ['query context', match.timings.player_query_ctx_ms.p95],
     ['player KCC horizontal', match.timings.player_kcc_horizontal_ms.p95],
     ['player KCC support', match.timings.player_kcc_support_ms.p95],
+    ['player KCC merged', match.timings.player_kcc_merged_ms.p95],
     ['support probe', match.timings.player_support_probe_ms.p95],
     ['collider sync', match.timings.player_collider_sync_ms.p95],
     ['dynamic contact query', match.timings.player_dynamic_contact_query_ms.p95],
@@ -207,7 +213,23 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
     return `Near tick budget: ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && match.network.strict_snapshot_drops > 0) {
-    return `WT strict drops: ${match.network.strict_snapshot_drops} dropped snapshots, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms`;
+    const dropSummary = [
+      match.network.strict_snapshot_drop_oversize > 0
+        ? `oversize ${match.network.strict_snapshot_drop_oversize}`
+        : null,
+      match.network.strict_snapshot_drop_connection_closed > 0
+        ? `closed ${match.network.strict_snapshot_drop_connection_closed}`
+        : null,
+      match.network.strict_snapshot_drop_unsupported_peer > 0
+        ? `unsupported ${match.network.strict_snapshot_drop_unsupported_peer}`
+        : null,
+      match.network.strict_snapshot_drop_other > 0
+        ? `other ${match.network.strict_snapshot_drop_other}`
+        : null,
+    ]
+      .filter((part): part is string => part != null)
+      .join(', ');
+    return `WT strict drops: ${match.network.strict_snapshot_drops} dropped snapshots${dropSummary ? ` (${dropSummary})` : ''}, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
     return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;

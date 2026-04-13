@@ -18,6 +18,15 @@ function maxValue(samples: MatchStatsSnapshot[], select: (sample: MatchStatsSnap
   return samples.reduce((max, sample) => Math.max(max, select(sample)), 0);
 }
 
+function deltaValue(samples: MatchStatsSnapshot[], select: (sample: MatchStatsSnapshot) => number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+  const first = select(samples[0]);
+  const last = select(samples[samples.length - 1]);
+  return Math.max(0, last - first);
+}
+
 export function buildMeasuredWindow(
   matchId: string,
   samples: Array<{ at: string; match: MatchStatsSnapshot }>,
@@ -38,15 +47,15 @@ export function buildMeasuredWindow(
     snapshotBytesPerTickP95: maxValue(matches, (sample) => sample.network.snapshot_bytes_per_tick.p95),
     bodiesPerClientP95: maxValue(matches, (sample) => sample.network.snapshot_dynamic_bodies_per_client.p95),
     wtReliableRatio: maxValue(matches, (sample) => webTransportSnapshotFallbackRatio(sample)),
-    datagramFallbacks: maxValue(matches, (sample) => sample.network.datagram_fallbacks),
-    strictSnapshotDrops: maxValue(matches, (sample) => sample.network.strict_snapshot_drops),
+    datagramFallbacks: deltaValue(matches, (sample) => sample.network.datagram_fallbacks),
+    strictSnapshotDrops: deltaValue(matches, (sample) => sample.network.strict_snapshot_drops),
     maxPendingInputs: maxValue(matches, (sample) => maxPendingInputs(sample)),
     avgPendingInputs: maxValue(matches, (sample) =>
       sample.players.length > 0
         ? sample.players.reduce((sum, player) => sum + player.pending_inputs, 0) / sample.players.length
         : 0,
     ),
-    voidKills: maxValue(matches, (sample) => sample.load.void_kills),
+    voidKills: deltaValue(matches, (sample) => sample.load.void_kills),
   };
 
   return {

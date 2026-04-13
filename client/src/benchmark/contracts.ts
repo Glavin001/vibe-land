@@ -31,6 +31,24 @@ export interface WebTransportWorkerResult extends BenchmarkWorkerResultBase {
   scenario: LoadTestScenario;
 }
 
+export interface PlayWorkerResult {
+  kind: 'play';
+  clientLabel: string;
+  transport: string;
+  connected: boolean;
+  disconnected: boolean;
+  startedAt: string;
+  finishedAt: string;
+  snapshotsReceived: number;
+  snapshotRate: number;
+  snapshotSource: string;
+  pendingInputsPeak5s: number;
+  playerCorrectionPeak5sM: number;
+  dynamicCorrectionPeak5sM: number;
+  shotsFired: number;
+  disconnectReason: string | null;
+}
+
 export interface BenchmarkPageState {
   mode: 'idle' | 'running' | 'completed' | 'failed';
   status: string;
@@ -40,6 +58,15 @@ export interface BenchmarkPageState {
   bottleneck: string;
   error: string | null;
   result: WebTransportWorkerResult | null;
+}
+
+export interface PlayBenchmarkPageState {
+  mode: 'idle' | 'running' | 'completed' | 'failed';
+  status: string;
+  playerId: number;
+  transport: string;
+  disconnectReason: string | null;
+  result: PlayWorkerResult | null;
 }
 
 export interface BenchmarkObservedMetrics {
@@ -93,6 +120,7 @@ export interface BenchmarkScenarioResult {
   workers: {
     websocket: WebSocketWorkerResult | null;
     webtransport: WebTransportWorkerResult | null;
+    play: PlayWorkerResult[];
   };
   connectedRatio: number;
   thresholdOutcomes: ThresholdOutcome[];

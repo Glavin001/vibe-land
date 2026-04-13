@@ -2,7 +2,7 @@
 pub use vibe_netcode::sim_world::SimWorld;
 
 use rapier3d::control::CharacterCollision;
-use rapier3d::prelude::ColliderHandle;
+use rapier3d::prelude::{Collider, ColliderHandle};
 
 use crate::constants::*;
 use crate::movement::*;
@@ -16,6 +16,13 @@ const SUPPORT_CONTACT_EPSILON_M: f32 = 0.12;
 const SUPPORT_CONTACT_MARGIN_M: f32 = 0.35;
 const SUPPORT_SNAP_EXTRA_M: f32 = 0.06;
 const SUPPORT_PLATFORM_VEL_EPSILON_MPS: f32 = 0.35;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayerKccMode {
+    #[default]
+    TwoPass,
+    OnePassSupportPredicate,
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -44,6 +51,7 @@ pub struct PlayerTickTimings {
     pub query_ctx_ms: f32,
     pub kcc_horizontal_ms: f32,
     pub kcc_support_ms: f32,
+    pub kcc_merged_ms: f32,
     pub support_probe_ms: f32,
     pub kcc_query_ms: f32,
     pub collider_sync_ms: f32,
@@ -261,16 +269,61 @@ fn support_pass_hit_dynamic_body(sim: &SimWorld, collisions: &[CharacterCollisio
         .any(|collision| sim.is_pushable_dynamic_collider(collision.handle))
 }
 
+fn merged_support_filter_allows_dynamic_collider(
+    sim: &SimWorld,
+    position: &Vec3d,
+    vertical_velocity: f64,
+    dt: f32,
+    handle: ColliderHandle,
+    collider: &Collider,
+) -> bool {
+    if !sim.is_pushable_dynamic_collider(handle) {
+        return true;
+    }
+
+    let player_bottom =
+        position.y as f32 - (sim.config.capsule_half_segment + sim.config.capsule_radius);
+    let projected_bottom = player_bottom + (vertical_velocity * dt as f64) as f32;
+    let support_probe_slack =
+        sim.config.snap_to_ground + sim.config.collision_offset + SUPPORT_SNAP_EXTRA_M;
+    let support_window_min = projected_bottom.min(player_bottom) - support_probe_slack;
+    let support_window_max = player_bottom + SUPPORT_CONTACT_MARGIN_M;
+    let aabb = collider.compute_aabb();
+    if aabb.maxs.y < support_window_min - SUPPORT_CONTACT_EPSILON_M
+        || aabb.maxs.y > support_window_max
+    {
+        return false;
+    }
+
+    let px = position.x as f32;
+    let pz = position.z as f32;
+    let dx = if px < aabb.mins.x {
+        aabb.mins.x - px
+    } else if px > aabb.maxs.x {
+        px - aabb.maxs.x
+    } else {
+        0.0
+    };
+    let dz = if pz < aabb.mins.z {
+        aabb.mins.z - pz
+    } else if pz > aabb.maxs.z {
+        pz - aabb.maxs.z
+    } else {
+        0.0
+    };
+    let horizontal_margin = sim.config.capsule_radius + sim.config.collision_offset + 0.2;
+    dx * dx + dz * dz <= horizontal_margin * horizontal_margin
+}
+
 fn stabilize_dynamic_support(
     sim: &SimWorld,
     query_ctx: &vibe_netcode::sim_world::PlayerQueryContext<'_>,
     position: &mut Vec3d,
     velocity: &mut Vec3d,
-    on_ground: bool,
     dt: f32,
     should_probe: bool,
 ) -> bool {
-    if !should_probe || !on_ground || velocity.y > 0.0 {
+    if !should_probe || velocity.y > 0.0 {
         return false;
     }
     let max_probe = sim.config.snap_to_ground + sim.config.collision_offset + SUPPORT_SNAP_EXTRA_M;
@@ -318,6 +371,32 @@ pub fn simulate_player_tick(
     input: &InputCmd,
     dt: f32,
 ) -> PlayerTickResult {
+    simulate_player_tick_with_mode(
+        sim,
+        collider_handle,
+        position,
+        velocity,
+        yaw,
+        pitch,
+        on_ground,
+        input,
+        dt,
+        PlayerKccMode::TwoPass,
+    )
+}
+
+pub fn simulate_player_tick_with_mode(
+    sim: &SimWorld,
+    collider_handle: ColliderHandle,
+    position: &mut Vec3d,
+    velocity: &mut Vec3d,
+    yaw: &mut f64,
+    pitch: &mut f64,
+    on_ground: &mut bool,
+    input: &InputCmd,
+    dt: f32,
+    kcc_mode: PlayerKccMode,
+) -> PlayerTickResult {
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
@@ -329,55 +408,98 @@ pub fn simulate_player_tick(
     let query_ctx = sim.player_query_context(collider_handle);
     result.timings.query_ctx_ms = elapsed_ms(query_ctx_started);
 
-    let mut horizontal_position = *position;
-    let mut horizontal_velocity = Vec3d::new(velocity.x, 0.0, velocity.z);
-    let mut horizontal_ground = *on_ground;
-    let horizontal_started = now_marker();
-    query_ctx.move_character_horizontal(
-        &mut horizontal_position,
-        &mut horizontal_velocity,
-        &mut horizontal_ground,
-        dt,
-    );
-    result.timings.kcc_horizontal_ms = elapsed_ms(horizontal_started);
-    position.x = horizontal_position.x;
-    position.z = horizontal_position.z;
-    velocity.x = horizontal_velocity.x;
-    velocity.z = horizontal_velocity.z;
+    let touched_dynamic_support = match kcc_mode {
+        PlayerKccMode::TwoPass => {
+            let mut horizontal_position = *position;
+            let mut horizontal_velocity = Vec3d::new(velocity.x, 0.0, velocity.z);
+            let mut horizontal_ground = *on_ground;
+            let horizontal_started = now_marker();
+            query_ctx.move_character_horizontal(
+                &mut horizontal_position,
+                &mut horizontal_velocity,
+                &mut horizontal_ground,
+                dt,
+            );
+            result.timings.kcc_horizontal_ms = elapsed_ms(horizontal_started);
+            position.x = horizontal_position.x;
+            position.z = horizontal_position.z;
+            velocity.x = horizontal_velocity.x;
+            velocity.z = horizontal_velocity.z;
 
-    let capture_support_collisions = velocity.y <= 0.0;
-    let mut support_velocity = Vec3d::new(0.0, velocity.y, 0.0);
-    let mut support_ground = *on_ground;
-    let mut support_collisions = Vec::new();
-    let support_started = now_marker();
-    query_ctx.move_character_support(
-        position,
-        &mut support_velocity,
-        &mut support_ground,
-        dt,
-        if capture_support_collisions {
-            Some(&mut support_collisions)
-        } else {
-            None
-        },
-    );
-    result.timings.kcc_support_ms = elapsed_ms(support_started);
-    velocity.y = support_velocity.y;
-    *on_ground = support_ground;
-    let touched_dynamic_support = capture_support_collisions
-        && support_ground
-        && support_pass_hit_dynamic_body(sim, &support_collisions);
+            let capture_support_collisions = velocity.y <= 0.0;
+            let mut support_velocity = Vec3d::new(0.0, velocity.y, 0.0);
+            let mut support_ground = *on_ground;
+            let mut support_collisions = Vec::new();
+            let support_started = now_marker();
+            query_ctx.move_character_support(
+                position,
+                &mut support_velocity,
+                &mut support_ground,
+                dt,
+                if capture_support_collisions {
+                    Some(&mut support_collisions)
+                } else {
+                    None
+                },
+            );
+            result.timings.kcc_support_ms = elapsed_ms(support_started);
+            velocity.y = support_velocity.y;
+            *on_ground = support_ground;
+            capture_support_collisions
+                && support_ground
+                && support_pass_hit_dynamic_body(sim, &support_collisions)
+        }
+        PlayerKccMode::OnePassSupportPredicate => {
+            let capture_support_collisions = velocity.y <= 0.0;
+            let vertical_velocity = velocity.y;
+            let mut merged_collisions = Vec::new();
+            let merged_started = now_marker();
+            let filter_position = *position;
+            let predicate = |handle: ColliderHandle, collider: &Collider| {
+                merged_support_filter_allows_dynamic_collider(
+                    sim,
+                    &filter_position,
+                    vertical_velocity,
+                    dt,
+                    handle,
+                    collider,
+                )
+            };
+            query_ctx.move_character_with_support_predicate(
+                position,
+                velocity,
+                on_ground,
+                dt,
+                &predicate,
+                if capture_support_collisions {
+                    Some(&mut merged_collisions)
+                } else {
+                    None
+                },
+            );
+            result.timings.kcc_merged_ms = elapsed_ms(merged_started);
+            capture_support_collisions
+                && *on_ground
+                && support_pass_hit_dynamic_body(sim, &merged_collisions)
+        }
+    };
+
     let support_probe_started = now_marker();
+    let should_probe_dynamic_support = touched_dynamic_support
+        || matches!(kcc_mode, PlayerKccMode::OnePassSupportPredicate)
+            && velocity.y <= 0.0;
     let support_probe_hit = stabilize_dynamic_support(
         sim,
         &query_ctx,
         position,
         velocity,
-        *on_ground,
         dt,
-        touched_dynamic_support,
+        should_probe_dynamic_support,
     );
-    if touched_dynamic_support {
+    if support_probe_hit {
+        *on_ground = true;
+    }
+    if should_probe_dynamic_support {
         result.dynamic_stats.support_probe_count = 1;
         if support_probe_hit {
             result.dynamic_stats.support_probe_hit_count = 1;
@@ -387,6 +509,7 @@ pub fn simulate_player_tick(
     result.timings.kcc_query_ms = result.timings.query_ctx_ms
         + result.timings.kcc_horizontal_ms
         + result.timings.kcc_support_ms
+        + result.timings.kcc_merged_ms
         + result.timings.support_probe_ms;
 
     let dynamic_started = now_marker();

@@ -32,12 +32,12 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
-use wtransport::{Connection, Endpoint, Identity, ServerConfig};
+use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     demo_world::seed_default_world,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena},
+    movement::{MoveConfig, PhysicsArena, PlayerKccMode},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
@@ -116,6 +116,13 @@ impl ClientTransport {
     }
 }
 
+fn parse_player_kcc_mode(value: Option<&str>) -> PlayerKccMode {
+    match value.unwrap_or("one_pass_support_predicate") {
+        "two_pass" => PlayerKccMode::TwoPass,
+        _ => PlayerKccMode::OnePassSupportPredicate,
+    }
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct SummaryStatsSnapshot {
     avg: f32,
@@ -162,6 +169,7 @@ struct MatchTimingStats {
     player_kcc_ms: RollingSamples,
     player_kcc_horizontal_ms: RollingSamples,
     player_kcc_support_ms: RollingSamples,
+    player_kcc_merged_ms: RollingSamples,
     player_support_probe_ms: RollingSamples,
     player_collider_sync_ms: RollingSamples,
     player_dynamic_contact_query_ms: RollingSamples,
@@ -183,6 +191,7 @@ struct MatchTimingSnapshot {
     player_kcc_ms: SummaryStatsSnapshot,
     player_kcc_horizontal_ms: SummaryStatsSnapshot,
     player_kcc_support_ms: SummaryStatsSnapshot,
+    player_kcc_merged_ms: SummaryStatsSnapshot,
     player_support_probe_ms: SummaryStatsSnapshot,
     player_collider_sync_ms: SummaryStatsSnapshot,
     player_dynamic_contact_query_ms: SummaryStatsSnapshot,
@@ -205,6 +214,7 @@ impl MatchTimingStats {
             player_kcc_ms: self.player_kcc_ms.snapshot(),
             player_kcc_horizontal_ms: self.player_kcc_horizontal_ms.snapshot(),
             player_kcc_support_ms: self.player_kcc_support_ms.snapshot(),
+            player_kcc_merged_ms: self.player_kcc_merged_ms.snapshot(),
             player_support_probe_ms: self.player_support_probe_ms.snapshot(),
             player_collider_sync_ms: self.player_collider_sync_ms.snapshot(),
             player_dynamic_contact_query_ms: self.player_dynamic_contact_query_ms.snapshot(),
@@ -262,6 +272,10 @@ struct MatchNetworkSnapshot {
     webtransport_snapshot_reliable_sent: u64,
     webtransport_snapshot_datagram_sent: u64,
     strict_snapshot_drops: u64,
+    strict_snapshot_drop_oversize: u64,
+    strict_snapshot_drop_connection_closed: u64,
+    strict_snapshot_drop_unsupported_peer: u64,
+    strict_snapshot_drop_other: u64,
     dropped_outbound_packets: u64,
     dropped_outbound_snapshots: u64,
     snapshot_bytes_per_client: SummaryStatsSnapshot,
@@ -295,6 +309,14 @@ struct MatchLoadSnapshot {
     void_kills: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictSnapshotDropCause {
+    Oversize,
+    ConnectionClosed,
+    UnsupportedByPeer,
+    Other,
+}
+
 #[derive(Default)]
 struct MatchIoTelemetry {
     inbound_bytes: std::sync::atomic::AtomicU64,
@@ -308,6 +330,10 @@ struct MatchIoTelemetry {
     snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     snapshot_datagram_sent: std::sync::atomic::AtomicU64,
     strict_snapshot_drops: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_oversize: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_connection_closed: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_unsupported_peer: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_other: std::sync::atomic::AtomicU64,
     websocket_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_datagram_sent: std::sync::atomic::AtomicU64,
@@ -383,8 +409,26 @@ impl MatchIoTelemetry {
         }
     }
 
-    fn observe_strict_snapshot_drop(&self) {
+    fn observe_strict_snapshot_drop(&self, cause: StrictSnapshotDropCause) {
         self.strict_snapshot_drops.fetch_add(1, Ordering::Relaxed);
+        match cause {
+            StrictSnapshotDropCause::Oversize => {
+                self.strict_snapshot_drop_oversize
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::ConnectionClosed => {
+                self.strict_snapshot_drop_connection_closed
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::UnsupportedByPeer => {
+                self.strict_snapshot_drop_unsupported_peer
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::Other => {
+                self.strict_snapshot_drop_other
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -454,6 +498,7 @@ struct AppState {
     cert_hash_hex: String,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
@@ -575,6 +620,7 @@ struct MatchState {
     snapshot_stats: MatchSnapshotStats,
     void_kills: u64,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -628,10 +674,13 @@ async fn main() -> Result<()> {
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
+    let player_kcc_mode =
+        parse_player_kcc_mode(std::env::var("VIBE_SERVER_PLAYER_KCC_MODE").ok().as_deref());
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
+        player_kcc_mode = ?player_kcc_mode,
         "WebTransport snapshot transport policy loaded"
     );
 
@@ -650,6 +699,7 @@ async fn main() -> Result<()> {
             cert_hash_hex,
             wt_base_url,
             strict_snapshot_datagrams,
+            player_kcc_mode,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
@@ -801,11 +851,15 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                 continue;
             }
             let first = bytes[0];
+            let datagram_result = if wants_unreliable_delivery(first) {
+                Some(conn_write.send_datagram(bytes.as_slice()))
+            } else {
+                None
+            };
             let delivery = classify_outbound_delivery(
                 first,
                 strict_snapshot_datagrams,
-                wants_unreliable_delivery(first)
-                    && conn_write.send_datagram(bytes.as_slice()).is_ok(),
+                datagram_result.as_ref().is_some_and(|result| result.is_ok()),
             );
             match delivery {
                 OutboundDelivery::Datagram => {
@@ -816,7 +870,13 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                     );
                 }
                 OutboundDelivery::StrictDrop => {
-                    telemetry.observe_strict_snapshot_drop();
+                    telemetry.observe_strict_snapshot_drop(
+                        datagram_result
+                            .as_ref()
+                            .and_then(|result| result.as_ref().err())
+                            .map(strict_snapshot_drop_cause_from_send_error)
+                            .unwrap_or(StrictSnapshotDropCause::Other),
+                    );
                     continue;
                 }
                 OutboundDelivery::ReliableFallback => {
@@ -1019,11 +1079,12 @@ async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
-    let mut arena = PhysicsArena::new(MoveConfig::default());
+    let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
     let world = VoxelWorld::new();
     seed_default_world(&mut arena).expect("default world document should instantiate");
     let dynamic_body_handles = arena
@@ -1063,6 +1124,7 @@ async fn run_match_loop(
         snapshot_stats: MatchSnapshotStats::default(),
         void_kills: 0,
         strict_snapshot_datagrams,
+        player_kcc_mode,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
@@ -1112,6 +1174,7 @@ fn spawn_match_loop(
             match_id.clone(),
             rx,
             app.strict_snapshot_datagrams,
+            app.player_kcc_mode,
             app.stats_tx.clone(),
             telemetry,
             app.stats_registry.clone(),
@@ -1485,6 +1548,7 @@ impl MatchState {
         let mut player_kcc_ms = 0.0f32;
         let mut player_kcc_horizontal_ms = 0.0f32;
         let mut player_kcc_support_ms = 0.0f32;
+        let mut player_kcc_merged_ms = 0.0f32;
         let mut player_support_probe_ms = 0.0f32;
         let mut player_collider_sync_ms = 0.0f32;
         let mut player_dynamic_contact_query_ms = 0.0f32;
@@ -1527,6 +1591,7 @@ impl MatchState {
                 player_kcc_ms += result.timings.kcc_query_ms;
                 player_kcc_horizontal_ms += result.timings.kcc_horizontal_ms;
                 player_kcc_support_ms += result.timings.kcc_support_ms;
+                player_kcc_merged_ms += result.timings.kcc_merged_ms;
                 player_support_probe_ms += result.timings.support_probe_ms;
                 player_collider_sync_ms += result.timings.collider_sync_ms;
                 player_dynamic_contact_query_ms += result.timings.dynamic_contact_query_ms;
@@ -1539,8 +1604,12 @@ impl MatchState {
                 dynamic_impulses_applied_per_tick +=
                     result.dynamic_stats.impulses_applied_count as f32;
                 contacted_dynamic_mass_per_tick += result.dynamic_stats.contacted_mass;
-                player_kcc_horizontal_calls_per_tick += 1.0;
-                player_kcc_support_calls_per_tick += 1.0;
+                if result.timings.kcc_horizontal_ms > 0.0 {
+                    player_kcc_horizontal_calls_per_tick += 1.0;
+                }
+                if result.timings.kcc_support_ms > 0.0 {
+                    player_kcc_support_calls_per_tick += 1.0;
+                }
                 player_support_probe_count_per_tick +=
                     result.dynamic_stats.support_probe_count as f32;
                 player_support_probe_hit_count_per_tick +=
@@ -1584,6 +1653,9 @@ impl MatchState {
         self.timings
             .player_kcc_support_ms
             .record(player_kcc_support_ms);
+        self.timings
+            .player_kcc_merged_ms
+            .record(player_kcc_merged_ms);
         self.timings
             .player_support_probe_ms
             .record(player_support_probe_ms);
@@ -1850,6 +1922,22 @@ impl MatchState {
                     .webtransport_snapshot_datagram_sent
                     .load(Ordering::Relaxed),
                 strict_snapshot_drops: self.io.strict_snapshot_drops.load(Ordering::Relaxed),
+                strict_snapshot_drop_oversize: self
+                    .io
+                    .strict_snapshot_drop_oversize
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_connection_closed: self
+                    .io
+                    .strict_snapshot_drop_connection_closed
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_unsupported_peer: self
+                    .io
+                    .strict_snapshot_drop_unsupported_peer
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_other: self
+                    .io
+                    .strict_snapshot_drop_other
+                    .load(Ordering::Relaxed),
                 dropped_outbound_packets: self.io.dropped_outbound_packets.load(Ordering::Relaxed),
                 dropped_outbound_snapshots: self
                     .io
@@ -1963,6 +2051,10 @@ impl MatchState {
                 datagram_packets_sent = self.io.datagram_packets_sent.load(Ordering::Relaxed),
                 datagram_fallbacks,
                 strict_snapshot_drops,
+                strict_snapshot_drop_oversize = self.io.strict_snapshot_drop_oversize.load(Ordering::Relaxed),
+                strict_snapshot_drop_connection_closed = self.io.strict_snapshot_drop_connection_closed.load(Ordering::Relaxed),
+                strict_snapshot_drop_unsupported_peer = self.io.strict_snapshot_drop_unsupported_peer.load(Ordering::Relaxed),
+                strict_snapshot_drop_other = self.io.strict_snapshot_drop_other.load(Ordering::Relaxed),
                 dropped_outbound_packets,
                 snapshot_reliable_sent = self.io.snapshot_reliable_sent.load(Ordering::Relaxed),
                 snapshot_datagram_sent = self.io.snapshot_datagram_sent.load(Ordering::Relaxed),
@@ -1982,8 +2074,10 @@ impl MatchState {
                 move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
                 player_query_ctx_ms_avg = match_stats.timings.player_query_ctx_ms.avg,
                 kcc_ms_avg = match_stats.timings.player_kcc_ms.avg,
+                player_kcc_mode = ?self.player_kcc_mode,
                 player_kcc_horizontal_ms_avg = match_stats.timings.player_kcc_horizontal_ms.avg,
                 player_kcc_support_ms_avg = match_stats.timings.player_kcc_support_ms.avg,
+                player_kcc_merged_ms_avg = match_stats.timings.player_kcc_merged_ms.avg,
                 player_support_probe_ms_avg = match_stats.timings.player_support_probe_ms.avg,
                 collider_sync_ms_avg = match_stats.timings.player_collider_sync_ms.avg,
                 player_dynamic_contact_query_ms_avg = match_stats.timings.player_dynamic_contact_query_ms.avg,
@@ -2833,6 +2927,14 @@ fn wants_unreliable_delivery(kind: u8) -> bool {
     is_snapshot_packet_kind(kind) || kind == PKT_PING
 }
 
+fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {
+    match err {
+        SendDatagramError::TooLarge => StrictSnapshotDropCause::Oversize,
+        SendDatagramError::NotConnected => StrictSnapshotDropCause::ConnectionClosed,
+        SendDatagramError::UnsupportedByPeer => StrictSnapshotDropCause::UnsupportedByPeer,
+    }
+}
+
 fn classify_outbound_delivery(
     kind: u8,
     strict_snapshot_datagrams: bool,
@@ -2934,14 +3036,15 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
-        enqueue_inputs, is_snapshot_packet_kind, rifle_damage, take_input_for_tick,
-        try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, OutboundDelivery, PlayerRuntime,
-        MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        enqueue_inputs, is_snapshot_packet_kind, rifle_damage, strict_snapshot_drop_cause_from_send_error,
+        take_input_for_tick, try_queue_packet, HitZone, InputCmd, MatchIoTelemetry,
+        OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::sync::mpsc;
     use vibe_land_shared::seq::seq_is_newer;
+    use wtransport::error::SendDatagramError;
 
     fn runtime() -> PlayerRuntime {
         let (tx, _rx) = mpsc::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
@@ -3103,6 +3206,22 @@ mod tests {
                 .snapshot_reliable_sent
                 .load(std::sync::atomic::Ordering::Relaxed),
             0
+        );
+    }
+
+    #[test]
+    fn strict_snapshot_drop_causes_are_classified() {
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::TooLarge),
+            StrictSnapshotDropCause::Oversize
+        );
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::NotConnected),
+            StrictSnapshotDropCause::ConnectionClosed
+        );
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::UnsupportedByPeer),
+            StrictSnapshotDropCause::UnsupportedByPeer
         );
     }
 

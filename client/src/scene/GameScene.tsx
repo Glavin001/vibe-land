@@ -10,7 +10,7 @@ import type { WorldDocument } from '../world/worldDocument';
 type GameSceneProps = {
   mode: GameMode;
   onWelcome: (id: number) => void;
-  onDisconnect: () => void;
+  onDisconnect: (reason?: string) => void;
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
@@ -22,6 +22,7 @@ type GameSceneProps = {
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
+  benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -40,6 +41,7 @@ export function GameScene({
   showRenderStats,
   renderStatsParent,
   worldDocument,
+  benchmarkAutopilot,
 }: GameSceneProps) {
   return (
     <Canvas
@@ -70,6 +72,7 @@ export function GameScene({
           inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
+          benchmarkAutopilot={benchmarkAutopilot}
         />
       </Suspense>
     </Canvas>

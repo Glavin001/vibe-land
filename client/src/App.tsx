@@ -1,6 +1,7 @@
-import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
+import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
   DEFAULT_INPUT_BINDINGS,
   loadInputBindings,
@@ -18,6 +19,7 @@ import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
+import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
 
 type AppProps = {
@@ -28,6 +30,56 @@ type AppProps = {
   autoConnect?: boolean;
   sessionKey?: number;
 };
+
+type BenchmarkConfig = {
+  autopilot: boolean;
+  autostart: boolean;
+  clientIndex: number;
+  clientLabel: string;
+  scenario: LoadTestScenario;
+  durationMs: number;
+};
+
+declare global {
+  interface Window {
+    __VIBE_PLAY_BENCHMARK_STATE__?: PlayBenchmarkPageState | null;
+    __VIBE_PLAY_BENCHMARK_RESULT__?: PlayWorkerResult | null;
+    __VIBE_GET_PLAY_BENCHMARK_RESULT__?: (() => PlayWorkerResult | null) | null;
+  }
+}
+
+function parseClientIndex(value: string | null): number {
+  const parsed = Number.parseInt(value ?? '0', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function parseBenchmarkScenario(raw: string | null, matchId: string): LoadTestScenario {
+  if (!raw) {
+    return normalizeScenario({
+      name: `play-benchmark-${matchId}`,
+      matchId,
+      durationS: 30,
+      botCount: 0,
+      transportMix: { websocket: 0, webtransport: 0 },
+      spawnPattern: 'clustered',
+    });
+  }
+  try {
+    return normalizeScenario({
+      ...(JSON.parse(raw) as Partial<LoadTestScenario>),
+      matchId,
+    });
+  } catch {
+    return normalizeScenario({
+      name: `play-benchmark-${matchId}`,
+      matchId,
+      durationS: 30,
+      botCount: 0,
+      transportMix: { websocket: 0, webtransport: 0 },
+      spawnPattern: 'clustered',
+    });
+  }
+}
 
 export function App({
   mode,
@@ -40,15 +92,44 @@ export function App({
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
   const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const benchmarkConfig = useMemo<BenchmarkConfig | null>(() => {
+    if (practiceMode) {
+      return null;
+    }
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('benchmark') !== '1') {
+      return null;
+    }
+    const clientIndex = parseClientIndex(params.get('clientIndex'));
+    const clientLabel = params.get('clientLabel') ?? `play-${clientIndex + 1}`;
+    const scenario = parseBenchmarkScenario(params.get('scenario'), multiplayerMatchId);
+    return {
+      autopilot: params.get('autopilot') === '1',
+      autostart: params.get('autostart') === '1',
+      clientIndex,
+      clientLabel,
+      scenario,
+      durationMs: Math.max(1, scenario.durationS) * 1000,
+    };
+  }, [multiplayerMatchId, practiceMode]);
+  const benchmarkAutopilot = useMemo(
+    () => benchmarkConfig ? {
+      enabled: benchmarkConfig.autopilot,
+      clientIndex: benchmarkConfig.clientIndex,
+      scenario: benchmarkConfig.scenario,
+    } : undefined,
+    [benchmarkConfig],
+  );
+  const effectiveAutoConnect = autoConnect || benchmarkConfig?.autostart === true;
   const pathLabel = routeLabel ?? (
     mode === 'multiplayer'
       ? buildMatchHref('/play', multiplayerMatchId)
       : '/practice'
   );
-  const [connected, setConnected] = useState(autoConnect);
+  const [connected, setConnected] = useState(effectiveAutoConnect);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState(
-    autoConnect
+    effectiveAutoConnect
       ? (practiceMode ? 'Starting firing range...' : 'Connecting...')
       : 'Click to join',
   );
@@ -68,10 +149,79 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
+  const benchmarkStartedAtRef = useRef<string | null>(null);
+  const benchmarkDisconnectReasonRef = useRef<string | null>(null);
+  const benchmarkResultRef = useRef<PlayWorkerResult | null>(null);
+  const autoConnectAttemptedRef = useRef(false);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
   }, [inputBindings]);
+
+  const publishBenchmarkState = useCallback((
+    modeValue: PlayBenchmarkPageState['mode'],
+    overrideStatus?: string,
+    result: PlayWorkerResult | null = benchmarkResultRef.current,
+  ) => {
+    if (!benchmarkConfig) {
+      return;
+    }
+    const stats = getStatsSnapshot();
+    window.__VIBE_PLAY_BENCHMARK_STATE__ = {
+      mode: modeValue,
+      status: overrideStatus ?? status,
+      playerId,
+      transport: stats.transport,
+      disconnectReason: benchmarkDisconnectReasonRef.current,
+      result,
+    };
+    window.__VIBE_PLAY_BENCHMARK_RESULT__ = result;
+  }, [benchmarkConfig, getStatsSnapshot, playerId, status]);
+
+  const buildBenchmarkResult = useCallback((
+    disconnected: boolean,
+    overrideReason?: string,
+    finishedAt = new Date().toISOString(),
+  ): PlayWorkerResult | null => {
+    if (!benchmarkConfig) {
+      return null;
+    }
+    const stats = getStatsSnapshot();
+    const snapshotsReceived =
+      stats.reliableSnapshotsReceived
+      + stats.datagramSnapshotsReceived
+      + stats.localSnapshotsReceived
+      + stats.directSnapshotsReceived;
+    return {
+      kind: 'play',
+      clientLabel: benchmarkConfig.clientLabel,
+      transport: stats.transport,
+      connected: playerId > 0,
+      disconnected,
+      startedAt: benchmarkStartedAtRef.current ?? finishedAt,
+      finishedAt,
+      snapshotsReceived,
+      snapshotRate: stats.snapshotsPerSec,
+      snapshotSource: stats.lastSnapshotSource,
+      pendingInputsPeak5s: stats.pendingInputsPeak5s,
+      playerCorrectionPeak5sM: stats.playerCorrectionPeak5sM,
+      dynamicCorrectionPeak5sM: stats.dynamicCorrectionPeak5sM,
+      shotsFired: stats.shotsFired,
+      disconnectReason: overrideReason ?? benchmarkDisconnectReasonRef.current,
+    };
+  }, [benchmarkConfig, getStatsSnapshot, playerId]);
+
+  const finalizeBenchmark = useCallback((modeValue: 'completed' | 'failed', overrideReason?: string) => {
+    if (!benchmarkConfig || benchmarkResultRef.current) {
+      return;
+    }
+    const result = buildBenchmarkResult(modeValue === 'failed', overrideReason);
+    if (!result) {
+      return;
+    }
+    benchmarkResultRef.current = result;
+    publishBenchmarkState(modeValue, overrideReason ?? status, result);
+  }, [benchmarkConfig, buildBenchmarkResult, publishBenchmarkState, status]);
 
   const updateKeyboardBinding = useCallback(<K extends keyof KeyboardBindings>(key: K, value: KeyboardBindings[K]) => {
     setInputBindings((current) => ({
@@ -109,26 +259,41 @@ export function App({
     setConnected(true);
     setCrosshairState('idle');
     setStatus(practiceMode ? 'Starting firing range...' : 'Connecting...');
-  }, [practiceMode]);
+    if (benchmarkConfig) {
+      benchmarkStartedAtRef.current = null;
+      benchmarkDisconnectReasonRef.current = null;
+      benchmarkResultRef.current = null;
+      publishBenchmarkState('idle', practiceMode ? 'Starting firing range...' : 'Connecting...', null);
+    }
+  }, [benchmarkConfig, practiceMode, publishBenchmarkState]);
 
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
     setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — controls are configurable from the Controls panel`);
-  }, [modeLabel, practiceMode]);
+    if (benchmarkConfig && benchmarkStartedAtRef.current == null) {
+      benchmarkStartedAtRef.current = new Date().toISOString();
+      publishBenchmarkState('running');
+    }
+  }, [benchmarkConfig, modeLabel, practiceMode, publishBenchmarkState]);
 
-  const handleDisconnect = useCallback(() => {
+  const handleDisconnect = useCallback((reason?: string) => {
     setStatus(`${practiceMode ? `${modeLabel} stopped` : 'Disconnected'} — click to rejoin`);
     setConnected(false);
     setPlayerId(0);
     setCrosshairState('idle');
-  }, [modeLabel, practiceMode]);
+    if (benchmarkConfig) {
+      benchmarkDisconnectReasonRef.current = reason ?? 'connection closed';
+      finalizeBenchmark('failed', benchmarkDisconnectReasonRef.current);
+    }
+  }, [benchmarkConfig, finalizeBenchmark, modeLabel, practiceMode]);
 
   useEffect(() => {
-    if (!autoConnect || connected) {
+    if (!effectiveAutoConnect || connected || autoConnectAttemptedRef.current) {
       return;
     }
+    autoConnectAttemptedRef.current = true;
     handleConnect();
-  }, [autoConnect, connected, handleConnect]);
+  }, [connected, effectiveAutoConnect, handleConnect]);
 
   useEffect(() => {
     if (!connected || sessionKey === 0) {
@@ -137,6 +302,57 @@ export function App({
     setCrosshairState('idle');
     setStatus(practiceMode ? 'Starting firing range...' : 'Connecting...');
   }, [connected, practiceMode, sessionKey]);
+
+  useEffect(() => {
+    if (!benchmarkConfig) {
+      return;
+    }
+    publishBenchmarkState('idle', status, null);
+    const intervalId = window.setInterval(() => {
+      if (benchmarkResultRef.current) {
+        publishBenchmarkState(
+          benchmarkResultRef.current.disconnected ? 'failed' : 'completed',
+          status,
+          benchmarkResultRef.current,
+        );
+      } else if (benchmarkStartedAtRef.current) {
+        publishBenchmarkState('running');
+      } else {
+        publishBenchmarkState('idle');
+      }
+    }, 250);
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [benchmarkConfig, publishBenchmarkState, status]);
+
+  useEffect(() => {
+    if (!benchmarkConfig) {
+      return;
+    }
+    window.__VIBE_GET_PLAY_BENCHMARK_RESULT__ = () => (
+      benchmarkResultRef.current
+      ?? buildBenchmarkResult(
+        Boolean(benchmarkDisconnectReasonRef.current),
+        benchmarkDisconnectReasonRef.current ?? undefined,
+      )
+    );
+    return () => {
+      window.__VIBE_PLAY_BENCHMARK_STATE__ = null;
+      window.__VIBE_PLAY_BENCHMARK_RESULT__ = null;
+      window.__VIBE_GET_PLAY_BENCHMARK_RESULT__ = null;
+    };
+  }, [benchmarkConfig, buildBenchmarkResult]);
+
+  useEffect(() => {
+    if (!benchmarkConfig || playerId === 0 || benchmarkResultRef.current) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      finalizeBenchmark('completed');
+    }, benchmarkConfig.durationMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [benchmarkConfig, finalizeBenchmark, playerId]);
 
   useEffect(() => {
     const setTimedCopyNotice = (message: string) => {
@@ -366,6 +582,7 @@ export function App({
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
+          benchmarkAutopilot={benchmarkAutopilot}
         />
       )}
     </div>

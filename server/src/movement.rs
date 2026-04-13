@@ -10,7 +10,9 @@ use crate::protocol::*;
 pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
-pub use vibe_land_shared::simulation::{simulate_player_tick, PlayerTickResult};
+pub use vibe_land_shared::simulation::{
+    simulate_player_tick_with_mode, PlayerKccMode, PlayerTickResult,
+};
 use vibe_land_shared::vehicle::{
     create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
 };
@@ -45,6 +47,7 @@ pub struct PhysicsArena {
     pub dynamic: DynamicArena,
     pub players: HashMap<u32, PlayerMotorState>,
     next_spawn_index: u32,
+    player_kcc_mode: PlayerKccMode,
 
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
@@ -53,10 +56,15 @@ pub struct PhysicsArena {
 
 impl PhysicsArena {
     pub fn new(config: MoveConfig) -> Self {
+        Self::with_player_kcc_mode(config, PlayerKccMode::OnePassSupportPredicate)
+    }
+
+    pub fn with_player_kcc_mode(config: MoveConfig, player_kcc_mode: PlayerKccMode) -> Self {
         Self {
             dynamic: DynamicArena::new(config),
             players: HashMap::new(),
             next_spawn_index: 0,
+            player_kcc_mode,
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
@@ -179,7 +187,7 @@ impl PhysicsArena {
         }
         state.last_input = input.clone();
 
-        let mut tick_result = simulate_player_tick(
+        let mut tick_result = simulate_player_tick_with_mode(
             &self.dynamic.sim,
             state.collider,
             &mut state.position,
@@ -189,6 +197,7 @@ impl PhysicsArena {
             &mut state.on_ground,
             input,
             dt,
+            self.player_kcc_mode,
         );
         let sync_started = Instant::now();
         self.dynamic
@@ -727,8 +736,9 @@ mod tests {
         }
     }
 
-    fn arena_with_ground() -> PhysicsArena {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+    fn arena_with_ground_kcc_mode(player_kcc_mode: PlayerKccMode) -> PhysicsArena {
+        let mut arena =
+            PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
         arena.add_static_cuboid(
             Vector3::<f32>::new(0.0, -0.5, 0.0),
             Vector3::<f32>::new(50.0, 0.5, 50.0),
@@ -736,6 +746,10 @@ mod tests {
         );
         arena.rebuild_broad_phase();
         arena
+    }
+
+    fn arena_with_ground() -> PhysicsArena {
+        arena_with_ground_kcc_mode(PlayerKccMode::TwoPass)
     }
 
     // ──────────────────────────────────────────────
@@ -1610,6 +1624,114 @@ mod tests {
         assert!(
             max_y - min_y < 0.18,
             "standing on dynamic box should be stable, y range={:.3}",
+            max_y - min_y
+        );
+        assert!(
+            box_state.1[1] > 0.5,
+            "dynamic box should remain resting on the floor, y={:.3}",
+            box_state.1[1]
+        );
+    }
+
+    #[test]
+    fn one_pass_support_predicate_advances_through_ball() {
+        let mut arena = arena_with_ground_kcc_mode(PlayerKccMode::OnePassSupportPredicate);
+        arena.spawn_player(1);
+        arena.rebuild_broad_phase();
+
+        let dt = 1.0_f32 / 60.0;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+        }
+
+        let player_start = arena.snapshot_player(1).unwrap().0;
+        arena.spawn_dynamic_ball(
+            vector![player_start[0], player_start[1], player_start[2] + 2.0],
+            0.3,
+        );
+        arena.rebuild_broad_phase();
+        for _ in 0..60 {
+            arena.step_dynamics(dt);
+        }
+
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &fwd, dt);
+            arena.step_dynamics(dt);
+        }
+
+        let player_end = arena.snapshot_player(1).unwrap().0;
+        assert!(
+            player_end[2] > player_start[2] + 1.0,
+            "merged KCC should still advance past ball: start z={:.3}, end z={:.3}",
+            player_start[2],
+            player_end[2],
+        );
+    }
+
+    #[test]
+    fn one_pass_support_predicate_can_stand_on_dynamic_box() {
+        let mut arena = arena_with_ground_kcc_mode(PlayerKccMode::OnePassSupportPredicate);
+        let box_id = arena.spawn_dynamic_box(vector![0.0, 3.0, 0.0], vector![0.6, 0.6, 0.6]);
+        arena.rebuild_broad_phase();
+
+        let dt = 1.0_f32 / 60.0;
+        for _ in 0..240 {
+            arena.step_dynamics(dt);
+        }
+
+        arena.spawn_player(1);
+        if let Some(state) = arena.players.get_mut(&1) {
+            state.position = Vector3::<f64>::new(0.0, 4.0, 0.0);
+            state.velocity = Vec3d::zeros();
+            arena
+                .dynamic
+                .sim
+                .sync_player_collider(state.collider, &state.position);
+        }
+
+        let mut settle_ticks = 0usize;
+        for _ in 0..180 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+            let (_, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+            if flags & FLAG_ON_GROUND != 0 {
+                settle_ticks += 1;
+            }
+        }
+
+        let mut grounded_ticks = 0usize;
+        let mut ys = Vec::new();
+        for _ in 0..120 {
+            arena.simulate_player_tick(1, &input(), dt);
+            arena.step_dynamics(dt);
+            let (pos, _, _, _, _, flags) = arena.snapshot_player(1).unwrap();
+            ys.push(pos[1]);
+            if flags & FLAG_ON_GROUND != 0 {
+                grounded_ticks += 1;
+            }
+        }
+
+        let box_state = arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|s| s.0 == box_id)
+            .unwrap();
+        let max_y = ys.iter().copied().fold(f32::MIN, f32::max);
+        let min_y = ys.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            settle_ticks > 60,
+            "merged KCC should land on dynamic box during settle, grounded={settle_ticks}"
+        );
+        assert!(
+            grounded_ticks > 90,
+            "merged KCC should remain grounded on dynamic box, grounded={grounded_ticks}"
+        );
+        assert!(
+            max_y - min_y < 0.2,
+            "merged KCC standing on dynamic box should stay stable, y range={:.3}",
             max_y - min_y
         );
         assert!(

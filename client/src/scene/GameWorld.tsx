@@ -21,6 +21,12 @@ import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
 import {
   aimDirectionFromAngles,
+  BTN_CROUCH,
+  BTN_FORWARD,
+  BTN_JUMP,
+  BTN_LEFT,
+  BTN_RIGHT,
+  BTN_SPRINT,
   BLOCK_ADD,
   BLOCK_REMOVE,
   FLAG_DEAD,
@@ -30,6 +36,8 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
+import type { LoadTestScenario } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
@@ -162,7 +170,7 @@ type GameWorldProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
   onWelcome: (id: number) => void;
-  onDisconnect: () => void;
+  onDisconnect: (reason?: string) => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
@@ -170,6 +178,11 @@ type GameWorldProps = {
   inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
+  benchmarkAutopilot?: {
+    enabled: boolean;
+    clientIndex: number;
+    scenario: LoadTestScenario;
+  };
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -327,6 +340,32 @@ type LocalVehicleVisualPoseState = {
   euler: THREE.Euler;
 };
 
+function resolvedInputFromBotIntent(
+  buttons: number,
+  yaw: number,
+  pitch: number,
+  firePrimary: boolean,
+): import('../input/types').ResolvedGameInput {
+  const moveX =
+    ((buttons & BTN_RIGHT) !== 0 ? 1 : 0)
+    - ((buttons & BTN_LEFT) !== 0 ? 1 : 0);
+  const moveY = (buttons & BTN_FORWARD) !== 0 ? 1 : 0;
+  return {
+    activeFamily: 'keyboardMouse',
+    moveX,
+    moveY,
+    yaw,
+    pitch,
+    buttons: buttons & (BTN_JUMP | BTN_SPRINT | BTN_CROUCH),
+    firePrimary,
+    interactPressed: false,
+    blockRemovePressed: false,
+    blockPlacePressed: false,
+    materialSlot1Pressed: false,
+    materialSlot2Pressed: false,
+  };
+}
+
 export function GameWorld({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
@@ -339,6 +378,7 @@ export function GameWorld({
   inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
+  benchmarkAutopilot,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
@@ -400,6 +440,11 @@ export function GameWorld({
   const nextLocalFireMsRef = useRef(0);
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
+  const botBrainRef = useRef<BotBrainState | null>(
+    benchmarkAutopilot?.enabled
+      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
+      : null,
+  );
 
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
@@ -433,6 +478,12 @@ export function GameWorld({
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
   }, []);
+
+  useEffect(() => {
+    botBrainRef.current = benchmarkAutopilot?.enabled
+      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
+      : null;
+  }, [benchmarkAutopilot]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -509,6 +560,7 @@ export function GameWorld({
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
+    const physStats = prediction.getDebugStats();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -532,9 +584,43 @@ export function GameWorld({
       pitchRef.current = look.pitch;
     }
 
-    const resolvedInput = isDrivingNow
+    const autopilotEnabled = Boolean(benchmarkAutopilot?.enabled && botBrainRef.current && !isDrivingNow);
+    const autopilotInput = autopilotEnabled
+      ? (() => {
+          const localPosition = prediction.getPosition() ?? state.localPosition;
+          const localState = {
+            position: localPosition,
+            velocity: physStats.velocity,
+            yaw: yawRef.current,
+            pitch: pitchRef.current,
+            hp: client?.localPlayerHp ?? 100,
+            flags: localFlags,
+          };
+          const remotePlayers: ObservedPlayer[] = Array.from(state.remotePlayers.values()).map((remote) => ({
+            id: remote.id,
+            state: {
+              position: remote.position,
+              velocity: [0, 0, 0],
+              yaw: remote.yaw,
+              pitch: remote.pitch,
+              hp: remote.hp,
+              flags: remote.hp <= 0 ? FLAG_DEAD : 0,
+            },
+          }));
+          const intent = stepBotBrain(
+            botBrainRef.current!,
+            benchmarkAutopilot!.scenario,
+            localState,
+            remotePlayers,
+          );
+          yawRef.current = intent.yaw;
+          pitchRef.current = intent.pitch;
+          return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
+        })()
+      : null;
+    const resolvedInput = autopilotInput ?? (isDrivingNow
       ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
-      : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily);
+      : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
 
     // --- Vehicle spawn/despawn sync ---
     if (client && prediction.ready) {
@@ -648,7 +734,10 @@ export function GameWorld({
       }
     }
 
-    const canUseAimActions = !isDrivingNow && !localDead && (pointerLocked || inputSample.activeFamily === 'gamepad');
+    const canUseAimActions =
+      !isDrivingNow
+      && !localDead
+      && (autopilotEnabled || pointerLocked || inputSample.activeFamily === 'gamepad');
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
@@ -904,7 +993,6 @@ export function GameWorld({
     }
 
     // Report per-frame debug stats to server (aggregated to 1 Hz)
-    const physStats = prediction.getDebugStats();
     client?.accumulateDebugStats(physStats.playerCorrectionMagnitude, physStats.physicsStepMs);
     client?.recordFrameDebugMetrics(
       physStats.playerCorrectionMagnitude,
