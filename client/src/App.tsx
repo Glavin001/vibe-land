@@ -2,12 +2,19 @@ import { useState, useCallback, useEffect, useRef, type CSSProperties, type Reac
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
-import type { InputFamilyMode } from './input/types';
+import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
+import { CalibrationOverlay } from './calibration/CalibrationOverlay';
+import { FirstRunPrompt } from './calibration/FirstRunPrompt';
+import {
+  getInputSettings,
+  hasStoredInputSettings,
+  updateInputSettings,
+} from './input/inputSettingsStore';
 
 type AppProps = {
   mode: GameMode;
@@ -50,6 +57,54 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
+
+  // Calibration wizard state (firing range only).
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
+  const [firstRunPromptVisible, setFirstRunPromptVisible] = useState(false);
+  const [calibrationActiveFamily, setCalibrationActiveFamily] = useState<DeviceFamily | null>(null);
+  const [calibrationSceneExtras, setCalibrationSceneExtras] = useState<ReactNode>(null);
+  const lastKnownFamilyRef = useRef<DeviceFamily | null>(null);
+
+  const handleInputFrame = useCallback((sample: InputSample) => {
+    updateInputFrame(sample);
+    if (sample.activeFamily && sample.activeFamily !== lastKnownFamilyRef.current) {
+      lastKnownFamilyRef.current = sample.activeFamily;
+    }
+  }, [updateInputFrame]);
+
+  // First-run prompt: show it only in practice mode, only once per user, and
+  // only when no stored input settings exist yet.
+  useEffect(() => {
+    if (!practiceMode) return;
+    const stored = hasStoredInputSettings();
+    const settings = getInputSettings();
+    if (!stored && !settings.meta.firstRunPromptDismissed) {
+      setFirstRunPromptVisible(true);
+    }
+  }, [practiceMode]);
+
+  const openCalibration = useCallback(() => {
+    setFirstRunPromptVisible(false);
+    // Snapshot the active family at the moment the wizard opens. If we don't
+    // have a known family yet (e.g. player just loaded the page), default to
+    // keyboardMouse — the input arbiter will update it if they use a gamepad
+    // first.
+    setCalibrationActiveFamily(lastKnownFamilyRef.current ?? 'keyboardMouse');
+    setCalibrationOpen(true);
+  }, []);
+
+  const dismissFirstRunPrompt = useCallback(() => {
+    setFirstRunPromptVisible(false);
+    updateInputSettings((draft) => {
+      draft.meta.firstRunPromptDismissed = true;
+      return draft;
+    });
+  }, []);
+
+  const closeCalibration = useCallback(() => {
+    setCalibrationOpen(false);
+    setCalibrationSceneExtras(null);
+  }, []);
 
   const handleConnect = useCallback(() => {
     setConnected(true);
@@ -203,6 +258,15 @@ export function App({
         <a href={practiceMode ? '/play' : '/practice'} style={navLinkStyle}>
           {practiceMode ? 'Multiplayer' : 'Firing range'}
         </a>
+        {practiceMode && connected && (
+          <button
+            type="button"
+            onClick={openCalibration}
+            style={calibrateButtonStyle}
+          >
+            Calibrate
+          </button>
+        )}
       </div>
       {overlay}
       {copyNotice && (
@@ -267,6 +331,21 @@ export function App({
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
+      {practiceMode && (
+        <FirstRunPrompt
+          visible={firstRunPromptVisible && connected}
+          onStart={openCalibration}
+          onDismiss={dismissFirstRunPrompt}
+        />
+      )}
+      {practiceMode && (
+        <CalibrationOverlay
+          visible={calibrationOpen}
+          activeFamily={calibrationActiveFamily}
+          onRequestClose={closeCalibration}
+          onRenderSceneExtras={setCalibrationSceneExtras}
+        />
+      )}
       <DebugOverlay stats={displayStats} visible={debugVisible} />
       {debugVisible && (
         <div
@@ -289,12 +368,13 @@ export function App({
           onAimStateChange={setCrosshairState}
           playerId={playerId}
           onDebugFrame={updateFrame}
-          onInputFrame={updateInputFrame}
+          onInputFrame={handleInputFrame}
           inputFamilyMode={inputFamilyMode}
           onSnapshot={recordSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
+          sceneExtras={calibrationSceneExtras}
         />
       )}
     </div>
@@ -308,4 +388,15 @@ const navLinkStyle: CSSProperties = {
   padding: '6px 10px',
   borderRadius: 4,
   fontSize: 13,
+};
+
+const calibrateButtonStyle: CSSProperties = {
+  background: 'rgba(149, 233, 255, 0.22)',
+  border: '1px solid rgba(149, 233, 255, 0.45)',
+  color: '#edf6ff',
+  padding: '6px 12px',
+  borderRadius: 999,
+  fontSize: 13,
+  cursor: 'pointer',
+  fontWeight: 600,
 };

@@ -1,6 +1,5 @@
+import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
-
-const POINTER_LOOK_SENSITIVITY = 0.003;
 
 export class KeyboardMouseInputSource {
   private readonly keys = new Set<string>();
@@ -93,8 +92,14 @@ export class KeyboardMouseInputSource {
       + (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? -1 : 0);
     const moveY = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0)
       + (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? -1 : 0);
-    const lookX = pointerLocked ? -this.pointerDeltaX * POINTER_LOOK_SENSITIVITY : 0;
-    const lookY = pointerLocked ? -this.pointerDeltaY * POINTER_LOOK_SENSITIVITY : 0;
+    const mouse = getInputSettings().mouse;
+    const baseSens = mouse.sensitivity;
+    // invertY=false keeps the legacy "-pointerDeltaY" semantics.
+    const ySign = mouse.invertY ? 1 : -1;
+    const lookX = pointerLocked ? -this.pointerDeltaX * baseSens : 0;
+    // yOverXRatio multiplies only Y so calibrating X (knob 1) stays stable
+    // when Y/X ratio (knob 2) is later tuned.
+    const lookY = pointerLocked ? ySign * this.pointerDeltaY * baseSens * mouse.yOverXRatio : 0;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
 

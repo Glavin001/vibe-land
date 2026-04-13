@@ -1,9 +1,10 @@
+import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
 
+// Move-stick inner deadzone is not currently calibrated (move is out of v1
+// scope; the player only notices it at walking edge cases). Aim-stick
+// deadzone and speed/curve are read from settings per-frame.
 const LEFT_STICK_DEADZONE = 0.18;
-const RIGHT_STICK_DEADZONE = 0.12;
-const GAMEPAD_YAW_SPEED = 2.8;
-const GAMEPAD_PITCH_SPEED = 2.1;
 const PRESSED_EPSILON = 0.35;
 
 type GamepadState = {
@@ -23,9 +24,24 @@ export function applyRadialDeadzone(x: number, y: number, deadzone: number): [nu
   return [x * scale, y * scale];
 }
 
-export function shapeLookAxis(value: number): number {
+/**
+ * Apply a variable-exponent response curve: `sign(v) * |v|^exponent`.
+ * - exponent = 1.0 → linear (direct)
+ * - exponent = 2.0 → legacy squared curve (default)
+ * - exponent > 2.0 → more precise near center, faster at the edges
+ */
+export function shapeLookAxisWithExponent(value: number, exponent: number): number {
   const sign = Math.sign(value);
-  return sign * value * value;
+  const mag = Math.abs(value);
+  // Math.pow(0, x) === 0 for x > 0, and we clamp exponent ≥ 1 at the
+  // settings layer, so this is numerically well-behaved.
+  return sign * Math.pow(mag, exponent);
+}
+
+// Back-compat wrapper kept for existing tests and anyone importing the
+// legacy name. Uses the hardcoded exponent-2 curve.
+export function shapeLookAxis(value: number): number {
+  return shapeLookAxisWithExponent(value, 2);
 }
 
 function buttonValue(gamepad: Gamepad, index: number): number {
@@ -65,10 +81,15 @@ export class GamepadInputSource {
     const previous = this.previous;
     this.noteActivityIfChanged(gamepad, previous);
 
+    const gp = getInputSettings().gamepad;
     const [moveX, moveYRaw] = applyRadialDeadzone(gamepad.axes[0] ?? 0, gamepad.axes[1] ?? 0, LEFT_STICK_DEADZONE);
-    const [lookXRaw, lookYRaw] = applyRadialDeadzone(gamepad.axes[2] ?? 0, gamepad.axes[3] ?? 0, RIGHT_STICK_DEADZONE);
-    const lookX = -shapeLookAxis(lookXRaw) * GAMEPAD_YAW_SPEED * deltaSec;
-    const lookY = shapeLookAxis(lookYRaw) * GAMEPAD_PITCH_SPEED * deltaSec;
+    const [lookXRaw, lookYRaw] = applyRadialDeadzone(gamepad.axes[2] ?? 0, gamepad.axes[3] ?? 0, gp.aimDeadzone);
+    const yawSpeed = gp.yawSpeed;
+    // Pitch speed is derived from yaw * y/x ratio so calibrating speed alone
+    // doesn't secretly change the aspect ratio.
+    const pitchSpeed = gp.yawSpeed * gp.yOverXRatio;
+    const lookX = -shapeLookAxisWithExponent(lookXRaw, gp.curveExponent) * yawSpeed * deltaSec;
+    const lookY = shapeLookAxisWithExponent(lookYRaw, gp.curveExponent) * pitchSpeed * deltaSec;
     const rt = buttonValue(gamepad, 7);
     const lt = buttonValue(gamepad, 6);
     const steer = moveX;
@@ -81,7 +102,9 @@ export class GamepadInputSource {
       moveX,
       moveY: -moveYRaw,
       lookX,
-      lookY: -lookY,
+      // Legacy default (invertY=false) negates raw stick Y. invertY=true keeps
+      // the sign, producing inverted vertical look.
+      lookY: gp.invertY ? lookY : -lookY,
       steer,
       throttle,
       brake,
