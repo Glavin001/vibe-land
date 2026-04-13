@@ -1,29 +1,21 @@
+import type { InputBindings } from './bindings';
+import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
-
-const POINTER_LOOK_SENSITIVITY = 0.003;
 
 export class KeyboardMouseInputSource {
   private readonly keys = new Set<string>();
   private readonly mouseButtons = new Set<number>();
+  private readonly justPressedKeys = new Set<string>();
   private pointerDeltaX = 0;
   private pointerDeltaY = 0;
   private activityId = 0;
-  private interactPressed = false;
-  private blockRemovePressed = false;
-  private blockPlacePressed = false;
-  private materialSlot1Pressed = false;
-  private materialSlot2Pressed = false;
 
   private readonly onKeyDown = (event: KeyboardEvent) => {
     if (!this.keys.has(event.code)) {
       this.activityId += 1;
     }
     this.keys.add(event.code);
-    if (event.code === 'KeyE') this.interactPressed = true;
-    if (event.code === 'KeyQ') this.blockRemovePressed = true;
-    if (event.code === 'KeyF') this.blockPlacePressed = true;
-    if (event.code === 'Digit1') this.materialSlot1Pressed = true;
-    if (event.code === 'Digit2') this.materialSlot2Pressed = true;
+    this.justPressedKeys.add(event.code);
   };
 
   private readonly onKeyUp = (event: KeyboardEvent) => {
@@ -32,6 +24,7 @@ export class KeyboardMouseInputSource {
 
   private readonly onBlur = () => {
     this.keys.clear();
+    this.justPressedKeys.clear();
     this.mouseButtons.clear();
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
@@ -88,13 +81,24 @@ export class KeyboardMouseInputSource {
     document.removeEventListener('contextmenu', this.onContextMenu);
   }
 
-  sample(pointerLocked: boolean, context: InputContext): ActionSnapshot {
-    const moveX = (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0)
-      + (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? -1 : 0);
-    const moveY = (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0)
-      + (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? -1 : 0);
-    const lookX = pointerLocked ? -this.pointerDeltaX * POINTER_LOOK_SENSITIVITY : 0;
-    const lookY = pointerLocked ? -this.pointerDeltaY * POINTER_LOOK_SENSITIVITY : 0;
+  sample(pointerLocked: boolean, context: InputContext, bindings: InputBindings): ActionSnapshot {
+    const keyboard = bindings.keyboard;
+    const moveX = (this.keys.has(keyboard.moveRight) ? 1 : 0)
+      + (this.keys.has(keyboard.moveLeft) ? -1 : 0);
+    const moveY = (this.keys.has(keyboard.moveForward) ? 1 : 0)
+      + (this.keys.has(keyboard.moveBackward) ? -1 : 0);
+    // Mouse look sensitivity and Y/X ratio come from the calibration settings
+    // store, NOT the key bindings — those two systems are orthogonal.
+    // Bindings control which key does what; calibration controls how the
+    // look delta is scaled.
+    const mouse = getInputSettings().mouse;
+    const baseSens = mouse.sensitivity;
+    // invertY=false keeps the legacy "-pointerDeltaY" semantics.
+    const ySign = mouse.invertY ? 1 : -1;
+    const lookX = pointerLocked ? -this.pointerDeltaX * baseSens : 0;
+    // yOverXRatio multiplies only Y so calibrating X (knob 1) stays stable
+    // when Y/X ratio (knob 2) is later tuned.
+    const lookY = pointerLocked ? ySign * this.pointerDeltaY * baseSens * mouse.yOverXRatio : 0;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
 
@@ -106,27 +110,23 @@ export class KeyboardMouseInputSource {
       lookX,
       lookY,
       steer: Math.max(-1, Math.min(1, moveX)),
-      throttle: this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0,
-      brake: this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0,
-      jump: context === 'onFoot' && this.keys.has('Space'),
-      sprint: context === 'onFoot' && (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')),
-      crouch: context === 'onFoot'
-        && (this.keys.has('ControlLeft') || this.keys.has('ControlRight') || this.keys.has('KeyC')),
-      firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(0),
-      firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(0) ? 1 : 0,
-      handbrake: context === 'vehicle' && this.keys.has('Space'),
-      interactPressed: this.interactPressed,
-      blockRemovePressed: context === 'onFoot' && this.blockRemovePressed,
-      blockPlacePressed: context === 'onFoot' && this.blockPlacePressed,
-      materialSlot1Pressed: context === 'onFoot' && this.materialSlot1Pressed,
-      materialSlot2Pressed: context === 'onFoot' && this.materialSlot2Pressed,
+      throttle: this.keys.has(keyboard.moveForward) ? 1 : 0,
+      brake: this.keys.has(keyboard.moveBackward) ? 1 : 0,
+      jump: context === 'onFoot' && this.keys.has(keyboard.jump),
+      sprint: context === 'onFoot' && this.keys.has(keyboard.sprint),
+      crouch: context === 'onFoot' && this.keys.has(keyboard.crouch),
+      firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton),
+      firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton) ? 1 : 0,
+      handbrake: context === 'vehicle' && this.keys.has(keyboard.handbrake),
+      interactPressed: this.justPressedKeys.has(keyboard.interact),
+      resetVehiclePressed: context === 'vehicle' && this.justPressedKeys.has(keyboard.resetVehicle),
+      blockRemovePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockRemove),
+      blockPlacePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockPlace),
+      materialSlot1Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot1),
+      materialSlot2Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot2),
     };
 
-    this.interactPressed = false;
-    this.blockRemovePressed = false;
-    this.blockPlacePressed = false;
-    this.materialSlot1Pressed = false;
-    this.materialSlot2Pressed = false;
+    this.justPressedKeys.clear();
 
     return snapshot;
   }

@@ -24,7 +24,11 @@ pub fn sample_demo_terrain_height(x: f32, z: f32) -> f32 {
     let dx = x - DEMO_TERRAIN_FLAT_CENTER_X;
     let dz = z - DEMO_TERRAIN_FLAT_CENTER_Z;
     let dist = (dx * dx + dz * dz).sqrt();
-    let blend = smoothstep(DEMO_TERRAIN_FLAT_RADIUS_M, DEMO_TERRAIN_BLEND_RADIUS_M, dist);
+    let blend = smoothstep(
+        DEMO_TERRAIN_FLAT_RADIUS_M,
+        DEMO_TERRAIN_BLEND_RADIUS_M,
+        dist,
+    );
     (base * blend).clamp(-1.0, 1.0)
 }
 
@@ -94,9 +98,11 @@ mod tests {
         for row in 0..DEMO_TERRAIN_GRID_SIZE {
             for col in 0..DEMO_TERRAIN_GRID_SIZE {
                 let x = -DEMO_TERRAIN_HALF_EXTENT_M
-                    + (DEMO_TERRAIN_HALF_EXTENT_M * 2.0) * (col as f32 / (DEMO_TERRAIN_GRID_SIZE - 1) as f32);
+                    + (DEMO_TERRAIN_HALF_EXTENT_M * 2.0)
+                        * (col as f32 / (DEMO_TERRAIN_GRID_SIZE - 1) as f32);
                 let z = -DEMO_TERRAIN_HALF_EXTENT_M
-                    + (DEMO_TERRAIN_HALF_EXTENT_M * 2.0) * (row as f32 / (DEMO_TERRAIN_GRID_SIZE - 1) as f32);
+                    + (DEMO_TERRAIN_HALF_EXTENT_M * 2.0)
+                        * (row as f32 / (DEMO_TERRAIN_GRID_SIZE - 1) as f32);
                 let h = sample_demo_terrain_height(x, z);
                 min_height = min_height.min(h);
                 max_height = max_height.max(h);
@@ -122,7 +128,10 @@ mod tests {
         ];
         for (x, z) in samples {
             let h = sample_demo_terrain_height(x, z);
-            assert!(h.abs() <= 0.05, "expected flat terrain near ({x}, {z}), got {h}");
+            assert!(
+                h.abs() <= 0.05,
+                "expected flat terrain near ({x}, {z}), got {h}"
+            );
         }
     }
 }

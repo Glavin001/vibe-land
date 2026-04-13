@@ -15,11 +15,14 @@ import path from 'node:path';
 import WebSocket from 'ws';
 import { buildInputFromButtons } from './src/scene/inputBuilder.js';
 import {
+  aimDirectionFromAngles,
   decodeServerPacket,
+  encodeFirePacket,
   encodeInputBundle,
   encodePingPacket,
   netStateToMeters,
   type PlayerStateMeters,
+  WEAPON_HITSCAN,
 } from './src/net/protocol.js';
 import { stepBotBrain, createBotBrainState, type ObservedPlayer } from './src/loadtest/brain.js';
 import { PacketImpairment } from './src/loadtest/networkModel.js';
@@ -117,25 +120,34 @@ class StatsMonitor {
 async function parseScenarioFromArgs(): Promise<LoadTestScenario> {
   const args = process.argv.slice(2);
   const scenarioFlagIndex = args.findIndex((arg) => arg === '--scenario');
+  const matchIdFlagIndex = args.findIndex((arg) => arg === '--match-id');
+  const matchIdOverride = args[matchIdFlagIndex + 1]?.trim() || process.env.LOADTEST_MATCH_ID?.trim() || null;
   if (scenarioFlagIndex >= 0) {
     const value = args[scenarioFlagIndex + 1];
     if (!value) {
       throw new Error('missing value after --scenario');
     }
     if (value.trim().startsWith('{')) {
-      return parseScenarioJson(value);
+      const scenario = parseScenarioJson(value);
+      return matchIdOverride ? normalizeScenario({ ...scenario, matchId: matchIdOverride }) : scenario;
     }
     const fullPath = path.resolve(process.cwd(), value);
-    return parseScenarioJson(await readFile(fullPath, 'utf8'));
+    const scenario = parseScenarioJson(await readFile(fullPath, 'utf8'));
+    return matchIdOverride ? normalizeScenario({ ...scenario, matchId: matchIdOverride }) : scenario;
   }
 
   if (process.env.LOADTEST_SCENARIO_JSON) {
-    return parseScenarioJson(process.env.LOADTEST_SCENARIO_JSON);
+    const scenario = parseScenarioJson(process.env.LOADTEST_SCENARIO_JSON);
+    return matchIdOverride ? normalizeScenario({ ...scenario, matchId: matchIdOverride }) : scenario;
   }
 
-  const botCount = Number.parseInt(args[0] ?? `${DEFAULT_SCENARIO.botCount}`, 10);
-  const durationS = Number.parseInt(args[1] ?? `${DEFAULT_SCENARIO.durationS}`, 10);
-  return createScenarioFromLegacyArgs(botCount, durationS);
+  const positionalArgs = args.filter((arg, index) =>
+    !(arg === '--match-id' || index === matchIdFlagIndex + 1),
+  );
+  const botCount = Number.parseInt(positionalArgs[0] ?? `${DEFAULT_SCENARIO.botCount}`, 10);
+  const durationS = Number.parseInt(positionalArgs[1] ?? `${DEFAULT_SCENARIO.durationS}`, 10);
+  const scenario = createScenarioFromLegacyArgs(botCount, durationS);
+  return matchIdOverride ? normalizeScenario({ ...scenario, matchId: matchIdOverride }) : scenario;
 }
 
 function makeBotMetrics(): BotMetrics {
@@ -319,8 +331,21 @@ function tickBot(state: BotState, scenario: LoadTestScenario): void {
       break;
   }
 
-  const frame = buildInputFromButtons(state.seq, 0, intent.buttons, intent.yaw, 0);
+  const frame = buildInputFromButtons(state.seq, 0, intent.buttons, intent.yaw, intent.pitch);
   state.outboundImpairment.enqueue(encodeInputBundle([frame]));
+  if (intent.firePrimary && state.ws?.readyState === WebSocket.OPEN) {
+    const firePacket = encodeFirePacket({
+      seq: state.seq,
+      shotId: ((state.id << 20) | state.seq) >>> 0,
+      weapon: WEAPON_HITSCAN,
+      clientFireTimeUs: Date.now() * 1000,
+      clientInterpMs: 100,
+      clientDynamicInterpMs: 16,
+      dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
+    });
+    state.metrics.outboundBytes += firePacket.length;
+    state.ws.send(firePacket);
+  }
 }
 
 function stopBot(state: BotState): void {

@@ -20,6 +20,7 @@ export type ActionSnapshot = {
   firePrimaryValue: number;
   handbrake: boolean;
   interactPressed: boolean;
+  resetVehiclePressed: boolean;
   blockRemovePressed: boolean;
   blockPlacePressed: boolean;
   materialSlot1Pressed: boolean;

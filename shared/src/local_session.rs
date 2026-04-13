@@ -1,11 +1,9 @@
 use std::collections::VecDeque;
 
-use bytes::{Buf, BufMut, BytesMut};
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE,
-        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT,
-        PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
+        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -13,6 +11,7 @@ use crate::{
     unit_conv::{i16_to_angle, snorm16_to_f32},
     world_document::WorldDocument,
 };
+use bytes::{Buf, BufMut, BytesMut};
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = SIM_HZ;
@@ -54,7 +53,9 @@ impl LocalPreviewSession {
 
     pub fn from_world_document(world: WorldDocument) -> Result<Self, String> {
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        world.instantiate(&mut arena).map_err(|error| error.to_string())?;
+        world
+            .instantiate(&mut arena)
+            .map_err(|error| error.to_string())?;
 
         Ok(Self {
             arena,
@@ -76,13 +77,14 @@ impl LocalPreviewSession {
         self.arena.spawn_player(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
-        self.outbound_packets.push(encode_welcome_packet(&WelcomePacket {
-            player_id: LOCAL_PLAYER_ID,
-            sim_hz: SIM_HZ,
-            snapshot_hz: SNAPSHOT_HZ,
-            server_time_us,
-            interpolation_delay_ms: 0,
-        }));
+        self.outbound_packets
+            .push(encode_welcome_packet(&WelcomePacket {
+                player_id: LOCAL_PLAYER_ID,
+                sim_hz: SIM_HZ,
+                snapshot_hz: SNAPSHOT_HZ,
+                server_time_us,
+                interpolation_delay_ms: 0,
+            }));
     }
 
     pub fn disconnect(&mut self) {
@@ -215,23 +217,25 @@ impl LocalPreviewSession {
                         shot.dir[1] * DYNAMIC_BODY_IMPULSE + normal[1] * 0.5,
                         shot.dir[2] * DYNAMIC_BODY_IMPULSE + normal[2] * 0.5,
                     ];
-                    let _ = self
-                        .arena
-                        .apply_dynamic_body_impulse(dynamic_body_id, impulse, impact_point);
+                    let _ = self.arena.apply_dynamic_body_impulse(
+                        dynamic_body_id,
+                        impulse,
+                        impact_point,
+                    );
                     make_shot_result(shot.shot_id, shot.weapon)
                 }
             } else {
                 make_shot_result(shot.shot_id, shot.weapon)
             };
 
-            self.outbound_packets.push(encode_shot_result_packet(&result));
+            self.outbound_packets
+                .push(encode_shot_result_packet(&result));
         }
     }
 
     fn build_snapshot_packet(&self) -> Vec<u8> {
         let mut player_states = Vec::new();
-        if let Some((pos, vel, yaw, pitch, hp, flags)) =
-            self.arena.snapshot_player(LOCAL_PLAYER_ID)
+        if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
@@ -307,6 +311,10 @@ fn make_shot_result(shot_id: u32, weapon: u8) -> ShotResultPacket {
         confirmed: false,
         hit_player_id: 0,
         hit_zone: HIT_ZONE_NONE,
+        server_resolution: 0,
+        server_dynamic_body_id: 0,
+        server_dynamic_hit_toi_cm: 0,
+        server_dynamic_impulse_centi: 0,
     }
 }
 
@@ -333,7 +341,7 @@ fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputCmd>, String> 
 }
 
 fn decode_fire_cmd(buf: &mut &[u8]) -> Result<FireCmd, String> {
-    if buf.remaining() < 23 {
+    if buf.remaining() < 25 {
         return Err("short fire packet".to_string());
     }
     Ok(FireCmd {
@@ -342,6 +350,7 @@ fn decode_fire_cmd(buf: &mut &[u8]) -> Result<FireCmd, String> {
         weapon: buf.get_u8(),
         client_fire_time_us: buf.get_u64_le(),
         client_interp_ms: buf.get_u16_le(),
+        client_dynamic_interp_ms: buf.get_u16_le(),
         dir: [
             snorm16_to_f32(buf.get_i16_le()),
             snorm16_to_f32(buf.get_i16_le()),
@@ -482,6 +491,66 @@ mod tests {
         buf.get_u16_le()
     }
 
+    fn encode_single_input_bundle(input: &InputCmd) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(12);
+        out.put_u8(PKT_INPUT_BUNDLE);
+        out.put_u8(1);
+        out.put_u16_le(input.seq);
+        out.put_u16_le(input.buttons);
+        out.put_i8(input.move_x);
+        out.put_i8(input.move_y);
+        out.put_i16_le(angle_to_i16(input.yaw));
+        out.put_i16_le(angle_to_i16(input.pitch));
+        out.to_vec()
+    }
+
+    fn encode_vehicle_enter_packet_for_test(vehicle_id: u32) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(6);
+        out.put_u8(PKT_VEHICLE_ENTER);
+        out.put_u32_le(vehicle_id);
+        out.put_u8(0);
+        out.to_vec()
+    }
+
+    fn decode_snapshot_vehicle_states(bytes: &[u8]) -> Vec<(u32, u32, i32, i32, i32)> {
+        let mut buf = bytes;
+        assert_eq!(buf.get_u8(), PKT_SNAPSHOT);
+        let _server_time = buf.get_u64_le();
+        let _server_tick = buf.get_u32_le();
+        let _ack = buf.get_u16_le();
+        let player_count = buf.get_u16_le() as usize;
+        let projectile_count = buf.get_u16_le() as usize;
+        let dynamic_count = buf.get_u16_le() as usize;
+        let vehicle_count = buf.get_u16_le() as usize;
+
+        for _ in 0..player_count {
+            buf.advance(29);
+        }
+        for _ in 0..projectile_count {
+            buf.advance(31);
+        }
+        for _ in 0..dynamic_count {
+            buf.advance(43);
+        }
+
+        let mut vehicles = Vec::with_capacity(vehicle_count);
+        for _ in 0..vehicle_count {
+            let id = buf.get_u32_le();
+            let _vehicle_type = buf.get_u8();
+            let _flags = buf.get_u8();
+            let driver_id = buf.get_u32_le();
+            let px = buf.get_i32_le();
+            let py = buf.get_i32_le();
+            let pz = buf.get_i32_le();
+            buf.advance(20);
+            for _ in 0..4 {
+                let _wheel = buf.get_u16_le();
+            }
+            vehicles.push((id, driver_id, px, py, pz));
+        }
+        vehicles
+    }
+
     #[test]
     fn connect_queues_welcome_packet() {
         let mut session = LocalPreviewSession::new();
@@ -506,24 +575,57 @@ mod tests {
             yaw: 0.0,
             pitch: 0.0,
         };
-        let bytes = {
-            let mut out = BytesMut::with_capacity(12);
-            out.put_u8(PKT_INPUT_BUNDLE);
-            out.put_u8(1);
-            out.put_u16_le(input.seq);
-            out.put_u16_le(input.buttons);
-            out.put_i8(input.move_x);
-            out.put_i8(input.move_y);
-            out.put_i16_le(angle_to_i16(input.yaw));
-            out.put_i16_le(angle_to_i16(input.pitch));
-            out.to_vec()
-        };
+        let bytes = encode_single_input_bundle(&input);
         session.handle_client_packet(&bytes).unwrap();
 
         session.tick(1.0 / 60.0);
         session.tick(1.0 / 60.0);
         let packets = session.drain_packets();
-        let snapshot = packets.into_iter().find(|pkt| pkt[0] == PKT_SNAPSHOT).unwrap();
+        let snapshot = packets
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
         assert_eq!(decode_snapshot_ack(&snapshot), 7);
+    }
+
+    #[test]
+    fn local_preview_can_enter_authored_vehicle() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        session.tick(1.0 / 60.0);
+        let initial_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("initial local preview snapshot");
+        let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
+        assert_eq!(
+            initial_vehicle.len(),
+            1,
+            "demo local preview should expose one vehicle"
+        );
+        let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
+        assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
+
+        session
+            .handle_client_packet(&encode_vehicle_enter_packet_for_test(vehicle_id))
+            .unwrap();
+
+        session.tick(1.0 / 60.0);
+
+        let latest_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("latest local preview snapshot");
+        let latest_vehicle = decode_snapshot_vehicle_states(&latest_snapshot);
+        assert_eq!(latest_vehicle.len(), 1);
+        let (_, latest_driver_id, _, _, _) = latest_vehicle[0];
+        assert_eq!(
+            latest_driver_id, LOCAL_PLAYER_ID,
+            "local preview vehicle should be driven by the local player after enter"
+        );
     }
 }

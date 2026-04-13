@@ -12,6 +12,7 @@ import type { RenderBlock } from '../world/voxelWorld';
 
 const PREDICTED_DYNAMIC_BODY_IMPULSE = 6.0;
 const FIXED_DT = 1 / 60;
+const SHOT_PREVIEW_STEP_DT = 1 / 240;
 
 type BlockRayHit = {
   point: [number, number, number];
@@ -29,6 +30,14 @@ type PlayerAimHit = {
   kind: number;
 };
 
+export type DynamicBodyShotDiagnostic = {
+  proxyHitBodyId: number | null;
+  proxyHitToi: number | null;
+  blockerDistance: number | null;
+  blockedByBlocker: boolean;
+  localPredictedDeltaM: number | null;
+};
+
 /**
  * Thin React wrapper around PredictionManager.
  * Handles shared WASM init and lifecycle only.
@@ -43,6 +52,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const dynamicBodyManagerRef = useRef<DynamicBodyPredictionManager | null>(null);
   const simRef = useRef<WasmSimWorldInstance | null>(null);
+  const lastPredictedDynamicShotRef = useRef<{ bodyId: number; atMs: number } | null>(null);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
   const [ready, setReady] = useState(false);
   const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
@@ -63,10 +73,10 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       sim.spawnPlayer(0, 2, 0);
       sim.rebuildBroadPhase();
 
-      const manager = new PredictionManager(sim);
+      const manager = new PredictionManager(sim, practiceMode);
       manager.enableTerrainWorld();
       managerRef.current = manager;
-      vehicleManagerRef.current = new VehiclePredictionManager(sim);
+      vehicleManagerRef.current = new VehiclePredictionManager(sim, practiceMode);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
       simRef.current = sim;
 
@@ -357,22 +367,66 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     direction: [number, number, number],
     maxDistance = 1000,
     blockerDistance: number | null = null,
-  ): number | null => {
+  ): { bodyId: number | null; diagnostic: DynamicBodyShotDiagnostic } => {
+    if (practiceMode) {
+      return {
+        bodyId: null,
+        diagnostic: {
+          proxyHitBodyId: null,
+          proxyHitToi: null,
+          blockerDistance,
+          blockedByBlocker: false,
+          localPredictedDeltaM: null,
+        },
+      };
+    }
     const sim = simRef.current;
-    if (!sim) return null;
+    if (!sim) {
+      return {
+        bodyId: null,
+        diagnostic: {
+          proxyHitBodyId: null,
+          proxyHitToi: null,
+          blockerDistance,
+          blockedByBlocker: false,
+          localPredictedDeltaM: null,
+        },
+      };
+    }
 
     const hit = sim.castDynamicBodyRay(
       origin[0], origin[1], origin[2],
       direction[0], direction[1], direction[2],
       maxDistance,
     );
-    if (hit.length < 5) return null;
+    if (hit.length < 5) {
+      return {
+        bodyId: null,
+        diagnostic: {
+          proxyHitBodyId: null,
+          proxyHitToi: null,
+          blockerDistance,
+          blockedByBlocker: false,
+          localPredictedDeltaM: null,
+        },
+      };
+    }
 
     const bodyId = hit[0];
     const toi = hit[1];
     if (blockerDistance != null && blockerDistance < toi) {
-      return null;
+      return {
+        bodyId: null,
+        diagnostic: {
+          proxyHitBodyId: bodyId,
+          proxyHitToi: toi,
+          blockerDistance,
+          blockedByBlocker: true,
+          localPredictedDeltaM: null,
+        },
+      };
     }
+    const beforeState = dynamicBodyManagerRef.current?.getPhysicsBodyState(bodyId);
     const impactPoint: [number, number, number] = [
       origin[0] + direction[0] * toi,
       origin[1] + direction[1] * toi,
@@ -390,15 +444,37 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     );
     if (applied) {
       dynamicBodyManagerRef.current?.markRecentInteraction(bodyId);
-      // Advance one fixed step so the locally-predicted impact is visible
-      // immediately without free-running all dynamic bodies every on-foot tick.
-      sim.stepDynamics(FIXED_DT);
+      lastPredictedDynamicShotRef.current = { bodyId, atMs: performance.now() };
+      // Use a short preview step so shots feel immediate without overshooting
+      // far ahead of the authoritative server result.
+      sim.stepDynamics(SHOT_PREVIEW_STEP_DT);
     }
-    return applied ? bodyId : null;
-  }, []);
+    const afterState = applied ? dynamicBodyManagerRef.current?.getPhysicsBodyState(bodyId) : null;
+    const localPredictedDeltaM = beforeState && afterState
+      ? Math.hypot(
+          afterState.position[0] - beforeState.position[0],
+          afterState.position[1] - beforeState.position[1],
+          afterState.position[2] - beforeState.position[2],
+        )
+      : null;
+    return {
+      bodyId: applied ? bodyId : null,
+      diagnostic: {
+        proxyHitBodyId: bodyId,
+        proxyHitToi: toi,
+        blockerDistance,
+        blockedByBlocker: false,
+        localPredictedDeltaM,
+      },
+    };
+  }, [practiceMode]);
 
   const hasRecentDynamicBodyInteraction = useCallback((id: number): boolean => {
     return dynamicBodyManagerRef.current?.hasRecentInteraction(id) ?? false;
+  }, []);
+
+  const getDynamicBodyPhysicsState = useCallback((id: number): DynamicBodyStateMeters | null => {
+    return dynamicBodyManagerRef.current?.getPhysicsBodyState(id) ?? null;
   }, []);
 
   const getNextSeq = useCallback((): number => {
@@ -427,6 +503,15 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
         dynamicOverThresholdCount: 0,
         dynamicTrackedBodies: 0,
         dynamicInteractiveBodies: 0,
+        lastDynamicShotBodyId: 0,
+        lastDynamicShotAgeMs: -1,
+        vehiclePendingInputs: 0,
+        vehicleAckSeq: 0,
+        vehicleReplayErrorM: 0,
+        vehiclePosErrorM: 0,
+        vehicleVelErrorMs: 0,
+        vehicleRotErrorRad: 0,
+        vehicleCorrectionAgeMs: -1,
         physicsStepMs: 0,
         velocity: [0, 0, 0] as [number, number, number],
       };
@@ -439,6 +524,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       interactiveMax: 0,
       overThresholdCount: 0,
     };
+    const vehicleDebugState = vm?.getDebugState();
     return {
       pendingInputs: m.getPendingInputCount(),
       predictionTicks: m.getTickCount(),
@@ -450,6 +536,17 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       dynamicOverThresholdCount: dynamicStats.overThresholdCount,
       dynamicTrackedBodies: dm?.getTrackedBodyCount() ?? 0,
       dynamicInteractiveBodies: dm?.getRecentInteractionCount() ?? 0,
+      lastDynamicShotBodyId: lastPredictedDynamicShotRef.current?.bodyId ?? 0,
+      lastDynamicShotAgeMs: lastPredictedDynamicShotRef.current
+        ? Math.max(0, performance.now() - lastPredictedDynamicShotRef.current.atMs)
+        : -1,
+      vehiclePendingInputs: vehicleDebugState?.pendingInputs ?? 0,
+      vehicleAckSeq: vehicleDebugState?.ackSeq ?? 0,
+      vehicleReplayErrorM: vehicleDebugState?.lastReplayErrorM ?? 0,
+      vehiclePosErrorM: vehicleDebugState?.lastPosErrorM ?? 0,
+      vehicleVelErrorMs: vehicleDebugState?.lastVelErrorMs ?? 0,
+      vehicleRotErrorRad: vehicleDebugState?.lastRotErrorRad ?? 0,
+      vehicleCorrectionAgeMs: vehicleDebugState?.lastCorrectionAgeMs ?? -1,
       physicsStepMs: m.getLastPhysicsStepMs(),
       velocity: m.getVelocity(),
     };
@@ -469,6 +566,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     updateDynamicBodies,
     advanceDynamicBodies,
     getDynamicBodyRenderState,
+    getDynamicBodyPhysicsState,
     predictDynamicBodyShot,
     hasRecentDynamicBodyInteraction,
     raycastScene,

@@ -80,11 +80,11 @@ describe('buildInputFromButtons', () => {
     expect(cmd.buttons & BTN_FORWARD).toBeTruthy();
   });
 
-  it('strips BTN_SECONDARY_FIRE and BTN_RELOAD from output', () => {
+  it('strips BTN_SECONDARY_FIRE but preserves BTN_RELOAD for vehicle reset', () => {
     const buttons = BTN_FORWARD | BTN_SECONDARY_FIRE | BTN_RELOAD;
     const cmd = buildInputFromButtons(1, 0, buttons, 0, 0);
     expect(cmd.buttons & BTN_SECONDARY_FIRE).toBe(0);
-    expect(cmd.buttons & BTN_RELOAD).toBe(0);
+    expect(cmd.buttons & BTN_RELOAD).toBeTruthy();
     expect(cmd.buttons & BTN_FORWARD).toBeTruthy();
   });
 

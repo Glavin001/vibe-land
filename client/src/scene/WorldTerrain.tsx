@@ -1,34 +1,83 @@
-import { forwardRef, useMemo } from 'react';
+import { forwardRef, memo, useEffect, useMemo } from 'react';
 import type { MeshProps } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { WorldDocument } from '../world/worldDocument';
-import { getTerrainWorldPosition } from '../world/worldDocument';
+import type { WorldDocument, WorldTerrainTile } from '../world/worldDocument';
+import {
+  getTerrainTileKey,
+  sortTerrainTiles,
+} from '../world/worldDocument';
 
-type WorldTerrainProps = MeshProps & {
+type WorldTerrainProps = Omit<MeshProps, 'geometry' | 'material'> & {
   world: WorldDocument;
 };
 
-export const WorldTerrain = forwardRef<THREE.Mesh, WorldTerrainProps>(function WorldTerrain(
+type TerrainTileGeometry = {
+  key: string;
+  tileX: number;
+  tileZ: number;
+  geometry: THREE.BufferGeometry;
+};
+
+export const WorldTerrain = forwardRef<THREE.Group, WorldTerrainProps>(function WorldTerrain(
   { world, ...meshProps },
   ref,
 ) {
-  const geometry = useMemo(() => buildTerrainGeometry(world), [world]);
   const material = useMemo(() => buildTerrainMaterial(), []);
-  return <mesh ref={ref} geometry={geometry} material={material} receiveShadow {...meshProps} />;
+
+  useEffect(() => () => {
+    material.dispose();
+  }, [material]);
+
+  return (
+    <group ref={ref}>
+      {sortTerrainTiles(world.terrain.tiles).map((tile) => (
+        <TerrainTileMesh
+          key={getTerrainTileKey(tile.tileX, tile.tileZ)}
+          tile={tile}
+          tileGridSize={world.terrain.tileGridSize}
+          tileHalfExtentM={world.terrain.tileHalfExtentM}
+          material={material}
+          meshProps={meshProps}
+        />
+      ))}
+    </group>
+  );
 });
 
-export function buildTerrainGeometry(world: WorldDocument): THREE.BufferGeometry {
-  const size = world.terrain.halfExtentM * 2;
-  const segments = world.terrain.gridSize - 1;
+export function buildTerrainTileGeometries(world: WorldDocument): TerrainTileGeometry[] {
+  return sortTerrainTiles(world.terrain.tiles).map((tile) => ({
+    key: getTerrainTileKey(tile.tileX, tile.tileZ),
+    tileX: tile.tileX,
+    tileZ: tile.tileZ,
+    geometry: buildTerrainTileGeometry(world, tile),
+  }));
+}
+
+export function buildTerrainTileGeometry(world: WorldDocument, tile: WorldTerrainTile): THREE.BufferGeometry {
+  return buildTerrainTileGeometryFromDimensions(world.terrain.tileGridSize, world.terrain.tileHalfExtentM, tile);
+}
+
+function buildTerrainTileGeometryFromDimensions(
+  tileGridSize: number,
+  tileHalfExtentM: number,
+  tile: WorldTerrainTile,
+): THREE.BufferGeometry {
+  const side = tileHalfExtentM * 2;
+  const last = tileGridSize - 1;
+  const size = side;
+  const segments = tileGridSize - 1;
   const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
   geometry.rotateX(-Math.PI / 2);
 
   const positions = geometry.attributes.position;
-  for (let row = 0; row < world.terrain.gridSize; row += 1) {
-    for (let col = 0; col < world.terrain.gridSize; col += 1) {
-      const vertexIndex = row * world.terrain.gridSize + col;
-      positions.setY(vertexIndex, world.terrain.heights[vertexIndex] ?? 0);
-      const [x, z] = getTerrainWorldPosition(world, row, col);
+  for (let row = 0; row < tileGridSize; row += 1) {
+    for (let col = 0; col < tileGridSize; col += 1) {
+      const vertexIndex = row * tileGridSize + col;
+      positions.setY(vertexIndex, tile.heights[vertexIndex] ?? 0);
+      const centerX = tile.tileX * side;
+      const centerZ = tile.tileZ * side;
+      const x = last <= 0 ? centerX : centerX - tileHalfExtentM + side * (col / last);
+      const z = last <= 0 ? centerZ : centerZ - tileHalfExtentM + side * (row / last);
       positions.setX(vertexIndex, x);
       positions.setZ(vertexIndex, z);
     }
@@ -68,6 +117,39 @@ export function buildTerrainGeometry(world: WorldDocument): THREE.BufferGeometry
   return geometry;
 }
 
+const TerrainTileMesh = memo(function TerrainTileMesh({
+  tile,
+  tileGridSize,
+  tileHalfExtentM,
+  material,
+  meshProps,
+}: {
+  tile: WorldTerrainTile;
+  tileGridSize: number;
+  tileHalfExtentM: number;
+  material: THREE.Material;
+  meshProps: Omit<MeshProps, 'geometry' | 'material'>;
+}) {
+  const geometry = useMemo(
+    () => buildTerrainTileGeometryFromDimensions(tileGridSize, tileHalfExtentM, tile),
+    [tile, tileGridSize, tileHalfExtentM],
+  );
+
+  useEffect(() => () => {
+    geometry.dispose();
+  }, [geometry]);
+
+  return (
+    <mesh
+      geometry={geometry}
+      material={material}
+      receiveShadow
+      userData={{ terrainTileX: tile.tileX, terrainTileZ: tile.tileZ }}
+      {...meshProps}
+    />
+  );
+});
+
 function buildTerrainMaterial(): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -96,7 +178,7 @@ function buildTerrainMaterial(): THREE.MeshStandardMaterial {
         `,
       );
   };
-  material.customProgramCacheKey = () => 'world-terrain-contours-v1';
+  material.customProgramCacheKey = () => 'world-terrain-contours-v2';
   return material;
 }
 

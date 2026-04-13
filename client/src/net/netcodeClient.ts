@@ -1,4 +1,5 @@
 import { GameSocket } from './gameSocket';
+import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import { LocalPreviewTransport } from './localPreviewTransport';
 import { WebTransportGameClient } from './webTransportClient';
 import {
@@ -15,12 +16,16 @@ import {
   netDynamicBodyStateToMeters,
   netStateToMeters,
   netVehicleStateToMeters,
+  q2_5mmToMeters,
   type BlockEditCmd,
+  type DynamicBodyMetaPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
   type NetPlayerState,
   type NetVehicleState,
+  type PlayerRosterPacket,
+  type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
   type VehicleStateMeters,
@@ -60,7 +65,10 @@ export type NetcodeClientConfig = {
  *   client.sendInputs(cmds);
  */
 export class NetcodeClient {
-  private static readonly DYNAMIC_BODY_STALE_TICKS = 90;
+  private static readonly DYNAMIC_BODY_STALE_TICKS = 240;
+  private static readonly VEHICLE_STALE_TICKS = 180;
+  static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
+  static readonly REMOTE_PLAYER_BUFFER_RATIO = 0.5;
 
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
@@ -69,6 +77,9 @@ export class NetcodeClient {
 
   playerId = 0;
   interpolationDelayMs = 100;
+  dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
+  private baselineInterpolationDelayMs = 100;
+  private minRemoteInterpolationDelayMs = 0;
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
@@ -77,11 +88,17 @@ export class NetcodeClient {
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
+  private readonly vehicleLastSeenTick = new Map<number, number>();
+  private readonly dynamicBodyServerTimeUs = new Map<number, number>();
+  private readonly playerIdByHandle = new Map<number, number>();
+  private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
+  private readonly debugTelemetry = new NetDebugTelemetry();
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
   private localTransport: LocalPreviewTransport | null = null;
   private config: NetcodeClientConfig;
+  private closedByClient = false;
 
   // Rolling accumulators for 1Hz debug stats report to server
   private _debugCorrectionSum = 0;
@@ -106,9 +123,10 @@ export class NetcodeClient {
   }
 
   connect(wsUrl: string): void {
+    this.closedByClient = false;
     this.socket = new GameSocket({
-      onPacket: (packet: ServerPacket) => this.handlePacket(packet),
-      onClose: () => { this.config.onDisconnect?.(); },
+      onPacket: (packet: ServerPacket) => this.handlePacket(packet, 'websocket'),
+      onClose: () => { this.notifyDisconnect(); },
       onRttUpdated: (rttMs: number) => {
         this.rttMs = rttMs;
         this.serverClock.observeRtt(rttMs);
@@ -118,12 +136,13 @@ export class NetcodeClient {
   }
 
   async connectLocalPreview(worldJson?: string): Promise<void> {
-    this.localTransport = await LocalPreviewTransport.connect({
+    this.closedByClient = false;
+      this.localTransport = await LocalPreviewTransport.connect({
       worldJson,
-      onPacket: (packet) => this.handlePacket(packet),
+      onPacket: (packet) => this.handlePacket(packet, 'local'),
       onClose: () => {
         this.localTransport = null;
-        this.config.onDisconnect?.();
+        this.notifyDisconnect();
       },
     });
   }
@@ -132,6 +151,7 @@ export class NetcodeClient {
    * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
    */
   async connectWithFallback(matchId: string, wsUrl: string, sessionConfigEndpoint?: string): Promise<void> {
+    this.closedByClient = false;
     const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
     console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
 
@@ -141,9 +161,9 @@ export class NetcodeClient {
         const wt = await WebTransportGameClient.connect({
           matchId,
           sessionConfigEndpoint,
-          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket),
-          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket),
-          onClose: () => { this.config.onDisconnect?.(); },
+          onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-reliable'),
+          onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-datagram'),
+          onClose: () => { this.notifyDisconnect(); },
         });
         this.wtClient = wt;
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
@@ -171,12 +191,20 @@ export class NetcodeClient {
   }
 
   disconnect(): void {
+    this.closedByClient = true;
     this.localTransport?.close();
     this.localTransport = null;
     this.wtClient?.close();
     this.wtClient = null;
     this.socket?.disconnect();
     this.socket = null;
+  }
+
+  private notifyDisconnect(): void {
+    if (this.closedByClient) {
+      return;
+    }
+    this.config.onDisconnect?.();
   }
 
   sendInputs(cmds: InputCmd[]): void {
@@ -257,15 +285,339 @@ export class NetcodeClient {
     }
   }
 
+  private applyPlayerRoster(packet: PlayerRosterPacket): void {
+    const nextByHandle = new Map<number, number>();
+    const activePlayerIds = new Set<number>();
+    for (const entry of packet.entries) {
+      nextByHandle.set(entry.handle, entry.playerId);
+      activePlayerIds.add(entry.playerId);
+    }
+    this.playerIdByHandle.clear();
+    for (const [handle, playerId] of nextByHandle) {
+      this.playerIdByHandle.set(handle, playerId);
+    }
+
+    for (const id of [...this.remotePlayers.keys()]) {
+      if (!activePlayerIds.has(id)) {
+        this.remotePlayers.delete(id);
+        this.interpolator.remove(id);
+      }
+    }
+  }
+
+  private applyDynamicBodyMeta(packet: DynamicBodyMetaPacket): void {
+    this.dynamicBodyMetaByHandle.clear();
+    for (const entry of packet.entries) {
+      this.dynamicBodyMetaByHandle.set(entry.handle, {
+        bodyId: entry.bodyId,
+        shapeType: entry.shapeType,
+        halfExtents: entry.halfExtents,
+      });
+    }
+  }
+
+  private applySnapshotV2(
+    packet: SnapshotV2Packet,
+    source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
+  ): void {
+    this.latestServerTick = packet.serverTick;
+    this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
+    if (this.localTransport) {
+      this.interpolationDelayMs = 0;
+      this.dynamicBodyInterpolationDelayMs = 0;
+    } else {
+      const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+      if (adaptiveDelayMs > 0) {
+        this.interpolationDelayMs = Math.round(
+          Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
+        ) / 100;
+        this.dynamicBodyInterpolationDelayMs = Math.round(
+          Math.min(adaptiveDelayMs, NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS) * 100,
+        ) / 100;
+      }
+    }
+    this.debugTelemetry.observeAcceptedSnapshot(
+      source,
+      packet.serverTick,
+      1 + packet.remotePlayers.length,
+      packet.sphereStates.length + packet.boxStates.length,
+    );
+
+    const anchorPos: [number, number, number] = [
+      packet.anchorPxMm / 1000,
+      packet.anchorPyMm / 1000,
+      packet.anchorPzMm / 1000,
+    ];
+    const localState: NetPlayerState = {
+      id: this.playerId,
+      pxMm: packet.anchorPxMm,
+      pyMm: packet.anchorPyMm,
+      pzMm: packet.anchorPzMm,
+      vxCms: packet.selfState.vxCms,
+      vyCms: packet.selfState.vyCms,
+      vzCms: packet.selfState.vzCms,
+      yawI16: packet.selfState.yawI16,
+      pitchI16: packet.selfState.pitchI16,
+      hp: packet.selfState.hp,
+      flags: packet.selfState.flags,
+    };
+    this.localPlayerHp = localState.hp;
+    this.localPlayerFlags = localState.flags;
+    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
+
+    for (const player of packet.remotePlayers) {
+      const remotePlayerId = this.playerIdByHandle.get(player.handle);
+      if (remotePlayerId == null || remotePlayerId === this.playerId) {
+        continue;
+      }
+      const position: [number, number, number] = [
+        anchorPos[0] + q2_5mmToMeters(player.dxQ2_5mm),
+        anchorPos[1] + q2_5mmToMeters(player.dyQ2_5mm),
+        anchorPos[2] + q2_5mmToMeters(player.dzQ2_5mm),
+      ];
+      const velocity: [number, number, number] = [
+        player.vxCms / 100,
+        player.vyCms / 100,
+        player.vzCms / 100,
+      ];
+      const yaw = (player.yawI16 & 0xffff) / 65535 * Math.PI * 2;
+      const pitch = (player.pitchI16 & 0xffff) / 65535 * Math.PI * 2;
+      this.interpolator.push(remotePlayerId, {
+        serverTimeUs: packet.serverTimeUs,
+        position,
+        velocity,
+        yaw,
+        pitch,
+        hp: player.hp,
+        flags: player.flags,
+      });
+      this.remotePlayers.set(remotePlayerId, {
+        id: remotePlayerId,
+        position,
+        yaw,
+        pitch,
+        hp: player.hp,
+      });
+    }
+
+    const seenDynamicIds = new Set<number>();
+    for (const sphere of packet.sphereStates) {
+      const meta = this.dynamicBodyMetaByHandle.get(sphere.handle);
+      if (!meta) continue;
+      const bodyId = meta.bodyId;
+      seenDynamicIds.add(bodyId);
+      const position: [number, number, number] = [
+        anchorPos[0] + q2_5mmToMeters(sphere.dxQ2_5mm),
+        anchorPos[1] + q2_5mmToMeters(sphere.dyQ2_5mm),
+        anchorPos[2] + q2_5mmToMeters(sphere.dzQ2_5mm),
+      ];
+      const velocity: [number, number, number] = [
+        sphere.vxCms / 100,
+        sphere.vyCms / 100,
+        sphere.vzCms / 100,
+      ];
+      const angularVelocity: [number, number, number] = [
+        sphere.wxMrads / 1000,
+        sphere.wyMrads / 1000,
+        sphere.wzMrads / 1000,
+      ];
+      const quaternion = this.predictSphereQuaternion(bodyId, packet.serverTimeUs, angularVelocity);
+      const meters: DynamicBodyStateMeters = {
+        id: bodyId,
+        shapeType: meta.shapeType,
+        position,
+        quaternion,
+        halfExtents: meta.halfExtents,
+        velocity,
+        angularVelocity,
+      };
+      this.dynamicBodies.set(bodyId, meters);
+      this.dynamicBodyServerTimeUs.set(bodyId, packet.serverTimeUs);
+      this.dynamicBodyInterpolator.push(bodyId, {
+        serverTimeUs: packet.serverTimeUs,
+        position,
+        quaternion,
+        halfExtents: meta.halfExtents,
+        velocity,
+        angularVelocity,
+        shapeType: meta.shapeType,
+      });
+      this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
+    }
+    for (const box of packet.boxStates) {
+      const meta = this.dynamicBodyMetaByHandle.get(box.handle);
+      if (!meta) continue;
+      const bodyId = meta.bodyId;
+      seenDynamicIds.add(bodyId);
+      const meters: DynamicBodyStateMeters = {
+        id: bodyId,
+        shapeType: meta.shapeType,
+        position: [
+          anchorPos[0] + q2_5mmToMeters(box.dxQ2_5mm),
+          anchorPos[1] + q2_5mmToMeters(box.dyQ2_5mm),
+          anchorPos[2] + q2_5mmToMeters(box.dzQ2_5mm),
+        ],
+        quaternion: [
+          box.qxSnorm / 32767,
+          box.qySnorm / 32767,
+          box.qzSnorm / 32767,
+          box.qwSnorm / 32767,
+        ],
+        halfExtents: meta.halfExtents,
+        velocity: [box.vxCms / 100, box.vyCms / 100, box.vzCms / 100],
+        angularVelocity: [box.wxMrads / 1000, box.wyMrads / 1000, box.wzMrads / 1000],
+      };
+      this.dynamicBodies.set(bodyId, meters);
+      this.dynamicBodyServerTimeUs.set(bodyId, packet.serverTimeUs);
+      this.dynamicBodyInterpolator.push(bodyId, {
+        serverTimeUs: packet.serverTimeUs,
+        position: meters.position,
+        quaternion: meters.quaternion,
+        halfExtents: meters.halfExtents,
+        velocity: meters.velocity,
+        angularVelocity: meters.angularVelocity,
+        shapeType: meters.shapeType,
+      });
+      this.dynamicBodyLastSeenTick.set(bodyId, packet.serverTick);
+    }
+    for (const [id, lastSeenTick] of this.dynamicBodyLastSeenTick) {
+      if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
+        this.dynamicBodyLastSeenTick.delete(id);
+        this.dynamicBodies.delete(id);
+        this.dynamicBodyServerTimeUs.delete(id);
+        this.dynamicBodyInterpolator.remove(id);
+      }
+    }
+    this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
+
+    for (const vehicle of packet.vehicleStates) {
+      const vehicleId = vehicle.handle;
+      const driverPlayerId = vehicle.driverHandle === 0
+        ? 0
+        : (this.playerIdByHandle.get(vehicle.driverHandle) ?? 0);
+      const meters: VehicleStateMeters = {
+        id: vehicleId,
+        vehicleType: vehicle.vehicleType,
+        flags: vehicle.flags,
+        driverId: driverPlayerId,
+        position: [
+          anchorPos[0] + q2_5mmToMeters(vehicle.dxQ2_5mm),
+          anchorPos[1] + q2_5mmToMeters(vehicle.dyQ2_5mm),
+          anchorPos[2] + q2_5mmToMeters(vehicle.dzQ2_5mm),
+        ],
+        quaternion: [
+          vehicle.qxSnorm / 32767,
+          vehicle.qySnorm / 32767,
+          vehicle.qzSnorm / 32767,
+          vehicle.qwSnorm / 32767,
+        ],
+        linearVelocity: [vehicle.vxCms / 100, vehicle.vyCms / 100, vehicle.vzCms / 100],
+        angularVelocity: [vehicle.wxMrads / 1000, vehicle.wyMrads / 1000, vehicle.wzMrads / 1000],
+        wheelData: [0, 0, 0, 0],
+      };
+      this.vehicles.set(vehicleId, meters);
+      this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
+      if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
+        const localVehicleState: NetVehicleState = {
+          id: vehicleId,
+          vehicleType: vehicle.vehicleType,
+          flags: vehicle.flags,
+          driverId: driverPlayerId,
+          pxMm: Math.round(meters.position[0] * 1000),
+          pyMm: Math.round(meters.position[1] * 1000),
+          pzMm: Math.round(meters.position[2] * 1000),
+          qxSnorm: vehicle.qxSnorm,
+          qySnorm: vehicle.qySnorm,
+          qzSnorm: vehicle.qzSnorm,
+          qwSnorm: vehicle.qwSnorm,
+          vxCms: vehicle.vxCms,
+          vyCms: vehicle.vyCms,
+          vzCms: vehicle.vzCms,
+          wxMrads: vehicle.wxMrads,
+          wyMrads: vehicle.wyMrads,
+          wzMrads: vehicle.wzMrads,
+          wheelData: [0, 0, 0, 0],
+        };
+        this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
+      } else {
+        this.vehicleInterpolator.push(vehicleId, {
+          serverTimeUs: packet.serverTimeUs,
+          position: meters.position,
+          quaternion: meters.quaternion,
+          linearVelocity: meters.linearVelocity,
+          angularVelocity: meters.angularVelocity,
+          wheelData: [0, 0, 0, 0],
+          driverPlayerId,
+          flags: vehicle.flags,
+        });
+      }
+    }
+    for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
+      if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
+        this.vehicleLastSeenTick.delete(id);
+        this.vehicles.delete(id);
+        this.vehicleInterpolator.remove(id);
+      }
+    }
+  }
+
+  private predictSphereQuaternion(
+    bodyId: number,
+    serverTimeUs: number,
+    angularVelocity: [number, number, number],
+  ): [number, number, number, number] {
+    const previous = this.dynamicBodies.get(bodyId);
+    const previousServerTimeUs = this.dynamicBodyServerTimeUs.get(bodyId);
+    if (!previous || previousServerTimeUs == null) {
+      return [0, 0, 0, 1];
+    }
+    const dt = Math.max(0, Math.min((serverTimeUs - previousServerTimeUs) / 1_000_000, 0.25));
+    if (dt <= 0) {
+      return previous.quaternion;
+    }
+    const [ax, ay, az] = angularVelocity;
+    const angSpeed = Math.hypot(ax, ay, az);
+    if (angSpeed <= 0.0001) {
+      return previous.quaternion;
+    }
+    const angle = angSpeed * dt;
+    const nx = ax / angSpeed;
+    const ny = ay / angSpeed;
+    const nz = az / angSpeed;
+    const s = Math.sin(angle / 2);
+    const dq: [number, number, number, number] = [nx * s, ny * s, nz * s, Math.cos(angle / 2)];
+    const [qx, qy, qz, qw] = previous.quaternion;
+    const [dx, dy, dz, dw] = dq;
+    return [
+      dw * qx + dx * qw + dy * qz - dz * qy,
+      dw * qy - dx * qz + dy * qw + dz * qx,
+      dw * qz + dx * qy - dy * qx + dz * qw,
+      dw * qw - dx * qx - dy * qy - dz * qz,
+    ];
+  }
+
   /**
    * Process a server packet directly (for testing without a real socket).
    * In production, packets arrive via the socket; in tests, call this directly.
    */
-  handlePacket(packet: ServerPacket): void {
+  handlePacket(
+    packet: ServerPacket,
+    source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct' = 'direct',
+  ): void {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
-        this.interpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
+        this.baselineInterpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
+        this.minRemoteInterpolationDelayMs = this.localTransport
+          ? 0
+          : (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
+        this.interpolationDelayMs = this.baselineInterpolationDelayMs;
+        this.dynamicBodyInterpolationDelayMs = this.localTransport
+          ? 0
+          : Math.min(
+              packet.interpolationDelayMs,
+              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+            );
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
@@ -274,24 +626,50 @@ export class NetcodeClient {
         console.info('[netcode] Welcome — playerId:', packet.playerId, { transport: this.transport, simHz: packet.simHz, interpolationDelayMs: packet.interpolationDelayMs });
         this.config.onWelcome?.(packet.playerId);
         break;
+      case 'playerRoster':
+        this.applyPlayerRoster(packet);
+        break;
+      case 'dynamicBodyMeta':
+        this.applyDynamicBodyMeta(packet);
+        break;
       case 'snapshot': {
+        if (packet.serverTick <= this.latestServerTick) {
+          this.debugTelemetry.observeDroppedSnapshot(source, packet.serverTick, this.latestServerTick);
+          break;
+        }
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
         if (this.localTransport) {
           this.interpolationDelayMs = 0;
+          this.dynamicBodyInterpolationDelayMs = 0;
         } else {
           // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
           const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
           if (adaptiveDelayMs > 0) {
-            this.interpolationDelayMs = Math.round(adaptiveDelayMs * 100) / 100;
+            this.interpolationDelayMs = Math.round(
+              Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
+            ) / 100;
+            this.dynamicBodyInterpolationDelayMs = Math.round(
+              Math.min(
+                adaptiveDelayMs,
+                NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+              ) * 100,
+            ) / 100;
           }
         }
+        this.debugTelemetry.observeAcceptedSnapshot(
+          source,
+          packet.serverTick,
+          packet.playerStates.length,
+          packet.dynamicBodyStates.length,
+        );
 
         // Update dynamic bodies BEFORE reconciliation so that input replay
         // collides with the correct (same-tick) collider positions.
         for (const db of packet.dynamicBodyStates) {
           const meters = netDynamicBodyStateToMeters(db);
           this.dynamicBodies.set(db.id, meters);
+          this.dynamicBodyServerTimeUs.set(db.id, packet.serverTimeUs);
           this.dynamicBodyInterpolator.push(db.id, {
             serverTimeUs: packet.serverTimeUs,
             position: meters.position,
@@ -307,9 +685,11 @@ export class NetcodeClient {
           if (packet.serverTick - lastSeenTick > NetcodeClient.DYNAMIC_BODY_STALE_TICKS) {
             this.dynamicBodyLastSeenTick.delete(id);
             this.dynamicBodies.delete(id);
+            this.dynamicBodyServerTimeUs.delete(id);
             this.dynamicBodyInterpolator.remove(id);
           }
         }
+        this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
         for (const ps of packet.playerStates) {
@@ -353,6 +733,7 @@ export class NetcodeClient {
           knownVehicleIds.add(vs.id);
           const m = netVehicleStateToMeters(vs);
           this.vehicles.set(vs.id, m);
+          this.vehicleLastSeenTick.set(vs.id, packet.serverTick);
 
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
@@ -371,14 +752,22 @@ export class NetcodeClient {
             });
           }
         }
-        // Remove despawned vehicles
-        for (const id of this.vehicles.keys()) {
-          if (!knownVehicleIds.has(id)) {
+        // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.
+        for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
+          if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
+            this.vehicleLastSeenTick.delete(id);
             this.vehicles.delete(id);
             this.vehicleInterpolator.remove(id);
           }
         }
-        this.vehicleInterpolator.retainOnly(knownVehicleIds);
+        break;
+      }
+      case 'snapshotV2': {
+        if (packet.serverTick <= this.latestServerTick) {
+          this.debugTelemetry.observeDroppedSnapshot(source, packet.serverTick, this.latestServerTick);
+          break;
+        }
+        this.applySnapshotV2(packet, source);
         break;
       }
       case 'chunkFull':
@@ -386,6 +775,16 @@ export class NetcodeClient {
         this.config.onWorldPacket?.(packet);
         break;
       case 'shotResult':
+        this.debugTelemetry.observeShotResult(
+          packet.shotId,
+          packet.confirmed,
+          packet.hitPlayerId,
+          packet.hitZone,
+          packet.serverResolution,
+          packet.serverDynamicBodyId,
+          packet.serverDynamicHitToiCm,
+          packet.serverDynamicImpulseCenti,
+        );
         this.config.onShotResult?.(packet);
         break;
       default:
@@ -415,8 +814,51 @@ export class NetcodeClient {
   }
 
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {
-    const t = renderTimeUs ?? this.getRenderTimeUs();
+    const t = renderTimeUs ?? this.getDynamicBodyRenderTimeUs();
     return this.dynamicBodyInterpolator.sample(id, t);
+  }
+
+  getDynamicBodyRenderTimeUs(localTimeUs?: number): number {
+    return this.serverClock.renderTimeUs(
+      this.dynamicBodyInterpolationDelayMs * 1000,
+      localTimeUs,
+    );
+  }
+
+  getDynamicBodyObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+    const sampleServerTimeUs = this.dynamicBodyServerTimeUs.get(id);
+    if (sampleServerTimeUs == null) return null;
+    return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
+  }
+
+  recordFrameDebugMetrics(
+    playerCorrectionMagnitude: number,
+    vehicleCorrectionMagnitude: number,
+    dynamicCorrectionMagnitude: number,
+    pendingInputCount: number,
+  ): void {
+    this.debugTelemetry.observeFrameMetrics(
+      playerCorrectionMagnitude,
+      vehicleCorrectionMagnitude,
+      dynamicCorrectionMagnitude,
+      pendingInputCount,
+    );
+  }
+
+  recordLocalShotFired(
+    shotId: number,
+    shot: Omit<LocalShotTelemetry, 'baselineBodyPosition'>,
+  ): void {
+    this.debugTelemetry.observeLocalShotFired(shotId, {
+      ...shot,
+      baselineBodyPosition: shot.predictedDynamicBodyId != null
+        ? this.dynamicBodies.get(shot.predictedDynamicBodyId)?.position ?? null
+        : null,
+    });
+  }
+
+  getDebugTelemetrySnapshot() {
+    return this.debugTelemetry.snapshot();
   }
 
   /** Reset all state (for reconnection). */
@@ -424,10 +866,18 @@ export class NetcodeClient {
     this.playerId = 0;
     this.latestServerTick = 0;
     this.interpolationDelayMs = 100;
+    this.dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
+    this.baselineInterpolationDelayMs = 100;
+    this.minRemoteInterpolationDelayMs = 0;
     this.remotePlayers.clear();
+    this.playerIdByHandle.clear();
     this.dynamicBodies.clear();
+    this.dynamicBodyMetaByHandle.clear();
+    this.dynamicBodyServerTimeUs.clear();
     this.dynamicBodyLastSeenTick.clear();
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
+    this.vehicleLastSeenTick.clear();
+    this.vehicleInterpolator.retainOnly(new Set());
   }
 }

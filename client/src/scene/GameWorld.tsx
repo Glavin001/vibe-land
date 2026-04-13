@@ -1,9 +1,10 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, type ReactNode } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
+import type { InputBindings } from '../input/bindings';
 import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
@@ -43,6 +44,13 @@ const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
+const VEHICLE_CHASSIS_HALF_EXTENTS = { x: 0.9, y: 0.3, z: 1.8 } as const;
+const VEHICLE_WHEEL_ANCHORS: ReadonlyArray<readonly [number, number, number]> = [
+  [-0.9, 0.0, 1.1],
+  [0.9, 0.0, 1.1],
+  [-0.9, 0.0, -1.1],
+  [0.9, 0.0, -1.1],
+] as const;
 const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
@@ -53,7 +61,16 @@ const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
-  network: { pingMs: number; serverTick: number; interpolationDelayMs: number; clockOffsetUs: number; remotePlayers: number; transport: string; playerId: number },
+  network: {
+    pingMs: number;
+    serverTick: number;
+    interpolationDelayMs: number;
+    dynamicBodyInterpolationDelayMs: number;
+    clockOffsetUs: number;
+    remotePlayers: number;
+    transport: string;
+    playerId: number;
+  },
   debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
   physics: {
     pendingInputs: number;
@@ -66,6 +83,15 @@ type FrameDebugCallback = (
     dynamicOverThresholdCount: number;
     dynamicTrackedBodies: number;
     dynamicInteractiveBodies: number;
+    lastDynamicShotBodyId: number;
+    lastDynamicShotAgeMs: number;
+    vehiclePendingInputs: number;
+    vehicleAckSeq: number;
+    vehicleReplayErrorM: number;
+    vehiclePosErrorM: number;
+    vehicleVelErrorMs: number;
+    vehicleRotErrorRad: number;
+    vehicleCorrectionAgeMs: number;
     physicsStepMs: number;
     velocity: [number, number, number];
   },
@@ -80,6 +106,54 @@ type FrameDebugCallback = (
     engineForce: number;
     brake: number;
   },
+  telemetry: {
+    lastSnapshotGapMs: number;
+    snapshotGapP95Ms: number;
+    snapshotGapMaxMs: number;
+    lastSnapshotSource: string;
+    staleSnapshotsDropped: number;
+    reliableSnapshotsReceived: number;
+    datagramSnapshotsReceived: number;
+    localSnapshotsReceived: number;
+    directSnapshotsReceived: number;
+    playerCorrectionPeak5sM: number;
+    vehicleCorrectionPeak5sM: number;
+    dynamicCorrectionPeak5sM: number;
+    pendingInputsPeak5s: number;
+    shotsFired: number;
+    shotsPending: number;
+    shotAuthoritativeMoves: number;
+    shotMismatches: number;
+    lastShotOutcome: string;
+    lastShotOutcomeAgeMs: number;
+    lastShotPredictedBodyId: number;
+    lastShotProxyHitBodyId: number;
+    lastShotProxyHitToi: number;
+    lastShotBlockedByBlocker: boolean;
+    lastShotLocalPredictedDeltaM: number;
+    lastShotDynamicSampleAgeMs: number;
+    lastShotPredictedBodyRecentInteraction: boolean;
+    lastShotBlockerDistance: number;
+    lastShotRenderedBodyId: number;
+    lastShotRenderedBodyToi: number;
+    lastShotRenderProxyDeltaM: number;
+    lastShotRenderedBodyProxyPresent: boolean;
+    lastShotRenderedBodyProxyToi: number;
+    lastShotRenderedBodyProxyCenterDeltaM: number;
+    lastShotNearestProxyBodyId: number;
+    lastShotNearestProxyBodyToi: number;
+    lastShotNearestProxyBodyMissDistanceM: number;
+    lastShotNearestProxyBodyRadiusM: number;
+    lastShotNearestRenderedBodyId: number;
+    lastShotNearestRenderedBodyToi: number;
+    lastShotNearestRenderedBodyMissDistanceM: number;
+    lastShotNearestRenderedBodyRadiusM: number;
+    lastShotServerResolution: number;
+    lastShotServerDynamicBodyId: number;
+    lastShotServerDynamicHitToiM: number;
+    lastShotServerDynamicImpulseMag: number;
+    recentEvents: string[];
+  },
   position: [number, number, number],
   player: { velocity: [number, number, number]; hp: number; localFlags: number },
 ) => void;
@@ -93,8 +167,14 @@ type GameWorldProps = {
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
+  inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
+  // Optional children rendered inside the R3F scene. Used by the calibration
+  // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
+  // firing-range scene, so the player's feel during drills is identical to
+  // normal play.
+  sceneExtras?: ReactNode;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -108,6 +188,142 @@ type VehicleRenderState = {
   lastBodyPosition: [number, number, number] | null;
   wheels: VehicleWheelVisualState[];
 };
+
+function collectRemoteShotHits(
+  remotePlayers: Map<number, RemotePlayer>,
+  remoteInterpolator: ReturnType<typeof useGameConnection>['stateRef']['current']['remoteInterpolator'],
+  renderTimeUs: number,
+  prediction: ReturnType<typeof usePredictionWithWorld>,
+  aimOrigin: [number, number, number],
+  aimDirection: [number, number, number],
+  blockerDistance: number | null,
+): RemoteShotHit[] {
+  const remoteHits: RemoteShotHit[] = [];
+  for (const [id, rp] of remotePlayers) {
+    const sample = remoteInterpolator.sample(id, renderTimeUs);
+    const position = sample?.position ?? rp.position;
+    const hit = prediction.classifyHitscanPlayer(aimOrigin, aimDirection, position, blockerDistance);
+    if (!hit) continue;
+    remoteHits.push({
+      distance: hit.distance,
+      kind: hit.kind === HIT_ZONE_HEAD ? 'head' : 'body',
+    });
+  }
+  return remoteHits;
+}
+
+function closestRemoteShotDistance(remoteHits: RemoteShotHit[]): number | null {
+  let closest = Number.POSITIVE_INFINITY;
+  for (const hit of remoteHits) {
+    if (hit.distance < closest) {
+      closest = hit.distance;
+    }
+  }
+  return Number.isFinite(closest) ? closest : null;
+}
+
+function minDistance(a: number | null, b: number | null): number | null {
+  if (a == null) return b;
+  if (b == null) return a;
+  return Math.min(a, b);
+}
+
+type RenderedDynamicBodyHit = {
+  bodyId: number;
+  toi: number;
+};
+
+type DynamicBodyRayCandidate = {
+  bodyId: number;
+  toi: number;
+  missDistance: number;
+  radius: number;
+};
+
+function approxBodyRayCandidate(
+  origin: [number, number, number],
+  direction: [number, number, number],
+  position: [number, number, number],
+  halfExtents: [number, number, number],
+  maxDistance: number,
+): DynamicBodyRayCandidate | null {
+  const radius = Math.max(halfExtents[0], halfExtents[1], halfExtents[2]);
+  const ox = position[0] - origin[0];
+  const oy = position[1] - origin[1];
+  const oz = position[2] - origin[2];
+  const toi = ox * direction[0] + oy * direction[1] + oz * direction[2];
+  if (toi < 0 || toi > maxDistance) return null;
+  const cx = origin[0] + direction[0] * toi;
+  const cy = origin[1] + direction[1] * toi;
+  const cz = origin[2] + direction[2] * toi;
+  return {
+    bodyId: 0,
+    toi,
+    missDistance: Math.hypot(position[0] - cx, position[1] - cy, position[2] - cz),
+    radius,
+  };
+}
+
+function approxRenderedDynamicBodyHit(
+  origin: [number, number, number],
+  direction: [number, number, number],
+  bodies: Array<{
+    id: number;
+    position: [number, number, number];
+    halfExtents: [number, number, number];
+  }>,
+  maxDistance: number,
+): RenderedDynamicBodyHit | null {
+  let best: RenderedDynamicBodyHit | null = null;
+  for (const body of bodies) {
+    const candidate = approxBodyRayCandidate(
+      origin,
+      direction,
+      body.position,
+      body.halfExtents,
+      maxDistance,
+    );
+    if (!candidate || candidate.missDistance > candidate.radius) continue;
+    if (!best || candidate.toi < best.toi) {
+      best = { bodyId: body.id, toi: candidate.toi };
+    }
+  }
+  return best;
+}
+
+function nearestDynamicBodyCandidate(
+  origin: [number, number, number],
+  direction: [number, number, number],
+  bodies: Array<{
+    id: number;
+    position: [number, number, number];
+    halfExtents: [number, number, number];
+  }>,
+  maxDistance: number,
+): DynamicBodyRayCandidate | null {
+  let best: DynamicBodyRayCandidate | null = null;
+  for (const body of bodies) {
+    const candidate = approxBodyRayCandidate(
+      origin,
+      direction,
+      body.position,
+      body.halfExtents,
+      maxDistance,
+    );
+    if (!candidate) continue;
+    candidate.bodyId = body.id;
+    const candidateEdgeDistance = candidate.missDistance - candidate.radius;
+    const bestEdgeDistance = best ? best.missDistance - best.radius : Number.POSITIVE_INFINITY;
+    if (
+      !best
+      || candidateEdgeDistance < bestEdgeDistance
+      || (Math.abs(candidateEdgeDistance - bestEdgeDistance) < 1e-4 && candidate.toi < best.toi)
+    ) {
+      best = candidate;
+    }
+  }
+  return best;
+}
 
 type LocalVehicleVisualPoseState = {
   vehicleId: number | null;
@@ -125,8 +341,10 @@ export function GameWorld({
   onDebugFrame,
   onInputFrame,
   inputFamilyMode = 'auto',
+  inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
+  sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
@@ -287,7 +505,13 @@ export function GameWorld({
     }
     const isDrivingNow = localControlledVehiclePose !== null;
     const pointerLocked = document.pointerLockElement === gl.domElement;
-    const inputSample = inputManagerRef.current?.sample(frameDelta, pointerLocked, isDrivingNow ? 'vehicle' : 'onFoot', inputFamilyMode)
+    const inputSample = inputManagerRef.current?.sample(
+      frameDelta,
+      pointerLocked,
+      isDrivingNow ? 'vehicle' : 'onFoot',
+      inputBindings,
+      inputFamilyMode,
+    )
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
@@ -423,9 +647,9 @@ export function GameWorld({
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
-        // Prediction owns seq counting, input building, and sending — all in lockstep.
-        // In practice mode this keeps local motion immediate instead of waiting on
-        // the local authoritative snapshots to move the camera.
+        // Shared input bundling lives here for both modes. In local practice mode
+        // the authoritative loopback session owns movement, so this only queues
+        // inputs and authoritative snapshots drive the rendered pose.
         prediction.update(frameDelta, resolvedInput, sendInputs);
       }
     }
@@ -439,34 +663,172 @@ export function GameWorld({
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
+        const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
         const sceneHit = prediction.raycastScene(
-          [camera.position.x, camera.position.y, camera.position.z],
+          aimOrigin,
           fireDir,
           CROSSHAIR_MAX_DISTANCE,
         );
-        if (lastAimStateRef.current === 'idle') {
-          prediction.predictDynamicBodyShot(
-            [camera.position.x, camera.position.y, camera.position.z],
-            fireDir,
-            CROSSHAIR_MAX_DISTANCE,
-            sceneHit?.toi ?? null,
-          );
+        const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+        const remoteHits = collectRemoteShotHits(
+          state.remotePlayers,
+          state.remoteInterpolator,
+          renderTimeUs,
+          prediction,
+          aimOrigin,
+          fireDir,
+          sceneHit?.toi ?? null,
+        );
+        const blockerDistance = minDistance(sceneHit?.toi ?? null, closestRemoteShotDistance(remoteHits));
+        const dynamicShot = prediction.predictDynamicBodyShot(
+          aimOrigin,
+          fireDir,
+          CROSSHAIR_MAX_DISTANCE,
+          blockerDistance,
+        );
+        const dynamicRenderTimeUs = client.getDynamicBodyRenderTimeUs();
+        const renderedBodies = Array.from(state.dynamicBodies.keys()).map((id) => {
+          const proxyBody = prediction.getDynamicBodyRenderState(id);
+          const remoteSample = client.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
+          const renderBody = proxyBody ?? (remoteSample
+            ? {
+                id,
+                position: remoteSample.position,
+                halfExtents: remoteSample.halfExtents,
+              }
+            : {
+                id,
+                position: state.dynamicBodies.get(id)!.position,
+                halfExtents: state.dynamicBodies.get(id)!.halfExtents,
+              });
+          return {
+            id,
+            position: renderBody.position,
+            halfExtents: renderBody.halfExtents,
+          };
+        });
+        const proxyBodies = Array.from(state.dynamicBodies.keys())
+          .map((id) => {
+            const proxyBody = prediction.getDynamicBodyPhysicsState(id);
+            if (!proxyBody) return null;
+            return {
+              id,
+              position: proxyBody.position,
+              halfExtents: proxyBody.halfExtents,
+            };
+          })
+          .filter((body): body is {
+            id: number;
+            position: [number, number, number];
+            halfExtents: [number, number, number];
+          } => body != null);
+        const renderedHit = approxRenderedDynamicBodyHit(
+          aimOrigin,
+          fireDir,
+          renderedBodies,
+          CROSSHAIR_MAX_DISTANCE,
+        );
+        const nearestRenderedCandidate = nearestDynamicBodyCandidate(
+          aimOrigin,
+          fireDir,
+          renderedBodies,
+          CROSSHAIR_MAX_DISTANCE,
+        );
+        const nearestProxyCandidate = nearestDynamicBodyCandidate(
+          aimOrigin,
+          fireDir,
+          proxyBodies,
+          CROSSHAIR_MAX_DISTANCE,
+        );
+        const renderedHitProxyBody = renderedHit
+          ? prediction.getDynamicBodyPhysicsState(renderedHit.bodyId)
+          : null;
+        let renderProxyDeltaM: number | null = null;
+        if (renderedHit && dynamicShot.diagnostic.proxyHitBodyId === renderedHit.bodyId) {
+          const renderBody = renderedBodies.find((body) => body.id === renderedHit.bodyId);
+          const proxyBody = prediction.getDynamicBodyPhysicsState(renderedHit.bodyId);
+          if (renderBody && proxyBody) {
+            renderProxyDeltaM = Math.hypot(
+              renderBody.position[0] - proxyBody.position[0],
+              renderBody.position[1] - proxyBody.position[1],
+              renderBody.position[2] - proxyBody.position[2],
+            );
+          }
         }
+        let renderedBodyProxyCenterDeltaM: number | null = null;
+        let renderedBodyProxyToi: number | null = null;
+        if (renderedHit && renderedHitProxyBody) {
+          const renderBody = renderedBodies.find((body) => body.id === renderedHit.bodyId);
+          if (renderBody) {
+            renderedBodyProxyCenterDeltaM = Math.hypot(
+              renderBody.position[0] - renderedHitProxyBody.position[0],
+              renderBody.position[1] - renderedHitProxyBody.position[1],
+              renderBody.position[2] - renderedHitProxyBody.position[2],
+            );
+            renderedBodyProxyToi = approxBodyRayCandidate(
+              aimOrigin,
+              fireDir,
+              renderedHitProxyBody.position,
+              renderedHitProxyBody.halfExtents,
+              CROSSHAIR_MAX_DISTANCE,
+            )?.toi ?? null;
+          }
+        }
+        const shotId = nextShotIdRef.current++ >>> 0;
+        const targetedBodyId = dynamicShot.bodyId ?? renderedHit?.bodyId ?? null;
+        const targetedBodyRecentInteraction = targetedBodyId != null
+          ? prediction.hasRecentDynamicBodyInteraction(targetedBodyId)
+          : false;
+        const dynamicSampleAgeMs = targetedBodyId != null
+          ? client.getDynamicBodyObservedAgeMs(targetedBodyId)
+          : null;
+        const dynamicLagMsForShot = Math.round(Math.max(
+          state.dynamicBodyInterpolationDelayMs,
+          dynamicSampleAgeMs ?? state.dynamicBodyInterpolationDelayMs,
+        ));
+        client.recordLocalShotFired(
+          shotId,
+          {
+            predictedDynamicBodyId: dynamicShot.bodyId,
+            interpDelayMs: state.interpolationDelayMs,
+            dynamicInterpDelayMs: dynamicLagMsForShot,
+            blockerDistance,
+            proxyHitBodyId: dynamicShot.diagnostic.proxyHitBodyId,
+            proxyHitToi: dynamicShot.diagnostic.proxyHitToi,
+            blockedByBlocker: dynamicShot.diagnostic.blockedByBlocker,
+            localPredictedDeltaM: dynamicShot.diagnostic.localPredictedDeltaM,
+            dynamicSampleAgeMs,
+            predictedBodyRecentInteraction: targetedBodyRecentInteraction,
+            renderedBodyId: renderedHit?.bodyId ?? null,
+            renderedBodyToi: renderedHit?.toi ?? null,
+            renderProxyDeltaM,
+            renderedBodyProxyPresent: Boolean(renderedHit && renderedHitProxyBody),
+            renderedBodyProxyToi,
+            renderedBodyProxyCenterDeltaM,
+            nearestProxyBodyId: nearestProxyCandidate?.bodyId ?? null,
+            nearestProxyBodyToi: nearestProxyCandidate?.toi ?? null,
+            nearestProxyBodyMissDistanceM: nearestProxyCandidate?.missDistance ?? null,
+            nearestProxyBodyRadiusM: nearestProxyCandidate?.radius ?? null,
+            nearestRenderedBodyId: nearestRenderedCandidate?.bodyId ?? null,
+            nearestRenderedBodyToi: nearestRenderedCandidate?.toi ?? null,
+            nearestRenderedBodyMissDistanceM: nearestRenderedCandidate?.missDistance ?? null,
+            nearestRenderedBodyRadiusM: nearestRenderedCandidate?.radius ?? null,
+          },
+        );
         localShotTraceRef.current = createLocalShotTrace(
           camera,
           now,
           fireDir,
-          state.remotePlayers,
-          state.remoteInterpolator,
-          state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
-          prediction,
+          remoteHits,
+          sceneHit?.toi ?? null,
         );
         sendFire({
           seq: prediction.getNextSeq(),
-          shotId: nextShotIdRef.current++ >>> 0,
+          shotId,
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),
           clientInterpMs: Math.round(state.interpolationDelayMs),
+          clientDynamicInterpMs: dynamicLagMsForShot,
           dir: fireDir,
         });
       }
@@ -553,6 +915,12 @@ export function GameWorld({
     // Report per-frame debug stats to server (aggregated to 1 Hz)
     const physStats = prediction.getDebugStats();
     client?.accumulateDebugStats(physStats.playerCorrectionMagnitude, physStats.physicsStepMs);
+    client?.recordFrameDebugMetrics(
+      physStats.playerCorrectionMagnitude,
+      physStats.vehicleCorrectionMagnitude,
+      physStats.dynamicGlobalMaxCorrectionMagnitude,
+      physStats.pendingInputs,
+    );
 
     updateLocalShotTraceVisuals(
       localShotTraceRef.current,
@@ -584,6 +952,7 @@ export function GameWorld({
           pingMs: client?.rttMs ?? 0,
           serverTick: state.latestServerTick,
           interpolationDelayMs: state.interpolationDelayMs,
+          dynamicBodyInterpolationDelayMs: client?.dynamicBodyInterpolationDelayMs ?? 0,
           clockOffsetUs: state.serverClock.getOffsetUs(),
           remotePlayers: state.remotePlayers.size,
           transport: client?.transport ?? 'connecting',
@@ -604,6 +973,54 @@ export function GameWorld({
           steering: localVehicleDebug?.steering ?? 0,
           engineForce: localVehicleDebug?.engineForce ?? 0,
           brake: localVehicleDebug?.brake ?? 0,
+        },
+        client?.getDebugTelemetrySnapshot() ?? {
+          lastSnapshotGapMs: 0,
+          snapshotGapP95Ms: 0,
+          snapshotGapMaxMs: 0,
+          lastSnapshotSource: 'none',
+          staleSnapshotsDropped: 0,
+          reliableSnapshotsReceived: 0,
+          datagramSnapshotsReceived: 0,
+          localSnapshotsReceived: 0,
+          directSnapshotsReceived: 0,
+          playerCorrectionPeak5sM: 0,
+          vehicleCorrectionPeak5sM: 0,
+          dynamicCorrectionPeak5sM: 0,
+          pendingInputsPeak5s: 0,
+          shotsFired: 0,
+          shotsPending: 0,
+          shotAuthoritativeMoves: 0,
+          shotMismatches: 0,
+          lastShotOutcome: 'none',
+          lastShotOutcomeAgeMs: -1,
+          lastShotPredictedBodyId: 0,
+          lastShotProxyHitBodyId: 0,
+          lastShotProxyHitToi: -1,
+          lastShotBlockedByBlocker: false,
+          lastShotLocalPredictedDeltaM: -1,
+          lastShotDynamicSampleAgeMs: -1,
+          lastShotPredictedBodyRecentInteraction: false,
+          lastShotBlockerDistance: -1,
+          lastShotRenderedBodyId: 0,
+          lastShotRenderedBodyToi: -1,
+          lastShotRenderProxyDeltaM: -1,
+          lastShotRenderedBodyProxyPresent: false,
+          lastShotRenderedBodyProxyToi: -1,
+          lastShotRenderedBodyProxyCenterDeltaM: -1,
+          lastShotNearestProxyBodyId: 0,
+          lastShotNearestProxyBodyToi: -1,
+          lastShotNearestProxyBodyMissDistanceM: -1,
+          lastShotNearestProxyBodyRadiusM: -1,
+          lastShotNearestRenderedBodyId: 0,
+          lastShotNearestRenderedBodyToi: -1,
+          lastShotNearestRenderedBodyMissDistanceM: -1,
+          lastShotNearestRenderedBodyRadiusM: -1,
+          lastShotServerResolution: 0,
+          lastShotServerDynamicBodyId: 0,
+          lastShotServerDynamicHitToiM: -1,
+          lastShotServerDynamicImpulseMag: -1,
+          recentEvents: [],
         },
         pos as [number, number, number],
         {
@@ -731,7 +1148,7 @@ export function GameWorld({
     const dbGroup = dynamicBodyGroupRef.current;
     if (dbGroup) {
       const activeBodies = new Set<number>();
-      const dynamicRenderTimeUs = client?.getRenderTimeUs() ?? 0;
+      const dynamicRenderTimeUs = client?.getDynamicBodyRenderTimeUs() ?? 0;
       for (const [id, body] of state.dynamicBodies) {
         activeBodies.add(id);
         const proxyBody = prediction.getDynamicBodyRenderState(id);
@@ -934,6 +1351,8 @@ export function GameWorld({
 
       {/* Crosshair */}
       <CrosshairHUD />
+
+      {sceneExtras}
     </>
   );
 }
@@ -1043,27 +1462,10 @@ function createLocalShotTrace(
   camera: THREE.Camera,
   nowMs: number,
   aimDirection: [number, number, number],
-  remotePlayers: Map<number, RemotePlayer>,
-  remoteInterpolator: ReturnType<typeof useGameConnection>['stateRef']['current']['remoteInterpolator'],
-  renderTimeUs: number,
-  prediction: ReturnType<typeof usePredictionWithWorld>,
+  remoteHits: RemoteShotHit[],
+  blockerDistance: number | null,
 ): LocalShotTrace {
   const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
-  const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, LOCAL_SHOT_TRACE_MAX_DISTANCE);
-  const blockerDistance = sceneHit?.toi ?? null;
-  const remoteHits: RemoteShotHit[] = [];
-
-  for (const [id, rp] of remotePlayers) {
-    const sample = remoteInterpolator.sample(id, renderTimeUs);
-    const position = sample?.position ?? rp.position;
-    const hit = prediction.classifyHitscanPlayer(aimOrigin, aimDirection, position, blockerDistance);
-    if (!hit) continue;
-    remoteHits.push({
-      distance: hit.distance,
-      kind: hit.kind === HIT_ZONE_HEAD ? 'head' : 'body',
-    });
-  }
-
   const intercept = pickShotTraceIntercept(blockerDistance, remoteHits, LOCAL_SHOT_TRACE_MAX_DISTANCE);
   const pseudoMuzzleOrigin = camera.position.clone().add(CAMERA_PSEUDO_MUZZLE_OFFSET.clone().applyQuaternion(camera.quaternion));
   const end = [
@@ -1132,34 +1534,39 @@ function createVehicleMesh(_id: number): THREE.Group {
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
   } satisfies VehicleRenderState;
 
-  // Chassis body
-  const chassisGeom = new THREE.BoxGeometry(1.8, 0.5, 3.6);
-  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x888899, roughness: 0.5, metalness: 0.3 });
+  // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
+  const chassisGeom = new THREE.BoxGeometry(
+    VEHICLE_CHASSIS_HALF_EXTENTS.x * 2,
+    VEHICLE_CHASSIS_HALF_EXTENTS.y * 2,
+    VEHICLE_CHASSIS_HALF_EXTENTS.z * 2,
+  );
+  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
   const chassis = new THREE.Mesh(chassisGeom, chassisMat);
   chassis.castShadow = true;
   chassis.receiveShadow = true;
   group.add(chassis);
 
-  // Cabin
-  const cabinGeom = new THREE.BoxGeometry(1.6, 0.6, 2.0);
-  const cabinMat = new THREE.MeshStandardMaterial({ color: 0x666677, roughness: 0.5, metalness: 0.2 });
-  const cabin = new THREE.Mesh(cabinGeom, cabinMat);
-  cabin.position.set(0, 0.55, 0);
-  cabin.castShadow = true;
-  group.add(cabin);
+  // Keep visual detail inside the collider bounds so the mesh reads honestly.
+  const roofGeom = new THREE.BoxGeometry(1.2, 0.18, 1.4);
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x9ba5b4, roughness: 0.46, metalness: 0.18 });
+  const roof = new THREE.Mesh(roofGeom, roofMat);
+  roof.position.set(0, 0.14, -0.05);
+  roof.castShadow = true;
+  group.add(roof);
+
+  const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
+  const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
+  const nose = new THREE.Mesh(noseGeom, noseMat);
+  nose.position.set(0, 0.04, VEHICLE_CHASSIS_HALF_EXTENTS.z - 0.42);
+  nose.castShadow = true;
+  group.add(nose);
 
   // Wheels: FL, FR, RL, RR
   const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
-  const wheelPositions: [number, number, number][] = [
-    [0.9, -0.15, 1.1],
-    [-0.9, -0.15, 1.1],
-    [0.9, -0.15, -1.1],
-    [-0.9, -0.15, -1.1],
-  ];
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
-    pivot.position.set(...wheelPositions[i]);
+    pivot.position.set(...VEHICLE_WHEEL_ANCHORS[i]);
     pivot.name = `wheel_pivot_${i}`;
     group.add(pivot);
 

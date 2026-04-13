@@ -72,6 +72,7 @@ pub struct FireCmd {
     pub weapon: u8,
     pub client_fire_time_us: u64,
     pub client_interp_ms: u16,
+    pub client_dynamic_interp_ms: u16,
     pub dir: [f32; 3],
 }
 
@@ -142,14 +143,23 @@ pub struct ShotResultPacket {
     pub confirmed: bool,
     pub hit_player_id: u32,
     pub hit_zone: u8,
+    pub server_resolution: u8,
+    pub server_dynamic_body_id: u32,
+    pub server_dynamic_hit_toi_cm: u16,
+    pub server_dynamic_impulse_centi: u16,
 }
+
+pub const SHOT_RESOLUTION_MISS: u8 = 0;
+pub const SHOT_RESOLUTION_PLAYER: u8 = 1;
+pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;
+pub const SHOT_RESOLUTION_BLOCKED_BY_WORLD: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetVehicleState {
     pub id: u32,
     pub vehicle_type: u8,
-    pub flags: u8,              // bit0=airborne, bit1=handbrake
-    pub driver_id: u32,         // 0 = unoccupied
+    pub flags: u8,      // bit0=airborne, bit1=handbrake
+    pub driver_id: u32, // 0 = unoccupied
     pub px_mm: i32,
     pub py_mm: i32,
     pub pz_mm: i32,
@@ -160,10 +170,10 @@ pub struct NetVehicleState {
     pub vx_cms: i16,
     pub vy_cms: i16,
     pub vz_cms: i16,
-    pub wx_mrads: i16,          // angular velocity milli-rad/s
+    pub wx_mrads: i16, // angular velocity milli-rad/s
     pub wy_mrads: i16,
     pub wz_mrads: i16,
-    pub wheel_data: [u16; 4],   // upper byte = spin angle u8 (0..255→0..TAU), lower byte = steer i8 snorm
+    pub wheel_data: [u16; 4], // upper byte = spin angle u8 (0..255→0..TAU), lower byte = steer i8 snorm
 }
 
 #[derive(Clone, Debug)]

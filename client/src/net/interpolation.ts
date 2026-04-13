@@ -29,6 +29,8 @@ export type DynamicBodySample = {
   shapeType: number;
 };
 
+const MAX_PLAYER_EXTRAPOLATION_US = 100_000;
+
 export class VehicleInterpolator {
   private readonly byEntity = new Map<number, VehicleSample[]>();
 
@@ -392,8 +394,20 @@ export class PlayerInterpolator {
         };
       }
     }
-
-    return { ...queue[queue.length - 1] };
+    const latest = queue[queue.length - 1];
+    const extrapolateUs = Math.min(targetTimeUs - latest.serverTimeUs, MAX_PLAYER_EXTRAPOLATION_US);
+    if (extrapolateUs <= 0) {
+      return { ...latest };
+    }
+    const extrapolateSecs = extrapolateUs / 1_000_000;
+    return {
+      ...latest,
+      position: [
+        latest.position[0] + latest.velocity[0] * extrapolateSecs,
+        latest.position[1] + latest.velocity[1] * extrapolateSecs,
+        latest.position[2] + latest.velocity[2] * extrapolateSecs,
+      ],
+    };
   }
 }
 

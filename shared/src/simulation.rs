@@ -90,7 +90,11 @@ fn update_player_motion(
         velocity,
         wish,
         max_speed,
-        if *on_ground { cfg.ground_accel } else { cfg.air_accel },
+        if *on_ground {
+            cfg.ground_accel
+        } else {
+            cfg.air_accel
+        },
         dt64,
     );
 
@@ -115,15 +119,14 @@ fn apply_dynamic_interaction(
         0.0,
         position.z - start_position.z,
     );
-    let horizontal_speed =
-        (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
+    let horizontal_speed = (velocity.x * velocity.x + velocity.z * velocity.z).sqrt();
     if horizontal_speed < MIN_PUSH_SPEED_MPS || horizontal_delta.norm_squared() < 1e-8 {
         return (DynamicInteractionStats::default(), Vec::new());
     }
 
     let move_dir = horizontal_delta.normalize();
-    let player_bottom = position.y as f32
-        - (sim.config.capsule_half_segment + sim.config.capsule_radius);
+    let player_bottom =
+        position.y as f32 - (sim.config.capsule_half_segment + sim.config.capsule_radius);
 
     query_ctx.intersect_pushable_dynamic_bodies(position, contacts);
     if contacts.is_empty() {
@@ -150,8 +153,7 @@ fn apply_dynamic_interaction(
                 contact.center[2] as f64 - position.z,
             )
         };
-        let in_front = to_body.norm_squared() < 1e-6
-            || move_dir.dot(&to_body.normalize()) >= -0.25;
+        let in_front = to_body.norm_squared() < 1e-6 || move_dir.dot(&to_body.normalize()) >= -0.25;
         if !in_front {
             continue;
         }
@@ -187,9 +189,8 @@ fn apply_dynamic_interaction(
     velocity.x *= resistance_scale;
     velocity.z *= resistance_scale;
 
-    let total_impulse = (PLAYER_INTERACTION_MASS as f64
-        * horizontal_speed
-        * (1.0 - resistance_scale)) as f32;
+    let total_impulse =
+        (PLAYER_INTERACTION_MASS as f64 * horizontal_speed * (1.0 - resistance_scale)) as f32;
     let mut weights = Vec::with_capacity(contacts.len());
     let mut total_weight = 0.0f32;
     for contact in contacts.iter() {
@@ -230,10 +231,7 @@ fn apply_dynamic_interaction(
     )
 }
 
-fn support_pass_hit_dynamic_body(
-    sim: &SimWorld,
-    collisions: &[CharacterCollision],
-) -> bool {
+fn support_pass_hit_dynamic_body(sim: &SimWorld, collisions: &[CharacterCollision]) -> bool {
     collisions
         .iter()
         .any(|collision| sim.is_pushable_dynamic_collider(collision.handle))
@@ -387,11 +385,7 @@ mod tests {
 
     fn sim_with_ground() -> SimWorld {
         let mut sim = SimWorld::new(MoveConfig::default());
-        sim.add_static_cuboid(
-            vector![0.0, -0.5, 0.0],
-            vector![50.0, 0.5, 50.0],
-            0,
-        );
+        sim.add_static_cuboid(vector![0.0, -0.5, 0.0], vector![50.0, 0.5, 50.0], 0);
         sim.rebuild_broad_phase();
         sim
     }
@@ -424,14 +418,34 @@ mod tests {
 
         let idle = input();
         for _ in 0..60 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &idle, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &idle,
+                1.0 / 60.0,
+            );
         }
         assert!(on_ground, "should be grounded after settling");
 
         let mut fwd = input();
         fwd.move_y = 127;
         for _ in 0..30 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &fwd, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+            );
         }
         assert!(pos.z > 0.5, "should have moved forward, got z={}", pos.z);
     }
@@ -449,19 +463,49 @@ mod tests {
 
         let idle = input();
         for _ in 0..120 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &idle, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &idle,
+                1.0 / 60.0,
+            );
         }
         assert!(on_ground);
         let ground_y = pos.y;
 
         let mut jump = input();
         jump.buttons = BTN_JUMP;
-        tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &jump, 1.0 / 60.0);
+        tick_player(
+            &mut sim,
+            collider,
+            &mut pos,
+            &mut vel,
+            &mut yaw,
+            &mut pitch,
+            &mut on_ground,
+            &jump,
+            1.0 / 60.0,
+        );
         assert!(vel.y > 0.0, "jump should give positive y velocity");
 
         let idle = input();
         for _ in 0..10 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &idle, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &idle,
+                1.0 / 60.0,
+            );
         }
         assert!(pos.y > ground_y, "should be above ground after jump");
     }
@@ -480,13 +524,33 @@ mod tests {
 
             let idle = input();
             for _ in 0..60 {
-                tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &idle, 1.0 / 60.0);
+                tick_player(
+                    &mut sim,
+                    collider,
+                    &mut pos,
+                    &mut vel,
+                    &mut yaw,
+                    &mut pitch,
+                    &mut on_ground,
+                    &idle,
+                    1.0 / 60.0,
+                );
             }
             let mut fwd = input();
             fwd.move_y = 127;
             fwd.buttons = BTN_SPRINT;
             for _ in 0..60 {
-                tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &fwd, 1.0 / 60.0);
+                tick_player(
+                    &mut sim,
+                    collider,
+                    &mut pos,
+                    &mut vel,
+                    &mut yaw,
+                    &mut pitch,
+                    &mut on_ground,
+                    &fwd,
+                    1.0 / 60.0,
+                );
             }
             pos
         };
@@ -506,11 +570,7 @@ mod tests {
     #[test]
     fn wall_collision() {
         let mut sim = sim_with_ground();
-        sim.add_static_cuboid(
-            vector![0.0, 2.5, 3.0],
-            vector![10.0, 5.0, 0.5],
-            0,
-        );
+        sim.add_static_cuboid(vector![0.0, 2.5, 3.0], vector![10.0, 5.0, 0.5], 0);
         let mut pos = Vec3d::new(0.0, 2.0, 0.0);
         let mut vel = Vec3d::zeros();
         let mut yaw = 0.0;
@@ -521,13 +581,33 @@ mod tests {
 
         let idle = input();
         for _ in 0..60 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &idle, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &idle,
+                1.0 / 60.0,
+            );
         }
 
         let mut fwd = input();
         fwd.move_y = 127;
         for _ in 0..120 {
-            tick_player(&mut sim, collider, &mut pos, &mut vel, &mut yaw, &mut pitch, &mut on_ground, &fwd, 1.0 / 60.0);
+            tick_player(
+                &mut sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+            );
         }
 
         assert!(pos.z < 3.0, "should be stopped by wall, got z={}", pos.z);

@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import type { WorldDocument } from '../world/worldDocument';
 
 type WorldStaticPropsProps = {
@@ -11,6 +12,7 @@ export function WorldStaticProps({ world }: WorldStaticPropsProps) {
         <mesh
           key={prop.id}
           position={prop.position}
+          quaternion={new THREE.Quaternion(...prop.rotation)}
           castShadow
           receiveShadow
         >

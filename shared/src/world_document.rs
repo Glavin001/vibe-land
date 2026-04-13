@@ -1,22 +1,17 @@
 use std::fmt;
 
-use nalgebra::{vector, DMatrix};
-use serde::{Deserialize, Serialize};
+use nalgebra::{vector, DMatrix, Vector3};
+use serde::{de::Deserializer, Deserialize, Serialize};
 
-use crate::{
-    local_arena::{PhysicsArena, Vec3},
-    movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS},
-    terrain::{
-        build_demo_heightfield, demo_ball_pit_wall_cuboids, DEMO_BALL_PIT_X,
-        DEMO_BALL_PIT_Z,
-    },
-};
+use crate::movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 
-pub const WORLD_DOCUMENT_VERSION: u32 = 1;
+pub const WORLD_DOCUMENT_VERSION: u32 = 2;
+pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldDocument {
+    #[serde(default = "world_document_version")]
     pub version: u32,
     pub meta: WorldMeta,
     pub terrain: WorldTerrain,
@@ -32,11 +27,19 @@ pub struct WorldMeta {
     pub description: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTerrain {
-    pub grid_size: u16,
-    pub half_extent_m: f32,
+    pub tile_grid_size: u16,
+    pub tile_half_extent_m: f32,
+    pub tiles: Vec<WorldTerrainTile>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorldTerrainTile {
+    pub tile_x: i32,
+    pub tile_z: i32,
     pub heights: Vec<f32>,
 }
 
@@ -46,6 +49,8 @@ pub struct StaticProp {
     pub id: u32,
     pub kind: StaticPropKind,
     pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
     pub half_extents: [f32; 3],
     #[serde(default)]
     pub material: Option<String>,
@@ -80,9 +85,17 @@ pub enum DynamicEntityKind {
     Vehicle,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainBrushMode {
+    Raise,
+    Lower,
+}
+
 #[derive(Debug)]
 pub enum WorldDocumentError {
     InvalidTerrainHeights {
+        tile_x: i32,
+        tile_z: i32,
         expected: usize,
         actual: usize,
     },
@@ -97,10 +110,15 @@ pub enum WorldDocumentError {
 impl fmt::Display for WorldDocumentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidTerrainHeights { expected, actual } => {
+            Self::InvalidTerrainHeights {
+                tile_x,
+                tile_z,
+                expected,
+                actual,
+            } => {
                 write!(
                     f,
-                    "terrain height count mismatch: expected {expected}, got {actual}"
+                    "terrain tile ({tile_x}, {tile_z}) height count mismatch: expected {expected}, got {actual}"
                 )
             }
             Self::MissingHalfExtents { entity_id } => {
@@ -115,143 +133,433 @@ impl fmt::Display for WorldDocumentError {
 
 impl std::error::Error for WorldDocumentError {}
 
-impl WorldDocument {
-    pub fn demo() -> Self {
-        let (heights, scale) = build_demo_heightfield();
-        let mut dynamic_entities = Vec::new();
+fn world_document_version() -> u32 {
+    WORLD_DOCUMENT_VERSION
+}
 
-        let radius = 0.3_f32;
-        let inner_min_x = DEMO_BALL_PIT_X + 1.5;
-        let inner_min_z = DEMO_BALL_PIT_Z + 1.5;
-        let spacing = 0.8;
-        let cols = 5;
-        let rows = 5;
-        let layers = 2;
-        let mut next_dynamic_id = 1_u32;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TiledWorldTerrain {
+    tile_grid_size: u16,
+    tile_half_extent_m: f32,
+    tiles: Vec<WorldTerrainTile>,
+}
 
-        for layer in 0..layers {
-            for row in 0..rows {
-                for col in 0..cols {
-                    dynamic_entities.push(DynamicEntity {
-                        id: next_dynamic_id,
-                        kind: DynamicEntityKind::Ball,
-                        position: [
-                            inner_min_x + col as f32 * spacing,
-                            2.0 + layer as f32 * 0.8,
-                            inner_min_z + row as f32 * spacing,
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyWorldTerrain {
+    grid_size: u16,
+    half_extent_m: f32,
+    heights: Vec<f32>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawWorldTerrain {
+    Tiled(TiledWorldTerrain),
+    Legacy(LegacyWorldTerrain),
+}
+
+impl<'de> Deserialize<'de> for WorldTerrain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawWorldTerrain::deserialize(deserializer)?;
+        Ok(match raw {
+            RawWorldTerrain::Tiled(TiledWorldTerrain {
+                tile_grid_size,
+                tile_half_extent_m,
+                mut tiles,
+            }) => {
+                if tiles.is_empty() {
+                    tiles.push(WorldTerrainTile {
+                        tile_x: 0,
+                        tile_z: 0,
+                        heights: vec![
+                            0.0;
+                            usize::from(tile_grid_size) * usize::from(tile_grid_size)
                         ],
-                        rotation: identity_rotation(),
-                        half_extents: None,
-                        radius: Some(radius),
-                        vehicle_type: None,
                     });
-                    next_dynamic_id += 1;
+                }
+                tiles.sort_by_key(|tile| (tile.tile_z, tile.tile_x));
+                Self {
+                    tile_grid_size,
+                    tile_half_extent_m,
+                    tiles,
                 }
             }
-        }
-
-        dynamic_entities.push(DynamicEntity {
-            id: 100,
-            kind: DynamicEntityKind::Box,
-            position: [4.0, 8.0, 4.0],
-            rotation: identity_rotation(),
-            half_extents: Some([0.5, 0.5, 0.5]),
-            radius: None,
-            vehicle_type: None,
-        });
-        dynamic_entities.push(DynamicEntity {
-            id: 200,
-            kind: DynamicEntityKind::Vehicle,
-            position: [8.0, 2.0, 0.0],
-            rotation: identity_rotation(),
-            half_extents: None,
-            radius: None,
-            vehicle_type: Some(0),
-        });
-
-        Self {
-            version: WORLD_DOCUMENT_VERSION,
-            meta: WorldMeta {
-                name: "Demo World".to_string(),
-                description: "Default authored world for practice and godmode".to_string(),
+            RawWorldTerrain::Legacy(LegacyWorldTerrain {
+                grid_size,
+                half_extent_m,
+                heights,
+            }) => Self {
+                tile_grid_size: grid_size,
+                tile_half_extent_m: half_extent_m,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                }],
             },
-            terrain: WorldTerrain {
-                grid_size: heights.nrows() as u16,
-                half_extent_m: scale.x * 0.5,
-                heights: heights.iter().copied().collect(),
-            },
-            static_props: demo_ball_pit_wall_cuboids()
-                .into_iter()
-                .enumerate()
-                .map(|(index, (center, half_extents))| StaticProp {
-                    id: 1000 + index as u32,
-                    kind: StaticPropKind::Cuboid,
-                    position: [center.x, center.y, center.z],
-                    half_extents: [half_extents.x, half_extents.y, half_extents.z],
-                    material: Some("pit-wall".to_string()),
-                })
-                .collect(),
-            dynamic_entities,
-        }
+        })
+    }
+}
+
+pub trait WorldDocumentArena {
+    fn add_static_heightfield(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+    );
+
+    fn add_static_cuboid(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+    );
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+    );
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vector3<f32>, radius: f32);
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+    );
+
+    fn rebuild_broad_phase(&mut self);
+}
+
+impl WorldDocumentArena for crate::local_arena::PhysicsArena {
+    fn add_static_heightfield(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+    ) {
+        crate::local_arena::PhysicsArena::add_static_heightfield(
+            self, center, heights, scale, user_data,
+        );
     }
 
-    pub fn terrain_matrix(&self) -> Result<DMatrix<f32>, WorldDocumentError> {
-        let side = self.terrain.grid_size as usize;
+    fn add_static_cuboid(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+    ) {
+        crate::local_arena::PhysicsArena::add_static_cuboid_rotated(
+            self,
+            center,
+            rotation,
+            half_extents,
+            user_data,
+        );
+    }
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+    ) {
+        crate::local_arena::PhysicsArena::spawn_dynamic_box_with_id(
+            self,
+            id,
+            position,
+            rotation,
+            half_extents,
+        );
+    }
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vector3<f32>, radius: f32) {
+        crate::local_arena::PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
+    }
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+    ) {
+        crate::local_arena::PhysicsArena::spawn_vehicle_with_id(
+            self,
+            id,
+            vehicle_type,
+            position,
+            rotation,
+        );
+    }
+
+    fn rebuild_broad_phase(&mut self) {
+        crate::local_arena::PhysicsArena::rebuild_broad_phase(self);
+    }
+}
+
+impl WorldDocument {
+    pub fn demo() -> Self {
+        let mut world: Self = serde_json::from_str(DEFAULT_WORLD_DOCUMENT_JSON)
+            .expect("default world document asset should deserialize");
+        world.version = WORLD_DOCUMENT_VERSION;
+        world
+    }
+
+    pub fn terrain_tile_matrix(
+        &self,
+        tile: &WorldTerrainTile,
+    ) -> Result<DMatrix<f32>, WorldDocumentError> {
+        let side = usize::from(self.terrain.tile_grid_size);
         let expected = side * side;
-        let actual = self.terrain.heights.len();
+        let actual = tile.heights.len();
         if actual != expected {
-            return Err(WorldDocumentError::InvalidTerrainHeights { expected, actual });
+            return Err(WorldDocumentError::InvalidTerrainHeights {
+                tile_x: tile.tile_x,
+                tile_z: tile.tile_z,
+                expected,
+                actual,
+            });
         }
-        Ok(DMatrix::from_row_slice(
-            side,
-            side,
-            self.terrain.heights.as_slice(),
-        ))
+        Ok(DMatrix::from_row_slice(side, side, tile.heights.as_slice()))
+    }
+
+    pub fn terrain_tile_scale(&self) -> Vector3<f32> {
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        vector![side, 1.0, side]
     }
 
     pub fn sample_terrain_height_at_world_position(&self, x: f32, z: f32) -> f32 {
-        let grid_size = self.terrain.grid_size as usize;
-        if grid_size < 2 || self.terrain.heights.is_empty() {
+        self.sample_heightfield_surface_at_world_position(x, z)
+    }
+
+    pub fn sample_heightfield_surface_at_world_position(&self, x: f32, z: f32) -> f32 {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if grid_size < 2 || self.terrain.tiles.is_empty() {
             return 0.0;
         }
 
-        let side = self.terrain.half_extent_m * 2.0;
+        let side = self.terrain.tile_half_extent_m * 2.0;
         if side <= 0.0 {
             return 0.0;
         }
 
+        let (min_tile_x, max_tile_x, min_tile_z, max_tile_z, min_x, max_x, min_z, max_z) =
+            self.terrain_world_bounds();
+        let clamped_x = x.clamp(min_x, max_x);
+        let clamped_z = z.clamp(min_z, max_z);
+        let tile_x = (((clamped_x + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_x, max_tile_x);
+        let tile_z = (((clamped_z + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_z, max_tile_z);
+        let Some(tile) = self
+            .terrain_tile(tile_x, tile_z)
+            .or_else(|| self.find_nearest_terrain_tile(clamped_x, clamped_z))
+        else {
+            return 0.0;
+        };
+
+        let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
+        let max_cell = (grid_size - 2) as f32;
         let max_index = (grid_size - 1) as f32;
-        let normalized_col = ((x + self.terrain.half_extent_m) / side).clamp(0.0, 1.0);
-        let normalized_row = ((z + self.terrain.half_extent_m) / side).clamp(0.0, 1.0);
-        let col = normalized_col * max_index;
-        let row = normalized_row * max_index;
+        let col = (((clamped_x - center_x + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
+        let row = (((clamped_z - center_z + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
+        let cell_col = col.floor().min(max_cell) as usize;
+        let cell_row = row.floor().min(max_cell) as usize;
+        let u = col - cell_col as f32;
+        let v = row - cell_row as f32;
 
-        let col0 = col.floor() as usize;
-        let row0 = row.floor() as usize;
-        let col1 = (col0 + 1).min(grid_size - 1);
-        let row1 = (row0 + 1).min(grid_size - 1);
-        let tx = col - col0 as f32;
-        let tz = row - row0 as f32;
+        let h00 = tile.heights[cell_row * grid_size + cell_col];
+        let h10 = tile.heights[cell_row * grid_size + cell_col + 1];
+        let h01 = tile.heights[(cell_row + 1) * grid_size + cell_col];
+        let h11 = tile.heights[(cell_row + 1) * grid_size + cell_col + 1];
 
-        let h00 = self.terrain.heights[row0 * grid_size + col0];
-        let h10 = self.terrain.heights[row0 * grid_size + col1];
-        let h01 = self.terrain.heights[row1 * grid_size + col0];
-        let h11 = self.terrain.heights[row1 * grid_size + col1];
-        let hx0 = lerp(h00, h10, tx);
-        let hx1 = lerp(h01, h11, tx);
-        lerp(hx0, hx1, tz)
+        if u + v <= 1.0 {
+            h00 + (h10 - h00) * u + (h01 - h00) * v
+        } else {
+            h11 + (h01 - h11) * (1.0 - u) + (h10 - h11) * (1.0 - v)
+        }
     }
 
-    pub fn instantiate(&self, arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
-        let heights = self.terrain_matrix()?;
-        let side = self.terrain.half_extent_m * 2.0;
-        arena.add_static_heightfield(heights, vector![side, 1.0, side], 0);
+    pub fn terrain_tile_center(&self, tile_x: i32, tile_z: i32) -> (f32, f32) {
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        (tile_x as f32 * side, tile_z as f32 * side)
+    }
+
+    pub fn terrain_world_bounds(&self) -> (i32, i32, i32, i32, f32, f32, f32, f32) {
+        if self.terrain.tiles.is_empty() {
+            return (
+                0,
+                0,
+                0,
+                0,
+                -self.terrain.tile_half_extent_m,
+                self.terrain.tile_half_extent_m,
+                -self.terrain.tile_half_extent_m,
+                self.terrain.tile_half_extent_m,
+            );
+        }
+
+        let min_tile_x = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_x)
+            .min()
+            .unwrap_or(0);
+        let max_tile_x = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_x)
+            .max()
+            .unwrap_or(0);
+        let min_tile_z = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_z)
+            .min()
+            .unwrap_or(0);
+        let max_tile_z = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| tile.tile_z)
+            .max()
+            .unwrap_or(0);
+        let (min_center_x, min_center_z) = self.terrain_tile_center(min_tile_x, min_tile_z);
+        let (max_center_x, max_center_z) = self.terrain_tile_center(max_tile_x, max_tile_z);
+        (
+            min_tile_x,
+            max_tile_x,
+            min_tile_z,
+            max_tile_z,
+            min_center_x - self.terrain.tile_half_extent_m,
+            max_center_x + self.terrain.tile_half_extent_m,
+            min_center_z - self.terrain.tile_half_extent_m,
+            max_center_z + self.terrain.tile_half_extent_m,
+        )
+    }
+
+    pub fn terrain_tile(&self, tile_x: i32, tile_z: i32) -> Option<&WorldTerrainTile> {
+        self.terrain
+            .tiles
+            .iter()
+            .find(|tile| tile.tile_x == tile_x && tile.tile_z == tile_z)
+    }
+
+    fn find_nearest_terrain_tile(&self, x: f32, z: f32) -> Option<&WorldTerrainTile> {
+        self.terrain.tiles.iter().min_by(|a, b| {
+            let (ax, az) = self.terrain_tile_center(a.tile_x, a.tile_z);
+            let (bx, bz) = self.terrain_tile_center(b.tile_x, b.tile_z);
+            let ad = (ax - x).powi(2) + (az - z).powi(2);
+            let bd = (bx - x).powi(2) + (bz - z).powi(2);
+            ad.partial_cmp(&bd).unwrap_or(std::cmp::Ordering::Equal)
+        })
+    }
+
+    pub fn terrain_tile_world_position(
+        &self,
+        tile_x: i32,
+        tile_z: i32,
+        row: usize,
+        col: usize,
+    ) -> (f32, f32) {
+        let last = (self.terrain.tile_grid_size.saturating_sub(1)) as f32;
+        if last <= 0.0 {
+            return self.terrain_tile_center(tile_x, tile_z);
+        }
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        let (center_x, center_z) = self.terrain_tile_center(tile_x, tile_z);
+        let x = center_x - self.terrain.tile_half_extent_m + side * (col as f32 / last);
+        let z = center_z - self.terrain.tile_half_extent_m + side * (row as f32 / last);
+        (x, z)
+    }
+
+    pub fn terrain_world_position(&self, row: usize, col: usize) -> (f32, f32) {
+        self.terrain_tile_world_position(0, 0, row, col)
+    }
+
+    pub fn apply_terrain_brush(
+        &mut self,
+        center_x: f32,
+        center_z: f32,
+        radius: f32,
+        strength: f32,
+        mode: TerrainBrushMode,
+    ) {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if grid_size == 0 || radius <= 0.0 || strength <= 0.0 {
+            return;
+        }
+
+        let direction = match mode {
+            TerrainBrushMode::Raise => 1.0,
+            TerrainBrushMode::Lower => -1.0,
+        };
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        let half_extent = self.terrain.tile_half_extent_m;
+        let last = (self.terrain.tile_grid_size.saturating_sub(1)) as f32;
+
+        for tile in &mut self.terrain.tiles {
+            for row in 0..grid_size {
+                for col in 0..grid_size {
+                    let (tile_center_x, tile_center_z) =
+                        (tile.tile_x as f32 * side, tile.tile_z as f32 * side);
+                    let x = tile_center_x - half_extent + side * (col as f32 / last.max(1.0));
+                    let z = tile_center_z - half_extent + side * (row as f32 / last.max(1.0));
+                    let distance = ((x - center_x).powi(2) + (z - center_z).powi(2)).sqrt();
+                    if distance > radius {
+                        continue;
+                    }
+                    let falloff = 1.0 - distance / radius;
+                    let delta = strength * falloff * falloff * direction;
+                    let index = row * grid_size + col;
+                    tile.heights[index] = (tile.heights[index] + delta).clamp(-10.0, 50.0);
+                }
+            }
+        }
+    }
+
+    pub fn instantiate<A: WorldDocumentArena>(
+        &self,
+        arena: &mut A,
+    ) -> Result<(), WorldDocumentError> {
+        for tile in &self.terrain.tiles {
+            let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
+            arena.add_static_heightfield(
+                Vector3::new(center_x, 0.0, center_z),
+                self.terrain_tile_matrix(tile)?,
+                self.terrain_tile_scale(),
+                0,
+            );
+        }
 
         for prop in &self.static_props {
             if matches!(prop.kind, StaticPropKind::Cuboid) {
                 arena.add_static_cuboid(
-                    Vec3::new(prop.position[0], prop.position[1], prop.position[2]),
-                    Vec3::new(
+                    Vector3::new(prop.position[0], prop.position[1], prop.position[2]),
+                    prop.rotation,
+                    Vector3::new(
                         prop.half_extents[0],
                         prop.half_extents[1],
                         prop.half_extents[2],
@@ -261,24 +569,30 @@ impl WorldDocument {
             }
         }
 
+        // Bootstrap the static world once before spawning dynamic authored entities.
+        // Let the first physics step register dynamic colliders naturally instead of
+        // folding them into the static rebuild path.
+        arena.rebuild_broad_phase();
+
         for entity in &self.dynamic_entities {
-            let terrain_y = self.sample_terrain_height_at_world_position(
+            let terrain_y = self.sample_heightfield_surface_at_world_position(
                 entity.position[0],
                 entity.position[2],
             );
             match entity.kind {
                 DynamicEntityKind::Box => {
-                    let half_extents = entity
-                        .half_extents
-                        .ok_or(WorldDocumentError::MissingHalfExtents {
-                            entity_id: entity.id,
-                        })?;
+                    let half_extents =
+                        entity
+                            .half_extents
+                            .ok_or(WorldDocumentError::MissingHalfExtents {
+                                entity_id: entity.id,
+                            })?;
                     let spawn_y = entity.position[1].max(terrain_y + half_extents[1] + 0.05);
                     arena.spawn_dynamic_box_with_id(
                         entity.id,
-                        Vec3::new(entity.position[0], spawn_y, entity.position[2]),
+                        Vector3::new(entity.position[0], spawn_y, entity.position[2]),
                         entity.rotation,
-                        Vec3::new(half_extents[0], half_extents[1], half_extents[2]),
+                        Vector3::new(half_extents[0], half_extents[1], half_extents[2]),
                     );
                 }
                 DynamicEntityKind::Ball => {
@@ -288,7 +602,7 @@ impl WorldDocument {
                     let spawn_y = entity.position[1].max(terrain_y + radius + 0.05);
                     arena.spawn_dynamic_ball_with_id(
                         entity.id,
-                        Vec3::new(entity.position[0], spawn_y, entity.position[2]),
+                        Vector3::new(entity.position[0], spawn_y, entity.position[2]),
                         radius,
                     );
                 }
@@ -299,14 +613,12 @@ impl WorldDocument {
                     arena.spawn_vehicle_with_id(
                         entity.id,
                         entity.vehicle_type.unwrap_or(0),
-                        Vec3::new(entity.position[0], spawn_y, entity.position[2]),
+                        Vector3::new(entity.position[0], spawn_y, entity.position[2]),
                         entity.rotation,
                     );
                 }
             }
         }
-
-        arena.rebuild_broad_phase();
         Ok(())
     }
 }
@@ -315,20 +627,95 @@ pub fn identity_rotation() -> [f32; 4] {
     [0.0, 0.0, 0.0, 1.0]
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local_arena::MoveConfig;
+    use crate::local_arena::{MoveConfig, PhysicsArena};
+
+    const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/broken.world.json");
+
+    fn apply_demo_brushes(world: &mut WorldDocument) {
+        for _ in 0..18 {
+            world.apply_terrain_brush(8.0, 8.0, 12.0, 0.12, TerrainBrushMode::Raise);
+            world.apply_terrain_brush(0.0, 0.0, 10.0, 0.08, TerrainBrushMode::Raise);
+        }
+    }
+
+    fn broken_world() -> WorldDocument {
+        serde_json::from_str(BROKEN_WORLD_DOCUMENT_JSON)
+            .expect("broken world document asset should deserialize")
+    }
+
+    fn cast_terrain_height(world: &WorldDocument, x: f32, z: f32) -> f32 {
+        let mut terrain_only_world = world.clone();
+        terrain_only_world.dynamic_entities.clear();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        terrain_only_world
+            .instantiate(&mut arena)
+            .expect("instantiate terrain-only world");
+        let toi = arena
+            .cast_static_world_ray([x, 40.0, z], [0.0, -1.0, 0.0], 100.0, None)
+            .expect("ray should hit terrain");
+        40.0 - toi
+    }
+
+    fn build_ball_stack(
+        world: &WorldDocument,
+        start_id: u32,
+        center_x: f32,
+        center_z: f32,
+    ) -> Vec<DynamicEntity> {
+        let radius = 0.3;
+        let spacing = 0.8;
+        let cols = 5;
+        let rows = 5;
+        let layers = 2;
+        let inner_min_x = center_x - spacing * ((cols - 1) as f32) * 0.5;
+        let inner_min_z = center_z - spacing * ((rows - 1) as f32) * 0.5;
+
+        let mut max_terrain = f32::NEG_INFINITY;
+        for layer in 0..layers {
+            let _ = layer;
+            for row in 0..rows {
+                for col in 0..cols {
+                    let x = inner_min_x + col as f32 * spacing;
+                    let z = inner_min_z + row as f32 * spacing;
+                    max_terrain =
+                        max_terrain.max(world.sample_heightfield_surface_at_world_position(x, z));
+                }
+            }
+        }
+
+        let base_y = max_terrain + 2.0;
+        let mut entities = Vec::with_capacity((cols * rows * layers) as usize);
+        let mut next_id = start_id;
+        for layer in 0..layers {
+            for row in 0..rows {
+                for col in 0..cols {
+                    let x = inner_min_x + col as f32 * spacing;
+                    let z = inner_min_z + row as f32 * spacing;
+                    entities.push(DynamicEntity {
+                        id: next_id,
+                        kind: DynamicEntityKind::Ball,
+                        position: [x, base_y + layer as f32 * 0.8, z],
+                        rotation: identity_rotation(),
+                        half_extents: None,
+                        radius: Some(radius),
+                        vehicle_type: None,
+                    });
+                    next_id += 1;
+                }
+            }
+        }
+        entities
+    }
 
     #[test]
     fn demo_document_has_valid_height_count() {
         let world = WorldDocument::demo();
-        let expected = usize::from(world.terrain.grid_size) * usize::from(world.terrain.grid_size);
-        assert_eq!(world.terrain.heights.len(), expected);
+        let expected =
+            usize::from(world.terrain.tile_grid_size) * usize::from(world.terrain.tile_grid_size);
+        assert_eq!(world.terrain.tiles[0].heights.len(), expected);
     }
 
     #[test]
@@ -344,7 +731,9 @@ mod tests {
     fn demo_document_runtime_entities_stay_above_ground() {
         let world = WorldDocument::demo();
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        world.instantiate(&mut arena).expect("instantiate demo world");
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate demo world");
 
         for _ in 0..300 {
             arena.step_vehicles(1.0 / 60.0);
@@ -353,42 +742,330 @@ mod tests {
 
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
         assert!(
-            dynamic_snapshot.iter().all(|(_, pos, _, _, _, _, _)| pos[1] > -0.25),
+            dynamic_snapshot
+                .iter()
+                .all(|(_, pos, _, _, _, _, _)| pos[1] > -0.25),
             "one or more dynamic bodies fell through authored terrain: {:?}",
-            dynamic_snapshot.iter().map(|(id, pos, _, _, _, _, _)| (*id, pos[1])).collect::<Vec<_>>()
+            dynamic_snapshot
+                .iter()
+                .map(|(id, pos, _, _, _, _, _)| (*id, pos[1]))
+                .collect::<Vec<_>>()
         );
 
         let vehicles = arena.snapshot_vehicles();
         assert!(
             vehicles.iter().all(|vehicle| vehicle.py_mm > -250),
             "one or more vehicles fell through authored terrain: {:?}",
-            vehicles.iter().map(|vehicle| (vehicle.id, vehicle.py_mm)).collect::<Vec<_>>()
+            vehicles
+                .iter()
+                .map(|vehicle| (vehicle.id, vehicle.py_mm))
+                .collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn instantiate_clamps_entities_above_terrain() {
         let mut world = WorldDocument::demo();
-        world.terrain.heights.fill(4.0);
+        for tile in &mut world.terrain.tiles {
+            tile.heights.fill(4.0);
+        }
         for entity in &mut world.dynamic_entities {
             entity.position[1] = -2.0;
         }
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        world.instantiate(&mut arena).expect("instantiate clamped world");
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate clamped world");
 
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
         assert!(
-            dynamic_snapshot.iter().all(|(_, pos, _, _, _, _, _)| pos[1] > 4.0),
+            dynamic_snapshot
+                .iter()
+                .all(|(_, pos, _, _, _, _, _)| pos[1] > 4.0),
             "dynamic entities should be clamped above terrain: {:?}",
-            dynamic_snapshot.iter().map(|(id, pos, _, _, _, _, _)| (*id, pos[1])).collect::<Vec<_>>()
+            dynamic_snapshot
+                .iter()
+                .map(|(id, pos, _, _, _, _, _)| (*id, pos[1]))
+                .collect::<Vec<_>>()
         );
 
         let vehicles = arena.snapshot_vehicles();
         assert!(
             vehicles.iter().all(|vehicle| vehicle.py_mm > 4000),
             "vehicles should be clamped above terrain: {:?}",
-            vehicles.iter().map(|vehicle| (vehicle.id, vehicle.py_mm)).collect::<Vec<_>>()
+            vehicles
+                .iter()
+                .map(|vehicle| (vehicle.id, vehicle.py_mm))
+                .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn brushed_demo_world_keeps_a_ball_supported() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+
+        world.dynamic_entities = vec![DynamicEntity {
+            id: 9001,
+            kind: DynamicEntityKind::Ball,
+            position: [
+                9.5,
+                world.sample_heightfield_surface_at_world_position(9.5, 9.5) + 2.0,
+                9.5,
+            ],
+            rotation: identity_rotation(),
+            half_extents: None,
+            radius: Some(0.5),
+            vehicle_type: None,
+        }];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate brushed world");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let dynamic_snapshot = arena.snapshot_dynamic_bodies();
+        let (_, pos, _, _, _, _, _) = dynamic_snapshot
+            .iter()
+            .find(|(id, _, _, _, _, _, _)| *id == 9001)
+            .expect("spawned ball should exist");
+        let terrain_y = cast_terrain_height(&world, pos[0], pos[2]);
+        assert!(
+            pos[1] > terrain_y - 0.25,
+            "brushed-world ball fell through terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+            pos[0],
+            pos[1],
+            pos[2],
+        );
+    }
+
+    #[test]
+    fn brushed_demo_world_raycast_matches_heightfield_surface() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+
+        for (x, z) in [(9.5, 9.5), (10.3, 9.5), (11.1, 10.3), (0.0, 0.0)] {
+            let expected = world.sample_heightfield_surface_at_world_position(x, z);
+            let hit_y = cast_terrain_height(&world, x, z);
+            assert!(
+                (hit_y - expected).abs() < 0.05,
+                "raycast mismatch at ({x}, {z}): hit_y={hit_y:.3} expected={expected:.3}",
+            );
+        }
+    }
+
+    #[test]
+    fn brushed_demo_world_keeps_high_ball_stack_supported_in_open_terrain() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+        world.static_props.clear();
+        world.dynamic_entities = build_ball_stack(&world, 10_000, 11.1, 11.1);
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate brushed open-terrain stack");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let dynamic_snapshot = arena.snapshot_dynamic_bodies();
+        for (ball_id, pos, _, _, _, _, _) in dynamic_snapshot {
+            let terrain_y = cast_terrain_height(&world, pos[0], pos[2]);
+            assert!(
+                pos[1] > terrain_y - 0.25,
+                "open-terrain stack ball {ball_id} fell through terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                pos[0],
+                pos[1],
+                pos[2],
+            );
+        }
+    }
+
+    #[test]
+    fn brushed_demo_world_keeps_default_ball_pit_supported() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate brushed default world");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        for (ball_id, pos, _, _, _, _, _) in arena.snapshot_dynamic_bodies() {
+            let terrain_y = cast_terrain_height(&world, pos[0], pos[2]);
+            assert!(
+                pos[1] > terrain_y - 0.25,
+                "default pit ball {ball_id} fell through terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                pos[0],
+                pos[1],
+                pos[2],
+            );
+        }
+    }
+
+    #[test]
+    fn brushed_demo_world_keeps_vehicle_supported() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate brushed default world");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        for vehicle in arena.snapshot_vehicles() {
+            let px = vehicle.px_mm as f32 / 1000.0;
+            let py = vehicle.py_mm as f32 / 1000.0;
+            let pz = vehicle.pz_mm as f32 / 1000.0;
+            let terrain_y = cast_terrain_height(&world, px, pz);
+            assert!(
+                py > terrain_y - 0.25,
+                "default brushed vehicle {} fell through terrain: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                vehicle.id,
+            );
+        }
+    }
+
+    #[test]
+    fn brushed_demo_world_keeps_repro_ball_supported() {
+        let mut world = WorldDocument::demo();
+        apply_demo_brushes(&mut world);
+        world.dynamic_entities = vec![DynamicEntity {
+            id: 42_001,
+            kind: DynamicEntityKind::Ball,
+            position: [9.5, 4.0, 9.5],
+            rotation: identity_rotation(),
+            half_extents: None,
+            radius: Some(0.3),
+            vehicle_type: None,
+        }];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate brushed repro ball world");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let body = arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .find(|(id, ..)| *id == 42_001)
+            .expect("repro ball should exist");
+        let terrain_y = cast_terrain_height(&world, body.1[0], body.1[2]);
+        assert!(
+            body.1[1] > terrain_y - 0.25,
+            "programmatic brushed repro ball fell through terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+            body.1[0],
+            body.1[1],
+            body.1[2],
+        );
+    }
+
+    #[test]
+    fn broken_world_keeps_authored_dynamics_supported() {
+        let world = broken_world();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate broken world");
+
+        for _ in 0..360 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        for entity in &world.dynamic_entities {
+            match entity.kind {
+                DynamicEntityKind::Vehicle => {
+                    let vehicle = arena
+                        .snapshot_vehicles()
+                        .into_iter()
+                        .find(|vehicle| vehicle.id == entity.id)
+                        .expect("authored vehicle should exist");
+                    let terrain_y = cast_terrain_height(
+                        &world,
+                        vehicle.px_mm as f32 / 1000.0,
+                        vehicle.pz_mm as f32 / 1000.0,
+                    );
+                    let final_y = vehicle.py_mm as f32 / 1000.0;
+                    assert!(
+                        final_y > terrain_y - 0.25,
+                        "vehicle {} fell through broken world terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                        entity.id,
+                        vehicle.px_mm as f32 / 1000.0,
+                        final_y,
+                        vehicle.pz_mm as f32 / 1000.0,
+                    );
+                }
+                _ => {
+                    let body = arena
+                        .snapshot_dynamic_bodies()
+                        .into_iter()
+                        .find(|(id, ..)| *id == entity.id)
+                        .expect("authored dynamic body should exist");
+                    let terrain_y = cast_terrain_height(&world, body.1[0], body.1[2]);
+                    assert!(
+                        body.1[1] > terrain_y - 0.25,
+                        "{} {} fell through broken world terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                        match entity.kind {
+                            DynamicEntityKind::Ball => "ball",
+                            DynamicEntityKind::Box => "box",
+                            DynamicEntityKind::Vehicle => "vehicle",
+                        },
+                        entity.id,
+                        body.1[0],
+                        body.1[1],
+                        body.1[2],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn broken_world_reports_upward_terrain_normals_at_repro_points() {
+        let world = broken_world();
+        let mut terrain_only_world = world.clone();
+        terrain_only_world.dynamic_entities.clear();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        terrain_only_world
+            .instantiate(&mut arena)
+            .expect("instantiate terrain-only broken world");
+
+        for (x, z) in [(9.5_f32, 9.5_f32), (8.0_f32, 0.0_f32), (4.0_f32, 4.0_f32)] {
+            let (_toi, normal) = arena
+                .dynamic
+                .sim
+                .cast_ray_and_get_normal([x, 40.0, z], [0.0, -1.0, 0.0], 100.0, None)
+                .expect("ray should hit terrain");
+            assert!(
+                normal[1] > 0.0,
+                "terrain normal should point upward at ({x}, {z}), got {:?}",
+                normal
+            );
+        }
     }
 }

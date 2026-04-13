@@ -152,6 +152,7 @@ export class TouchInputSource {
       firePrimaryValue: context === 'onFoot' && this.holdFire ? 1 : 0,
       handbrake: context === 'vehicle' && this.holdJump,
       interactPressed: this.interactPressed,
+      resetVehiclePressed: false,
       blockRemovePressed: context === 'onFoot' && this.blockRemovePressed,
       blockPlacePressed: context === 'onFoot' && this.blockPlacePressed,
       materialSlot1Pressed: context === 'onFoot' && this.materialSlot1Pressed,

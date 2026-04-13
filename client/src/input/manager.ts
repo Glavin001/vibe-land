@@ -1,3 +1,4 @@
+import type { InputBindings } from './bindings';
 import { resolveActiveFamily } from './arbiter';
 import { GamepadInputSource } from './gamepad';
 import { KeyboardMouseInputSource } from './keyboardMouse';
@@ -20,9 +21,15 @@ export class GameInputManager {
     this.touch.detach();
   }
 
-  sample(deltaSec: number, pointerLocked: boolean, context: InputContext, mode: InputFamilyMode = 'auto'): InputSample {
-    const keyboardMouseSnapshot = this.keyboardMouse.sample(pointerLocked, context);
-    const gamepadSnapshot = this.gamepad.sample(deltaSec, context);
+  sample(
+    deltaSec: number,
+    pointerLocked: boolean,
+    context: InputContext,
+    bindings: InputBindings,
+    mode: InputFamilyMode = 'auto',
+  ): InputSample {
+    const keyboardMouseSnapshot = this.keyboardMouse.sample(pointerLocked, context, bindings);
+    const gamepadSnapshot = this.gamepad.sample(deltaSec, context, bindings);
     const touchSnapshot = this.touch.sample(context);
     this.activeFamily = resolveActiveFamily(
       mode,

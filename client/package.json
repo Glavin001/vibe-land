@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "gen:constants": "node ../scripts/gen-constants.mjs",
+    "gen:demo-world": "node ../scripts/generate-demo-world.mjs",
     "ensure:wasm-pack": "command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked",
     "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg",
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
@@ -18,6 +19,7 @@
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:world-docs": "vitest run src/world/worldDocumentPhysics.test.ts",
     "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts",
     "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",

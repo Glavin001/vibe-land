@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use nalgebra::{DMatrix, Vector3};
+use nalgebra::{DMatrix, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
+use vibe_land_shared::world_document::WorldDocumentArena;
 
 use crate::protocol::*;
 pub use vibe_land_shared::movement::{
     vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
 };
 pub use vibe_land_shared::simulation::{simulate_player_tick, PlayerTickResult};
-use vibe_land_shared::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
+use vibe_land_shared::vehicle::{
+    create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
+};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -117,13 +120,26 @@ impl PhysicsArena {
             .add_static_cuboid(center, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vec3,
         heights: DMatrix<f32>,
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
-        self.dynamic.add_static_heightfield(heights, scale, user_data)
+        self.dynamic
+            .add_static_heightfield(center, heights, scale, user_data)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -178,8 +194,7 @@ impl PhysicsArena {
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
-        tick_result.timings.collider_sync_ms =
-            sync_started.elapsed().as_secs_f32() * 1000.0;
+        tick_result.timings.collider_sync_ms = sync_started.elapsed().as_secs_f32() * 1000.0;
 
         for impulse in &tick_result.dynamic_impulses {
             let _ = self.apply_dynamic_body_impulse(
@@ -277,10 +292,19 @@ impl PhysicsArena {
             let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
                 continue;
             };
+            let collider_pose = collider
+                .parent()
+                .and_then(|parent| self.dynamic.sim.rigid_bodies.get(parent))
+                .and_then(|parent_rb| {
+                    collider
+                        .position_wrt_parent()
+                        .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                })
+                .unwrap_or(*collider.position());
             let Some(hit) =
                 collider
                     .shape()
-                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                    .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
             else {
                 continue;
             };
@@ -352,8 +376,24 @@ impl PhysicsArena {
         self.dynamic.spawn_dynamic_box(position, half_extents)
     }
 
+    pub fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) -> u32 {
+        self.dynamic
+            .spawn_dynamic_box_with_id(id, position, rotation, half_extents)
+    }
+
     pub fn spawn_dynamic_ball(&mut self, position: Vec3, radius: f32) -> u32 {
         self.dynamic.spawn_dynamic_ball(position, radius)
+    }
+
+    pub fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) -> u32 {
+        self.dynamic
+            .spawn_dynamic_ball_with_id(id, position, radius)
     }
 
     // ── Vehicle management ──────────────────────────────────────────────────
@@ -381,6 +421,39 @@ impl PhysicsArena {
         id
     }
 
+    pub fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vec3,
+        rotation: [f32; 4],
+    ) -> u32 {
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(position.x, position.y, position.z),
+            UnitQuaternion::from_quaternion(Quaternion::new(
+                rotation[3],
+                rotation[0],
+                rotation[1],
+                rotation[2],
+            )),
+        );
+        let (chassis_body, chassis_collider, controller) =
+            create_vehicle_physics(&mut self.dynamic.sim, pose);
+
+        self.vehicles.insert(
+            id,
+            Vehicle {
+                chassis_body,
+                chassis_collider,
+                controller,
+                vehicle_type,
+                driver_id: None,
+            },
+        );
+        self.next_vehicle_id = self.next_vehicle_id.max(id.saturating_add(1));
+        id
+    }
+
     /// Apply driver inputs to each vehicle and update suspension.
     /// Call BEFORE `step_dynamics` so forces are integrated in the same tick.
     pub fn step_vehicles(&mut self, dt: f32) {
@@ -390,7 +463,10 @@ impl PhysicsArena {
 
         let vehicle_ids: Vec<u32> = self.vehicles.keys().copied().collect();
         for vid in vehicle_ids {
-            if let Some(driver_id) = self.vehicles.get(&vid).and_then(|vehicle| vehicle.driver_id)
+            if let Some(driver_id) = self
+                .vehicles
+                .get(&vid)
+                .and_then(|vehicle| vehicle.driver_id)
             {
                 if !self.players.contains_key(&driver_id) {
                     self.detach_player_from_vehicles(driver_id);
@@ -400,7 +476,7 @@ impl PhysicsArena {
             }
 
             // Collect driver input from the player driving this vehicle.
-            let (steering, engine_force, brake) = {
+            let (reset_requested, steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
                     None => continue,
@@ -409,23 +485,38 @@ impl PhysicsArena {
                     if let Some(player) = self.players.get(&driver_id) {
                         let (steering, engine_force, brake) =
                             vehicle_wheel_params(&player.last_input);
-                        (steering, engine_force, brake)
+                        (
+                            player.last_input.buttons & BTN_RELOAD != 0,
+                            steering,
+                            engine_force,
+                            brake,
+                        )
                     } else {
-                        (0.0, 0.0, 0.0)
+                        (false, 0.0, 0.0, 0.0)
                     }
                 } else {
-                    (0.0, 0.0, 0.0)
+                    (false, 0.0, 0.0, 0.0)
                 }
             };
 
             // Apply inputs to wheels.
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
+            if reset_requested {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
+                    reset_vehicle_body(rb);
+                }
+            }
             for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
                 if i < 2 {
-                    wheel.steering = steering; // front-wheel steering
+                    wheel.steering = if reset_requested { 0.0 } else { steering };
+                    // front-wheel steering
                 }
-                wheel.engine_force = if i >= 2 { engine_force } else { 0.0 }; // RWD
-                wheel.brake = brake;
+                wheel.engine_force = if !reset_requested && i >= 2 {
+                    engine_force
+                } else {
+                    0.0
+                }; // RWD
+                wheel.brake = if reset_requested { 0.0 } else { brake };
             }
 
             // Run suspension + traction.
@@ -560,6 +651,56 @@ impl PhysicsArena {
         &self,
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
+    }
+}
+
+impl WorldDocumentArena for PhysicsArena {
+    fn add_static_heightfield(
+        &mut self,
+        center: Vec3,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_heightfield(self, center, heights, scale, user_data);
+    }
+
+    fn add_static_cuboid(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) {
+        PhysicsArena::add_static_cuboid_rotated(self, center, rotation, half_extents, user_data);
+    }
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+    ) {
+        PhysicsArena::spawn_dynamic_box_with_id(self, id, position, rotation, half_extents);
+    }
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vec3, radius: f32) {
+        PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
+    }
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vec3,
+        rotation: [f32; 4],
+    ) {
+        PhysicsArena::spawn_vehicle_with_id(self, id, vehicle_type, position, rotation);
+    }
+
+    fn rebuild_broad_phase(&mut self) {
+        PhysicsArena::rebuild_broad_phase(self);
     }
 }
 
@@ -860,12 +1001,18 @@ mod tests {
         let vehicle_id = arena.spawn_vehicle(0, vector![0.0, 2.0, 0.0]);
 
         arena.enter_vehicle(1, vehicle_id);
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
 
         arena.remove_player(1);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), None);
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            None
+        );
         assert!(!arena.vehicle_of_player.contains_key(&1));
     }
 
@@ -881,7 +1028,10 @@ mod tests {
 
         arena.enter_vehicle(1, vehicle_id);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
     }
 
@@ -895,7 +1045,10 @@ mod tests {
         arena.enter_vehicle(1, vehicle_id);
         arena.enter_vehicle(2, vehicle_id);
 
-        assert_eq!(arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id), Some(1));
+        assert_eq!(
+            arena.vehicles.get(&vehicle_id).and_then(|v| v.driver_id),
+            Some(1)
+        );
         assert_eq!(arena.vehicle_of_player.get(&1), Some(&vehicle_id));
         assert!(!arena.vehicle_of_player.contains_key(&2));
     }
@@ -1185,6 +1338,43 @@ mod tests {
             pre_y,
             post_ball.1[1],
         );
+    }
+
+    #[test]
+    fn cast_dynamic_body_ray_uses_current_authoritative_body_pose() {
+        let mut arena = arena_with_ground();
+        let ball_id = arena.spawn_dynamic_ball(vector![0.0, 1.0, 6.0], 0.3);
+        arena.rebuild_broad_phase();
+
+        let origin = [0.0, 1.0, 0.0];
+        let dir = [0.0, 0.0, 1.0];
+        let first_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert_eq!(first_hit.map(|(id, _, _)| id), Some(ball_id));
+
+        let db = arena.dynamic.dynamic_bodies.get(&ball_id).unwrap();
+        let rb = arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get_mut(db.body_handle)
+            .unwrap();
+        rb.set_translation(vector![3.0, 1.0, 6.0], true);
+        arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut arena.dynamic.sim.colliders);
+        arena.sync_broad_phase();
+
+        let stale_hit = arena.cast_dynamic_body_ray(origin, dir, 20.0, None);
+        assert!(
+            stale_hit.is_none(),
+            "raycast should miss the old position after the authoritative body moved"
+        );
+
+        let moved_origin = [3.0, 1.0, 0.0];
+        let moved_hit = arena.cast_dynamic_body_ray(moved_origin, dir, 20.0, None);
+        assert_eq!(moved_hit.map(|(id, _, _)| id), Some(ball_id));
     }
 
     #[test]

@@ -24,6 +24,7 @@ export function useControlHints() {
   const lastUiUpdate = useRef(0);
   const flashUntilRef = useRef({
     interactPressed: 0,
+    resetVehiclePressed: 0,
     blockRemovePressed: 0,
     blockPlacePressed: 0,
     materialSlot1Pressed: 0,
@@ -41,6 +42,7 @@ export function useControlHints() {
     const now = performance.now();
     const action = sample.action;
     if (action?.interactPressed) flashUntilRef.current.interactPressed = now + FLASH_MS;
+    if (action?.resetVehiclePressed) flashUntilRef.current.resetVehiclePressed = now + FLASH_MS;
     if (action?.blockRemovePressed) flashUntilRef.current.blockRemovePressed = now + FLASH_MS;
     if (action?.blockPlacePressed) flashUntilRef.current.blockPlacePressed = now + FLASH_MS;
     if (action?.materialSlot1Pressed) flashUntilRef.current.materialSlot1Pressed = now + FLASH_MS;
@@ -60,6 +62,7 @@ export function useControlHints() {
         ? {
             ...action,
             interactPressed: action.interactPressed || flashUntilRef.current.interactPressed > now,
+            resetVehiclePressed: action.resetVehiclePressed || flashUntilRef.current.resetVehiclePressed > now,
             blockRemovePressed: action.blockRemovePressed || flashUntilRef.current.blockRemovePressed > now,
             blockPlacePressed: action.blockPlacePressed || flashUntilRef.current.blockPlacePressed > now,
             materialSlot1Pressed: action.materialSlot1Pressed || flashUntilRef.current.materialSlot1Pressed > now,

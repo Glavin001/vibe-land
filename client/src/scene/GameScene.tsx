@@ -1,8 +1,9 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
-import { Suspense } from 'react';
+import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
+import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -16,11 +17,13 @@ type GameSceneProps = {
   onDebugFrame?: GameWorldDebugFrame;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
+  inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
+  sceneExtras?: ReactNode;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -33,11 +36,13 @@ export function GameScene({
   onDebugFrame,
   onInputFrame,
   inputFamilyMode,
+  inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
   renderStatsParent,
   worldDocument,
+  sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -67,8 +72,10 @@ export function GameScene({
           onDebugFrame={onDebugFrame}
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
+          inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
+          sceneExtras={sceneExtras}
         />
       </Suspense>
     </Canvas>
