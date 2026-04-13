@@ -6,7 +6,7 @@ use serde::{de::Deserializer, Deserialize, Serialize};
 use crate::movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 
 pub const WORLD_DOCUMENT_VERSION: u32 = 2;
-pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../world/demo-world.world.json");
+pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,8 +99,12 @@ pub enum WorldDocumentError {
         expected: usize,
         actual: usize,
     },
-    MissingHalfExtents { entity_id: u32 },
-    MissingRadius { entity_id: u32 },
+    MissingHalfExtents {
+        entity_id: u32,
+    },
+    MissingRadius {
+        entity_id: u32,
+    },
 }
 
 impl fmt::Display for WorldDocumentError {
@@ -172,7 +176,10 @@ impl<'de> Deserialize<'de> for WorldTerrain {
                     tiles.push(WorldTerrainTile {
                         tile_x: 0,
                         tile_z: 0,
-                        heights: vec![0.0; usize::from(tile_grid_size) * usize::from(tile_grid_size)],
+                        heights: vec![
+                            0.0;
+                            usize::from(tile_grid_size) * usize::from(tile_grid_size)
+                        ],
                     });
                 }
                 tiles.sort_by_key(|tile| (tile.tile_z, tile.tile_x));
@@ -371,12 +378,10 @@ impl WorldDocument {
         let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
         let max_cell = (grid_size - 2) as f32;
         let max_index = (grid_size - 1) as f32;
-        let col =
-            (((clamped_x - center_x + self.terrain.tile_half_extent_m) / side) * max_index)
-                .clamp(0.0, max_index);
-        let row =
-            (((clamped_z - center_z + self.terrain.tile_half_extent_m) / side) * max_index)
-                .clamp(0.0, max_index);
+        let col = (((clamped_x - center_x + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
+        let row = (((clamped_z - center_z + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
         let cell_col = col.floor().min(max_cell) as usize;
         let cell_row = row.floor().min(max_cell) as usize;
         let u = col - cell_col as f32;
@@ -520,10 +525,8 @@ impl WorldDocument {
                 for col in 0..grid_size {
                     let (tile_center_x, tile_center_z) =
                         (tile.tile_x as f32 * side, tile.tile_z as f32 * side);
-                    let x = tile_center_x - half_extent
-                        + side * (col as f32 / last.max(1.0));
-                    let z = tile_center_z - half_extent
-                        + side * (row as f32 / last.max(1.0));
+                    let x = tile_center_x - half_extent + side * (col as f32 / last.max(1.0));
+                    let z = tile_center_z - half_extent + side * (row as f32 / last.max(1.0));
                     let distance = ((x - center_x).powi(2) + (z - center_z).powi(2)).sqrt();
                     if distance > radius {
                         continue;
@@ -629,7 +632,7 @@ mod tests {
     use super::*;
     use crate::local_arena::{MoveConfig, PhysicsArena};
 
-    const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../world/broken.world.json");
+    const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/broken.world.json");
 
     fn apply_demo_brushes(world: &mut WorldDocument) {
         for _ in 0..18 {

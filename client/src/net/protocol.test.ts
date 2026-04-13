@@ -24,8 +24,11 @@ import {
   BTN_JUMP,
   BTN_SPRINT,
   PKT_SNAPSHOT,
+  PKT_SNAPSHOT_V2,
   PKT_WELCOME,
   PKT_SHOT_RESULT,
+  PKT_PLAYER_ROSTER,
+  PKT_DYNAMIC_BODY_META,
 } from './protocol';
 
 // ──────────────────────────────────────────────
@@ -320,6 +323,141 @@ describe('snapshot decode', () => {
   });
 });
 
+function buildSnapshotV2Binary(): Uint8Array {
+  const size = 1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 12 + 19 + 20 + 30;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+
+  view.setUint8(o++, PKT_SNAPSHOT_V2);
+  view.setUint32(o, 25, true); o += 4;
+  view.setUint16(o, 9, true); o += 2;
+  view.setInt32(o, 10_000, true); o += 4;
+  view.setInt32(o, 2_000, true); o += 4;
+  view.setInt32(o, -4_000, true); o += 4;
+  view.setUint8(o++, 1);
+  view.setUint8(o++, 1);
+  view.setUint8(o++, 0);
+  view.setUint8(o++, 1);
+
+  view.setInt16(o, 100, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setUint8(o++, 100);
+  view.setUint8(o++, 1);
+
+  view.setUint8(o++, 2);
+  view.setInt16(o, 2000, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 400, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 200, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setUint8(o++, 80);
+  view.setUint8(o++, 1);
+
+  view.setUint16(o, 7, true); o += 2;
+  view.setInt16(o, 1200, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, -800, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 100, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 250, true); o += 2;
+
+  view.setUint8(o++, 3);
+  view.setUint8(o++, 0);
+  view.setUint8(o++, 2);
+  view.setUint8(o++, 0);
+  view.setInt16(o, 3200, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 32767, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+  view.setInt16(o, 0, true); o += 2;
+
+  return buf;
+}
+
+describe('snapshot V2 decode', () => {
+  it('decodes relative V2 snapshot sections', () => {
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary());
+    expect(packet.type).toBe('snapshotV2');
+    expect(packet.serverTick).toBe(25);
+    expect(packet.ackInputSeq).toBe(9);
+    expect(packet.anchorPxMm).toBe(10_000);
+    expect(packet.remotePlayers).toHaveLength(1);
+    expect(packet.remotePlayers[0].handle).toBe(2);
+    expect(packet.sphereStates).toHaveLength(1);
+    expect(packet.sphereStates[0].handle).toBe(7);
+    expect(packet.vehicleStates).toHaveLength(1);
+    expect(packet.vehicleStates[0].handle).toBe(3);
+    expect(packet.vehicleStates[0].driverHandle).toBe(2);
+  });
+});
+
+function buildPlayerRosterBinary(): Uint8Array {
+  const size = 1 + 1 + 5;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_PLAYER_ROSTER);
+  view.setUint8(o++, 1);
+  view.setUint8(o++, 7);
+  view.setUint32(o, 44, true);
+  return buf;
+}
+
+function buildDynamicBodyMetaBinary(): Uint8Array {
+  const size = 1 + 2 + 13;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_DYNAMIC_BODY_META);
+  view.setUint16(o, 1, true); o += 2;
+  view.setUint16(o, 7, true); o += 2;
+  view.setUint32(o, 7001, true); o += 4;
+  view.setUint8(o++, 1);
+  view.setUint16(o, 30, true); o += 2;
+  view.setUint16(o, 30, true); o += 2;
+  view.setUint16(o, 30, true); o += 2;
+  return buf;
+}
+
+describe('V2 metadata decode', () => {
+  it('decodes player roster packets', () => {
+    const packet = decodeServerReliablePacket(buildPlayerRosterBinary());
+    expect(packet.type).toBe('playerRoster');
+    expect(packet.entries).toEqual([{ handle: 7, playerId: 44 }]);
+  });
+
+  it('decodes dynamic body metadata with canonical body ids', () => {
+    const packet = decodeServerReliablePacket(buildDynamicBodyMetaBinary());
+    expect(packet.type).toBe('dynamicBodyMeta');
+    expect(packet.entries).toEqual([
+      {
+        handle: 7,
+        bodyId: 7001,
+        shapeType: 1,
+        halfExtents: [0.3, 0.3, 0.3],
+      },
+    ]);
+  });
+});
+
 // ──────────────────────────────────────────────
 // Welcome packet decode
 // ──────────────────────────────────────────────
@@ -381,8 +519,12 @@ function buildShotResultBinary(opts: {
   confirmed?: boolean;
   hitPlayerId?: number;
   hitZone?: number;
+  serverResolution?: number;
+  serverDynamicBodyId?: number;
+  serverDynamicHitToiCm?: number;
+  serverDynamicImpulseCenti?: number;
 }): Uint8Array {
-  const size = 1 + 4 + 1 + 1 + 4 + 1;
+  const size = 1 + 4 + 1 + 1 + 4 + 1 + 1 + 4 + 2 + 2;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -393,6 +535,10 @@ function buildShotResultBinary(opts: {
   view.setUint8(o++, (opts.confirmed ?? true) ? 1 : 0);
   view.setUint32(o, opts.hitPlayerId ?? 2, true); o += 4;
   view.setUint8(o++, opts.hitZone ?? 1);
+  view.setUint8(o++, opts.serverResolution ?? 0);
+  view.setUint32(o, opts.serverDynamicBodyId ?? 0, true); o += 4;
+  view.setUint16(o, opts.serverDynamicHitToiCm ?? 0, true); o += 2;
+  view.setUint16(o, opts.serverDynamicImpulseCenti ?? 0, true);
 
   return buf;
 }

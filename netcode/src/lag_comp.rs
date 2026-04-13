@@ -443,7 +443,9 @@ pub fn ray_dynamic_body_intersection(
         body.quaternion[2],
     ));
     let pose = Isometry::from_parts(
-        point![body.position[0], body.position[1], body.position[2]].coords.into(),
+        point![body.position[0], body.position[1], body.position[2]]
+            .coords
+            .into(),
         rotation,
     );
 
@@ -584,22 +586,13 @@ mod tests {
         hist.record_dynamic_body(9, dynamic_body(2, 200, [5.0, 0.0, 4.0], 1));
 
         let hit = hist
-            .resolve_dynamic_body_hitscan(
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                100,
-                f32::MAX,
-            )
+            .resolve_dynamic_body_hitscan([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 100, f32::MAX)
             .expect("rewound ray should hit old body position");
         assert_eq!(hit.body_id, 9);
         assert!(hit.distance > 4.0 && hit.distance < 6.0);
 
-        let miss_now = hist.resolve_dynamic_body_hitscan(
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            200,
-            f32::MAX,
-        );
+        let miss_now =
+            hist.resolve_dynamic_body_hitscan([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 200, f32::MAX);
         assert!(
             miss_now.is_none(),
             "same ray should miss current moved body pose"

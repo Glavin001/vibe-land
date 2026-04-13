@@ -32,6 +32,9 @@ dev:
 server:
 	cd server && RUST_LOG=info cargo run
 
+server-with-logs:
+	cd server && RUST_LOG=info RUST_BACKTRACE=1 cargo run 2>&1 | tee /tmp/vibe-server.log
+
 ## Start only the Vite client dev server
 client:
 	cd client && npm run dev

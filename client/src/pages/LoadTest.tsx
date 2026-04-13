@@ -47,10 +47,28 @@ type BrowserBot = {
 function createPageScenario(matchId: string): LoadTestScenario {
   return normalizeScenario({
     ...DEFAULT_SCENARIO,
-    name: 'webtransport-browser',
+    name: 'arena-shared-debug-10',
     matchId,
-    botCount: 20,
-    transportMix: { websocket: 0, webtransport: 20 },
+    durationS: 0,
+    rampUpS: 5,
+    botCount: 10,
+    inputHz: 15,
+    transportMix: { websocket: 0, webtransport: 10 },
+    spawnPattern: 'clustered',
+    behavior: {
+      ...DEFAULT_SCENARIO.behavior,
+      fireMode: 'nearest_target_or_center',
+      fireCooldownTicks: 12,
+    },
+    networkProfiles: [
+      {
+        name: 'lan',
+        weight: 1,
+        transport: 'any',
+        uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+        downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+      },
+    ],
   });
 }
 
@@ -66,7 +84,7 @@ function readBenchmarkLaunch() {
   const benchmark = params.get('benchmark') === '1';
   const autoStart = params.get('autostart') === '1';
   const scenarioParam = params.get('scenario');
-  const requestedMatchId = resolveRequestedMatchId(window.location.search, 'loadtest-webtransport-browser');
+  const requestedMatchId = resolveRequestedMatchId(window.location.search, 'arena');
   let scenarioText: string | null = null;
   if (scenarioParam) {
     try {

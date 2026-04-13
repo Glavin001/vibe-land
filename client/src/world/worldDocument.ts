@@ -1,4 +1,4 @@
-import defaultWorldDocumentJson from '../../../world/demo-world.world.json';
+import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
 
 export const WORLD_DOCUMENT_VERSION = 2;
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;

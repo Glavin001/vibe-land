@@ -11,9 +11,12 @@ import {
   PKT_DEBUG_STATS,
   PKT_WELCOME,
   PKT_SNAPSHOT,
+  PKT_SNAPSHOT_V2,
   PKT_SHOT_RESULT,
   PKT_CHUNK_FULL,
   PKT_CHUNK_DIFF,
+  PKT_PLAYER_ROSTER,
+  PKT_DYNAMIC_BODY_META,
   PKT_PING,
   PKT_PONG,
   BTN_FORWARD,
@@ -156,6 +159,117 @@ export type SnapshotPacket = {
   vehicleStates: NetVehicleState[];
 };
 
+export type PlayerRosterEntry = {
+  handle: number;
+  playerId: number;
+};
+
+export type PlayerRosterPacket = {
+  type: 'playerRoster';
+  entries: PlayerRosterEntry[];
+};
+
+export type DynamicBodyMetaEntry = {
+  handle: number;
+  bodyId: number;
+  shapeType: number;
+  halfExtents: [number, number, number];
+};
+
+export type DynamicBodyMetaPacket = {
+  type: 'dynamicBodyMeta';
+  entries: DynamicBodyMetaEntry[];
+};
+
+export type SelfPlayerStateV2 = {
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  yawI16: number;
+  pitchI16: number;
+  hp: number;
+  flags: number;
+};
+
+export type RemotePlayerStateV2 = {
+  handle: number;
+  dxQ2_5mm: number;
+  dyQ2_5mm: number;
+  dzQ2_5mm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  yawI16: number;
+  pitchI16: number;
+  hp: number;
+  flags: number;
+};
+
+export type DynamicSphereStateV2 = {
+  handle: number;
+  dxQ2_5mm: number;
+  dyQ2_5mm: number;
+  dzQ2_5mm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+};
+
+export type DynamicBoxStateV2 = {
+  handle: number;
+  dxQ2_5mm: number;
+  dyQ2_5mm: number;
+  dzQ2_5mm: number;
+  qxSnorm: number;
+  qySnorm: number;
+  qzSnorm: number;
+  qwSnorm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+};
+
+export type VehicleStateV2 = {
+  handle: number;
+  vehicleType: number;
+  driverHandle: number;
+  flags: number;
+  dxQ2_5mm: number;
+  dyQ2_5mm: number;
+  dzQ2_5mm: number;
+  qxSnorm: number;
+  qySnorm: number;
+  qzSnorm: number;
+  qwSnorm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+};
+
+export type SnapshotV2Packet = {
+  type: 'snapshotV2';
+  serverTimeUs: number;
+  serverTick: number;
+  ackInputSeq: number;
+  anchorPxMm: number;
+  anchorPyMm: number;
+  anchorPzMm: number;
+  selfState: SelfPlayerStateV2;
+  remotePlayers: RemotePlayerStateV2[];
+  sphereStates: DynamicSphereStateV2[];
+  boxStates: DynamicBoxStateV2[];
+  vehicleStates: VehicleStateV2[];
+};
+
 export type ShotResultPacket = {
   type: 'shotResult';
   shotId: number;
@@ -169,8 +283,15 @@ export type ShotResultPacket = {
   serverDynamicImpulseCenti: number;
 };
 
-export type ServerReliablePacket = WelcomePacket | ShotResultPacket | ChunkFullPacket | ChunkDiffPacket | SnapshotPacket;
-export type ServerDatagramPacket = SnapshotPacket;
+export type ServerReliablePacket =
+  | WelcomePacket
+  | ShotResultPacket
+  | ChunkFullPacket
+  | ChunkDiffPacket
+  | SnapshotPacket
+  | PlayerRosterPacket
+  | DynamicBodyMetaPacket;
+export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
 export type PongPacket = { type: 'pong'; value: number };
@@ -178,9 +299,12 @@ export type ServerWorldPacket = ChunkFullPacket | ChunkDiffPacket;
 export type ServerPacket =
   | WelcomePacket
   | SnapshotPacket
+  | SnapshotV2Packet
   | ShotResultPacket
   | ChunkFullPacket
   | ChunkDiffPacket
+  | PlayerRosterPacket
+  | DynamicBodyMetaPacket
   | ServerPingPacket
   | PongPacket;
 
@@ -352,6 +476,10 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return decodeChunkFullPacket(data);
     case PKT_CHUNK_DIFF:
       return decodeChunkDiffPacket(data);
+    case PKT_PLAYER_ROSTER:
+      return decodePlayerRosterPacket(view, o);
+    case PKT_DYNAMIC_BODY_META:
+      return decodeDynamicBodyMetaPacket(view, o);
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
@@ -472,6 +600,156 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
   };
 }
 
+export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Packet {
+  const serverTick = view.getUint32(o, true); o += 4;
+  const ackInputSeq = view.getUint16(o, true); o += 2;
+  const anchorPxMm = view.getInt32(o, true); o += 4;
+  const anchorPyMm = view.getInt32(o, true); o += 4;
+  const anchorPzMm = view.getInt32(o, true); o += 4;
+  const remotePlayerCount = view.getUint8(o++);
+  const sphereCount = view.getUint8(o++);
+  const boxCount = view.getUint8(o++);
+  const vehicleCount = view.getUint8(o++);
+
+  const selfState: SelfPlayerStateV2 = {
+    vxCms: view.getInt16(o, true),
+    vyCms: view.getInt16(o + 2, true),
+    vzCms: view.getInt16(o + 4, true),
+    yawI16: view.getInt16(o + 6, true),
+    pitchI16: view.getInt16(o + 8, true),
+    hp: view.getUint8(o + 10),
+    flags: view.getUint8(o + 11),
+  };
+  o += 12;
+
+  const remotePlayers: RemotePlayerStateV2[] = [];
+  for (let i = 0; i < remotePlayerCount; i += 1) {
+    remotePlayers.push({
+      handle: view.getUint8(o),
+      dxQ2_5mm: view.getInt16(o + 1, true),
+      dyQ2_5mm: view.getInt16(o + 3, true),
+      dzQ2_5mm: view.getInt16(o + 5, true),
+      vxCms: view.getInt16(o + 7, true),
+      vyCms: view.getInt16(o + 9, true),
+      vzCms: view.getInt16(o + 11, true),
+      yawI16: view.getInt16(o + 13, true),
+      pitchI16: view.getInt16(o + 15, true),
+      hp: view.getUint8(o + 17),
+      flags: view.getUint8(o + 18),
+    });
+    o += 19;
+  }
+
+  const sphereStates: DynamicSphereStateV2[] = [];
+  for (let i = 0; i < sphereCount; i += 1) {
+    sphereStates.push({
+      handle: view.getUint16(o, true),
+      dxQ2_5mm: view.getInt16(o + 2, true),
+      dyQ2_5mm: view.getInt16(o + 4, true),
+      dzQ2_5mm: view.getInt16(o + 6, true),
+      vxCms: view.getInt16(o + 8, true),
+      vyCms: view.getInt16(o + 10, true),
+      vzCms: view.getInt16(o + 12, true),
+      wxMrads: view.getInt16(o + 14, true),
+      wyMrads: view.getInt16(o + 16, true),
+      wzMrads: view.getInt16(o + 18, true),
+    });
+    o += 20;
+  }
+
+  const boxStates: DynamicBoxStateV2[] = [];
+  for (let i = 0; i < boxCount; i += 1) {
+    boxStates.push({
+      handle: view.getUint16(o, true),
+      dxQ2_5mm: view.getInt16(o + 2, true),
+      dyQ2_5mm: view.getInt16(o + 4, true),
+      dzQ2_5mm: view.getInt16(o + 6, true),
+      qxSnorm: view.getInt16(o + 8, true),
+      qySnorm: view.getInt16(o + 10, true),
+      qzSnorm: view.getInt16(o + 12, true),
+      qwSnorm: view.getInt16(o + 14, true),
+      vxCms: view.getInt16(o + 16, true),
+      vyCms: view.getInt16(o + 18, true),
+      vzCms: view.getInt16(o + 20, true),
+      wxMrads: view.getInt16(o + 22, true),
+      wyMrads: view.getInt16(o + 24, true),
+      wzMrads: view.getInt16(o + 26, true),
+    });
+    o += 28;
+  }
+
+  const vehicleStates: VehicleStateV2[] = [];
+  for (let i = 0; i < vehicleCount; i += 1) {
+    vehicleStates.push({
+      handle: view.getUint8(o),
+      vehicleType: view.getUint8(o + 1),
+      driverHandle: view.getUint8(o + 2),
+      flags: view.getUint8(o + 3),
+      dxQ2_5mm: view.getInt16(o + 4, true),
+      dyQ2_5mm: view.getInt16(o + 6, true),
+      dzQ2_5mm: view.getInt16(o + 8, true),
+      qxSnorm: view.getInt16(o + 10, true),
+      qySnorm: view.getInt16(o + 12, true),
+      qzSnorm: view.getInt16(o + 14, true),
+      qwSnorm: view.getInt16(o + 16, true),
+      vxCms: view.getInt16(o + 18, true),
+      vyCms: view.getInt16(o + 20, true),
+      vzCms: view.getInt16(o + 22, true),
+      wxMrads: view.getInt16(o + 24, true),
+      wyMrads: view.getInt16(o + 26, true),
+      wzMrads: view.getInt16(o + 28, true),
+    });
+    o += 30;
+  }
+
+  return {
+    type: 'snapshotV2',
+    serverTimeUs: serverTick * Math.round(1_000_000 / 60),
+    serverTick,
+    ackInputSeq,
+    anchorPxMm,
+    anchorPyMm,
+    anchorPzMm,
+    selfState,
+    remotePlayers,
+    sphereStates,
+    boxStates,
+    vehicleStates,
+  };
+}
+
+function decodePlayerRosterPacket(view: DataView, o: number): PlayerRosterPacket {
+  const count = view.getUint8(o++);
+  const entries: PlayerRosterEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    entries.push({
+      handle: view.getUint8(o),
+      playerId: view.getUint32(o + 1, true),
+    });
+    o += 5;
+  }
+  return { type: 'playerRoster', entries };
+}
+
+function decodeDynamicBodyMetaPacket(view: DataView, o: number): DynamicBodyMetaPacket {
+  const count = view.getUint16(o, true); o += 2;
+  const entries: DynamicBodyMetaEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    entries.push({
+      handle: view.getUint16(o, true),
+      bodyId: view.getUint32(o + 2, true),
+      shapeType: view.getUint8(o + 6),
+      halfExtents: [
+        view.getUint16(o + 7, true) / 100,
+        view.getUint16(o + 9, true) / 100,
+        view.getUint16(o + 11, true) / 100,
+      ],
+    });
+    o += 13;
+  }
+  return { type: 'dynamicBodyMeta', entries };
+}
+
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -481,6 +759,8 @@ export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): Serv
   switch (kind) {
     case PKT_SNAPSHOT:
       return decodeSnapshotPacket(view, o);
+    case PKT_SNAPSHOT_V2:
+      return decodeSnapshotV2Packet(view, o);
     default:
       throw new Error(`unknown datagram packet kind: ${kind}`);
   }
@@ -610,6 +890,10 @@ export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
 
 export function mmToMeters(value: number): number {
   return value / 1000;
+}
+
+export function q2_5mmToMeters(value: number): number {
+  return value * 0.0025;
 }
 
 export function cmsToMetersPerSecond(value: number): number {
@@ -788,10 +1072,16 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return decodeServerReliablePacket(data);
     case PKT_SNAPSHOT:
       return decodeServerDatagramPacket(data);
+    case PKT_SNAPSHOT_V2:
+      return decodeServerDatagramPacket(data);
     case PKT_CHUNK_FULL:
       return decodeChunkFullPacket(data);
     case PKT_CHUNK_DIFF:
       return decodeChunkDiffPacket(data);
+    case PKT_PLAYER_ROSTER:
+      return decodePlayerRosterPacket(view, 1);
+    case PKT_DYNAMIC_BODY_META:
+      return decodeDynamicBodyMetaPacket(view, 1);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

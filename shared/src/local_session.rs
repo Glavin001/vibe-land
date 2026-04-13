@@ -601,7 +601,11 @@ mod tests {
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
             .expect("initial local preview snapshot");
         let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
-        assert_eq!(initial_vehicle.len(), 1, "demo local preview should expose one vehicle");
+        assert_eq!(
+            initial_vehicle.len(),
+            1,
+            "demo local preview should expose one vehicle"
+        );
         let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
         assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
 

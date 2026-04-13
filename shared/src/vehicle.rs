@@ -7,8 +7,8 @@
 use nalgebra::{point, Isometry3, UnitQuaternion, Vector3};
 use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
-use vibe_netcode::sim_world::SimWorld;
 use vibe_netcode::physics_arena::DYNAMIC_SUBSTEPS;
+use vibe_netcode::sim_world::SimWorld;
 
 use crate::movement::{
     VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP, VEHICLE_SUSPENSION_DAMPING,
@@ -198,10 +198,8 @@ mod tests {
                 Vector3::new(200.0, 0.5, 200.0),
                 0,
             );
-            let (chassis_body, chassis_collider, controller) = create_vehicle_physics(
-                &mut sim,
-                Isometry3::translation(0.0, 1.2, 0.0),
-            );
+            let (chassis_body, chassis_collider, controller) =
+                create_vehicle_physics(&mut sim, Isometry3::translation(0.0, 1.2, 0.0));
             sim.rebuild_broad_phase();
             Self {
                 sim,

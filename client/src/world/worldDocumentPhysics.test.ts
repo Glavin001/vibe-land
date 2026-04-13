@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decodeServerPacket, type DynamicBodyStateMeters, type SnapshotPacket, type VehicleStateMeters, netDynamicBodyStateToMeters, netVehicleStateToMeters } from '../net/protocol';
 import { initWasmForTests, WasmLocalSession, WasmSimWorld } from '../wasm/testInit';
-import brokenWorldDocumentJson from '../../../world/broken.world.json';
+import brokenWorldDocumentJson from '../../../worlds/broken.world.json';
 import {
   DEFAULT_WORLD_DOCUMENT,
   addTerrainTile,

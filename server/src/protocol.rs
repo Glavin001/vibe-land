@@ -28,9 +28,12 @@ pub enum ClientPacket {
 pub enum ServerPacket {
     Welcome(WelcomePacket),
     Snapshot(SnapshotPacket),
+    SnapshotV2(SnapshotV2Packet),
     ShotResult(ShotResultPacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
+    PlayerRoster(PlayerRosterPacket),
+    DynamicBodyMeta(DynamicBodyMetaPacket),
     Ping(u32),
     Pong(u32),
 }
@@ -52,11 +55,133 @@ pub enum ServerReliablePacket {
     ShotResult(ShotResultPacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
+    PlayerRoster(PlayerRosterPacket),
+    DynamicBodyMeta(DynamicBodyMetaPacket),
 }
 
 #[derive(Clone, Debug)]
 pub enum ServerDatagramPacket {
     Snapshot(SnapshotPacket),
+    SnapshotV2(SnapshotV2Packet),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SelfPlayerStateV2 {
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub yaw_i16: i16,
+    pub pitch_i16: i16,
+    pub hp: u8,
+    pub flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RemotePlayerStateV2 {
+    pub handle: u8,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub yaw_i16: i16,
+    pub pitch_i16: i16,
+    pub hp: u8,
+    pub flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicSphereStateV2 {
+    pub handle: u16,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicBoxStateV2 {
+    pub handle: u16,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct VehicleStateV2 {
+    pub handle: u8,
+    pub vehicle_type: u8,
+    pub driver_handle: u8,
+    pub flags: u8,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SnapshotV2Packet {
+    pub server_tick: u32,
+    pub ack_input_seq: u16,
+    pub anchor_px_mm: i32,
+    pub anchor_py_mm: i32,
+    pub anchor_pz_mm: i32,
+    pub self_state: SelfPlayerStateV2,
+    pub remote_players: Vec<RemotePlayerStateV2>,
+    pub sphere_states: Vec<DynamicSphereStateV2>,
+    pub box_states: Vec<DynamicBoxStateV2>,
+    pub vehicle_states: Vec<VehicleStateV2>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerRosterEntry {
+    pub handle: u8,
+    pub player_id: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PlayerRosterPacket {
+    pub entries: Vec<PlayerRosterEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicBodyMetaEntry {
+    pub handle: u16,
+    pub body_id: u32,
+    pub shape_type: u8,
+    pub hx_cm: u16,
+    pub hy_cm: u16,
+    pub hz_cm: u16,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DynamicBodyMetaPacket {
+    pub entries: Vec<DynamicBodyMetaEntry>,
 }
 
 // ── Server-only decode/encode functions ─────────
@@ -221,6 +346,26 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
                 out.put_u16_le(e.material);
             }
         }
+        ServerReliablePacket::PlayerRoster(pkt) => {
+            out.put_u8(PKT_PLAYER_ROSTER);
+            out.put_u8(pkt.entries.len() as u8);
+            for entry in &pkt.entries {
+                out.put_u8(entry.handle);
+                out.put_u32_le(entry.player_id);
+            }
+        }
+        ServerReliablePacket::DynamicBodyMeta(pkt) => {
+            out.put_u8(PKT_DYNAMIC_BODY_META);
+            out.put_u16_le(pkt.entries.len() as u16);
+            for entry in &pkt.entries {
+                out.put_u16_le(entry.handle);
+                out.put_u32_le(entry.body_id);
+                out.put_u8(entry.shape_type);
+                out.put_u16_le(entry.hx_cm);
+                out.put_u16_le(entry.hy_cm);
+                out.put_u16_le(entry.hz_cm);
+            }
+        }
     }
     out.to_vec()
 }
@@ -283,6 +428,91 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
+        }
+        ServerDatagramPacket::SnapshotV2(pkt) => {
+            out.put_u8(PKT_SNAPSHOT_V2);
+            out.put_u32_le(pkt.server_tick);
+            out.put_u16_le(pkt.ack_input_seq);
+            out.put_i32_le(pkt.anchor_px_mm);
+            out.put_i32_le(pkt.anchor_py_mm);
+            out.put_i32_le(pkt.anchor_pz_mm);
+            out.put_u8(pkt.remote_players.len() as u8);
+            out.put_u8(pkt.sphere_states.len() as u8);
+            out.put_u8(pkt.box_states.len() as u8);
+            out.put_u8(pkt.vehicle_states.len() as u8);
+
+            let s = &pkt.self_state;
+            out.put_i16_le(s.vx_cms);
+            out.put_i16_le(s.vy_cms);
+            out.put_i16_le(s.vz_cms);
+            out.put_i16_le(s.yaw_i16);
+            out.put_i16_le(s.pitch_i16);
+            out.put_u8(s.hp);
+            out.put_u8(s.flags);
+
+            for player in &pkt.remote_players {
+                out.put_u8(player.handle);
+                out.put_i16_le(player.dx_q2_5mm);
+                out.put_i16_le(player.dy_q2_5mm);
+                out.put_i16_le(player.dz_q2_5mm);
+                out.put_i16_le(player.vx_cms);
+                out.put_i16_le(player.vy_cms);
+                out.put_i16_le(player.vz_cms);
+                out.put_i16_le(player.yaw_i16);
+                out.put_i16_le(player.pitch_i16);
+                out.put_u8(player.hp);
+                out.put_u8(player.flags);
+            }
+
+            for sphere in &pkt.sphere_states {
+                out.put_u16_le(sphere.handle);
+                out.put_i16_le(sphere.dx_q2_5mm);
+                out.put_i16_le(sphere.dy_q2_5mm);
+                out.put_i16_le(sphere.dz_q2_5mm);
+                out.put_i16_le(sphere.vx_cms);
+                out.put_i16_le(sphere.vy_cms);
+                out.put_i16_le(sphere.vz_cms);
+                out.put_i16_le(sphere.wx_mrads);
+                out.put_i16_le(sphere.wy_mrads);
+                out.put_i16_le(sphere.wz_mrads);
+            }
+
+            for body in &pkt.box_states {
+                out.put_u16_le(body.handle);
+                out.put_i16_le(body.dx_q2_5mm);
+                out.put_i16_le(body.dy_q2_5mm);
+                out.put_i16_le(body.dz_q2_5mm);
+                out.put_i16_le(body.qx_snorm);
+                out.put_i16_le(body.qy_snorm);
+                out.put_i16_le(body.qz_snorm);
+                out.put_i16_le(body.qw_snorm);
+                out.put_i16_le(body.vx_cms);
+                out.put_i16_le(body.vy_cms);
+                out.put_i16_le(body.vz_cms);
+                out.put_i16_le(body.wx_mrads);
+                out.put_i16_le(body.wy_mrads);
+                out.put_i16_le(body.wz_mrads);
+            }
+
+            for vehicle in &pkt.vehicle_states {
+                out.put_u8(vehicle.handle);
+                out.put_u8(vehicle.vehicle_type);
+                out.put_u8(vehicle.driver_handle);
+                out.put_u8(vehicle.flags);
+                out.put_i16_le(vehicle.dx_q2_5mm);
+                out.put_i16_le(vehicle.dy_q2_5mm);
+                out.put_i16_le(vehicle.dz_q2_5mm);
+                out.put_i16_le(vehicle.qx_snorm);
+                out.put_i16_le(vehicle.qy_snorm);
+                out.put_i16_le(vehicle.qz_snorm);
+                out.put_i16_le(vehicle.qw_snorm);
+                out.put_i16_le(vehicle.vx_cms);
+                out.put_i16_le(vehicle.vy_cms);
+                out.put_i16_le(vehicle.vz_cms);
+                out.put_i16_le(vehicle.wx_mrads);
+                out.put_i16_le(vehicle.wy_mrads);
+                out.put_i16_le(vehicle.wz_mrads);
+            }
         }
     }
     out.to_vec()
@@ -513,6 +743,15 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_u8(e.op);
                 out.put_u16_le(e.material);
             }
+        }
+        ServerPacket::SnapshotV2(pkt) => {
+            return encode_server_datagram(&ServerDatagramPacket::SnapshotV2(pkt.clone()))
+        }
+        ServerPacket::PlayerRoster(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::PlayerRoster(pkt.clone()))
+        }
+        ServerPacket::DynamicBodyMeta(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::DynamicBodyMeta(pkt.clone()))
         }
         ServerPacket::Ping(v) => {
             out.put_u8(PKT_PING);

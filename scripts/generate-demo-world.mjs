@@ -167,7 +167,7 @@ function createDemoWorldDocument() {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const outputPath = path.resolve(__dirname, '../world/demo-world.world.json');
+const outputPath = path.resolve(__dirname, '../worlds/trail.world.json');
 const world = createDemoWorldDocument();
 fs.writeFileSync(outputPath, `${JSON.stringify(world, null, 2)}\n`);
 process.stdout.write(`Wrote ${outputPath}\n`);
