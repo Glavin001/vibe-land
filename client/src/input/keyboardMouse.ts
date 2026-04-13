@@ -118,7 +118,15 @@ export class KeyboardMouseInputSource {
       firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton),
       firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton) ? 1 : 0,
       handbrake: context === 'vehicle' && this.keys.has(keyboard.handbrake),
-      interactPressed: this.justPressedKeys.has(keyboard.interact),
+      // While operating a snap-machine, the "interact" action
+      // (enter/exit) moves to a dedicated exit key so it doesn't
+      // overlap with the machine's motor bindings. The default
+      // snap-machine `motorSpin` is E/Q, which was silently exiting
+      // the machine on every press until this fix.
+      interactPressed:
+        context === 'snapMachine'
+          ? this.justPressedKeys.has(keyboard.machineExit)
+          : this.justPressedKeys.has(keyboard.interact),
       resetVehiclePressed: context === 'vehicle' && this.justPressedKeys.has(keyboard.resetVehicle),
       blockRemovePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockRemove),
       blockPlacePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockPlace),

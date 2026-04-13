@@ -15,6 +15,10 @@ export type ControlHintsState = {
     negKey: string | null;
     scale: number;
   }>;
+  /// Live scalar values per snap-machine action channel, in
+  /// `bindings` order. Each slot is `-127..127`. The overlay uses
+  /// these to light up hint rows as keys are held.
+  machineChannels: Int8Array;
 };
 
 function createDefaultState(): ControlHintsState {
@@ -24,6 +28,7 @@ function createDefaultState(): ControlHintsState {
     action: null,
     machineDisplayName: null,
     machineBindings: [],
+    machineChannels: new Int8Array(0),
   };
 }
 
@@ -63,6 +68,7 @@ export function useControlHints() {
       action: sample.action,
       machineDisplayName: sample.machineDisplayName ?? null,
       machineBindings: sample.machineBindings ?? [],
+      machineChannels: sample.machineChannels ?? new Int8Array(0),
     };
 
     if (now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
@@ -86,6 +92,7 @@ export function useControlHints() {
         : null,
       machineDisplayName: sample.machineDisplayName ?? null,
       machineBindings: sample.machineBindings ?? [],
+      machineChannels: sample.machineChannels ?? new Int8Array(0),
     });
   }, []);
 

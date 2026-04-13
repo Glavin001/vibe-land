@@ -43,6 +43,11 @@ export type InputSample = {
     negKey: string | null;
     scale: number;
   }>;
+  /// Current per-action channel values (range `-127..127`) for the
+  /// operated snap-machine, computed by `resolveSnapMachineInput`.
+  /// The HUD lights hint rows based on these so the player can see
+  /// keypresses register in real time.
+  machineChannels?: Int8Array;
 };
 
 export type SemanticInputState = {

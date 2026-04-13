@@ -41,14 +41,25 @@ pub const MAX_MACHINE_BODIES: usize = 32;
 /// keeps the fixture JSON byte-identical to upstream while letting
 /// motors overcome weight + friction without wheelying the machine.
 /// If a machine feels sluggish this is the first knob to tune.
-pub const MOTOR_MAX_FORCE_MULTIPLIER: f32 = 10.0;
+pub const MOTOR_MAX_FORCE_MULTIPLIER: f32 = 50.0;
 
-/// Matches [`MOTOR_MAX_FORCE_MULTIPLIER`] — applied to every joint
-/// motor's `damping` so the solver tightens the control loop at the
-/// same rate as the force ceiling. Necessary for symmetric vehicles
-/// (4-wheel car / rover) where the default damping lets only two of
-/// four motors engage per step.
+/// Bumped alongside the max-force multiplier so the Rapier 0.30
+/// acceleration-based motor solver tightens the control loop on every
+/// tick. Necessary for symmetric vehicles (4-wheel car / rover) where
+/// the default damping lets only two of four motors engage per step
+/// — observed directly with upstream snap-machines-rapier against an
+/// unmodified envelope during development.
 pub const MOTOR_DAMPING_MULTIPLIER: f32 = 10.0;
+
+/// Multiplier applied to every collider's explicit `mass` override on
+/// install. The shipped fixtures author toy-scale masses (chassis 1
+/// kg, wheels 1.5 kg each → total ~8 kg) which means the vibe-land
+/// vehicle (~300 kg chassis) would trivially shove a parked
+/// snap-machine aside and look like it phased through. This scales
+/// the whole machine mass up to roughly vehicle-weight range so
+/// contacts feel solid. The force multiplier is set proportionally
+/// larger so torque budget stays ahead of the extra inertia.
+pub const COLLIDER_MASS_MULTIPLIER: f32 = 30.0;
 
 #[derive(Debug)]
 pub enum SnapMachineError {
@@ -154,6 +165,17 @@ impl SnapMachine {
                     *max_force *= MOTOR_MAX_FORCE_MULTIPLIER;
                 }
                 motor.damping *= MOTOR_DAMPING_MULTIPLIER;
+            }
+        }
+
+        // Scale every collider's explicit mass override. Fixtures are
+        // authored at toy scale (~15 kg cars); without this the
+        // 300 kg vehicle chassis trivially shoves a parked machine.
+        for body in &mut envelope.plan.bodies {
+            for collider in &mut body.colliders {
+                if let Some(mass) = collider.mass.as_mut() {
+                    *mass *= COLLIDER_MASS_MULTIPLIER;
+                }
             }
         }
 
@@ -745,6 +767,226 @@ mod tests {
         assert_eq!(
             machine.machine.action_channels(),
             &["armPitch".to_string(), "armYaw".to_string()]
+        );
+    }
+
+    /// End-to-end check that the crane's position-mode motors actually
+    /// swing the arm when the operator holds `armPitch`. If this test
+    /// fails, the damping / force multiplier tuning is probably
+    /// breaking position-mode motors or the driver→channel wiring has
+    /// regressed.
+    #[test]
+    fn crane_arm_swings_when_pitch_input_held() {
+        let envelope: serde_json::Value =
+            serde_json::from_str(CRANE_ENVELOPE).expect("crane parses");
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.add_static_cuboid(
+            Vector3::new(0.0, -0.5, 0.0),
+            Vector3::new(50.0, 0.5, 50.0),
+            0,
+        );
+        arena
+            .spawn_snap_machine_with_id(
+                99,
+                Vector3::new(0.0, 0.5, 0.0),
+                [0.0, 0.0, 0.0, 1.0],
+                &envelope,
+            )
+            .expect("crane installs clean");
+        arena.rebuild_broad_phase();
+
+        // Pick the tip body (body:3 — the arm's far end). We don't know
+        // the exact id ordering but the crane plan has bodies 0..3; the
+        // tip is the heaviest at y ≈ 5 m.
+        let tip_body = "body:3";
+        let tip_handle = arena
+            .machines
+            .get(&99)
+            .and_then(|m| m.machine.body_handle(tip_body))
+            .expect("tip body present");
+
+        let action_channels = arena
+            .machines
+            .get(&99)
+            .expect("crane")
+            .machine
+            .action_channels()
+            .to_vec();
+        let pitch_idx = action_channels
+            .iter()
+            .position(|a| a == "armPitch")
+            .expect("crane has armPitch");
+
+        // Settle for a few ticks so the arm is at rest before we drive it.
+        arena.spawn_player(1);
+        arena.enter_machine(1, 99);
+        for _ in 0..30 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let start_pos = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(tip_handle)
+            .expect("tip body")
+            .translation();
+
+        // Push armPitch full positive for 1 second.
+        if let Some(player) = arena.players.get_mut(&1) {
+            let mut channels = MachineChannels::default();
+            channels[pitch_idx] = 127;
+            player.last_input.machine_channels = channels;
+        }
+        // Wake bodies — position-mode motors don't wake sleeping bodies
+        // on their own, matching the car driving case.
+        for bid in ["body:0", "body:1", "body:2", "body:3"] {
+            if let Some(h) = arena
+                .machines
+                .get(&99)
+                .and_then(|m| m.machine.body_handle(bid))
+            {
+                if let Some(rb) = arena.dynamic.sim.rigid_bodies.get_mut(h) {
+                    rb.wake_up(true);
+                }
+            }
+        }
+        for _ in 0..60 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let end_pos = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(tip_handle)
+            .expect("tip body after drive")
+            .translation();
+
+        let dx = end_pos.x - start_pos.x;
+        let dy = end_pos.y - start_pos.y;
+        let dz = end_pos.z - start_pos.z;
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+        assert!(
+            dist > 0.25,
+            "crane tip should have moved when armPitch is held: \
+             start=({:.2},{:.2},{:.2}) end=({:.2},{:.2},{:.2}) dist={dist:.3}",
+            start_pos.x, start_pos.y, start_pos.z,
+            end_pos.x, end_pos.y, end_pos.z
+        );
+    }
+
+    /// If you drive the built-in 4-wheel vehicle into a snap-machine, the
+    /// snap machine's rigid-bodies should push back through contact
+    /// instead of letting the vehicle tunnel through. This exercises
+    /// `vehicle.chassis_collider` ↔ `machine_body.collider` pairing in
+    /// the shared Rapier pipeline and catches any collision-group
+    /// regression (the vehicle uses GROUP_1 with filter GROUP_1|GROUP_2
+    /// while snap-machine colliders default to `Group::all()`).
+    #[test]
+    fn vehicle_collides_with_snap_machine() {
+        let envelope: serde_json::Value =
+            serde_json::from_str(FOUR_WHEEL_CAR_ENVELOPE).expect("parse car envelope");
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.add_static_cuboid(
+            Vector3::new(0.0, -0.5, 0.0),
+            Vector3::new(50.0, 0.5, 50.0),
+            0,
+        );
+        // Parked snap machine at the origin.
+        arena
+            .spawn_snap_machine_with_id(
+                99,
+                Vector3::new(0.0, 0.2, 0.0),
+                [0.0, 0.0, 0.0, 1.0],
+                &envelope,
+            )
+            .expect("snap-machine installs");
+        // Vehicle starts 5 m in front of the snap-machine (the
+        // vehicle's `forward_axis = 2` / +Z convention) with a large
+        // initial linvel so the first few ticks of contact are all
+        // that matter; we don't care about the long-term behaviour,
+        // we just want a detectable shove on the machine when the
+        // vehicle rams it.
+        let vehicle_id = arena.spawn_vehicle_with_id(
+            1,
+            0,
+            Vector3::new(0.0, 0.6, 5.0),
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        arena.rebuild_broad_phase();
+
+        let chassis_body = arena
+            .vehicles
+            .get(&vehicle_id)
+            .expect("vehicle in arena")
+            .chassis_body;
+
+        // Grab the snap-machine chassis (body:0) starting position.
+        let sm_body0 = arena
+            .machines
+            .get(&99)
+            .and_then(|m| m.machine.body_handle("body:0"))
+            .expect("snap machine body:0");
+        let sm_start = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(sm_body0)
+            .expect("body:0")
+            .translation();
+
+        // Apply a single strong impulse to the chassis pointing
+        // toward -Z (the vehicle's forward direction in the plan) so
+        // we exercise the natural contact response when the vehicle
+        // rams the parked machine. After that the simulation runs
+        // free — no `set_linvel` override, so contact impulses can
+        // decelerate the chassis normally.
+        if let Some(rb) = arena.dynamic.sim.rigid_bodies.get_mut(chassis_body) {
+            // 300 kg chassis × 12 m/s target = 3600 N·s impulse.
+            rb.apply_impulse(Vector3::new(0.0, 0.0, -3600.0), true);
+        }
+        for _ in 0..90 {
+            arena.step_vehicles(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+
+        let vehicle_end = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(chassis_body)
+            .expect("vehicle chassis")
+            .translation();
+        let sm_end = *arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(sm_body0)
+            .expect("body:0 after collision")
+            .translation();
+        let sm_delta = (sm_end - sm_start).norm();
+
+        // Two assertions together prove the contact actually resolved:
+        //   1. The snap machine was shoved along the hit direction
+        //      (sm_delta > 0.3 m) — it wasn't ignored entirely.
+        //   2. The vehicle chassis did NOT pass through the machine —
+        //      the vehicle's final Z is still in front of the
+        //      machine's final Z (vehicle.z > snap.z + a small
+        //      buffer). Without contact resolution the vehicle would
+        //      have kept going and ended up several metres past.
+        assert!(
+            sm_delta > 0.3,
+            "snap machine should have been shoved at least 0.3 m when the \
+             vehicle rammed it, but sm_delta={sm_delta:.3}. \
+             vehicle_end={vehicle_end:?} sm_end={sm_end:?}"
+        );
+        assert!(
+            vehicle_end.z > sm_end.z,
+            "vehicle should not have passed through the snap machine: \
+             vehicle.z={:.3}, sm.z={:.3}",
+            vehicle_end.z,
+            sm_end.z,
         );
     }
 

@@ -63,23 +63,32 @@ function buildRows(
     negKey: string | null;
     scale: number;
   }>,
+  machineChannels: Int8Array,
 ): RowSpec[] {
   if (context === 'snapMachine') {
-    // Snap-machine hints: one row per action channel, using each
-    // binding's own key pair. Works on both keyboard and gamepad
-    // families — gamepad users see the keyboard fallback. The key
-    // strings come straight from the envelope so we format them
-    // generically (not via the fixed `KeyboardCodeBinding` union).
-    if (machineBindings.length === 0) {
-      return [];
-    }
-    return machineBindings.map((binding) => ({
-      command: binding.action,
-      binding: binding.negKey
-        ? `${formatDomKey(binding.negKey)} / ${formatDomKey(binding.posKey)}`
-        : formatDomKey(binding.posKey),
-      value: 0,
-    }));
+    // Snap-machine hints: one row per action channel + a trailing
+    // Exit row showing the dedicated `machineExit` key. Each action
+    // row lights up based on its live channel value so the player
+    // sees keys register in real time.
+    const rows: RowSpec[] = machineBindings.map((binding, idx) => {
+      const raw = machineChannels.length > idx ? machineChannels[idx] : 0;
+      const magnitude = clamp01(Math.abs(raw) / 127);
+      return {
+        command: binding.action,
+        binding: binding.negKey
+          ? `${formatDomKey(binding.negKey)} / ${formatDomKey(binding.posKey)}`
+          : formatDomKey(binding.posKey),
+        value: magnitude,
+        active: magnitude > 0.01,
+      };
+    });
+    rows.push({
+      command: 'Exit Machine',
+      binding: keyboardCodeLabel(bindings.keyboard.machineExit),
+      value: boolValue(action?.interactPressed ?? false),
+      active: action?.interactPressed ?? false,
+    });
+    return rows;
   }
   if (context === 'vehicle') {
     if (family === 'gamepad') {
@@ -154,7 +163,14 @@ export function ControlHintsOverlay({
 
   const family = state.activeFamily ?? 'keyboardMouse';
   const context = state.context;
-  const rows = buildRows(family, context, state.action, bindings, state.machineBindings);
+  const rows = buildRows(
+    family,
+    context,
+    state.action,
+    bindings,
+    state.machineBindings,
+    state.machineChannels,
+  );
   const contextLabel =
     context === 'snapMachine'
       ? state.machineDisplayName ?? 'Machine'

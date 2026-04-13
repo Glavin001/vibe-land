@@ -563,20 +563,35 @@ export function GameWorld({
       inputFamilyMode,
     )
       ?? { activeFamily: null, action: null, context: activeInputContext };
-    // Enrich the input sample with snap-machine metadata so the HUD
-    // can render the machine's preset name and hint rows without
-    // reaching into the prediction manager itself.
     const machineDisplayName = isOperatingMachineNow
       ? prediction.getSnapMachineDisplayName()
       : null;
     const machineBindings = isOperatingMachineNow
       ? prediction.getSnapMachineBindings()
       : [];
+    // Pre-compute live machine channel values so the HUD can flash
+    // hint rows as keys are held, and so the resolver below can
+    // reuse them without walking the binding table twice.
+    let liveMachineChannels: Int8Array | undefined;
+    if (isOperatingMachineNow) {
+      const actionChannels = prediction.getSnapMachineActionChannels();
+      liveMachineChannels = new Int8Array(8);
+      for (let idx = 0; idx < actionChannels.length && idx < 8; idx += 1) {
+        const action = actionChannels[idx];
+        const binding = machineBindings.find((b) => b.action === action);
+        if (!binding) continue;
+        let value = 0;
+        if (inputManagerRef.current?.isCodeDown(binding.posKey)) value += 1;
+        if (binding.negKey && inputManagerRef.current?.isCodeDown(binding.negKey)) value -= 1;
+        liveMachineChannels[idx] = Math.max(-127, Math.min(127, Math.round(value * 127)));
+      }
+    }
     const inputSample = isOperatingMachineNow
       ? {
           ...rawInputSample,
           machineDisplayName,
           machineBindings,
+          machineChannels: liveMachineChannels,
         }
       : rawInputSample;
     onInputFrameRef.current?.(inputSample);
@@ -606,16 +621,12 @@ export function GameWorld({
 
     let resolvedInput;
     if (isOperatingMachineNow) {
-      const actionChannels = prediction.getSnapMachineActionChannels();
-      const keyDownQuery = (code: string) => inputManagerRef.current?.isCodeDown(code) ?? false;
       resolvedInput = resolveSnapMachineInput(
         inputSample.action,
         yawRef.current,
         pitchRef.current,
         inputSample.activeFamily,
-        actionChannels,
-        machineBindings,
-        keyDownQuery,
+        liveMachineChannels ?? new Int8Array(8),
       );
     } else if (isDrivingNow) {
       resolvedInput = resolveVehicleInput(
