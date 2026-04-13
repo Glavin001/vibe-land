@@ -12,10 +12,20 @@ export type DebugStats = {
   pingMs: number;
   serverTick: number;
   interpolationDelayMs: number;
+  dynamicBodyInterpolationDelayMs: number;
   clockOffsetUs: number;
   remotePlayers: number;
   snapshotsPerSec: number;
   jitterMs: number;
+  lastSnapshotGapMs: number;
+  snapshotGapP95Ms: number;
+  snapshotGapMaxMs: number;
+  lastSnapshotSource: string;
+  staleSnapshotsDropped: number;
+  reliableSnapshotsReceived: number;
+  datagramSnapshotsReceived: number;
+  localSnapshotsReceived: number;
+  directSnapshotsReceived: number;
   rapierDebugLabel: string;
   rapierDebugModeBits: number;
 
@@ -30,7 +40,53 @@ export type DebugStats = {
   dynamicOverThresholdCount: number;
   dynamicTrackedBodies: number;
   dynamicInteractiveBodies: number;
+  lastDynamicShotBodyId: number;
+  lastDynamicShotAgeMs: number;
+  lastShotPredictedBodyId: number;
+  lastShotProxyHitBodyId: number;
+  lastShotProxyHitToi: number;
+  lastShotBlockedByBlocker: boolean;
+  lastShotLocalPredictedDeltaM: number;
+  lastShotDynamicSampleAgeMs: number;
+  lastShotPredictedBodyRecentInteraction: boolean;
+  lastShotBlockerDistance: number;
+  lastShotRenderedBodyId: number;
+  lastShotRenderedBodyToi: number;
+  lastShotRenderProxyDeltaM: number;
+  lastShotRenderedBodyProxyPresent: boolean;
+  lastShotRenderedBodyProxyToi: number;
+  lastShotRenderedBodyProxyCenterDeltaM: number;
+  lastShotNearestProxyBodyId: number;
+  lastShotNearestProxyBodyToi: number;
+  lastShotNearestProxyBodyMissDistanceM: number;
+  lastShotNearestProxyBodyRadiusM: number;
+  lastShotNearestRenderedBodyId: number;
+  lastShotNearestRenderedBodyToi: number;
+  lastShotNearestRenderedBodyMissDistanceM: number;
+  lastShotNearestRenderedBodyRadiusM: number;
+  lastShotServerResolution: number;
+  lastShotServerDynamicBodyId: number;
+  lastShotServerDynamicHitToiM: number;
+  lastShotServerDynamicImpulseMag: number;
+  playerCorrectionPeak5sM: number;
+  vehicleCorrectionPeak5sM: number;
+  dynamicCorrectionPeak5sM: number;
+  pendingInputsPeak5s: number;
+  vehiclePendingInputs: number;
+  vehicleAckSeq: number;
+  vehicleReplayErrorM: number;
+  vehiclePosErrorM: number;
+  vehicleVelErrorMs: number;
+  vehicleRotErrorRad: number;
+  vehicleCorrectionAgeMs: number;
   physicsStepMs: number;
+  shotsFired: number;
+  shotsPending: number;
+  shotAuthoritativeMoves: number;
+  shotMismatches: number;
+  lastShotOutcome: string;
+  lastShotOutcomeAgeMs: number;
+  recentEvents: string[];
 
   // Local vehicle debug
   vehicleDebugId: number;
@@ -69,10 +125,20 @@ export const DEFAULT_STATS: DebugStats = {
   pingMs: 0,
   serverTick: 0,
   interpolationDelayMs: 0,
+  dynamicBodyInterpolationDelayMs: 0,
   clockOffsetUs: 0,
   remotePlayers: 0,
   snapshotsPerSec: 0,
   jitterMs: 0,
+  lastSnapshotGapMs: 0,
+  snapshotGapP95Ms: 0,
+  snapshotGapMaxMs: 0,
+  lastSnapshotSource: 'none',
+  staleSnapshotsDropped: 0,
+  reliableSnapshotsReceived: 0,
+  datagramSnapshotsReceived: 0,
+  localSnapshotsReceived: 0,
+  directSnapshotsReceived: 0,
   rapierDebugLabel: 'off',
   rapierDebugModeBits: 0,
   pendingInputs: 0,
@@ -85,7 +151,53 @@ export const DEFAULT_STATS: DebugStats = {
   dynamicOverThresholdCount: 0,
   dynamicTrackedBodies: 0,
   dynamicInteractiveBodies: 0,
+  lastDynamicShotBodyId: 0,
+  lastDynamicShotAgeMs: -1,
+  lastShotPredictedBodyId: 0,
+  lastShotProxyHitBodyId: 0,
+  lastShotProxyHitToi: -1,
+  lastShotBlockedByBlocker: false,
+  lastShotLocalPredictedDeltaM: -1,
+  lastShotDynamicSampleAgeMs: -1,
+  lastShotPredictedBodyRecentInteraction: false,
+  lastShotBlockerDistance: -1,
+  lastShotRenderedBodyId: 0,
+  lastShotRenderedBodyToi: -1,
+  lastShotRenderProxyDeltaM: -1,
+  lastShotRenderedBodyProxyPresent: false,
+  lastShotRenderedBodyProxyToi: -1,
+  lastShotRenderedBodyProxyCenterDeltaM: -1,
+  lastShotNearestProxyBodyId: 0,
+  lastShotNearestProxyBodyToi: -1,
+  lastShotNearestProxyBodyMissDistanceM: -1,
+  lastShotNearestProxyBodyRadiusM: -1,
+  lastShotNearestRenderedBodyId: 0,
+  lastShotNearestRenderedBodyToi: -1,
+  lastShotNearestRenderedBodyMissDistanceM: -1,
+  lastShotNearestRenderedBodyRadiusM: -1,
+  lastShotServerResolution: 0,
+  lastShotServerDynamicBodyId: 0,
+  lastShotServerDynamicHitToiM: -1,
+  lastShotServerDynamicImpulseMag: -1,
+  playerCorrectionPeak5sM: 0,
+  vehicleCorrectionPeak5sM: 0,
+  dynamicCorrectionPeak5sM: 0,
+  pendingInputsPeak5s: 0,
+  vehiclePendingInputs: 0,
+  vehicleAckSeq: 0,
+  vehicleReplayErrorM: 0,
+  vehiclePosErrorM: 0,
+  vehicleVelErrorMs: 0,
+  vehicleRotErrorRad: 0,
+  vehicleCorrectionAgeMs: -1,
   physicsStepMs: 0,
+  shotsFired: 0,
+  shotsPending: 0,
+  shotAuthoritativeMoves: 0,
+  shotMismatches: 0,
+  lastShotOutcome: 'none',
+  lastShotOutcomeAgeMs: -1,
+  recentEvents: [],
   vehicleDebugId: 0,
   vehicleDriverConfirmed: false,
   vehicleLocalSpeedMs: 0,
@@ -153,9 +265,16 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- jitter_ms: ${fmt(stats.jitterMs, 2)}`,
     `- server_tick: ${stats.serverTick}`,
     `- interp_delay_ms: ${fmt(stats.interpolationDelayMs, 2)}`,
+    `- dyn_interp_delay_ms: ${fmt(stats.dynamicBodyInterpolationDelayMs, 2)}`,
     `- clock_offset_ms: ${fmt(stats.clockOffsetUs / 1000, 2)}`,
     `- remote_players: ${stats.remotePlayers}`,
     `- snapshots_per_sec: ${fmt(stats.snapshotsPerSec, 0)}`,
+    `- snapshot_gap_ms: ${fmt(stats.lastSnapshotGapMs, 2)}`,
+    `- snapshot_gap_p95_ms: ${fmt(stats.snapshotGapP95Ms, 2)}`,
+    `- snapshot_gap_max_ms: ${fmt(stats.snapshotGapMaxMs, 2)}`,
+    `- snapshot_source_last: ${stats.lastSnapshotSource}`,
+    `- stale_snapshots_dropped: ${stats.staleSnapshotsDropped}`,
+    `- snapshot_src_counts: rel=${stats.reliableSnapshotsReceived} dgram=${stats.datagramSnapshotsReceived} local=${stats.localSnapshotsReceived} direct=${stats.directSnapshotsReceived}`,
     `- rapier_debug: ${stats.rapierDebugLabel} (${stats.rapierDebugModeBits})`,
     '',
     '## Physics',
@@ -169,7 +288,54 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- dyn_over_25cm_count: ${stats.dynamicOverThresholdCount}`,
     `- dyn_tracked_bodies: ${stats.dynamicTrackedBodies}`,
     `- dyn_interactive_bodies: ${stats.dynamicInteractiveBodies}`,
+    `- dyn_last_shot_body_id: ${stats.lastDynamicShotBodyId}`,
+    `- dyn_last_shot_age_ms: ${stats.lastDynamicShotAgeMs >= 0 ? fmt(stats.lastDynamicShotAgeMs, 2) : 'n/a'}`,
+    `- vehicle_pending_inputs: ${stats.vehiclePendingInputs}`,
+    `- vehicle_ack_seq: ${stats.vehicleAckSeq}`,
+    `- vehicle_replay_error_m: ${fmt(stats.vehicleReplayErrorM, 3)}`,
+    `- vehicle_pos_error_m: ${fmt(stats.vehiclePosErrorM, 3)}`,
+    `- vehicle_vel_error_ms: ${fmt(stats.vehicleVelErrorMs, 3)}`,
+    `- vehicle_rot_error_rad: ${fmt(stats.vehicleRotErrorRad, 3)}`,
+    `- vehicle_corr_age_ms: ${stats.vehicleCorrectionAgeMs >= 0 ? fmt(stats.vehicleCorrectionAgeMs, 2) : 'n/a'}`,
+    `- player_corr_peak_5s_m: ${fmt(stats.playerCorrectionPeak5sM, 3)}`,
+    `- vehicle_corr_peak_5s_m: ${fmt(stats.vehicleCorrectionPeak5sM, 3)}`,
+    `- dyn_corr_peak_5s_m: ${fmt(stats.dynamicCorrectionPeak5sM, 3)}`,
+    `- pending_inputs_peak_5s: ${fmt(stats.pendingInputsPeak5s, 0)}`,
     `- physics_step_ms: ${fmt(stats.physicsStepMs, 2)}`,
+    '',
+    '## Shots',
+    `- shots_fired: ${stats.shotsFired}`,
+    `- shots_pending: ${stats.shotsPending}`,
+    `- shot_auth_moves: ${stats.shotAuthoritativeMoves}`,
+    `- shot_mismatches: ${stats.shotMismatches}`,
+    `- last_shot_outcome_age_ms: ${stats.lastShotOutcomeAgeMs >= 0 ? fmt(stats.lastShotOutcomeAgeMs, 2) : 'n/a'}`,
+    `- last_shot_outcome: ${stats.lastShotOutcome}`,
+    `- last_shot_predicted_body_id: ${stats.lastShotPredictedBodyId}`,
+    `- last_shot_proxy_hit_body_id: ${stats.lastShotProxyHitBodyId}`,
+    `- last_shot_proxy_hit_toi: ${stats.lastShotProxyHitToi >= 0 ? fmt(stats.lastShotProxyHitToi, 2) : 'n/a'}`,
+    `- last_shot_blocked_by_blocker: ${stats.lastShotBlockedByBlocker ? 'yes' : 'no'}`,
+    `- last_shot_local_pred_delta_m: ${stats.lastShotLocalPredictedDeltaM >= 0 ? fmt(stats.lastShotLocalPredictedDeltaM, 3) : 'n/a'}`,
+    `- last_shot_dynamic_sample_age_ms: ${stats.lastShotDynamicSampleAgeMs >= 0 ? fmt(stats.lastShotDynamicSampleAgeMs, 2) : 'n/a'}`,
+    `- last_shot_predicted_body_recent_interaction: ${stats.lastShotPredictedBodyRecentInteraction ? 'yes' : 'no'}`,
+    `- last_shot_blocker_distance: ${stats.lastShotBlockerDistance >= 0 ? fmt(stats.lastShotBlockerDistance, 2) : 'n/a'}`,
+    `- last_shot_rendered_body_id: ${stats.lastShotRenderedBodyId}`,
+    `- last_shot_rendered_body_toi: ${stats.lastShotRenderedBodyToi >= 0 ? fmt(stats.lastShotRenderedBodyToi, 2) : 'n/a'}`,
+    `- last_shot_render_proxy_delta_m: ${stats.lastShotRenderProxyDeltaM >= 0 ? fmt(stats.lastShotRenderProxyDeltaM, 3) : 'n/a'}`,
+    `- last_shot_rendered_body_proxy_present: ${stats.lastShotRenderedBodyProxyPresent ? 'yes' : 'no'}`,
+    `- last_shot_rendered_body_proxy_toi: ${stats.lastShotRenderedBodyProxyToi >= 0 ? fmt(stats.lastShotRenderedBodyProxyToi, 2) : 'n/a'}`,
+    `- last_shot_rendered_body_proxy_center_delta_m: ${stats.lastShotRenderedBodyProxyCenterDeltaM >= 0 ? fmt(stats.lastShotRenderedBodyProxyCenterDeltaM, 3) : 'n/a'}`,
+    `- last_shot_nearest_proxy_body_id: ${stats.lastShotNearestProxyBodyId}`,
+    `- last_shot_nearest_proxy_body_toi: ${stats.lastShotNearestProxyBodyToi >= 0 ? fmt(stats.lastShotNearestProxyBodyToi, 2) : 'n/a'}`,
+    `- last_shot_nearest_proxy_body_miss_distance_m: ${stats.lastShotNearestProxyBodyMissDistanceM >= 0 ? fmt(stats.lastShotNearestProxyBodyMissDistanceM, 3) : 'n/a'}`,
+    `- last_shot_nearest_proxy_body_radius_m: ${stats.lastShotNearestProxyBodyRadiusM >= 0 ? fmt(stats.lastShotNearestProxyBodyRadiusM, 3) : 'n/a'}`,
+    `- last_shot_nearest_rendered_body_id: ${stats.lastShotNearestRenderedBodyId}`,
+    `- last_shot_nearest_rendered_body_toi: ${stats.lastShotNearestRenderedBodyToi >= 0 ? fmt(stats.lastShotNearestRenderedBodyToi, 2) : 'n/a'}`,
+    `- last_shot_nearest_rendered_body_miss_distance_m: ${stats.lastShotNearestRenderedBodyMissDistanceM >= 0 ? fmt(stats.lastShotNearestRenderedBodyMissDistanceM, 3) : 'n/a'}`,
+    `- last_shot_nearest_rendered_body_radius_m: ${stats.lastShotNearestRenderedBodyRadiusM >= 0 ? fmt(stats.lastShotNearestRenderedBodyRadiusM, 3) : 'n/a'}`,
+    `- last_shot_server_resolution: ${stats.lastShotServerResolution}`,
+    `- last_shot_server_dynamic_body_id: ${stats.lastShotServerDynamicBodyId}`,
+    `- last_shot_server_dynamic_hit_toi_m: ${stats.lastShotServerDynamicHitToiM >= 0 ? fmt(stats.lastShotServerDynamicHitToiM, 2) : 'n/a'}`,
+    `- last_shot_server_dynamic_impulse_mag: ${stats.lastShotServerDynamicImpulseMag >= 0 ? fmt(stats.lastShotServerDynamicImpulseMag, 2) : 'n/a'}`,
     '',
     '## Vehicle',
     `- vehicle_id: ${stats.vehicleDebugId}`,
@@ -200,6 +366,10 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     lines.push('', '## Render Stats', '```text', renderStatsText, '```');
   }
 
+  if (stats.recentEvents.length > 0) {
+    lines.push('', '## Recent Events', '```text', ...stats.recentEvents, '```');
+  }
+
   return lines.join('\n');
 }
 
@@ -223,9 +393,17 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         lineHeight: 1.5,
         padding: '8px 12px',
         borderRadius: 4,
-        pointerEvents: 'none',
-        whiteSpace: 'pre',
+        pointerEvents: 'auto',
         minWidth: 240,
+        maxWidth: 'calc((100vw - 16px) / 3)',
+        maxHeight: 'calc(100vh - 16px)',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+        boxSizing: 'border-box',
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        overscrollBehavior: 'contain',
       }}
     >
       <Section title="Rendering">
@@ -239,23 +417,46 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         {`Ping: ${fmt(stats.pingMs)}ms  Jitter: ±${fmt(stats.jitterMs)}ms`}
         {`Server tick: ${stats.serverTick}`}
         {`Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
+        {`Dyn interp delay: ${stats.dynamicBodyInterpolationDelayMs.toFixed(2)}ms`}
         {`Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
         {`Remote players: ${stats.remotePlayers}`}
         {`Snapshots/s: ${fmt(stats.snapshotsPerSec, 0)}`}
+        {`Snapshot gap: ${fmt(stats.lastSnapshotGapMs)}ms  p95 ${fmt(stats.snapshotGapP95Ms)}ms  max ${fmt(stats.snapshotGapMaxMs)}ms`}
+        {`Snapshot src: ${stats.lastSnapshotSource}  stale drops: ${stats.staleSnapshotsDropped}`}
+        {`Snapshot counts rel/dgram: ${stats.reliableSnapshotsReceived}/${stats.datagramSnapshotsReceived}`}
         {`Rapier debug: ${stats.rapierDebugLabel}`}
       </Section>
 
       <Section title="Physics">
         {`Pending inputs: ${stats.pendingInputs}`}
+        {`Pending peak 5s: ${fmt(stats.pendingInputsPeak5s, 0)}`}
         {`Prediction ticks: ${stats.predictionTicks}`}
         {`Player corr: ${fmt(stats.playerCorrectionMagnitude, 3)}m`}
         {`Vehicle corr: ${fmt(stats.vehicleCorrectionMagnitude, 3)}m`}
         {`Dyn global max: ${fmt(stats.dynamicGlobalMaxCorrectionMagnitude, 3)}m`}
         {`Dyn near max: ${fmt(stats.dynamicNearPlayerMaxCorrectionMagnitude, 3)}m`}
         {`Dyn interact max: ${fmt(stats.dynamicInteractiveMaxCorrectionMagnitude, 3)}m`}
+        {`Correction peaks 5s P/V/D: ${fmt(stats.playerCorrectionPeak5sM, 3)}/${fmt(stats.vehicleCorrectionPeak5sM, 3)}/${fmt(stats.dynamicCorrectionPeak5sM, 3)}`}
         {`Dyn >25cm: ${stats.dynamicOverThresholdCount}`}
         {`Dynamic bodies: ${stats.dynamicTrackedBodies}  interactive: ${stats.dynamicInteractiveBodies}`}
+        {`Dyn shot: ${stats.lastDynamicShotBodyId || '—'}  age: ${stats.lastDynamicShotAgeMs >= 0 ? fmt(stats.lastDynamicShotAgeMs, 0) : 'n/a'}ms`}
+        {`Vehicle pend/ack: ${stats.vehiclePendingInputs}/${stats.vehicleAckSeq}  replay ${fmt(stats.vehicleReplayErrorM, 3)}m`}
+        {`Vehicle pos/vel/rot err: ${fmt(stats.vehiclePosErrorM, 3)}m ${fmt(stats.vehicleVelErrorMs, 3)}m/s ${fmt(stats.vehicleRotErrorRad, 3)}rad`}
         {`Physics step: ${fmt(stats.physicsStepMs, 2)}ms`}
+      </Section>
+
+      <Section title="Shots">
+        {`Shots fired/pending: ${stats.shotsFired}/${stats.shotsPending}`}
+        {`Auth moves/mismatches: ${stats.shotAuthoritativeMoves}/${stats.shotMismatches}`}
+        {`Last shot: ${stats.lastShotOutcome}`}
+        {`Pred/proxy/render body: ${stats.lastShotPredictedBodyId}/${stats.lastShotProxyHitBodyId}/${stats.lastShotRenderedBodyId}`}
+        {`Proxy toi/blocker/render toi: ${stats.lastShotProxyHitToi >= 0 ? fmt(stats.lastShotProxyHitToi, 2) : 'n/a'} / ${stats.lastShotBlockerDistance >= 0 ? fmt(stats.lastShotBlockerDistance, 2) : 'n/a'} / ${stats.lastShotRenderedBodyToi >= 0 ? fmt(stats.lastShotRenderedBodyToi, 2) : 'n/a'}`}
+        {`Local predicted delta: ${stats.lastShotLocalPredictedDeltaM >= 0 ? fmt(stats.lastShotLocalPredictedDeltaM, 3) : 'n/a'}m  dyn age: ${stats.lastShotDynamicSampleAgeMs >= 0 ? fmt(stats.lastShotDynamicSampleAgeMs, 1) : 'n/a'}ms  recent interact: ${stats.lastShotPredictedBodyRecentInteraction ? 'yes' : 'no'}`}
+        {`Blocked by blocker: ${stats.lastShotBlockedByBlocker ? 'yes' : 'no'}  render-proxy delta: ${stats.lastShotRenderProxyDeltaM >= 0 ? fmt(stats.lastShotRenderProxyDeltaM, 3) : 'n/a'}m`}
+        {`Rendered body in proxy: ${stats.lastShotRenderedBodyProxyPresent ? 'yes' : 'no'}  proxy toi: ${stats.lastShotRenderedBodyProxyToi >= 0 ? fmt(stats.lastShotRenderedBodyProxyToi, 2) : 'n/a'}  center delta: ${stats.lastShotRenderedBodyProxyCenterDeltaM >= 0 ? fmt(stats.lastShotRenderedBodyProxyCenterDeltaM, 3) : 'n/a'}m`}
+        {`Nearest proxy body: ${stats.lastShotNearestProxyBodyId || '—'} @ ${stats.lastShotNearestProxyBodyToi >= 0 ? fmt(stats.lastShotNearestProxyBodyToi, 2) : 'n/a'}  miss/radius: ${stats.lastShotNearestProxyBodyMissDistanceM >= 0 ? fmt(stats.lastShotNearestProxyBodyMissDistanceM, 3) : 'n/a'}/${stats.lastShotNearestProxyBodyRadiusM >= 0 ? fmt(stats.lastShotNearestProxyBodyRadiusM, 3) : 'n/a'}m`}
+        {`Nearest render body: ${stats.lastShotNearestRenderedBodyId || '—'} @ ${stats.lastShotNearestRenderedBodyToi >= 0 ? fmt(stats.lastShotNearestRenderedBodyToi, 2) : 'n/a'}  miss/radius: ${stats.lastShotNearestRenderedBodyMissDistanceM >= 0 ? fmt(stats.lastShotNearestRenderedBodyMissDistanceM, 3) : 'n/a'}/${stats.lastShotNearestRenderedBodyRadiusM >= 0 ? fmt(stats.lastShotNearestRenderedBodyRadiusM, 3) : 'n/a'}m`}
+        {`Server resolution/body: ${stats.lastShotServerResolution}/${stats.lastShotServerDynamicBodyId || '—'}  toi/impulse: ${stats.lastShotServerDynamicHitToiM >= 0 ? fmt(stats.lastShotServerDynamicHitToiM, 2) : 'n/a'} / ${stats.lastShotServerDynamicImpulseMag >= 0 ? fmt(stats.lastShotServerDynamicImpulseMag, 2) : 'n/a'}`}
       </Section>
 
       {(stats.vehicleDebugId !== 0 || stats.inVehicle) && (
@@ -281,6 +482,12 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         </Section>
       )}
 
+      {stats.recentEvents.length > 0 && (
+        <Section title="Events">
+          {stats.recentEvents.join('\n')}
+        </Section>
+      )}
+
       <div style={{ color: '#8fd18f', marginTop: 6 }}>
         {`Copy markdown: F4 or ${typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl'}+Shift+D`}
       </div>
@@ -293,8 +500,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div style={{ marginBottom: 4 }}>
       <div style={{ color: '#ff0', fontWeight: 'bold' }}>{`— ${title} —`}</div>
       {Array.isArray(children)
-        ? children.map((line, i) => <div key={i}>{line}</div>)
-        : <div>{children}</div>
+        ? children.map((line, i) => <div key={i} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{line}</div>)
+        : <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{children}</div>
       }
     </div>
   );

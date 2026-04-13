@@ -1,9 +1,11 @@
+import type { InputBindings } from './bindings';
 import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
 
 // Move-stick inner deadzone is not currently calibrated (move is out of v1
 // scope; the player only notices it at walking edge cases). Aim-stick
-// deadzone and speed/curve are read from settings per-frame.
+// deadzone, look speeds, and response curve all come from the calibration
+// settings store per-frame.
 const LEFT_STICK_DEADZONE = 0.18;
 const PRESSED_EPSILON = 0.35;
 
@@ -71,27 +73,38 @@ export class GamepadInputSource {
     }
   }
 
-  sample(deltaSec: number, context: InputContext): ActionSnapshot | null {
+  sample(deltaSec: number, context: InputContext, bindings: InputBindings): ActionSnapshot | null {
     const pads = navigator.getGamepads?.() ?? [];
     const gamepad = pads.find((pad) => Boolean(pad && pad.connected && pad.mapping === 'standard'))
       ?? pads.find((pad) => Boolean(pad && pad.connected))
       ?? null;
     if (!gamepad) return null;
 
+    const gamepadBindings = bindings.gamepad;
     const previous = this.previous;
     this.noteActivityIfChanged(gamepad, previous);
 
+    // Bindings control WHICH axis/button does what; the calibration store
+    // controls HOW the look delta is shaped (deadzone, speed, curve).
     const gp = getInputSettings().gamepad;
-    const [moveX, moveYRaw] = applyRadialDeadzone(gamepad.axes[0] ?? 0, gamepad.axes[1] ?? 0, LEFT_STICK_DEADZONE);
-    const [lookXRaw, lookYRaw] = applyRadialDeadzone(gamepad.axes[2] ?? 0, gamepad.axes[3] ?? 0, gp.aimDeadzone);
+    const [moveX, moveYRaw] = applyRadialDeadzone(
+      gamepad.axes[gamepadBindings.moveXAxis] ?? 0,
+      gamepad.axes[gamepadBindings.moveYAxis] ?? 0,
+      LEFT_STICK_DEADZONE,
+    );
+    const [lookXRaw, lookYRaw] = applyRadialDeadzone(
+      gamepad.axes[gamepadBindings.lookXAxis] ?? 0,
+      gamepad.axes[gamepadBindings.lookYAxis] ?? 0,
+      gp.aimDeadzone,
+    );
     const yawSpeed = gp.yawSpeed;
     // Pitch speed is derived from yaw * y/x ratio so calibrating speed alone
     // doesn't secretly change the aspect ratio.
     const pitchSpeed = gp.yawSpeed * gp.yOverXRatio;
     const lookX = -shapeLookAxisWithExponent(lookXRaw, gp.curveExponent) * yawSpeed * deltaSec;
     const lookY = shapeLookAxisWithExponent(lookYRaw, gp.curveExponent) * pitchSpeed * deltaSec;
-    const rt = buttonValue(gamepad, 7);
-    const lt = buttonValue(gamepad, 6);
+    const rt = buttonValue(gamepad, gamepadBindings.throttleButton);
+    const lt = buttonValue(gamepad, gamepadBindings.brakeButton);
     const steer = moveX;
     const throttle = context === 'vehicle' ? rt : Math.max(0, -moveYRaw);
     const brake = context === 'vehicle' ? lt : 0;
@@ -108,17 +121,18 @@ export class GamepadInputSource {
       steer,
       throttle,
       brake,
-      jump: context === 'onFoot' && buttonPressed(gamepad, 0),
-      sprint: context === 'onFoot' && buttonPressed(gamepad, 10),
-      crouch: context === 'onFoot' && buttonPressed(gamepad, 1),
-      firePrimary: context === 'onFoot' && rt > PRESSED_EPSILON,
-      firePrimaryValue: context === 'onFoot' ? rt : 0,
-      handbrake: context === 'vehicle' && buttonPressed(gamepad, 0),
-      interactPressed: buttonJustPressed(gamepad, previous, 2),
-      blockRemovePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 4),
-      blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 5),
-      materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 14),
-      materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, 15),
+      jump: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.jumpButton),
+      sprint: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.sprintButton),
+      crouch: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.crouchButton),
+      firePrimary: context === 'onFoot' && buttonValue(gamepad, gamepadBindings.firePrimaryButton) > PRESSED_EPSILON,
+      firePrimaryValue: context === 'onFoot' ? buttonValue(gamepad, gamepadBindings.firePrimaryButton) : 0,
+      handbrake: context === 'vehicle' && buttonPressed(gamepad, gamepadBindings.handbrakeButton),
+      interactPressed: buttonJustPressed(gamepad, previous, gamepadBindings.interactButton),
+      resetVehiclePressed: context === 'vehicle' && buttonJustPressed(gamepad, previous, gamepadBindings.resetVehicleButton),
+      blockRemovePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockRemoveButton),
+      blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockPlaceButton),
+      materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot1Button),
+      materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot2Button),
     };
 
     this.previous = {

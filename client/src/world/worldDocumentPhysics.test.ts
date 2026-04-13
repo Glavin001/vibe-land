@@ -1,14 +1,22 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decodeServerPacket, type DynamicBodyStateMeters, type SnapshotPacket, type VehicleStateMeters, netDynamicBodyStateToMeters, netVehicleStateToMeters } from '../net/protocol';
 import { initWasmForTests, WasmLocalSession, WasmSimWorld } from '../wasm/testInit';
-import brokenWorldDocumentJson from '../../../world/broken.world.json';
+import brokenWorldDocumentJson from '../../../worlds/broken.world.json';
 import {
   DEFAULT_WORLD_DOCUMENT,
+  addTerrainTile,
   applyTerrainBrush,
+  applyTerrainRampStencil,
   cloneWorldDocument,
+  expandWorldTerrain,
+  getAddableTerrainTiles,
+  getTerrainTile,
   getTerrainWorldPosition,
+  parseWorldDocument,
+  removeTerrainTile,
   sampleTerrainHeightAtWorldPosition,
   serializeWorldDocument,
+  shrinkWorldTerrain,
   type DynamicEntity,
   type WorldDocument,
 } from './worldDocument';
@@ -24,16 +32,24 @@ type LocalPreviewResult = {
 };
 
 function makeFlatWorld(): WorldDocument {
+  return makeFlatWorldWithGrid(8, 10);
+}
+
+function makeFlatWorldWithGrid(tileGridSize: number, tileHalfExtentM: number): WorldDocument {
   return {
-    version: 1,
+    version: 2,
     meta: {
       name: 'Flat Test World',
       description: 'Minimal world for local-preview terrain tests.',
     },
     terrain: {
-      gridSize: 8,
-      halfExtentM: 10,
-      heights: Array.from({ length: 8 * 8 }, () => 0),
+      tileGridSize,
+      tileHalfExtentM,
+      tiles: [{
+        tileX: 0,
+        tileZ: 0,
+        heights: Array.from({ length: tileGridSize * tileGridSize }, () => 0),
+      }],
     },
     staticProps: [],
     dynamicEntities: [],
@@ -52,15 +68,19 @@ function makeSmoothHillWorld(): WorldDocument {
     }
   }
   return {
-    version: 1,
+    version: 2,
     meta: {
       name: 'Smooth Hill',
       description: 'Brush-like hill for rigid body terrain tests.',
     },
     terrain: {
-      gridSize,
-      halfExtentM: 10,
-      heights,
+      tileGridSize: gridSize,
+      tileHalfExtentM: 10,
+      tiles: [{
+        tileX: 0,
+        tileZ: 0,
+        heights,
+      }],
     },
     staticProps: [],
     dynamicEntities: [],
@@ -76,15 +96,19 @@ function makeAsymmetricWorld(): WorldDocument {
   heights[row * gridSize + col - 1] = 3;
   heights[(row + 1) * gridSize + col] = 1.5;
   return {
-    version: 1,
+    version: 2,
     meta: {
       name: 'Asymmetric Terrain',
       description: 'Useful for probing steep authored terrain edge-cases.',
     },
     terrain: {
-      gridSize,
-      halfExtentM: 10,
-      heights,
+      tileGridSize: gridSize,
+      tileHalfExtentM: 10,
+      tiles: [{
+        tileX: 0,
+        tileZ: 0,
+        heights,
+      }],
     },
     staticProps: [],
     dynamicEntities: [],
@@ -168,6 +192,36 @@ function expectSupportedAboveTerrain(y: number, terrainY: number, epsilon = 0.1)
   expect(y).toBeGreaterThan(terrainY - epsilon);
 }
 
+function primaryTile(world: WorldDocument) {
+  const tile = getTerrainTile(world, 0, 0);
+  expect(tile).not.toBeNull();
+  return tile!;
+}
+
+function applyRampRepeated(world: WorldDocument, count: number, overrides: Partial<Parameters<typeof applyTerrainRampStencil>[1]> = {}): WorldDocument {
+  let next = cloneWorldDocument(world);
+  for (let i = 0; i < count; i += 1) {
+    next = applyTerrainRampStencil(next, {
+      centerX: 0,
+      centerZ: 0,
+      width: 6,
+      length: 12,
+      gradePct: 50,
+      yawRad: 0,
+      mode: 'raise',
+      strength: 0.25,
+      targetHeight: 6,
+      targetEdge: 'end',
+      targetKind: 'max',
+      sideFalloffM: 0,
+      startFalloffM: 0,
+      endFalloffM: 0,
+      ...overrides,
+    });
+  }
+  return next;
+}
+
 describe('WorldDocument local-preview scenarios', () => {
   it('flat world keeps ball, box, and vehicle supported', () => {
     const world = makeWorldWithEntities(makeFlatWorld(), [
@@ -210,6 +264,191 @@ describe('WorldDocument local-preview scenarios', () => {
 
     expectSupportedAboveTerrain(box!.position[1], raycastTerrainHeight(world, 0, 0));
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, 14, 0));
+  });
+
+  it('terrain brush respects lower and upper plateaus', () => {
+    const world = makeFlatWorld();
+    const [x, z] = getTerrainWorldPosition(world, 4, 4);
+    let lowered = cloneWorldDocument(world);
+    primaryTile(lowered).heights.fill(2);
+    for (let i = 0; i < 40; i += 1) {
+      lowered = applyTerrainBrush(lowered, x, z, 4, 0.5, 'lower', { minHeight: 1, maxHeight: 6 });
+    }
+    expect(sampleTerrainHeightAtWorldPosition(lowered, x, z)).toBeGreaterThanOrEqual(1);
+    expect(sampleTerrainHeightAtWorldPosition(lowered, x, z)).toBeLessThan(1.2);
+
+    let raised = cloneWorldDocument(world);
+    primaryTile(raised).heights.fill(2);
+    for (let i = 0; i < 40; i += 1) {
+      raised = applyTerrainBrush(raised, x, z, 4, 0.5, 'raise', { minHeight: -4, maxHeight: 3 });
+    }
+    expect(sampleTerrainHeightAtWorldPosition(raised, x, z)).toBeLessThanOrEqual(3);
+    expect(sampleTerrainHeightAtWorldPosition(raised, x, z)).toBeGreaterThan(2.8);
+  });
+
+  it('terrain ramp stencil converges toward a stable raised target instead of stacking additively', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const onePass = applyRampRepeated(world, 1);
+    const manyPasses = applyRampRepeated(world, 24);
+
+    expect(sampleTerrainHeightAtWorldPosition(onePass, 0, 6)).toBeGreaterThan(0);
+    expect(sampleTerrainHeightAtWorldPosition(onePass, 0, 6)).toBeLessThan(6);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeGreaterThan(sampleTerrainHeightAtWorldPosition(onePass, 0, 6));
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeLessThanOrEqual(6);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeGreaterThan(5.9);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, -6)).toBeCloseTo(0, 4);
+  });
+
+  it('terrain ramp stencil can raise toward a start-edge minimum target', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const raised = applyRampRepeated(world, 24, {
+      targetEdge: 'start',
+      targetKind: 'min',
+      targetHeight: 2,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(raised, 0, -6)).toBeGreaterThan(1.9);
+    expect(sampleTerrainHeightAtWorldPosition(raised, 0, 6)).toBeGreaterThan(7.9);
+  });
+
+  it('terrain ramp stencil can cut toward a start-edge maximum target', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    primaryTile(world).heights.fill(6);
+    const cut = applyRampRepeated(world, 24, {
+      mode: 'lower',
+      targetEdge: 'start',
+      targetKind: 'max',
+      targetHeight: 0,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(cut, 0, -6)).toBeLessThan(0.1);
+    expect(sampleTerrainHeightAtWorldPosition(cut, 0, 6)).toBeLessThan(-5.9);
+  });
+
+  it('terrain ramp stencil uses independent side, start, and end falloffs', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const ramped = applyRampRepeated(world, 28, {
+      width: 6,
+      length: 10,
+      gradePct: 50,
+      targetHeight: 10,
+      targetEdge: 'end',
+      targetKind: 'max',
+      sideFalloffM: 4,
+      startFalloffM: 2,
+      endFalloffM: 0,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 0, -6)).toBeGreaterThan(0.5);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 4, 0)).toBeGreaterThan(0.5);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 8, 0)).toBeCloseTo(0, 4);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 0, 6)).toBeCloseTo(0, 4);
+  });
+
+  it('terrain expansion adds seamless eastward tiles', () => {
+    const world = makeFlatWorld();
+    primaryTile(world).heights.fill(2.5);
+    const expanded = expandWorldTerrain(world, 'east');
+    const originalTile = getTerrainTile(expanded, 0, 0);
+    const eastTile = getTerrainTile(expanded, 1, 0);
+    expect(originalTile).toBeTruthy();
+    expect(eastTile).toBeTruthy();
+    expect(expanded.terrain.tiles).toHaveLength(2);
+
+    const seamWorldX = expanded.terrain.tileHalfExtentM;
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX - 0.01, 0)).toBeCloseTo(2.5, 4);
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX, 0)).toBeCloseTo(2.5, 4);
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX + 3, 0)).toBeLessThan(2.5);
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX + 3, 0)).toBeGreaterThan(0);
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX + 6, 0)).toBeLessThan(0.1);
+    expect(sampleTerrainHeightAtWorldPosition(expanded, seamWorldX + 20, 0)).toBeCloseTo(0, 4);
+  });
+
+  it('terrain expansion preserves the seam profile but tapers jagged edges back to ground', () => {
+    const world = makeFlatWorld();
+    const tile = primaryTile(world);
+    const last = world.terrain.tileGridSize - 1;
+    for (let row = 0; row < world.terrain.tileGridSize; row += 1) {
+      tile.heights[row * world.terrain.tileGridSize + last] = row;
+    }
+
+    const expanded = expandWorldTerrain(world, 'east');
+    const eastTile = getTerrainTile(expanded, 1, 0);
+    expect(eastTile).toBeTruthy();
+
+    for (let row = 0; row < world.terrain.tileGridSize; row += 1) {
+      const seamIndex = row * world.terrain.tileGridSize;
+      const midIndex = seamIndex + Math.floor(last / 2);
+      const farEdgeIndex = seamIndex + last;
+      expect(eastTile!.heights[seamIndex]).toBeCloseTo(row, 6);
+      expect(eastTile!.heights[midIndex]).toBeLessThanOrEqual(row);
+      expect(eastTile!.heights[midIndex]).toBeGreaterThanOrEqual(0);
+      expect(eastTile!.heights[farEdgeIndex]).toBeCloseTo(0, 6);
+    }
+  });
+
+  it('terrain shrink removes one outer strip without deleting the last remaining column', () => {
+    let world = makeFlatWorld();
+    world = expandWorldTerrain(world, 'east');
+    world = expandWorldTerrain(world, 'east');
+    expect(world.terrain.tiles).toHaveLength(3);
+
+    const shrunk = shrinkWorldTerrain(world, 'east');
+    expect(shrunk.terrain.tiles).toHaveLength(2);
+    expect(getTerrainTile(shrunk, 2, 0)).toBeNull();
+    expect(getTerrainTile(shrunk, 1, 0)).toBeTruthy();
+
+    const unchanged = shrinkWorldTerrain(makeFlatWorld(), 'east');
+    expect(unchanged.terrain.tiles).toHaveLength(1);
+    expect(getTerrainTile(unchanged, 0, 0)).toBeTruthy();
+  });
+
+  it('addable terrain tiles are exposed on open edges and support sparse growth', () => {
+    let world = makeFlatWorld();
+    expect(getAddableTerrainTiles(world)).toEqual([
+      { tileX: 0, tileZ: -1 },
+      { tileX: -1, tileZ: 0 },
+      { tileX: 1, tileZ: 0 },
+      { tileX: 0, tileZ: 1 },
+    ]);
+
+    world = addTerrainTile(world, 1, 0);
+    expect(getTerrainTile(world, 1, 0)).toBeTruthy();
+    expect(getAddableTerrainTiles(world)).toContainEqual({ tileX: 2, tileZ: 0 });
+    expect(getAddableTerrainTiles(world)).toContainEqual({ tileX: 1, tileZ: -1 });
+    expect(getAddableTerrainTiles(world)).toContainEqual({ tileX: 1, tileZ: 1 });
+  });
+
+  it('removing a specific tile creates a real hole with default sampling', () => {
+    let world = makeFlatWorld();
+    world = addTerrainTile(world, 1, 0);
+    world = removeTerrainTile(world, 1, 0);
+
+    expect(getTerrainTile(world, 1, 0)).toBeNull();
+    expect(sampleTerrainHeightAtWorldPosition(world, 20, 0)).toBeCloseTo(0, 6);
+    expect(world.terrain.tiles).toHaveLength(1);
+  });
+
+  it('rotated static cuboids keep their authored collision footprint', () => {
+    const world = makeFlatWorld();
+    world.staticProps = [
+      {
+        id: 7001,
+        kind: 'cuboid',
+        position: [0, 1, 0],
+        rotation: [0, Math.sin(Math.PI / 8), 0, Math.cos(Math.PI / 8)],
+        halfExtents: [2, 1, 0.25],
+      },
+    ];
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+
+    const ray = sim.castRayAndGetNormal(1.2, 20, -1.2, 0, -1, 0, 40);
+    expect(ray.length).toBe(4);
+    const hitY = 20 - ray[0];
+    expect(hitY).toBeGreaterThan(1.5);
   });
 
   it('smooth hill terrain supports ball and vehicle above the sampled surface', () => {
@@ -346,7 +585,7 @@ describe('WorldDocument local-preview scenarios', () => {
   });
 
   it('broken exported world keeps its authored box, balls, and vehicle supported', () => {
-    const world = cloneWorldDocument(brokenWorldDocumentJson as WorldDocument);
+    const world = cloneWorldDocument(parseWorldDocument(brokenWorldDocumentJson));
     const result = runLocalPreview(world, 360);
 
     for (const entity of world.dynamicEntities) {
@@ -372,7 +611,7 @@ describe('WorldDocument local-preview scenarios', () => {
   });
 
   it('broken exported world supports a single box at the pit ball spawn', () => {
-    const world = cloneWorldDocument(brokenWorldDocumentJson as WorldDocument);
+    const world = cloneWorldDocument(parseWorldDocument(brokenWorldDocumentJson));
     world.dynamicEntities = [
       makeEntity('box', 9001, 9.5, 4, 9.5),
     ];
@@ -385,7 +624,7 @@ describe('WorldDocument local-preview scenarios', () => {
   });
 
   it('broken exported world supports a single ball at the pit ball spawn', () => {
-    const world = cloneWorldDocument(brokenWorldDocumentJson as WorldDocument);
+    const world = cloneWorldDocument(parseWorldDocument(brokenWorldDocumentJson));
     world.dynamicEntities = [
       makeEntity('ball', 9002, 9.5, 4, 9.5),
     ];

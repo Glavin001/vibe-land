@@ -4,7 +4,6 @@ import {
   BTN_LEFT,
   BTN_RIGHT,
   BTN_SECONDARY_FIRE,
-  BTN_RELOAD,
   angleToI16,
   i16ToAngle,
   type InputCmd,
@@ -40,7 +39,7 @@ export function buildInputFromState(
 
   return {
     seq,
-    buttons: applyAxisButtons(moveX, moveY, state.buttons) & ~(BTN_SECONDARY_FIRE | BTN_RELOAD),
+    buttons: applyAxisButtons(moveX, moveY, state.buttons) & ~BTN_SECONDARY_FIRE,
     moveX,
     moveY,
     yaw: quantizedYaw,

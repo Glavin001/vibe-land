@@ -20,6 +20,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     firePrimaryValue: 0,
     handbrake: false,
     interactPressed: false,
+    resetVehiclePressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
     materialSlot1Pressed: false,

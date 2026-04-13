@@ -4,11 +4,12 @@ use nalgebra::{Point3, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
+use crate::constants::BTN_RELOAD;
 use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND};
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
-use crate::vehicle::{create_vehicle_physics, vehicle_suspension_filter};
+use crate::vehicle::{create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -131,14 +132,26 @@ impl PhysicsArena {
             .add_static_cuboid(center, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic
+            .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
+    }
+
     pub fn add_static_heightfield(
         &mut self,
+        center: Vec3,
         heights: nalgebra::DMatrix<f32>,
         scale: Vec3,
         user_data: u128,
     ) -> ColliderHandle {
         self.dynamic
-            .add_static_heightfield(heights, scale, user_data)
+            .add_static_heightfield(center, heights, scale, user_data)
     }
 
     pub fn add_static_trimesh(
@@ -298,10 +311,19 @@ impl PhysicsArena {
             let Some(collider) = self.dynamic.sim.colliders.get(db.collider_handle) else {
                 continue;
             };
+            let collider_pose = collider
+                .parent()
+                .and_then(|parent| self.dynamic.sim.rigid_bodies.get(parent))
+                .and_then(|parent_rb| {
+                    collider
+                        .position_wrt_parent()
+                        .map(|wrt_parent| *parent_rb.position() * *wrt_parent)
+                })
+                .unwrap_or(*collider.position());
             let Some(hit) =
                 collider
                     .shape()
-                    .cast_ray_and_get_normal(collider.position(), &ray, max_toi, true)
+                    .cast_ray_and_get_normal(&collider_pose, &ray, max_toi, true)
             else {
                 continue;
             };
@@ -451,29 +473,45 @@ impl PhysicsArena {
                 }
             }
 
-            let (steering, engine_force, brake) = {
+            let (reset_requested, steering, engine_force, brake) = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
                     None => continue,
                 };
                 if let Some(driver_id) = vehicle.driver_id {
                     if let Some(player) = self.players.get(&driver_id) {
-                        vehicle_wheel_params(&player.last_input)
+                        let (steering, engine_force, brake) =
+                            vehicle_wheel_params(&player.last_input);
+                        (
+                            player.last_input.buttons & BTN_RELOAD != 0,
+                            steering,
+                            engine_force,
+                            brake,
+                        )
                     } else {
-                        (0.0, 0.0, 0.0)
+                        (false, 0.0, 0.0, 0.0)
                     }
                 } else {
-                    (0.0, 0.0, 0.0)
+                    (false, 0.0, 0.0, 0.0)
                 }
             };
 
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
+            if reset_requested {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
+                    reset_vehicle_body(rb);
+                }
+            }
             for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
                 if i < 2 {
-                    wheel.steering = steering;
+                    wheel.steering = if reset_requested { 0.0 } else { steering };
                 }
-                wheel.engine_force = if i >= 2 { engine_force } else { 0.0 };
-                wheel.brake = brake;
+                wheel.engine_force = if !reset_requested && i >= 2 {
+                    engine_force
+                } else {
+                    0.0
+                };
+                wheel.brake = if reset_requested { 0.0 } else { brake };
             }
 
             let chassis_collider = vehicle.chassis_collider;

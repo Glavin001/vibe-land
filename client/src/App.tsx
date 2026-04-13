@@ -1,9 +1,20 @@
 import { useState, useCallback, useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
+import {
+  DEFAULT_INPUT_BINDINGS,
+  loadInputBindings,
+  resetAllInputBindings,
+  saveInputBindings,
+  type GamepadBindings,
+  type InputBindings,
+  type KeyboardBindings,
+} from './input/bindings';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
+import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -36,7 +47,12 @@ export function App({
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const pathLabel = routeLabel ?? (mode === 'multiplayer' ? '/play' : '/practice');
+  const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const pathLabel = routeLabel ?? (
+    mode === 'multiplayer'
+      ? buildMatchHref('/play', multiplayerMatchId)
+      : '/practice'
+  );
   const [connected, setConnected] = useState(autoConnect);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState(
@@ -47,6 +63,8 @@ export function App({
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
     displayStats,
@@ -73,6 +91,42 @@ export function App({
   // While the wizard is open, render a deliberately-empty flat world so
   // drill targets aren't fighting terrain or props for visibility.
   const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
+
+  useEffect(() => {
+    saveInputBindings(inputBindings);
+  }, [inputBindings]);
+
+  const updateKeyboardBinding = useCallback(<K extends keyof KeyboardBindings>(key: K, value: KeyboardBindings[K]) => {
+    setInputBindings((current) => ({
+      ...current,
+      keyboard: {
+        ...current.keyboard,
+        [key]: value,
+      },
+    }));
+  }, []);
+
+  const updateGamepadBinding = useCallback(<K extends keyof GamepadBindings>(key: K, value: GamepadBindings[K]) => {
+    setInputBindings((current) => ({
+      ...current,
+      gamepad: {
+        ...current.gamepad,
+        [key]: value,
+      },
+    }));
+  }, []);
+
+  const resetKeyboardBinding = useCallback((key: keyof KeyboardBindings) => {
+    updateKeyboardBinding(key, DEFAULT_INPUT_BINDINGS.keyboard[key]);
+  }, [updateKeyboardBinding]);
+
+  const resetGamepadBinding = useCallback((key: keyof GamepadBindings) => {
+    updateGamepadBinding(key, DEFAULT_INPUT_BINDINGS.gamepad[key]);
+  }, [updateGamepadBinding]);
+
+  const resetBindings = useCallback(() => {
+    setInputBindings(resetAllInputBindings());
+  }, []);
 
   const handleInputFrame = useCallback((sample: InputSample) => {
     updateInputFrame(sample);
@@ -124,7 +178,7 @@ export function App({
   const handleWelcome = useCallback((id: number) => {
     setPlayerId(id);
     hasEverConnectedRef.current = true;
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — KB/M: WASD + mouse, Gamepad: sticks + RT, E/X interact, Q/LB remove, F/RB place`);
+    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — controls are configurable from the Controls panel`);
   }, [modeLabel, practiceMode]);
 
   const handleDisconnect = useCallback(() => {
@@ -271,7 +325,7 @@ export function App({
           position: 'absolute',
           top: 8,
           right: 8,
-          zIndex: 5,
+          zIndex: 12,
           display: 'flex',
           gap: 8,
         }}
@@ -279,9 +333,12 @@ export function App({
         <a href="/" style={navLinkStyle}>
           Home
         </a>
-        <a href={practiceMode ? '/play' : '/practice'} style={navLinkStyle}>
+        <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
           {practiceMode ? 'Multiplayer' : 'Firing range'}
         </a>
+        <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
+          Controls
+        </button>
         {practiceMode && connected && (
           <button
             type="button"
@@ -350,10 +407,23 @@ export function App({
         </div>
       )}
       <ControlHintsOverlay
+        bindings={inputBindings}
         state={controlHintsState}
         visible={connected && isDesktop}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
+      />
+      <ControlsSettingsPanel
+        open={controlsOpen}
+        bindings={inputBindings}
+        inputFamilyMode={inputFamilyMode}
+        onClose={() => setControlsOpen(false)}
+        onInputFamilyModeChange={setInputFamilyMode}
+        onKeyboardBindingChange={updateKeyboardBinding}
+        onGamepadBindingChange={updateGamepadBinding}
+        onKeyboardBindingReset={resetKeyboardBinding}
+        onGamepadBindingReset={resetGamepadBinding}
+        onResetAll={resetBindings}
       />
       {practiceMode && (
         <FirstRunPrompt
@@ -394,6 +464,7 @@ export function App({
           onDebugFrame={updateFrame}
           onInputFrame={handleInputFrame}
           inputFamilyMode={inputFamilyMode}
+          inputBindings={inputBindings}
           onSnapshot={recordSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
@@ -412,6 +483,12 @@ const navLinkStyle: CSSProperties = {
   padding: '6px 10px',
   borderRadius: 4,
   fontSize: 13,
+};
+
+const navButtonStyle: CSSProperties = {
+  ...navLinkStyle,
+  border: 'none',
+  cursor: 'pointer',
 };
 
 const calibrateButtonStyle: CSSProperties = {

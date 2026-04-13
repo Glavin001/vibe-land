@@ -5,25 +5,30 @@
 
 import type { WorldDocument } from '../world/worldDocument';
 
-const GRID_SIZE = 16;
-const HALF_EXTENT_M = 50;
+const TILE_GRID_SIZE = 33; // 33x33 vertices per tile
+const TILE_HALF_EXTENT_M = 50;
 
-function buildFlatHeights(): number[] {
-  // All cells at y=0. The terrain mesh uses these as vertex heights — a
-  // uniform value produces a perfectly flat plane.
-  return new Array(GRID_SIZE * GRID_SIZE).fill(0);
+function buildFlatTileHeights(): number[] {
+  // All vertices at y=0. A uniform height produces a perfectly flat plane.
+  return new Array(TILE_GRID_SIZE * TILE_GRID_SIZE).fill(0);
 }
 
 export const CALIBRATION_WORLD_DOCUMENT: WorldDocument = {
-  version: 1,
+  version: 2,
   meta: {
     name: 'Calibration Range',
     description: 'Flat, empty arena used by the input calibration wizard so drill targets are impossible to miss visually.',
   },
   terrain: {
-    gridSize: GRID_SIZE,
-    halfExtentM: HALF_EXTENT_M,
-    heights: buildFlatHeights(),
+    tileGridSize: TILE_GRID_SIZE,
+    tileHalfExtentM: TILE_HALF_EXTENT_M,
+    tiles: [
+      {
+        tileX: 0,
+        tileZ: 0,
+        heights: buildFlatTileHeights(),
+      },
+    ],
   },
   staticProps: [],
   dynamicEntities: [],

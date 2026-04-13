@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { buildInputFromButtons } from '../scene/inputBuilder';
 import { stepBotBrain, createBotBrainState, type ObservedPlayer } from '../loadtest/brain';
@@ -43,13 +44,33 @@ type BrowserBot = {
   shotId: number;
 };
 
-const PAGE_SCENARIO = normalizeScenario({
-  ...DEFAULT_SCENARIO,
-  name: 'webtransport-browser',
-  matchId: 'loadtest-webtransport-browser',
-  botCount: 20,
-  transportMix: { websocket: 0, webtransport: 20 },
-});
+function createPageScenario(matchId: string): LoadTestScenario {
+  return normalizeScenario({
+    ...DEFAULT_SCENARIO,
+    name: 'arena-shared-debug-10',
+    matchId,
+    durationS: 0,
+    rampUpS: 5,
+    botCount: 10,
+    inputHz: 15,
+    transportMix: { websocket: 0, webtransport: 10 },
+    spawnPattern: 'clustered',
+    behavior: {
+      ...DEFAULT_SCENARIO.behavior,
+      fireMode: 'nearest_target_or_center',
+      fireCooldownTicks: 12,
+    },
+    networkProfiles: [
+      {
+        name: 'lan',
+        weight: 1,
+        transport: 'any',
+        uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+        downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+      },
+    ],
+  });
+}
 
 declare global {
   interface Window {
@@ -63,6 +84,7 @@ function readBenchmarkLaunch() {
   const benchmark = params.get('benchmark') === '1';
   const autoStart = params.get('autostart') === '1';
   const scenarioParam = params.get('scenario');
+  const requestedMatchId = resolveRequestedMatchId(window.location.search, 'arena');
   let scenarioText: string | null = null;
   if (scenarioParam) {
     try {
@@ -71,7 +93,12 @@ function readBenchmarkLaunch() {
       scenarioText = null;
     }
   }
-  return { benchmark, autoStart, scenarioText };
+  return {
+    benchmark,
+    autoStart,
+    scenarioText,
+    defaultScenarioText: JSON.stringify(createPageScenario(requestedMatchId), null, 2),
+  };
 }
 
 export function LoadTestPage() {
@@ -84,7 +111,7 @@ export function LoadTestPage() {
   const peakConnectedBotsRef = useRef(0);
   const latestBottleneckRef = useRef('waiting for server stats');
   const [scenarioText, setScenarioText] = useState(() =>
-    launchConfigRef.current.scenarioText ?? JSON.stringify(PAGE_SCENARIO, null, 2),
+    launchConfigRef.current.scenarioText ?? launchConfigRef.current.defaultScenarioText,
   );
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState('Idle');
@@ -259,7 +286,7 @@ export function LoadTestPage() {
       window.clearTimeout(completionTimerRef.current);
       completionTimerRef.current = null;
     }
-    const scenario = completedScenario ?? tryParseScenario(scenarioText) ?? PAGE_SCENARIO;
+    const scenario = completedScenario ?? tryParseScenario(scenarioText) ?? parseScenarioJson(launchConfigRef.current.defaultScenarioText);
     const result: WebTransportWorkerResult = {
       kind: 'webtransport',
       scenario,
@@ -317,7 +344,7 @@ export function LoadTestPage() {
         <button style={styles.button} disabled={!running} onClick={() => void stop('manual')}>
           Stop
         </button>
-        <button style={styles.button} onClick={() => setScenarioText(JSON.stringify(PAGE_SCENARIO, null, 2))}>
+        <button style={styles.button} onClick={() => setScenarioText(launchConfigRef.current.defaultScenarioText)}>
           Reset Scenario
         </button>
       </div>
@@ -403,6 +430,7 @@ export function LoadTestPage() {
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: Date.now() * 1000,
           clientInterpMs: client.sessionConfig.interpolation_delay_ms,
+          clientDynamicInterpMs: Math.min(client.sessionConfig.interpolation_delay_ms, 16),
           dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
         });
       }

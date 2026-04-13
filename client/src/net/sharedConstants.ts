@@ -33,6 +33,9 @@ export const PKT_CHUNK_FULL = 104;
 export const PKT_CHUNK_DIFF = 105;
 export const PKT_PING = 110;
 export const PKT_PONG = 111;
+export const PKT_SNAPSHOT_V2 = 112;
+export const PKT_PLAYER_ROSTER = 113;
+export const PKT_DYNAMIC_BODY_META = 114;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;

@@ -2,6 +2,7 @@ import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
+import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -15,6 +16,7 @@ type GameSceneProps = {
   onDebugFrame?: GameWorldDebugFrame;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
+  inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
@@ -33,6 +35,7 @@ export function GameScene({
   onDebugFrame,
   onInputFrame,
   inputFamilyMode,
+  inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
@@ -66,6 +69,7 @@ export function GameScene({
           onDebugFrame={onDebugFrame}
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
+          inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           sceneExtras={sceneExtras}
