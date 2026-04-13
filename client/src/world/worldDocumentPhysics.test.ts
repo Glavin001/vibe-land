@@ -266,6 +266,148 @@ describe('WorldDocument local-preview scenarios', () => {
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, 14, 0));
   });
 
+  it('snap-machine spawned in the air drops ~half its authored height', () => {
+    // Swap the shipped machine for a clone positioned 5 m above the
+    // flat terrain. Verifies gravity drags the chassis down by at least
+    // 1 m within the first second (free-fall under g = 20 m/s² covers
+    // 2.5 m in 0.5 s — plenty of budget).
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const shipped = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(shipped).toBeDefined();
+    const elevatedId = 80001;
+    const elevated: DynamicEntity = {
+      id: elevatedId,
+      kind: 'snapMachine',
+      position: [-10, 5, 0],
+      rotation: [0, 0, 0, 1],
+      envelope: shipped!.envelope,
+    };
+    world.dynamicEntities = world.dynamicEntities.filter(
+      (e) => e.kind !== 'snapMachine',
+    );
+    world.dynamicEntities.push(elevated);
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    session.drainPackets();
+
+    let firstChassisY: number | null = null;
+    let lastChassisY: number | null = null;
+
+    for (let i = 0; i < 60; i += 1) {
+      session.tick(1 / 60);
+      const blob = session.drainPackets();
+      let offset = 0;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === elevatedId);
+          if (machine && machine.bodies.length > 0) {
+            const y = machine.bodies[0].pyMm / 1000;
+            if (firstChassisY === null) firstChassisY = y;
+            lastChassisY = y;
+          }
+        }
+      }
+    }
+
+    expect(firstChassisY).not.toBeNull();
+    expect(lastChassisY).not.toBeNull();
+    // First sample should be near the authored 5 m spawn (envelope
+    // auto-shifted so its floor sits at entity.y = 5; chassis center is
+    // then at 5 + ~0.81 ≈ 5.81 before any fall).
+    expect(firstChassisY!).toBeGreaterThan(4.5);
+    expect(firstChassisY!).toBeLessThan(7.0);
+    // After 1 s of falling the chassis has dropped at least 1 m.
+    expect(firstChassisY! - lastChassisY!).toBeGreaterThan(1.0);
+  });
+
+  it('default snap-machine falls under gravity and settles above the ground', () => {
+    // Drive the loopback session with the real world document (which
+    // ships a 4-wheel-car placed just above the ground) and watch the
+    // chassis body's Y over time. The chassis must monotonically fall
+    // in the first half-second, then settle well above terrain.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(snapEntity, 'default world should ship a snap-machine').toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+
+    type Sample = { tick: number; chassisY: number | null };
+
+    function readChassisY(): Sample {
+      session.tick(1 / 60);
+      const blob = session.drainPackets();
+      let offset = 0;
+      let chassisY: number | null = null;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === snapEntity!.id);
+          if (machine && machine.bodies.length > 0) {
+            // bodies are sorted by body id alphabetically; index 0 is
+            // `body:0` which is the chassis.
+            chassisY = machine.bodies[0].pyMm / 1000;
+          }
+        }
+      }
+      return { tick: -1, chassisY };
+    }
+
+    // Warm-up tick to flush the welcome packet.
+    session.drainPackets();
+
+    const samples: Array<{ elapsedMs: number; y: number }> = [];
+    for (let i = 0; i < 300; i += 1) {
+      const s = readChassisY();
+      if (s.chassisY != null) {
+        samples.push({ elapsedMs: (i + 1) * (1000 / 60), y: s.chassisY });
+      }
+    }
+    expect(samples.length).toBeGreaterThan(30);
+
+    // First sample is right after the first physics step; it should be
+    // below the authored spawn y because gravity has already pulled the
+    // chassis downward for one tick.
+    const first = samples[0]!.y;
+    const quarterSec = samples.find((s) => s.elapsedMs >= 250)?.y ?? first;
+    const oneSec = samples.find((s) => s.elapsedMs >= 1000)?.y ?? quarterSec;
+    const settled = samples[samples.length - 1]!.y;
+
+    // Gravity is clearly active: the chassis moved downward between
+    // the first post-spawn tick and a quarter second later. (The
+    // authored spawn only leaves 20 cm of air so the full "drop"
+    // distance is small — the point is that motion is downward, not
+    // frozen.)
+    expect(quarterSec).toBeLessThanOrEqual(first);
+    expect(oneSec).toBeLessThanOrEqual(quarterSec);
+    expect(first).toBeGreaterThan(quarterSec - 0.001);
+
+    // Chassis must rest above the terrain (not tunnel through) and not
+    // fly off to space. Terrain near (-4, 0) is effectively flat at
+    // y ≈ 0; chassis center should settle between ~0.5 m and ~3 m
+    // above depending on suspension + wheel geometry.
+    expect(settled).toBeGreaterThan(0.1);
+    expect(settled).toBeLessThan(5.0);
+    // And the chassis must not keep sinking forever: late samples
+    // should be within a few cm of each other.
+    const lateSamples = samples.slice(-30);
+    const minLate = Math.min(...lateSamples.map((s) => s.y));
+    const maxLate = Math.max(...lateSamples.map((s) => s.y));
+    expect(maxLate - minLate).toBeLessThan(0.1);
+  });
+
   it('press-E machine enter sets driverId in the next snapshot', () => {
     const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
     const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');

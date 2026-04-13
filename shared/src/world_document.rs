@@ -669,11 +669,14 @@ impl WorldDocument {
                             entity_id: entity.id,
                         },
                     )?;
-                    // Snap-machines are anchored at their authored y by
-                    // default; we assume the envelope already accounts for
-                    // ground clearance. We still nudge above the terrain
-                    // surface so authoring at y=0 doesn't bury the chassis.
-                    let spawn_y = entity.position[1].max(terrain_y + 0.05);
+                    // Snap-machine envelopes get auto-shifted on install so
+                    // their floor (lowest collider bottom) sits at
+                    // envelope-local y=0. We place that floor 20 cm above
+                    // the sampled terrain so the chassis has air to fall
+                    // through before settling — gives us a visually
+                    // obvious gravity step and avoids tunnelling through
+                    // the heightfield on the first substep.
+                    let spawn_y = entity.position[1].max(terrain_y + 0.2);
                     arena
                         .spawn_snap_machine_with_id(
                             entity.id,

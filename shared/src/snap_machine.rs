@@ -87,6 +87,12 @@ impl SnapMachine {
     /// Decode a JSON envelope `Value`, pre-translate every body origin by
     /// `pose`, install the plan into `world`, and return a runnable
     /// `SnapMachine`.
+    ///
+    /// Body origins are first shifted so the envelope's lowest collider
+    /// sits at envelope-local `y = 0`. This means the caller can pass a
+    /// spawn pose `y` that directly corresponds to "put the machine's
+    /// floor here" rather than having to know each envelope's internal
+    /// authoring convention.
     pub fn install_envelope_at_pose(
         world: &mut MachineWorldMut<'_>,
         envelope_json: &Value,
@@ -100,6 +106,17 @@ impl SnapMachine {
                 count: envelope.plan.bodies.len(),
                 max: MAX_MACHINE_BODIES,
             });
+        }
+
+        // Drop every body so the envelope's lowest collider ends up at
+        // local y = 0. Callers can then specify a spawn y that means
+        // "put the floor of the machine here" — no envelope-specific
+        // tuning needed.
+        let min_y = envelope_min_y(&envelope.plan);
+        if min_y.is_finite() && min_y != 0.0 {
+            for body in &mut envelope.plan.bodies {
+                body.origin.position.y -= min_y;
+            }
         }
 
         retransform_plan_bodies(&mut envelope.plan, pose);
@@ -247,6 +264,82 @@ pub struct MachineBodySnapshot {
     pub angvel: [f32; 3],
 }
 
+/// Minimum collider Y in envelope-local coordinates across every body.
+///
+/// Computes a per-collider Y extent that is tight for axis-aligned
+/// authoring (the common case — body origins and collider local
+/// transforms default to identity rotations) and falls back to a loose
+/// rotation-invariant bound under arbitrary rotation via
+/// `|R[1,*]| · half_extents`. Exact for cylinders / capsules because we
+/// use each collider's explicit `axis` hint to figure out which
+/// dimension is the radial one before rotating.
+fn envelope_min_y(plan: &MachinePlan) -> f32 {
+    use snap_machines_rapier::{AxisName, ColliderKind};
+
+    fn y_extent_after_rot(half: (f32, f32, f32), rot: UnitQuaternion<f32>) -> f32 {
+        let m = rot.to_rotation_matrix();
+        m[(1, 0)].abs() * half.0 + m[(1, 1)].abs() * half.1 + m[(1, 2)].abs() * half.2
+    }
+
+    fn quat_from_sm(q: SmQuat) -> UnitQuaternion<f32> {
+        UnitQuaternion::from_quaternion(Quaternion::new(q.w, q.x, q.y, q.z))
+    }
+
+    let mut min_y = f32::INFINITY;
+    for body in &plan.bodies {
+        let body_rot = quat_from_sm(body.origin.rotation);
+        let body_pos = Vector3::new(
+            body.origin.position.x,
+            body.origin.position.y,
+            body.origin.position.z,
+        );
+
+        for col in &body.colliders {
+            // Axis-aware half extents. Snap-machines' `local_shape_isometry`
+            // rotates Y-aligned primitives into the declared axis at build
+            // time, so the effective box the physics engine sees already
+            // has its radial/height dimensions rearranged.
+            let axis = col.axis.unwrap_or(AxisName::Y);
+            let r = col.radius.unwrap_or(0.0);
+            let hh = col.half_height.unwrap_or(0.0);
+            let half = match col.kind {
+                ColliderKind::Box => {
+                    let h = col.half_extents.unwrap_or(SmVec3 { x: 0.0, y: 0.0, z: 0.0 });
+                    (h.x, h.y, h.z)
+                }
+                ColliderKind::Sphere => (r, r, r),
+                ColliderKind::Cylinder => match axis {
+                    AxisName::Y => (r, hh, r),
+                    AxisName::X => (hh, r, r),
+                    AxisName::Z => (r, r, hh),
+                },
+                ColliderKind::Capsule => match axis {
+                    AxisName::Y => (r, hh + r, r),
+                    AxisName::X => (hh + r, r, r),
+                    AxisName::Z => (r, r, hh + r),
+                },
+                _ => (0.1, 0.1, 0.1),
+            };
+
+            let stored_rot = quat_from_sm(col.local_transform.rotation);
+            let full_rot = body_rot * stored_rot;
+            let y_ext = y_extent_after_rot(half, full_rot);
+
+            let col_local_pos = Vector3::new(
+                col.local_transform.position.x,
+                col.local_transform.position.y,
+                col.local_transform.position.z,
+            );
+            let col_world = body_pos + body_rot * col_local_pos;
+            let low = col_world.y - y_ext;
+            if low < min_y {
+                min_y = low;
+            }
+        }
+    }
+    if min_y.is_finite() { min_y } else { 0.0 }
+}
+
 /// Single source of truth for the wire-format channel ordering. Both
 /// server and client (and the Rust reference for the TS implementation in
 /// `client/src/physics/machinePredictionManager.ts`) call this against the
@@ -340,13 +433,9 @@ mod tests {
     const FOUR_WHEEL_CAR_ENVELOPE: &str =
         include_str!("../test-fixtures/4-wheel-car.envelope.json");
 
-    #[test]
-    fn install_4_wheel_car_into_physics_arena() {
+    fn spawn_test_car(arena: &mut PhysicsArena, spawn_y: f32) -> serde_json::Value {
         let envelope: serde_json::Value =
             serde_json::from_str(FOUR_WHEEL_CAR_ENVELOPE).expect("envelope parses");
-        let mut arena = PhysicsArena::new(MoveConfig::default());
-        // Drop a flat ground beneath the spawn so the chassis has something to
-        // fall onto.
         arena.add_static_cuboid(
             Vector3::new(0.0, -0.5, 0.0),
             Vector3::new(50.0, 0.5, 50.0),
@@ -355,12 +444,111 @@ mod tests {
         arena
             .spawn_snap_machine_with_id(
                 42,
-                Vector3::new(0.0, 2.0, 0.0),
+                Vector3::new(0.0, spawn_y, 0.0),
                 [0.0, 0.0, 0.0, 1.0],
                 &envelope,
             )
             .expect("spawns clean");
         arena.rebuild_broad_phase();
+        envelope
+    }
+
+    fn chassis_y(arena: &PhysicsArena, machine_id: u32) -> f32 {
+        arena
+            .machines
+            .get(&machine_id)
+            .and_then(|m| m.machine.body_handle("body:0"))
+            .and_then(|h| arena.dynamic.sim.rigid_bodies.get(h))
+            .map(|rb| rb.translation().y)
+            .expect("chassis body exists")
+    }
+
+    #[test]
+    fn envelope_min_y_auto_shifts_floor_to_zero() {
+        // The 4-wheel-car envelope authors body:0 at (0, 2, 0) with a
+        // chassis that extends ~0.8 m below the body origin, so its
+        // unshifted floor sits at envelope-y ≈ 1.19. After install the
+        // first body should be at roughly `spawn_y + 0.81` (origin),
+        // with the collider bottom almost exactly at `spawn_y`.
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let _envelope = spawn_test_car(&mut arena, 5.0);
+
+        let body_y = chassis_y(&arena, 42);
+        // The chassis origin is the old 2.0 minus the envelope min-y
+        // (~1.19), so body center ends up at `spawn_y + ~0.81`. Allow a
+        // generous window so the test is robust to small bounding-sphere
+        // tweaks in `envelope_min_y`.
+        assert!(
+            (body_y - 5.0 - 0.81).abs() < 0.5,
+            "expected chassis center near spawn_y + 0.81 after auto-shift, got {body_y:.3}"
+        );
+    }
+
+    #[test]
+    fn chassis_falls_under_gravity() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        // Spawn well above the static ground so the first physics tick
+        // has no chance of immediately resting on anything. No driver,
+        // no motor input — just gravity.
+        let _envelope = spawn_test_car(&mut arena, 5.0);
+
+        let y_start = chassis_y(&arena, 42);
+        for _ in 0..15 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let y_quarter_sec = chassis_y(&arena, 42);
+        for _ in 0..45 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let y_one_sec = chassis_y(&arena, 42);
+
+        assert!(
+            y_quarter_sec < y_start - 0.1,
+            "chassis should fall within 0.25 s: start={y_start:.3}, after 0.25s={y_quarter_sec:.3}"
+        );
+        assert!(
+            y_one_sec < y_quarter_sec,
+            "chassis should keep falling: 0.25s={y_quarter_sec:.3}, 1.0s={y_one_sec:.3}"
+        );
+        assert!(
+            y_one_sec < y_start - 0.5,
+            "chassis should have fallen at least 0.5 m after 1 s: start={y_start:.3}, 1.0s={y_one_sec:.3}"
+        );
+    }
+
+    #[test]
+    fn chassis_settles_on_ground() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        // Ground is a 1-m-thick slab centred at y=-0.5 (top at y=0).
+        let _envelope = spawn_test_car(&mut arena, 2.0);
+
+        // Step enough ticks for suspension/wheels to settle.
+        for _ in 0..240 {
+            arena.step_machines(1.0 / 60.0);
+            arena.step_dynamics(1.0 / 60.0);
+        }
+        let y_final = chassis_y(&arena, 42);
+
+        // Chassis origin (center) ends up at roughly `wheel_radius +
+        // chassis_half_height` above the ground. For the 4-wheel-car:
+        //   wheel radius ≈ 0.8, chassis half-extents ≈ 0.5..0.8 around
+        //   the origin → center settles around y ≈ 0.8..1.5.
+        assert!(
+            y_final > 0.1,
+            "chassis should not tunnel below the ground: y_final={y_final:.3}"
+        );
+        assert!(
+            y_final < 2.0,
+            "chassis should have settled close to ground (below its 2 m spawn): y_final={y_final:.3}"
+        );
+    }
+
+    #[test]
+    fn install_4_wheel_car_into_physics_arena() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let _envelope = spawn_test_car(&mut arena, 2.0);
 
         // Drive `motorSpin` for half a second.
         let machine = arena.machines.get_mut(&42).expect("machine present");
