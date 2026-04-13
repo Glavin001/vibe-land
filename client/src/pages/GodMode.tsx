@@ -1,24 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
-import { OrbitControls, Sky } from '@react-three/drei';
+import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
 import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import {
   DEFAULT_WORLD_DOCUMENT,
+  TERRAIN_MAX_HEIGHT,
+  TERRAIN_MIN_HEIGHT,
+  addTerrainTile,
   applyTerrainBrush,
   cloneWorldDocument,
+  getAddableTerrainTiles,
+  getTerrainTileCenter,
+  getTerrainTileKey,
   getNextWorldEntityId,
   getMinimumDynamicEntityY,
   identityQuaternion,
   parseWorldDocument,
   quaternionFromYaw,
+  removeTerrainTile,
   sampleTerrainHeightAtWorldPosition,
   serializeWorldDocument,
+  terrainTileSideLength,
   yawFromQuaternion,
+  type TerrainTileCoordinate,
   type DynamicEntity,
   type Quaternion,
   type StaticProp,
+  type Vec3,
   type WorldDocument,
   type WorldDraftRevision,
 } from '../world/worldDocument';
@@ -26,6 +36,7 @@ import {
   clearDraftStorage,
   getInitialGodModeWorld,
   getLastImportName,
+  loadCurrentDraft,
   loadRevisionHistory,
   markAutosaveBackup,
   pushRevisionHistory,
@@ -36,43 +47,80 @@ import {
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
+type TerrainToolMode = 'sculpt' | 'add-tile' | 'delete-tile';
+type TransformMode = 'translate' | 'rotate' | 'scale';
 type SelectedTarget =
   | { kind: 'static'; id: number }
   | { kind: 'dynamic'; id: number }
   | null;
 
+type SelectedTransformEntity = {
+  kind: 'static' | 'dynamic';
+  id: number;
+  position: Vec3;
+  rotation: Quaternion;
+  halfExtents?: Vec3;
+  radius?: number;
+  canRotate: boolean;
+  canResize: boolean;
+};
+
 export function GodModePage() {
   const [mode, setMode] = useState<EditorMode>('edit');
   const [tool, setTool] = useState<EditorTool>('select');
+  const [transformMode, setTransformMode] = useState<TransformMode>('translate');
   const [world, setWorld] = useState<WorldDocument>(() => getInitialGodModeWorld());
-  const [history, setHistory] = useState<WorldDraftRevision[]>(() => loadRevisionHistory());
+  const [history, setHistory] = useState<WorldDraftRevision[]>([]);
+  const [storageReady, setStorageReady] = useState(false);
   const [selected, setSelected] = useState<SelectedTarget>(null);
   const [brushRadius, setBrushRadius] = useState(8);
   const [brushStrength, setBrushStrength] = useState(0.12);
   const [brushMode, setBrushMode] = useState<'raise' | 'lower'>('raise');
+  const [terrainToolMode, setTerrainToolMode] = useState<TerrainToolMode>('sculpt');
+  const [brushMinHeight, setBrushMinHeight] = useState(TERRAIN_MIN_HEIGHT);
+  const [brushMaxHeight, setBrushMaxHeight] = useState(TERRAIN_MAX_HEIGHT);
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autosaveTimerRef = useRef<number | null>(null);
-  const initializedRef = useRef(false);
 
   useEffect(() => {
-    initializedRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      const [draft, revisionHistory] = await Promise.all([
+        loadCurrentDraft(),
+        loadRevisionHistory(),
+      ]);
+      if (cancelled) {
+        return;
+      }
+      if (draft) {
+        setWorld(cloneWorldDocument(draft));
+      }
+      setHistory(revisionHistory);
+      setStorageReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (!initializedRef.current) {
+    if (!storageReady) {
       return;
     }
     if (autosaveTimerRef.current != null) {
       window.clearTimeout(autosaveTimerRef.current);
     }
     autosaveTimerRef.current = window.setTimeout(() => {
-      saveCurrentDraft(world);
+      void saveCurrentDraft(world);
       const nowMs = Date.now();
       if (shouldCreateAutosaveBackup(nowMs)) {
-        setHistory(pushRevisionHistory(world, 'Autosave backup'));
+        void pushRevisionHistory(world, 'Autosave backup').then((nextHistory) => {
+          setHistory(nextHistory);
+        });
         markAutosaveBackup(nowMs);
       }
       autosaveTimerRef.current = null;
@@ -84,7 +132,7 @@ export function GodModePage() {
         autosaveTimerRef.current = null;
       }
     };
-  }, [world]);
+  }, [storageReady, world]);
 
   const selectedStatic = selected?.kind === 'static'
     ? world.staticProps.find((entity) => entity.id === selected.id) ?? null
@@ -92,6 +140,74 @@ export function GodModePage() {
   const selectedDynamic = selected?.kind === 'dynamic'
     ? world.dynamicEntities.find((entity) => entity.id === selected.id) ?? null
     : null;
+  const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
+    if (selectedStatic) {
+      return {
+        kind: 'static',
+        id: selectedStatic.id,
+        position: selectedStatic.position,
+        rotation: selectedStatic.rotation,
+        halfExtents: selectedStatic.halfExtents,
+        canRotate: true,
+        canResize: true,
+      };
+    }
+    if (selectedDynamic) {
+      return {
+        kind: 'dynamic',
+        id: selectedDynamic.id,
+        position: selectedDynamic.position,
+        rotation: selectedDynamic.rotation,
+        halfExtents: selectedDynamic.halfExtents,
+        radius: selectedDynamic.radius,
+        canRotate: selectedDynamic.kind !== 'ball',
+        canResize: selectedDynamic.kind !== 'vehicle',
+      };
+    }
+    return null;
+  }, [selectedDynamic, selectedStatic]);
+
+  useEffect(() => {
+    if (tool !== 'select') {
+      return;
+    }
+    if (transformMode === 'rotate' && !selectedTransformEntity?.canRotate) {
+      setTransformMode('translate');
+      return;
+    }
+    if (transformMode === 'scale' && !selectedTransformEntity?.canResize) {
+      setTransformMode('translate');
+    }
+  }, [selectedTransformEntity, tool, transformMode]);
+
+  useEffect(() => {
+    if (mode !== 'edit') {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (tool !== 'select') {
+        return;
+      }
+      if (event.target instanceof HTMLElement && (
+        event.target.tagName === 'INPUT'
+        || event.target.tagName === 'TEXTAREA'
+        || event.target.isContentEditable
+      )) {
+        return;
+      }
+      if (event.key.toLowerCase() === 'w') {
+        setTransformMode('translate');
+      }
+      if (event.key.toLowerCase() === 'e' && selectedTransformEntity?.canRotate) {
+        setTransformMode('rotate');
+      }
+      if (event.key.toLowerCase() === 'r' && selectedTransformEntity?.canResize) {
+        setTransformMode('scale');
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mode, selectedTransformEntity, tool]);
 
   const handleStartPlay = useCallback(() => {
     const snapshot = cloneWorldDocument(world);
@@ -138,7 +254,7 @@ export function GodModePage() {
     setSelected(null);
     setLastImportName(file.name);
     setLastImportNameState(file.name);
-    setHistory(pushRevisionHistory(nextWorld, `Imported ${file.name}`));
+    setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
     event.target.value = '';
   }, []);
 
@@ -148,10 +264,11 @@ export function GodModePage() {
   }, []);
 
   const handleResetToDefault = useCallback(() => {
-    clearDraftStorage();
+    void clearDraftStorage();
     setWorld(cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
     setHistory([]);
     setSelected(null);
+    setLastImportName('');
     setLastImportNameState('');
   }, []);
 
@@ -162,6 +279,7 @@ export function GodModePage() {
       id: nextId,
       kind: 'cuboid',
       position: [0, baseY, 0],
+      rotation: identityQuaternion(),
       halfExtents: [2, 1, 2],
       material: 'editor-static',
     };
@@ -234,7 +352,34 @@ export function GodModePage() {
     });
   }, [selected]);
 
+  const updateSelectedPositionVector = useCallback((nextPosition: Vec3) => {
+    setWorld((current) => {
+      if (!selected) {
+        return current;
+      }
+      if (selected.kind === 'static') {
+        return {
+          ...current,
+          staticProps: current.staticProps.map((entity) => (
+            entity.id === selected.id
+              ? { ...entity, position: nextPosition }
+              : entity
+          )),
+        };
+      }
+      return {
+        ...current,
+        dynamicEntities: current.dynamicEntities.map((entity) => (
+          entity.id === selected.id
+            ? { ...entity, position: nextPosition }
+            : entity
+        )),
+      };
+    });
+  }, [selected]);
+
   const updateSelectedHalfExtent = useCallback((axis: 0 | 1 | 2, value: number) => {
+    const nextValue = clampDimension(value * 2) / 2;
     setWorld((current) => {
       if (!selected) return current;
       if (selected.kind === 'static') {
@@ -242,7 +387,7 @@ export function GodModePage() {
           ...current,
           staticProps: current.staticProps.map((entity) => (
             entity.id === selected.id
-              ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, value) }
+              ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
               : entity
           )),
         };
@@ -251,7 +396,34 @@ export function GodModePage() {
         ...current,
         dynamicEntities: current.dynamicEntities.map((entity) => (
           entity.id === selected.id && entity.halfExtents
-            ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, value) }
+            ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
+            : entity
+        )),
+      };
+    });
+  }, [selected]);
+
+  const updateSelectedHalfExtentsVector = useCallback((nextHalfExtents: Vec3) => {
+    const clampedHalfExtents = nextHalfExtents.map((value) => clampDimension(value * 2) / 2) as Vec3;
+    setWorld((current) => {
+      if (!selected) {
+        return current;
+      }
+      if (selected.kind === 'static') {
+        return {
+          ...current,
+          staticProps: current.staticProps.map((entity) => (
+            entity.id === selected.id
+              ? { ...entity, halfExtents: clampedHalfExtents }
+              : entity
+          )),
+        };
+      }
+      return {
+        ...current,
+        dynamicEntities: current.dynamicEntities.map((entity) => (
+          entity.id === selected.id && entity.halfExtents
+            ? { ...entity, halfExtents: clampedHalfExtents }
             : entity
         )),
       };
@@ -262,45 +434,117 @@ export function GodModePage() {
     if (selected?.kind !== 'dynamic') {
       return;
     }
+    const nextRadius = clampDimension(value);
     setWorld((current) => ({
       ...current,
       dynamicEntities: current.dynamicEntities.map((entity) => (
         entity.id === selected.id
-          ? { ...entity, radius: value }
+          ? { ...entity, radius: nextRadius }
           : entity
       )),
     }));
   }, [selected]);
 
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
-    if (selected?.kind !== 'dynamic') {
-      return;
-    }
     const yawRadians = (yawDegrees * Math.PI) / 180;
-    setWorld((current) => ({
-      ...current,
-      dynamicEntities: current.dynamicEntities.map((entity) => (
-        entity.id === selected.id
-          ? { ...entity, rotation: quaternionFromYaw(yawRadians) }
-          : entity
-      )),
-    }));
+    const nextRotation = quaternionFromYaw(yawRadians);
+    setWorld((current) => {
+      if (!selected) {
+        return current;
+      }
+      if (selected.kind === 'static') {
+        return {
+          ...current,
+          staticProps: current.staticProps.map((entity) => (
+            entity.id === selected.id
+              ? { ...entity, rotation: nextRotation }
+              : entity
+          )),
+        };
+      }
+      return {
+        ...current,
+        dynamicEntities: current.dynamicEntities.map((entity) => (
+          entity.id === selected.id
+            ? { ...entity, rotation: nextRotation }
+            : entity
+        )),
+      };
+    });
+  }, [selected]);
+
+  const updateSelectedRotationQuaternion = useCallback((nextRotation: Quaternion) => {
+    setWorld((current) => {
+      if (!selected) {
+        return current;
+      }
+      if (selected.kind === 'static') {
+        return {
+          ...current,
+          staticProps: current.staticProps.map((entity) => (
+            entity.id === selected.id
+              ? { ...entity, rotation: nextRotation }
+              : entity
+          )),
+        };
+      }
+      return {
+        ...current,
+        dynamicEntities: current.dynamicEntities.map((entity) => (
+          entity.id === selected.id
+            ? { ...entity, rotation: nextRotation }
+            : entity
+        )),
+      };
+    });
   }, [selected]);
 
   const editScene = useMemo(() => (
     <GodModeEditorScene
       world={world}
       tool={tool}
+      terrainToolMode={terrainToolMode}
       selected={selected}
+      transformMode={transformMode}
+      selectedTransformEntity={selectedTransformEntity}
       brushRadius={brushRadius}
       brushStrength={brushStrength}
       brushMode={brushMode}
       onSelect={setSelected}
+      onTransformPositionChange={updateSelectedPositionVector}
+      onTransformRotationChange={updateSelectedRotationQuaternion}
+      onTransformHalfExtentsChange={updateSelectedHalfExtentsVector}
+      onTransformRadiusChange={updateSelectedRadius}
       onPaint={(x, z) => {
-        setWorld((current) => applyTerrainBrush(current, x, z, brushRadius, brushStrength, brushMode));
+        setWorld((current) => applyTerrainBrush(current, x, z, brushRadius, brushStrength, brushMode, {
+          minHeight: brushMinHeight,
+          maxHeight: brushMaxHeight,
+        }));
+      }}
+      onDeleteTile={(tileX, tileZ) => {
+        setWorld((current) => removeTerrainTile(current, tileX, tileZ));
+      }}
+      onAddTile={(tileX, tileZ) => {
+        setWorld((current) => addTerrainTile(current, tileX, tileZ));
       }}
     />
-  ), [brushMode, brushRadius, brushStrength, selected, tool, world]);
+  ), [
+    brushMaxHeight,
+    brushMode,
+    brushMinHeight,
+    brushRadius,
+    brushStrength,
+    terrainToolMode,
+    selected,
+    selectedTransformEntity,
+    tool,
+    transformMode,
+    updateSelectedHalfExtentsVector,
+    updateSelectedPositionVector,
+    updateSelectedRadius,
+    updateSelectedRotationQuaternion,
+    world,
+  ]);
 
   if (mode === 'play' && playWorldSnapshot) {
     return (
@@ -358,7 +602,7 @@ export function GodModePage() {
             <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
           </div>
           <div style={mutedTextStyle}>
-            Autosaves are stored in localStorage. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
+            Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
           </div>
         </div>
 
@@ -372,20 +616,66 @@ export function GodModePage() {
               </div>
               {tool === 'terrain' && (
                 <div style={fieldStackStyle}>
-                  <label style={fieldLabelStyle}>
-                    Radius
-                    <input type="range" min="2" max="20" step="0.5" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
-                    <span>{brushRadius.toFixed(1)}m</span>
-                  </label>
-                  <label style={fieldLabelStyle}>
-                    Strength
-                    <input type="range" min="0.02" max="0.35" step="0.01" value={brushStrength} onChange={(event) => setBrushStrength(Number(event.target.value))} />
-                    <span>{brushStrength.toFixed(2)}</span>
-                  </label>
                   <div style={buttonRowStyle}>
-                    <button type="button" onClick={() => setBrushMode('raise')} style={brushMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise</button>
-                    <button type="button" onClick={() => setBrushMode('lower')} style={brushMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Lower</button>
+                    <button type="button" onClick={() => setTerrainToolMode('sculpt')} style={terrainToolMode === 'sculpt' ? activeButtonStyle : secondaryButtonStyle}>Sculpt</button>
+                    <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
+                    <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
                   </div>
+                  {terrainToolMode === 'sculpt' ? (
+                    <>
+                      <label style={fieldLabelStyle}>
+                        Radius
+                        <input type="range" min="2" max="20" step="0.5" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
+                        <span>{brushRadius.toFixed(1)}m</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Strength
+                        <input type="range" min="0.02" max="0.35" step="0.01" value={brushStrength} onChange={(event) => setBrushStrength(Number(event.target.value))} />
+                        <span>{brushStrength.toFixed(2)}</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Lower Plateau
+                        <input
+                          type="number"
+                          min={TERRAIN_MIN_HEIGHT}
+                          max={brushMaxHeight}
+                          step="0.5"
+                          value={brushMinHeight}
+                          onChange={(event) => setBrushMinHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, brushMaxHeight))}
+                        />
+                        <span>Terrain under this height stops lowering.</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Upper Plateau
+                        <input
+                          type="number"
+                          min={brushMinHeight}
+                          max={TERRAIN_MAX_HEIGHT}
+                          step="0.5"
+                          value={brushMaxHeight}
+                          onChange={(event) => setBrushMaxHeight(clampBrushHeight(Number(event.target.value), brushMinHeight, TERRAIN_MAX_HEIGHT))}
+                        />
+                        <span>Terrain above this height stops raising.</span>
+                      </label>
+                      <div style={buttonRowStyle}>
+                        <button type="button" onClick={() => setBrushMode('raise')} style={brushMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise</button>
+                        <button type="button" onClick={() => setBrushMode('lower')} style={brushMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Lower</button>
+                      </div>
+                      <div style={mutedTextStyle}>
+                        {brushMode === 'lower'
+                          ? `Lowering plateaus at ${brushMinHeight.toFixed(1)}m.`
+                          : `Raising plateaus at ${brushMaxHeight.toFixed(1)}m.`}
+                      </div>
+                    </>
+                  ) : terrainToolMode === 'add-tile' ? (
+                    <div style={mutedTextStyle}>
+                      Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
+                    </div>
+                  ) : (
+                    <div style={mutedTextStyle}>
+                      Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -401,13 +691,51 @@ export function GodModePage() {
             </div>
 
             <div style={sectionStyle}>
+              <div style={sectionTitleStyle}>Terrain Grid</div>
+              <div style={mutedTextStyle}>
+                {world.terrain.tiles.length} tiles · {world.terrain.tileGridSize} x {world.terrain.tileGridSize} samples per tile
+              </div>
+              <div style={mutedTextStyle}>
+                Terrain now grows from exposed edges directly in the 3D viewport, so you can build sparse connected layouts like corridors, U-shapes, or C-shapes without filling a full rectangle.
+              </div>
+            </div>
+
+            <div style={sectionStyle}>
               <div style={sectionTitleStyle}>Selection</div>
-              {!selected && <div style={mutedTextStyle}>Select an authored object to edit transform and shape values.</div>}
+              {!selected && <div style={mutedTextStyle}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
+              {selectedTransformEntity && (
+                <>
+                  <div style={buttonRowStyle}>
+                    <button type="button" onClick={() => setTransformMode('translate')} style={transformMode === 'translate' ? activeButtonStyle : secondaryButtonStyle}>Move (W)</button>
+                    <button
+                      type="button"
+                      onClick={() => setTransformMode('rotate')}
+                      style={transformMode === 'rotate' ? activeButtonStyle : secondaryButtonStyle}
+                      disabled={!selectedTransformEntity.canRotate}
+                    >
+                      Rotate (E)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransformMode('scale')}
+                      style={transformMode === 'scale' ? activeButtonStyle : secondaryButtonStyle}
+                      disabled={!selectedTransformEntity.canResize}
+                    >
+                      Resize (R)
+                    </button>
+                  </div>
+                  <div style={mutedTextStyle}>
+                    Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
+                  </div>
+                </>
+              )}
               {selectedStatic && (
                 <EditorFields
                   title={`Static ${selectedStatic.id}`}
                   position={selectedStatic.position}
                   onPositionChange={updateSelectedPosition}
+                  yawDegrees={(yawFromQuaternion(selectedStatic.rotation) * 180) / Math.PI}
+                  onYawChange={updateSelectedYaw}
                   dimensions={selectedStatic.halfExtents}
                   onDimensionsChange={updateSelectedHalfExtent}
                   onDelete={removeSelected}
@@ -451,6 +779,14 @@ export function GodModePage() {
       </aside>
 
       <main style={viewportStyle}>
+        {mode === 'edit' && tool === 'select' && (
+          <div style={editorViewportOverlayStyle}>
+            <span>{selectedTransformEntity ? `Selected ${selectedTransformEntity.kind} ${selectedTransformEntity.id}` : 'Select an object'}</span>
+            <span>W move</span>
+            <span>E rotate</span>
+            <span>R resize</span>
+          </div>
+        )}
         {editScene}
       </main>
     </div>
@@ -460,51 +796,188 @@ export function GodModePage() {
 function GodModeEditorScene({
   world,
   tool,
+  terrainToolMode,
   selected,
+  transformMode,
+  selectedTransformEntity,
   brushRadius,
   brushStrength,
   brushMode,
   onSelect,
+  onTransformPositionChange,
+  onTransformRotationChange,
+  onTransformHalfExtentsChange,
+  onTransformRadiusChange,
   onPaint,
+  onAddTile,
+  onDeleteTile,
 }: {
   world: WorldDocument;
   tool: EditorTool;
+  terrainToolMode: TerrainToolMode;
   selected: SelectedTarget;
+  transformMode: TransformMode;
+  selectedTransformEntity: SelectedTransformEntity | null;
   brushRadius: number;
   brushStrength: number;
   brushMode: 'raise' | 'lower';
   onSelect: (next: SelectedTarget) => void;
+  onTransformPositionChange: (nextPosition: Vec3) => void;
+  onTransformRotationChange: (nextRotation: Quaternion) => void;
+  onTransformHalfExtentsChange: (nextHalfExtents: Vec3) => void;
+  onTransformRadiusChange: (nextRadius: number) => void;
   onPaint: (x: number, z: number) => void;
+  onAddTile: (tileX: number, tileZ: number) => void;
+  onDeleteTile: (tileX: number, tileZ: number) => void;
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
+  const objectRefs = useRef(new Map<string, THREE.Object3D>());
+  const resizeOriginRef = useRef<{ halfExtents?: Vec3; radius?: number } | null>(null);
+  const [hoveredTerrainTile, setHoveredTerrainTile] = useState<TerrainTileCoordinate | null>(null);
+  const addableTerrainTiles = useMemo(() => getAddableTerrainTiles(world), [world]);
+
+  const selectedObjectKey = selected ? `${selected.kind}:${selected.id}` : null;
+  const selectedObject = selectedObjectKey ? objectRefs.current.get(selectedObjectKey) ?? null : null;
+  const canShowTransform =
+    tool === 'select'
+    && selectedObject != null
+    && selectedTransformEntity != null
+    && (transformMode !== 'rotate' || selectedTransformEntity.canRotate)
+    && (transformMode !== 'scale' || selectedTransformEntity.canResize);
 
   const handleTerrainPointerMove = useCallback((event: ThreeEvent<PointerEvent>) => {
     if (brushCursorRef.current) {
       brushCursorRef.current.position.set(event.point.x, event.point.y + 0.06, event.point.z);
     }
-    if (tool === 'terrain' && paintingRef.current) {
+    const tileX = event.object.userData?.terrainTileX;
+    const tileZ = event.object.userData?.terrainTileZ;
+    if (typeof tileX === 'number' && typeof tileZ === 'number') {
+      setHoveredTerrainTile({ tileX, tileZ });
+    }
+    if (tool === 'terrain' && terrainToolMode === 'sculpt' && paintingRef.current) {
       onPaint(event.point.x, event.point.z);
     }
-  }, [onPaint, tool]);
+  }, [onPaint, terrainToolMode, tool]);
 
   const handleTerrainPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
-    if (tool === 'terrain') {
+    const tileX = event.object.userData?.terrainTileX;
+    const tileZ = event.object.userData?.terrainTileZ;
+    if (tool === 'terrain' && terrainToolMode === 'sculpt') {
       paintingRef.current = true;
       onPaint(event.point.x, event.point.z);
       return;
     }
+    if (tool === 'terrain' && terrainToolMode === 'delete-tile' && typeof tileX === 'number' && typeof tileZ === 'number') {
+      setHoveredTerrainTile({ tileX, tileZ });
+      onDeleteTile(tileX, tileZ);
+      setHoveredTerrainTile(null);
+      return;
+    }
     onSelect(null);
-  }, [onPaint, onSelect, tool]);
+  }, [onDeleteTile, onPaint, onSelect, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     paintingRef.current = false;
   }, []);
 
+  const handleTerrainPointerOut = useCallback(() => {
+    if (terrainToolMode === 'delete-tile') {
+      return;
+    }
+    setHoveredTerrainTile(null);
+  }, [terrainToolMode]);
+
+  const registerSelectableObject = useCallback((key: string, object: THREE.Object3D | null) => {
+    if (object) {
+      objectRefs.current.set(key, object);
+      return;
+    }
+    objectRefs.current.delete(key);
+  }, []);
+
+  const handleTransformMouseDown = useCallback(() => {
+    if (transformMode !== 'scale' || !selectedTransformEntity) {
+      resizeOriginRef.current = null;
+      return;
+    }
+    resizeOriginRef.current = {
+      halfExtents: selectedTransformEntity.halfExtents ? [...selectedTransformEntity.halfExtents] as Vec3 : undefined,
+      radius: selectedTransformEntity.radius,
+    };
+  }, [selectedTransformEntity, transformMode]);
+
+  const handleTransformObjectChange = useCallback(() => {
+    if (!selectedObject || !selectedTransformEntity) {
+      return;
+    }
+    if (transformMode === 'translate') {
+      onTransformPositionChange([
+        selectedObject.position.x,
+        selectedObject.position.y,
+        selectedObject.position.z,
+      ]);
+      return;
+    }
+    if (transformMode === 'rotate' && selectedTransformEntity.canRotate) {
+      const yaw = new THREE.Euler().setFromQuaternion(selectedObject.quaternion, 'YXZ').y;
+      const nextRotation = quaternionFromYaw(yaw);
+      selectedObject.quaternion.set(nextRotation[0], nextRotation[1], nextRotation[2], nextRotation[3]);
+      onTransformRotationChange(nextRotation);
+    }
+  }, [onTransformPositionChange, onTransformRotationChange, selectedObject, selectedTransformEntity, transformMode]);
+
+  const handleTransformMouseUp = useCallback(() => {
+    if (!selectedObject || !selectedTransformEntity || transformMode !== 'scale') {
+      resizeOriginRef.current = null;
+      return;
+    }
+    if (selectedTransformEntity.halfExtents) {
+      const baseHalfExtents = resizeOriginRef.current?.halfExtents ?? selectedTransformEntity.halfExtents;
+      onTransformHalfExtentsChange([
+        clampDimension(baseHalfExtents[0] * Math.abs(selectedObject.scale.x) * 2) / 2,
+        clampDimension(baseHalfExtents[1] * Math.abs(selectedObject.scale.y) * 2) / 2,
+        clampDimension(baseHalfExtents[2] * Math.abs(selectedObject.scale.z) * 2) / 2,
+      ]);
+    } else if (selectedTransformEntity.radius != null) {
+      const baseRadius = resizeOriginRef.current?.radius ?? selectedTransformEntity.radius;
+      const scale = Math.max(
+        Math.abs(selectedObject.scale.x),
+        Math.abs(selectedObject.scale.y),
+        Math.abs(selectedObject.scale.z),
+      );
+      onTransformRadiusChange(clampDimension(baseRadius * scale));
+    }
+    selectedObject.scale.set(1, 1, 1);
+    resizeOriginRef.current = null;
+  }, [
+    onTransformHalfExtentsChange,
+    onTransformRadiusChange,
+    selectedObject,
+    selectedTransformEntity,
+    transformMode,
+  ]);
+
   useEffect(() => () => {
     paintingRef.current = false;
   }, []);
+
+  const hoveredTerrainTileCenter = useMemo(() => {
+    if (!hoveredTerrainTile) {
+      return null;
+    }
+    const tile = getTerrainTileCenter(world, hoveredTerrainTile.tileX, hoveredTerrainTile.tileZ);
+    return {
+      key: getTerrainTileKey(hoveredTerrainTile.tileX, hoveredTerrainTile.tileZ),
+      tileX: hoveredTerrainTile.tileX,
+      tileZ: hoveredTerrainTile.tileZ,
+      centerX: tile[0],
+      centerZ: tile[1],
+    };
+  }, [hoveredTerrainTile, world]);
+
+  const terrainTileSize = terrainTileSideLength(world);
 
   return (
     <Canvas
@@ -512,6 +985,7 @@ function GodModeEditorScene({
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
       style={{ width: '100%', height: '100%' }}
       onPointerUp={handleTerrainPointerUp}
+      onPointerMissed={() => setHoveredTerrainTile(null)}
     >
       <ambientLight intensity={0.55} />
       <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
@@ -521,12 +995,55 @@ function GodModeEditorScene({
         onPointerDown={handleTerrainPointerDown}
         onPointerMove={handleTerrainPointerMove}
         onPointerUp={handleTerrainPointerUp}
+        onPointerOut={handleTerrainPointerOut}
       />
+      {tool === 'terrain' && terrainToolMode === 'add-tile' && addableTerrainTiles.map((tile) => {
+        const [centerX, centerZ] = getTerrainTileCenter(world, tile.tileX, tile.tileZ);
+        return (
+          <group key={getTerrainTileKey(tile.tileX, tile.tileZ)}>
+            <mesh
+              position={[centerX, 0.03, centerZ]}
+              rotation-x={-Math.PI / 2}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                onAddTile(tile.tileX, tile.tileZ);
+              }}
+            >
+              <planeGeometry args={[terrainTileSize, terrainTileSize]} />
+              <meshBasicMaterial color={0x9af7bf} transparent opacity={0.18} side={THREE.DoubleSide} depthWrite={false} />
+            </mesh>
+            <FloatingTileActionButton
+              kind="add"
+              position={[centerX, 1.4, centerZ]}
+              onClick={() => onAddTile(tile.tileX, tile.tileZ)}
+            />
+          </group>
+        );
+      })}
+      {tool === 'terrain' && terrainToolMode === 'delete-tile' && hoveredTerrainTileCenter && (
+        <group key={hoveredTerrainTileCenter.key}>
+          <mesh position={[hoveredTerrainTileCenter.centerX, 0.05, hoveredTerrainTileCenter.centerZ]} rotation-x={-Math.PI / 2}>
+            <planeGeometry args={[terrainTileSize, terrainTileSize]} />
+            <meshBasicMaterial color={0xff7d6e} transparent opacity={0.2} side={THREE.DoubleSide} depthWrite={false} />
+          </mesh>
+          <FloatingTileActionButton
+            kind="delete"
+            position={[hoveredTerrainTileCenter.centerX, 1.4, hoveredTerrainTileCenter.centerZ]}
+            disabled={world.terrain.tiles.length <= 1}
+            onClick={() => {
+              onDeleteTile(hoveredTerrainTileCenter.tileX, hoveredTerrainTileCenter.tileZ);
+              setHoveredTerrainTile(null);
+            }}
+          />
+        </group>
+      )}
       <group>
         {world.staticProps.map((entity) => (
           <mesh
             key={entity.id}
+            ref={(object) => registerSelectableObject(`static:${entity.id}`, object)}
             position={entity.position}
+            quaternion={new THREE.Quaternion(...entity.rotation)}
             castShadow
             receiveShadow
             onPointerDown={(event) => {
@@ -541,6 +1058,7 @@ function GodModeEditorScene({
         {world.dynamicEntities.map((entity) => (
           <mesh
             key={entity.id}
+            ref={(object) => registerSelectableObject(`dynamic:${entity.id}`, object)}
             position={entity.position}
             quaternion={new THREE.Quaternion(...entity.rotation)}
             castShadow
@@ -571,14 +1089,82 @@ function GodModeEditorScene({
           </mesh>
         ))}
       </group>
-      {tool === 'terrain' && (
+      {canShowTransform && (
+        <TransformControls
+          object={selectedObject ?? undefined}
+          mode={transformMode}
+          space={transformMode === 'translate' ? 'world' : 'local'}
+          rotationSnap={transformMode === 'rotate' ? THREE.MathUtils.degToRad(5) : undefined}
+          showX={transformMode !== 'rotate'}
+          showY
+          showZ={transformMode !== 'rotate'}
+          onMouseDown={handleTransformMouseDown}
+          onMouseUp={handleTransformMouseUp}
+          onObjectChange={handleTransformObjectChange}
+        />
+      )}
+      {tool === 'terrain' && terrainToolMode === 'sculpt' && (
         <mesh ref={brushCursorRef} rotation-x={-Math.PI / 2}>
           <ringGeometry args={[Math.max(brushRadius - brushStrength * 0.5, 0.1), brushRadius, 64]} />
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
         </mesh>
       )}
-      <OrbitControls enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
+      <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
     </Canvas>
+  );
+}
+
+function FloatingTileActionButton({
+  kind,
+  position,
+  onClick,
+  disabled = false,
+}: {
+  kind: 'add' | 'delete';
+  position: [number, number, number];
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const color = disabled ? 0x7d7d7d : kind === 'add' ? 0x64d98f : 0xe76c5d;
+  return (
+    <group position={position}>
+      <mesh
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          if (!disabled) {
+            onClick();
+          }
+        }}
+      >
+        <cylinderGeometry args={[0.9, 0.9, 0.18, 32]} />
+        <meshStandardMaterial color={color} roughness={0.45} metalness={0.08} transparent opacity={disabled ? 0.45 : 0.9} />
+      </mesh>
+      <group position={[0, 0.15, 0]}>
+        {kind === 'add' ? (
+          <>
+            <mesh>
+              <boxGeometry args={[0.9, 0.14, 0.14]} />
+              <meshStandardMaterial color={0xffffff} />
+            </mesh>
+            <mesh rotation-y={Math.PI / 2}>
+              <boxGeometry args={[0.9, 0.14, 0.14]} />
+              <meshStandardMaterial color={0xffffff} />
+            </mesh>
+          </>
+        ) : (
+          <>
+            <mesh rotation-y={Math.PI / 4}>
+              <boxGeometry args={[0.9, 0.14, 0.14]} />
+              <meshStandardMaterial color={0xffffff} />
+            </mesh>
+            <mesh rotation-y={-Math.PI / 4}>
+              <boxGeometry args={[0.9, 0.14, 0.14]} />
+              <meshStandardMaterial color={0xffffff} />
+            </mesh>
+          </>
+        )}
+      </group>
+    </group>
   );
 }
 
@@ -616,8 +1202,14 @@ function EditorFields({
       ))}
       {dimensions && onDimensionsChange && (['Width', 'Height', 'Depth'] as const).map((label, axis) => (
         <label key={label} style={fieldLabelStyle}>
-          {label} / 2
-          <input type="number" min="0.1" step="0.1" value={dimensions[axis]} onChange={(event) => onDimensionsChange(axis as 0 | 1 | 2, Number(event.target.value))} />
+          {label}
+          <input
+            type="number"
+            min="0.1"
+            step="0.1"
+            value={dimensions[axis] * 2}
+            onChange={(event) => onDimensionsChange(axis as 0 | 1 | 2, clampDimension(Number(event.target.value)) / 2)}
+          />
         </label>
       ))}
       {radius != null && onRadiusChange && (
@@ -639,6 +1231,15 @@ function EditorFields({
 
 function withAxis(vector: [number, number, number], axis: 0 | 1 | 2, value: number): [number, number, number] {
   return vector.map((component, index) => (index === axis ? value : component)) as [number, number, number];
+}
+
+function clampDimension(value: number): number {
+  return Math.max(0.1, Number.isFinite(value) ? value : 0.1);
+}
+
+function clampBrushHeight(value: number, min: number, max: number): number {
+  const fallback = Number.isFinite(value) ? value : min;
+  return Math.min(Math.max(fallback, min), max);
 }
 
 function scaleExtents(extents: [number, number, number]): [number, number, number] {
@@ -797,4 +1398,20 @@ const godModePlayOverlayStyle: CSSProperties = {
   padding: '8px 12px',
   borderRadius: 12,
   color: '#eef7ff',
+};
+
+const editorViewportOverlayStyle: CSSProperties = {
+  position: 'absolute',
+  top: 16,
+  left: 16,
+  zIndex: 10,
+  display: 'flex',
+  gap: 12,
+  flexWrap: 'wrap',
+  alignItems: 'center',
+  background: 'rgba(5, 9, 16, 0.68)',
+  padding: '10px 12px',
+  borderRadius: 12,
+  color: '#eef7ff',
+  fontSize: 13,
 };
