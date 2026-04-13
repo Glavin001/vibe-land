@@ -10,8 +10,10 @@ import {
   TERRAIN_MIN_HEIGHT,
   addTerrainTile,
   applyTerrainBrush,
+  applyTerrainRampStencil,
   cloneWorldDocument,
   getAddableTerrainTiles,
+  getTerrainRampEndpointHeights,
   getTerrainTileCenter,
   getTerrainTileKey,
   getNextWorldEntityId,
@@ -47,7 +49,7 @@ import {
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
-type TerrainToolMode = 'sculpt' | 'add-tile' | 'delete-tile';
+type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile';
 type TransformMode = 'translate' | 'rotate' | 'scale';
 type SelectedTarget =
   | { kind: 'static'; id: number }
@@ -79,6 +81,18 @@ export function GodModePage() {
   const [terrainToolMode, setTerrainToolMode] = useState<TerrainToolMode>('sculpt');
   const [brushMinHeight, setBrushMinHeight] = useState(TERRAIN_MIN_HEIGHT);
   const [brushMaxHeight, setBrushMaxHeight] = useState(TERRAIN_MAX_HEIGHT);
+  const [rampWidth, setRampWidth] = useState(8);
+  const [rampLength, setRampLength] = useState(16);
+  const [rampGradePct, setRampGradePct] = useState(25);
+  const [rampYawDegrees, setRampYawDegrees] = useState(0);
+  const [rampMode, setRampMode] = useState<'raise' | 'lower'>('raise');
+  const [rampStrength, setRampStrength] = useState(0.2);
+  const [rampTargetHeight, setRampTargetHeight] = useState(6);
+  const [rampTargetEdge, setRampTargetEdge] = useState<'start' | 'end'>('end');
+  const [rampTargetKind, setRampTargetKind] = useState<'min' | 'max'>('max');
+  const [rampSideFalloff, setRampSideFalloff] = useState(2);
+  const [rampStartFalloff, setRampStartFalloff] = useState(0);
+  const [rampEndFalloff, setRampEndFalloff] = useState(0);
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
@@ -510,6 +524,18 @@ export function GodModePage() {
       brushRadius={brushRadius}
       brushStrength={brushStrength}
       brushMode={brushMode}
+      rampWidth={rampWidth}
+      rampLength={rampLength}
+      rampGradePct={rampGradePct}
+      rampYawDegrees={rampYawDegrees}
+      rampMode={rampMode}
+      rampStrength={rampStrength}
+      rampTargetHeight={rampTargetHeight}
+      rampTargetEdge={rampTargetEdge}
+      rampTargetKind={rampTargetKind}
+      rampSideFalloff={rampSideFalloff}
+      rampStartFalloff={rampStartFalloff}
+      rampEndFalloff={rampEndFalloff}
       onSelect={setSelected}
       onTransformPositionChange={updateSelectedPositionVector}
       onTransformRotationChange={updateSelectedRotationQuaternion}
@@ -527,6 +553,24 @@ export function GodModePage() {
       onAddTile={(tileX, tileZ) => {
         setWorld((current) => addTerrainTile(current, tileX, tileZ));
       }}
+      onApplyRamp={(x, z) => {
+        setWorld((current) => applyTerrainRampStencil(current, {
+          centerX: x,
+          centerZ: z,
+          width: rampWidth,
+          length: rampLength,
+          gradePct: rampGradePct,
+          yawRad: (rampYawDegrees * Math.PI) / 180,
+          mode: rampMode,
+          strength: rampStrength,
+          targetHeight: rampTargetHeight,
+          targetEdge: rampTargetEdge,
+          targetKind: rampTargetKind,
+          sideFalloffM: rampSideFalloff,
+          startFalloffM: rampStartFalloff,
+          endFalloffM: rampEndFalloff,
+        }));
+      }}
     />
   ), [
     brushMaxHeight,
@@ -534,6 +578,18 @@ export function GodModePage() {
     brushMinHeight,
     brushRadius,
     brushStrength,
+    rampGradePct,
+    rampLength,
+    rampMode,
+    rampSideFalloff,
+    rampStartFalloff,
+    rampEndFalloff,
+    rampStrength,
+    rampTargetHeight,
+    rampTargetEdge,
+    rampTargetKind,
+    rampWidth,
+    rampYawDegrees,
     terrainToolMode,
     selected,
     selectedTransformEntity,
@@ -618,6 +674,7 @@ export function GodModePage() {
                 <div style={fieldStackStyle}>
                   <div style={buttonRowStyle}>
                     <button type="button" onClick={() => setTerrainToolMode('sculpt')} style={terrainToolMode === 'sculpt' ? activeButtonStyle : secondaryButtonStyle}>Sculpt</button>
+                    <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
                     <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
                     <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
                   </div>
@@ -665,6 +722,86 @@ export function GodModePage() {
                         {brushMode === 'lower'
                           ? `Lowering plateaus at ${brushMinHeight.toFixed(1)}m.`
                           : `Raising plateaus at ${brushMaxHeight.toFixed(1)}m.`}
+                      </div>
+                    </>
+                  ) : terrainToolMode === 'ramp' ? (
+                    <>
+                      <label style={fieldLabelStyle}>
+                        Strength
+                        <input type="range" min="0.02" max="1" step="0.02" value={rampStrength} onChange={(event) => setRampStrength(Number(event.target.value))} />
+                        <span>{rampStrength.toFixed(2)}</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Width
+                        <input type="range" min="2" max="30" step="0.5" value={rampWidth} onChange={(event) => setRampWidth(Number(event.target.value))} />
+                        <span>{rampWidth.toFixed(1)}m</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Length
+                        <input type="range" min="4" max="40" step="0.5" value={rampLength} onChange={(event) => setRampLength(Number(event.target.value))} />
+                        <span>{rampLength.toFixed(1)}m</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Grade
+                        <input type="range" min="1" max="100" step="1" value={rampGradePct} onChange={(event) => setRampGradePct(Number(event.target.value))} />
+                        <span>{rampGradePct.toFixed(0)}%</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Direction
+                        <input
+                          type="range"
+                          min="0"
+                          max="355"
+                          step="5"
+                          value={rampYawDegrees}
+                          onChange={(event) => setRampYawDegrees(Number(event.target.value))}
+                        />
+                        <span>{`${rampYawDegrees.toFixed(0)}deg start -> end`}</span>
+                      </label>
+                      <div style={buttonRowStyle}>
+                        <button type="button" onClick={() => setRampTargetEdge('start')} style={rampTargetEdge === 'start' ? activeButtonStyle : secondaryButtonStyle}>Target Start</button>
+                        <button type="button" onClick={() => setRampTargetEdge('end')} style={rampTargetEdge === 'end' ? activeButtonStyle : secondaryButtonStyle}>Target End</button>
+                      </div>
+                      <div style={buttonRowStyle}>
+                        <button type="button" onClick={() => setRampTargetKind('min')} style={rampTargetKind === 'min' ? activeButtonStyle : secondaryButtonStyle}>Target Min</button>
+                        <button type="button" onClick={() => setRampTargetKind('max')} style={rampTargetKind === 'max' ? activeButtonStyle : secondaryButtonStyle}>Target Max</button>
+                      </div>
+                      <label style={fieldLabelStyle}>
+                        Target Height
+                        <input
+                          type="number"
+                          min={TERRAIN_MIN_HEIGHT}
+                          max={TERRAIN_MAX_HEIGHT}
+                          step="0.5"
+                          value={rampTargetHeight}
+                          onChange={(event) => setRampTargetHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT))}
+                        />
+                        <span>{rampTargetEdge === 'start' ? 'Start edge' : 'End edge'} uses this {rampTargetKind} height.</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Side Shoulder
+                        <input type="range" min="0" max="20" step="0.5" value={rampSideFalloff} onChange={(event) => setRampSideFalloff(Number(event.target.value))} />
+                        <span>{rampSideFalloff.toFixed(1)}m</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        Start Falloff
+                        <input type="range" min="0" max="20" step="0.5" value={rampStartFalloff} onChange={(event) => setRampStartFalloff(Number(event.target.value))} />
+                        <span>{rampStartFalloff.toFixed(1)}m</span>
+                      </label>
+                      <label style={fieldLabelStyle}>
+                        End Falloff
+                        <input type="range" min="0" max="20" step="0.5" value={rampEndFalloff} onChange={(event) => setRampEndFalloff(Number(event.target.value))} />
+                        <span>{rampEndFalloff.toFixed(1)}m</span>
+                      </label>
+                      <div style={buttonRowStyle}>
+                        <button type="button" onClick={() => setRampMode('raise')} style={rampMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise Ramp</button>
+                        <button type="button" onClick={() => setRampMode('lower')} style={rampMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Cut Ramp</button>
+                      </div>
+                      <div style={mutedTextStyle}>
+                        Hold and drag to morph terrain toward the target ramp. Repeated passes converge instead of stacking.
+                      </div>
+                      <div style={mutedTextStyle}>
+                        {describeRampTool(rampLength, rampGradePct, rampTargetHeight, rampTargetEdge, rampTargetKind, rampMode)}
                       </div>
                     </>
                   ) : terrainToolMode === 'add-tile' ? (
@@ -803,6 +940,18 @@ function GodModeEditorScene({
   brushRadius,
   brushStrength,
   brushMode,
+  rampWidth,
+  rampLength,
+  rampGradePct,
+  rampYawDegrees,
+  rampMode,
+  rampStrength,
+  rampTargetHeight,
+  rampTargetEdge,
+  rampTargetKind,
+  rampSideFalloff,
+  rampStartFalloff,
+  rampEndFalloff,
   onSelect,
   onTransformPositionChange,
   onTransformRotationChange,
@@ -811,6 +960,7 @@ function GodModeEditorScene({
   onPaint,
   onAddTile,
   onDeleteTile,
+  onApplyRamp,
 }: {
   world: WorldDocument;
   tool: EditorTool;
@@ -821,6 +971,18 @@ function GodModeEditorScene({
   brushRadius: number;
   brushStrength: number;
   brushMode: 'raise' | 'lower';
+  rampWidth: number;
+  rampLength: number;
+  rampGradePct: number;
+  rampYawDegrees: number;
+  rampMode: 'raise' | 'lower';
+  rampStrength: number;
+  rampTargetHeight: number;
+  rampTargetEdge: 'start' | 'end';
+  rampTargetKind: 'min' | 'max';
+  rampSideFalloff: number;
+  rampStartFalloff: number;
+  rampEndFalloff: number;
   onSelect: (next: SelectedTarget) => void;
   onTransformPositionChange: (nextPosition: Vec3) => void;
   onTransformRotationChange: (nextRotation: Quaternion) => void;
@@ -829,12 +991,16 @@ function GodModeEditorScene({
   onPaint: (x: number, z: number) => void;
   onAddTile: (tileX: number, tileZ: number) => void;
   onDeleteTile: (tileX: number, tileZ: number) => void;
+  onApplyRamp: (x: number, z: number) => void;
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
+  const terrainPointerRef = useRef<Vec3 | null>(null);
   const objectRefs = useRef(new Map<string, THREE.Object3D>());
   const resizeOriginRef = useRef<{ halfExtents?: Vec3; radius?: number } | null>(null);
   const [hoveredTerrainTile, setHoveredTerrainTile] = useState<TerrainTileCoordinate | null>(null);
+  const [terrainPointerPoint, setTerrainPointerPoint] = useState<Vec3 | null>(null);
+  const [isRampApplying, setIsRampApplying] = useState(false);
   const addableTerrainTiles = useMemo(() => getAddableTerrainTiles(world), [world]);
 
   const selectedObjectKey = selected ? `${selected.kind}:${selected.id}` : null;
@@ -847,26 +1013,38 @@ function GodModeEditorScene({
     && (transformMode !== 'scale' || selectedTransformEntity.canResize);
 
   const handleTerrainPointerMove = useCallback((event: ThreeEvent<PointerEvent>) => {
+    const nextPoint: Vec3 = [event.point.x, event.point.y, event.point.z];
+    terrainPointerRef.current = nextPoint;
     if (brushCursorRef.current) {
       brushCursorRef.current.position.set(event.point.x, event.point.y + 0.06, event.point.z);
     }
-    const tileX = event.object.userData?.terrainTileX;
-    const tileZ = event.object.userData?.terrainTileZ;
-    if (typeof tileX === 'number' && typeof tileZ === 'number') {
-      setHoveredTerrainTile({ tileX, tileZ });
+    if (terrainToolMode === 'ramp') {
+      setTerrainPointerPoint(nextPoint);
     }
-    if (tool === 'terrain' && terrainToolMode === 'sculpt' && paintingRef.current) {
-      onPaint(event.point.x, event.point.z);
+    if (terrainToolMode === 'delete-tile') {
+      const tileX = event.object.userData?.terrainTileX;
+      const tileZ = event.object.userData?.terrainTileZ;
+      if (typeof tileX === 'number' && typeof tileZ === 'number') {
+        setHoveredTerrainTile({ tileX, tileZ });
+      }
     }
-  }, [onPaint, terrainToolMode, tool]);
+  }, [terrainToolMode]);
 
   const handleTerrainPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
+    const nextPoint: Vec3 = [event.point.x, event.point.y, event.point.z];
+    terrainPointerRef.current = nextPoint;
     const tileX = event.object.userData?.terrainTileX;
     const tileZ = event.object.userData?.terrainTileZ;
     if (tool === 'terrain' && terrainToolMode === 'sculpt') {
       paintingRef.current = true;
       onPaint(event.point.x, event.point.z);
+      return;
+    }
+    if (tool === 'terrain' && terrainToolMode === 'ramp') {
+      setIsRampApplying(true);
+      setTerrainPointerPoint(nextPoint);
+      onApplyRamp(event.point.x, event.point.z);
       return;
     }
     if (tool === 'terrain' && terrainToolMode === 'delete-tile' && typeof tileX === 'number' && typeof tileZ === 'number') {
@@ -876,10 +1054,11 @@ function GodModeEditorScene({
       return;
     }
     onSelect(null);
-  }, [onDeleteTile, onPaint, onSelect, terrainToolMode, tool]);
+  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     paintingRef.current = false;
+    setIsRampApplying(false);
   }, []);
 
   const handleTerrainPointerOut = useCallback(() => {
@@ -887,6 +1066,9 @@ function GodModeEditorScene({
       return;
     }
     setHoveredTerrainTile(null);
+    setTerrainPointerPoint(null);
+    terrainPointerRef.current = null;
+    setIsRampApplying(false);
   }, [terrainToolMode]);
 
   const registerSelectableObject = useCallback((key: string, object: THREE.Object3D | null) => {
@@ -963,6 +1145,26 @@ function GodModeEditorScene({
     paintingRef.current = false;
   }, []);
 
+  useEffect(() => {
+    if (tool !== 'terrain') {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      const point = terrainPointerRef.current;
+      if (!point) {
+        return;
+      }
+      if (terrainToolMode === 'sculpt' && paintingRef.current) {
+        onPaint(point[0], point[2]);
+        return;
+      }
+      if (terrainToolMode === 'ramp' && isRampApplying) {
+        onApplyRamp(point[0], point[2]);
+      }
+    }, 80);
+    return () => window.clearInterval(interval);
+  }, [isRampApplying, onApplyRamp, onPaint, terrainToolMode, tool]);
+
   const hoveredTerrainTileCenter = useMemo(() => {
     if (!hoveredTerrainTile) {
       return null;
@@ -985,7 +1187,13 @@ function GodModeEditorScene({
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
       style={{ width: '100%', height: '100%' }}
       onPointerUp={handleTerrainPointerUp}
-      onPointerMissed={() => setHoveredTerrainTile(null)}
+      onPointerMissed={() => {
+        setHoveredTerrainTile(null);
+        setTerrainPointerPoint(null);
+        terrainPointerRef.current = null;
+        paintingRef.current = false;
+        setIsRampApplying(false);
+      }}
     >
       <ambientLight intensity={0.55} />
       <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
@@ -1036,6 +1244,25 @@ function GodModeEditorScene({
             }}
           />
         </group>
+      )}
+      {tool === 'terrain' && terrainToolMode === 'ramp' && terrainPointerPoint && (
+        <RampStencilPreview
+          world={world}
+          centerX={terrainPointerPoint[0]}
+          centerZ={terrainPointerPoint[2]}
+          width={rampWidth}
+          length={rampLength}
+          gradePct={rampGradePct}
+          yawRad={(rampYawDegrees * Math.PI) / 180}
+          mode={rampMode}
+          rampStrength={rampStrength}
+          targetHeight={rampTargetHeight}
+          targetEdge={rampTargetEdge}
+          targetKind={rampTargetKind}
+          sideFalloffM={rampSideFalloff}
+          startFalloffM={rampStartFalloff}
+          endFalloffM={rampEndFalloff}
+        />
       )}
       <group>
         {world.staticProps.map((entity) => (
@@ -1168,6 +1395,235 @@ function FloatingTileActionButton({
   );
 }
 
+function RampStencilPreview({
+  world,
+  centerX,
+  centerZ,
+  width,
+  length,
+  gradePct,
+  yawRad,
+  mode,
+  rampStrength,
+  targetHeight,
+  targetEdge,
+  targetKind,
+  sideFalloffM,
+  startFalloffM,
+  endFalloffM,
+}: {
+  world: WorldDocument;
+  centerX: number;
+  centerZ: number;
+  width: number;
+  length: number;
+  gradePct: number;
+  yawRad: number;
+  mode: 'raise' | 'lower';
+  rampStrength: number;
+  targetHeight: number;
+  targetEdge: 'start' | 'end';
+  targetKind: 'min' | 'max';
+  sideFalloffM: number;
+  startFalloffM: number;
+  endFalloffM: number;
+}) {
+  const { startHeight, endHeight, lowHeight, highHeight } = useMemo(() => getTerrainRampEndpointHeights({
+    length,
+    gradePct,
+    targetHeight,
+    targetEdge,
+    targetKind,
+  }), [gradePct, length, targetEdge, targetHeight, targetKind]);
+  const coreGeometry = useMemo(() => {
+    const nextGeometry = new THREE.BufferGeometry();
+    const halfWidth = width * 0.5;
+    const halfLength = length * 0.5;
+    const positions = new Float32Array([
+      -halfWidth, startHeight + 0.08, -halfLength,
+      halfWidth, startHeight + 0.08, -halfLength,
+      -halfWidth, endHeight + 0.08, halfLength,
+      halfWidth, endHeight + 0.08, halfLength,
+    ]);
+    const indices = [0, 2, 1, 1, 2, 3];
+    nextGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    nextGeometry.setIndex(indices);
+    nextGeometry.computeVertexNormals();
+    return nextGeometry;
+  }, [endHeight, length, startHeight, width]);
+  const volumeGeometry = useMemo(() => {
+    const nextGeometry = new THREE.BufferGeometry();
+    const halfWidth = width * 0.5;
+    const halfLength = length * 0.5;
+    const alongSegments = Math.max(6, Math.round(length));
+    const acrossSegments = Math.max(3, Math.round(width / 2));
+    const positions: number[] = [];
+    const indices: number[] = [];
+
+    const appendQuad = (
+      a: [number, number, number],
+      b: [number, number, number],
+      c: [number, number, number],
+      d: [number, number, number],
+    ) => {
+      const base = positions.length / 3;
+      positions.push(...a, ...b, ...c, ...d);
+      indices.push(base, base + 1, base + 2, base + 2, base + 1, base + 3);
+    };
+
+    const toWorld = (localX: number, localZ: number): [number, number] => {
+      const cos = Math.cos(yawRad);
+      const sin = Math.sin(yawRad);
+      return [
+        centerX + localX * cos + localZ * sin,
+        centerZ - localX * sin + localZ * cos,
+      ];
+    };
+    const topYAt = (localZ: number): number => {
+      const along01 = (localZ + halfLength) / Math.max(length, 0.001);
+      return startHeight + (endHeight - startHeight) * along01 + 0.08;
+    };
+    const bottomYAt = (localX: number, localZ: number): number => {
+      const [worldX, worldZ] = toWorld(localX, localZ);
+      return sampleTerrainHeightAtWorldPosition(world, worldX, worldZ) + 0.02;
+    };
+
+    for (let step = 0; step < alongSegments; step += 1) {
+      const z0 = -halfLength + (length * step) / alongSegments;
+      const z1 = -halfLength + (length * (step + 1)) / alongSegments;
+      appendQuad(
+        [-halfWidth, bottomYAt(-halfWidth, z0), z0],
+        [-halfWidth, topYAt(z0), z0],
+        [-halfWidth, bottomYAt(-halfWidth, z1), z1],
+        [-halfWidth, topYAt(z1), z1],
+      );
+      appendQuad(
+        [halfWidth, topYAt(z0), z0],
+        [halfWidth, bottomYAt(halfWidth, z0), z0],
+        [halfWidth, topYAt(z1), z1],
+        [halfWidth, bottomYAt(halfWidth, z1), z1],
+      );
+    }
+
+    for (let step = 0; step < acrossSegments; step += 1) {
+      const x0 = -halfWidth + (width * step) / acrossSegments;
+      const x1 = -halfWidth + (width * (step + 1)) / acrossSegments;
+      appendQuad(
+        [x0, topYAt(-halfLength), -halfLength],
+        [x0, bottomYAt(x0, -halfLength), -halfLength],
+        [x1, topYAt(-halfLength), -halfLength],
+        [x1, bottomYAt(x1, -halfLength), -halfLength],
+      );
+      appendQuad(
+        [x0, bottomYAt(x0, halfLength), halfLength],
+        [x0, topYAt(halfLength), halfLength],
+        [x1, bottomYAt(x1, halfLength), halfLength],
+        [x1, topYAt(halfLength), halfLength],
+      );
+    }
+
+    nextGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    nextGeometry.setIndex(indices);
+    nextGeometry.computeVertexNormals();
+    return nextGeometry;
+  }, [centerX, centerZ, endHeight, length, startHeight, width, world, yawRad]);
+  const guideGeometry = useMemo(() => {
+    const nextGeometry = new THREE.BufferGeometry();
+    const halfWidth = width * 0.5;
+    const halfLength = length * 0.5;
+    const guidePoints: number[] = [];
+    const sampleColumns = [-halfWidth, 0, halfWidth];
+    const sampleRows = [-halfLength, 0, halfLength];
+    const cos = Math.cos(yawRad);
+    const sin = Math.sin(yawRad);
+    const topYAt = (localZ: number): number => {
+      const along01 = (localZ + halfLength) / Math.max(length, 0.001);
+      return startHeight + (endHeight - startHeight) * along01 + 0.08;
+    };
+
+    for (const localX of sampleColumns) {
+      for (const localZ of sampleRows) {
+        const worldX = centerX + localX * cos + localZ * sin;
+        const worldZ = centerZ - localX * sin + localZ * cos;
+        const bottomY = sampleTerrainHeightAtWorldPosition(world, worldX, worldZ) + 0.02;
+        guidePoints.push(localX, bottomY, localZ, localX, topYAt(localZ), localZ);
+      }
+    }
+
+    nextGeometry.setAttribute('position', new THREE.Float32BufferAttribute(guidePoints, 3));
+    return nextGeometry;
+  }, [centerX, centerZ, endHeight, length, startHeight, width, world, yawRad]);
+  const outerWidth = width + sideFalloffM * 2;
+  const outerLength = length + startFalloffM + endFalloffM;
+  const outerCenterOffsetZ = (endFalloffM - startFalloffM) * 0.5;
+
+  useEffect(() => () => coreGeometry.dispose(), [coreGeometry]);
+  useEffect(() => () => volumeGeometry.dispose(), [volumeGeometry]);
+  useEffect(() => () => guideGeometry.dispose(), [guideGeometry]);
+
+  return (
+    <group position={[centerX, 0, centerZ]} rotation-y={yawRad}>
+      <mesh
+        position={[0, Math.min(lowHeight, highHeight) + 0.02, outerCenterOffsetZ]}
+        rotation-x={-Math.PI / 2}
+        raycast={ignorePointerRaycast}
+        renderOrder={1}
+      >
+        <planeGeometry args={[outerWidth, outerLength]} />
+        <meshBasicMaterial color={mode === 'raise' ? 0x4ca5ff : 0xffb25c} transparent opacity={0.08 + rampStrength * 0.1} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      <mesh geometry={volumeGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
+        <meshBasicMaterial color={mode === 'raise' ? 0x3f8ee8 : 0xe2a145} transparent opacity={0.16 + rampStrength * 0.12} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      <mesh geometry={coreGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
+        <meshBasicMaterial color={mode === 'raise' ? 0x75c8ff : 0xffc977} transparent opacity={0.25 + rampStrength * 0.2} side={THREE.DoubleSide} depthWrite={false} />
+      </mesh>
+      <lineSegments geometry={guideGeometry} raycast={ignorePointerRaycast} renderOrder={4}>
+        <lineBasicMaterial color={mode === 'raise' ? 0xe7f5ff : 0xfff0d2} transparent opacity={0.9} />
+      </lineSegments>
+      <lineSegments raycast={ignorePointerRaycast} renderOrder={3}>
+        <edgesGeometry args={[coreGeometry]} />
+        <lineBasicMaterial color={mode === 'raise' ? 0xc7ebff : 0xffe0a6} transparent opacity={0.95} />
+      </lineSegments>
+      <group position={[0, Math.max(lowHeight, highHeight) + 0.5, outerCenterOffsetZ]}>
+        <mesh raycast={ignorePointerRaycast} position={[0, 0, outerLength * 0.18]}>
+          <boxGeometry args={[0.14, 0.14, Math.max(length * 0.5, 2)]} />
+          <meshBasicMaterial color={mode === 'raise' ? 0xd7f0ff : 0xffefc7} />
+        </mesh>
+        <mesh raycast={ignorePointerRaycast} position={[0, 0, outerLength * 0.48]}>
+          <coneGeometry args={[0.35, 0.8, 12]} />
+          <meshBasicMaterial color={mode === 'raise' ? 0xd7f0ff : 0xffefc7} />
+        </mesh>
+      </group>
+    </group>
+  );
+}
+
+function ignorePointerRaycast(): void {}
+
+function describeRampTool(
+  length: number,
+  gradePct: number,
+  targetHeight: number,
+  targetEdge: 'start' | 'end',
+  targetKind: 'min' | 'max',
+  mode: 'raise' | 'lower',
+): string {
+  const { startHeight, endHeight } = getTerrainRampEndpointHeights({
+    length,
+    gradePct,
+    targetHeight,
+    targetEdge,
+    targetKind,
+  });
+  const targetLabel = `${targetEdge} edge targets ${targetKind} ${targetHeight.toFixed(1)}m`;
+  const resolvedLabel = `${targetEdge === 'start' ? 'end' : 'start'} edge resolves near ${(targetEdge === 'start' ? endHeight : startHeight).toFixed(1)}m`;
+  const movementLabel = mode === 'raise'
+    ? 'Raise only lifts terrain toward that profile.'
+    : 'Cut only lowers terrain toward that profile.';
+  return `${targetLabel}; ${resolvedLabel}. ${movementLabel}`;
+}
+
 function EditorFields({
   title,
   position,
@@ -1253,9 +1709,10 @@ function slugify(value: string): string {
 const pageStyle: CSSProperties = {
   display: 'grid',
   gridTemplateColumns: '340px minmax(0, 1fr)',
-  minHeight: '100%',
+  height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
+  overflow: 'hidden',
 };
 
 const sidebarStyle: CSSProperties = {
@@ -1264,13 +1721,15 @@ const sidebarStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 18,
+  minHeight: 0,
   overflowY: 'auto',
   background: 'rgba(3, 8, 14, 0.92)',
 };
 
 const viewportStyle: CSSProperties = {
   position: 'relative',
-  minHeight: '100vh',
+  minHeight: 0,
+  height: '100vh',
 };
 
 const sectionStyle: CSSProperties = {

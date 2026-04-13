@@ -6,6 +6,7 @@ import {
   DEFAULT_WORLD_DOCUMENT,
   addTerrainTile,
   applyTerrainBrush,
+  applyTerrainRampStencil,
   cloneWorldDocument,
   expandWorldTerrain,
   getAddableTerrainTiles,
@@ -31,6 +32,10 @@ type LocalPreviewResult = {
 };
 
 function makeFlatWorld(): WorldDocument {
+  return makeFlatWorldWithGrid(8, 10);
+}
+
+function makeFlatWorldWithGrid(tileGridSize: number, tileHalfExtentM: number): WorldDocument {
   return {
     version: 2,
     meta: {
@@ -38,12 +43,12 @@ function makeFlatWorld(): WorldDocument {
       description: 'Minimal world for local-preview terrain tests.',
     },
     terrain: {
-      tileGridSize: 8,
-      tileHalfExtentM: 10,
+      tileGridSize,
+      tileHalfExtentM,
       tiles: [{
         tileX: 0,
         tileZ: 0,
-        heights: Array.from({ length: 8 * 8 }, () => 0),
+        heights: Array.from({ length: tileGridSize * tileGridSize }, () => 0),
       }],
     },
     staticProps: [],
@@ -193,6 +198,30 @@ function primaryTile(world: WorldDocument) {
   return tile!;
 }
 
+function applyRampRepeated(world: WorldDocument, count: number, overrides: Partial<Parameters<typeof applyTerrainRampStencil>[1]> = {}): WorldDocument {
+  let next = cloneWorldDocument(world);
+  for (let i = 0; i < count; i += 1) {
+    next = applyTerrainRampStencil(next, {
+      centerX: 0,
+      centerZ: 0,
+      width: 6,
+      length: 12,
+      gradePct: 50,
+      yawRad: 0,
+      mode: 'raise',
+      strength: 0.25,
+      targetHeight: 6,
+      targetEdge: 'end',
+      targetKind: 'max',
+      sideFalloffM: 0,
+      startFalloffM: 0,
+      endFalloffM: 0,
+      ...overrides,
+    });
+  }
+  return next;
+}
+
 describe('WorldDocument local-preview scenarios', () => {
   it('flat world keeps ball, box, and vehicle supported', () => {
     const world = makeWorldWithEntities(makeFlatWorld(), [
@@ -255,6 +284,65 @@ describe('WorldDocument local-preview scenarios', () => {
     }
     expect(sampleTerrainHeightAtWorldPosition(raised, x, z)).toBeLessThanOrEqual(3);
     expect(sampleTerrainHeightAtWorldPosition(raised, x, z)).toBeGreaterThan(2.8);
+  });
+
+  it('terrain ramp stencil converges toward a stable raised target instead of stacking additively', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const onePass = applyRampRepeated(world, 1);
+    const manyPasses = applyRampRepeated(world, 24);
+
+    expect(sampleTerrainHeightAtWorldPosition(onePass, 0, 6)).toBeGreaterThan(0);
+    expect(sampleTerrainHeightAtWorldPosition(onePass, 0, 6)).toBeLessThan(6);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeGreaterThan(sampleTerrainHeightAtWorldPosition(onePass, 0, 6));
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeLessThanOrEqual(6);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, 6)).toBeGreaterThan(5.9);
+    expect(sampleTerrainHeightAtWorldPosition(manyPasses, 0, -6)).toBeCloseTo(0, 4);
+  });
+
+  it('terrain ramp stencil can raise toward a start-edge minimum target', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const raised = applyRampRepeated(world, 24, {
+      targetEdge: 'start',
+      targetKind: 'min',
+      targetHeight: 2,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(raised, 0, -6)).toBeGreaterThan(1.9);
+    expect(sampleTerrainHeightAtWorldPosition(raised, 0, 6)).toBeGreaterThan(7.9);
+  });
+
+  it('terrain ramp stencil can cut toward a start-edge maximum target', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    primaryTile(world).heights.fill(6);
+    const cut = applyRampRepeated(world, 24, {
+      mode: 'lower',
+      targetEdge: 'start',
+      targetKind: 'max',
+      targetHeight: 0,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(cut, 0, -6)).toBeLessThan(0.1);
+    expect(sampleTerrainHeightAtWorldPosition(cut, 0, 6)).toBeLessThan(-5.9);
+  });
+
+  it('terrain ramp stencil uses independent side, start, and end falloffs', () => {
+    const world = makeFlatWorldWithGrid(33, 16);
+    const ramped = applyRampRepeated(world, 28, {
+      width: 6,
+      length: 10,
+      gradePct: 50,
+      targetHeight: 10,
+      targetEdge: 'end',
+      targetKind: 'max',
+      sideFalloffM: 4,
+      startFalloffM: 2,
+      endFalloffM: 0,
+    });
+
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 0, -6)).toBeGreaterThan(0.5);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 4, 0)).toBeGreaterThan(0.5);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 8, 0)).toBeCloseTo(0, 4);
+    expect(sampleTerrainHeightAtWorldPosition(ramped, 0, 6)).toBeCloseTo(0, 4);
   });
 
   it('terrain expansion adds seamless eastward tiles', () => {

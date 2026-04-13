@@ -21,6 +21,23 @@ export type TerrainTileCoordinate = {
   tileZ: number;
 };
 
+export type TerrainRampStencil = {
+  centerX: number;
+  centerZ: number;
+  width: number;
+  length: number;
+  gradePct: number;
+  yawRad: number;
+  mode: 'raise' | 'lower';
+  strength: number;
+  targetHeight: number;
+  targetEdge: 'start' | 'end';
+  targetKind: 'min' | 'max';
+  sideFalloffM: number;
+  startFalloffM: number;
+  endFalloffM: number;
+};
+
 export type WorldDocument = {
   version: number;
   meta: {
@@ -343,17 +360,26 @@ export function applyTerrainBrush(
     maxHeight?: number;
   },
 ): WorldDocument {
-  const next = cloneWorldDocument(world);
+  const next: WorldDocument = {
+    ...world,
+    terrain: {
+      ...world.terrain,
+      tiles: [...world.terrain.tiles],
+    },
+  };
   const direction = mode === 'raise' ? 1 : -1;
   const lowerLimit = clampNumber(limits?.minHeight ?? TERRAIN_MIN_HEIGHT, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
   const upperLimit = clampNumber(limits?.maxHeight ?? TERRAIN_MAX_HEIGHT, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
   const brushMinHeight = Math.min(lowerLimit, upperLimit);
   const brushMaxHeight = Math.max(lowerLimit, upperLimit);
+  let mutated = false;
 
-  for (const tile of next.terrain.tiles) {
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
     for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
       for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
-        const [x, z] = getTerrainTileWorldPosition(next, tile, row, col);
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
         const distance = Math.hypot(x - centerX, z - centerZ);
         if (distance > radius) {
           continue;
@@ -361,23 +387,151 @@ export function applyTerrainBrush(
         const falloff = 1 - distance / radius;
         const delta = strength * falloff * falloff * direction;
         const index = row * next.terrain.tileGridSize + col;
-        const currentHeight = tile.heights[index] ?? 0;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        let nextHeight = currentHeight;
         if (mode === 'raise') {
           if (currentHeight >= brushMaxHeight) {
             continue;
           }
-          tile.heights[index] = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, brushMaxHeight);
+          nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, brushMaxHeight);
+        } else {
+          if (currentHeight <= brushMinHeight) {
+            continue;
+          }
+          nextHeight = clampNumber(currentHeight + delta, brushMinHeight, TERRAIN_MAX_HEIGHT);
+        }
+        if (nextHeight === currentHeight) {
           continue;
         }
-        if (currentHeight <= brushMinHeight) {
-          continue;
+        if (nextTile === sourceTile) {
+          nextTile = {
+            ...sourceTile,
+            heights: [...sourceTile.heights],
+          };
+          next.terrain.tiles[tileIndex] = nextTile;
         }
-        tile.heights[index] = clampNumber(currentHeight + delta, brushMinHeight, TERRAIN_MAX_HEIGHT);
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
       }
     }
   }
 
-  return next;
+  return mutated ? next : world;
+}
+
+export function applyTerrainRampStencil(world: WorldDocument, ramp: TerrainRampStencil): WorldDocument {
+  const next: WorldDocument = {
+    ...world,
+    terrain: {
+      ...world.terrain,
+      tiles: [...world.terrain.tiles],
+    },
+  };
+  const width = Math.max(0.5, ramp.width);
+  const length = Math.max(0.5, ramp.length);
+  const halfWidth = width * 0.5;
+  const halfLength = length * 0.5;
+  const forwardX = Math.sin(ramp.yawRad);
+  const forwardZ = Math.cos(ramp.yawRad);
+  const rightX = forwardZ;
+  const rightZ = -forwardX;
+  const rampStrength = clampNumber(ramp.strength, 0, 1);
+  const sideFalloff = Math.max(0, ramp.sideFalloffM);
+  const startFalloff = Math.max(0, ramp.startFalloffM);
+  const endFalloff = Math.max(0, ramp.endFalloffM);
+  const { startHeight, endHeight } = getTerrainRampEndpointHeights(ramp);
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
+    for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+        const dx = x - ramp.centerX;
+        const dz = z - ramp.centerZ;
+        const localAcross = dx * rightX + dz * rightZ;
+        const localAlong = dx * forwardX + dz * forwardZ;
+
+        const sideDistance = Math.max(0, Math.abs(localAcross) - halfWidth);
+        const startDistance = Math.max(0, -halfLength - localAlong);
+        const endDistance = Math.max(0, localAlong - halfLength);
+        const sideInfluence = sideDistance === 0 ? 1 : computeRampFalloff(sideDistance, sideFalloff);
+        const alongInfluence = startDistance > 0
+          ? computeRampFalloff(startDistance, startFalloff)
+          : endDistance > 0
+            ? computeRampFalloff(endDistance, endFalloff)
+            : 1;
+        const influence = sideInfluence * alongInfluence;
+        if (influence <= 0) {
+          continue;
+        }
+
+        const clampedAlong = clampNumber(localAlong, -halfLength, halfLength);
+        const along01 = clampNumber((clampedAlong + halfLength) / length, 0, 1);
+        const targetHeight = lerp(startHeight, endHeight, along01);
+        const index = row * next.terrain.tileGridSize + col;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        if (ramp.mode === 'raise' && targetHeight <= currentHeight) {
+          continue;
+        }
+        if (ramp.mode === 'lower' && targetHeight >= currentHeight) {
+          continue;
+        }
+        const nextHeight = clampNumber(
+          currentHeight + rampStrength * influence * (targetHeight - currentHeight),
+          TERRAIN_MIN_HEIGHT,
+          TERRAIN_MAX_HEIGHT,
+        );
+        if (Math.abs(nextHeight - currentHeight) <= 1e-6) {
+          continue;
+        }
+        if (nextTile === sourceTile) {
+          nextTile = {
+            ...sourceTile,
+            heights: [...sourceTile.heights],
+          };
+          next.terrain.tiles[tileIndex] = nextTile;
+        }
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
+      }
+    }
+  }
+
+  return mutated ? next : world;
+}
+
+export function getTerrainRampEndpointHeights(ramp: Pick<TerrainRampStencil, 'length' | 'gradePct' | 'targetHeight' | 'targetEdge' | 'targetKind'>): {
+  startHeight: number;
+  endHeight: number;
+  lowHeight: number;
+  highHeight: number;
+  heightDelta: number;
+} {
+  const length = Math.max(0.5, ramp.length);
+  const rise = length * Math.max(0, ramp.gradePct) / 100;
+  const targetHeight = clampNumber(ramp.targetHeight, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+  let startHeight = targetHeight;
+  let endHeight = targetHeight;
+
+  if (ramp.targetEdge === 'start') {
+    endHeight = ramp.targetKind === 'min' ? targetHeight + rise : targetHeight - rise;
+  } else {
+    startHeight = ramp.targetKind === 'min' ? targetHeight + rise : targetHeight - rise;
+  }
+
+  startHeight = clampNumber(startHeight, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+  endHeight = clampNumber(endHeight, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+  const lowHeight = Math.min(startHeight, endHeight);
+  const highHeight = Math.max(startHeight, endHeight);
+  return {
+    startHeight,
+    endHeight,
+    lowHeight,
+    highHeight,
+    heightDelta: Math.abs(endHeight - startHeight),
+  };
 }
 
 export function expandWorldTerrain(world: WorldDocument, direction: TerrainExpandDirection): WorldDocument {
@@ -634,6 +788,17 @@ function getTerrainEdgeInfluence(normalizedDistance: number): number {
   return remainingFalloff * remainingFalloff;
 }
 
+function computeRampFalloff(distanceOutside: number, falloffDistance: number): number {
+  if (distanceOutside <= 0) {
+    return 1;
+  }
+  if (falloffDistance <= 0) {
+    return 0;
+  }
+  const normalized = clampNumber(1 - distanceOutside / falloffDistance, 0, 1);
+  return normalized * normalized;
+}
+
 function createConnectedTerrainTile(world: WorldDocument, tileX: number, tileZ: number): WorldTerrainTile | null {
   const west = getTerrainTile(world, tileX - 1, tileZ);
   const east = getTerrainTile(world, tileX + 1, tileZ);
@@ -716,4 +881,8 @@ function clamp(value: number, min: number, max: number): number {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
 }
