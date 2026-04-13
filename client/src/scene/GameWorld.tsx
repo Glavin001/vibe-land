@@ -29,7 +29,8 @@ import {
   HIT_ZONE_HEAD,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import type { NetSnapMachineState, NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import { MAX_MACHINE_CHANNELS } from '../net/protocol';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
@@ -351,7 +352,18 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
-  const { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
+  const {
+    stateRef,
+    ready,
+    sendInputs,
+    sendFire,
+    sendBlockEdit,
+    sendVehicleEnter,
+    sendVehicleExit,
+    sendMachineEnter,
+    sendMachineExit,
+    clientRef,
+  } = useGameConnection(
     mode,
     onWelcome,
     onDisconnect,
@@ -380,6 +392,12 @@ export function GameWorld({
     },
     prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
       prediction.reconcileVehicle(vs, ackInputSeq);
+    } : undefined,
+    prediction.ready ? (ms: NetSnapMachineState, ackInputSeq: number) => {
+      prediction.reconcileSnapMachine(ms, ackInputSeq);
+    } : undefined,
+    prediction.ready ? (ms: NetSnapMachineState) => {
+      prediction.syncRemoteSnapMachine(ms);
     } : undefined,
   );
   const { camera, gl } = useThree();
@@ -420,6 +438,12 @@ export function GameWorld({
   const shotTraceBeamRef = useRef<THREE.Mesh>(null);
   const shotTraceImpactRef = useRef<THREE.Mesh>(null);
 
+  // Snap-machine refs
+  const knownMachineIds = useRef<Set<number>>(new Set());
+  const nearestMachineIdRef = useRef<number | null>(null);
+  // Persistent buffer for machine input channels passed to prediction.
+  const machineChannelsRef = useRef<Int8Array>(new Int8Array(MAX_MACHINE_CHANNELS));
+
   useEffect(() => {
     const manager = new GameInputManager();
     manager.attach();
@@ -433,6 +457,33 @@ export function GameWorld({
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
   }, []);
+
+  // Spawn snap-machines from the world document into WASM as soon as
+  // prediction is ready. Envelopes are inlined on each entity.
+  useEffect(() => {
+    if (!prediction.ready) return;
+    for (const entity of worldDocument.dynamicEntities) {
+      if (entity.kind !== 'snapMachine' || !entity.envelope) continue;
+      if (knownMachineIds.current.has(entity.id)) continue;
+      try {
+        prediction.spawnSnapMachine(
+          entity.id,
+          JSON.stringify(entity.envelope),
+          entity.position[0], entity.position[1], entity.position[2],
+          entity.rotation[0], entity.rotation[1], entity.rotation[2], entity.rotation[3],
+        );
+        knownMachineIds.current.add(entity.id);
+      } catch (err) {
+        console.error(`Failed to spawn snap-machine ${entity.id}`, err);
+      }
+    }
+    return () => {
+      for (const id of knownMachineIds.current) {
+        prediction.removeSnapMachine(id);
+      }
+      knownMachineIds.current.clear();
+    };
+  }, [prediction.ready, prediction, worldDocument]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -583,9 +634,16 @@ export function GameWorld({
       }
     }
 
-    // --- Enter/Exit vehicle on E press ---
+    // --- Enter/Exit vehicle or snap-machine on E press ---
+    const isOperatingMachineNow = prediction.isOperatingSnapMachine();
     if (resolvedInput.interactPressed) {
-      if (isDrivingNow) {
+      if (isOperatingMachineNow) {
+        const operatedMachineId = prediction.getOperatedSnapMachineId();
+        prediction.exitSnapMachine();
+        if (operatedMachineId !== null) {
+          sendMachineExit(operatedMachineId);
+        }
+      } else if (isDrivingNow) {
         // Exit current vehicle
         const vehiclePose = prediction.getVehiclePose();
         prediction.exitVehicle();
@@ -599,6 +657,13 @@ export function GameWorld({
             }
           }
         }
+      } else if (
+        nearestMachineIdRef.current !== null &&
+        knownMachineIds.current.has(nearestMachineIdRef.current)
+      ) {
+        const machineId = nearestMachineIdRef.current;
+        prediction.enterSnapMachine(machineId);
+        sendMachineEnter(machineId);
       } else if (nearestVehicleIdRef.current !== null) {
         const vehicleId = nearestVehicleIdRef.current;
         const vs = client?.vehicles.get(vehicleId);
@@ -640,6 +705,31 @@ export function GameWorld({
       if (prediction.isInVehicle()) {
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
+      } else if (prediction.isOperatingSnapMachine()) {
+        // Snap-machine prediction — derive actuator-channel input from
+        // the player's current keyboard mapping (W/S = ch0, A/D = ch1,
+        // Q/E = ch2, Shift/Space = ch3 by default). The keys are read
+        // from `resolvedInput.buttons` since they pass through the same
+        // input bindings as on-foot movement.
+        const channels = machineChannelsRef.current;
+        channels.fill(0);
+        // Default 4-channel WASD/QE mapping until per-machine bindings ship.
+        // Channel 0: forward (W) / back (S)
+        if (resolvedInput.buttons & 0x0001) channels[0] = 127;  // BTN_FORWARD
+        else if (resolvedInput.buttons & 0x0002) channels[0] = -127; // BTN_BACK
+        // Channel 1: left (A) / right (D) — note client move axes use camera
+        // convention so we map move_x directly here.
+        if (resolvedInput.buttons & 0x0008) channels[1] = 127;  // BTN_RIGHT
+        else if (resolvedInput.buttons & 0x0004) channels[1] = -127; // BTN_LEFT
+        // Channel 2: jump (Space)
+        if (resolvedInput.buttons & 0x0010) channels[2] = 127;  // BTN_JUMP
+        // Channel 3: sprint (Shift)
+        if (resolvedInput.buttons & 0x0040) channels[3] = 127;  // BTN_SPRINT
+        const semantic: typeof resolvedInput = {
+          ...resolvedInput,
+          machineChannels: channels,
+        };
+        prediction.updateSnapMachine(frameDelta, semantic, sendInputs);
       } else {
         // Shared input bundling lives here for both modes. In local practice mode
         // the authoritative loopback session owns movement, so this only queues
@@ -1274,6 +1364,25 @@ export function GameWorld({
           vehicleMeshes.current.delete(id);
         }
       }
+
+      // Nearest snap-machine (proximity check for E to operate). Uses the
+      // first body's world pose as the machine origin.
+      let nearestMachine: number | null = null;
+      let nearestMachineDist = VEHICLE_INTERACT_RADIUS;
+      const isOperatingMachine = prediction.isOperatingSnapMachine();
+      if (!isDrivingNow && !isOperatingMachine) {
+        for (const entity of worldDocument.dynamicEntities) {
+          if (entity.kind !== 'snapMachine') continue;
+          const dx = entity.position[0] - pos[0];
+          const dz = entity.position[2] - pos[2];
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < nearestMachineDist) {
+            nearestMachineDist = dist;
+            nearestMachine = entity.id;
+          }
+        }
+      }
+      nearestMachineIdRef.current = nearestMachine;
     }
   });
 

@@ -6,7 +6,8 @@ import type { WasmDebugRenderBuffers, WasmSimWorldInstance } from '../wasm/share
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from './dynamicBodyPredictionManager';
-import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
+import { MachinePredictionManager } from './machinePredictionManager';
+import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetSnapMachineState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import type { RenderBlock } from '../world/voxelWorld';
 
@@ -51,6 +52,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const dynamicBodyManagerRef = useRef<DynamicBodyPredictionManager | null>(null);
+  const machineManagerRef = useRef<MachinePredictionManager | null>(null);
   const simRef = useRef<WasmSimWorldInstance | null>(null);
   const lastPredictedDynamicShotRef = useRef<{ bodyId: number; atMs: number } | null>(null);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
@@ -78,6 +80,7 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
       managerRef.current = manager;
       vehicleManagerRef.current = new VehiclePredictionManager(sim, practiceMode);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
+      machineManagerRef.current = new MachinePredictionManager(sim, practiceMode);
       simRef.current = sim;
 
       // Apply any world packets that arrived before WASM was ready.
@@ -348,6 +351,75 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     return vehicleManagerRef.current?.isActive() ?? false;
   }, []);
 
+  // ── Snap-machine wrappers ───────────────────────────────────────────
+
+  const spawnSnapMachine = useCallback((
+    id: number,
+    envelopeJson: string,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+  ): void => {
+    simRef.current?.spawnSnapMachine(id, envelopeJson, px, py, pz, qx, qy, qz, qw);
+  }, []);
+
+  const removeSnapMachine = useCallback((id: number): void => {
+    simRef.current?.removeSnapMachine(id);
+  }, []);
+
+  const enterSnapMachine = useCallback((machineId: number): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    mm.setNextSeq(managerRef.current?.getNextSeq() ?? mm.getNextSeq());
+    mm.enterMachine(machineId);
+  }, []);
+
+  const exitSnapMachine = useCallback((): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    managerRef.current?.setNextSeq(mm.getNextSeq());
+    mm.exitMachine();
+  }, []);
+
+  const updateSnapMachine = useCallback((
+    frameDeltaSec: number,
+    input: SemanticInputState,
+    sendInputs: (cmds: InputCmd[]) => void,
+  ): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    const cmds = mm.update(frameDeltaSec, input);
+    managerRef.current?.setNextSeq(mm.getNextSeq());
+    if (cmds.length > 0) sendInputs(cmds);
+  }, []);
+
+  const reconcileSnapMachine = useCallback(
+    (state: NetSnapMachineState, ackInputSeq: number): void => {
+      machineManagerRef.current?.reconcile(state, ackInputSeq);
+    },
+    [],
+  );
+
+  const syncRemoteSnapMachine = useCallback((state: NetSnapMachineState): void => {
+    if (practiceMode) return;
+    machineManagerRef.current?.syncRemoteMachine(state);
+  }, [practiceMode]);
+
+  const isOperatingSnapMachine = useCallback((): boolean => {
+    return machineManagerRef.current?.isActive() ?? false;
+  }, []);
+
+  const getOperatedSnapMachineId = useCallback((): number | null => {
+    return machineManagerRef.current?.getMachineId() ?? null;
+  }, []);
+
+  const getSnapMachineActionChannels = useCallback((): string[] => {
+    return machineManagerRef.current?.getActionChannels() ?? [];
+  }, []);
+
+  const getSnapMachineBodyPoses = useCallback((): Float32Array => {
+    return machineManagerRef.current?.getBodyPoses() ?? new Float32Array(0);
+  }, []);
+
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const dynamicManager = dynamicBodyManagerRef.current;
     if (!dynamicManager) return;
@@ -586,6 +658,17 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
     getDrivenVehicleId,
     getLocalVehicleDebug,
     isInVehicle,
+    spawnSnapMachine,
+    removeSnapMachine,
+    enterSnapMachine,
+    exitSnapMachine,
+    updateSnapMachine,
+    reconcileSnapMachine,
+    syncRemoteSnapMachine,
+    isOperatingSnapMachine,
+    getOperatedSnapMachineId,
+    getSnapMachineActionChannels,
+    getSnapMachineBodyPoses,
   };
 }
 

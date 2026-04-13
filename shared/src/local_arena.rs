@@ -9,7 +9,9 @@ use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND};
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
+use crate::snap_machine::{MachineBodySnapshot, SnapMachine, SnapMachineError};
 use crate::vehicle::{create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter};
+use snap_machines_rapier::{MachineWorldMut, MachineWorldRemove};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
@@ -43,6 +45,11 @@ pub struct Vehicle {
     pub driver_id: Option<u32>,
 }
 
+pub struct SnapMachineInstance {
+    pub machine: SnapMachine,
+    pub driver_id: Option<u32>,
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerMotorState {
     pub collider: ColliderHandle,
@@ -65,6 +72,9 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+    pub machines: HashMap<u32, SnapMachineInstance>,
+    next_machine_id: u32,
+    pub machine_of_player: HashMap<u32, u32>,
 }
 
 impl PhysicsArena {
@@ -76,6 +86,9 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            machines: HashMap::new(),
+            next_machine_id: 1,
+            machine_of_player: HashMap::new(),
         }
     }
 
@@ -117,6 +130,7 @@ impl PhysicsArena {
 
     pub fn remove_player(&mut self, player_id: u32) {
         self.detach_player_from_vehicles(player_id);
+        self.detach_player_from_machines(player_id);
         if let Some(player) = self.players.remove(&player_id) {
             self.dynamic.sim.remove_player_collider(player.collider);
         }
@@ -182,7 +196,9 @@ impl PhysicsArena {
         input: &InputCmd,
         dt: f32,
     ) -> Option<PlayerTickResult> {
-        if self.vehicle_of_player.contains_key(&player_id) {
+        if self.vehicle_of_player.contains_key(&player_id)
+            || self.machine_of_player.contains_key(&player_id)
+        {
             if let Some(state) = self.players.get_mut(&player_id) {
                 state.last_input = input.clone();
             }
@@ -641,4 +657,269 @@ impl PhysicsArena {
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
+
+    // ── Snap-machine management ──────────────────────
+
+    /// Install a snap-machine into the shared rapier sets at the given world
+    /// pose. `id` is the world-document entity id used as the wire id.
+    pub fn spawn_snap_machine_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        envelope: &serde_json::Value,
+    ) -> Result<(), SnapMachineError> {
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(position.x, position.y, position.z),
+            UnitQuaternion::from_quaternion(Quaternion::new(
+                rotation[3],
+                rotation[0],
+                rotation[1],
+                rotation[2],
+            )),
+        );
+
+        let machine = {
+            let mut world = MachineWorldMut {
+                bodies: &mut self.dynamic.sim.rigid_bodies,
+                colliders: &mut self.dynamic.sim.colliders,
+                impulse_joints: &mut self.dynamic.impulse_joints,
+            };
+            SnapMachine::install_envelope_at_pose(&mut world, envelope, pose)?
+        };
+
+        // Mark every freshly-attached collider modified so the broad-phase
+        // BVH picks them up on the next sync.
+        for body_id in machine.body_ids() {
+            if let Some(handle) = machine.plan().bodies.iter().find(|b| &b.id == body_id) {
+                let _ = handle; // we do not need handle here, just iterate
+            }
+        }
+        // Cheap path: mark every dynamic body collider as modified by walking
+        // the new bodies.
+        let body_handles: Vec<rapier3d::prelude::RigidBodyHandle> = machine
+            .body_ids()
+            .iter()
+            .filter_map(|id| machine_runtime_body_handle(&machine, id))
+            .collect();
+        for handle in body_handles {
+            if let Some(rb) = self.dynamic.sim.rigid_bodies.get(handle) {
+                for ch in rb.colliders() {
+                    self.dynamic.sim.modified_colliders.push(*ch);
+                }
+            }
+        }
+
+        self.machines.insert(
+            id,
+            SnapMachineInstance {
+                machine,
+                driver_id: None,
+            },
+        );
+        self.next_machine_id = self.next_machine_id.max(id.saturating_add(1));
+        Ok(())
+    }
+
+    /// Step every machine one tick by feeding the driver's last machine
+    /// input channels into its motors. Caller must subsequently advance the
+    /// shared dynamics pipeline (which already steps `impulse_joints`).
+    pub fn step_machines(&mut self, dt: f32) {
+        if self.machines.is_empty() {
+            return;
+        }
+        let machine_ids: Vec<u32> = self.machines.keys().copied().collect();
+        for mid in machine_ids {
+            // Make sure stale driver bookkeeping does not survive a player
+            // disconnect.
+            if let Some(driver_id) = self
+                .machines
+                .get(&mid)
+                .and_then(|machine| machine.driver_id)
+            {
+                if !self.players.contains_key(&driver_id) {
+                    self.detach_player_from_machines(driver_id);
+                } else if self.machine_of_player.get(&driver_id) != Some(&mid) {
+                    self.machine_of_player.insert(driver_id, mid);
+                }
+            }
+
+            // Pull the channels off the driver (or zeros when unoccupied).
+            let channels = {
+                let driver_id = self
+                    .machines
+                    .get(&mid)
+                    .and_then(|machine| machine.driver_id);
+                match driver_id.and_then(|did| self.players.get(&did)) {
+                    Some(player) => player.last_input.machine_channels,
+                    None => MachineChannels::default(),
+                }
+            };
+
+            let machine = match self.machines.get_mut(&mid) {
+                Some(m) => m,
+                None => continue,
+            };
+            let mut world = MachineWorldMut {
+                bodies: &mut self.dynamic.sim.rigid_bodies,
+                colliders: &mut self.dynamic.sim.colliders,
+                impulse_joints: &mut self.dynamic.impulse_joints,
+            };
+            machine.machine.apply_input(&mut world, &channels, dt);
+        }
+    }
+
+    pub fn enter_machine(&mut self, player_id: u32, machine_id: u32) {
+        if !self.players.contains_key(&player_id) || !self.machines.contains_key(&machine_id) {
+            return;
+        }
+
+        // Drop any prior occupancy.
+        self.detach_player_from_vehicles(player_id);
+        self.detach_player_from_machines(player_id);
+
+        if let Some(current_driver_id) = self
+            .machines
+            .get(&machine_id)
+            .and_then(|machine| machine.driver_id)
+        {
+            if current_driver_id != player_id {
+                if self.players.contains_key(&current_driver_id) {
+                    self.machine_of_player.insert(current_driver_id, machine_id);
+                    return;
+                }
+                self.detach_player_from_machines(current_driver_id);
+            }
+        }
+
+        if let Some(player) = self.players.get(&player_id) {
+            if let Some(c) = self.dynamic.sim.colliders.get_mut(player.collider) {
+                c.set_collision_groups(InteractionGroups::none());
+            }
+        }
+        if let Some(machine) = self.machines.get_mut(&machine_id) {
+            machine.driver_id = Some(player_id);
+        }
+        self.machine_of_player.insert(player_id, machine_id);
+    }
+
+    pub fn exit_machine(&mut self, player_id: u32) {
+        if let Some(machine_id) = self.detach_player_from_machines(player_id) {
+            // Eject 2.5 m beside the machine's first body, mirroring vehicle
+            // exit behavior.
+            let first_body_pos = self
+                .machines
+                .get(&machine_id)
+                .and_then(|machine| {
+                    machine
+                        .machine
+                        .body_ids()
+                        .first()
+                        .and_then(|id| machine_runtime_body_handle(&machine.machine, id))
+                })
+                .and_then(|h| self.dynamic.sim.rigid_bodies.get(h))
+                .map(|rb| *rb.translation());
+
+            if let Some(p) = first_body_pos {
+                if let Some(state) = self.players.get_mut(&player_id) {
+                    state.position =
+                        Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
+                    if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
+                        c.set_collision_groups(InteractionGroups::all());
+                    }
+                    self.dynamic
+                        .sim
+                        .sync_player_collider(state.collider, &state.position);
+                }
+            }
+        }
+    }
+
+    fn detach_player_from_machines(&mut self, player_id: u32) -> Option<u32> {
+        self.machine_of_player.remove(&player_id);
+        let machine_ids: Vec<u32> = self
+            .machines
+            .iter()
+            .filter_map(|(&id, machine)| {
+                (machine.driver_id == Some(player_id)).then_some(id)
+            })
+            .collect();
+        for id in &machine_ids {
+            if let Some(machine) = self.machines.get_mut(id) {
+                machine.driver_id = None;
+            }
+        }
+        machine_ids.into_iter().next()
+    }
+
+    pub fn snapshot_machines(&self) -> Vec<NetSnapMachineState> {
+        let mut out = Vec::with_capacity(self.machines.len());
+        for (&id, machine) in &self.machines {
+            let body_snapshots = machine.machine.snapshot_bodies(&self.dynamic.sim.rigid_bodies);
+            let bodies = body_snapshots
+                .into_iter()
+                .map(|s| {
+                    make_net_snap_body_state(s.index, s.position, s.rotation, s.linvel, s.angvel)
+                })
+                .collect();
+            out.push(NetSnapMachineState {
+                id,
+                driver_id: machine.driver_id.unwrap_or(0),
+                flags: 0,
+                bodies,
+            });
+        }
+        out.sort_by_key(|m| m.id);
+        out
+    }
+
+    /// Read-only access to a machine instance (for client-side prediction).
+    pub fn machine(&self, id: u32) -> Option<&SnapMachineInstance> {
+        self.machines.get(&id)
+    }
+
+    /// Apply an authoritative server snapshot of a single machine to its
+    /// rigid bodies (used by the wasm reconcile path).
+    pub fn apply_machine_snapshot(&mut self, id: u32, snapshots: &[MachineBodySnapshot]) {
+        let Some(machine) = self.machines.get_mut(&id) else {
+            return;
+        };
+        machine.machine.apply_body_snapshot(
+            &mut self.dynamic.sim.rigid_bodies,
+            &mut self.dynamic.sim.modified_colliders,
+            snapshots,
+        );
+    }
+
+    /// Tear down a snap-machine and free its rapier bodies/joints.
+    pub fn remove_snap_machine(&mut self, id: u32) {
+        if let Some(instance) = self.machines.remove(&id) {
+            // Detach any drivers.
+            let drivers: Vec<u32> = self
+                .machine_of_player
+                .iter()
+                .filter_map(|(&pid, &mid)| (mid == id).then_some(pid))
+                .collect();
+            for pid in drivers {
+                self.machine_of_player.remove(&pid);
+            }
+            let mut world = MachineWorldRemove {
+                islands: &mut self.dynamic.sim.island_manager,
+                bodies: &mut self.dynamic.sim.rigid_bodies,
+                colliders: &mut self.dynamic.sim.colliders,
+                impulse_joints: &mut self.dynamic.impulse_joints,
+                multibody_joints: &mut self.dynamic.multibody_joints,
+            };
+            instance.machine.remove(&mut world);
+        }
+    }
+}
+
+fn machine_runtime_body_handle(
+    machine: &SnapMachine,
+    body_id: &str,
+) -> Option<rapier3d::prelude::RigidBodyHandle> {
+    // SnapMachine does not expose `body_handle` directly (the `MachineRuntime`
+    // does). Look it up via the runtime accessor on the wrapper.
+    machine.body_handle(body_id)
 }

@@ -25,6 +25,8 @@ export const PKT_BLOCK_EDIT = 4;
 export const PKT_VEHICLE_ENTER = 5;
 export const PKT_VEHICLE_EXIT = 6;
 export const PKT_DEBUG_STATS = 7;
+export const PKT_MACHINE_ENTER = 8;
+export const PKT_MACHINE_EXIT = 9;
 
 export const PKT_WELCOME = 101;
 export const PKT_SNAPSHOT = 102;

@@ -21,6 +21,8 @@ pub enum ClientPacket {
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
+    MachineEnter(MachineEnterCmd),
+    MachineExit(MachineExitCmd),
     DebugStats { correction_m: f32, physics_ms: f32 },
 }
 
@@ -45,6 +47,8 @@ pub enum ClientDatagram {
     BlockEdit(BlockEditCmd),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
+    MachineEnter(MachineEnterCmd),
+    MachineExit(MachineExitCmd),
     Ping(u32),
     DebugStats { correction_m: f32, physics_ms: f32 },
 }
@@ -256,6 +260,16 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
             let vehicle_id = buf.get_u32_le();
             ClientDatagram::VehicleExit(VehicleExitCmd { vehicle_id })
         }
+        PKT_MACHINE_ENTER => {
+            ensure!(buf.remaining() >= 4, "short machine enter datagram");
+            let machine_id = buf.get_u32_le();
+            ClientDatagram::MachineEnter(MachineEnterCmd { machine_id })
+        }
+        PKT_MACHINE_EXIT => {
+            ensure!(buf.remaining() >= 4, "short machine exit datagram");
+            let machine_id = buf.get_u32_le();
+            ClientDatagram::MachineExit(MachineExitCmd { machine_id })
+        }
         PKT_PING => {
             ensure!(buf.remaining() >= 4, "short ping datagram");
             ClientDatagram::Ping(buf.get_u32_le())
@@ -283,6 +297,8 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
         ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
+        ClientDatagram::MachineEnter(cmd) => ClientPacket::MachineEnter(cmd),
+        ClientDatagram::MachineExit(cmd) => ClientPacket::MachineExit(cmd),
         ClientDatagram::Ping(n) => ClientPacket::Ping(n),
         ClientDatagram::DebugStats {
             correction_m,
@@ -382,6 +398,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             out.put_u16_le(pkt.vehicle_states.len() as u16);
+            out.put_u16_le(pkt.machine_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -428,6 +445,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
+            encode_machine_states(&mut out, &pkt.machine_states);
         }
         ServerDatagramPacket::SnapshotV2(pkt) => {
             out.put_u8(PKT_SNAPSHOT_V2);
@@ -577,6 +595,16 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             let vehicle_id = buf.get_u32_le();
             ClientPacket::VehicleExit(VehicleExitCmd { vehicle_id })
         }
+        PKT_MACHINE_ENTER => {
+            ensure!(buf.remaining() >= 4, "short machine enter packet");
+            let machine_id = buf.get_u32_le();
+            ClientPacket::MachineEnter(MachineEnterCmd { machine_id })
+        }
+        PKT_MACHINE_EXIT => {
+            ensure!(buf.remaining() >= 4, "short machine exit packet");
+            let machine_id = buf.get_u32_le();
+            ClientPacket::MachineExit(MachineExitCmd { machine_id })
+        }
         PKT_DEBUG_STATS => {
             ensure!(buf.remaining() >= 8, "short debug stats packet");
             let correction_m =
@@ -617,20 +645,60 @@ fn encode_vehicle_states(out: &mut bytes::BytesMut, states: &[NetVehicleState]) 
     }
 }
 
+fn encode_machine_states(out: &mut bytes::BytesMut, states: &[NetSnapMachineState]) {
+    for m in states {
+        out.put_u32_le(m.id);
+        out.put_u32_le(m.driver_id);
+        out.put_u8(m.flags);
+        out.put_u8(m.bodies.len() as u8);
+        for b in &m.bodies {
+            out.put_u16_le(b.index);
+            out.put_i32_le(b.px_mm);
+            out.put_i32_le(b.py_mm);
+            out.put_i32_le(b.pz_mm);
+            out.put_i16_le(b.qx_snorm);
+            out.put_i16_le(b.qy_snorm);
+            out.put_i16_le(b.qz_snorm);
+            out.put_i16_le(b.qw_snorm);
+            out.put_i16_le(b.vx_cms);
+            out.put_i16_le(b.vy_cms);
+            out.put_i16_le(b.vz_cms);
+            out.put_i16_le(b.wx_mrads);
+            out.put_i16_le(b.wy_mrads);
+            out.put_i16_le(b.wz_mrads);
+        }
+    }
+}
+
 fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputFrame>> {
     ensure!(buf.remaining() >= 1, "short input bundle header");
     let count = buf.get_u8() as usize;
     ensure!(count > 0, "input bundle cannot be empty");
-    ensure!(buf.remaining() >= count * 10, "short input bundle payload");
+    let frame_size = 10 + vibe_land_shared::snap_machine::MAX_MACHINE_CHANNELS;
+    ensure!(
+        buf.remaining() >= count * frame_size,
+        "short input bundle payload"
+    );
     let mut frames = Vec::with_capacity(count);
     for _ in 0..count {
+        let seq = buf.get_u16_le();
+        let buttons = buf.get_u16_le();
+        let move_x = buf.get_i8();
+        let move_y = buf.get_i8();
+        let yaw = i16_to_angle(buf.get_i16_le());
+        let pitch = i16_to_angle(buf.get_i16_le());
+        let mut machine_channels = vibe_land_shared::protocol::MachineChannels::default();
+        for slot in machine_channels.iter_mut() {
+            *slot = buf.get_i8();
+        }
         frames.push(InputFrame {
-            seq: buf.get_u16_le(),
-            buttons: buf.get_u16_le(),
-            move_x: buf.get_i8(),
-            move_y: buf.get_i8(),
-            yaw: i16_to_angle(buf.get_i16_le()),
-            pitch: i16_to_angle(buf.get_i16_le()),
+            seq,
+            buttons,
+            move_x,
+            move_y,
+            yaw,
+            pitch,
+            machine_channels,
         });
     }
     Ok(frames)
@@ -656,6 +724,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             out.put_u16_le(pkt.vehicle_states.len() as u16);
+            out.put_u16_le(pkt.machine_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -702,6 +771,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
+            encode_machine_states(&mut out, &pkt.machine_states);
         }
         ServerPacket::ShotResult(pkt) => {
             out.put_u8(PKT_SHOT_RESULT);
@@ -849,6 +919,7 @@ mod tests {
             projectile_states: vec![],
             dynamic_body_states: vec![],
             vehicle_states: vec![],
+            machine_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT);
@@ -866,6 +937,7 @@ mod tests {
             projectile_states: vec![],
             dynamic_body_states: vec![],
             vehicle_states: vec![],
+            machine_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];
@@ -901,7 +973,29 @@ mod tests {
 
     #[test]
     fn decode_single_input_frame() {
-        let bytes = [PKT_INPUT_BUNDLE, 1, 42, 0, 17, 0, 127, 0, 0, 0, 0, 0];
+        let bytes = [
+            PKT_INPUT_BUNDLE,
+            1,
+            42,
+            0,
+            17,
+            0,
+            127,
+            0,
+            0,
+            0,
+            0,
+            0,
+            // 8 bytes of zero machine_channels
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
         let packet = decode_client_packet(&bytes).unwrap();
         match packet {
             ClientPacket::InputBundle(frames) => {

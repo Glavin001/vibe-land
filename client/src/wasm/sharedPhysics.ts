@@ -94,6 +94,42 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
     vy: number,
     vz: number,
   ): void;
+
+  // ── Snap-machine API ────────────────────────────────────────────────
+  spawnSnapMachine(
+    id: number,
+    envelopeJson: string,
+    px: number,
+    py: number,
+    pz: number,
+    qx: number,
+    qy: number,
+    qz: number,
+    qw: number,
+  ): void;
+  removeSnapMachine(id: number): void;
+  setLocalSnapMachine(machineId: number): void;
+  clearLocalSnapMachine(): void;
+  getSnapMachineBodyCount(id: number): number;
+  /** \n-delimited list of action channel names in deterministic order. */
+  getSnapMachineActionChannels(id: number): string;
+  /** Flat `[px, py, pz, qx, qy, qz, qw]` per body. */
+  getSnapMachineBodyPoses(id: number): Float32Array;
+  /** Flat `[index, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]` per body. */
+  syncRemoteSnapMachine(id: number, bodiesFlat: Float32Array): void;
+  tickSnapMachine(
+    seq: number,
+    channelsIn: Int8Array,
+    yaw: number,
+    pitch: number,
+    dt: number,
+  ): void;
+  reconcileSnapMachine(
+    ackSeq: number,
+    bodiesFlat: Float32Array,
+    dt: number,
+  ): boolean;
+  getSnapMachinePendingCount(): number;
 };
 type WasmSimWorldCtor = {
   new (): WasmSimWorldInstance;

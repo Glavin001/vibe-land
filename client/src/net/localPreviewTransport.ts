@@ -7,6 +7,8 @@ import {
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
+  encodeMachineEnterPacket,
+  encodeMachineExitPacket,
   type BlockEditCmd,
   type FireCmd,
   type InputCmd,
@@ -102,6 +104,14 @@ export class LocalPreviewTransport {
 
   sendVehicleExit(vehicleId: number): void {
     this.sendRaw(encodeVehicleExitPacket(vehicleId));
+  }
+
+  sendMachineEnter(machineId: number): void {
+    this.sendRaw(encodeMachineEnterPacket(machineId));
+  }
+
+  sendMachineExit(machineId: number): void {
+    this.sendRaw(encodeMachineExitPacket(machineId));
   }
 
   ping(): void {

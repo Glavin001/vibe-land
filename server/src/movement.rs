@@ -4,6 +4,9 @@ use std::time::Instant;
 use nalgebra::{DMatrix, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
+use snap_machines_rapier::MachineWorldMut;
+use vibe_land_shared::protocol::{MachineChannels, NetSnapMachineState, make_net_snap_body_state};
+use vibe_land_shared::snap_machine::{SnapMachine, SnapMachineError};
 use vibe_land_shared::world_document::WorldDocumentArena;
 
 use crate::protocol::*;
@@ -39,6 +42,11 @@ pub struct PlayerMotorState {
     pub last_input: InputCmd,
 }
 
+pub struct SnapMachineInstance {
+    pub machine: SnapMachine,
+    pub driver_id: Option<u32>,
+}
+
 /// Server-side physics world: wraps `DynamicArena` (generic netcode library)
 /// and adds game-specific player state management.
 pub struct PhysicsArena {
@@ -49,6 +57,9 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+
+    pub machines: HashMap<u32, SnapMachineInstance>,
+    pub machine_of_player: HashMap<u32, u32>,
 }
 
 impl PhysicsArena {
@@ -60,6 +71,8 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            machines: HashMap::new(),
+            machine_of_player: HashMap::new(),
         }
     }
 
@@ -105,6 +118,7 @@ impl PhysicsArena {
 
     pub fn remove_player(&mut self, player_id: u32) {
         self.detach_player_from_vehicles(player_id);
+        self.detach_player_from_machines(player_id);
         if let Some(player) = self.players.remove(&player_id) {
             self.dynamic.sim.remove_player_collider(player.collider);
         }
@@ -161,8 +175,11 @@ impl PhysicsArena {
         input: &InputCmd,
         dt: f32,
     ) -> Option<PlayerTickResult> {
-        // Players driving a vehicle don't move independently — store input for vehicle use.
-        if self.vehicle_of_player.contains_key(&player_id) {
+        // Players driving a vehicle or operating a snap-machine don't move
+        // independently — store input for vehicle/machine use.
+        if self.vehicle_of_player.contains_key(&player_id)
+            || self.machine_of_player.contains_key(&player_id)
+        {
             if let Some(state) = self.players.get_mut(&player_id) {
                 state.last_input = input.clone();
             }
@@ -652,6 +669,197 @@ impl PhysicsArena {
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
     }
+
+    // ── Snap-machine management ─────────────────────────────────────────
+
+    pub fn spawn_snap_machine_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        envelope: &serde_json::Value,
+    ) -> Result<(), SnapMachineError> {
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(position.x, position.y, position.z),
+            UnitQuaternion::from_quaternion(Quaternion::new(
+                rotation[3],
+                rotation[0],
+                rotation[1],
+                rotation[2],
+            )),
+        );
+
+        let machine = {
+            let mut world = MachineWorldMut {
+                bodies: &mut self.dynamic.sim.rigid_bodies,
+                colliders: &mut self.dynamic.sim.colliders,
+                impulse_joints: &mut self.dynamic.impulse_joints,
+            };
+            SnapMachine::install_envelope_at_pose(&mut world, envelope, pose)?
+        };
+
+        // Mark machine colliders modified so the broad-phase sees them.
+        let body_handles: Vec<RigidBodyHandle> = machine
+            .body_ids()
+            .iter()
+            .filter_map(|id| machine.body_handle(id))
+            .collect();
+        for handle in body_handles {
+            if let Some(rb) = self.dynamic.sim.rigid_bodies.get(handle) {
+                for ch in rb.colliders() {
+                    self.dynamic.sim.modified_colliders.push(*ch);
+                }
+            }
+        }
+
+        self.machines.insert(
+            id,
+            SnapMachineInstance {
+                machine,
+                driver_id: None,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn step_machines(&mut self, dt: f32) {
+        if self.machines.is_empty() {
+            return;
+        }
+        let machine_ids: Vec<u32> = self.machines.keys().copied().collect();
+        for mid in machine_ids {
+            if let Some(driver_id) = self
+                .machines
+                .get(&mid)
+                .and_then(|machine| machine.driver_id)
+            {
+                if !self.players.contains_key(&driver_id) {
+                    self.detach_player_from_machines(driver_id);
+                } else if self.machine_of_player.get(&driver_id) != Some(&mid) {
+                    self.machine_of_player.insert(driver_id, mid);
+                }
+            }
+            let channels = {
+                let driver_id = self
+                    .machines
+                    .get(&mid)
+                    .and_then(|machine| machine.driver_id);
+                match driver_id.and_then(|did| self.players.get(&did)) {
+                    Some(player) => player.last_input.machine_channels,
+                    None => MachineChannels::default(),
+                }
+            };
+            let machine = match self.machines.get_mut(&mid) {
+                Some(m) => m,
+                None => continue,
+            };
+            let mut world = MachineWorldMut {
+                bodies: &mut self.dynamic.sim.rigid_bodies,
+                colliders: &mut self.dynamic.sim.colliders,
+                impulse_joints: &mut self.dynamic.impulse_joints,
+            };
+            machine.machine.apply_input(&mut world, &channels, dt);
+        }
+    }
+
+    pub fn enter_machine(&mut self, player_id: u32, machine_id: u32) {
+        if !self.players.contains_key(&player_id) || !self.machines.contains_key(&machine_id) {
+            return;
+        }
+        self.detach_player_from_vehicles(player_id);
+        self.detach_player_from_machines(player_id);
+
+        if let Some(current_driver_id) = self
+            .machines
+            .get(&machine_id)
+            .and_then(|machine| machine.driver_id)
+        {
+            if current_driver_id != player_id {
+                if self.players.contains_key(&current_driver_id) {
+                    self.machine_of_player.insert(current_driver_id, machine_id);
+                    return;
+                }
+                self.detach_player_from_machines(current_driver_id);
+            }
+        }
+
+        if let Some(player) = self.players.get(&player_id) {
+            if let Some(c) = self.dynamic.sim.colliders.get_mut(player.collider) {
+                c.set_collision_groups(InteractionGroups::none());
+            }
+        }
+        if let Some(machine) = self.machines.get_mut(&machine_id) {
+            machine.driver_id = Some(player_id);
+        }
+        self.machine_of_player.insert(player_id, machine_id);
+    }
+
+    pub fn exit_machine(&mut self, player_id: u32) {
+        if let Some(machine_id) = self.detach_player_from_machines(player_id) {
+            let first_body_pos = self
+                .machines
+                .get(&machine_id)
+                .and_then(|machine| {
+                    machine
+                        .machine
+                        .body_ids()
+                        .first()
+                        .and_then(|id| machine.machine.body_handle(id))
+                })
+                .and_then(|h| self.dynamic.sim.rigid_bodies.get(h))
+                .map(|rb| *rb.translation());
+            if let Some(p) = first_body_pos {
+                if let Some(state) = self.players.get_mut(&player_id) {
+                    state.position =
+                        Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
+                    if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
+                        c.set_collision_groups(InteractionGroups::all());
+                    }
+                    self.dynamic
+                        .sim
+                        .sync_player_collider(state.collider, &state.position);
+                }
+            }
+        }
+    }
+
+    fn detach_player_from_machines(&mut self, player_id: u32) -> Option<u32> {
+        self.machine_of_player.remove(&player_id);
+        let machine_ids: Vec<u32> = self
+            .machines
+            .iter()
+            .filter_map(|(&id, machine)| (machine.driver_id == Some(player_id)).then_some(id))
+            .collect();
+        for id in &machine_ids {
+            if let Some(machine) = self.machines.get_mut(id) {
+                machine.driver_id = None;
+            }
+        }
+        machine_ids.into_iter().next()
+    }
+
+    pub fn snapshot_machines(&self) -> Vec<NetSnapMachineState> {
+        let mut out = Vec::with_capacity(self.machines.len());
+        for (&id, instance) in &self.machines {
+            let body_snapshots = instance
+                .machine
+                .snapshot_bodies(&self.dynamic.sim.rigid_bodies);
+            let bodies = body_snapshots
+                .into_iter()
+                .map(|s| {
+                    make_net_snap_body_state(s.index, s.position, s.rotation, s.linvel, s.angvel)
+                })
+                .collect();
+            out.push(NetSnapMachineState {
+                id,
+                driver_id: instance.driver_id.unwrap_or(0),
+                flags: 0,
+                bodies,
+            });
+        }
+        out.sort_by_key(|m| m.id);
+        out
+    }
 }
 
 impl WorldDocumentArena for PhysicsArena {
@@ -699,6 +907,17 @@ impl WorldDocumentArena for PhysicsArena {
         PhysicsArena::spawn_vehicle_with_id(self, id, vehicle_type, position, rotation);
     }
 
+    fn spawn_snap_machine_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        rotation: [f32; 4],
+        envelope: &serde_json::Value,
+    ) -> Result<(), String> {
+        PhysicsArena::spawn_snap_machine_with_id(self, id, position, rotation, envelope)
+            .map_err(|e| e.to_string())
+    }
+
     fn rebuild_broad_phase(&mut self) {
         PhysicsArena::rebuild_broad_phase(self);
     }
@@ -715,6 +934,7 @@ mod tests {
             buttons: 0,
             move_x: 0,
             move_y: 0,
+            machine_channels: Default::default(),
             yaw: 0.0,
             pitch: 0.0,
         }

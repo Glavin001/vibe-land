@@ -2,8 +2,9 @@ use std::collections::VecDeque;
 
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MACHINE_ENTER,
+        PKT_MACHINE_EXIT, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -128,6 +129,18 @@ impl LocalPreviewSession {
                     self.arena.exit_vehicle(LOCAL_PLAYER_ID);
                 }
             }
+            PKT_MACHINE_ENTER => {
+                let machine_id = decode_machine_enter(&mut buf)?;
+                if self.arena.machines.contains_key(&machine_id) {
+                    self.arena.enter_machine(LOCAL_PLAYER_ID, machine_id);
+                }
+            }
+            PKT_MACHINE_EXIT => {
+                let machine_id = decode_machine_exit(&mut buf)?;
+                if self.arena.machine_of_player.get(&LOCAL_PLAYER_ID) == Some(&machine_id) {
+                    self.arena.exit_machine(LOCAL_PLAYER_ID);
+                }
+            }
             PKT_PING | PKT_DEBUG_STATS => {}
             other => return Err(format!("unsupported local preview packet kind {other}")),
         }
@@ -145,6 +158,7 @@ impl LocalPreviewSession {
         let input = take_input_for_tick(&mut self.player);
         self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
         self.arena.step_vehicles(dt);
+        self.arena.step_machines(dt);
         self.arena.step_dynamics(dt);
         self.process_hitscan(server_time_ms);
 
@@ -257,6 +271,7 @@ impl LocalPreviewSession {
             })
             .collect();
         let vehicle_states = self.arena.snapshot_vehicles();
+        let machine_states = self.arena.snapshot_machines();
 
         encode_snapshot_packet(&SnapshotPacket {
             server_time_us: self.server_time_us(),
@@ -266,6 +281,7 @@ impl LocalPreviewSession {
             projectile_states: Vec::new(),
             dynamic_body_states,
             vehicle_states,
+            machine_states,
         })
     }
 
@@ -325,16 +341,27 @@ fn decode_input_bundle_frames(buf: &mut &[u8]) -> Result<Vec<InputCmd>, String> 
     let count = buf.get_u8() as usize;
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
-        if buf.remaining() < 10 {
+        if buf.remaining() < 10 + crate::snap_machine::MAX_MACHINE_CHANNELS {
             return Err("truncated input frame".to_string());
         }
+        let seq = buf.get_u16_le();
+        let buttons = buf.get_u16_le();
+        let move_x = buf.get_i8();
+        let move_y = buf.get_i8();
+        let yaw = i16_to_angle(buf.get_i16_le());
+        let pitch = i16_to_angle(buf.get_i16_le());
+        let mut machine_channels = MachineChannels::default();
+        for slot in machine_channels.iter_mut() {
+            *slot = buf.get_i8();
+        }
         out.push(InputCmd {
-            seq: buf.get_u16_le(),
-            buttons: buf.get_u16_le(),
-            move_x: buf.get_i8(),
-            move_y: buf.get_i8(),
-            yaw: i16_to_angle(buf.get_i16_le()),
-            pitch: i16_to_angle(buf.get_i16_le()),
+            seq,
+            buttons,
+            move_x,
+            move_y,
+            yaw,
+            pitch,
+            machine_channels,
         });
     }
     Ok(out)
@@ -375,6 +402,20 @@ fn decode_vehicle_exit(buf: &mut &[u8]) -> Result<u32, String> {
     Ok(buf.get_u32_le())
 }
 
+fn decode_machine_enter(buf: &mut &[u8]) -> Result<u32, String> {
+    if buf.remaining() < 4 {
+        return Err("short machine enter packet".to_string());
+    }
+    Ok(buf.get_u32_le())
+}
+
+fn decode_machine_exit(buf: &mut &[u8]) -> Result<u32, String> {
+    if buf.remaining() < 4 {
+        return Err("short machine exit packet".to_string());
+    }
+    Ok(buf.get_u32_le())
+}
+
 fn encode_welcome_packet(pkt: &WelcomePacket) -> Vec<u8> {
     let mut out = BytesMut::with_capacity(19);
     out.put_u8(PKT_WELCOME);
@@ -407,6 +448,7 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
     out.put_u16_le(pkt.projectile_states.len() as u16);
     out.put_u16_le(pkt.dynamic_body_states.len() as u16);
     out.put_u16_le(pkt.vehicle_states.len() as u16);
+    out.put_u16_le(pkt.machine_states.len() as u16);
     for p in &pkt.player_states {
         out.put_u32_le(p.id);
         out.put_i32_le(p.px_mm);
@@ -474,6 +516,28 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
             out.put_u16_le(wheel);
         }
     }
+    for m in &pkt.machine_states {
+        out.put_u32_le(m.id);
+        out.put_u32_le(m.driver_id);
+        out.put_u8(m.flags);
+        out.put_u8(m.bodies.len() as u8);
+        for b in &m.bodies {
+            out.put_u16_le(b.index);
+            out.put_i32_le(b.px_mm);
+            out.put_i32_le(b.py_mm);
+            out.put_i32_le(b.pz_mm);
+            out.put_i16_le(b.qx_snorm);
+            out.put_i16_le(b.qy_snorm);
+            out.put_i16_le(b.qz_snorm);
+            out.put_i16_le(b.qw_snorm);
+            out.put_i16_le(b.vx_cms);
+            out.put_i16_le(b.vy_cms);
+            out.put_i16_le(b.vz_cms);
+            out.put_i16_le(b.wx_mrads);
+            out.put_i16_le(b.wy_mrads);
+            out.put_i16_le(b.wz_mrads);
+        }
+    }
     out.to_vec()
 }
 
@@ -492,7 +556,7 @@ mod tests {
     }
 
     fn encode_single_input_bundle(input: &InputCmd) -> Vec<u8> {
-        let mut out = BytesMut::with_capacity(12);
+        let mut out = BytesMut::with_capacity(12 + crate::snap_machine::MAX_MACHINE_CHANNELS);
         out.put_u8(PKT_INPUT_BUNDLE);
         out.put_u8(1);
         out.put_u16_le(input.seq);
@@ -501,6 +565,9 @@ mod tests {
         out.put_i8(input.move_y);
         out.put_i16_le(angle_to_i16(input.yaw));
         out.put_i16_le(angle_to_i16(input.pitch));
+        for ch in input.machine_channels {
+            out.put_i8(ch);
+        }
         out.to_vec()
     }
 
@@ -522,6 +589,7 @@ mod tests {
         let projectile_count = buf.get_u16_le() as usize;
         let dynamic_count = buf.get_u16_le() as usize;
         let vehicle_count = buf.get_u16_le() as usize;
+        let _machine_count = buf.get_u16_le() as usize;
 
         for _ in 0..player_count {
             buf.advance(29);
@@ -574,6 +642,7 @@ mod tests {
             move_y: 127,
             yaw: 0.0,
             pitch: 0.0,
+            machine_channels: Default::default(),
         };
         let bytes = encode_single_input_bundle(&input);
         session.handle_client_packet(&bytes).unwrap();

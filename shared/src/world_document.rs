@@ -75,14 +75,20 @@ pub struct DynamicEntity {
     pub radius: Option<f32>,
     #[serde(default)]
     pub vehicle_type: Option<u8>,
+    /// Inline snap-machine envelope JSON. Required when `kind == SnapMachine`,
+    /// ignored otherwise. Stored as a generic JSON value so the world
+    /// document round-trips even if the envelope schema evolves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum DynamicEntityKind {
     Box,
     Ball,
     Vehicle,
+    SnapMachine,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +111,13 @@ pub enum WorldDocumentError {
     MissingRadius {
         entity_id: u32,
     },
+    MissingMachineEnvelope {
+        entity_id: u32,
+    },
+    InvalidMachineEnvelope {
+        entity_id: u32,
+        reason: String,
+    },
 }
 
 impl fmt::Display for WorldDocumentError {
@@ -126,6 +139,18 @@ impl fmt::Display for WorldDocumentError {
             }
             Self::MissingRadius { entity_id } => {
                 write!(f, "dynamic entity {entity_id} missing radius")
+            }
+            Self::MissingMachineEnvelope { entity_id } => {
+                write!(
+                    f,
+                    "dynamic entity {entity_id} is a snapMachine but has no `envelope` field"
+                )
+            }
+            Self::InvalidMachineEnvelope { entity_id, reason } => {
+                write!(
+                    f,
+                    "dynamic entity {entity_id} snap-machine envelope is invalid: {reason}"
+                )
             }
         }
     }
@@ -241,6 +266,14 @@ pub trait WorldDocumentArena {
         rotation: [f32; 4],
     );
 
+    fn spawn_snap_machine_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        envelope: &serde_json::Value,
+    ) -> Result<(), String>;
+
     fn rebuild_broad_phase(&mut self);
 }
 
@@ -307,6 +340,19 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
             position,
             rotation,
         );
+    }
+
+    fn spawn_snap_machine_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        envelope: &serde_json::Value,
+    ) -> Result<(), String> {
+        crate::local_arena::PhysicsArena::spawn_snap_machine_with_id(
+            self, id, position, rotation, envelope,
+        )
+        .map_err(|e| e.to_string())
     }
 
     fn rebuild_broad_phase(&mut self) {
@@ -617,6 +663,29 @@ impl WorldDocument {
                         entity.rotation,
                     );
                 }
+                DynamicEntityKind::SnapMachine => {
+                    let envelope = entity.envelope.as_ref().ok_or(
+                        WorldDocumentError::MissingMachineEnvelope {
+                            entity_id: entity.id,
+                        },
+                    )?;
+                    // Snap-machines are anchored at their authored y by
+                    // default; we assume the envelope already accounts for
+                    // ground clearance. We still nudge above the terrain
+                    // surface so authoring at y=0 doesn't bury the chassis.
+                    let spawn_y = entity.position[1].max(terrain_y + 0.05);
+                    arena
+                        .spawn_snap_machine_with_id(
+                            entity.id,
+                            Vector3::new(entity.position[0], spawn_y, entity.position[2]),
+                            entity.rotation,
+                            envelope,
+                        )
+                        .map_err(|reason| WorldDocumentError::InvalidMachineEnvelope {
+                            entity_id: entity.id,
+                            reason,
+                        })?;
+                }
             }
         }
         Ok(())
@@ -702,6 +771,7 @@ mod tests {
                         half_extents: None,
                         radius: Some(radius),
                         vehicle_type: None,
+                        envelope: None,
                     });
                     next_id += 1;
                 }
@@ -818,6 +888,7 @@ mod tests {
             half_extents: None,
             radius: Some(0.5),
             vehicle_type: None,
+            envelope: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -957,6 +1028,7 @@ mod tests {
             half_extents: None,
             radius: Some(0.3),
             vehicle_type: None,
+            envelope: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1034,6 +1106,7 @@ mod tests {
                             DynamicEntityKind::Ball => "ball",
                             DynamicEntityKind::Box => "box",
                             DynamicEntityKind::Vehicle => "vehicle",
+                            DynamicEntityKind::SnapMachine => "snapMachine",
                         },
                         entity.id,
                         body.1[0],

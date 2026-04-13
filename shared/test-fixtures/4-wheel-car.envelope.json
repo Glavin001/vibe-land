@@ -1,0 +1,1027 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "smcat1-6c8337bf81d06ae1",
+  "plan": {
+    "behaviors": [],
+    "bodies": [
+      {
+        "colliders": [
+          {
+            "blockId": "chassis",
+            "halfExtents": {
+              "x": 2.5,
+              "y": 0.5,
+              "z": 0.5
+            },
+            "id": "frame.beam.5x1:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "mass": 5,
+            "partId": "main",
+            "sensor": false
+          },
+          {
+            "blockId": "fl-wheel",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.15,
+              "z": 0.15
+            },
+            "id": "joint.motor.wheel:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": -2,
+                "y": 0,
+                "z": 0.65
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 0.5,
+            "partId": "axle",
+            "sensor": false
+          },
+          {
+            "blockId": "fr-wheel",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.15,
+              "z": 0.15
+            },
+            "id": "joint.motor.wheel:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": -2,
+                "y": 0,
+                "z": -0.65
+              },
+              "rotation": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              }
+            },
+            "mass": 0.5,
+            "partId": "axle",
+            "sensor": false
+          },
+          {
+            "blockId": "rl-wheel",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.15,
+              "z": 0.15
+            },
+            "id": "joint.motor.wheel:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 2,
+                "y": 0,
+                "z": 0.65
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 0.5,
+            "partId": "axle",
+            "sensor": false
+          },
+          {
+            "blockId": "rr-wheel",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.15,
+              "z": 0.15
+            },
+            "id": "joint.motor.wheel:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 2,
+                "y": 0,
+                "z": -0.65
+              },
+              "rotation": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              }
+            },
+            "mass": 0.5,
+            "partId": "axle",
+            "sensor": false
+          }
+        ],
+        "id": "body:0",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 0,
+            "y": 2,
+            "z": 0
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "chassis",
+          "fl-wheel",
+          "fr-wheel",
+          "rl-wheel",
+          "rr-wheel"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "chassis",
+            "partId": "main"
+          },
+          {
+            "blockId": "fl-wheel",
+            "partId": "axle"
+          },
+          {
+            "blockId": "fr-wheel",
+            "partId": "axle"
+          },
+          {
+            "blockId": "rl-wheel",
+            "partId": "axle"
+          },
+          {
+            "blockId": "rr-wheel",
+            "partId": "axle"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "axis": "z",
+            "blockId": "fl-wheel",
+            "friction": 2,
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:collider:1",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.29999999999999993
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 1.5,
+            "partId": "wheel",
+            "radius": 0.8,
+            "sensor": false
+          }
+        ],
+        "id": "body:1",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": -2,
+            "y": 2,
+            "z": 0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "fl-wheel"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "fl-wheel",
+            "partId": "wheel"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "axis": "z",
+            "blockId": "fr-wheel",
+            "friction": 2,
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:collider:1",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": -0.29999999999999993
+              },
+              "rotation": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              }
+            },
+            "mass": 1.5,
+            "partId": "wheel",
+            "radius": 0.8,
+            "sensor": false
+          }
+        ],
+        "id": "body:2",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": -2,
+            "y": 2,
+            "z": -0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "fr-wheel"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "fr-wheel",
+            "partId": "wheel"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "axis": "z",
+            "blockId": "rl-wheel",
+            "friction": 2,
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:collider:1",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.29999999999999993
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 1.5,
+            "partId": "wheel",
+            "radius": 0.8,
+            "sensor": false
+          }
+        ],
+        "id": "body:3",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 2,
+            "y": 2,
+            "z": 0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "rl-wheel"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "rl-wheel",
+            "partId": "wheel"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "axis": "z",
+            "blockId": "rr-wheel",
+            "friction": 2,
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:collider:1",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": -0.29999999999999993
+              },
+              "rotation": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              }
+            },
+            "mass": 1.5,
+            "partId": "wheel",
+            "radius": 0.8,
+            "sensor": false
+          }
+        ],
+        "id": "body:4",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 2,
+            "y": 2,
+            "z": -0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "rr-wheel"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "rr-wheel",
+            "partId": "wheel"
+          }
+        ]
+      }
+    ],
+    "diagnostics": [],
+    "joints": [
+      {
+        "blockId": "fl-wheel",
+        "bodyAId": "body:0",
+        "bodyBId": "body:1",
+        "collideConnected": false,
+        "id": "joint:fl-wheel",
+        "kind": "revolute",
+        "localAnchorA": {
+          "x": -2,
+          "y": 0,
+          "z": 0.8
+        },
+        "localAnchorB": {
+          "x": 0,
+          "y": 0,
+          "z": 0.15000000000000002
+        },
+        "localAxisA": {
+          "x": -1.2246467991473532e-16,
+          "y": 0,
+          "z": 1
+        },
+        "localAxisB": {
+          "x": -1.2246467991473532e-16,
+          "y": 0,
+          "z": 1
+        },
+        "localFrameA": {
+          "w": 1,
+          "x": 0,
+          "y": -6.123233995736766e-17,
+          "z": 0
+        },
+        "localFrameB": {
+          "w": 6.123233995736766e-17,
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "motor": {
+          "damping": 10,
+          "input": {
+            "action": "motorSpin",
+            "scale": 5
+          },
+          "inputTarget": "velocity",
+          "maxForce": 100,
+          "mode": "velocity",
+          "stiffness": 0,
+          "targetPosition": 0,
+          "targetVelocity": 5
+        }
+      },
+      {
+        "blockId": "fr-wheel",
+        "bodyAId": "body:0",
+        "bodyBId": "body:2",
+        "collideConnected": false,
+        "id": "joint:fr-wheel",
+        "kind": "revolute",
+        "localAnchorA": {
+          "x": -2,
+          "y": 0,
+          "z": -0.8
+        },
+        "localAnchorB": {
+          "x": 0,
+          "y": 0,
+          "z": -0.15000000000000002
+        },
+        "localAxisA": {
+          "x": 1.2246467991473532e-16,
+          "y": 0,
+          "z": -1
+        },
+        "localAxisB": {
+          "x": 1.2246467991473532e-16,
+          "y": 0,
+          "z": -1
+        },
+        "localFrameA": {
+          "w": 6.123233995736766e-17,
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "localFrameB": {
+          "w": -1,
+          "x": 0,
+          "y": 6.123233995736766e-17,
+          "z": 0
+        },
+        "motor": {
+          "damping": 10,
+          "input": {
+            "action": "motorSpin",
+            "scale": 5
+          },
+          "inputTarget": "velocity",
+          "maxForce": 100,
+          "mode": "velocity",
+          "stiffness": 0,
+          "targetPosition": 0,
+          "targetVelocity": 5
+        }
+      },
+      {
+        "blockId": "rl-wheel",
+        "bodyAId": "body:0",
+        "bodyBId": "body:3",
+        "collideConnected": false,
+        "id": "joint:rl-wheel",
+        "kind": "revolute",
+        "localAnchorA": {
+          "x": 2,
+          "y": 0,
+          "z": 0.8
+        },
+        "localAnchorB": {
+          "x": 0,
+          "y": 0,
+          "z": 0.15000000000000002
+        },
+        "localAxisA": {
+          "x": -1.2246467991473532e-16,
+          "y": 0,
+          "z": 1
+        },
+        "localAxisB": {
+          "x": -1.2246467991473532e-16,
+          "y": 0,
+          "z": 1
+        },
+        "localFrameA": {
+          "w": 1,
+          "x": 0,
+          "y": -6.123233995736766e-17,
+          "z": 0
+        },
+        "localFrameB": {
+          "w": 6.123233995736766e-17,
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "motor": {
+          "damping": 10,
+          "input": {
+            "action": "motorSpin",
+            "scale": 5
+          },
+          "inputTarget": "velocity",
+          "maxForce": 100,
+          "mode": "velocity",
+          "stiffness": 0,
+          "targetPosition": 0,
+          "targetVelocity": 5
+        }
+      },
+      {
+        "blockId": "rr-wheel",
+        "bodyAId": "body:0",
+        "bodyBId": "body:4",
+        "collideConnected": false,
+        "id": "joint:rr-wheel",
+        "kind": "revolute",
+        "localAnchorA": {
+          "x": 2,
+          "y": 0,
+          "z": -0.8
+        },
+        "localAnchorB": {
+          "x": 0,
+          "y": 0,
+          "z": -0.15000000000000002
+        },
+        "localAxisA": {
+          "x": 1.2246467991473532e-16,
+          "y": 0,
+          "z": -1
+        },
+        "localAxisB": {
+          "x": 1.2246467991473532e-16,
+          "y": 0,
+          "z": -1
+        },
+        "localFrameA": {
+          "w": 6.123233995736766e-17,
+          "x": 0,
+          "y": 1,
+          "z": 0
+        },
+        "localFrameB": {
+          "w": -1,
+          "x": 0,
+          "y": 6.123233995736766e-17,
+          "z": 0
+        },
+        "motor": {
+          "damping": 10,
+          "input": {
+            "action": "motorSpin",
+            "scale": 5
+          },
+          "inputTarget": "velocity",
+          "maxForce": 100,
+          "mode": "velocity",
+          "stiffness": 0,
+          "targetPosition": 0,
+          "targetVelocity": 5
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "blockId": "chassis",
+        "blockTypeId": "frame.beam.5x1",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "frame.beam.5x1:geometry:0",
+            "kind": "box",
+            "partId": "main",
+            "size": {
+              "x": 5,
+              "y": 1,
+              "z": 1
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:chassis::main",
+        "localTransform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "partId": "main"
+      },
+      {
+        "blockId": "fl-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "joint.motor.wheel:geometry:0",
+            "kind": "box",
+            "partId": "axle",
+            "size": {
+              "x": 0.3,
+              "y": 0.3,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:fl-wheel::axle",
+        "localTransform": {
+          "position": {
+            "x": -2,
+            "y": 0,
+            "z": 0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": -6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "axle"
+      },
+      {
+        "blockId": "fl-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:1",
+        "geometry": [
+          {
+            "axis": "z",
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:geometry:1",
+            "kind": "cylinder",
+            "partId": "wheel",
+            "radius": 0.8,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.3
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:fl-wheel::wheel",
+        "localTransform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": -6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "wheel"
+      },
+      {
+        "blockId": "fr-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "joint.motor.wheel:geometry:0",
+            "kind": "box",
+            "partId": "axle",
+            "size": {
+              "x": 0.3,
+              "y": 0.3,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:fr-wheel::axle",
+        "localTransform": {
+          "position": {
+            "x": -2,
+            "y": 0,
+            "z": -0.65
+          },
+          "rotation": {
+            "w": 6.123233995736766e-17,
+            "x": 0,
+            "y": 1,
+            "z": 0
+          }
+        },
+        "partId": "axle"
+      },
+      {
+        "blockId": "fr-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:2",
+        "geometry": [
+          {
+            "axis": "z",
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:geometry:1",
+            "kind": "cylinder",
+            "partId": "wheel",
+            "radius": 0.8,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.3
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:fr-wheel::wheel",
+        "localTransform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "w": 6.123233995736766e-17,
+            "x": 0,
+            "y": 1,
+            "z": 0
+          }
+        },
+        "partId": "wheel"
+      },
+      {
+        "blockId": "rl-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "joint.motor.wheel:geometry:0",
+            "kind": "box",
+            "partId": "axle",
+            "size": {
+              "x": 0.3,
+              "y": 0.3,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:rl-wheel::axle",
+        "localTransform": {
+          "position": {
+            "x": 2,
+            "y": 0,
+            "z": 0.65
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": -6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "axle"
+      },
+      {
+        "blockId": "rl-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:3",
+        "geometry": [
+          {
+            "axis": "z",
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:geometry:1",
+            "kind": "cylinder",
+            "partId": "wheel",
+            "radius": 0.8,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.3
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:rl-wheel::wheel",
+        "localTransform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": -6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "wheel"
+      },
+      {
+        "blockId": "rr-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "joint.motor.wheel:geometry:0",
+            "kind": "box",
+            "partId": "axle",
+            "size": {
+              "x": 0.3,
+              "y": 0.3,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:rr-wheel::axle",
+        "localTransform": {
+          "position": {
+            "x": 2,
+            "y": 0,
+            "z": -0.65
+          },
+          "rotation": {
+            "w": 6.123233995736766e-17,
+            "x": 0,
+            "y": 1,
+            "z": 0
+          }
+        },
+        "partId": "axle"
+      },
+      {
+        "blockId": "rr-wheel",
+        "blockTypeId": "joint.motor.wheel",
+        "bodyId": "body:4",
+        "geometry": [
+          {
+            "axis": "z",
+            "halfHeight": 0.15,
+            "id": "joint.motor.wheel:geometry:1",
+            "kind": "cylinder",
+            "partId": "wheel",
+            "radius": 0.8,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0.3
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:rr-wheel::wheel",
+        "localTransform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "w": 6.123233995736766e-17,
+            "x": 0,
+            "y": 1,
+            "z": 0
+          }
+        },
+        "partId": "wheel"
+      }
+    ]
+  },
+  "metadata": {
+    "builder": "snap-machines-demo",
+    "mode": "build",
+    "presetName": "4-Wheel Car"
+  }
+}

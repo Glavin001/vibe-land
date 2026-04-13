@@ -13,10 +13,17 @@ nalgebra = "0.34"
 rapier3d = { version = "0.30", default-features = false, features = ["dim3", "f32", "debug-render"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+snap-machines-rapier = { git = "https://github.com/Glavin001/snap-machines", rev = "55ea2699bd0eaad8693e2d22987814e367df8511" }
 
 [features]
 default = []
 simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

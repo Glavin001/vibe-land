@@ -1,7 +1,7 @@
 export type DeviceFamily = 'keyboardMouse' | 'gamepad';
 export type InputFamilyMode = DeviceFamily | 'auto';
 
-export type InputContext = 'onFoot' | 'vehicle';
+export type InputContext = 'onFoot' | 'vehicle' | 'snapMachine';
 
 export type ActionSnapshot = {
   family: DeviceFamily;
@@ -39,6 +39,11 @@ export type SemanticInputState = {
   yaw: number;
   pitch: number;
   buttons: number;
+  /// Per-tick scalar values for the snap-machine actuator channels the
+  /// player is currently driving. Index → action-name mapping is
+  /// determined when the player enters a machine. Optional: zero-filled
+  /// when not operating a machine.
+  machineChannels?: Int8Array;
 };
 
 export type ResolvedGameInput = SemanticInputState & {

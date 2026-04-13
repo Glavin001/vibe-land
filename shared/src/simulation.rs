@@ -380,6 +380,7 @@ mod tests {
             move_y: 0,
             yaw: 0.0,
             pitch: 0.0,
+            machine_channels: Default::default(),
         }
     }
 

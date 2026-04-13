@@ -23,6 +23,7 @@ import {
   type FireCmd,
   type InputCmd,
   type NetPlayerState,
+  type NetSnapMachineState,
   type NetVehicleState,
   type PlayerRosterPacket,
   type SnapshotV2Packet,
@@ -44,6 +45,12 @@ export type NetcodeClientConfig = {
   onDisconnect?: () => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
+  /// Snap-machine snapshot for the machine THIS player is operating —
+  /// the prediction layer should reconcile against it.
+  onLocalSnapMachineSnapshot?: (machineState: NetSnapMachineState, ackInputSeq: number) => void;
+  /// Snap-machine snapshot for any machine this player is NOT operating
+  /// — the prediction layer should sync remote bodies.
+  onRemoteSnapMachineSnapshot?: (machineState: NetSnapMachineState) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
@@ -87,8 +94,13 @@ export class NetcodeClient {
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
+  /// Latest snap-machine snapshots keyed by machine id. Updated whenever a
+  /// snapshot packet arrives. Consumers (`GameWorld`) loop over this to
+  /// drive prediction reconcile / remote-sync of operated machines.
+  readonly machines = new Map<number, NetSnapMachineState>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
   private readonly vehicleLastSeenTick = new Map<number, number>();
+  private readonly machineLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
@@ -282,6 +294,26 @@ export class NetcodeClient {
       this.wtClient.sendVehicleExit(vehicleId);
     } else {
       this.socket?.sendVehicleExit(vehicleId);
+    }
+  }
+
+  sendMachineEnter(machineId: number): void {
+    if (this.localTransport) {
+      this.localTransport.sendMachineEnter?.(machineId);
+    } else if (this.wtClient) {
+      this.wtClient.sendMachineEnter?.(machineId);
+    } else {
+      this.socket?.sendMachineEnter?.(machineId);
+    }
+  }
+
+  sendMachineExit(machineId: number): void {
+    if (this.localTransport) {
+      this.localTransport.sendMachineExit?.(machineId);
+    } else if (this.wtClient) {
+      this.wtClient.sendMachineExit?.(machineId);
+    } else {
+      this.socket?.sendMachineExit?.(machineId);
     }
   }
 
@@ -760,6 +792,23 @@ export class NetcodeClient {
             this.vehicleInterpolator.remove(id);
           }
         }
+
+        // Snap-machine snapshots (no interpolation yet — direct authoritative state).
+        for (const ms of packet.machineStates ?? []) {
+          this.machines.set(ms.id, ms);
+          this.machineLastSeenTick.set(ms.id, packet.serverTick);
+          if (ms.driverId === this.playerId && ms.driverId !== 0) {
+            this.config.onLocalSnapMachineSnapshot?.(ms, packet.ackInputSeq);
+          } else {
+            this.config.onRemoteSnapMachineSnapshot?.(ms);
+          }
+        }
+        for (const [id, lastSeenTick] of this.machineLastSeenTick) {
+          if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
+            this.machineLastSeenTick.delete(id);
+            this.machines.delete(id);
+          }
+        }
         break;
       }
       case 'snapshotV2': {
@@ -878,6 +927,8 @@ export class NetcodeClient {
     this.dynamicBodyInterpolator.retainOnly(new Set());
     this.vehicles.clear();
     this.vehicleLastSeenTick.clear();
+    this.machineLastSeenTick.clear();
+    this.machines.clear();
     this.vehicleInterpolator.retainOnly(new Set());
   }
 }
