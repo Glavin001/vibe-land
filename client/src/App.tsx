@@ -31,6 +31,12 @@ import {
   hasStoredInputSettings,
   updateInputSettings,
 } from './input/inputSettingsStore';
+import {
+  PracticeBotRuntime,
+  type PracticeBotBehaviorKind,
+  type PracticeBotStats,
+} from './bots';
+import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 
 type AppProps = {
   mode: GameMode;
@@ -180,6 +186,61 @@ export function App({
   // While the wizard is open, render a deliberately-empty flat world so
   // drill targets aren't fighting terrain or props for visibility.
   const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
+
+  // Practice-mode bot runtime. Lazily constructed the first time the user
+  // spawns a bot via the panel (navmesh build takes a beat and isn't worth
+  // paying upfront for users who never enable bots).
+  const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
+  const [practiceBotStats, setPracticeBotStats] = useState<PracticeBotStats | null>(null);
+  const refreshPracticeBotStats = useCallback(() => {
+    const runtime = practiceBotRuntimeRef.current;
+    setPracticeBotStats(runtime ? runtime.stats() : null);
+  }, []);
+  const ensurePracticeBotRuntime = useCallback((): PracticeBotRuntime => {
+    let runtime = practiceBotRuntimeRef.current;
+    if (!runtime) {
+      runtime = new PracticeBotRuntime(effectiveWorldDocument, { maxAgentRadius: 0.6 });
+      practiceBotRuntimeRef.current = runtime;
+    }
+    return runtime;
+  }, [effectiveWorldDocument]);
+  const handleSetBotCount = useCallback((count: number) => {
+    if (count <= 0 && !practiceBotRuntimeRef.current) {
+      return;
+    }
+    const runtime = ensurePracticeBotRuntime();
+    runtime.setBotCount(count);
+    refreshPracticeBotStats();
+  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
+  const handleClearBots = useCallback(() => {
+    practiceBotRuntimeRef.current?.clear();
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleSetBotBehavior = useCallback((kind: PracticeBotBehaviorKind) => {
+    const runtime = ensurePracticeBotRuntime();
+    runtime.setBehavior(kind);
+    refreshPracticeBotStats();
+  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
+  const handleSetBotMaxSpeed = useCallback((speed: number) => {
+    const runtime = ensurePracticeBotRuntime();
+    runtime.setMaxSpeed(speed);
+    refreshPracticeBotStats();
+  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
+  // Tear down bots when leaving practice mode or switching worlds (calibration).
+  useEffect(() => {
+    if (!practiceMode) {
+      practiceBotRuntimeRef.current?.clear();
+      practiceBotRuntimeRef.current = null;
+      setPracticeBotStats(null);
+    }
+  }, [practiceMode]);
+  useEffect(() => {
+    // Clear out bots when the active world swaps so they don't rely on a
+    // stale navmesh. The panel will re-create them on demand.
+    practiceBotRuntimeRef.current?.clear();
+    practiceBotRuntimeRef.current = null;
+    setPracticeBotStats(null);
+  }, [effectiveWorldDocument]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -664,6 +725,14 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
+      <PracticeBotsPanel
+        visible={practiceMode && connected && !calibrationOpen}
+        stats={practiceBotStats}
+        onSetBotCount={handleSetBotCount}
+        onClear={handleClearBots}
+        onSetBehavior={handleSetBotBehavior}
+        onSetMaxSpeed={handleSetBotMaxSpeed}
+      />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -699,6 +768,7 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
+          practiceBots={practiceMode ? practiceBotRuntimeRef.current : null}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
         />

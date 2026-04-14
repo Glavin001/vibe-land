@@ -38,6 +38,7 @@ import {
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario } from '../loadtest/scenario';
+import type { PracticeBotRuntime } from '../bots';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
@@ -183,6 +184,13 @@ type GameWorldProps = {
     clientIndex: number;
     scenario: LoadTestScenario;
   };
+  /**
+   * Optional runtime for client-only practice bots. When supplied (only in
+   * practice mode), GameWorld ticks it each frame and uses its
+   * `remotePlayers` map in place of the real network map so the bots render
+   * as regular capsule meshes alongside the local player.
+   */
+  practiceBots?: PracticeBotRuntime | null;
   localRenderSmoothingEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
@@ -385,6 +393,7 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   benchmarkAutopilot,
+  practiceBots,
   localRenderSmoothingEnabled = true,
   sceneExtras,
 }: GameWorldProps) {
@@ -1125,7 +1134,20 @@ export function GameWorld({
     const group = remoteGroupRef.current;
     if (!group) return;
 
-    const currentRemote = state.remotePlayers;
+    // In practice mode with a bot runtime attached, we treat the runtime's
+    // map as the source of truth for "remote players" so bots render the
+    // same way network-driven players do. Tick it here (once per frame) so
+    // its positions are fresh for the render code below.
+    if (practiceBots && practiceMode) {
+      const localPosRaw = prediction.getPosition() ?? state.localPosition;
+      practiceBots.update(frameDelta, {
+        id: client?.playerId ?? 1,
+        position: [localPosRaw[0], localPosRaw[1], localPosRaw[2]],
+        dead: localDead,
+      });
+    }
+    const currentRemote =
+      practiceBots && practiceMode ? practiceBots.remotePlayers : state.remotePlayers;
     const activeIds = new Set<number>();
     const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
     let crosshairAimState: CrosshairAimState = 'idle';

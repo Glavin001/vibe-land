@@ -55,3 +55,10 @@ export type {
   ObservedPlayer,
   Vec3Tuple,
 } from './types';
+export {
+  PracticeBotRuntime,
+  type LocalPlayerInput,
+  type PracticeBotBehaviorKind,
+  type PracticeBotRuntimeOptions,
+  type PracticeBotStats,
+} from './practice/PracticeBotRuntime';
