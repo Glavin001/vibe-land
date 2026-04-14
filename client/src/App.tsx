@@ -147,7 +147,7 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOpen, setControlsOpen] = useState(false);
-  const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
+  const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(false);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,

@@ -67,8 +67,9 @@ export type NetcodeClientConfig = {
 export class NetcodeClient {
   private static readonly DYNAMIC_BODY_STALE_TICKS = 240;
   private static readonly VEHICLE_STALE_TICKS = 180;
-  static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 16;
+  static readonly MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS = 100;
   static readonly REMOTE_PLAYER_BUFFER_RATIO = 0.5;
+  static readonly DYNAMIC_BODY_BUFFER_RATIO = 1.0;
 
   readonly interpolator: PlayerInterpolator;
   readonly serverClock: ServerClockEstimator;
@@ -80,6 +81,7 @@ export class NetcodeClient {
   dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
   private baselineInterpolationDelayMs = 100;
   private minRemoteInterpolationDelayMs = 0;
+  private minDynamicBodyInterpolationDelayMs = 0;
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
@@ -320,6 +322,27 @@ export class NetcodeClient {
     }
   }
 
+  private pushVehicleSample(
+    vehicleId: number,
+    serverTimeUs: number,
+    meters: VehicleStateMeters,
+  ): void {
+    this.vehicleInterpolator.push(vehicleId, {
+      serverTimeUs,
+      position: meters.position,
+      quaternion: meters.quaternion,
+      linearVelocity: meters.linearVelocity,
+      angularVelocity: meters.angularVelocity,
+      wheelData: meters.wheelData,
+      driverPlayerId: meters.driverId,
+      flags: meters.flags ?? 0,
+    });
+  }
+
+  private shouldBufferLocalDrivenVehicle(driverPlayerId: number): boolean {
+    return this.localTransport != null && driverPlayerId === this.playerId && driverPlayerId !== 0;
+  }
+
   private applySnapshotV2(
     packet: SnapshotV2Packet,
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
@@ -336,7 +359,13 @@ export class NetcodeClient {
           Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
         ) / 100;
         this.dynamicBodyInterpolationDelayMs = Math.round(
-          Math.min(adaptiveDelayMs, NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS) * 100,
+          Math.min(
+            Math.max(adaptiveDelayMs, this.minDynamicBodyInterpolationDelayMs),
+            Math.min(
+              this.baselineInterpolationDelayMs,
+              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+            ),
+          ) * 100,
         ) / 100;
       }
     }
@@ -367,7 +396,6 @@ export class NetcodeClient {
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
-    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
     for (const player of packet.remotePlayers) {
       const remotePlayerId = this.playerIdByHandle.get(player.handle);
@@ -493,6 +521,10 @@ export class NetcodeClient {
       }
     }
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
+    // Fire the local snapshot callback only after authoritative dynamic-body
+    // state has been applied. Multiplayer vehicle reconcile depends on the
+    // callback syncing same-tick collider state before replaying pending inputs.
+    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
     for (const vehicle of packet.vehicleStates) {
       const vehicleId = vehicle.handle;
@@ -543,17 +575,11 @@ export class NetcodeClient {
           wheelData: [0, 0, 0, 0],
         };
         this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
+        if (this.shouldBufferLocalDrivenVehicle(driverPlayerId)) {
+          this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
+        }
       } else {
-        this.vehicleInterpolator.push(vehicleId, {
-          serverTimeUs: packet.serverTimeUs,
-          position: meters.position,
-          quaternion: meters.quaternion,
-          linearVelocity: meters.linearVelocity,
-          angularVelocity: meters.angularVelocity,
-          wheelData: [0, 0, 0, 0],
-          driverPlayerId,
-          flags: vehicle.flags,
-        });
+        this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
       }
     }
     for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
@@ -615,11 +641,14 @@ export class NetcodeClient {
         this.minRemoteInterpolationDelayMs = this.localTransport
           ? 0
           : (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
+        this.minDynamicBodyInterpolationDelayMs = this.localTransport
+          ? 0
+          : (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.DYNAMIC_BODY_BUFFER_RATIO;
         this.interpolationDelayMs = this.baselineInterpolationDelayMs;
         this.dynamicBodyInterpolationDelayMs = this.localTransport
           ? 0
           : Math.min(
-              packet.interpolationDelayMs,
+              Math.max(packet.interpolationDelayMs, this.minDynamicBodyInterpolationDelayMs),
               NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
             );
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
@@ -655,8 +684,11 @@ export class NetcodeClient {
             ) / 100;
             this.dynamicBodyInterpolationDelayMs = Math.round(
               Math.min(
-                adaptiveDelayMs,
-                NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+                Math.max(adaptiveDelayMs, this.minDynamicBodyInterpolationDelayMs),
+                Math.min(
+                  this.baselineInterpolationDelayMs,
+                  NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+                ),
               ) * 100,
             ) / 100;
           }
@@ -742,18 +774,13 @@ export class NetcodeClient {
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
             this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
+            if (this.shouldBufferLocalDrivenVehicle(vs.driverId)) {
+              this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
+            }
           } else {
-            // Push to interpolator for remote rendering
-            this.vehicleInterpolator.push(vs.id, {
-              serverTimeUs: packet.serverTimeUs,
-              position: m.position,
-              quaternion: m.quaternion,
-              linearVelocity: m.linearVelocity,
-              angularVelocity: m.angularVelocity,
-              wheelData: m.wheelData,
-              driverPlayerId: vs.driverId,
-              flags: vs.flags,
-            });
+            // In local preview the authoritative local driver is also buffered
+            // here so the practice vehicle renders from loopback snapshots.
+            this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
           }
         }
         // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.
@@ -811,7 +838,7 @@ export class NetcodeClient {
     return this.interpolator.sample(id, t);
   }
 
-  /** Get the render time for interpolating remote vehicles. */
+  /** Sample a buffered vehicle presentation state at the current render time. */
   sampleRemoteVehicle(id: number, renderTimeUs?: number): VehicleSample | null {
     const t = renderTimeUs ?? this.getRenderTimeUs();
     return this.vehicleInterpolator.sample(id, t);
@@ -873,6 +900,7 @@ export class NetcodeClient {
     this.dynamicBodyInterpolationDelayMs = NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS;
     this.baselineInterpolationDelayMs = 100;
     this.minRemoteInterpolationDelayMs = 0;
+    this.minDynamicBodyInterpolationDelayMs = 0;
     this.remotePlayers.clear();
     this.playerIdByHandle.clear();
     this.dynamicBodies.clear();

@@ -11,7 +11,16 @@ export const VEHICLE_ROT_THRESHOLD = 0.0175;         // ~1 degree
 export const VEHICLE_LINVEL_THRESHOLD = 0.1;         // 10 cm/s
 export const VEHICLE_ANGVEL_THRESHOLD = 0.035;       // ~2 degrees/s
 export const VEHICLE_VISUAL_SMOOTH_RATE = 15.0;  // fast decay → correction applied in ~4 ticks
+export const VEHICLE_VISUAL_DEADBAND_DISTANCE = 0.03; // tiny corrections should just snap
+export const VEHICLE_VISUAL_SNAP_DISTANCE = 0.35; // large local corrections should not linger visually
+export const VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE = 0.08; // avoid smoothing into terrain after impacts
+export const VEHICLE_VISUAL_SNAP_ROT_THRESHOLD = 0.04; // ~2.3 degrees
 export const VEHICLE_INPUT_REDUNDANCY = 4;
+export const VEHICLE_MAX_PENDING_INPUTS = 30;
+
+function seqIsNewer(a: number, b: number): boolean {
+  return ((a - b) & 0xffff) < 0x8000 && a !== b;
+}
 
 // ── Quaternion math helpers ──────────────────────────────────────────────────
 
@@ -27,10 +36,6 @@ function quatMultiply(
     aw * bz + ax * by - ay * bx + az * bw,
     aw * bw - ax * bx - ay * by - az * bz,
   ];
-}
-
-function quatInvert(q: [number, number, number, number]): [number, number, number, number] {
-  return [-q[0], -q[1], -q[2], q[3]]; // conjugate (unit quaternion)
 }
 
 function quatNormalize(q: [number, number, number, number]): [number, number, number, number] {
@@ -91,6 +96,7 @@ export class VehiclePredictionManager {
   private lastAngVelErrorRadPs = 0;
   private lastRotErrorRad = 0;
   private lastCorrectionAtMs = -1;
+  private pendingInputsForSend: InputCmd[] = [];
 
   // Current chassis pose (from physics)
   private currPosition: [number, number, number] = [0, 0, 0];
@@ -106,6 +112,12 @@ export class VehiclePredictionManager {
     private readonly sim: WasmSimWorldInstance,
     private readonly isLocalPreview = false,
   ) {}
+
+  private getPendingInputCount(): number {
+    return this.isLocalPreview
+      ? this.pendingInputsForSend.length
+      : this.sim.getVehiclePendingCount();
+  }
 
   isActive(): boolean {
     return this.vehicleId !== null;
@@ -139,9 +151,8 @@ export class VehiclePredictionManager {
     this.lastAngVelErrorRadPs = 0;
     this.lastRotErrorRad = 0;
     this.lastCorrectionAtMs = -1;
+    this.pendingInputsForSend = [];
 
-    // Sync WASM chassis to authoritative server state BEFORE activating prediction
-    // so the first tick starts from the correct position, not a stale spawn position.
     const px = initState.pxMm / 1000;
     const py = initState.pyMm / 1000;
     const pz = initState.pzMm / 1000;
@@ -152,8 +163,20 @@ export class VehiclePredictionManager {
     const vx = initState.vxCms / 100;
     const vy = initState.vyCms / 100;
     const vz = initState.vzCms / 100;
-    this.sim.syncRemoteVehicle(vehicleId, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
 
+    const pos: [number, number, number] = [px, py, pz];
+    this.currPosition = [...pos];
+    this.prevPosition = [...pos];
+    this.prevQuaternion = [qx, qy, qz, qw];
+    this.currQuaternion = [qx, qy, qz, qw];
+
+    if (this.isLocalPreview) {
+      return;
+    }
+
+    // Multiplayer local driving owns a prediction sim. Local preview reuses the
+    // input/ack path only and renders from authoritative local-session samples.
+    this.sim.syncRemoteVehicle(vehicleId, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
     this.sim.setLocalVehicle(vehicleId);
     // Match reconcile_vehicle's contact warm-up on first enter so suspension
     // constraints are initialized from the authoritative pose before the first
@@ -161,17 +184,11 @@ export class VehiclePredictionManager {
     for (let i = 0; i < 3; i++) {
       this.sim.stepDynamics(FIXED_DT);
     }
-
-    const pos: [number, number, number] = [px, py, pz];
-    this.currPosition = [...pos];
-    this.prevPosition = [...pos];
-    this.prevQuaternion = [qx, qy, qz, qw];
-    this.currQuaternion = [qx, qy, qz, qw];
   }
 
   /** Exit vehicle — deactivate prediction. */
   exitVehicle(): void {
-    if (this.vehicleId !== null) {
+    if (!this.isLocalPreview && this.vehicleId !== null) {
       this.sim.clearLocalVehicle();
     }
     this.vehicleId = null;
@@ -185,6 +202,7 @@ export class VehiclePredictionManager {
     this.lastAngVelErrorRadPs = 0;
     this.lastRotErrorRad = 0;
     this.lastCorrectionAtMs = -1;
+    this.pendingInputsForSend = [];
   }
 
   /**
@@ -204,7 +222,7 @@ export class VehiclePredictionManager {
     const semanticInput = normalizeVehicleSemanticInput(inputOrButtons, yaw, pitch);
 
     this.accumulator += frameDeltaSec;
-    const pendingInputs: InputCmd[] = [];
+    const generatedThisFrame: InputCmd[] = [];
 
     let steps = 0;
     while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
@@ -212,7 +230,7 @@ export class VehiclePredictionManager {
       const input = buildInputFromState(seq, 0, semanticInput);
 
       if (this.isLocalPreview) {
-        pendingInputs.push(input);
+        generatedThisFrame.push(input);
         this.accumulator -= FIXED_DT;
         steps++;
         continue;
@@ -221,7 +239,7 @@ export class VehiclePredictionManager {
       const result = this.sim.tickVehicle(
         input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT,
       );
-      pendingInputs.push(input);
+      generatedThisFrame.push(input);
 
       this.prevPosition = [...this.currPosition] as [number, number, number];
       this.prevQuaternion = [...this.currQuaternion] as [number, number, number, number];
@@ -243,9 +261,16 @@ export class VehiclePredictionManager {
       this.accumulator = FIXED_DT;
     }
 
-    // Return last N inputs for redundancy (server will dedup by seq)
-    if (pendingInputs.length === 0) return [];
-    return pendingInputs.slice(-VEHICLE_INPUT_REDUNDANCY);
+    if (generatedThisFrame.length > 0) {
+      this.pendingInputsForSend.push(...generatedThisFrame);
+      if (this.pendingInputsForSend.length > 128) {
+        this.pendingInputsForSend.splice(0, this.pendingInputsForSend.length - 128);
+      }
+    }
+
+    // Return the newest unacked inputs across frames, not just the commands
+    // generated in this render frame. This gives WT datagrams real redundancy.
+    return this.pendingInputsForSend.slice(-VEHICLE_INPUT_REDUNDANCY);
   }
 
   /**
@@ -256,6 +281,7 @@ export class VehiclePredictionManager {
   reconcile(vehicleState: NetVehicleState, ackInputSeq: number): void {
     if (this.vehicleId === null) return;
     this.lastAckSeq = ackInputSeq;
+    this.pendingInputsForSend = this.pendingInputsForSend.filter((input) => seqIsNewer(input.seq, ackInputSeq));
 
     const serverPos: [number, number, number] = [
       vehicleState.pxMm / 1000,
@@ -280,24 +306,19 @@ export class VehiclePredictionManager {
     ];
 
     if (this.isLocalPreview) {
-      this.sim.syncRemoteVehicle(
-        this.vehicleId,
-        serverPos[0], serverPos[1], serverPos[2],
-        serverQuat[0], serverQuat[1], serverQuat[2], serverQuat[3],
-        serverVel[0], serverVel[1], serverVel[2],
-      );
-      this.prevPosition = [...serverPos];
-      this.currPosition = [...serverPos];
-      this.prevQuaternion = [...serverQuat];
-      this.currQuaternion = [...serverQuat];
+      this.lastReplayErrorM = 0;
+      this.lastPosErrorM = 0;
+      this.lastVelErrorMs = 0;
+      this.lastAngVelErrorRadPs = 0;
+      this.lastRotErrorRad = 0;
       this.correctionOffset = [0, 0, 0];
       this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
+      this.lastCorrectionAtMs = -1;
       return;
     }
 
     const oldPosition: [number, number, number] = [...this.currPosition];
     const oldQuat = this.currQuaternion;
-    const oldCorrectionQuat = this.correctionQuatOffset;
     this.lastPosErrorM = Math.hypot(
       this.currPosition[0] - serverPos[0],
       this.currPosition[1] - serverPos[1],
@@ -350,8 +371,12 @@ export class VehiclePredictionManager {
     );
     this.lastRotErrorRad = 2 * Math.acos(Math.min(1, dot));
     this.lastCorrectionAtMs = performance.now();
+    const snapVisualCorrection = replayError <= VEHICLE_VISUAL_DEADBAND_DISTANCE
+      || replayError >= VEHICLE_VISUAL_SNAP_DISTANCE
+      || Math.abs(dy) >= VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE
+      || this.lastRotErrorRad >= VEHICLE_VISUAL_SNAP_ROT_THRESHOLD;
 
-    if (replayError > VEHICLE_HARD_SNAP_DISTANCE) {
+    if (replayError > VEHICLE_HARD_SNAP_DISTANCE || snapVisualCorrection) {
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
       this.correctionOffset = [0, 0, 0];
@@ -361,17 +386,18 @@ export class VehiclePredictionManager {
     } else {
       this.correctionOffset = [
         this.correctionOffset[0] - dx,
-        this.correctionOffset[1] - dy,
+        0,
         this.correctionOffset[2] - dz,
       ];
       this.currPosition = [result[0], result[1], result[2]];
-      this.prevPosition = oldPosition;
-      this.prevQuaternion = oldQuat;
+      // Smooth planar corrections only; snap vertical movement to avoid
+      // visibly sinking into terrain after collisions or jump landings.
+      this.prevPosition = [oldPosition[0], this.currPosition[1], oldPosition[2]];
+      // Rotation snap is less objectionable than chassis vibration on the
+      // local driven vehicle, especially around low-speed ground contact.
+      this.prevQuaternion = newQuat;
       this.currQuaternion = newQuat;
-      // Preserve the current rendered orientation, then decay smoothly toward
-      // the newly reconciled simulation orientation.
-      const oldRenderedQuat = quatNormalize(quatMultiply(oldCorrectionQuat, oldQuat));
-      this.correctionQuatOffset = quatNormalize(quatMultiply(oldRenderedQuat, quatInvert(newQuat)));
+      this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     }
   }
 
@@ -415,7 +441,7 @@ export class VehiclePredictionManager {
     lastCorrectionAgeMs: number;
   } {
     return {
-      pendingInputs: this.sim.getVehiclePendingCount(),
+      pendingInputs: this.getPendingInputCount(),
       ackSeq: this.lastAckSeq,
       lastReplayErrorM: this.lastReplayErrorM,
       lastPosErrorM: this.lastPosErrorM,

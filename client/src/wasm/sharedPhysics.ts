@@ -1,4 +1,4 @@
-import init, { WasmSimWorld as RawWasmSimWorld, WasmClockSync, WasmLocalSession } from './pkg/vibe_land_shared.js';
+import init, { WasmSimWorld as RawWasmSimWorld, WasmClockSync, WasmLocalSession, vehicle_chassis_half_extents, vehicle_wheel_offsets, vehicle_suspension_rest_length } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
 import { installWasmSimWorldCompat } from './compat';
 
@@ -118,5 +118,5 @@ export async function initSharedPhysics(): Promise<void> {
   await initPromise;
 }
 
-export { WasmSimWorld, WasmClockSync, WasmLocalSession };
+export { WasmSimWorld, WasmClockSync, WasmLocalSession, vehicle_chassis_half_extents, vehicle_wheel_offsets, vehicle_suspension_rest_length };
 export type { WasmDebugRenderBuffers, WasmSimWorldInstance };

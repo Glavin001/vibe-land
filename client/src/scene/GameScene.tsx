@@ -45,7 +45,7 @@ export function GameScene({
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
-  localRenderSmoothingEnabled = true,
+  localRenderSmoothingEnabled = false,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();

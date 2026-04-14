@@ -49,7 +49,7 @@ export function usePrediction(mode: GameMode) {
 export function usePredictionWithWorld(
   mode: GameMode,
   worldJson?: string,
-  localRenderSmoothingEnabled = true,
+  localRenderSmoothingEnabled = false,
 ) {
   const practiceMode = isPracticeMode(mode);
   const managerRef = useRef<PredictionManager | null>(null);

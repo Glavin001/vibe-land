@@ -8,16 +8,16 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalPreviewSession;
-use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
+use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics, vehicle_suspension_filter,
+    apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
+    step_vehicle_dynamics, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_WHEEL_OFFSETS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -27,6 +27,24 @@ static PANIC_HOOK: Once = Once::new();
 
 fn install_panic_hook_once() {
     PANIC_HOOK.call_once(console_error_panic_hook::set_once);
+}
+
+/// Returns chassis half-extents as [x, y, z].
+#[wasm_bindgen]
+pub fn vehicle_chassis_half_extents() -> Box<[f32]> {
+    Box::new(VEHICLE_CHASSIS_HALF_EXTENTS)
+}
+
+/// Returns wheel offsets as a flat array [x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3] (FL, FR, RL, RR).
+#[wasm_bindgen]
+pub fn vehicle_wheel_offsets() -> Box<[f32]> {
+    VEHICLE_WHEEL_OFFSETS.concat().into_boxed_slice()
+}
+
+/// Returns the suspension rest length in metres.
+#[wasm_bindgen]
+pub fn vehicle_suspension_rest_length() -> f32 {
+    VEHICLE_SUSPENSION_REST_LENGTH
 }
 
 struct WasmVehicle {
@@ -1049,7 +1067,7 @@ impl WasmSimWorld {
             self.vehicle_pending_inputs.drain(0..excess);
         }
 
-        self.apply_vehicle_input(vid, &input);
+        self.apply_vehicle_input(vid, &input, dt);
         self.step_vehicle_pipeline(dt);
 
         self.get_vehicle_state(vid)
@@ -1164,7 +1182,7 @@ impl WasmSimWorld {
         // Replay pending inputs.
         let inputs: Vec<InputCmd> = self.vehicle_pending_inputs.clone();
         for input in &inputs {
-            self.apply_vehicle_input(vid, input);
+            self.apply_vehicle_input(vid, input, dt);
             self.step_vehicle_pipeline(dt);
         }
 
@@ -1231,44 +1249,18 @@ impl WasmSimWorld {
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
 
 impl WasmSimWorld {
-    fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd) {
-        let reset_requested = input.buttons & BTN_RELOAD != 0;
-        let (steering, engine_force, brake) = vehicle_wheel_params(input);
-
+    fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd, dt: f32) {
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
         };
-        if reset_requested {
-            if let Some(rb) = self.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
-                reset_vehicle_body(rb);
-            }
-        }
-        for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
-            if i < 2 {
-                wheel.steering = if reset_requested { 0.0 } else { steering };
-            }
-            wheel.engine_force = if !reset_requested && i >= 2 {
-                engine_force
-            } else {
-                0.0
-            };
-            wheel.brake = if reset_requested { 0.0 } else { brake };
-        }
-
-        let chassis_collider = vehicle.chassis_collider;
-        let filter = vehicle_suspension_filter(chassis_collider);
-        let dt = 1.0_f32 / 60.0; // used internally for suspension forces
-        let queries = self.sim.broad_phase.as_query_pipeline_mut(
-            self.sim.narrow_phase.query_dispatcher(),
-            &mut self.sim.rigid_bodies,
-            &mut self.sim.colliders,
-            filter,
+        apply_vehicle_input_step(
+            &mut self.sim,
+            vehicle.chassis_body,
+            vehicle.chassis_collider,
+            &mut vehicle.controller,
+            input,
+            dt,
         );
-        // update_vehicle applies suspension impulses but not integration
-        let Some(vehicle) = self.vehicles.get_mut(&vid) else {
-            return;
-        };
-        vehicle.controller.update_vehicle(dt, queries);
     }
 
     fn step_vehicle_pipeline(&mut self, dt: f32) {
@@ -1290,15 +1282,20 @@ impl WasmSimWorld {
         let Some(vehicle) = self.vehicles.get(&vid) else {
             return Box::new([0.0; 10]);
         };
-        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+        let Some(state) = read_vehicle_chassis_state(&self.sim, vehicle.chassis_body) else {
             return Box::new([0.0; 10]);
         };
-        let p = rb.translation();
-        let r = rb.rotation();
-        let v = rb.linvel();
         Box::new([
-            p.x as f64, p.y as f64, p.z as f64, r.i as f64, r.j as f64, r.k as f64, r.w as f64,
-            v.x as f64, v.y as f64, v.z as f64,
+            state.position[0] as f64,
+            state.position[1] as f64,
+            state.position[2] as f64,
+            state.quaternion[0] as f64,
+            state.quaternion[1] as f64,
+            state.quaternion[2] as f64,
+            state.quaternion[3] as f64,
+            state.linear_velocity[0] as f64,
+            state.linear_velocity[1] as f64,
+            state.linear_velocity[2] as f64,
         ])
     }
 }

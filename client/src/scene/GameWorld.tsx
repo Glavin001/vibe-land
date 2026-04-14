@@ -9,6 +9,7 @@ import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
 import { usePredictionWithWorld } from '../physics/usePrediction';
+import { vehicle_chassis_half_extents, vehicle_wheel_offsets, vehicle_suspension_rest_length } from '../wasm/sharedPhysics';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -41,6 +42,7 @@ import type { LoadTestScenario } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
+import { shouldSnapLocalVehicleVisualPose } from './vehicleVisualPose';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
@@ -52,13 +54,6 @@ const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
-const VEHICLE_CHASSIS_HALF_EXTENTS = { x: 0.9, y: 0.3, z: 1.8 } as const;
-const VEHICLE_WHEEL_ANCHORS: ReadonlyArray<readonly [number, number, number]> = [
-  [-0.9, 0.0, 1.1],
-  [0.9, 0.0, 1.1],
-  [-0.9, 0.0, -1.1],
-  [0.9, 0.0, -1.1],
-] as const;
 const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
@@ -385,7 +380,7 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   benchmarkAutopilot,
-  localRenderSmoothingEnabled = true,
+  localRenderSmoothingEnabled = false,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -504,20 +499,33 @@ export function GameWorld({
     const localPreviewTransport = client?.transport === 'local-preview';
     const localFlags = client?.localPlayerFlags ?? 0;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
-    const localPreviewVehicleEntry = practiceMode && client
-      ? [...client.vehicles.entries()].find(([, vs]) => vs.driverId === client.playerId) ?? null
-      : null;
-    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
     const drivenVehicleId = prediction.getDrivenVehicleId();
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
+    const localVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+    const localPreviewVehicleSample = localPreviewTransport && client && drivenVehicleId != null
+      ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleRenderTimeUs)
+      : null;
+    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
     const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
-    const localControlledVehiclePose = predictedVehiclePose
-      ?? (localPreviewVehicleEntry
+    const localControlledVehiclePose = localPreviewTransport
+      ? (localPreviewVehicleSample
         ? {
-            position: localPreviewVehicleEntry[1].position,
-            quaternion: localPreviewVehicleEntry[1].quaternion,
+            position: localPreviewVehicleSample.position,
+            quaternion: localPreviewVehicleSample.quaternion,
           }
-        : null);
+        : (drivenVehicleState
+          ? {
+              position: drivenVehicleState.position,
+              quaternion: drivenVehicleState.quaternion,
+            }
+          : null))
+      : (predictedVehiclePose
+        ?? (drivenVehicleState
+          ? {
+              position: drivenVehicleState.position,
+              quaternion: drivenVehicleState.quaternion,
+            }
+          : null));
     let localVehicleVisualPose = localControlledVehiclePose;
     if (localControlledVehiclePose && drivenVehicleId != null) {
       const visualPose = localVehicleVisualPoseRef.current;
@@ -541,13 +549,25 @@ export function GameWorld({
         visualPose.quaternion.copy(targetQuat);
         visualPose.euler.copy(targetEuler);
       } else {
-        visualPose.position.x = THREE.MathUtils.damp(visualPose.position.x, targetPosition[0], planarRate, frameDelta);
-        visualPose.position.y = THREE.MathUtils.damp(visualPose.position.y, targetPosition[1], verticalRate, frameDelta);
-        visualPose.position.z = THREE.MathUtils.damp(visualPose.position.z, targetPosition[2], planarRate, frameDelta);
-        visualPose.euler.x = dampAngle(visualPose.euler.x, targetEuler.x, tiltRate, frameDelta);
-        visualPose.euler.y = dampAngle(visualPose.euler.y, targetEuler.y, yawRate, frameDelta);
-        visualPose.euler.z = dampAngle(visualPose.euler.z, targetEuler.z, tiltRate, frameDelta);
-        visualPose.quaternion.setFromEuler(visualPose.euler);
+        const dx = targetPosition[0] - visualPose.position.x;
+        const dy = targetPosition[1] - visualPose.position.y;
+        const dz = targetPosition[2] - visualPose.position.z;
+        const dot = Math.min(1, Math.abs(visualPose.quaternion.dot(targetQuat)));
+        const angleDelta = 2 * Math.acos(dot);
+        const shouldSnap = shouldSnapLocalVehicleVisualPose(dx, dy, dz, angleDelta);
+        if (shouldSnap) {
+          visualPose.position.set(targetPosition[0], targetPosition[1], targetPosition[2]);
+          visualPose.quaternion.copy(targetQuat);
+          visualPose.euler.copy(targetEuler);
+        } else {
+          visualPose.position.x = THREE.MathUtils.damp(visualPose.position.x, targetPosition[0], planarRate, frameDelta);
+          visualPose.position.y = THREE.MathUtils.damp(visualPose.position.y, targetPosition[1], verticalRate, frameDelta);
+          visualPose.position.z = THREE.MathUtils.damp(visualPose.position.z, targetPosition[2], planarRate, frameDelta);
+          visualPose.euler.x = dampAngle(visualPose.euler.x, targetEuler.x, tiltRate, frameDelta);
+          visualPose.euler.y = dampAngle(visualPose.euler.y, targetEuler.y, yawRate, frameDelta);
+          visualPose.euler.z = dampAngle(visualPose.euler.z, targetEuler.z, tiltRate, frameDelta);
+          visualPose.quaternion.setFromEuler(visualPose.euler);
+        }
       }
       localVehicleVisualPose = {
         position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
@@ -556,7 +576,9 @@ export function GameWorld({
     } else {
       localVehicleVisualPoseRef.current.vehicleId = null;
     }
-    const isDrivingNow = localControlledVehiclePose !== null;
+    // Control ownership and pose availability are not the same in local
+    // preview; entering a vehicle should switch input routing immediately.
+    const isDrivingNow = prediction.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,
@@ -1624,7 +1646,18 @@ function createVehicleMesh(_id: number): THREE.Group {
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
   } satisfies VehicleRenderState;
 
-  // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
+  const _chassisHE = vehicle_chassis_half_extents();
+  const VEHICLE_CHASSIS_HALF_EXTENTS = { x: _chassisHE[0], y: _chassisHE[1], z: _chassisHE[2] };
+  const _wheelFlat = vehicle_wheel_offsets();
+  const _restLength = vehicle_suspension_rest_length();
+  // Wheel visual sits at the axle center (connection point + rest length downward).
+  const VEHICLE_WHEEL_ANCHORS: [number, number, number][] = Array.from({ length: 4 }, (_, i) => [
+    _wheelFlat[i * 3],
+    _wheelFlat[i * 3 + 1] - _restLength,
+    _wheelFlat[i * 3 + 2],
+  ]);
+
+  // Match the Rapier chassis cuboid exactly.
   const chassisGeom = new THREE.BoxGeometry(
     VEHICLE_CHASSIS_HALF_EXTENTS.x * 2,
     VEHICLE_CHASSIS_HALF_EXTENTS.y * 2,

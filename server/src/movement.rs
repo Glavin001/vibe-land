@@ -7,14 +7,12 @@ use rapier3d::prelude::*;
 use vibe_land_shared::world_document::WorldDocumentArena;
 
 use crate::protocol::*;
-pub use vibe_land_shared::movement::{
-    vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD,
-};
+pub use vibe_land_shared::movement::{MoveConfig, Vec3d};
 pub use vibe_land_shared::simulation::{
     simulate_player_tick_with_mode, PlayerKccMode, PlayerTickResult,
 };
 use vibe_land_shared::vehicle::{
-    create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
+    apply_vehicle_input_step, create_vehicle_physics, make_vehicle_snapshot,
 };
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -491,60 +489,31 @@ impl PhysicsArena {
                 }
             }
 
-            // Collect driver input from the player driving this vehicle.
-            let (reset_requested, steering, engine_force, brake) = {
+            let driver_input = {
                 let vehicle = match self.vehicles.get(&vid) {
                     Some(v) => v,
                     None => continue,
                 };
                 if let Some(driver_id) = vehicle.driver_id {
                     if let Some(player) = self.players.get(&driver_id) {
-                        let (steering, engine_force, brake) =
-                            vehicle_wheel_params(&player.last_input);
-                        (
-                            player.last_input.buttons & BTN_RELOAD != 0,
-                            steering,
-                            engine_force,
-                            brake,
-                        )
+                        player.last_input.clone()
                     } else {
-                        (false, 0.0, 0.0, 0.0)
+                        InputCmd::default()
                     }
                 } else {
-                    (false, 0.0, 0.0, 0.0)
+                    InputCmd::default()
                 }
             };
 
-            // Apply inputs to wheels.
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
-            if reset_requested {
-                if let Some(rb) = self.dynamic.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
-                    reset_vehicle_body(rb);
-                }
-            }
-            for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
-                if i < 2 {
-                    wheel.steering = if reset_requested { 0.0 } else { steering };
-                    // front-wheel steering
-                }
-                wheel.engine_force = if !reset_requested && i >= 2 {
-                    engine_force
-                } else {
-                    0.0
-                }; // RWD
-                wheel.brake = if reset_requested { 0.0 } else { brake };
-            }
-
-            // Run suspension + traction.
-            let chassis_collider = vehicle.chassis_collider;
-            let filter = vehicle_suspension_filter(chassis_collider);
-            let queries = self.dynamic.sim.broad_phase.as_query_pipeline_mut(
-                self.dynamic.sim.narrow_phase.query_dispatcher(),
-                &mut self.dynamic.sim.rigid_bodies,
-                &mut self.dynamic.sim.colliders,
-                filter,
+            apply_vehicle_input_step(
+                &mut self.dynamic.sim,
+                vehicle.chassis_body,
+                vehicle.chassis_collider,
+                &mut vehicle.controller,
+                &driver_input,
+                dt,
             );
-            vehicle.controller.update_vehicle(dt, queries);
         }
     }
 
@@ -629,32 +598,15 @@ impl PhysicsArena {
         self.vehicles
             .iter()
             .filter_map(|(&id, vehicle)| {
-                let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
-                let p = rb.translation();
-                let r = rb.rotation();
-                let lv = rb.linvel();
-                let av = rb.angvel();
-
-                let mut wheel_data = [0u16; 4];
-                for (i, wheel) in vehicle.controller.wheels().iter().enumerate().take(4) {
-                    let spin =
-                        ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
-                    let steer = (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0)
-                        .clamp(-127.0, 127.0) as i8 as u8;
-                    wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
-                }
-
-                Some(make_net_vehicle_state(
+                make_vehicle_snapshot(
+                    &self.dynamic.sim,
                     id,
                     vehicle.vehicle_type,
                     0,
                     vehicle.driver_id.unwrap_or(0),
-                    [p.x, p.y, p.z],
-                    [r.i, r.j, r.k, r.w],
-                    [lv.x, lv.y, lv.z],
-                    [av.x, av.y, av.z],
-                    wheel_data,
-                ))
+                    vehicle.chassis_body,
+                    &vehicle.controller,
+                )
             })
             .collect()
     }

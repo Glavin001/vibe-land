@@ -42,7 +42,7 @@ use crate::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
         make_net_player_state, mm_to_meters, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        ShotResultPacket, SnapshotPacket, WelcomePacket, HIT_ZONE_BODY, HIT_ZONE_HEAD,
+        ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD,
         HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
         SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
@@ -53,6 +53,7 @@ const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_PENDING_INPUTS: usize = 120;
+const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 8;
 const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
@@ -1619,7 +1620,16 @@ impl MatchState {
             let input = self
                 .players
                 .get_mut(&player_id)
-                .map(take_input_for_tick)
+                .map(|runtime| {
+                    // Vehicle controls are continuous state, not precious per-frame
+                    // history. Once the backlog grows unhealthy, catch the server up
+                    // to the newest useful control state instead of replaying stale
+                    // steering/throttle for hundreds of milliseconds.
+                    take_input_for_tick_with_vehicle_catchup(
+                        runtime,
+                        self.arena.vehicle_of_player.contains_key(&player_id),
+                    )
+                })
                 .unwrap_or_default();
             if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
                 player_move_math_ms += result.timings.move_math_ms;
@@ -2548,6 +2558,14 @@ impl MatchState {
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
+            let reserved_vehicle_budget = vehicle_states
+                .iter()
+                .filter(|(_, _, state)| state.driver_id == recipient_id)
+                .take(STRICT_SNAPSHOT_RESERVED_VEHICLES)
+                .count()
+                .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
+            budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
+
             let mut remote_player_states = Vec::new();
             for (player_id, pos, state) in player_states.iter().filter(|(player_id, pos, _)| {
                 *player_id != recipient_id
@@ -2579,6 +2597,48 @@ impl MatchState {
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
             }
 
+            let mut selected_vehicle_states = Vec::new();
+            let mut reserved_vehicle_ids = HashSet::new();
+            for (vehicle_id, pos, state) in vehicle_states
+                .iter()
+                .filter(|(_, _, state)| state.driver_id == recipient_id)
+            {
+                let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
+                    continue;
+                };
+                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
+                    continue;
+                };
+                let driver_handle = self
+                    .player_handles
+                    .get(&state.driver_id)
+                    .copied()
+                    .unwrap_or_default();
+                selected_vehicle_states.push(protocol::VehicleStateV2 {
+                    handle,
+                    vehicle_type: state.vehicle_type,
+                    driver_handle,
+                    flags: state.flags,
+                    dx_q2_5mm: dx,
+                    dy_q2_5mm: dy,
+                    dz_q2_5mm: dz,
+                    qx_snorm: state.qx_snorm,
+                    qy_snorm: state.qy_snorm,
+                    qz_snorm: state.qz_snorm,
+                    qw_snorm: state.qw_snorm,
+                    vx_cms: state.vx_cms,
+                    vy_cms: state.vy_cms,
+                    vz_cms: state.vz_cms,
+                    wx_mrads: state.wx_mrads,
+                    wy_mrads: state.wy_mrads,
+                    wz_mrads: state.wz_mrads,
+                });
+                reserved_vehicle_ids.insert(*vehicle_id);
+                runtime
+                    .last_sent_vehicle_tick
+                    .insert(*vehicle_id, self.server_tick);
+            }
+
             let mut vehicle_hot = Vec::new();
             let mut vehicle_cold = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
@@ -2586,6 +2646,9 @@ impl MatchState {
                     || distance_sq(*pos, *recipient_pos)
                         <= VEHICLE_AOI_RADIUS_M * VEHICLE_AOI_RADIUS_M
             }) {
+                if reserved_vehicle_ids.contains(vehicle_id) {
+                    continue;
+                }
                 let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
                     continue;
                 };
@@ -2644,7 +2707,6 @@ impl MatchState {
             vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             vehicle_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-            let mut selected_vehicle_states = Vec::new();
             for (vehicle_id, _, record) in vehicle_hot.into_iter().chain(vehicle_cold.into_iter()) {
                 if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
                     break;
@@ -2818,6 +2880,28 @@ fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
         return input;
     }
     runtime.last_applied_input.clone()
+}
+
+fn take_input_for_tick_with_vehicle_catchup(
+    runtime: &mut PlayerRuntime,
+    collapse_vehicle_backlog: bool,
+) -> InputCmd {
+    if collapse_vehicle_backlog && runtime.pending_inputs.len() >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
+        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
+            let skipped_reset = runtime
+                .pending_inputs
+                .iter()
+                .any(|input| input.buttons & BTN_RELOAD != 0);
+            runtime.pending_inputs.clear();
+            if skipped_reset {
+                newest.buttons |= BTN_RELOAD;
+            }
+            runtime.last_ack_input_seq = newest.seq;
+            runtime.last_applied_input = newest.clone();
+            return newest;
+        }
+    }
+    take_input_for_tick(runtime)
 }
 
 fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
@@ -3075,8 +3159,9 @@ mod tests {
         classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
         enqueue_inputs, is_snapshot_packet_kind, parse_respawn_delay_ms, rifle_damage,
         server_build_profile, strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
-        try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, OutboundDelivery, PlayerRuntime,
-        StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
+        MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
+        MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -3170,6 +3255,44 @@ mod tests {
         assert_eq!(second.seq, 22);
         assert_eq!(repeated.seq, 22);
         assert_eq!(runtime.last_ack_input_seq, 22);
+    }
+
+    #[test]
+    fn vehicle_catchup_skips_stale_inputs_and_acks_newest_control() {
+        let mut runtime = runtime();
+        enqueue_inputs(&mut runtime, (21..=30).map(input).collect());
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
+
+        assert_eq!(applied.seq, 30);
+        assert!(runtime.pending_inputs.is_empty());
+        assert_eq!(runtime.last_ack_input_seq, 30);
+        assert_eq!(runtime.last_applied_input.seq, 30);
+    }
+
+    #[test]
+    fn vehicle_catchup_preserves_reset_pressed_in_skipped_history() {
+        let mut runtime = runtime();
+        let mut frames: Vec<_> = (21..=30).map(input).collect();
+        frames[3].buttons |= BTN_RELOAD;
+        enqueue_inputs(&mut runtime, frames);
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
+
+        assert_eq!(applied.seq, 30);
+        assert_ne!(applied.buttons & BTN_RELOAD, 0);
+    }
+
+    #[test]
+    fn on_foot_backlog_keeps_ordered_processing() {
+        let mut runtime = runtime();
+        enqueue_inputs(&mut runtime, (21..=30).map(input).collect());
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, false);
+
+        assert_eq!(applied.seq, 21);
+        assert_eq!(runtime.pending_inputs.len(), 9);
+        assert_eq!(runtime.last_ack_input_seq, 21);
     }
 
     #[test]

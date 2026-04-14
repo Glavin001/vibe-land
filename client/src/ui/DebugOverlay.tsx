@@ -378,7 +378,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
 export function DebugOverlay({
   stats,
   visible,
-  localRenderSmoothingEnabled = true,
+  localRenderSmoothingEnabled = false,
   onToggleLocalRenderSmoothing,
 }: {
   stats: DebugStats;

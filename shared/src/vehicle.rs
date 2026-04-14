@@ -10,20 +10,24 @@ use rapier3d::prelude::*;
 use vibe_netcode::physics_arena::DYNAMIC_SUBSTEPS;
 use vibe_netcode::sim_world::SimWorld;
 
+use crate::constants::BTN_RELOAD;
 use crate::movement::{
-    VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP, VEHICLE_SUSPENSION_DAMPING,
-    VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL,
-    VEHICLE_WHEEL_RADIUS,
+    vehicle_wheel_params, VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP, VEHICLE_MAX_STEER_RAD,
+    VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS,
+    VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
 };
+use crate::protocol::{make_net_vehicle_state, InputCmd, NetVehicleState};
 
 pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
 pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
-    [-0.9, 0.0, 1.1],
-    [0.9, 0.0, 1.1],
-    [-0.9, 0.0, -1.1],
-    [0.9, 0.0, -1.1],
+    [-0.9, -0.3, 1.1],
+    [0.9, -0.3, 1.1],
+    [-0.9, -0.3, -1.1],
+    [0.9, -0.3, -1.1],
 ];
 const VEHICLE_RESET_LIFT_M: f32 = 1.0;
+/// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
+const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
 
 /// Spawn a vehicle chassis rigid body + collider + configured wheel controller
 /// into `sim`.  Returns `(chassis_body, chassis_collider, controller)`.
@@ -140,25 +144,132 @@ pub fn step_vehicle_dynamics(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehicleChassisState {
+    pub position: [f32; 3],
+    pub quaternion: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+}
+
+/// Apply one input frame to a vehicle controller and update suspension/traction.
+///
+/// This is the single source of truth for wheel steering, engine force, brake,
+/// reset behavior, and the Rapier vehicle-controller query/update call used by
+/// the server, local authoritative practice arena, and WASM prediction world.
+pub fn apply_vehicle_input_step(
+    sim: &mut SimWorld,
+    chassis_body: RigidBodyHandle,
+    chassis_collider: ColliderHandle,
+    controller: &mut DynamicRayCastVehicleController,
+    input: &InputCmd,
+    dt: f32,
+) {
+    let reset_requested = input.buttons & BTN_RELOAD != 0;
+    let (steering, engine_force, brake) = vehicle_wheel_params(input);
+
+    if reset_requested {
+        if let Some(rb) = sim.rigid_bodies.get_mut(chassis_body) {
+            reset_vehicle_body(rb);
+        }
+    }
+
+    for (index, wheel) in controller.wheels_mut().iter_mut().enumerate() {
+        if index < 2 {
+            wheel.steering = if reset_requested { 0.0 } else { steering };
+        }
+        wheel.engine_force = if !reset_requested && index >= 2 {
+            engine_force
+        } else {
+            0.0
+        };
+        wheel.brake = if reset_requested { 0.0 } else { brake };
+    }
+
+    let filter = vehicle_suspension_filter(chassis_collider);
+    let queries = sim.broad_phase.as_query_pipeline_mut(
+        sim.narrow_phase.query_dispatcher(),
+        &mut sim.rigid_bodies,
+        &mut sim.colliders,
+        filter,
+    );
+    controller.update_vehicle(dt, queries);
+}
+
+/// Read the current chassis pose/velocity from the shared simulation world.
+pub fn read_vehicle_chassis_state(
+    sim: &SimWorld,
+    chassis_body: RigidBodyHandle,
+) -> Option<VehicleChassisState> {
+    let rb = sim.rigid_bodies.get(chassis_body)?;
+    let p = rb.translation();
+    let q = rb.rotation();
+    let lv = rb.linvel();
+    let av = rb.angvel();
+    Some(VehicleChassisState {
+        position: [p.x, p.y, p.z],
+        quaternion: [q.i, q.j, q.k, q.w],
+        linear_velocity: [lv.x, lv.y, lv.z],
+        angular_velocity: [av.x, av.y, av.z],
+    })
+}
+
+/// Encode the wheel rotation/steering data used by the client vehicle visuals.
+pub fn encode_vehicle_wheel_data(controller: &DynamicRayCastVehicleController) -> [u16; 4] {
+    let mut wheel_data = [0u16; 4];
+    for (i, wheel) in controller.wheels().iter().enumerate().take(4) {
+        let spin = ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
+        let steer =
+            (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0).clamp(-127.0, 127.0) as i8 as u8;
+        wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
+    }
+    wheel_data
+}
+
+/// Build a replicated vehicle snapshot directly from the shared simulation.
+pub fn make_vehicle_snapshot(
+    sim: &SimWorld,
+    id: u32,
+    vehicle_type: u8,
+    flags: u8,
+    driver_id: u32,
+    chassis_body: RigidBodyHandle,
+    controller: &DynamicRayCastVehicleController,
+) -> Option<NetVehicleState> {
+    let state = read_vehicle_chassis_state(sim, chassis_body)?;
+    Some(make_net_vehicle_state(
+        id,
+        vehicle_type,
+        flags,
+        driver_id,
+        state.position,
+        state.quaternion,
+        state.linear_velocity,
+        state.angular_velocity,
+        encode_vehicle_wheel_data(controller),
+    ))
+}
+
 /// Upright a vehicle in-place while preserving its planar heading.
 pub fn reset_vehicle_body(rb: &mut RigidBody) {
     let translation = *rb.translation();
     let rotation = *rb.rotation();
     let forward = rotation * Vector3::z();
     let planar_forward = Vector3::new(forward.x, 0.0, forward.z);
-    let yaw = if planar_forward.norm_squared() > 0.0001 {
-        planar_forward.x.atan2(planar_forward.z)
+    let (yaw, forward_nudge) = if planar_forward.norm_squared() > 0.0001 {
+        let n = planar_forward.normalize();
+        (n.x.atan2(n.z), n * VEHICLE_RESET_FORWARD_M)
     } else {
-        0.0
+        (0.0_f32, Vector3::new(0.0, 0.0, VEHICLE_RESET_FORWARD_M))
     };
     let upright = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), yaw);
 
     rb.set_position(
         Isometry3::from_parts(
             nalgebra::Translation3::new(
-                translation.x,
+                translation.x + forward_nudge.x,
                 translation.y + VEHICLE_RESET_LIFT_M,
-                translation.z,
+                translation.z + forward_nudge.z,
             ),
             upright,
         ),
@@ -172,7 +283,7 @@ pub fn reset_vehicle_body(rb: &mut RigidBody) {
 mod tests {
     use super::*;
     use crate::constants::{BTN_FORWARD, BTN_RIGHT};
-    use crate::movement::{vehicle_wheel_params, MoveConfig};
+    use crate::movement::MoveConfig;
     use crate::protocol::InputCmd;
     const DT: f32 = 1.0 / 60.0;
     const POSITION_EPSILON_M: f32 = 0.05;
@@ -215,23 +326,14 @@ mod tests {
         }
 
         fn apply_input(&mut self, input: &InputCmd) {
-            let (steering, engine_force, brake) = vehicle_wheel_params(input);
-            for (index, wheel) in self.controller.wheels_mut().iter_mut().enumerate() {
-                if index < 2 {
-                    wheel.steering = steering;
-                }
-                wheel.engine_force = if index >= 2 { engine_force } else { 0.0 };
-                wheel.brake = brake;
-            }
-
-            let filter = vehicle_suspension_filter(self.chassis_collider);
-            let queries = self.sim.broad_phase.as_query_pipeline_mut(
-                self.sim.narrow_phase.query_dispatcher(),
-                &mut self.sim.rigid_bodies,
-                &mut self.sim.colliders,
-                filter,
+            apply_vehicle_input_step(
+                &mut self.sim,
+                self.chassis_body,
+                self.chassis_collider,
+                &mut self.controller,
+                input,
+                DT,
             );
-            self.controller.update_vehicle(DT, queries);
         }
 
         fn step_client_prediction(&mut self) {
@@ -321,6 +423,51 @@ mod tests {
         assert!(
             rotation_delta <= ROTATION_EPSILON_RAD,
             "vehicle rotation drifted by {rotation_delta:.3}rad"
+        );
+    }
+
+    #[test]
+    fn vehicle_snapshot_helper_matches_rigidbody_state() {
+        let mut rig = VehicleRig::new();
+        let input = scripted_input(0);
+        rig.apply_input(&input);
+        rig.step_client_prediction();
+
+        let snapshot =
+            make_vehicle_snapshot(&rig.sim, 7, 0, 0, 1, rig.chassis_body, &rig.controller)
+                .expect("vehicle snapshot");
+        let state =
+            read_vehicle_chassis_state(&rig.sim, rig.chassis_body).expect("vehicle chassis state");
+
+        assert_eq!(snapshot.id, 7);
+        assert_eq!(snapshot.driver_id, 1);
+        assert_eq!(
+            snapshot.px_mm,
+            crate::unit_conv::meters_to_mm(state.position[0])
+        );
+        assert_eq!(
+            snapshot.py_mm,
+            crate::unit_conv::meters_to_mm(state.position[1])
+        );
+        assert_eq!(
+            snapshot.pz_mm,
+            crate::unit_conv::meters_to_mm(state.position[2])
+        );
+        assert_eq!(
+            snapshot.vx_cms,
+            crate::unit_conv::meters_to_cms_i16(state.linear_velocity[0])
+        );
+        assert_eq!(
+            snapshot.vy_cms,
+            crate::unit_conv::meters_to_cms_i16(state.linear_velocity[1])
+        );
+        assert_eq!(
+            snapshot.vz_cms,
+            crate::unit_conv::meters_to_cms_i16(state.linear_velocity[2])
+        );
+        assert_eq!(
+            snapshot.wheel_data,
+            encode_vehicle_wheel_data(&rig.controller)
         );
     }
 }
