@@ -147,6 +147,7 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -452,6 +453,7 @@ export function App({
         path: window.location.pathname,
         userAgent: navigator.userAgent,
         renderStatsText: renderStatsParentRef.current?.innerText ?? '',
+        localRenderSmoothingEnabled,
       });
       try {
         await navigator.clipboard.writeText(markdown);
@@ -479,7 +481,7 @@ export function App({
         window.clearTimeout(copyNoticeTimerRef.current);
       }
     };
-  }, [connected, getStatsSnapshot, status]);
+  }, [connected, getStatsSnapshot, localRenderSmoothingEnabled, status]);
 
   const crosshairColor =
     crosshairState === 'head'
@@ -662,7 +664,12 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
-      <DebugOverlay stats={displayStats} visible={debugVisible} />
+      <DebugOverlay
+        stats={displayStats}
+        visible={debugVisible}
+        localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+        onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
+      />
       {debugVisible && (
         <div
           ref={renderStatsParentRef}
@@ -692,6 +699,7 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
+          localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
         />
       )}

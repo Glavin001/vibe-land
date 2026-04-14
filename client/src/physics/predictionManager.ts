@@ -76,11 +76,12 @@ export class PredictionManager {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
 
-      if (this.isLocalPreview) {
+      if (this.isLocalPreview && !this.initialized) {
+        // Let the loopback session consume startup inputs, but avoid predicting
+        // from the placeholder spawn state before the first authoritative snapshot.
         pendingInputs.push(input);
         this.accumulator -= FIXED_DT;
         steps++;
-        this.tickCount++;
         continue;
       }
 
@@ -119,20 +120,6 @@ export class PredictionManager {
    */
   reconcile(ackInputSeq: number, playerState: NetPlayerState): void {
     const m = netPlayerStateToMeters(playerState);
-
-    if (this.isLocalPreview) {
-      this.sim.setFullState(
-        m.position[0], m.position[1], m.position[2],
-        m.velocity[0], m.velocity[1], m.velocity[2],
-        m.yaw, m.pitch,
-        (m.flags & 1) !== 0,
-      );
-      this.currPosition = [...m.position] as [number, number, number];
-      this.prevPosition = [...m.position] as [number, number, number];
-      this.correctionOffset = [0, 0, 0];
-      this.initialized = true;
-      return;
-    }
 
     if (!this.initialized) {
       this.sim.setFullState(

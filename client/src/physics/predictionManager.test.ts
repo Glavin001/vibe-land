@@ -140,7 +140,7 @@ describe('PredictionManager', () => {
       expect(result[0]).toBeLessThan(5);
     });
 
-    it('local preview mode queues inputs without stepping a predicted player sim', () => {
+    it('local preview queues inputs before first authoritative snapshot without advancing predicted movement', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -149,21 +149,25 @@ describe('PredictionManager', () => {
       const cmds = mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
 
       expect(cmds).toHaveLength(1);
+      expect(mgr.isInitialized()).toBe(false);
       expect(mgr.getPosition()).toEqual(before);
+      expect(mgr.getInterpolatedPosition()).toBeNull();
       mgr.dispose();
     });
 
-    it('local preview mode applies authoritative snapshots directly', () => {
+    it('local preview starts predicting after the first authoritative snapshot', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
 
-      mgr.reconcile(0, makeNetState({ position: [5, 1, 2], flags: FLAG_ON_GROUND }));
+      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
+      const before = mgr.getPosition();
+      const cmds = mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
 
       expect(mgr.isInitialized()).toBe(true);
-      expect(mgr.getPosition()).toEqual([5, 1, 2]);
-      expect(mgr.getInterpolatedPosition()).toEqual([5, 1, 2]);
-      expect(mgr.getCorrectionOffset()).toEqual([0, 0, 0]);
+      expect(cmds).toHaveLength(1);
+      expect(mgr.getPosition()[2]).toBeGreaterThan(before[2]);
+      expect(mgr.getInterpolatedPosition()).not.toBeNull();
       mgr.dispose();
     });
   });
@@ -340,6 +344,43 @@ describe('PredictionManager', () => {
       expect(pos).not.toBeNull();
       const offset = mgr.getCorrectionOffset();
       expect(Math.hypot(...offset)).toBeGreaterThan(0);
+      mgr.dispose();
+    });
+
+    it('local preview interpolates render position between 60 Hz prediction steps on 120 Hz frames', () => {
+      const sim = createSim();
+      const mgr = new PredictionManager(sim, true);
+      mgr.enableTerrainWorld();
+      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
+
+      mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
+      const renderAtStep = mgr.getInterpolatedPosition();
+      const rawCurrent = mgr.getPosition();
+
+      mgr.update(FIXED_DT * 0.5, BTN_FORWARD, 0, 0);
+      const renderBetweenSteps = mgr.getInterpolatedPosition();
+
+      expect(renderAtStep).not.toBeNull();
+      expect(renderBetweenSteps).not.toBeNull();
+      expect(renderBetweenSteps![2]).toBeGreaterThan(renderAtStep![2]);
+      expect(renderBetweenSteps![2]).toBeLessThan(rawCurrent[2]);
+      mgr.dispose();
+    });
+
+    it('local preview uses correction smoothing after initialization', () => {
+      const sim = createSim();
+      const mgr = new PredictionManager(sim, true);
+      mgr.enableTerrainWorld();
+      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
+
+      for (let i = 0; i < 5; i += 1) {
+        mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
+      }
+
+      mgr.reconcile(2, makeNetState({ position: [0, 1, 0.1], flags: FLAG_ON_GROUND }));
+
+      expect(Math.hypot(...mgr.getCorrectionOffset())).toBeGreaterThan(0);
+      expect(Math.hypot(...mgr.getCorrectionOffset())).toBeLessThan(HARD_SNAP_DISTANCE);
       mgr.dispose();
     });
   });

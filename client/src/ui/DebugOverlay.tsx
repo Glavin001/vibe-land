@@ -225,6 +225,7 @@ type DebugMarkdownExtras = {
   path?: string;
   userAgent?: string;
   renderStatsText?: string;
+  localRenderSmoothingEnabled?: boolean;
 };
 
 function fmt(n: number, decimals = 1): string {
@@ -250,6 +251,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- connected: ${extras.connected == null ? 'unknown' : extras.connected ? 'yes' : 'no'}`,
     `- status: ${extras.status ?? 'unknown'}`,
     `- user-agent: ${extras.userAgent ?? (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown')}`,
+    `- local_render_smoothing: ${extras.localRenderSmoothingEnabled == null ? 'unknown' : extras.localRenderSmoothingEnabled ? 'on' : 'off'}`,
     '',
     '## Rendering',
     `- fps: ${fmt(stats.fps, 0)}`,
@@ -373,11 +375,28 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
   return lines.join('\n');
 }
 
-export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: boolean }) {
+export function DebugOverlay({
+  stats,
+  visible,
+  localRenderSmoothingEnabled = true,
+  onToggleLocalRenderSmoothing,
+}: {
+  stats: DebugStats;
+  visible: boolean;
+  localRenderSmoothingEnabled?: boolean;
+  onToggleLocalRenderSmoothing?: () => void;
+}) {
   if (!visible) return null;
 
   const p = stats.position;
   const v = stats.velocity;
+  const smoothingAccent = localRenderSmoothingEnabled ? '#98ffbc' : '#d8dee6';
+  const smoothingBackground = localRenderSmoothingEnabled
+    ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+    : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
+  const smoothingBorder = localRenderSmoothingEnabled
+    ? 'rgba(118, 255, 170, 0.28)'
+    : 'rgba(228, 234, 241, 0.18)';
 
   return (
     <div
@@ -386,16 +405,19 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         top: 8,
         right: 8,
         zIndex: 20,
-        background: 'rgba(0, 0, 0, 0.75)',
-        color: '#0f0',
+        background: 'linear-gradient(180deg, rgba(7, 18, 14, 0.96), rgba(3, 10, 8, 0.9))',
+        border: '1px solid rgba(154, 211, 176, 0.16)',
+        boxShadow: '0 18px 44px rgba(0, 0, 0, 0.42)',
+        backdropFilter: 'blur(10px)',
+        color: '#d8f3de',
         fontFamily: 'monospace',
         fontSize: 12,
-        lineHeight: 1.5,
-        padding: '8px 12px',
-        borderRadius: 4,
+        lineHeight: 1.45,
+        padding: '10px 12px 12px',
+        borderRadius: 12,
         pointerEvents: 'auto',
-        minWidth: 240,
-        maxWidth: 'calc((100vw - 16px) / 3)',
+        minWidth: 272,
+        maxWidth: 'min(420px, calc((100vw - 16px) / 2.2))',
         maxHeight: 'calc(100vh - 16px)',
         whiteSpace: 'pre-wrap',
         overflowWrap: 'anywhere',
@@ -406,6 +428,113 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         overscrollBehavior: 'contain',
       }}
     >
+      <div
+        style={{
+          display: 'grid',
+          gap: 10,
+          marginBottom: 10,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: '#87b89a',
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                marginBottom: 2,
+              }}
+            >
+              Debug Overlay
+            </div>
+            <div style={{ color: '#f2fff5', fontSize: 14, fontWeight: 700 }}>
+              Runtime Diagnostics
+            </div>
+          </div>
+          <div
+            style={{
+              color: '#7fa18b',
+              fontSize: 10,
+              textAlign: 'right',
+              lineHeight: 1.35,
+            }}
+          >
+            <div>F3 show / hide</div>
+            <div>F4 copy report</div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: smoothingBackground,
+            border: `1px solid ${smoothingBorder}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Local Render Smoothing
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Toggle interpolated local player and camera presentation.
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={localRenderSmoothingEnabled}
+              onClick={onToggleLocalRenderSmoothing}
+              style={{
+                background: localRenderSmoothingEnabled ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${localRenderSmoothingEnabled ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: smoothingAccent,
+                borderRadius: 999,
+                cursor: onToggleLocalRenderSmoothing ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: localRenderSmoothingEnabled ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Local Smooth ${localRenderSmoothingEnabled ? 'ON' : 'OFF'}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {localRenderSmoothingEnabled
+              ? 'High-refresh monitors render the local pose between 60Hz simulation steps.'
+              : 'Uses the raw 60Hz local pose so you can compare against the smoothed path.'}
+          </div>
+        </div>
+      </div>
+
       <Section title="Rendering">
         {`FPS: ${fmt(stats.fps, 0)}  (${fmt(stats.frameTimeMs)}ms)`}
         {`Draw calls: ${stats.drawCalls}  Tris: ${stats.triangles}`}
@@ -488,7 +617,15 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
         </Section>
       )}
 
-      <div style={{ color: '#8fd18f', marginTop: 6 }}>
+      <div
+        style={{
+          color: '#7ca88a',
+          marginTop: 8,
+          paddingTop: 8,
+          borderTop: '1px solid rgba(150, 209, 171, 0.1)',
+          fontSize: 11,
+        }}
+      >
         {`Copy markdown: F4 or ${typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl'}+Shift+D`}
       </div>
     </div>
@@ -496,13 +633,43 @@ export function DebugOverlay({ stats, visible }: { stats: DebugStats; visible: b
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const lines = Array.isArray(children) ? children : [children];
   return (
-    <div style={{ marginBottom: 4 }}>
-      <div style={{ color: '#ff0', fontWeight: 'bold' }}>{`— ${title} —`}</div>
-      {Array.isArray(children)
-        ? children.map((line, i) => <div key={i} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{line}</div>)
-        : <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{children}</div>
-      }
-    </div>
+    <section
+      style={{
+        marginBottom: 8,
+        padding: '9px 10px',
+        borderRadius: 8,
+        background: 'rgba(10, 21, 16, 0.52)',
+        border: '1px solid rgba(139, 192, 159, 0.1)',
+      }}
+    >
+      <div
+        style={{
+          color: '#f3da7b',
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          marginBottom: 5,
+        }}
+      >
+        {title}
+      </div>
+      <div style={{ display: 'grid', gap: 2 }}>
+        {lines.map((line, i) => (
+          <div
+            key={i}
+            style={{
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+              color: '#d5eddc',
+            }}
+          >
+            {line}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

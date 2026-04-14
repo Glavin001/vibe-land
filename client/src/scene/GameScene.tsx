@@ -24,6 +24,7 @@ type GameSceneProps = {
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
+  localRenderSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
 };
 
@@ -44,6 +45,7 @@ export function GameScene({
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
+  localRenderSmoothingEnabled = true,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -78,6 +80,7 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           benchmarkAutopilot={benchmarkAutopilot}
+          localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           sceneExtras={sceneExtras}
         />
       </Suspense>

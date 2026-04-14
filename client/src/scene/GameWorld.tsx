@@ -183,6 +183,7 @@ type GameWorldProps = {
     clientIndex: number;
     scenario: LoadTestScenario;
   };
+  localRenderSmoothingEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -384,11 +385,12 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   benchmarkAutopilot,
+  localRenderSmoothingEnabled = true,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
-  const prediction = usePredictionWithWorld(mode, worldJson);
+  const prediction = usePredictionWithWorld(mode, worldJson, localRenderSmoothingEnabled);
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
@@ -734,8 +736,8 @@ export function GameWorld({
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
         // Shared input bundling lives here for both modes. In local practice mode
-        // the authoritative loopback session owns movement, so this only queues
-        // inputs and authoritative snapshots drive the rendered pose.
+        // the loopback session remains authoritative, but the client predicts and
+        // reconciles the local player so high-refresh rendering stays smooth.
         prediction.update(frameDelta, resolvedInput, sendInputs);
       }
     }
