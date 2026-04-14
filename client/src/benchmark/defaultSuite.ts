@@ -10,6 +10,7 @@ const smokeThresholds: BenchmarkThresholds = {
   strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
   maxPendingInputs: { comparator: 'upper', warn: 16, fail: 28 },
   connectedRatio: { comparator: 'lower', warn: 0.98, fail: 0.9 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
   voidKills: { comparator: 'upper', warn: 0, fail: 1 },
 };
 
@@ -23,6 +24,7 @@ const scaleThresholds: BenchmarkThresholds = {
   strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
   maxPendingInputs: { comparator: 'upper', warn: 18, fail: 30 },
   connectedRatio: { comparator: 'lower', warn: 0.96, fail: 0.9 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
   voidKills: { comparator: 'upper', warn: 0, fail: 1 },
 };
 
@@ -36,6 +38,7 @@ const strictArenaThresholds: BenchmarkThresholds = {
   strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
   maxPendingInputs: { comparator: 'upper', warn: 10, fail: 12 },
   connectedRatio: { comparator: 'lower', warn: 1, fail: 0.95 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
   voidKills: { comparator: 'upper', warn: 0, fail: 1 },
 };
 
@@ -387,8 +390,15 @@ export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
   ],
 };
 
+export const STRICT_SUITE: BenchmarkSuiteSpec = {
+  name: 'strict',
+  scenarios: DEFAULT_SUITE.scenarios.filter((scenario) =>
+    scenario.name === 'arena_shared_play_11' || scenario.name === 'arena_shared_play_12'),
+};
+
 export function resolveSuite(name: string): BenchmarkSuiteSpec {
   if (name === 'smoke') return SMOKE_SUITE;
+  if (name === 'strict') return STRICT_SUITE;
   if (name === 'default') return DEFAULT_SUITE;
   throw new Error(`Unknown benchmark suite: ${name}`);
 }

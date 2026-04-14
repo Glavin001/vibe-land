@@ -76,6 +76,7 @@ declare global {
   interface Window {
     __VIBE_BENCHMARK_STATE__?: BenchmarkPageState;
     __VIBE_BENCHMARK_RESULT__?: WebTransportWorkerResult | null;
+    __VIBE_GET_BENCHMARK_RESULT__?: (() => WebTransportWorkerResult | null) | null;
   }
 }
 
@@ -161,6 +162,25 @@ export function LoadTestPage() {
     stopBots(botsRef.current);
     statsSocketRef.current?.close();
   }, []);
+
+  function buildBenchmarkResult(completedScenario?: LoadTestScenario): WebTransportWorkerResult {
+    const scenario = completedScenario ?? tryParseScenario(scenarioText) ?? parseScenarioJson(launchConfigRef.current.defaultScenarioText);
+    return {
+      kind: 'webtransport',
+      scenario,
+      requestedBots: scenario.transportMix.webtransport,
+      connectedBots: peakConnectedBotsRef.current,
+      failedBots: Math.max(0, scenario.transportMix.webtransport - botsRef.current.length) + benchmarkErrorsRef.current.length,
+      shotsFired: botsRef.current.reduce((sum, bot) => sum + bot.shotsFired, 0),
+      snapshotsReceived: botsRef.current.reduce((sum, bot) => sum + bot.snapshotsReceived, 0),
+      totalInboundBytes: 0,
+      totalOutboundBytes: 0,
+      startedAt: runStartedAtRef.current ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      errors: [...benchmarkErrorsRef.current],
+      bottleneck: latestBottleneckRef.current,
+    };
+  }
 
   async function start(): Promise<void> {
     setError(null);
@@ -286,22 +306,7 @@ export function LoadTestPage() {
       window.clearTimeout(completionTimerRef.current);
       completionTimerRef.current = null;
     }
-    const scenario = completedScenario ?? tryParseScenario(scenarioText) ?? parseScenarioJson(launchConfigRef.current.defaultScenarioText);
-    const result: WebTransportWorkerResult = {
-      kind: 'webtransport',
-      scenario,
-      requestedBots: scenario.transportMix.webtransport,
-      connectedBots: peakConnectedBotsRef.current,
-      failedBots: Math.max(0, scenario.transportMix.webtransport - botsRef.current.length) + benchmarkErrorsRef.current.length,
-      shotsFired: botsRef.current.reduce((sum, bot) => sum + bot.shotsFired, 0),
-      snapshotsReceived: botsRef.current.reduce((sum, bot) => sum + bot.snapshotsReceived, 0),
-      totalInboundBytes: 0,
-      totalOutboundBytes: 0,
-      startedAt: runStartedAtRef.current ?? new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      errors: [...benchmarkErrorsRef.current],
-      bottleneck: latestBottleneckRef.current,
-    };
+    const result = buildBenchmarkResult(completedScenario);
     stopBots(botsRef.current);
     botsRef.current = [];
     statsSocketRef.current?.close();
@@ -322,6 +327,13 @@ export function LoadTestPage() {
       result,
     });
   }
+
+  useEffect(() => {
+    window.__VIBE_GET_BENCHMARK_RESULT__ = () => buildBenchmarkResult();
+    return () => {
+      window.__VIBE_GET_BENCHMARK_RESULT__ = null;
+    };
+  }, [scenarioText]);
 
   return (
     <div style={styles.page}>

@@ -44,6 +44,7 @@ export function renderScenarioMarkdown(result: BenchmarkScenarioResult): string 
     `- datagram fallbacks: ${result.measuredWindow.peakMetrics.datagramFallbacks.toFixed(0)}`,
     `- strict snapshot drops: ${result.measuredWindow.peakMetrics.strictSnapshotDrops.toFixed(0)}`,
     `- max pending inputs: ${result.measuredWindow.peakMetrics.maxPendingInputs.toFixed(0)}`,
+    `- dead players skipped p95: ${result.measuredWindow.peakMetrics.deadPlayersSkippedP95.toFixed(0)}`,
     '',
     '### Thresholds',
     '',

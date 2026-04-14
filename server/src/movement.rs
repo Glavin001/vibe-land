@@ -737,8 +737,7 @@ mod tests {
     }
 
     fn arena_with_ground_kcc_mode(player_kcc_mode: PlayerKccMode) -> PhysicsArena {
-        let mut arena =
-            PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
+        let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
         arena.add_static_cuboid(
             Vector3::<f32>::new(0.0, -0.5, 0.0),
             Vector3::<f32>::new(50.0, 0.5, 50.0),

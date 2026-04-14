@@ -120,8 +120,7 @@ impl<'a> PlayerQueryContext<'a> {
         dt: f32,
         predicate: &'b F,
         collisions_out: Option<&mut Vec<CharacterCollision>>,
-    )
-    where
+    ) where
         F: Fn(ColliderHandle, &Collider) -> bool,
     {
         let filter = SimWorld::shared_player_support_filter().predicate(predicate);
@@ -159,6 +158,23 @@ impl<'a> PlayerQueryContext<'a> {
             position,
             max_probe_distance,
             self.dynamic_pipeline(),
+        )
+    }
+
+    pub fn any_pushable_dynamic_body_in_aabb<'b, F>(
+        &self,
+        mins: [f32; 3],
+        maxs: [f32; 3],
+        predicate: &'b F,
+    ) -> bool
+    where
+        F: Fn(ColliderHandle, &Collider) -> bool,
+    {
+        self.sim.any_pushable_dynamic_body_in_aabb_with_pipeline(
+            Point3::new(mins[0], mins[1], mins[2]),
+            Point3::new(maxs[0], maxs[1], maxs[2]),
+            self.dynamic_pipeline(),
+            predicate,
         )
     }
 }
@@ -652,6 +668,22 @@ impl SimWorld {
             collider,
             &vector![position.x as f32, position.y as f32, position.z as f32],
         )
+    }
+
+    fn any_pushable_dynamic_body_in_aabb_with_pipeline<'a, F>(
+        &self,
+        mins: Point3<f32>,
+        maxs: Point3<f32>,
+        query_pipeline: &QueryPipeline<'a>,
+        predicate: &F,
+    ) -> bool
+    where
+        F: Fn(ColliderHandle, &Collider) -> bool,
+    {
+        let aabb = Aabb::new(mins, maxs);
+        query_pipeline
+            .intersect_aabb_conservative(aabb)
+            .any(|(handle, collider)| predicate(handle, collider))
     }
 
     pub fn is_pushable_dynamic_collider(&self, handle: ColliderHandle) -> bool {

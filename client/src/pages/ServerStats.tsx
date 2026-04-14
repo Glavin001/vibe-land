@@ -185,11 +185,14 @@ function statsMarkdown(stats: GlobalStatsSnapshot, lastUpdate: Date | null, conn
   const lines = [
     '# vibe-land / server-stats',
     '',
-    `sim: ${stats.sim_hz} Hz | snapshots: ${stats.snapshot_hz} Hz | matches: ${stats.matches.length}`,
+    `build: ${stats.server_build_profile} | sim: ${stats.sim_hz} Hz | snapshots: ${stats.snapshot_hz} Hz | matches: ${stats.matches.length}`,
     `connection: ${connState}`,
     `updated: ${lastUpdate ? lastUpdate.toISOString() : 'unknown'}`,
     '',
   ];
+  if (stats.server_build_profile !== 'release') {
+    lines.push('warning: debug server build; authoritative performance numbers are not representative.', '');
+  }
   for (const match of stats.matches) {
     lines.push(matchMarkdown(match, stats.sim_hz), '');
   }
@@ -472,7 +475,12 @@ export function ServerStats() {
           <p style={styles.title}>vibe-land / server-stats</p>
           {stats && (
             <div style={styles.serverInfo}>
-              {`sim: ${stats.sim_hz} Hz  |  snapshots: ${stats.snapshot_hz} Hz  |  matches: ${stats.matches.length}`}
+              {`build: ${stats.server_build_profile}  |  sim: ${stats.sim_hz} Hz  |  snapshots: ${stats.snapshot_hz} Hz  |  matches: ${stats.matches.length}`}
+            </div>
+          )}
+          {stats?.server_build_profile && stats.server_build_profile !== 'release' && (
+            <div style={{ ...styles.serverInfo, color: RED }}>
+              Debug server build: authoritative performance numbers are not representative.
             </div>
           )}
         </div>

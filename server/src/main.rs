@@ -123,6 +123,23 @@ fn parse_player_kcc_mode(value: Option<&str>) -> PlayerKccMode {
     }
 }
 
+fn parse_respawn_delay_ms(value: Option<&str>) -> u32 {
+    value
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(RESPAWN_DELAY_MS)
+}
+
+fn server_build_profile() -> &'static str {
+    #[cfg(debug_assertions)]
+    {
+        "debug"
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        "release"
+    }
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct SummaryStatsSnapshot {
     avg: f32,
@@ -479,6 +496,7 @@ struct MatchStatsSnapshot {
 
 #[derive(serde::Serialize, Clone, Default)]
 struct GlobalStatsSnapshot {
+    server_build_profile: String,
     sim_hz: u16,
     snapshot_hz: u16,
     matches: Vec<MatchStatsSnapshot>,
@@ -499,6 +517,7 @@ struct AppState {
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
     player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
@@ -621,6 +640,7 @@ struct MatchState {
     void_kills: u64,
     strict_snapshot_datagrams: bool,
     player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -640,6 +660,10 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     install_panic_hook();
+    #[cfg(debug_assertions)]
+    warn!(
+        "running a debug server build; authoritative player/KCC performance numbers are not representative, use `cargo run --release -p web-fps-server` for perf validation"
+    );
 
     // Build TLS identity for WebTransport.
     // If WT_CERT_PEM + WT_KEY_PEM are set, load a CA-signed cert (production).
@@ -676,11 +700,17 @@ async fn main() -> Result<()> {
         .unwrap_or(false);
     let player_kcc_mode =
         parse_player_kcc_mode(std::env::var("VIBE_SERVER_PLAYER_KCC_MODE").ok().as_deref());
+    let respawn_delay_ms = parse_respawn_delay_ms(
+        std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
+            .ok()
+            .as_deref(),
+    );
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
         player_kcc_mode = ?player_kcc_mode,
+        respawn_delay_ms,
         "WebTransport snapshot transport policy loaded"
     );
 
@@ -700,6 +730,7 @@ async fn main() -> Result<()> {
             wt_base_url,
             strict_snapshot_datagrams,
             player_kcc_mode,
+            respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
@@ -859,7 +890,9 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
             let delivery = classify_outbound_delivery(
                 first,
                 strict_snapshot_datagrams,
-                datagram_result.as_ref().is_some_and(|result| result.is_ok()),
+                datagram_result
+                    .as_ref()
+                    .is_some_and(|result| result.is_ok()),
             );
             match delivery {
                 OutboundDelivery::Datagram => {
@@ -1080,6 +1113,7 @@ async fn run_match_loop(
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
     player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -1125,6 +1159,7 @@ async fn run_match_loop(
         void_kills: 0,
         strict_snapshot_datagrams,
         player_kcc_mode,
+        respawn_delay_ms,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
@@ -1175,6 +1210,7 @@ fn spawn_match_loop(
             rx,
             app.strict_snapshot_datagrams,
             app.player_kcc_mode,
+            app.respawn_delay_ms,
             app.stats_tx.clone(),
             telemetry,
             app.stats_registry.clone(),
@@ -2136,7 +2172,7 @@ impl MatchState {
         self.arena.exit_vehicle(player_id);
         self.arena.set_player_dead(player_id, true);
         if let Some(runtime) = self.players.get_mut(&player_id) {
-            runtime.respawn_at_ms = Some(server_time_ms.saturating_add(RESPAWN_DELAY_MS));
+            runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
         }
@@ -3003,6 +3039,7 @@ fn global_stats_from_registry(
     let mut matches: Vec<_> = registry.values().cloned().collect();
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     GlobalStatsSnapshot {
+        server_build_profile: server_build_profile().to_string(),
         sim_hz: SIM_HZ,
         snapshot_hz: SNAPSHOT_HZ,
         matches,
@@ -3036,9 +3073,10 @@ impl SpacetimeVerifier {
 mod tests {
     use super::{
         classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
-        enqueue_inputs, is_snapshot_packet_kind, rifle_damage, strict_snapshot_drop_cause_from_send_error,
-        take_input_for_tick, try_queue_packet, HitZone, InputCmd, MatchIoTelemetry,
-        OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        enqueue_inputs, is_snapshot_packet_kind, parse_respawn_delay_ms, rifle_damage,
+        server_build_profile, strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
+        try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, OutboundDelivery, PlayerRuntime,
+        StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -3139,6 +3177,25 @@ mod tests {
         assert_eq!(rifle_damage(HitZone::Body), RIFLE_BODY_DAMAGE);
         assert_eq!(rifle_damage(HitZone::Head), RIFLE_HEAD_DAMAGE);
         assert!(rifle_damage(HitZone::Head) > rifle_damage(HitZone::Body));
+    }
+
+    #[test]
+    fn respawn_delay_uses_default_and_accepts_override() {
+        assert_eq!(parse_respawn_delay_ms(None), super::RESPAWN_DELAY_MS);
+        assert_eq!(parse_respawn_delay_ms(Some("0")), 0);
+        assert_eq!(parse_respawn_delay_ms(Some("250")), 250);
+        assert_eq!(
+            parse_respawn_delay_ms(Some("bad-value")),
+            super::RESPAWN_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn server_build_profile_matches_cfg() {
+        #[cfg(debug_assertions)]
+        assert_eq!(server_build_profile(), "debug");
+        #[cfg(not(debug_assertions))]
+        assert_eq!(server_build_profile(), "release");
     }
 
     #[test]

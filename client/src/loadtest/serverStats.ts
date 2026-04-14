@@ -114,6 +114,7 @@ export interface MatchStatsSnapshot {
 }
 
 export interface GlobalStatsSnapshot {
+  server_build_profile: string;
   sim_hz: number;
   snapshot_hz: number;
   matches: MatchStatsSnapshot[];

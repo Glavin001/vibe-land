@@ -55,6 +55,7 @@ export function buildMeasuredWindow(
         ? sample.players.reduce((sum, player) => sum + player.pending_inputs, 0) / sample.players.length
         : 0,
     ),
+    deadPlayersSkippedP95: maxValue(matches, (sample) => sample.network.dead_players_skipped.p95),
     voidKills: deltaValue(matches, (sample) => sample.load.void_kills),
   };
 
@@ -111,12 +112,13 @@ export function evaluateScenario(
     evaluateBand('strict_snapshot_drops', metrics.strictSnapshotDrops, spec.thresholds.strictSnapshotDrops),
     evaluateBand('max_pending_inputs', metrics.maxPendingInputs, spec.thresholds.maxPendingInputs),
     evaluateBand('connected_ratio', connectedRatio, spec.thresholds.connectedRatio),
+    evaluateBand('dead_players_skipped_p95', metrics.deadPlayersSkippedP95, spec.thresholds.deadPlayersSkippedP95),
     evaluateBand('void_kills', metrics.voidKills, spec.thresholds.voidKills),
   ];
 
   const derivedAnomalies = [...anomalies];
   if (measuredWindow.sampleCount === 0) {
-    derivedAnomalies.push('No /ws/stats samples captured during the measurement window.');
+    derivedAnomalies.push('Invalid benchmark: no /ws/stats samples captured during the measurement window.');
   }
   if (browserConsoleErrors.length > 0) {
     derivedAnomalies.push(`${browserConsoleErrors.length} browser console error(s) captured.`);
@@ -125,7 +127,8 @@ export function evaluateScenario(
     derivedAnomalies.push(`${browserPageErrors.length} browser page error(s) captured.`);
   }
 
-  const verdict = outcomes.some((outcome) => outcome.verdict === 'fail')
+  const invalidBenchmark = derivedAnomalies.some((anomaly) => anomaly.startsWith('Invalid benchmark:'));
+  const verdict = outcomes.some((outcome) => outcome.verdict === 'fail') || invalidBenchmark
     ? 'fail'
     : outcomes.some((outcome) => outcome.verdict === 'warn') || derivedAnomalies.length > 0
       ? 'warn'

@@ -84,6 +84,7 @@ export interface BenchmarkObservedMetrics {
   strictSnapshotDrops: number;
   maxPendingInputs: number;
   avgPendingInputs: number;
+  deadPlayersSkippedP95: number;
   voidKills: number;
 }
 

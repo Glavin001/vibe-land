@@ -94,10 +94,11 @@ async function main() {
       pages.push(page);
     }
 
+    const startupTimeoutMs = Math.max(60_000, (scenario.rampUpS ?? 0) * 1000 + 30_000);
     await Promise.all(pages.map((page) => page.waitForFunction(() => {
       const mode = window.__VIBE_PLAY_BENCHMARK_STATE__?.mode;
       return mode === "running" || mode === "completed" || mode === "failed";
-    }, { timeout: 30_000 })));
+    }, { timeout: startupTimeoutMs })));
 
     const timeoutMs = (scenario.durationS ?? 30) * 1000 + 45_000;
     await Promise.all(pages.map((page) => page.waitForFunction(() => {
@@ -119,16 +120,22 @@ async function main() {
       pageErrors,
     })}\n`);
   } catch (error) {
-    const states = await Promise.all(pages.map(async (page) => {
+    const payload = await Promise.all(pages.map(async (page) => {
       try {
-        return await page.evaluate(() => window.__VIBE_PLAY_BENCHMARK_STATE__ ?? null);
+        return await page.evaluate(() => ({
+          result:
+            window.__VIBE_PLAY_BENCHMARK_RESULT__
+            ?? window.__VIBE_GET_PLAY_BENCHMARK_RESULT__?.()
+            ?? null,
+          state: window.__VIBE_PLAY_BENCHMARK_STATE__ ?? null,
+        }));
       } catch {
-        return null;
+        return { result: null, state: null };
       }
     }));
     process.stdout.write(`${JSON.stringify({
-      results: [],
-      states,
+      results: payload.map((entry) => entry.result),
+      states: payload.map((entry) => entry.state),
       consoleErrors,
       pageErrors,
       error: error?.message ?? String(error),

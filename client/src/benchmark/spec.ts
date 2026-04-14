@@ -18,6 +18,7 @@ export interface BenchmarkThresholds {
   strictSnapshotDrops: BenchmarkThresholdBand;
   maxPendingInputs: BenchmarkThresholdBand;
   connectedRatio: BenchmarkThresholdBand;
+  deadPlayersSkippedP95: BenchmarkThresholdBand;
   voidKills: BenchmarkThresholdBand;
 }
 

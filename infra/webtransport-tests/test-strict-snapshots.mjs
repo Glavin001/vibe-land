@@ -79,6 +79,7 @@ async function main() {
         WT_BIND_ADDR: `${serverHost}:${wtPort}`,
         WT_HOST: serverHost,
         WT_STRICT_SNAPSHOT_DATAGRAMS: '1',
+        VIBE_SERVER_RESPAWN_DELAY_MS: process.env.STRICT_TEST_RESPAWN_DELAY_MS ?? '0',
         RUST_LOG: process.env.RUST_LOG ?? 'info',
       },
     });

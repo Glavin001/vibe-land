@@ -126,6 +126,7 @@ describe('benchmark evaluation', () => {
         strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 1 },
         maxPendingInputs: { comparator: 'upper', warn: 16, fail: 24 },
         connectedRatio: { comparator: 'lower', warn: 0.95, fail: 0.8 },
+        deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
         voidKills: { comparator: 'upper', warn: 0, fail: 1 },
       },
       scenario: {
@@ -175,5 +176,79 @@ describe('benchmark evaluation', () => {
     expect(measured.peakMetrics.datagramFallbacks).toBe(2);
     expect(measured.peakMetrics.strictSnapshotDrops).toBe(3);
     expect(measured.peakMetrics.voidKills).toBe(1);
+  });
+
+  it('fails when too many dead players are skipped in the measured window', () => {
+    const spec = createScenarioSpec({
+      name: 'test',
+      environment: 'local',
+      warmupS: 2,
+      measureS: 2,
+      thresholds: {
+        tickP95Ms: { comparator: 'upper', warn: 14, fail: 16 },
+        playerKccP95Ms: { comparator: 'upper', warn: 8, fail: 10 },
+        dynamicsP95Ms: { comparator: 'upper', warn: 6, fail: 8 },
+        snapshotBytesPerClientP95: { comparator: 'upper', warn: 900, fail: 1200 },
+        wtReliableRatio: { comparator: 'upper', warn: 0.1, fail: 0.2 },
+        datagramFallbacks: { comparator: 'upper', warn: 0, fail: 1 },
+        strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 1 },
+        maxPendingInputs: { comparator: 'upper', warn: 16, fail: 24 },
+        connectedRatio: { comparator: 'lower', warn: 0.95, fail: 0.8 },
+        deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
+        voidKills: { comparator: 'upper', warn: 0, fail: 1 },
+      },
+      scenario: {
+        botCount: 4,
+        transportMix: { websocket: 0, webtransport: 4 },
+      },
+    });
+    const measured = buildMeasuredWindow('test', [{
+      at: new Date().toISOString(),
+      match: makeMatch({
+        network: {
+          ...makeMatch().network,
+          dead_players_skipped: { avg: 2, p95: 3, max: 4 },
+        },
+      }),
+    }], 60);
+    const evaluation = evaluateScenario(spec, measured, 1, [], [], []);
+    expect(evaluation.verdict).toBe('fail');
+    expect(evaluation.thresholdOutcomes.find((outcome) => outcome.metric === 'dead_players_skipped_p95')?.verdict).toBe('fail');
+  });
+
+  it('fails invalid benchmark anomalies even when numeric thresholds pass', () => {
+    const spec = createScenarioSpec({
+      name: 'test',
+      environment: 'local',
+      warmupS: 2,
+      measureS: 2,
+      thresholds: {
+        tickP95Ms: { comparator: 'upper', warn: 14, fail: 16 },
+        playerKccP95Ms: { comparator: 'upper', warn: 8, fail: 10 },
+        dynamicsP95Ms: { comparator: 'upper', warn: 6, fail: 8 },
+        snapshotBytesPerClientP95: { comparator: 'upper', warn: 900, fail: 1200 },
+        wtReliableRatio: { comparator: 'upper', warn: 0.1, fail: 0.2 },
+        datagramFallbacks: { comparator: 'upper', warn: 0, fail: 1 },
+        strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 1 },
+        maxPendingInputs: { comparator: 'upper', warn: 16, fail: 24 },
+        connectedRatio: { comparator: 'lower', warn: 0.95, fail: 0.8 },
+        deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
+        voidKills: { comparator: 'upper', warn: 0, fail: 1 },
+      },
+      scenario: {
+        botCount: 4,
+        transportMix: { websocket: 0, webtransport: 4 },
+      },
+    });
+    const measured = buildMeasuredWindow('test', [{ at: new Date().toISOString(), match: makeMatch() }], 60);
+    const evaluation = evaluateScenario(
+      spec,
+      measured,
+      1,
+      ['Invalid benchmark: missing play worker result payloads.'],
+      [],
+      [],
+    );
+    expect(evaluation.verdict).toBe('fail');
   });
 });

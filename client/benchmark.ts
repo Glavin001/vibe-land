@@ -58,6 +58,7 @@ type TimedMatchSample = {
   at: string;
   match: MatchStatsSnapshot;
   simHz: number;
+  serverBuildProfile: string;
 };
 
 class StatsStream {
@@ -88,7 +89,13 @@ class StatsStream {
           const atMs = Date.now();
           const at = new Date(atMs).toISOString();
           for (const match of snapshot.matches) {
-            this.samples.push({ atMs, at, match, simHz: snapshot.sim_hz });
+            this.samples.push({
+              atMs,
+              at,
+              match,
+              simHz: snapshot.sim_hz,
+              serverBuildProfile: snapshot.server_build_profile,
+            });
           }
         } catch {
           // ignore malformed frames
@@ -114,6 +121,11 @@ class StatsStream {
   simHz(matchId: string): number {
     const matchSample = this.samples.find((sample) => sample.match.id === matchId);
     return matchSample?.simHz ?? 60;
+  }
+
+  serverBuildProfile(matchId: string): string | null {
+    const matchSample = this.samples.find((sample) => sample.match.id === matchId);
+    return matchSample?.serverBuildProfile ?? null;
   }
 }
 
@@ -383,13 +395,48 @@ function combineConnectedRatio(
   wsResult: BenchmarkScenarioResult['workers']['websocket'],
   wtResult: BenchmarkScenarioResult['workers']['webtransport'],
   playResults: PlayWorkerResult[],
+  measuredSamples: Array<{ at: string; match: MatchStatsSnapshot }>,
 ): number {
-  const connected =
+  const workerConnected =
     (wsResult?.connectedBots ?? 0)
     + (wtResult?.connectedBots ?? 0)
     + playResults.filter((result) => result.connected && !result.disconnected).length;
   const requested = spec.scenario.botCount + spec.playClients;
+  const observedConnected = measuredSamples.reduce((max, sample) => (
+    Math.max(
+      max,
+      sample.match.load.websocket_players + sample.match.load.webtransport_players,
+    )
+  ), 0);
+  const connected = Math.max(workerConnected, observedConnected);
   return requested > 0 ? connected / requested : 1;
+}
+
+function observedConnectedPlayers(
+  measuredSamples: Array<{ at: string; match: MatchStatsSnapshot }>,
+): number {
+  return measuredSamples.reduce((max, sample) => (
+    Math.max(
+      max,
+      sample.match.load.websocket_players + sample.match.load.webtransport_players,
+    )
+  ), 0);
+}
+
+function isRecoverableBrowserWorkerError(
+  error: string | undefined,
+  observedConnected: number,
+  requested: number,
+): boolean {
+  return Boolean(
+    error
+    && observedConnected >= requested
+    && error.includes('page.waitForFunction: Timeout'),
+  );
+}
+
+function invalidBenchmark(message: string): string {
+  return `Invalid benchmark: ${message}`;
 }
 
 async function writeScenarioArtifact(outputDir: string, generatedAt: string, result: BenchmarkScenarioResult): Promise<void> {
@@ -452,6 +499,9 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
 
   const measuredSamples = statsStream.windowSamples(spec.scenario.matchId, measureStartMs, measureEndMs);
   const measuredWindow = buildMeasuredWindow(spec.scenario.matchId, measuredSamples, statsStream.simHz(spec.scenario.matchId));
+  const serverBuildProfile = statsStream.serverBuildProfile(spec.scenario.matchId);
+  const requestedPlayers = spec.scenario.botCount + spec.playClients;
+  const observedConnected = observedConnectedPlayers(measuredSamples);
 
   const anomalies = [
     ...(wsResult?.errors ?? []),
@@ -463,20 +513,43 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
   if (wsOutcome.status === 'rejected') {
     anomalies.push(wsOutcome.reason instanceof Error ? wsOutcome.reason.message : String(wsOutcome.reason));
   }
-  if (playRun.error) {
+  if (playRun.error && !isRecoverableBrowserWorkerError(playRun.error, observedConnected, requestedPlayers)) {
     anomalies.push(playRun.error);
   }
-  if (wtRun.error) {
+  if (wtRun.error && !isRecoverableBrowserWorkerError(wtRun.error, observedConnected, requestedPlayers)) {
     anomalies.push(wtRun.error);
+  }
+  const missingPlayResults = Math.max(0, spec.playClients - playRun.results.length);
+  if (missingPlayResults > 0) {
+    anomalies.push(invalidBenchmark(
+      `missing ${missingPlayResults} of ${spec.playClients} play worker result payloads`,
+    ));
+  }
+  if (spec.scenario.transportMix.webtransport > 0 && wtRun.result == null) {
+    anomalies.push(invalidBenchmark('missing webtransport worker result payload'));
+  }
+  if (serverBuildProfile && serverBuildProfile !== 'release') {
+    anomalies.push(
+      invalidBenchmark(
+        `server build profile is ${serverBuildProfile}; use a release server for authoritative performance benchmarks`,
+      ),
+    );
   }
   const totalShotsFired =
     (wsResult?.shotsFired ?? 0)
     + (wtRun.result?.shotsFired ?? 0)
     + playRun.results.reduce((sum, result) => sum + result.shotsFired, 0);
-  if (spec.scenario.behavior.fireMode !== 'off' && totalShotsFired === 0) {
-    anomalies.push('Scenario requested combat behavior, but no benchmark shots were fired.');
+  const haveWorkerMetrics = wsResult != null || wtRun.result != null || playRun.results.length > 0;
+  if (spec.scenario.behavior.fireMode !== 'off' && haveWorkerMetrics && totalShotsFired === 0) {
+    anomalies.push(invalidBenchmark('scenario requested combat behavior, but no benchmark shots were fired'));
   }
-  const connectedRatio = combineConnectedRatio(spec, wsResult, wtRun.result, playRun.results);
+  const connectedRatio = combineConnectedRatio(
+    spec,
+    wsResult,
+    wtRun.result,
+    playRun.results,
+    measuredSamples,
+  );
   const evaluation = evaluateScenario(
     spec,
     measuredWindow,

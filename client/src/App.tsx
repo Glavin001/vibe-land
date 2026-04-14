@@ -330,7 +330,7 @@ export function App({
       benchmarkStartedAtRef.current = null;
       benchmarkDisconnectReasonRef.current = null;
       benchmarkResultRef.current = null;
-      publishBenchmarkState('idle', practiceMode ? 'Starting firing range...' : 'Connecting...', null);
+      publishBenchmarkState('running', practiceMode ? 'Starting firing range...' : 'Connecting...', null);
     }
   }, [benchmarkConfig, practiceMode, publishBenchmarkState]);
 
