@@ -41,6 +41,19 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/gallery')).toEqual({ kind: 'gallery' });
   });
 
+  it('routes /practice/shared/:id to the shared-practice runner', () => {
+    expect(resolveAppRoute('/practice/shared/abc123')).toEqual({ kind: 'sharedPractice', id: 'abc123' });
+    expect(resolveAppRoute('/practice/shared/abc123/')).toEqual({ kind: 'sharedPractice', id: 'abc123' });
+  });
+
+  it('decodes url-encoded shared practice ids', () => {
+    expect(resolveAppRoute('/practice/shared/foo%20bar')).toEqual({ kind: 'sharedPractice', id: 'foo bar' });
+  });
+
+  it('falls back to launcher when /practice/shared/ has no id', () => {
+    expect(resolveAppRoute('/practice/shared/')).toEqual({ kind: 'launcher' });
+  });
+
   it('preserves diagnostics pages', () => {
     expect(resolveAppRoute('/stats')).toEqual({ kind: 'stats' });
     expect(resolveAppRoute('/loadtest')).toEqual({ kind: 'loadtest' });

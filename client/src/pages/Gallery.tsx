@@ -31,14 +31,35 @@ const headerRowStyle: CSSProperties = {
 };
 
 const cardStyle: CSSProperties = {
-  display: 'block',
+  display: 'flex',
+  flexDirection: 'column',
   textDecoration: 'none',
   color: 'inherit',
   borderRadius: 20,
   border: '1px solid rgba(145, 198, 255, 0.18)',
   background: 'linear-gradient(180deg, rgba(18, 29, 45, 0.95) 0%, rgba(8, 14, 23, 0.95) 100%)',
   padding: '22px',
-  cursor: 'pointer',
+};
+
+const primaryActionStyle: CSSProperties = {
+  display: 'inline-block',
+  padding: '9px 16px',
+  borderRadius: 999,
+  background: 'linear-gradient(180deg, #4cd1ff 0%, #2f8bd6 100%)',
+  color: '#04121f',
+  fontWeight: 600,
+  fontSize: 14,
+  textDecoration: 'none',
+};
+
+const secondaryActionStyle: CSSProperties = {
+  display: 'inline-block',
+  padding: '9px 14px',
+  borderRadius: 999,
+  border: '1px solid rgba(145, 198, 255, 0.3)',
+  color: '#cfe7ff',
+  fontSize: 13,
+  textDecoration: 'none',
 };
 
 const mutedTextStyle: CSSProperties = {
@@ -130,35 +151,40 @@ export function GalleryPage() {
               gap: 18,
             }}
           >
-            {state.worlds.map((world) => (
-              <a
-                key={world.id}
-                href={`/builder/world?published=${encodeURIComponent(world.id)}`}
-                style={cardStyle}
-              >
-                <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 8 }}>
-                  {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
+            {state.worlds.map((world) => {
+              const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
+              const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
+              return (
+                <div key={world.id} style={cardStyle}>
+                  <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 8 }}>
+                    {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
+                  </div>
+                  <h2 style={{ margin: '6px 0 10px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
+                  <p
+                    style={{
+                      margin: 0,
+                      color: 'rgba(237, 246, 255, 0.72)',
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 3,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      flex: 1,
+                    }}
+                  >
+                    {world.description || 'No description provided.'}
+                  </p>
+                  <div style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <a href={playHref} style={primaryActionStyle}>Play</a>
+                    <a href={editHref} style={secondaryActionStyle}>Edit in builder</a>
+                  </div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
+                    id <code>{world.id}</code>
+                  </div>
                 </div>
-                <h2 style={{ margin: '6px 0 10px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
-                <p
-                  style={{
-                    margin: 0,
-                    color: 'rgba(237, 246, 255, 0.72)',
-                    fontSize: 14,
-                    lineHeight: 1.5,
-                    display: '-webkit-box',
-                    WebkitLineClamp: 3,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden',
-                  }}
-                >
-                  {world.description || 'No description provided.'}
-                </p>
-                <div style={{ marginTop: 14, fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
-                  id <code>{world.id}</code>
-                </div>
-              </a>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

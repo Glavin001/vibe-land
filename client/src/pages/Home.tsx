@@ -88,7 +88,7 @@ export function HomePage() {
             </div>
             <h2 style={{ margin: 0, fontSize: 30 }}>Gallery</h2>
             <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
-              Browse worlds published by other builders. Click any card to open it in the builder and tinker from there.
+              Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker.
             </p>
             <div style={{ color: '#cdb1ff', fontSize: 14 }}>Available when the deployment has Cloudflare R2 configured.</div>
           </a>

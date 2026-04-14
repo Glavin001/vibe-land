@@ -3,6 +3,7 @@ import type { GameMode } from './gameMode';
 export type AppRoute =
   | { kind: 'launcher' }
   | { kind: 'game'; mode: GameMode }
+  | { kind: 'sharedPractice'; id: string }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'builder'; page: 'world'; publishedId?: string }
@@ -16,10 +17,22 @@ function normalizePathname(pathname: string): string {
   return normalized || '/';
 }
 
+const SHARED_PRACTICE_PREFIX = '/practice/shared/';
+
 export function resolveAppRoute(pathname: string, search?: string): AppRoute {
   const params = new URLSearchParams(search ?? '');
   const publishedId = params.get('published') ?? undefined;
-  switch (normalizePathname(pathname)) {
+  const normalized = normalizePathname(pathname);
+
+  if (normalized.startsWith(SHARED_PRACTICE_PREFIX)) {
+    const rest = normalized.slice(SHARED_PRACTICE_PREFIX.length);
+    const id = rest.split('/')[0] ?? '';
+    if (id) {
+      return { kind: 'sharedPractice', id: decodeURIComponent(id) };
+    }
+  }
+
+  switch (normalized) {
     case '/':
     case '/index.html':
       return { kind: 'launcher' };

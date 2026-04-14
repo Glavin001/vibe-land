@@ -6,6 +6,7 @@ import { HomePage } from './pages/Home';
 import { ServerStats } from './pages/ServerStats';
 import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
+import { SharedPracticePage } from './pages/SharedPractice';
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -27,6 +28,9 @@ switch (route.kind) {
     break;
   case 'game':
     root.render(<App mode={route.mode} />);
+    break;
+  case 'sharedPractice':
+    root.render(<SharedPracticePage id={route.id} />);
     break;
   case 'builder':
     root.render(<GodModePage publishedId={route.publishedId} />);
