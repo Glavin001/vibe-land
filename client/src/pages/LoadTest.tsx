@@ -44,32 +44,143 @@ type BrowserBot = {
   shotId: number;
 };
 
-function createPageScenario(matchId: string): LoadTestScenario {
+type ScenarioPreset = {
+  id: string;
+  label: string;
+  description: string;
+  scenario: (matchId: string) => LoadTestScenario;
+};
+
+function buildLanProfile() {
+  return {
+    name: 'lan',
+    weight: 1,
+    transport: 'any' as const,
+    uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+    downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+  };
+}
+
+function buildMixedProfiles() {
+  return [
+    buildLanProfile(),
+    {
+      name: 'wifi',
+      weight: 0.55,
+      transport: 'any' as const,
+      uplink: { latencyMs: 28, jitterMs: 10, packetLossRate: 0.01 },
+      downlink: { latencyMs: 28, jitterMs: 10, packetLossRate: 0.01 },
+    },
+    {
+      name: 'cellular',
+      weight: 0.3,
+      transport: 'any' as const,
+      uplink: { latencyMs: 85, jitterMs: 32, packetLossRate: 0.025 },
+      downlink: { latencyMs: 85, jitterMs: 32, packetLossRate: 0.025 },
+    },
+  ];
+}
+
+function createScenario(matchId: string, overrides: Partial<LoadTestScenario>): LoadTestScenario {
   return normalizeScenario({
     ...DEFAULT_SCENARIO,
-    name: 'arena-shared-debug-10',
     matchId,
+    behavior: {
+      ...DEFAULT_SCENARIO.behavior,
+      fireMode: 'nearest_target_or_center',
+      fireCooldownTicks: 12,
+    },
     durationS: 0,
     rampUpS: 5,
     botCount: 10,
     inputHz: 15,
     transportMix: { websocket: 0, webtransport: 10 },
     spawnPattern: 'clustered',
-    behavior: {
-      ...DEFAULT_SCENARIO.behavior,
-      fireMode: 'nearest_target_or_center',
-      fireCooldownTicks: 12,
-    },
-    networkProfiles: [
-      {
-        name: 'lan',
-        weight: 1,
-        transport: 'any',
-        uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
-        downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
-      },
-    ],
+    networkProfiles: [buildLanProfile()],
+    ...overrides,
   });
+}
+
+function createPageScenario(matchId: string): LoadTestScenario {
+  return createScenario(matchId, {
+    name: 'arena-shared-debug-10',
+  });
+}
+
+function createScenarioPresets(matchId: string): ScenarioPreset[] {
+  return [
+    {
+      id: 'debug-10',
+      label: 'Debug 10',
+      description: 'Current default: 10 WT bots, 15 Hz input, LAN.',
+      scenario: () => createPageScenario(matchId),
+    },
+    {
+      id: 'real-10',
+      label: 'Realistic 10',
+      description: '10 WT bots at 60 Hz to match real player input cadence.',
+      scenario: () => createScenario(matchId, {
+        name: 'arena-realistic-10',
+        botCount: 10,
+        inputHz: 60,
+        transportMix: { websocket: 0, webtransport: 10 },
+        networkProfiles: [buildLanProfile()],
+      }),
+    },
+    {
+      id: 'scale-20',
+      label: 'Scale 20',
+      description: '20 WT bots at 60 Hz for server and packet fanout scaling.',
+      scenario: () => createScenario(matchId, {
+        name: 'arena-scale-20',
+        botCount: 20,
+        rampUpS: 6,
+        inputHz: 60,
+        transportMix: { websocket: 0, webtransport: 20 },
+        networkProfiles: [buildLanProfile()],
+      }),
+    },
+    {
+      id: 'stress-32',
+      label: 'Stress 32',
+      description: '32 WT bots at 60 Hz on LAN to push CPU and outbound snapshot volume.',
+      scenario: () => createScenario(matchId, {
+        name: 'arena-stress-32',
+        botCount: 32,
+        rampUpS: 8,
+        inputHz: 60,
+        transportMix: { websocket: 0, webtransport: 32 },
+        networkProfiles: [buildLanProfile()],
+        behavior: {
+          ...DEFAULT_SCENARIO.behavior,
+          fireMode: 'nearest_target_or_center',
+          fireCooldownTicks: 8,
+        },
+      }),
+    },
+    {
+      id: 'mixed-network-24',
+      label: 'Mixed Net 24',
+      description: '24 WT bots at 60 Hz with LAN, wifi, and cellular impairments.',
+      scenario: () => createScenario(matchId, {
+        name: 'arena-mixed-network-24',
+        botCount: 24,
+        rampUpS: 8,
+        inputHz: 60,
+        transportMix: { websocket: 0, webtransport: 24 },
+        networkProfiles: buildMixedProfiles(),
+        behavior: {
+          ...DEFAULT_SCENARIO.behavior,
+          fireMode: 'nearest_target_or_center',
+          fireCooldownTicks: 10,
+        },
+      }),
+    },
+  ];
+}
+
+function scenarioTextFromScenario(scenario: LoadTestScenario): string {
+  return JSON.stringify(normalizeScenario(scenario), null, 2);
 }
 
 declare global {
@@ -97,8 +208,9 @@ function readBenchmarkLaunch() {
   return {
     benchmark,
     autoStart,
+    requestedMatchId,
     scenarioText,
-    defaultScenarioText: JSON.stringify(createPageScenario(requestedMatchId), null, 2),
+    defaultScenarioText: scenarioTextFromScenario(createPageScenario(requestedMatchId)),
   };
 }
 
@@ -122,6 +234,9 @@ export function LoadTestPage() {
   const [bottleneck, setBottleneck] = useState('waiting for server stats');
   const botsRef = useRef<BrowserBot[]>([]);
   const statsSocketRef = useRef<WebSocket | null>(null);
+  const presets = createScenarioPresets(launchConfigRef.current.requestedMatchId);
+  const activePresetId = detectActivePreset(scenarioText, presets);
+  const activePreset = presets.find((preset) => preset.id === activePresetId) ?? null;
 
   useEffect(() => {
     latestBottleneckRef.current = bottleneck;
@@ -361,6 +476,34 @@ export function LoadTestPage() {
         </button>
       </div>
 
+      <div style={styles.presetPanel}>
+        <div style={styles.presetHeader}>
+          <div style={styles.presetTitle}>Presets</div>
+          <div style={styles.presetMeta}>
+            {activePreset ? `Active: ${activePreset.label}` : 'Active: Custom'}
+          </div>
+        </div>
+        <div style={styles.presetRow}>
+          {presets.map((preset) => {
+            const isActive = preset.id === activePresetId;
+            return (
+              <button
+                key={preset.id}
+                style={styles.presetButton(isActive)}
+                disabled={running}
+                onClick={() => setScenarioText(scenarioTextFromScenario(preset.scenario(launchConfigRef.current.requestedMatchId)))}
+                title={preset.description}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={styles.presetDescription}>
+          {activePreset?.description ?? 'Custom scenario JSON. Edit freely or re-apply a preset.'}
+        </div>
+      </div>
+
       <div style={styles.statusLine}>{status}</div>
       <div style={styles.statusLine}>{`Bottleneck: ${bottleneck}`}</div>
       {error && <div style={styles.error}>{error}</div>}
@@ -491,11 +634,28 @@ function tryParseScenario(json: string): LoadTestScenario | null {
   }
 }
 
+function detectActivePreset(
+  scenarioText: string,
+  presets: ScenarioPreset[],
+): string | null {
+  const parsed = tryParseScenario(scenarioText);
+  if (!parsed) {
+    return null;
+  }
+  const normalizedText = JSON.stringify(normalizeScenario(parsed));
+  for (const preset of presets) {
+    if (JSON.stringify(normalizeScenario(preset.scenario(parsed.matchId))) === normalizedText) {
+      return preset.id;
+    }
+  }
+  return null;
+}
+
 function publishBenchmarkState(state: BenchmarkPageState): void {
   window.__VIBE_BENCHMARK_STATE__ = state;
 }
 
-const styles: Record<string, CSSProperties> = {
+const styles = {
   page: {
     minHeight: '100vh',
     background: '#0a0e18',
@@ -528,6 +688,49 @@ const styles: Record<string, CSSProperties> = {
     gap: 12,
     marginBottom: 12,
   },
+  presetPanel: {
+    marginBottom: 14,
+    padding: 12,
+    background: '#0d1524',
+    border: '1px solid #263a59',
+    borderRadius: 8,
+  },
+  presetHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
+    alignItems: 'baseline',
+    flexWrap: 'wrap',
+  },
+  presetTitle: {
+    color: '#b8ffda',
+    fontWeight: 700,
+  },
+  presetMeta: {
+    color: '#9ab0d1',
+    fontSize: 12,
+  },
+  presetRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
+  },
+  presetButton: (active: boolean): CSSProperties => ({
+    background: active ? '#21406a' : '#162236',
+    color: active ? '#ffffff' : '#cfe4ff',
+    border: `1px solid ${active ? '#79b6ff' : '#38537c'}`,
+    borderRadius: 999,
+    padding: '8px 12px',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: active ? 700 : 500,
+  }),
+  presetDescription: {
+    color: '#9ab0d1',
+    fontSize: 12,
+  },
   button: {
     background: '#162236',
     color: '#ffffff',
@@ -554,4 +757,4 @@ const styles: Record<string, CSSProperties> = {
     padding: 16,
     boxSizing: 'border-box',
   },
-};
+} satisfies Record<string, CSSProperties | ((active: boolean) => CSSProperties)>;
