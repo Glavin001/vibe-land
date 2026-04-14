@@ -92,6 +92,47 @@ export class LocalPreviewTransport {
     this.sendRaw(encodeFirePacket(cmd));
   }
 
+  /**
+   * Spawn a bot as a real player inside the local session. Returns `true`
+   * if the bot id was accepted.
+   */
+  connectBot(botId: number): boolean {
+    if (!this.session || this.closed) return false;
+    return this.session.connectBot(botId);
+  }
+
+  /** Remove a previously spawned bot. */
+  disconnectBot(botId: number): boolean {
+    if (!this.session || this.closed) return false;
+    const removed = this.session.disconnectBot(botId);
+    this.flushPackets();
+    return removed;
+  }
+
+  /** Push an InputCmd bundle for a specific bot id. */
+  sendBotInputs(botId: number, cmds: InputCmd[]): void {
+    if (cmds.length === 0 || !this.session || this.closed) return;
+    const bytes = encodeInputBundle(cmds);
+    try {
+      this.session.handleBotPacket(botId, bytes);
+    } catch (error) {
+      console.warn('[local-preview] bot input rejected', error);
+    }
+    this.flushPackets();
+  }
+
+  /** Push a fire packet for a specific bot id. */
+  sendBotFire(botId: number, cmd: FireCmd): void {
+    if (!this.session || this.closed) return;
+    const bytes = encodeFirePacket(cmd);
+    try {
+      this.session.handleBotPacket(botId, bytes);
+    } catch (error) {
+      console.warn('[local-preview] bot fire rejected', error);
+    }
+    this.flushPackets();
+  }
+
   sendBlockEdit(cmd: BlockEditCmd): void {
     this.sendRaw(encodeBlockEditPacket(cmd));
   }

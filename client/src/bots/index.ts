@@ -57,7 +57,9 @@ export type {
 } from './types';
 export {
   PracticeBotRuntime,
-  type LocalPlayerInput,
+  PRACTICE_BOT_ID_BASE,
+  type LocalSelfAccessor,
+  type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,
   type PracticeBotRuntimeOptions,
   type PracticeBotStats,

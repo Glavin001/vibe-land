@@ -376,6 +376,25 @@ impl PhysicsArena {
         }
     }
 
+    /// Applies damage to `player_id`, clamping hp at 0 and setting the dead
+    /// flag when hp reaches zero. Returns true if this damage killed the
+    /// player (was alive, now dead).
+    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> bool {
+        let Some(state) = self.players.get_mut(&player_id) else {
+            return false;
+        };
+        if state.dead || state.hp == 0 {
+            return false;
+        }
+        state.hp = state.hp.saturating_sub(damage);
+        if state.hp == 0 {
+            state.dead = true;
+            state.velocity = Vec3d::zeros();
+            return true;
+        }
+        false
+    }
+
     pub fn respawn_player(&mut self, player_id: u32) -> Option<[f32; 3]> {
         let lane = self.next_spawn_index % 8;
         self.next_spawn_index += 1;

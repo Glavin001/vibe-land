@@ -1336,6 +1336,31 @@ impl WasmLocalSession {
             .map_err(|err| JsValue::from_str(&err))
     }
 
+    /// Spawn a bot as a first-class player in this local session. Returns
+    /// `true` if the bot was spawned (`false` if the id is already taken or
+    /// the session isn't connected yet).
+    #[wasm_bindgen(js_name = connectBot)]
+    pub fn connect_bot(&mut self, bot_id: u32) -> bool {
+        self.inner.connect_bot(bot_id)
+    }
+
+    /// Remove a previously spawned bot. Returns `true` if the id was a
+    /// known bot.
+    #[wasm_bindgen(js_name = disconnectBot)]
+    pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
+        self.inner.disconnect_bot(bot_id)
+    }
+
+    /// Push an input or fire packet authored for a bot (same wire format as
+    /// the human client's `handleClientPacket`, but routed to the bot's
+    /// PlayerRuntime).
+    #[wasm_bindgen(js_name = handleBotPacket)]
+    pub fn handle_bot_packet(&mut self, bot_id: u32, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .handle_bot_packet(bot_id, bytes)
+            .map_err(|err| JsValue::from_str(&err))
+    }
+
     pub fn tick(&mut self, dt: f32) {
         self.inner.tick(dt);
     }

@@ -185,10 +185,11 @@ type GameWorldProps = {
     scenario: LoadTestScenario;
   };
   /**
-   * Optional runtime for client-only practice bots. When supplied (only in
-   * practice mode), GameWorld ticks it each frame and uses its
-   * `remotePlayers` map in place of the real network map so the bots render
-   * as regular capsule meshes alongside the local player.
+   * Optional {@link PracticeBotRuntime}. When supplied and we're in a
+   * practice session, GameWorld attaches the runtime to the NetcodeClient
+   * as soon as the welcome packet arrives (so the runtime has access to
+   * the shared `LocalPreviewTransport` and can push bot inputs). Detached
+   * automatically on unmount.
    */
   practiceBots?: PracticeBotRuntime | null;
   localRenderSmoothingEnabled?: boolean;
@@ -501,6 +502,28 @@ export function GameWorld({
       ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
       : null;
   }, [benchmarkAutopilot]);
+
+  // Attach the practice bot runtime to the live NetcodeClient (only after
+  // `ready`, which means the welcome packet landed and the client's
+  // LocalPreviewTransport exists). Detaches automatically when the scene
+  // unmounts, when the runtime reference swaps, or when we leave practice.
+  useEffect(() => {
+    if (!practiceBots || !practiceMode || !ready) return;
+    const client = clientRef.current;
+    if (!client) return;
+    const getSelf = () => {
+      const position = prediction.getPosition() ?? stateRef.current.localPosition;
+      return {
+        id: client.playerId,
+        position: [position[0], position[1], position[2]] as [number, number, number],
+        dead: (client.localPlayerFlags & FLAG_DEAD) !== 0 || client.localPlayerHp <= 0,
+      };
+    };
+    practiceBots.attach(client, getSelf);
+    return () => {
+      practiceBots.detach();
+    };
+  }, [practiceBots, practiceMode, ready, clientRef, prediction, stateRef]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -1134,20 +1157,7 @@ export function GameWorld({
     const group = remoteGroupRef.current;
     if (!group) return;
 
-    // In practice mode with a bot runtime attached, we treat the runtime's
-    // map as the source of truth for "remote players" so bots render the
-    // same way network-driven players do. Tick it here (once per frame) so
-    // its positions are fresh for the render code below.
-    if (practiceBots && practiceMode) {
-      const localPosRaw = prediction.getPosition() ?? state.localPosition;
-      practiceBots.update(frameDelta, {
-        id: client?.playerId ?? 1,
-        position: [localPosRaw[0], localPosRaw[1], localPosRaw[2]],
-        dead: localDead,
-      });
-    }
-    const currentRemote =
-      practiceBots && practiceMode ? practiceBots.remotePlayers : state.remotePlayers;
+    const currentRemote = state.remotePlayers;
     const activeIds = new Set<number>();
     const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
     let crosshairAimState: CrosshairAimState = 'idle';

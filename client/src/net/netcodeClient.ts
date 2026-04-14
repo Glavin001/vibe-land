@@ -100,6 +100,15 @@ export class NetcodeClient {
   private config: NetcodeClientConfig;
   private closedByClient = false;
 
+  /**
+   * Returns the underlying local-preview transport if this client is
+   * running in practice mode, or null otherwise. Used by
+   * `PracticeBotRuntime` to push per-bot input / fire packets.
+   */
+  getLocalPreviewTransport(): LocalPreviewTransport | null {
+    return this.localTransport;
+  }
+
   // Rolling accumulators for 1Hz debug stats report to server
   private _debugCorrectionSum = 0;
   private _debugPhysicsSum = 0;

@@ -1,9 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        FLAG_DEAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -12,15 +13,19 @@ use crate::{
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
+use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = SIM_HZ;
 const MAX_PENDING_INPUTS: usize = 120;
-const LOCAL_PLAYER_ID: u32 = 1;
+pub const LOCAL_PLAYER_ID: u32 = 1;
 const LOCAL_RIFLE_INTERVAL_MS: u32 = 100;
 const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
 const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
 const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
+const HITSCAN_BODY_DAMAGE: u8 = 25;
+const HITSCAN_HEAD_DAMAGE: u8 = 100;
+const BOT_RESPAWN_TICKS: u32 = 60 * 3; // 3 seconds
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -29,13 +34,21 @@ struct PlayerRuntime {
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     next_allowed_fire_ms: u32,
+    /// True when this runtime is for a bot (driven by the client-side
+    /// practice bot runtime). Bots have their own lifecycle — they don't
+    /// receive welcome packets and they're auto-respawned on death.
+    is_bot: bool,
+    /// Ticks remaining until respawn (only used for bots; 0 means alive).
+    respawn_cooldown_ticks: u32,
 }
 
 pub struct LocalPreviewSession {
     arena: PhysicsArena,
     connected: bool,
-    player: PlayerRuntime,
-    queued_shots: Vec<FireCmd>,
+    /// Per-player runtime state. The human player (if connected) lives at
+    /// key {@link LOCAL_PLAYER_ID}; bots live at ids >= {@link BOT_ID_BASE}.
+    players: HashMap<u32, PlayerRuntime>,
+    queued_shots: Vec<(u32, FireCmd)>,
     outbound_packets: Vec<Vec<u8>>,
     server_tick: u32,
 }
@@ -60,7 +73,7 @@ impl LocalPreviewSession {
         Ok(Self {
             arena,
             connected: false,
-            player: PlayerRuntime::default(),
+            players: HashMap::new(),
             queued_shots: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
@@ -73,7 +86,7 @@ impl LocalPreviewSession {
         }
 
         self.connected = true;
-        self.player = PlayerRuntime::default();
+        self.players.insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
         self.arena.spawn_player(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
@@ -93,9 +106,78 @@ impl LocalPreviewSession {
         }
         self.connected = false;
         self.queued_shots.clear();
-        self.player = PlayerRuntime::default();
+        // Tear down every player (human + bots) so the arena is clean if
+        // the session is reused.
+        let ids: Vec<u32> = self.players.keys().copied().collect();
+        for id in ids {
+            self.arena.remove_player(id);
+        }
+        self.players.clear();
         self.outbound_packets.clear();
-        self.arena.remove_player(LOCAL_PLAYER_ID);
+    }
+
+    /// Spawn a bot as a first-class player in the arena. Returns true if the
+    /// bot was added (false if the id already existed or the session is not
+    /// connected).
+    pub fn connect_bot(&mut self, bot_id: u32) -> bool {
+        if !self.connected || bot_id == LOCAL_PLAYER_ID || self.players.contains_key(&bot_id) {
+            return false;
+        }
+        let mut runtime = PlayerRuntime::default();
+        runtime.is_bot = true;
+        self.players.insert(bot_id, runtime);
+        self.arena.spawn_player(bot_id);
+        true
+    }
+
+    /// Remove a bot from the arena. Returns true if the id was a known bot.
+    pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
+        if bot_id == LOCAL_PLAYER_ID {
+            return false;
+        }
+        let Some(runtime) = self.players.remove(&bot_id) else {
+            return false;
+        };
+        if !runtime.is_bot {
+            // Put it back; we only disconnect bots through this path.
+            self.players.insert(bot_id, runtime);
+            return false;
+        }
+        self.arena.remove_player(bot_id);
+        true
+    }
+
+    /// Push a bot's input packet (same wire format as the human client's
+    /// input bundle). Shots/vehicle packets are not supported for bots in
+    /// v1 — they route to the `handle_client_packet` path of the human.
+    pub fn handle_bot_packet(&mut self, bot_id: u32, bytes: &[u8]) -> Result<(), String> {
+        if bot_id == LOCAL_PLAYER_ID {
+            return Err("cannot push bot input for local player id".to_string());
+        }
+        let Some(runtime) = self.players.get_mut(&bot_id) else {
+            return Err(format!("unknown bot id {bot_id}"));
+        };
+        if !runtime.is_bot {
+            return Err(format!("player {bot_id} is not a bot"));
+        }
+        if bytes.is_empty() {
+            return Err("empty bot packet".to_string());
+        }
+        let mut buf = bytes;
+        let kind = buf.get_u8();
+        match kind {
+            PKT_INPUT_BUNDLE => {
+                let frames = decode_input_bundle_frames(&mut buf)?;
+                enqueue_inputs(runtime, frames);
+                Ok(())
+            }
+            PKT_FIRE => {
+                let shot = decode_fire_cmd(&mut buf)?;
+                self.queued_shots.push((bot_id, shot));
+                Ok(())
+            }
+            other => Err(format!("unsupported bot packet kind {other}")),
+        }
     }
 
     pub fn handle_client_packet(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -111,10 +193,14 @@ impl LocalPreviewSession {
         match kind {
             PKT_INPUT_BUNDLE => {
                 let frames = decode_input_bundle_frames(&mut buf)?;
-                enqueue_inputs(&mut self.player, frames);
+                let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) else {
+                    return Ok(());
+                };
+                enqueue_inputs(runtime, frames);
             }
             PKT_FIRE => {
-                self.queued_shots.push(decode_fire_cmd(&mut buf)?);
+                self.queued_shots
+                    .push((LOCAL_PLAYER_ID, decode_fire_cmd(&mut buf)?));
             }
             PKT_VEHICLE_ENTER => {
                 let vehicle_id = decode_vehicle_enter(&mut buf)?;
@@ -142,8 +228,36 @@ impl LocalPreviewSession {
         self.server_tick += 1;
         let server_time_ms = self.server_time_ms();
 
-        let input = take_input_for_tick(&mut self.player);
-        self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
+        // Drive each connected player's KCC for this tick. The iteration
+        // order doesn't matter for correctness since the arena is a shared
+        // physics world and each player is a kinematic capsule.
+        let player_ids: Vec<u32> = self.players.keys().copied().collect();
+        for id in player_ids {
+            // Bot respawn handling: tick cooldown, then respawn in place
+            // when it reaches zero. We skip input processing while dead.
+            let mut skip_sim = false;
+            if let Some(runtime) = self.players.get_mut(&id) {
+                if runtime.is_bot && runtime.respawn_cooldown_ticks > 0 {
+                    runtime.respawn_cooldown_ticks -= 1;
+                    if runtime.respawn_cooldown_ticks == 0 {
+                        self.arena.respawn_player(id);
+                    } else {
+                        skip_sim = true;
+                    }
+                }
+            }
+            if skip_sim {
+                continue;
+            }
+            let input = {
+                let Some(runtime) = self.players.get_mut(&id) else {
+                    continue;
+                };
+                take_input_for_tick(runtime)
+            };
+            self.arena.simulate_player_tick(id, &input, dt);
+        }
+
         self.arena.step_vehicles(dt);
         self.arena.step_dynamics(dt);
         self.process_hitscan(server_time_ms);
@@ -170,18 +284,20 @@ impl LocalPreviewSession {
 
     fn process_hitscan(&mut self, server_time_ms: u32) {
         let shots = std::mem::take(&mut self.queued_shots);
-        for shot in shots {
-            if self.player.next_allowed_fire_ms > server_time_ms {
+        for (shooter_id, shot) in shots {
+            let Some(shooter) = self.players.get_mut(&shooter_id) else {
+                continue;
+            };
+            if shooter.next_allowed_fire_ms > server_time_ms {
                 continue;
             }
-            self.player.next_allowed_fire_ms =
-                server_time_ms.saturating_add(LOCAL_RIFLE_INTERVAL_MS);
+            shooter.next_allowed_fire_ms = server_time_ms.saturating_add(LOCAL_RIFLE_INTERVAL_MS);
 
-            if self.arena.vehicle_of_player.contains_key(&LOCAL_PLAYER_ID) {
+            if self.arena.vehicle_of_player.contains_key(&shooter_id) {
                 continue;
             }
             let Some((pos, _vel, _yaw, _pitch, hp, _flags)) =
-                self.arena.snapshot_player(LOCAL_PLAYER_ID)
+                self.arena.snapshot_player(shooter_id)
             else {
                 continue;
             };
@@ -194,19 +310,47 @@ impl LocalPreviewSession {
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE,
-                Some(LOCAL_PLAYER_ID),
+                Some(shooter_id),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE,
-                Some(LOCAL_PLAYER_ID),
+                Some(shooter_id),
             );
+            let player_hit = self.cast_player_hitscan(shooter_id, origin, shot.dir);
 
-            let result = if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
-                if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    make_shot_result(shot.shot_id, shot.weapon)
-                } else {
+            // Find the nearest obstacle between the shooter and any candidate
+            // target (wall, dynamic body, or player).
+            let nearest_toi = [
+                world_toi,
+                dynamic_hit.map(|(_, toi, _)| toi),
+                player_hit.map(|(_, toi, _)| toi),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(f32::MAX, f32::min);
+
+            let mut result = make_shot_result(shot.shot_id, shot.weapon);
+
+            // Resolve player hit first — they deal damage and are the only
+            // target that fills hit_player_id.
+            if let Some((victim_id, toi, zone)) = player_hit {
+                if toi <= nearest_toi + 1e-3 {
+                    result.confirmed = true;
+                    result.hit_player_id = victim_id;
+                    result.hit_zone = match zone {
+                        HitZone::Head => HIT_ZONE_HEAD,
+                        HitZone::Body => HIT_ZONE_BODY,
+                    };
+                    let damage = match zone {
+                        HitZone::Head => HITSCAN_HEAD_DAMAGE,
+                        HitZone::Body => HITSCAN_BODY_DAMAGE,
+                    };
+                    self.apply_damage(victim_id, damage);
+                }
+            } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
+                if world_toi.map(|world| world >= dynamic_toi).unwrap_or(true) {
                     let impact_point = [
                         origin[0] + shot.dir[0] * dynamic_toi,
                         origin[1] + shot.dir[1] * dynamic_toi,
@@ -222,19 +366,79 @@ impl LocalPreviewSession {
                         impulse,
                         impact_point,
                     );
-                    make_shot_result(shot.shot_id, shot.weapon)
                 }
-            } else {
-                make_shot_result(shot.shot_id, shot.weapon)
-            };
+            }
 
             self.outbound_packets
                 .push(encode_shot_result_packet(&result));
         }
     }
 
+    /// Casts a ray from `shooter_id`'s muzzle through every other connected
+    /// player's capsule/head pair and returns the nearest hit's (victim id,
+    /// time-of-impact, hit zone). Returns None if no player is intersected.
+    fn cast_player_hitscan(
+        &self,
+        shooter_id: u32,
+        origin: [f32; 3],
+        dir: [f32; 3],
+    ) -> Option<(u32, f32, HitZone)> {
+        let capsule_half_segment = self.arena.config().capsule_half_segment;
+        let capsule_radius = self.arena.config().capsule_radius;
+        let mut best: Option<(u32, f32, HitZone)> = None;
+        for &victim_id in self.players.keys() {
+            if victim_id == shooter_id {
+                continue;
+            }
+            let Some((pos, _vel, _yaw, _pitch, hp, flags)) =
+                self.arena.snapshot_player(victim_id)
+            else {
+                continue;
+            };
+            if hp == 0 || (flags & FLAG_DEAD) != 0 {
+                continue;
+            }
+            let Some(hit) = classify_player_hitscan(
+                origin,
+                dir,
+                pos,
+                capsule_half_segment,
+                capsule_radius,
+                None,
+            ) else {
+                continue;
+            };
+            if hit.distance > HITSCAN_MAX_DISTANCE {
+                continue;
+            }
+            if best
+                .map(|(_, toi, _)| hit.distance < toi)
+                .unwrap_or(true)
+            {
+                best = Some((victim_id, hit.distance, hit.zone));
+            }
+        }
+        best
+    }
+
+    fn apply_damage(&mut self, victim_id: u32, damage: u8) {
+        let is_bot = self
+            .players
+            .get(&victim_id)
+            .map(|runtime| runtime.is_bot)
+            .unwrap_or(false);
+        let died = self.arena.apply_player_damage(victim_id, damage);
+        if died && is_bot {
+            if let Some(runtime) = self.players.get_mut(&victim_id) {
+                runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+            }
+        }
+    }
+
     fn build_snapshot_packet(&self) -> Vec<u8> {
         let mut player_states = Vec::new();
+        // The human player goes first so the client's self-resolution logic
+        // (which matches on id) finds it quickly. Bots follow in any order.
         if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
             player_states.push(make_net_player_state(
@@ -247,6 +451,14 @@ impl LocalPreviewSession {
                 flags,
             ));
         }
+        for (&id, _) in &self.players {
+            if id == LOCAL_PLAYER_ID {
+                continue;
+            }
+            if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(id) {
+                player_states.push(make_net_player_state(id, pos, vel, yaw, pitch, hp, flags));
+            }
+        }
 
         let dynamic_body_states = self
             .arena
@@ -258,10 +470,16 @@ impl LocalPreviewSession {
             .collect();
         let vehicle_states = self.arena.snapshot_vehicles();
 
+        let ack_input_seq = self
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|runtime| runtime.last_ack_input_seq)
+            .unwrap_or(0);
+
         encode_snapshot_packet(&SnapshotPacket {
             server_time_us: self.server_time_us(),
             server_tick: self.server_tick,
-            ack_input_seq: self.player.last_ack_input_seq,
+            ack_input_seq,
             player_states,
             projectile_states: Vec::new(),
             dynamic_body_states,
@@ -627,5 +845,97 @@ mod tests {
             latest_driver_id, LOCAL_PLAYER_ID,
             "local preview vehicle should be driven by the local player after enter"
         );
+    }
+
+    fn decode_snapshot_player_ids(bytes: &[u8]) -> Vec<u32> {
+        let mut buf = bytes;
+        assert_eq!(buf.get_u8(), PKT_SNAPSHOT);
+        let _server_time = buf.get_u64_le();
+        let _server_tick = buf.get_u32_le();
+        let _ack = buf.get_u16_le();
+        let player_count = buf.get_u16_le() as usize;
+        let _projectile_count = buf.get_u16_le() as usize;
+        let _dynamic_count = buf.get_u16_le() as usize;
+        let _vehicle_count = buf.get_u16_le() as usize;
+        let mut ids = Vec::with_capacity(player_count);
+        for _ in 0..player_count {
+            ids.push(buf.get_u32_le());
+            buf.advance(25);
+        }
+        ids
+    }
+
+    #[test]
+    fn connect_bot_spawns_extra_player_state() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        assert!(session.connect_bot(101));
+        // duplicate id: rejected
+        assert!(!session.connect_bot(101));
+        // disallow using the local player id
+        assert!(!session.connect_bot(LOCAL_PLAYER_ID));
+
+        session.tick(1.0 / 60.0);
+        let snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
+        let ids = decode_snapshot_player_ids(&snapshot);
+        assert!(ids.contains(&LOCAL_PLAYER_ID));
+        assert!(ids.contains(&101));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn bot_input_drives_its_own_kcc() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(202));
+
+        // Push a forward-walking input for the bot and tick a handful of
+        // frames so the KCC integrates position.
+        let frame = InputCmd {
+            seq: 1,
+            buttons: crate::constants::BTN_FORWARD,
+            move_x: 0,
+            move_y: 127,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let bytes = encode_single_input_bundle(&frame);
+        session.handle_bot_packet(202, &bytes).unwrap();
+        let start = session.arena.snapshot_player(202).unwrap().0;
+        for _ in 0..10 {
+            session.tick(1.0 / 60.0);
+        }
+        let after = session.arena.snapshot_player(202).unwrap().0;
+        let dz = (after[2] - start[2]).abs();
+        assert!(dz > 0.0, "bot should have moved after 10 ticks of forward input");
+    }
+
+    #[test]
+    fn disconnect_bot_removes_it_from_snapshots() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(303));
+        assert!(session.disconnect_bot(303));
+        // Cannot disconnect twice.
+        assert!(!session.disconnect_bot(303));
+        // Cannot disconnect the local player via this path.
+        assert!(!session.disconnect_bot(LOCAL_PLAYER_ID));
+
+        session.tick(1.0 / 60.0);
+        let snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
+        let ids = decode_snapshot_player_ids(&snapshot);
+        assert!(!ids.contains(&303));
     }
 }

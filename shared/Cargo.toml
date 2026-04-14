@@ -22,3 +22,9 @@ simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+
+# wasm-pack release profile — disable wasm-opt so the build doesn't require
+# network access to download binaryen. The opt step is mostly a size win,
+# not a speed win, and our builds run in environments without internet.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
