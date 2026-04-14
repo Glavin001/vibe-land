@@ -10,7 +10,12 @@ import {
   WEAPON_HITSCAN,
   type PlayerStateMeters,
 } from '../src/net/protocol.js';
-import { stepBotBrain, createBotBrainState, type ObservedPlayer } from '../src/loadtest/brain.js';
+import {
+  createBotBrainState,
+  disposeBotBrainState,
+  stepBotBrain,
+  type ObservedPlayer,
+} from '../src/loadtest/brain.js';
 import { PacketImpairment } from '../src/loadtest/networkModel.js';
 import {
   SeededRandom,
@@ -18,6 +23,8 @@ import {
   type LoadTestScenario,
   type NetworkProfile,
 } from '../src/loadtest/scenario.js';
+import { createBotCrowd, type BotCrowd } from '../src/bots/index.js';
+import { DEFAULT_WORLD_DOCUMENT } from '../src/world/worldDocument.js';
 import type { WebSocketWorkerResult } from '../src/benchmark/contracts.js';
 
 type BotMetrics = {
@@ -48,6 +55,7 @@ type BotState = {
   localState: PlayerStateMeters | null;
   remotePlayers: Map<number, ObservedPlayer>;
   brainState: ReturnType<typeof createBotBrainState>;
+  botCrowd: BotCrowd;
   inboundImpairment: PacketImpairment<Uint8Array>;
   outboundImpairment: PacketImpairment<Uint8Array>;
   currentTargetPlayerId: number | null;
@@ -120,6 +128,7 @@ function stopBot(state: BotState): void {
     clearInterval(state.tickHandle);
     state.tickHandle = null;
   }
+  disposeBotBrainState(state.brainState, state.botCrowd);
   state.inboundImpairment.dispose();
   state.outboundImpairment.dispose();
   state.ws?.close();
@@ -131,6 +140,7 @@ function spawnBot(
   token: string,
   scenario: LoadTestScenario,
   profile: NetworkProfile,
+  botCrowd: BotCrowd,
 ): Promise<BotState> {
   return new Promise((resolve, reject) => {
     const identity = `bench-ws-${id}`;
@@ -154,7 +164,8 @@ function spawnBot(
       metrics: makeBotMetrics(),
       localState: null,
       remotePlayers: new Map(),
-      brainState: createBotBrainState(id - 1, scenario),
+      brainState: createBotBrainState(id - 1, scenario, { crowd: botCrowd }),
+      botCrowd,
       inboundImpairment: new PacketImpairment(profile.downlink, scenario.seed + id * 17, (bytes) => {
         handlePacket(bytes);
       }),
@@ -297,6 +308,12 @@ export async function runWebSocketWorker(options: {
 
   const startMs = Date.now();
   const startedAt = new Date().toISOString();
+  const botCrowd = createBotCrowd(DEFAULT_WORLD_DOCUMENT, { maxAgentRadius: 0.6 });
+  const crowdTickHz = 30;
+  const crowdDt = 1 / crowdTickHz;
+  const crowdInterval = setInterval(() => {
+    botCrowd.step(crowdDt);
+  }, 1000 / crowdTickHz);
   const rng = new SeededRandom(scenario.seed);
   const botPromises = Array.from({ length: requestedBots }, (_, index) => {
     const profile = chooseWeightedProfile(scenario, 'websocket', rng);
@@ -305,7 +322,7 @@ export async function runWebSocketWorker(options: {
       : 0;
     return new Promise<BotState>((resolve, reject) => {
       setTimeout(() => {
-        void spawnBot(index + 1, serverHost, token, scenario, profile).then(resolve, reject);
+        void spawnBot(index + 1, serverHost, token, scenario, profile, botCrowd).then(resolve, reject);
       }, delayMs);
     });
   });
@@ -331,6 +348,7 @@ export async function runWebSocketWorker(options: {
   for (const bot of bots) {
     stopBot(bot);
   }
+  clearInterval(crowdInterval);
 
   const totals = summarizeBots(bots);
   return {

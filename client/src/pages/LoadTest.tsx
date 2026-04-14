@@ -2,8 +2,15 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { buildInputFromButtons } from '../scene/inputBuilder';
-import { stepBotBrain, createBotBrainState, type ObservedPlayer } from '../loadtest/brain';
+import {
+  createBotBrainState,
+  disposeBotBrainState,
+  stepBotBrain,
+  type ObservedPlayer,
+} from '../loadtest/brain';
 import { PacketImpairment } from '../loadtest/networkModel';
+import { createBotCrowd, type BotCrowd } from '../bots';
+import { DEFAULT_WORLD_DOCUMENT } from '../world/worldDocument';
 import type { BenchmarkPageState, WebTransportWorkerResult } from '../benchmark/contracts';
 import {
   DEFAULT_SCENARIO,
@@ -36,6 +43,7 @@ type BrowserBot = {
   localState: PlayerStateMeters | null;
   remotePlayers: Map<number, ObservedPlayer>;
   brainState: ReturnType<typeof createBotBrainState>;
+  botCrowd: BotCrowd;
   currentTargetPlayerId: number | null;
   inboundImpairment: PacketImpairment<ServerReliablePacket | ServerDatagramPacket>;
   outboundImpairment: PacketImpairment<ReturnType<typeof buildInputFromButtons>>;
@@ -233,6 +241,8 @@ export function LoadTestPage() {
   const [snapshotsReceived, setSnapshotsReceived] = useState(0);
   const [bottleneck, setBottleneck] = useState('waiting for server stats');
   const botsRef = useRef<BrowserBot[]>([]);
+  const botCrowdRef = useRef<BotCrowd | null>(null);
+  const botCrowdTickerRef = useRef<number | null>(null);
   const statsSocketRef = useRef<WebSocket | null>(null);
   const presets = createScenarioPresets(launchConfigRef.current.requestedMatchId);
   const activePresetId = detectActivePreset(scenarioText, presets);
@@ -274,7 +284,11 @@ export function LoadTestPage() {
       window.clearTimeout(completionTimerRef.current);
       completionTimerRef.current = null;
     }
-    stopBots(botsRef.current);
+    stopBots(botsRef.current, botCrowdRef.current);
+    if (botCrowdTickerRef.current !== null) {
+      window.clearInterval(botCrowdTickerRef.current);
+      botCrowdTickerRef.current = null;
+    }
     statsSocketRef.current?.close();
   }, []);
 
@@ -310,8 +324,24 @@ export function LoadTestPage() {
         throw new Error('This browser does not support WebTransport.');
       }
 
-      stopBots(botsRef.current);
+      stopBots(botsRef.current, botCrowdRef.current);
       botsRef.current = [];
+      if (botCrowdTickerRef.current !== null) {
+        window.clearInterval(botCrowdTickerRef.current);
+        botCrowdTickerRef.current = null;
+      }
+      const navBuildStarted = performance.now();
+      botCrowdRef.current = createBotCrowd(DEFAULT_WORLD_DOCUMENT, { maxAgentRadius: 0.6 });
+      // eslint-disable-next-line no-console
+      console.log(
+        `[LoadTest] built navmesh in ${(performance.now() - navBuildStarted).toFixed(1)}ms`,
+        `(${botCrowdRef.current.nav.geometry.triangleCount} tris)`,
+      );
+      const crowdTickHz = 30;
+      const crowdDt = 1 / crowdTickHz;
+      botCrowdTickerRef.current = window.setInterval(() => {
+        botCrowdRef.current?.step(crowdDt);
+      }, 1000 / crowdTickHz);
       runStartedAtRef.current = new Date().toISOString();
       peakConnectedBotsRef.current = 0;
       latestBottleneckRef.current = 'waiting for server stats';
@@ -339,6 +369,10 @@ export function LoadTestPage() {
       connectStatsSocket(scenario.matchId);
 
       const rng = new SeededRandom(scenario.seed);
+      const botCrowd = botCrowdRef.current;
+      if (!botCrowd) {
+        throw new Error('Bot crowd was not initialized.');
+      }
       const results = await Promise.allSettled(
         Array.from({ length: scenario.transportMix.webtransport }, async (_, index) => {
           const profile = chooseWeightedProfile(scenario, 'webtransport', rng);
@@ -346,7 +380,7 @@ export function LoadTestPage() {
             ? Math.round((scenario.rampUpS * 1000 * index) / Math.max(1, scenario.transportMix.webtransport))
             : 0;
           await new Promise((resolve) => window.setTimeout(resolve, delayMs));
-          return spawnWebTransportBot(index + 1, scenario, profile);
+          return spawnWebTransportBot(index + 1, scenario, profile, botCrowd);
         }),
       );
       const bots: BrowserBot[] = [];
@@ -422,8 +456,13 @@ export function LoadTestPage() {
       completionTimerRef.current = null;
     }
     const result = buildBenchmarkResult(completedScenario);
-    stopBots(botsRef.current);
+    stopBots(botsRef.current, botCrowdRef.current);
     botsRef.current = [];
+    if (botCrowdTickerRef.current !== null) {
+      window.clearInterval(botCrowdTickerRef.current);
+      botCrowdTickerRef.current = null;
+    }
+    botCrowdRef.current = null;
     statsSocketRef.current?.close();
     statsSocketRef.current = null;
     setRunning(false);
@@ -521,6 +560,7 @@ export function LoadTestPage() {
     id: number,
     scenario: LoadTestScenario,
     profile: NetworkProfile,
+    botCrowd: BotCrowd,
   ): Promise<BrowserBot> {
     const bot = {} as BrowserBot;
     const inboundImpairment = new PacketImpairment<ServerReliablePacket | ServerDatagramPacket>(
@@ -555,7 +595,8 @@ export function LoadTestPage() {
       tickHandle: null,
       localState: null,
       remotePlayers: new Map<number, ObservedPlayer>(),
-      brainState: createBotBrainState(id - 1, scenario),
+      brainState: createBotBrainState(id - 1, scenario, { crowd: botCrowd }),
+      botCrowd,
       currentTargetPlayerId: null,
       inboundImpairment,
       outboundImpairment: new PacketImpairment(
@@ -613,12 +654,13 @@ export function LoadTestPage() {
   }
 }
 
-function stopBots(bots: BrowserBot[]): void {
+function stopBots(bots: BrowserBot[], botCrowd: BotCrowd | null): void {
   for (const bot of bots) {
     if (bot.tickHandle !== null) {
       window.clearInterval(bot.tickHandle);
       bot.tickHandle = null;
     }
+    disposeBotBrainState(bot.brainState, botCrowd ?? bot.botCrowd);
     bot.inboundImpairment.dispose();
     bot.outboundImpairment.dispose();
     bot.client.close();

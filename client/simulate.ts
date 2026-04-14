@@ -24,8 +24,15 @@ import {
   type PlayerStateMeters,
   WEAPON_HITSCAN,
 } from './src/net/protocol.js';
-import { stepBotBrain, createBotBrainState, type ObservedPlayer } from './src/loadtest/brain.js';
+import {
+  createBotBrainState,
+  disposeBotBrainState,
+  stepBotBrain,
+  type ObservedPlayer,
+} from './src/loadtest/brain.js';
 import { PacketImpairment } from './src/loadtest/networkModel.js';
+import { createBotCrowd, type BotCrowd } from './src/bots/index.js';
+import { DEFAULT_WORLD_DOCUMENT } from './src/world/worldDocument.js';
 import {
   DEFAULT_SCENARIO,
   SeededRandom,
@@ -75,6 +82,7 @@ type BotState = {
   localState: PlayerStateMeters | null;
   remotePlayers: Map<number, ObservedPlayer>;
   brainState: ReturnType<typeof createBotBrainState>;
+  botCrowd: BotCrowd;
   inboundImpairment: PacketImpairment<Uint8Array>;
   outboundImpairment: PacketImpairment<Uint8Array>;
   currentTargetPlayerId: number | null;
@@ -169,6 +177,7 @@ function spawnBot(
   scenario: LoadTestScenario,
   profile: NetworkProfile,
   statsMonitor: StatsMonitor,
+  botCrowd: BotCrowd,
 ): Promise<BotState> {
   return new Promise((resolve, reject) => {
     const identity = `bot-${id}`;
@@ -193,7 +202,8 @@ function spawnBot(
       metrics: makeBotMetrics(),
       localState: null,
       remotePlayers: new Map(),
-      brainState: createBotBrainState(id - 1, scenario),
+      brainState: createBotBrainState(id - 1, scenario, { crowd: botCrowd }),
+      botCrowd,
       inboundImpairment: new PacketImpairment(profile.downlink, scenario.seed + id * 17, (bytes) => {
         handlePacket(state, scenario, statsMonitor, bytes);
       }),
@@ -353,6 +363,7 @@ function stopBot(state: BotState): void {
     clearInterval(state.tickHandle);
     state.tickHandle = null;
   }
+  disposeBotBrainState(state.brainState, state.botCrowd);
   state.inboundImpairment.dispose();
   state.outboundImpairment.dispose();
   state.ws?.close();
@@ -433,13 +444,28 @@ async function main(): Promise<void> {
   const statsMonitor = new StatsMonitor(`ws://${SERVER_HOST}/ws/stats`);
   statsMonitor.connect();
 
+  const navBuildStarted = Date.now();
+  const botCrowd = createBotCrowd(DEFAULT_WORLD_DOCUMENT, {
+    maxAgentRadius: 0.6,
+  });
+  const navBuildMs = Date.now() - navBuildStarted;
+  console.log(
+    `Built navmesh in ${navBuildMs}ms (${botCrowd.nav.geometry.triangleCount} tris, ${botCrowd.nav.geometry.vertexCount} verts)\n`,
+  );
+
+  const crowdTickHz = 30;
+  const crowdDt = 1 / crowdTickHz;
+  const crowdInterval = setInterval(() => {
+    botCrowd.step(crowdDt);
+  }, 1000 / crowdTickHz);
+
   const rng = new SeededRandom(scenario.seed);
   const botPromises = Array.from({ length: wsBotCount }, (_, index) => {
     const profile = chooseWeightedProfile(scenario, 'websocket', rng);
     const delayMs = scenario.rampUpS > 0 ? Math.round((scenario.rampUpS * 1000 * index) / Math.max(1, wsBotCount)) : 0;
     return new Promise<BotState>((resolve, reject) => {
       setTimeout(() => {
-        void spawnBot(index + 1, scenario, profile, statsMonitor).then(resolve, reject);
+        void spawnBot(index + 1, scenario, profile, statsMonitor, botCrowd).then(resolve, reject);
       }, delayMs);
     });
   });
@@ -498,6 +524,7 @@ async function main(): Promise<void> {
     }
     cleanedUp = true;
     clearInterval(statusInterval);
+    clearInterval(crowdInterval);
     console.log('\nStopping all websocket bots...');
     for (const bot of bots) {
       stopBot(bot);

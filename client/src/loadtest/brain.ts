@@ -1,3 +1,20 @@
+/**
+ * Loadtest-facing bot brain.
+ *
+ * Historically this file owned a complete FSM (target acquisition, recover,
+ * hold anchor, fire, stuck detection). That logic now lives inside the
+ * reusable `@/bots` framework. This file is the thin shim between the
+ * loadtest runners (`simulate.ts`, `wsWorker.ts`, `LoadTest.tsx`) and the
+ * framework.
+ *
+ * Behavior matrix:
+ *   - If a {@link BotCrowd} is supplied to {@link createBotBrainState}, the
+ *     brain routes through a {@link BotBrain} with the `harassNearest`
+ *     behavior — bots plan paths through the navmesh and avoid each other.
+ *   - If no crowd is supplied (legacy + unit-test path) the brain falls back
+ *     to the original direct-steering FSM so existing tests keep passing.
+ */
+
 import {
   BTN_FORWARD,
   BTN_JUMP,
@@ -8,6 +25,15 @@ import {
   FLAG_ON_GROUND,
   type PlayerStateMeters,
 } from '../net/protocol';
+import {
+  BotBrain,
+  behaviors,
+  type BotCrowd,
+  type BotHandle,
+  type BotSelfState,
+  type ObservedPlayer as FrameworkObservedPlayer,
+  type Vec3Tuple,
+} from '../bots';
 import type { LoadTestScenario } from './scenario';
 import { anchorForBot } from './scenario';
 
@@ -16,7 +42,12 @@ export type ObservedPlayer = {
   state: PlayerStateMeters;
 };
 
-export type BotBrainMode = 'acquire_target' | 'follow_target' | 'recover_center' | 'hold_anchor' | 'dead';
+export type BotBrainMode =
+  | 'acquire_target'
+  | 'follow_target'
+  | 'recover_center'
+  | 'hold_anchor'
+  | 'dead';
 
 export interface BotBrainState {
   mode: BotBrainMode;
@@ -28,6 +59,14 @@ export interface BotBrainState {
   airborneTicks: number;
   lastPosition: [number, number, number] | null;
   targetPlayerId: number | null;
+  /**
+   * Optional navmesh-aware brain. When present, stepBotBrain delegates all
+   * movement decisions to it and only keeps {@link fireCooldownTicks} /
+   * target-id bookkeeping locally.
+   */
+  navBrain: BotBrain | null;
+  /** Handle into the shared crowd (for cleanup). */
+  navHandle: BotHandle | null;
 }
 
 export interface BotIntent {
@@ -39,10 +78,22 @@ export interface BotIntent {
   firePrimary: boolean;
 }
 
-export function createBotBrainState(botIndex: number, scenario: LoadTestScenario): BotBrainState {
-  return {
+export interface CreateBotBrainOptions {
+  /** Shared navcat crowd. When set, the brain uses navmesh pathfinding. */
+  crowd?: BotCrowd;
+  /** Optional initial spawn point override (meters). */
+  spawnPosition?: [number, number, number];
+}
+
+export function createBotBrainState(
+  botIndex: number,
+  scenario: LoadTestScenario,
+  options: CreateBotBrainOptions = {},
+): BotBrainState {
+  const anchor = anchorForBot(botIndex, scenario);
+  const state: BotBrainState = {
     mode: 'acquire_target',
-    anchor: anchorForBot(botIndex, scenario),
+    anchor,
     orbitDirection: botIndex % 2 === 0 ? 1 : -1,
     jumpCooldownTicks: 0,
     fireCooldownTicks: 0,
@@ -50,10 +101,113 @@ export function createBotBrainState(botIndex: number, scenario: LoadTestScenario
     airborneTicks: 0,
     lastPosition: null,
     targetPlayerId: null,
+    navBrain: null,
+    navHandle: null,
   };
+
+  if (options.crowd) {
+    const spawn: Vec3Tuple = options.spawnPosition ?? [anchor[0], 2.5, anchor[1]];
+    const handle = options.crowd.addBot(spawn);
+    const behavior = behaviors.harassNearest({
+      acquireDistanceM: scenario.behavior.targetAcquireDistanceM,
+      recoveryDistanceM: scenario.behavior.recoveryDistanceM,
+      fireDistanceM: scenario.behavior.fireDistanceM,
+    });
+    state.navBrain = new BotBrain(options.crowd, handle, behavior, {
+      anchor: [anchor[0], spawn[1], anchor[1]],
+      stuckTicksBeforeJump: scenario.behavior.stuckTickThreshold,
+      jumpCooldownTicks: scenario.behavior.jumpCooldownTicks,
+    });
+    state.navHandle = handle;
+  }
+
+  return state;
+}
+
+/** Removes the underlying crowd agent, if any. Call on disconnect. */
+export function disposeBotBrainState(state: BotBrainState, crowd?: BotCrowd): void {
+  if (state.navHandle && crowd) {
+    crowd.removeBot(state.navHandle);
+  }
+  state.navBrain = null;
+  state.navHandle = null;
 }
 
 export function stepBotBrain(
+  state: BotBrainState,
+  scenario: LoadTestScenario,
+  localState: PlayerStateMeters | null,
+  remotePlayers: ObservedPlayer[],
+): BotIntent {
+  if (state.navBrain) {
+    return stepWithNavBrain(state, scenario, localState, remotePlayers);
+  }
+  return stepLegacy(state, scenario, localState, remotePlayers);
+}
+
+function stepWithNavBrain(
+  state: BotBrainState,
+  scenario: LoadTestScenario,
+  localState: PlayerStateMeters | null,
+  remotePlayers: ObservedPlayer[],
+): BotIntent {
+  if (!localState) {
+    return { buttons: 0, yaw: 0, pitch: 0, mode: state.mode, targetPlayerId: null, firePrimary: false };
+  }
+  if ((localState.flags & FLAG_DEAD) !== 0) {
+    state.mode = 'dead';
+    state.targetPlayerId = null;
+    return { buttons: 0, yaw: 0, pitch: 0, mode: 'dead', targetPlayerId: null, firePrimary: false };
+  }
+
+  const self: BotSelfState = {
+    position: [...localState.position],
+    velocity: [...localState.velocity],
+    yaw: localState.yaw,
+    pitch: localState.pitch,
+    onGround: (localState.flags & FLAG_ON_GROUND) !== 0,
+    dead: false,
+  };
+
+  const observed: FrameworkObservedPlayer[] = remotePlayers.map((p) => ({
+    id: p.id,
+    position: [...p.state.position],
+    isDead: (p.state.flags & FLAG_DEAD) !== 0,
+  }));
+
+  state.fireCooldownTicks = Math.max(0, state.fireCooldownTicks - 1);
+  const intent = state.navBrain!.think(self, observed);
+
+  // Fire gating: the framework always requests fire when the behavior asks;
+  // loadtest adds a fireMode + cooldown on top.
+  let firePrimary = intent.firePrimary;
+  if (firePrimary) {
+    if (scenario.behavior.fireMode === 'off' || state.fireCooldownTicks > 0) {
+      firePrimary = false;
+    } else {
+      state.fireCooldownTicks = scenario.behavior.fireCooldownTicks;
+    }
+  }
+
+  state.mode = intent.mode;
+  state.targetPlayerId = intent.targetPlayerId;
+
+  return {
+    buttons: intent.buttons,
+    yaw: intent.yaw,
+    pitch: intent.pitch,
+    mode: intent.mode,
+    targetPlayerId: intent.targetPlayerId,
+    firePrimary,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy direct-steering FSM (used when no crowd/navmesh is available, and
+// by the existing unit tests).
+// ---------------------------------------------------------------------------
+
+function stepLegacy(
   state: BotBrainState,
   scenario: LoadTestScenario,
   localState: PlayerStateMeters | null,
