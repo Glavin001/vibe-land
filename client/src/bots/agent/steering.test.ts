@@ -37,10 +37,10 @@ describe('agentStateToIntent', () => {
     expect(intent.buttons & BTN_SPRINT).toBe(0);
   });
 
-  it('adds BTN_SPRINT when the desired speed exceeds the sprint threshold', () => {
+  it('never emits BTN_SPRINT (bot speed is controlled by the WASM override)', () => {
     const state = createSteeringState();
     const intent = agentStateToIntent(
-      fakeAgent([5, 0, 0]),
+      fakeAgent([9, 0, 0]),
       selfAt(0, 0),
       state,
       'follow_target',
@@ -48,7 +48,7 @@ describe('agentStateToIntent', () => {
       null,
     );
     expect(intent.buttons & BTN_FORWARD).toBe(BTN_FORWARD);
-    expect(intent.buttons & BTN_SPRINT).toBe(BTN_SPRINT);
+    expect(intent.buttons & BTN_SPRINT).toBe(0);
   });
 
   it('yaw faces desired velocity direction in XZ', () => {

@@ -10,7 +10,6 @@ import { crowd } from 'navcat/blocks';
 import {
   BTN_FORWARD,
   BTN_JUMP,
-  BTN_SPRINT,
 } from '../../net/protocol';
 
 type Agent = crowd.Agent;
@@ -19,7 +18,11 @@ import type { BotIntent, BotMode, BotSelfState, Vec3Tuple } from '../types';
 export interface SteeringOptions {
   /** Minimum desired speed before we hold BTN_FORWARD (m/s). */
   minMoveSpeed?: number;
-  /** Desired speed above which BTN_SPRINT is held (m/s). */
+  /**
+   * @deprecated Kept for back-compat. Bots no longer emit BTN_SPRINT —
+   * their speed is controlled by a per-player override inside the WASM
+   * session, not by the walk/sprint button tiers.
+   */
   sprintSpeed?: number;
   /** If desiredVelocity magnitude is below this and we're not at target, count as stuck. */
   stuckSpeed?: number;
@@ -92,9 +95,12 @@ export function agentStateToIntent(
   if (desiredSpeedPlanar > opts.minMoveSpeed) {
     buttons |= BTN_FORWARD;
   }
-  if (desiredSpeedPlanar > opts.sprintSpeed) {
-    buttons |= BTN_SPRINT;
-  }
+  // Note: we intentionally do not emit BTN_SPRINT for bots. Bot movement
+  // speed is controlled by a per-player override inside the WASM session
+  // (see `PracticeBotRuntime.setMaxSpeed` and
+  // `shared/src/local_session.rs::set_bot_max_speed`). Emitting SPRINT
+  // here would make the KCC pick `sprint_speed` instead of respecting the
+  // override.
 
   // Stuck detection: agent wants to move but isn't (stuck on a ledge / step).
   const actualSpeed = Math.hypot(self.velocity[0], self.velocity[2]);

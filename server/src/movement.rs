@@ -198,6 +198,9 @@ impl PhysicsArena {
             input,
             dt,
             self.player_kcc_mode,
+            // Server-side players always use the walk/sprint tiers from
+            // MoveConfig. Only practice-mode bots override this.
+            None,
         );
         let sync_started = Instant::now();
         self.dynamic

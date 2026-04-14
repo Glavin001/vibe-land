@@ -130,6 +130,24 @@ impl LocalPreviewSession {
         true
     }
 
+    /// Set (or clear) a bot's max horizontal move speed override (m/s).
+    /// Pass `None` to restore the default walk/sprint tiers. Returns true
+    /// if the id was a known bot. Refuses to touch the local player.
+    pub fn set_bot_max_speed(&mut self, bot_id: u32, max_speed: Option<f64>) -> bool {
+        if bot_id == LOCAL_PLAYER_ID {
+            return false;
+        }
+        let is_bot = self
+            .players
+            .get(&bot_id)
+            .map(|runtime| runtime.is_bot)
+            .unwrap_or(false);
+        if !is_bot {
+            return false;
+        }
+        self.arena.set_player_max_speed_override(bot_id, max_speed)
+    }
+
     /// Remove a bot from the arena. Returns true if the id was a known bot.
     pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
         if bot_id == LOCAL_PLAYER_ID {

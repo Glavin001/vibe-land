@@ -94,7 +94,11 @@ interface PracticeBot {
 }
 
 const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
-const DEFAULT_MAX_SPEED = 5.5;
+// Default at a brisk jog. The KCC's human walk speed is 6.0 m/s and
+// sprint is 8.5 m/s; 3.0 m/s feels like a slow bot you can actually look
+// at, and the slider goes up from there. See the speed override flow in
+// `shared/src/simulation.rs::update_player_motion`.
+const DEFAULT_MAX_SPEED = 3.0;
 const DEFAULT_TICK_HZ = 60;
 
 /**
@@ -144,9 +148,11 @@ export class PracticeBotRuntime {
       return;
     }
     this.transport = transport;
-    // Re-spawn any already-tracked bots against the new session.
+    // Re-spawn any already-tracked bots against the new session and
+    // re-apply the current max-speed override so the KCC uses it.
     for (const bot of this.bots.values()) {
       this.transport.connectBot(bot.id);
+      this.transport.setBotMaxSpeed(bot.id, this.maxSpeed);
     }
     this.running = true;
     this.lastTickMs = performance.now();
@@ -198,8 +204,14 @@ export class PracticeBotRuntime {
     const clamped = Math.max(0.5, Math.min(12, speed));
     this.maxSpeed = clamped;
     for (const bot of this.bots.values()) {
+      // Keep navcat's crowd planner in sync so desiredVelocity never
+      // exceeds the KCC cap (avoids oscillation where the crowd asks for
+      // faster-than-attainable motion and the agent looks stuttery).
       const agent = this.crowd.getAgent(bot.handle.id);
       if (agent) agent.maxSpeed = clamped;
+      // Real source of truth for how fast the bot moves on the server:
+      // the per-player override inside LocalPreviewSession.
+      this.transport?.setBotMaxSpeed(bot.id, clamped);
     }
   }
 
@@ -239,7 +251,12 @@ export class PracticeBotRuntime {
       seq: 0,
       lastIntent: makeIdleIntent(),
     });
-    this.transport?.connectBot(id);
+    if (this.transport) {
+      this.transport.connectBot(id);
+      // Push the current max-speed override so the bot's KCC moves at
+      // whatever speed the user has on the slider right now.
+      this.transport.setBotMaxSpeed(id, this.maxSpeed);
+    }
     return id;
   }
 

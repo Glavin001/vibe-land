@@ -95,6 +95,7 @@ fn update_player_motion(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    max_speed_override: Option<f64>,
 ) {
     let cfg = &sim.config;
     let dt64 = dt as f64;
@@ -103,7 +104,11 @@ fn update_player_motion(
     *pitch = (input.pitch as f64).clamp(-1.55, 1.55);
 
     let wish = build_wish_dir(input, *yaw);
-    let max_speed = pick_move_speed(cfg, input.buttons);
+    // Per-player override replaces the walk/sprint tier the KCC would have
+    // picked. Used by practice-mode bots so their speed is a continuous
+    // dial instead of a walk-or-sprint toggle.
+    let max_speed = max_speed_override
+        .unwrap_or_else(|| pick_move_speed(cfg, input.buttons));
 
     apply_horizontal_friction(velocity, cfg.friction, dt64, *on_ground);
     accelerate(
@@ -421,6 +426,7 @@ pub fn simulate_player_tick(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    max_speed_override: Option<f64>,
 ) -> PlayerTickResult {
     simulate_player_tick_with_mode(
         sim,
@@ -433,6 +439,7 @@ pub fn simulate_player_tick(
         input,
         dt,
         PlayerKccMode::TwoPass,
+        max_speed_override,
     )
 }
 
@@ -447,11 +454,21 @@ pub fn simulate_player_tick_with_mode(
     input: &InputCmd,
     dt: f32,
     kcc_mode: PlayerKccMode,
+    max_speed_override: Option<f64>,
 ) -> PlayerTickResult {
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
-    update_player_motion(sim, velocity, yaw, pitch, on_ground, input, dt);
+    update_player_motion(
+        sim,
+        velocity,
+        yaw,
+        pitch,
+        on_ground,
+        input,
+        dt,
+        max_speed_override,
+    );
     result.timings.move_math_ms = elapsed_ms(move_math_started);
 
     let start_position = *position;
@@ -633,7 +650,7 @@ mod tests {
         input: &InputCmd,
         dt: f32,
     ) {
-        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt);
+        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt, None);
         sim.sync_player_collider(collider, pos);
     }
 
@@ -683,6 +700,87 @@ mod tests {
     }
 
     #[test]
+    fn max_speed_override_caps_horizontal_velocity() {
+        // Sanity-check: with no override and a full-forward input, the KCC
+        // settles to walk_speed. With Some(2.0), it settles near 2.0.
+        let mut sim = sim_with_ground();
+        let walk_speed = sim.config.walk_speed;
+        let mut pos = Vec3d::new(0.0, 2.0, 0.0);
+        let mut vel = Vec3d::zeros();
+        let mut yaw = 0.0;
+        let mut pitch = 0.0;
+        let mut on_ground = false;
+        let collider = sim.create_player_collider(pos, 1);
+        sim.rebuild_broad_phase();
+
+        // Settle onto the ground.
+        let idle = input();
+        for _ in 0..60 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &idle,
+                1.0 / 60.0,
+                None,
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+        assert!(on_ground);
+
+        // No override: accelerates toward walk_speed.
+        let mut fwd = input();
+        fwd.move_y = 127;
+        for _ in 0..60 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+                None,
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+        let planar_no_override = (vel.x * vel.x + vel.z * vel.z).sqrt();
+        assert!(
+            (planar_no_override - walk_speed).abs() < 0.5,
+            "default run should approach walk_speed ({walk_speed}), got {planar_no_override}"
+        );
+
+        // Reset and run with an override of 2.0 m/s.
+        vel = Vec3d::zeros();
+        for _ in 0..120 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+                Some(2.0),
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+        let planar_override = (vel.x * vel.x + vel.z * vel.z).sqrt();
+        assert!(
+            (planar_override - 2.0).abs() < 0.3,
+            "override should cap horizontal velocity near 2.0 m/s, got {planar_override}"
+        );
+    }
+
+    #[test]
     fn one_pass_without_dynamic_support_skips_support_probe() {
         let mut sim = sim_with_ground();
         let mut pos = Vec3d::new(0.0, 2.0, 0.0);
@@ -705,6 +803,7 @@ mod tests {
                 &input(),
                 1.0 / 60.0,
                 PlayerKccMode::OnePassSupportPredicate,
+                None,
             );
             sim.sync_player_collider(collider, &pos);
         }
@@ -720,6 +819,7 @@ mod tests {
             &input(),
             1.0 / 60.0,
             PlayerKccMode::OnePassSupportPredicate,
+            None,
         );
 
         assert!(on_ground, "player should remain grounded on static floor");

@@ -54,6 +54,12 @@ pub struct PlayerMotorState {
     pub hp: u8,
     pub dead: bool,
     pub last_input: InputCmd,
+    /// Optional per-player override for the KCC's max horizontal move
+    /// speed (m/s). When `Some`, the simulation uses this value instead
+    /// of the walk/sprint tiers from `MoveConfig`, letting bots move at
+    /// arbitrary continuous speeds independent of the human's
+    /// walk/sprint buttons.
+    pub max_speed_override: Option<f64>,
 }
 
 /// Browser-local authoritative physics world: wraps `DynamicArena` and adds
@@ -109,6 +115,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                max_speed_override: None,
             },
         );
 
@@ -199,6 +206,7 @@ impl PhysicsArena {
         }
         state.last_input = input.clone();
 
+        let max_speed_override = state.max_speed_override;
         let mut tick_result = simulate_player_tick(
             &self.dynamic.sim,
             state.collider,
@@ -209,6 +217,7 @@ impl PhysicsArena {
             &mut state.on_ground,
             input,
             dt,
+            max_speed_override,
         );
         let sync_started = now_marker();
         self.dynamic
@@ -373,6 +382,22 @@ impl PhysicsArena {
                 state.velocity = Vec3d::zeros();
                 state.on_ground = false;
             }
+        }
+    }
+
+    /// Sets an override for the KCC's max horizontal move speed for the
+    /// given player. Pass `None` to restore the default walk/sprint tiers.
+    /// Returns true if the player exists.
+    pub fn set_player_max_speed_override(
+        &mut self,
+        player_id: u32,
+        max_speed: Option<f64>,
+    ) -> bool {
+        if let Some(state) = self.players.get_mut(&player_id) {
+            state.max_speed_override = max_speed;
+            true
+        } else {
+            false
         }
     }
 

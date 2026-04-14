@@ -72,14 +72,26 @@ export function PracticeBotsPanel({
             <label style={labelStyle}>Speed</label>
             <input
               type="range"
-              min={1}
-              max={10}
-              step={0.5}
+              min={0.5}
+              max={8}
+              step={0.25}
               value={maxSpeed}
               onChange={(event) => onSetMaxSpeed(Number(event.target.value))}
               style={sliderStyle}
             />
-            <span style={valueStyle}>{maxSpeed.toFixed(1)} m/s</span>
+            <input
+              type="number"
+              min={0.5}
+              max={12}
+              step={0.25}
+              value={maxSpeed}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isFinite(next)) onSetMaxSpeed(next);
+              }}
+              style={{ ...numberInputStyle, width: 64 }}
+            />
+            <span style={{ ...valueStyle, minWidth: 36 }}>m/s</span>
           </div>
           <div style={{ ...rowStyle, alignItems: 'flex-start' }}>
             <label style={labelStyle}>Behavior</label>

@@ -89,6 +89,56 @@ describe('WASM bot integration', () => {
 
     transport.close();
   }, 10_000);
+
+  it('setBotMaxSpeed caps the bot velocity at the requested value', async () => {
+    const captured: ServerPacket[] = [];
+    const transport = await LocalPreviewTransport.connect({
+      onPacket: (packet) => captured.push(packet),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const BOT_ID = 1_000_202;
+    expect(transport.connectBot(BOT_ID)).toBe(true);
+    // Cap this bot at 2 m/s — well below the KCC's walk_speed of 6 m/s.
+    expect(transport.setBotMaxSpeed(BOT_ID, 2.0)).toBe(true);
+
+    // Hold BTN_FORWARD for ~1.2 simulated seconds (72 ticks at 60 Hz).
+    for (let i = 1; i <= 72; i += 1) {
+      transport.sendBotInputs(BOT_ID, [
+        buildInputFromButtons(i, 0, BTN_FORWARD, 0, 0),
+      ]);
+      if (i % 6 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const botSnapshots = captured
+      .filter((p): p is ServerPacket & { type: 'snapshot' } => p.type === 'snapshot')
+      .filter((snap) => snap.playerStates.some((p) => p.id === BOT_ID));
+    expect(botSnapshots.length).toBeGreaterThan(2);
+
+    // Pick two snapshots ~0.5s apart and compute the observed velocity
+    // magnitude from the position delta. It should track the 2.0 m/s cap,
+    // NOT the 6.0 m/s walk speed and NOT the 8.5 m/s sprint speed.
+    const first = botSnapshots[0];
+    const last = botSnapshots[botSnapshots.length - 1];
+    const firstState = first.playerStates.find((p) => p.id === BOT_ID)!;
+    const lastState = last.playerStates.find((p) => p.id === BOT_ID)!;
+    const dtS = (last.serverTimeUs - first.serverTimeUs) / 1_000_000;
+    expect(dtS).toBeGreaterThan(0.3);
+    const dxMm = lastState.pxMm - firstState.pxMm;
+    const dzMm = lastState.pzMm - firstState.pzMm;
+    const distanceM = Math.hypot(dxMm, dzMm) / 1000;
+    const observedSpeed = distanceM / dtS;
+
+    // Allow some slack for acceleration ramp-up + KCC friction.
+    expect(observedSpeed).toBeLessThan(3.0);
+    expect(observedSpeed).toBeGreaterThan(0.5);
+
+    transport.disconnectBot(BOT_ID);
+    transport.close();
+  }, 10_000);
 });
 
 // Keep decodeServerPacket referenced so tree-shaking doesn't drop the import

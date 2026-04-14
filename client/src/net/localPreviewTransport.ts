@@ -121,6 +121,18 @@ export class LocalPreviewTransport {
     this.flushPackets();
   }
 
+  /**
+   * Override a bot's max horizontal move speed in meters/second. Pass
+   * `null` to restore the KCC's default walk/sprint tiers. Returns true
+   * if the id was a known bot.
+   */
+  setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean {
+    if (!this.session || this.closed) return false;
+    // WASM takes a negative sentinel for "clear override".
+    const value = maxSpeedMps === null ? -1 : maxSpeedMps;
+    return this.session.setBotMaxSpeed(botId, value);
+  }
+
   /** Push a fire packet for a specific bot id. */
   sendBotFire(botId: number, cmd: FireCmd): void {
     if (!this.session || this.closed) return;

@@ -286,6 +286,7 @@ impl WasmSimWorld {
             &mut self.on_ground,
             &input,
             dt,
+            None,
         );
         for impulse in &tick.dynamic_impulses {
             let _ = self.apply_dynamic_body_impulse(
@@ -426,6 +427,7 @@ impl WasmSimWorld {
                 &mut self.on_ground,
                 input,
                 dt,
+                None,
             );
             for impulse in &tick.dynamic_impulses {
                 let _ = self.apply_dynamic_body_impulse(
@@ -1359,6 +1361,18 @@ impl WasmLocalSession {
         self.inner
             .handle_bot_packet(bot_id, bytes)
             .map_err(|err| JsValue::from_str(&err))
+    }
+
+    /// Override the bot's max horizontal move speed (m/s). Pass a negative
+    /// value to clear the override and restore the walk/sprint tiers.
+    #[wasm_bindgen(js_name = setBotMaxSpeed)]
+    pub fn set_bot_max_speed(&mut self, bot_id: u32, max_speed: f64) -> bool {
+        let override_value = if max_speed.is_finite() && max_speed >= 0.0 {
+            Some(max_speed)
+        } else {
+            None
+        };
+        self.inner.set_bot_max_speed(bot_id, override_value)
     }
 
     pub fn tick(&mut self, dt: f32) {
