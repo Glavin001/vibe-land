@@ -4,6 +4,12 @@
   "version": "0.1.0",
   "description": "Vercel serverless functions for vibe-land. The client lives in ./client and has its own package.json.",
   "type": "module",
+  "scripts": {
+    "r2:up": "docker compose up -d",
+    "r2:down": "docker compose down",
+    "r2:reset": "docker compose down -v && docker compose up -d",
+    "r2:logs": "docker compose logs -f minio"
+  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.658.0"
   },

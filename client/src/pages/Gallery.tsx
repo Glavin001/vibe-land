@@ -1,10 +1,11 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   fetchCloudConfig,
   listPublishedWorlds,
   screenshotUrlForWorld,
   type GalleryWorldSummary,
 } from '../world/worldsCloud';
+import { loadPublishedHistory, type PublishedHistoryEntry } from '../world/publishedHistory';
 
 const shellStyle: CSSProperties = {
   minHeight: '100%',
@@ -45,6 +46,27 @@ const cardStyle: CSSProperties = {
   background: 'linear-gradient(180deg, rgba(18, 29, 45, 0.95) 0%, rgba(8, 14, 23, 0.95) 100%)',
   padding: '18px',
   gap: 14,
+};
+
+const sectionHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'baseline',
+  justifyContent: 'space-between',
+  gap: 12,
+  marginBottom: 14,
+  flexWrap: 'wrap',
+};
+
+const ownedBadgeStyle: CSSProperties = {
+  display: 'inline-block',
+  padding: '3px 10px',
+  borderRadius: 999,
+  background: 'rgba(140, 255, 174, 0.18)',
+  border: '1px solid rgba(140, 255, 174, 0.35)',
+  color: '#b9ffc3',
+  fontSize: 11,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
 };
 
 const previewStyle: CSSProperties = {
@@ -98,6 +120,15 @@ type LoadState =
 
 export function GalleryPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [history, setHistory] = useState<PublishedHistoryEntry[]>(() => loadPublishedHistory());
+
+  useEffect(() => {
+    // Refresh whenever the page regains focus so a publish in another tab
+    // shows up here immediately.
+    const handleFocus = () => setHistory(loadPublishedHistory());
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -122,6 +153,37 @@ export function GalleryPage() {
       cancelled = true;
     };
   }, []);
+
+  const ownedSummaries = useMemo<GalleryWorldSummary[] | null>(() => {
+    if (state.kind !== 'loaded' || history.length === 0) return null;
+    const byId = new Map(state.worlds.map((world) => [world.id, world] as const));
+    const result: GalleryWorldSummary[] = [];
+    for (const entry of history) {
+      const server = byId.get(entry.id);
+      if (server) {
+        result.push(server);
+      } else {
+        // The server listing didn't include this entry (pagination, deleted,
+        // etc.) – fall back to the local record so the user can still see and
+        // link to it.
+        result.push({
+          id: entry.id,
+          name: entry.name,
+          description: 'Published from this device – not returned by the current gallery listing.',
+          createdAt: entry.publishedAt,
+          size: 0,
+        });
+      }
+    }
+    return result;
+  }, [state, history]);
+
+  const communitySummaries = useMemo<GalleryWorldSummary[] | null>(() => {
+    if (state.kind !== 'loaded') return null;
+    if (!ownedSummaries || ownedSummaries.length === 0) return state.worlds;
+    const ownedIds = new Set(ownedSummaries.map((world) => world.id));
+    return state.worlds.filter((world) => !ownedIds.has(world.id));
+  }, [state, ownedSummaries]);
 
   return (
     <div style={shellStyle}>
@@ -158,32 +220,62 @@ export function GalleryPage() {
           <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>{state.message}</div>
         )}
 
-        {state.kind === 'loaded' && state.worlds.length === 0 && (
+        {state.kind === 'loaded' && state.worlds.length === 0 && history.length === 0 && (
           <div style={mutedTextStyle}>
             No worlds published yet. Open the <a href="/builder/world" style={{ color: '#9cd4ff' }}>builder</a> and hit
             Publish to be the first.
           </div>
         )}
 
-        {state.kind === 'loaded' && state.worlds.length > 0 && (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-              gap: 18,
-            }}
-          >
-            {state.worlds.map((world) => (
-              <GalleryCard key={world.id} world={world} />
-            ))}
-          </div>
+        {ownedSummaries && ownedSummaries.length > 0 && (
+          <section style={{ marginBottom: 30 }}>
+            <div style={sectionHeaderStyle}>
+              <h2 style={{ margin: 0, fontSize: 22 }}>Your publications</h2>
+              <span style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.55)' }}>
+                Tracked locally on this device ({ownedSummaries.length})
+              </span>
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                gap: 18,
+              }}
+            >
+              {ownedSummaries.map((world) => (
+                <GalleryCard key={`own-${world.id}`} world={world} owned />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {communitySummaries && communitySummaries.length > 0 && (
+          <section>
+            <div style={sectionHeaderStyle}>
+              <h2 style={{ margin: 0, fontSize: 22 }}>Community gallery</h2>
+              <span style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.55)' }}>
+                {communitySummaries.length} world{communitySummaries.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+                gap: 18,
+              }}
+            >
+              {communitySummaries.map((world) => (
+                <GalleryCard key={world.id} world={world} />
+              ))}
+            </div>
+          </section>
         )}
       </div>
     </div>
   );
 }
 
-function GalleryCard({ world }: { world: GalleryWorldSummary }) {
+function GalleryCard({ world, owned = false }: { world: GalleryWorldSummary; owned?: boolean }) {
   const [screenshotFailed, setScreenshotFailed] = useState(false);
   const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
   const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
@@ -207,8 +299,11 @@ function GalleryCard({ world }: { world: GalleryWorldSummary }) {
           />
         )}
       </a>
-      <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff' }}>
-        {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff' }}>
+          {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
+        </div>
+        {owned && <span style={ownedBadgeStyle}>yours</span>}
       </div>
       <h2 style={{ margin: '2px 0 4px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
       <p

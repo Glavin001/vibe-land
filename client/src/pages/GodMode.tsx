@@ -53,6 +53,7 @@ import {
   uploadWorldScreenshot,
 } from '../world/worldsCloud';
 import { captureCanvasScreenshot } from '../world/canvasScreenshot';
+import { recordPublishedWorld } from '../world/publishedHistory';
 import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
@@ -474,6 +475,13 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     setPublishStatus({ kind: 'publishing', dataUrl });
     try {
       const result = await publishWorld(worldRef.current);
+      // Remember this publication on the local device so the user can see a
+      // private gallery of their own worlds even without an account system.
+      recordPublishedWorld({
+        id: result.id,
+        name: worldRef.current.meta.name || 'Untitled World',
+        publishedAt: result.createdAt,
+      });
       // A screenshot upload failure is non-fatal – the world is already
       // published and the gallery can render without a preview image.
       let screenshotWarning: string | undefined;
