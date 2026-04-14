@@ -4,6 +4,7 @@ import type { NetVehicleState } from '../net/protocol';
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import {
   FIXED_DT,
+  VEHICLE_MAX_INPUT_REDUNDANCY,
   VEHICLE_MAX_PENDING_INPUTS,
   VehiclePredictionManager,
 } from './vehiclePredictionManager';
@@ -20,6 +21,7 @@ class FakeVehicleSim {
   clearLocalVehicleCalls = 0;
   stepDynamicsCalls = 0;
   reconcileVehicleCalls = 0;
+  nextReconcileResult: number[] | null = null;
 
   syncRemoteVehicle(): void {
     this.syncRemoteVehicleCalls += 1;
@@ -54,7 +56,9 @@ class FakeVehicleSim {
   ): number[] {
     this.reconcileVehicleCalls += 1;
     this.pendingSeqs = this.pendingSeqs.filter((seq) => seqIsNewer(seq, ackSeq));
-    return [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+    const result = this.nextReconcileResult ?? [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+    this.nextReconcileResult = null;
+    return result;
   }
 
   getVehiclePendingCount(): number {
@@ -126,7 +130,10 @@ describe('VehiclePredictionManager', () => {
 
     const continued = manager.update(FIXED_DT, input);
     expect(sim.tickedSeqs).toHaveLength(VEHICLE_MAX_PENDING_INPUTS + 1);
-    expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
+    expect(continued.map((frame) => frame.seq)).toEqual([
+      16, 17, 18, 19, 20, 21, 22, 23,
+      24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
   });
 
   it('local preview enter and exit do not activate a second local vehicle sim', () => {
@@ -173,6 +180,49 @@ describe('VehiclePredictionManager', () => {
     }
 
     const continued = manager.update(FIXED_DT, input);
-    expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
+    expect(continued.map((frame) => frame.seq)).toEqual([
+      16, 17, 18, 19, 20, 21, 22, 23,
+      24, 25, 26, 27, 28, 29, 30, 31,
+    ]);
+  });
+
+  it('widens vehicle resend window aggressively when unacked backlog becomes unhealthy', () => {
+    const { manager, input } = createManager();
+
+    for (let seq = 1; seq <= 40; seq += 1) {
+      manager.update(FIXED_DT, input);
+    }
+
+    const resent = manager.update(0, input);
+    expect(resent).toHaveLength(VEHICLE_MAX_INPUT_REDUNDANCY);
+    expect(resent[0].seq).toBe(9);
+    expect(resent.at(-1)?.seq).toBe(40);
+  });
+
+  it('snaps tiny local vehicle corrections instead of smoothing them into vibration', () => {
+    const { sim, manager, initState } = createManager();
+
+    sim.nextReconcileResult = [0.02, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0.02, 0, 0, 1];
+    manager.reconcile({ ...initState, pxMm: 20 }, 0);
+
+    expect(manager.getCorrectionMagnitude()).toBe(0);
+  });
+
+  it('snaps large vertical corrections immediately to avoid visible terrain clipping', () => {
+    const { sim, manager, initState } = createManager();
+
+    sim.nextReconcileResult = [0, 0.15, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0.15, 0, 1];
+    manager.reconcile({ ...initState, pyMm: 150 }, 0);
+
+    expect(manager.getCorrectionMagnitude()).toBe(0);
+  });
+
+  it('keeps a narrow band of planar-only smoothing for medium corrections', () => {
+    const { sim, manager, initState } = createManager();
+
+    sim.nextReconcileResult = [0.12, 0.02, -0.06, 0, 0, 0, 1, 0, 0, 0, 0.12, 0.02, -0.06, 1];
+    manager.reconcile({ ...initState, pxMm: 120, pyMm: 20, pzMm: -60 }, 0);
+
+    expect(manager.getCorrectionMagnitude()).toBeCloseTo(Math.hypot(0.12, 0.06), 6);
   });
 });

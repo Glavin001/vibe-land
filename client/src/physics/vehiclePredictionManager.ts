@@ -11,11 +11,23 @@ export const VEHICLE_ROT_THRESHOLD = 0.0175;         // ~1 degree
 export const VEHICLE_LINVEL_THRESHOLD = 0.1;         // 10 cm/s
 export const VEHICLE_ANGVEL_THRESHOLD = 0.035;       // ~2 degrees/s
 export const VEHICLE_VISUAL_SMOOTH_RATE = 15.0;  // fast decay → correction applied in ~4 ticks
+export const VEHICLE_VISUAL_DEADBAND_DISTANCE = 0.03;
+export const VEHICLE_VISUAL_SNAP_DISTANCE = 0.35;
+export const VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE = 0.08;
+export const VEHICLE_VISUAL_SNAP_ROT_THRESHOLD = 0.04;
 export const VEHICLE_INPUT_REDUNDANCY = 4;
+export const VEHICLE_MAX_INPUT_REDUNDANCY = 32;
 export const VEHICLE_MAX_PENDING_INPUTS = 30;
 
 function seqIsNewer(a: number, b: number): boolean {
   return ((a - b) & 0xffff) < 0x8000 && a !== b;
+}
+
+function vehicleInputSendWindowSize(pendingCount: number): number {
+  if (pendingCount >= 32) return VEHICLE_MAX_INPUT_REDUNDANCY;
+  if (pendingCount >= 16) return 16;
+  if (pendingCount >= 8) return 8;
+  return VEHICLE_INPUT_REDUNDANCY;
 }
 
 // ── Quaternion math helpers ──────────────────────────────────────────────────
@@ -97,6 +109,7 @@ export class VehiclePredictionManager {
   private lastRotErrorRad = 0;
   private lastCorrectionAtMs = -1;
   private pendingInputsForSend: InputCmd[] = [];
+  private readonly pendingInputCreatedAtMs = new Map<number, number>();
 
   // Current chassis pose (from physics)
   private currPosition: [number, number, number] = [0, 0, 0];
@@ -152,6 +165,7 @@ export class VehiclePredictionManager {
     this.lastRotErrorRad = 0;
     this.lastCorrectionAtMs = -1;
     this.pendingInputsForSend = [];
+    this.pendingInputCreatedAtMs.clear();
 
     const px = initState.pxMm / 1000;
     const py = initState.pyMm / 1000;
@@ -200,6 +214,7 @@ export class VehiclePredictionManager {
     this.lastRotErrorRad = 0;
     this.lastCorrectionAtMs = -1;
     this.pendingInputsForSend = [];
+    this.pendingInputCreatedAtMs.clear();
   }
 
   /**
@@ -259,14 +274,22 @@ export class VehiclePredictionManager {
     }
 
     if (generatedThisFrame.length > 0) {
+      const generatedAtMs = performance.now();
       this.pendingInputsForSend.push(...generatedThisFrame);
+      for (const input of generatedThisFrame) {
+        this.pendingInputCreatedAtMs.set(input.seq, generatedAtMs);
+      }
       if (this.pendingInputsForSend.length > 128) {
-        this.pendingInputsForSend.splice(0, this.pendingInputsForSend.length - 128);
+        const removed = this.pendingInputsForSend.splice(0, this.pendingInputsForSend.length - 128);
+        for (const input of removed) {
+          this.pendingInputCreatedAtMs.delete(input.seq);
+        }
       }
     }
 
     if (this.pendingInputsForSend.length === 0) return [];
-    return this.pendingInputsForSend.slice(-VEHICLE_INPUT_REDUNDANCY);
+    const sendWindow = vehicleInputSendWindowSize(this.pendingInputsForSend.length);
+    return this.pendingInputsForSend.slice(-sendWindow);
   }
 
   /**
@@ -277,6 +300,11 @@ export class VehiclePredictionManager {
   reconcile(vehicleState: NetVehicleState, ackInputSeq: number): void {
     if (this.vehicleId === null) return;
     this.lastAckSeq = ackInputSeq;
+    for (const input of this.pendingInputsForSend) {
+      if (!seqIsNewer(input.seq, ackInputSeq)) {
+        this.pendingInputCreatedAtMs.delete(input.seq);
+      }
+    }
     this.pendingInputsForSend = this.pendingInputsForSend.filter((input) => seqIsNewer(input.seq, ackInputSeq));
 
     const serverPos: [number, number, number] = [
@@ -315,7 +343,6 @@ export class VehiclePredictionManager {
 
     const oldPosition: [number, number, number] = [...this.currPosition];
     const oldQuat = this.currQuaternion;
-    const oldCorrectionQuat = this.correctionQuatOffset;
     this.lastPosErrorM = Math.hypot(
       this.currPosition[0] - serverPos[0],
       this.currPosition[1] - serverPos[1],
@@ -368,8 +395,12 @@ export class VehiclePredictionManager {
     );
     this.lastRotErrorRad = 2 * Math.acos(Math.min(1, dot));
     this.lastCorrectionAtMs = performance.now();
+    const snapVisualCorrection = replayError <= VEHICLE_VISUAL_DEADBAND_DISTANCE
+      || replayError >= VEHICLE_VISUAL_SNAP_DISTANCE
+      || Math.abs(dy) >= VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE
+      || this.lastRotErrorRad >= VEHICLE_VISUAL_SNAP_ROT_THRESHOLD;
 
-    if (replayError > VEHICLE_HARD_SNAP_DISTANCE) {
+    if (replayError > VEHICLE_HARD_SNAP_DISTANCE || snapVisualCorrection) {
       this.currPosition = [result[0], result[1], result[2]];
       this.prevPosition = [...this.currPosition];
       this.correctionOffset = [0, 0, 0];
@@ -379,17 +410,14 @@ export class VehiclePredictionManager {
     } else {
       this.correctionOffset = [
         this.correctionOffset[0] - dx,
-        this.correctionOffset[1] - dy,
+        0,
         this.correctionOffset[2] - dz,
       ];
       this.currPosition = [result[0], result[1], result[2]];
-      this.prevPosition = oldPosition;
-      this.prevQuaternion = oldQuat;
+      this.prevPosition = [oldPosition[0], this.currPosition[1], oldPosition[2]];
+      this.prevQuaternion = newQuat;
       this.currQuaternion = newQuat;
-      // Preserve the current rendered orientation, then decay smoothly toward
-      // the newly reconciled simulation orientation.
-      const oldRenderedQuat = quatNormalize(quatMultiply(oldCorrectionQuat, oldQuat));
-      this.correctionQuatOffset = quatNormalize(quatMultiply(oldRenderedQuat, quatInvert(newQuat)));
+      this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
     }
   }
 
@@ -425,6 +453,10 @@ export class VehiclePredictionManager {
   getDebugState(): {
     pendingInputs: number;
     ackSeq: number;
+    latestLocalSeq: number;
+    pendingInputsAgeMs: number;
+    ackBacklogMs: number;
+    resendWindow: number;
     lastReplayErrorM: number;
     lastPosErrorM: number;
     lastVelErrorMs: number;
@@ -432,15 +464,26 @@ export class VehiclePredictionManager {
     lastRotErrorRad: number;
     lastCorrectionAgeMs: number;
   } {
+    const now = performance.now();
+    const oldestPending = this.pendingInputsForSend[0];
+    const oldestPendingAtMs = oldestPending
+      ? (this.pendingInputCreatedAtMs.get(oldestPending.seq) ?? now)
+      : now;
+    const resendWindow = vehicleInputSendWindowSize(this.pendingInputsForSend.length);
+    const latestLocalSeq = (this.nextSeq - 1) & 0xffff;
     return {
       pendingInputs: this.getPendingInputCount(),
       ackSeq: this.lastAckSeq,
+      latestLocalSeq,
+      pendingInputsAgeMs: this.pendingInputsForSend.length > 0 ? Math.max(0, now - oldestPendingAtMs) : 0,
+      ackBacklogMs: this.pendingInputsForSend.length * FIXED_DT * 1000,
+      resendWindow,
       lastReplayErrorM: this.lastReplayErrorM,
       lastPosErrorM: this.lastPosErrorM,
       lastVelErrorMs: this.lastVelErrorMs,
       lastAngVelErrorRadPs: this.lastAngVelErrorRadPs,
       lastRotErrorRad: this.lastRotErrorRad,
-      lastCorrectionAgeMs: this.lastCorrectionAtMs >= 0 ? performance.now() - this.lastCorrectionAtMs : -1,
+      lastCorrectionAgeMs: this.lastCorrectionAtMs >= 0 ? now - this.lastCorrectionAtMs : -1,
     };
   }
 

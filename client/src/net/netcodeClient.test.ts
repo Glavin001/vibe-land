@@ -602,9 +602,12 @@ describe('NetcodeClient', () => {
         vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [5, 0, 0], velocity: [2, 0, 0] })],
       }));
 
+      const sample = client.sampleRemoteVehicle(200, 0);
       expect(receivedAck).toBe(7);
       expect(receivedVehicleId).toBe(200);
-      expect(client.sampleRemoteVehicle(200, 0)).toBeNull();
+      expect(sample).not.toBeNull();
+      expect(sample?.driverPlayerId).toBe(1);
+      expect(sample?.position[0]).toBeCloseTo(5);
     });
 
     it('buffers authoritative local-driver vehicle samples in local preview snapshots', () => {

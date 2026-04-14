@@ -102,15 +102,13 @@ export class NetcodeClient {
     });
   }
 
-  private shouldBufferLocalDrivenVehicle(driverPlayerId: number): boolean {
-    return this.localTransport != null && driverPlayerId === this.playerId && driverPlayerId !== 0;
-  }
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
+  private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
   private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
   private readonly debugTelemetry = new NetDebugTelemetry();
@@ -545,6 +543,7 @@ export class NetcodeClient {
       };
       this.vehicles.set(vehicleId, meters);
       this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
+      this.vehicleServerTimeUs.set(vehicleId, packet.serverTimeUs);
       if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
         const localVehicleState: NetVehicleState = {
           id: vehicleId,
@@ -567,17 +566,14 @@ export class NetcodeClient {
           wheelData: [0, 0, 0, 0],
         };
         this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
-        if (this.shouldBufferLocalDrivenVehicle(driverPlayerId)) {
-          this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
-        }
-      } else {
-        this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
       }
+      this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
     }
     for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
       if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
         this.vehicleLastSeenTick.delete(id);
         this.vehicles.delete(id);
+        this.vehicleServerTimeUs.delete(id);
         this.vehicleInterpolator.remove(id);
       }
     }
@@ -760,22 +756,20 @@ export class NetcodeClient {
           const m = netVehicleStateToMeters(vs);
           this.vehicles.set(vs.id, m);
           this.vehicleLastSeenTick.set(vs.id, packet.serverTick);
+          this.vehicleServerTimeUs.set(vs.id, packet.serverTimeUs);
 
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
             this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
-            if (this.shouldBufferLocalDrivenVehicle(vs.driverId)) {
-              this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
-            }
-          } else {
-            this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
           }
+          this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
         }
         // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.
         for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
           if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
             this.vehicleLastSeenTick.delete(id);
             this.vehicles.delete(id);
+            this.vehicleServerTimeUs.delete(id);
             this.vehicleInterpolator.remove(id);
           }
         }
@@ -830,6 +824,12 @@ export class NetcodeClient {
   sampleRemoteVehicle(id: number, renderTimeUs?: number): VehicleSample | null {
     const t = renderTimeUs ?? this.getRenderTimeUs();
     return this.vehicleInterpolator.sample(id, t);
+  }
+
+  getVehicleObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+    const sampleServerTimeUs = this.vehicleServerTimeUs.get(id);
+    if (sampleServerTimeUs == null) return null;
+    return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
   }
 
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {

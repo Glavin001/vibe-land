@@ -74,6 +74,10 @@ export type DebugStats = {
   pendingInputsPeak5s: number;
   vehiclePendingInputs: number;
   vehicleAckSeq: number;
+  vehicleLatestLocalSeq: number;
+  vehiclePendingInputsAgeMs: number;
+  vehicleAckBacklogMs: number;
+  vehicleResendWindow: number;
   vehicleReplayErrorM: number;
   vehiclePosErrorM: number;
   vehicleVelErrorMs: number;
@@ -98,6 +102,24 @@ export type DebugStats = {
   vehicleSteering: number;
   vehicleEngineForce: number;
   vehicleBrake: number;
+  vehicleMeshDeltaM: number;
+  vehicleMeshRotDeltaRad: number;
+  vehicleMeshDeltaRms5sM: number;
+  vehicleMeshDeltaPeak5sM: number;
+  vehicleRestJitterRms5sM: number;
+  vehicleStraightJitterRms5sM: number;
+  vehicleLatestAuthDeltaM: number;
+  vehicleSampledAuthDeltaM: number;
+  vehicleMeshAuthDeltaM: number;
+  vehicleLatestVsSampledAuthDeltaM: number;
+  vehicleCurrentAuthDeltaM: number;
+  vehicleMeshCurrentAuthDeltaM: number;
+  vehicleAuthObservedAgeMs: number;
+  vehicleAuthSampleOffsetMs: number;
+  vehicleAuthSampleServerDeltaMs: number;
+  vehicleAuthCurrentOffsetMs: number;
+  vehiclePredictedAuthDeltaRms5sM: number;
+  vehiclePredictedAuthDeltaPeak5sM: number;
 
   // Player
   playerId: number;
@@ -185,6 +207,10 @@ export const DEFAULT_STATS: DebugStats = {
   pendingInputsPeak5s: 0,
   vehiclePendingInputs: 0,
   vehicleAckSeq: 0,
+  vehicleLatestLocalSeq: 0,
+  vehiclePendingInputsAgeMs: 0,
+  vehicleAckBacklogMs: 0,
+  vehicleResendWindow: 0,
   vehicleReplayErrorM: 0,
   vehiclePosErrorM: 0,
   vehicleVelErrorMs: 0,
@@ -207,6 +233,24 @@ export const DEFAULT_STATS: DebugStats = {
   vehicleSteering: 0,
   vehicleEngineForce: 0,
   vehicleBrake: 0,
+  vehicleMeshDeltaM: 0,
+  vehicleMeshRotDeltaRad: 0,
+  vehicleMeshDeltaRms5sM: 0,
+  vehicleMeshDeltaPeak5sM: 0,
+  vehicleRestJitterRms5sM: 0,
+  vehicleStraightJitterRms5sM: 0,
+  vehicleLatestAuthDeltaM: 0,
+  vehicleSampledAuthDeltaM: 0,
+  vehicleMeshAuthDeltaM: 0,
+  vehicleLatestVsSampledAuthDeltaM: 0,
+  vehicleCurrentAuthDeltaM: 0,
+  vehicleMeshCurrentAuthDeltaM: 0,
+  vehicleAuthObservedAgeMs: -1,
+  vehicleAuthSampleOffsetMs: -1,
+  vehicleAuthSampleServerDeltaMs: -1,
+  vehicleAuthCurrentOffsetMs: -1,
+  vehiclePredictedAuthDeltaRms5sM: 0,
+  vehiclePredictedAuthDeltaPeak5sM: 0,
   playerId: 0,
   position: [0, 0, 0],
   velocity: [0, 0, 0],
@@ -294,11 +338,33 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- dyn_last_shot_age_ms: ${stats.lastDynamicShotAgeMs >= 0 ? fmt(stats.lastDynamicShotAgeMs, 2) : 'n/a'}`,
     `- vehicle_pending_inputs: ${stats.vehiclePendingInputs}`,
     `- vehicle_ack_seq: ${stats.vehicleAckSeq}`,
+    `- vehicle_latest_local_seq: ${stats.vehicleLatestLocalSeq}`,
+    `- vehicle_pending_inputs_age_ms: ${fmt(stats.vehiclePendingInputsAgeMs, 2)}`,
+    `- vehicle_ack_backlog_ms: ${fmt(stats.vehicleAckBacklogMs, 2)}`,
+    `- vehicle_resend_window: ${fmt(stats.vehicleResendWindow, 0)}`,
     `- vehicle_replay_error_m: ${fmt(stats.vehicleReplayErrorM, 3)}`,
     `- vehicle_pos_error_m: ${fmt(stats.vehiclePosErrorM, 3)}`,
     `- vehicle_vel_error_ms: ${fmt(stats.vehicleVelErrorMs, 3)}`,
     `- vehicle_rot_error_rad: ${fmt(stats.vehicleRotErrorRad, 3)}`,
     `- vehicle_corr_age_ms: ${stats.vehicleCorrectionAgeMs >= 0 ? fmt(stats.vehicleCorrectionAgeMs, 2) : 'n/a'}`,
+    `- vehicle_mesh_delta_m: ${fmt(stats.vehicleMeshDeltaM, 3)}`,
+    `- vehicle_mesh_rot_delta_rad: ${fmt(stats.vehicleMeshRotDeltaRad, 3)}`,
+    `- vehicle_mesh_delta_rms_5s_m: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}`,
+    `- vehicle_mesh_delta_peak_5s_m: ${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}`,
+    `- vehicle_rest_jitter_rms_5s_m: ${fmt(stats.vehicleRestJitterRms5sM, 3)}`,
+    `- vehicle_straight_jitter_rms_5s_m: ${fmt(stats.vehicleStraightJitterRms5sM, 3)}`,
+    `- vehicle_latest_auth_delta_m: ${fmt(stats.vehicleLatestAuthDeltaM, 3)}`,
+    `- vehicle_sampled_auth_delta_m: ${fmt(stats.vehicleSampledAuthDeltaM, 3)}`,
+    `- vehicle_mesh_auth_delta_m: ${fmt(stats.vehicleMeshAuthDeltaM, 3)}`,
+    `- vehicle_latest_vs_sampled_auth_delta_m: ${fmt(stats.vehicleLatestVsSampledAuthDeltaM, 3)}`,
+    `- vehicle_current_auth_delta_m: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}`,
+    `- vehicle_mesh_current_auth_delta_m: ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}`,
+    `- vehicle_auth_observed_age_ms: ${stats.vehicleAuthObservedAgeMs >= 0 ? fmt(stats.vehicleAuthObservedAgeMs, 2) : 'n/a'}`,
+    `- vehicle_auth_sample_offset_ms: ${stats.vehicleAuthSampleOffsetMs >= 0 ? fmt(stats.vehicleAuthSampleOffsetMs, 2) : 'n/a'}`,
+    `- vehicle_auth_sample_server_delta_ms: ${stats.vehicleAuthSampleServerDeltaMs >= 0 ? fmt(stats.vehicleAuthSampleServerDeltaMs, 2) : 'n/a'}`,
+    `- vehicle_auth_current_offset_ms: ${stats.vehicleAuthCurrentOffsetMs >= 0 ? fmt(stats.vehicleAuthCurrentOffsetMs, 2) : 'n/a'}`,
+    `- vehicle_predicted_auth_delta_rms_5s_m: ${fmt(stats.vehiclePredictedAuthDeltaRms5sM, 3)}`,
+    `- vehicle_predicted_auth_delta_peak_5s_m: ${fmt(stats.vehiclePredictedAuthDeltaPeak5sM, 3)}`,
     `- player_corr_peak_5s_m: ${fmt(stats.playerCorrectionPeak5sM, 3)}`,
     `- vehicle_corr_peak_5s_m: ${fmt(stats.vehicleCorrectionPeak5sM, 3)}`,
     `- dyn_corr_peak_5s_m: ${fmt(stats.dynamicCorrectionPeak5sM, 3)}`,
@@ -570,7 +636,14 @@ export function DebugOverlay({
         {`Dynamic bodies: ${stats.dynamicTrackedBodies}  interactive: ${stats.dynamicInteractiveBodies}`}
         {`Dyn shot: ${stats.lastDynamicShotBodyId || '—'}  age: ${stats.lastDynamicShotAgeMs >= 0 ? fmt(stats.lastDynamicShotAgeMs, 0) : 'n/a'}ms`}
         {`Vehicle pend/ack: ${stats.vehiclePendingInputs}/${stats.vehicleAckSeq}  replay ${fmt(stats.vehicleReplayErrorM, 3)}m`}
+        {`Vehicle latest seq/backlog/resend: ${stats.vehicleLatestLocalSeq}  ${fmt(stats.vehicleAckBacklogMs, 1)}ms  win ${fmt(stats.vehicleResendWindow, 0)}`}
+        {`Vehicle pending age: ${fmt(stats.vehiclePendingInputsAgeMs, 1)}ms  corr age: ${stats.vehicleCorrectionAgeMs >= 0 ? fmt(stats.vehicleCorrectionAgeMs, 1) : 'n/a'}ms`}
         {`Vehicle pos/vel/rot err: ${fmt(stats.vehiclePosErrorM, 3)}m ${fmt(stats.vehicleVelErrorMs, 3)}m/s ${fmt(stats.vehicleRotErrorRad, 3)}rad`}
+        {`Vehicle mesh delta/rot: ${fmt(stats.vehicleMeshDeltaM, 3)}m ${fmt(stats.vehicleMeshRotDeltaRad, 3)}rad`}
+        {`Vehicle mesh rms/peak 5s: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}m`}
+        {`Vehicle rest/straight jitter rms: ${fmt(stats.vehicleRestJitterRms5sM, 3)}/${fmt(stats.vehicleStraightJitterRms5sM, 3)}m`}
+        {`Vehicle pred/auth rms/peak 5s: ${fmt(stats.vehiclePredictedAuthDeltaRms5sM, 3)}/${fmt(stats.vehiclePredictedAuthDeltaPeak5sM, 3)}m`}
+        {`Vehicle current auth delta: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}m  mesh/current ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}m`}
         {`Physics step: ${fmt(stats.physicsStepMs, 2)}ms`}
       </Section>
 
@@ -593,6 +666,10 @@ export function DebugOverlay({
           {`ID: ${stats.vehicleDebugId || '—'}  confirmed: ${stats.vehicleDriverConfirmed ? 'yes' : 'no'}`}
           {`Local/server speed: ${fmt(stats.vehicleLocalSpeedMs, 2)} / ${fmt(stats.vehicleServerSpeedMs, 2)} m/s`}
           {`Pos delta: ${fmt(stats.vehiclePosDeltaM, 3)}m  wheels: ${stats.vehicleGroundedWheels}/4`}
+          {`Pred/latest/sample auth: ${fmt(stats.vehicleLatestAuthDeltaM, 3)} / ${fmt(stats.vehicleSampledAuthDeltaM, 3)} / ${fmt(stats.vehicleLatestVsSampledAuthDeltaM, 3)}m`}
+          {`Pred/current auth: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}m  mesh/current ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}m`}
+          {`Mesh/auth delta: ${fmt(stats.vehicleMeshAuthDeltaM, 3)}m  auth age/sample/current: ${stats.vehicleAuthObservedAgeMs >= 0 ? fmt(stats.vehicleAuthObservedAgeMs, 1) : 'n/a'} / ${stats.vehicleAuthSampleOffsetMs >= 0 ? fmt(stats.vehicleAuthSampleOffsetMs, 1) : 'n/a'} / ${stats.vehicleAuthCurrentOffsetMs >= 0 ? fmt(stats.vehicleAuthCurrentOffsetMs, 1) : 'n/a'}ms`}
+          {`Mesh delta: ${fmt(stats.vehicleMeshDeltaM, 3)}m  rms/peak: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}m`}
           {`Steer: ${fmt(stats.vehicleSteering, 3)}  engine: ${fmt(stats.vehicleEngineForce, 0)}  brake: ${fmt(stats.vehicleBrake, 0)}`}
         </Section>
       )}

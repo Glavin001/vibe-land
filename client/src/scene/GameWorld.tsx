@@ -41,6 +41,16 @@ import type { LoadTestScenario } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
+import {
+  VEHICLE_CHASSIS_HALF_EXTENTS,
+  VEHICLE_WHEEL_RADIUS_M,
+  getVehicleWheelVisualAnchors,
+} from './vehicleVisualGeometry';
+import {
+  resetLocalVehicleMeshPose,
+  updateLocalVehicleMeshPose,
+  type LocalVehicleVisualPoseState,
+} from './vehicleLocalMeshPose';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
@@ -52,19 +62,7 @@ const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
-const VEHICLE_CHASSIS_HALF_EXTENTS = { x: 0.9, y: 0.3, z: 1.8 } as const;
-const VEHICLE_WHEEL_ANCHORS: ReadonlyArray<readonly [number, number, number]> = [
-  [-0.9, 0.0, 1.1],
-  [0.9, 0.0, 1.1],
-  [-0.9, 0.0, -1.1],
-  [0.9, 0.0, -1.1],
-] as const;
-const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
-const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
-const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
-const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
-const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -113,6 +111,12 @@ type FrameDebugCallback = (
     steering: number;
     engineForce: number;
     brake: number;
+    meshDeltaM: number;
+    meshRotDeltaRad: number;
+    meshDeltaRms5sM: number;
+    meshDeltaPeak5sM: number;
+    restJitterRms5sM: number;
+    straightJitterRms5sM: number;
   },
   telemetry: {
     lastSnapshotGapMs: number;
@@ -339,12 +343,34 @@ function nearestDynamicBodyCandidate(
   return best;
 }
 
-type LocalVehicleVisualPoseState = {
-  vehicleId: number | null;
-  position: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  euler: THREE.Euler;
-};
+type TimedScalar = { atMs: number; value: number };
+
+function trimTimedScalars(samples: TimedScalar[], nowMs: number, windowMs = 5000): void {
+  while (samples.length > 0 && nowMs - samples[0].atMs > windowMs) {
+    samples.shift();
+  }
+}
+
+function rmsTimedScalars(samples: TimedScalar[]): number {
+  if (samples.length === 0) return 0;
+  let sumSquares = 0;
+  for (const sample of samples) {
+    sumSquares += sample.value * sample.value;
+  }
+  return Math.sqrt(sumSquares / samples.length);
+}
+
+function peakTimedScalars(samples: TimedScalar[]): number {
+  let peak = 0;
+  for (const sample of samples) {
+    if (sample.value > peak) peak = sample.value;
+  }
+  return peak;
+}
+
+function distanceVec3(a: [number, number, number], b: [number, number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
 
 function resolvedInputFromBotIntent(
   buttons: number,
@@ -472,6 +498,10 @@ export function GameWorld({
   const lastVehicleLookAtMsRef = useRef(performance.now());
   const shotTraceBeamRef = useRef<THREE.Mesh>(null);
   const shotTraceImpactRef = useRef<THREE.Mesh>(null);
+  const localVehicleMeshDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRestJitterSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleStraightJitterSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehiclePredictedAuthDeltaSamplesRef = useRef<TimedScalar[]>([]);
 
   useEffect(() => {
     const manager = new GameInputManager();
@@ -507,16 +537,20 @@ export function GameWorld({
     const drivenVehicleId = prediction.getDrivenVehicleId();
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
     const localVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
-    const localPreviewVehicleSample = localPreviewTransport && client && drivenVehicleId != null
+    const localVehicleNowTimeUs = client?.serverClock.serverNowUs();
+    const localVehicleAuthoritativeSample = client && drivenVehicleId != null
       ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleRenderTimeUs)
+      : null;
+    const localVehicleAuthoritativeNowSample = client && drivenVehicleId != null && localVehicleNowTimeUs != null
+      ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleNowTimeUs)
       : null;
     const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
     const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
     const localControlledVehiclePose = localPreviewTransport
-      ? (localPreviewVehicleSample
+      ? (localVehicleAuthoritativeSample
         ? {
-            position: localPreviewVehicleSample.position,
-            quaternion: localPreviewVehicleSample.quaternion,
+            position: localVehicleAuthoritativeSample.position,
+            quaternion: localVehicleAuthoritativeSample.quaternion,
           }
         : (drivenVehicleState
           ? {
@@ -526,42 +560,48 @@ export function GameWorld({
           : null))
       : predictedVehiclePose;
     let localVehicleVisualPose = localControlledVehiclePose;
-    if (localPreviewTransport && localControlledVehiclePose && drivenVehicleId != null) {
-      const visualPose = localVehicleVisualPoseRef.current;
-      const targetPosition = localControlledVehiclePose.position;
-      const targetQuaternion = localControlledVehiclePose.quaternion;
-      const targetQuat = new THREE.Quaternion(
-        targetQuaternion[0],
-        targetQuaternion[1],
-        targetQuaternion[2],
-        targetQuaternion[3],
+    let localVehicleMeshDeltaM = 0;
+    let localVehicleMeshRotDeltaRad = 0;
+    if (localControlledVehiclePose && drivenVehicleId != null) {
+      const result = updateLocalVehicleMeshPose(
+        localVehicleVisualPoseRef.current,
+        drivenVehicleId,
+        localControlledVehiclePose,
+        frameDelta,
+        localVehicleDebug?.speedMs ?? 0,
+        localVehicleDebug?.groundedWheels ?? 0,
+        localPreviewTransport ? 'practice' : 'multiplayer',
       );
-      const targetEuler = new THREE.Euler().setFromQuaternion(targetQuat, 'YXZ');
-      const speedMs = localVehicleDebug?.speedMs ?? 0;
-      const planarRate = LOCAL_VEHICLE_RENDER_PLANAR_RATE;
-      const verticalRate = LOCAL_VEHICLE_RENDER_VERTICAL_RATE + Math.min(speedMs * 0.25, 8.0);
-      const yawRate = LOCAL_VEHICLE_RENDER_YAW_RATE + Math.min(speedMs * 0.2, 10.0);
-      const tiltRate = LOCAL_VEHICLE_RENDER_TILT_RATE + Math.min(speedMs * 0.12, 5.0);
-      if (visualPose.vehicleId !== drivenVehicleId) {
-        visualPose.vehicleId = drivenVehicleId;
-        visualPose.position.set(targetPosition[0], targetPosition[1], targetPosition[2]);
-        visualPose.quaternion.copy(targetQuat);
-        visualPose.euler.copy(targetEuler);
-      } else {
-        visualPose.position.x = THREE.MathUtils.damp(visualPose.position.x, targetPosition[0], planarRate, frameDelta);
-        visualPose.position.y = THREE.MathUtils.damp(visualPose.position.y, targetPosition[1], verticalRate, frameDelta);
-        visualPose.position.z = THREE.MathUtils.damp(visualPose.position.z, targetPosition[2], planarRate, frameDelta);
-        visualPose.euler.x = dampAngle(visualPose.euler.x, targetEuler.x, tiltRate, frameDelta);
-        visualPose.euler.y = dampAngle(visualPose.euler.y, targetEuler.y, yawRate, frameDelta);
-        visualPose.euler.z = dampAngle(visualPose.euler.z, targetEuler.z, tiltRate, frameDelta);
-        visualPose.quaternion.setFromEuler(visualPose.euler);
-      }
-      localVehicleVisualPose = {
-        position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
-        quaternion: [visualPose.quaternion.x, visualPose.quaternion.y, visualPose.quaternion.z, visualPose.quaternion.w],
-      };
+      localVehicleVisualPose = result.pose;
+      localVehicleMeshDeltaM = result.metrics.positionDeltaM;
+      localVehicleMeshRotDeltaRad = result.metrics.rotationDeltaRad;
     } else {
-      localVehicleVisualPoseRef.current.vehicleId = null;
+      resetLocalVehicleMeshPose(localVehicleVisualPoseRef.current);
+    }
+    const isMultiplayerLocalVehicle = !localPreviewTransport && predictedVehiclePose != null && drivenVehicleId != null;
+    if (isMultiplayerLocalVehicle) {
+      localVehicleMeshDeltaSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+      trimTimedScalars(localVehicleMeshDeltaSamplesRef.current, now);
+      if ((localVehicleDebug?.speedMs ?? 0) < 1 && (localVehicleDebug?.groundedWheels ?? 0) === 4) {
+        localVehicleRestJitterSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+      }
+      trimTimedScalars(localVehicleRestJitterSamplesRef.current, now);
+      if (Math.abs(localVehicleDebug?.steering ?? 0) < 0.05 && (localVehicleDebug?.groundedWheels ?? 0) >= 3) {
+        localVehicleStraightJitterSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+      }
+      trimTimedScalars(localVehicleStraightJitterSamplesRef.current, now);
+      if (localVehicleAuthoritativeSample) {
+        localVehiclePredictedAuthDeltaSamplesRef.current.push({
+          atMs: now,
+          value: distanceVec3(localControlledVehiclePose.position, localVehicleAuthoritativeSample.position),
+        });
+      }
+      trimTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current, now);
+    } else {
+      localVehicleMeshDeltaSamplesRef.current = [];
+      localVehicleRestJitterSamplesRef.current = [];
+      localVehicleStraightJitterSamplesRef.current = [];
+      localVehiclePredictedAuthDeltaSamplesRef.current = [];
     }
     const isDrivingNow = prediction.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
@@ -958,7 +998,7 @@ export function GameWorld({
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
-    const vehiclePoseForCamera = localVehicleVisualPose;
+    const vehiclePoseForCamera = localPreviewTransport ? localVehicleVisualPose : localControlledVehiclePose;
     const predictedPos = prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
@@ -1036,12 +1076,35 @@ export function GameWorld({
           )
         : 0;
       const vehiclePosDeltaM = localControlledVehiclePose && drivenVehicleState
-        ? Math.hypot(
-            localControlledVehiclePose.position[0] - drivenVehicleState.position[0],
-            localControlledVehiclePose.position[1] - drivenVehicleState.position[1],
-            localControlledVehiclePose.position[2] - drivenVehicleState.position[2],
-          )
+        ? distanceVec3(localControlledVehiclePose.position, drivenVehicleState.position)
         : 0;
+      const vehicleSampledAuthDeltaM = localControlledVehiclePose && localVehicleAuthoritativeSample
+        ? distanceVec3(localControlledVehiclePose.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleMeshAuthDeltaM = localVehicleVisualPose && localVehicleAuthoritativeSample
+        ? distanceVec3(localVehicleVisualPose.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleLatestVsSampledAuthDeltaM = drivenVehicleState && localVehicleAuthoritativeSample
+        ? distanceVec3(drivenVehicleState.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleCurrentAuthDeltaM = localControlledVehiclePose && localVehicleAuthoritativeNowSample
+        ? distanceVec3(localControlledVehiclePose.position, localVehicleAuthoritativeNowSample.position)
+        : 0;
+      const vehicleMeshCurrentAuthDeltaM = localVehicleVisualPose && localVehicleAuthoritativeNowSample
+        ? distanceVec3(localVehicleVisualPose.position, localVehicleAuthoritativeNowSample.position)
+        : 0;
+      const vehicleAuthObservedAgeMs = client && drivenVehicleId != null
+        ? (client.getVehicleObservedAgeMs(drivenVehicleId) ?? -1)
+        : -1;
+      const vehicleAuthSampleOffsetMs = localVehicleAuthoritativeSample
+        ? Math.max(0, (state.serverClock.serverNowUs() - localVehicleAuthoritativeSample.serverTimeUs) / 1000)
+        : -1;
+      const vehicleAuthSampleServerDeltaMs = vehicleAuthObservedAgeMs >= 0 && vehicleAuthSampleOffsetMs >= 0
+        ? vehicleAuthObservedAgeMs - vehicleAuthSampleOffsetMs
+        : -1;
+      const vehicleAuthCurrentOffsetMs = localVehicleAuthoritativeNowSample && localVehicleNowTimeUs != null
+        ? Math.max(0, (localVehicleNowTimeUs - localVehicleAuthoritativeNowSample.serverTimeUs) / 1000)
+        : -1;
       onDebugFrameRef.current(
         frameDelta * 1000,
         gl.info,
@@ -1070,6 +1133,24 @@ export function GameWorld({
           steering: localVehicleDebug?.steering ?? 0,
           engineForce: localVehicleDebug?.engineForce ?? 0,
           brake: localVehicleDebug?.brake ?? 0,
+          meshDeltaM: localVehicleMeshDeltaM,
+          meshRotDeltaRad: localVehicleMeshRotDeltaRad,
+          meshDeltaRms5sM: rmsTimedScalars(localVehicleMeshDeltaSamplesRef.current),
+          meshDeltaPeak5sM: peakTimedScalars(localVehicleMeshDeltaSamplesRef.current),
+          restJitterRms5sM: rmsTimedScalars(localVehicleRestJitterSamplesRef.current),
+          straightJitterRms5sM: rmsTimedScalars(localVehicleStraightJitterSamplesRef.current),
+          latestAuthDeltaM: vehiclePosDeltaM,
+          sampledAuthDeltaM: vehicleSampledAuthDeltaM,
+          meshAuthDeltaM: vehicleMeshAuthDeltaM,
+          latestVsSampledAuthDeltaM: vehicleLatestVsSampledAuthDeltaM,
+          currentAuthDeltaM: vehicleCurrentAuthDeltaM,
+          meshCurrentAuthDeltaM: vehicleMeshCurrentAuthDeltaM,
+          authObservedAgeMs: vehicleAuthObservedAgeMs,
+          authSampleOffsetMs: vehicleAuthSampleOffsetMs,
+          authSampleServerDeltaMs: vehicleAuthSampleServerDeltaMs,
+          authCurrentOffsetMs: vehicleAuthCurrentOffsetMs,
+          predictedAuthDeltaRms5sM: rmsTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current),
+          predictedAuthDeltaPeak5sM: peakTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current),
         },
         client?.getDebugTelemetrySnapshot() ?? {
           lastSnapshotGapMs: 0,
@@ -1626,6 +1707,7 @@ function updateLocalShotTraceVisuals(
 
 function createVehicleMesh(_id: number): THREE.Group {
   const group = new THREE.Group();
+  const wheelVisualAnchors = getVehicleWheelVisualAnchors();
   group.userData.renderState = {
     lastBodyPosition: null,
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
@@ -1663,7 +1745,7 @@ function createVehicleMesh(_id: number): THREE.Group {
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
-    pivot.position.set(...VEHICLE_WHEEL_ANCHORS[i]);
+    pivot.position.set(...wheelVisualAnchors[i]);
     pivot.name = `wheel_pivot_${i}`;
     group.add(pivot);
 
@@ -1755,12 +1837,6 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
-}
-
-function dampAngle(current: number, target: number, lambda: number, dt: number): number {
-  const delta = THREE.MathUtils.euclideanModulo(target - current + Math.PI, Math.PI * 2) - Math.PI;
-  const alpha = 1 - Math.exp(-lambda * dt);
-  return current + delta * alpha;
 }
 
 function createPlayerMesh(id: number): THREE.Group {
