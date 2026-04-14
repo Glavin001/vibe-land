@@ -5,7 +5,8 @@ export type AppRoute =
   | { kind: 'game'; mode: GameMode }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
-  | { kind: 'godmode' };
+  | { kind: 'builder'; page: 'world'; publishedId?: string }
+  | { kind: 'gallery' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -15,7 +16,9 @@ function normalizePathname(pathname: string): string {
   return normalized || '/';
 }
 
-export function resolveAppRoute(pathname: string): AppRoute {
+export function resolveAppRoute(pathname: string, search?: string): AppRoute {
+  const params = new URLSearchParams(search ?? '');
+  const publishedId = params.get('published') ?? undefined;
   switch (normalizePathname(pathname)) {
     case '/':
     case '/index.html':
@@ -28,8 +31,11 @@ export function resolveAppRoute(pathname: string): AppRoute {
       return { kind: 'stats' };
     case '/loadtest':
       return { kind: 'loadtest' };
+    case '/builder/world':
     case '/godmode':
-      return { kind: 'godmode' };
+      return { kind: 'builder', page: 'world', publishedId };
+    case '/gallery':
+      return { kind: 'gallery' };
     default:
       return { kind: 'launcher' };
   }

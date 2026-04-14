@@ -47,6 +47,11 @@ import {
   shouldCreateAutosaveBackup,
 } from '../world/worldDraftStore';
 import {
+  fetchCloudConfig,
+  fetchPublishedWorld,
+  publishWorld,
+} from '../world/worldsCloud';
+import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
   redoWorldEdit,
@@ -74,7 +79,17 @@ type SelectedTransformEntity = {
   canResize: boolean;
 };
 
-export function GodModePage() {
+type PublishStatus =
+  | { kind: 'idle' }
+  | { kind: 'publishing' }
+  | { kind: 'success'; id: string; shareUrl: string; clipboardOk: boolean }
+  | { kind: 'error'; message: string };
+
+export type GodModePageProps = {
+  publishedId?: string;
+};
+
+export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [mode, setMode] = useState<EditorMode>('edit');
   const [tool, setTool] = useState<EditorTool>('select');
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
@@ -104,6 +119,14 @@ export function GodModePage() {
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
+  const [cloudEnabled, setCloudEnabled] = useState(false);
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
+  const [cloudLoadStatus, setCloudLoadStatus] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading'; id: string }
+    | { kind: 'loaded'; id: string; name: string }
+    | { kind: 'error'; id: string; message: string }
+  >(publishedId ? { kind: 'loading', id: publishedId } : { kind: 'idle' });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const worldRef = useRef(world);
@@ -400,6 +423,81 @@ export function GodModePage() {
     setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
     event.target.value = '';
   }, [applyCommittedWorldEdit]);
+
+  const handlePublish = useCallback(async () => {
+    if (!cloudEnabled) {
+      return;
+    }
+    setPublishStatus({ kind: 'publishing' });
+    try {
+      const result = await publishWorld(worldRef.current);
+      const shareUrl = `${window.location.origin}/builder/world?published=${encodeURIComponent(result.id)}`;
+      let clipboardOk = false;
+      try {
+        await navigator.clipboard?.writeText(shareUrl);
+        clipboardOk = true;
+      } catch {
+        clipboardOk = false;
+      }
+      setPublishStatus({ kind: 'success', id: result.id, shareUrl, clipboardOk });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown publish error.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [cloudEnabled]);
+
+  const handleOpenGallery = useCallback(() => {
+    window.location.href = '/gallery';
+  }, []);
+
+  // Probe cloud config once on mount. We only care whether the deployment has
+  // R2 configured — the response contains no secrets.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCloudConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setCloudEnabled(config.enabled);
+        }
+      })
+      .catch(() => {
+        // Feature stays disabled on transient errors; the rest of the builder keeps working.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the builder was opened with `?published=<id>`, pull that world from R2
+  // and load it in place of the local draft. We wait for storage to be ready
+  // so we don't race with the initial IndexedDB restore.
+  useEffect(() => {
+    if (!publishedId || !storageReady) {
+      return;
+    }
+    let cancelled = false;
+    setCloudLoadStatus({ kind: 'loading', id: publishedId });
+    fetchPublishedWorld(publishedId)
+      .then((raw) => {
+        if (cancelled) {
+          return;
+        }
+        const nextWorld = parseWorldDocument(raw);
+        applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
+        setSelected(null);
+        setCloudLoadStatus({ kind: 'loaded', id: publishedId, name: nextWorld.meta.name });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Failed to load published world.';
+        setCloudLoadStatus({ kind: 'error', id: publishedId, message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publishedId, storageReady, applyCommittedWorldEdit]);
 
   const handleRestoreRevision = useCallback((revision: WorldDraftRevision) => {
     applyCommittedWorldEdit(() => cloneWorldDocument(revision.world));
@@ -833,6 +931,55 @@ export function GodModePage() {
             Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
           </div>
         </div>
+
+        {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
+          <div style={sectionStyle}>
+            <div style={sectionTitleStyle}>Cloud</div>
+            <div style={buttonRowStyle}>
+              {cloudEnabled && (
+                <button
+                  type="button"
+                  onClick={() => void handlePublish()}
+                  style={primaryButtonStyle}
+                  disabled={publishStatus.kind === 'publishing'}
+                >
+                  {publishStatus.kind === 'publishing' ? 'Publishing…' : 'Publish to Cloud'}
+                </button>
+              )}
+              <button type="button" onClick={handleOpenGallery} style={secondaryButtonStyle}>
+                Browse Gallery
+              </button>
+            </div>
+            {cloudLoadStatus.kind === 'loading' && (
+              <div style={mutedTextStyle}>Loading published world {cloudLoadStatus.id}…</div>
+            )}
+            {cloudLoadStatus.kind === 'loaded' && (
+              <div style={mutedTextStyle}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
+            )}
+            {cloudLoadStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Failed to load published world: {cloudLoadStatus.message}
+              </div>
+            )}
+            {publishStatus.kind === 'idle' && cloudEnabled && (
+              <div style={mutedTextStyle}>
+                Publishing uploads the current world to Cloudflare R2 and lists it in the gallery.
+              </div>
+            )}
+            {publishStatus.kind === 'success' && (
+              <div style={mutedTextStyle}>
+                Published as <code>{publishStatus.id}</code>.{' '}
+                {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
+                <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
+              </div>
+            )}
+            {publishStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Publish failed: {publishStatus.message}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>Undo / Redo</div>

@@ -14,9 +14,31 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/practice')).toEqual({ kind: 'game', mode: 'practice' });
   });
 
-  it('preserves the godmode page', () => {
-    expect(resolveAppRoute('/godmode')).toEqual({ kind: 'godmode' });
-    expect(resolveAppRoute('/godmode/')).toEqual({ kind: 'godmode' });
+  it('routes the world builder page', () => {
+    expect(resolveAppRoute('/builder/world')).toEqual({ kind: 'builder', page: 'world' });
+    expect(resolveAppRoute('/builder/world/')).toEqual({ kind: 'builder', page: 'world' });
+  });
+
+  it('parses a published id from the query string', () => {
+    expect(resolveAppRoute('/builder/world', '?published=abc123')).toEqual({
+      kind: 'builder',
+      page: 'world',
+      publishedId: 'abc123',
+    });
+  });
+
+  it('maps legacy /godmode to the builder for backwards compatibility', () => {
+    expect(resolveAppRoute('/godmode')).toEqual({ kind: 'builder', page: 'world' });
+    expect(resolveAppRoute('/godmode/')).toEqual({ kind: 'builder', page: 'world' });
+    expect(resolveAppRoute('/godmode', '?published=xyz')).toEqual({
+      kind: 'builder',
+      page: 'world',
+      publishedId: 'xyz',
+    });
+  });
+
+  it('routes the gallery page', () => {
+    expect(resolveAppRoute('/gallery')).toEqual({ kind: 'gallery' });
   });
 
   it('preserves diagnostics pages', () => {
