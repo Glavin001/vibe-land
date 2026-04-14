@@ -6,8 +6,11 @@ const smokeThresholds: BenchmarkThresholds = {
   dynamicsP95Ms: { comparator: 'upper', warn: 8, fail: 12 },
   snapshotBytesPerClientP95: { comparator: 'upper', warn: 1100, fail: 1500 },
   wtReliableRatio: { comparator: 'upper', warn: 0.1, fail: 0.25 },
+  datagramFallbacks: { comparator: 'upper', warn: 0, fail: 0 },
+  strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
   maxPendingInputs: { comparator: 'upper', warn: 16, fail: 28 },
   connectedRatio: { comparator: 'lower', warn: 0.98, fail: 0.9 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
   voidKills: { comparator: 'upper', warn: 0, fail: 1 },
 };
 
@@ -17,8 +20,25 @@ const scaleThresholds: BenchmarkThresholds = {
   dynamicsP95Ms: { comparator: 'upper', warn: 8, fail: 12 },
   snapshotBytesPerClientP95: { comparator: 'upper', warn: 1000, fail: 1400 },
   wtReliableRatio: { comparator: 'upper', warn: 0.08, fail: 0.2 },
+  datagramFallbacks: { comparator: 'upper', warn: 0, fail: 0 },
+  strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
   maxPendingInputs: { comparator: 'upper', warn: 18, fail: 30 },
   connectedRatio: { comparator: 'lower', warn: 0.96, fail: 0.9 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
+  voidKills: { comparator: 'upper', warn: 0, fail: 1 },
+};
+
+const strictArenaThresholds: BenchmarkThresholds = {
+  tickP95Ms: { comparator: 'upper', warn: 15, fail: 16.67 },
+  playerKccP95Ms: { comparator: 'upper', warn: 10, fail: 12 },
+  dynamicsP95Ms: { comparator: 'upper', warn: 8, fail: 12 },
+  snapshotBytesPerClientP95: { comparator: 'upper', warn: 1100, fail: 1400 },
+  wtReliableRatio: { comparator: 'upper', warn: 0, fail: 0 },
+  datagramFallbacks: { comparator: 'upper', warn: 0, fail: 0 },
+  strictSnapshotDrops: { comparator: 'upper', warn: 0, fail: 0 },
+  maxPendingInputs: { comparator: 'upper', warn: 10, fail: 12 },
+  connectedRatio: { comparator: 'lower', warn: 1, fail: 0.95 },
+  deadPlayersSkippedP95: { comparator: 'upper', warn: 1, fail: 2 },
   voidKills: { comparator: 'upper', warn: 0, fail: 1 },
 };
 
@@ -118,6 +138,150 @@ export const SMOKE_SUITE: BenchmarkSuiteSpec = {
 export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
   name: 'default',
   scenarios: [
+    createScenarioSpec({
+      name: 'arena_shared_play_11',
+      environment: 'local',
+      warmupS: 10,
+      measureS: 20,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'arena',
+        botCount: 10,
+        rampUpS: 5,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 10 },
+        spawnPattern: 'clustered',
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+      },
+    }),
+    createScenarioSpec({
+      name: 'arena_shared_play_12',
+      environment: 'local',
+      warmupS: 10,
+      measureS: 20,
+      playClients: 2,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'arena',
+        botCount: 10,
+        rampUpS: 5,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 10 },
+        spawnPattern: 'clustered',
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+      },
+    }),
+    createScenarioSpec({
+      name: 'arena_shared_debug_10',
+      environment: 'local',
+      warmupS: 10,
+      measureS: 20,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        botCount: 10,
+        rampUpS: 5,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 10 },
+        spawnPattern: 'clustered',
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+      },
+    }),
+    createScenarioSpec({
+      name: 'arena_shared_debug_12',
+      environment: 'local',
+      warmupS: 10,
+      measureS: 20,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        botCount: 12,
+        rampUpS: 6,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 12 },
+        spawnPattern: 'clustered',
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'nearest_target_or_center',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+      },
+    }),
     createScenarioSpec({
       name: 'spread_wt_25',
       environment: 'local',
@@ -226,8 +390,15 @@ export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
   ],
 };
 
+export const STRICT_SUITE: BenchmarkSuiteSpec = {
+  name: 'strict',
+  scenarios: DEFAULT_SUITE.scenarios.filter((scenario) =>
+    scenario.name === 'arena_shared_play_11' || scenario.name === 'arena_shared_play_12'),
+};
+
 export function resolveSuite(name: string): BenchmarkSuiteSpec {
   if (name === 'smoke') return SMOKE_SUITE;
+  if (name === 'strict') return STRICT_SUITE;
   if (name === 'default') return DEFAULT_SUITE;
   throw new Error(`Unknown benchmark suite: ${name}`);
 }

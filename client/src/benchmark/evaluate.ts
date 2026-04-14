@@ -18,6 +18,15 @@ function maxValue(samples: MatchStatsSnapshot[], select: (sample: MatchStatsSnap
   return samples.reduce((max, sample) => Math.max(max, select(sample)), 0);
 }
 
+function deltaValue(samples: MatchStatsSnapshot[], select: (sample: MatchStatsSnapshot) => number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+  const first = select(samples[0]);
+  const last = select(samples[samples.length - 1]);
+  return Math.max(0, last - first);
+}
+
 export function buildMeasuredWindow(
   matchId: string,
   samples: Array<{ at: string; match: MatchStatsSnapshot }>,
@@ -38,13 +47,16 @@ export function buildMeasuredWindow(
     snapshotBytesPerTickP95: maxValue(matches, (sample) => sample.network.snapshot_bytes_per_tick.p95),
     bodiesPerClientP95: maxValue(matches, (sample) => sample.network.snapshot_dynamic_bodies_per_client.p95),
     wtReliableRatio: maxValue(matches, (sample) => webTransportSnapshotFallbackRatio(sample)),
+    datagramFallbacks: deltaValue(matches, (sample) => sample.network.datagram_fallbacks),
+    strictSnapshotDrops: deltaValue(matches, (sample) => sample.network.strict_snapshot_drops),
     maxPendingInputs: maxValue(matches, (sample) => maxPendingInputs(sample)),
     avgPendingInputs: maxValue(matches, (sample) =>
       sample.players.length > 0
         ? sample.players.reduce((sum, player) => sum + player.pending_inputs, 0) / sample.players.length
         : 0,
     ),
-    voidKills: maxValue(matches, (sample) => sample.load.void_kills),
+    deadPlayersSkippedP95: maxValue(matches, (sample) => sample.network.dead_players_skipped.p95),
+    voidKills: deltaValue(matches, (sample) => sample.load.void_kills),
   };
 
   return {
@@ -96,14 +108,17 @@ export function evaluateScenario(
       spec.thresholds.snapshotBytesPerClientP95,
     ),
     evaluateBand('wt_reliable_ratio', metrics.wtReliableRatio, spec.thresholds.wtReliableRatio),
+    evaluateBand('datagram_fallbacks', metrics.datagramFallbacks, spec.thresholds.datagramFallbacks),
+    evaluateBand('strict_snapshot_drops', metrics.strictSnapshotDrops, spec.thresholds.strictSnapshotDrops),
     evaluateBand('max_pending_inputs', metrics.maxPendingInputs, spec.thresholds.maxPendingInputs),
     evaluateBand('connected_ratio', connectedRatio, spec.thresholds.connectedRatio),
+    evaluateBand('dead_players_skipped_p95', metrics.deadPlayersSkippedP95, spec.thresholds.deadPlayersSkippedP95),
     evaluateBand('void_kills', metrics.voidKills, spec.thresholds.voidKills),
   ];
 
   const derivedAnomalies = [...anomalies];
   if (measuredWindow.sampleCount === 0) {
-    derivedAnomalies.push('No /ws/stats samples captured during the measurement window.');
+    derivedAnomalies.push('Invalid benchmark: no /ws/stats samples captured during the measurement window.');
   }
   if (browserConsoleErrors.length > 0) {
     derivedAnomalies.push(`${browserConsoleErrors.length} browser console error(s) captured.`);
@@ -112,7 +127,8 @@ export function evaluateScenario(
     derivedAnomalies.push(`${browserPageErrors.length} browser page error(s) captured.`);
   }
 
-  const verdict = outcomes.some((outcome) => outcome.verdict === 'fail')
+  const invalidBenchmark = derivedAnomalies.some((anomaly) => anomaly.startsWith('Invalid benchmark:'));
+  const verdict = outcomes.some((outcome) => outcome.verdict === 'fail') || invalidBenchmark
     ? 'fail'
     : outcomes.some((outcome) => outcome.verdict === 'warn') || derivedAnomalies.length > 0
       ? 'warn'

@@ -41,7 +41,7 @@ export type RemotePlayer = {
 
 export type NetcodeClientConfig = {
   onWelcome?: (playerId: number) => void;
-  onDisconnect?: () => void;
+  onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
@@ -126,7 +126,11 @@ export class NetcodeClient {
     this.closedByClient = false;
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.handlePacket(packet, 'websocket'),
-      onClose: () => { this.notifyDisconnect(); },
+      onClose: (event) => {
+        this.notifyDisconnect(
+          `websocket closed (code=${event.code}${event.reason ? `, reason=${event.reason}` : ''})`,
+        );
+      },
       onRttUpdated: (rttMs: number) => {
         this.rttMs = rttMs;
         this.serverClock.observeRtt(rttMs);
@@ -142,7 +146,7 @@ export class NetcodeClient {
       onPacket: (packet) => this.handlePacket(packet, 'local'),
       onClose: () => {
         this.localTransport = null;
-        this.notifyDisconnect();
+        this.notifyDisconnect('local preview closed');
       },
     });
   }
@@ -163,7 +167,7 @@ export class NetcodeClient {
           sessionConfigEndpoint,
           onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-reliable'),
           onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-datagram'),
-          onClose: () => { this.notifyDisconnect(); },
+          onClose: (reason) => { this.notifyDisconnect(describeDisconnectReason('webtransport', reason)); },
         });
         this.wtClient = wt;
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
@@ -200,11 +204,11 @@ export class NetcodeClient {
     this.socket = null;
   }
 
-  private notifyDisconnect(): void {
+  private notifyDisconnect(reason?: string): void {
     if (this.closedByClient) {
       return;
     }
-    this.config.onDisconnect?.();
+    this.config.onDisconnect?.(reason);
   }
 
   sendInputs(cmds: InputCmd[]): void {
@@ -880,4 +884,17 @@ export class NetcodeClient {
     this.vehicleLastSeenTick.clear();
     this.vehicleInterpolator.retainOnly(new Set());
   }
+}
+
+function describeDisconnectReason(prefix: string, reason: unknown): string {
+  if (reason == null) {
+    return `${prefix} closed`;
+  }
+  if (typeof reason === 'string') {
+    return `${prefix} closed (${reason})`;
+  }
+  if (reason instanceof Error) {
+    return `${prefix} closed (${reason.message})`;
+  }
+  return `${prefix} closed (${String(reason)})`;
 }

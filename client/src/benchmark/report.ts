@@ -11,7 +11,8 @@ function formatOutcome(outcome: ThresholdOutcome): string {
 
 function scenarioRow(result: BenchmarkScenarioResult): string {
   const metrics = result.measuredWindow.peakMetrics;
-  return `| ${result.scenarioName} | ${formatVerdict(result.verdict)} | ${metrics.tickP95Ms.toFixed(2)}ms | ${metrics.playerKccP95Ms.toFixed(2)}ms | ${(metrics.snapshotBytesPerClientP95 / 1024).toFixed(2)} KiB | ${(metrics.wtReliableRatio * 100).toFixed(1)}% | ${result.workers.websocket?.shotsFired ?? 0}/${result.workers.webtransport?.shotsFired ?? 0} | ${result.measuredWindow.bottleneck} |`;
+  const playShots = result.workers.play.reduce((sum, worker) => sum + worker.shotsFired, 0);
+  return `| ${result.scenarioName} | ${formatVerdict(result.verdict)} | ${metrics.tickP95Ms.toFixed(2)}ms | ${metrics.playerKccP95Ms.toFixed(2)}ms | ${(metrics.snapshotBytesPerClientP95 / 1024).toFixed(2)} KiB | ${(metrics.wtReliableRatio * 100).toFixed(1)}% | ${result.workers.websocket?.shotsFired ?? 0}/${result.workers.webtransport?.shotsFired ?? 0}/${playShots} | ${result.measuredWindow.bottleneck} |`;
 }
 
 function worstScenarioLine(result: BenchmarkSuiteResult, label: string, select: (scenario: BenchmarkScenarioResult) => number, suffix: string): string | null {
@@ -29,7 +30,7 @@ export function renderScenarioMarkdown(result: BenchmarkScenarioResult): string 
     `- Match: \`${result.scenario.matchId}\``,
     `- Environment: \`${result.environment.label}\``,
     `- Connected ratio: ${(result.connectedRatio * 100).toFixed(1)}%`,
-    `- Shots fired (ws/wt): ${result.workers.websocket?.shotsFired ?? 0}/${result.workers.webtransport?.shotsFired ?? 0}`,
+    `- Shots fired (ws/wt/play): ${result.workers.websocket?.shotsFired ?? 0}/${result.workers.webtransport?.shotsFired ?? 0}/${result.workers.play.reduce((sum, worker) => sum + worker.shotsFired, 0)}`,
     `- Bottleneck: ${result.measuredWindow.bottleneck}`,
     `- Samples captured: ${result.measuredWindow.sampleCount}`,
     '',
@@ -40,7 +41,10 @@ export function renderScenarioMarkdown(result: BenchmarkScenarioResult): string 
     `- dynamics p95: ${result.measuredWindow.peakMetrics.dynamicsP95Ms.toFixed(2)}ms`,
     `- snapshot/client p95: ${(result.measuredWindow.peakMetrics.snapshotBytesPerClientP95 / 1024).toFixed(2)} KiB`,
     `- WT reliable ratio: ${(result.measuredWindow.peakMetrics.wtReliableRatio * 100).toFixed(1)}%`,
+    `- datagram fallbacks: ${result.measuredWindow.peakMetrics.datagramFallbacks.toFixed(0)}`,
+    `- strict snapshot drops: ${result.measuredWindow.peakMetrics.strictSnapshotDrops.toFixed(0)}`,
     `- max pending inputs: ${result.measuredWindow.peakMetrics.maxPendingInputs.toFixed(0)}`,
+    `- dead players skipped p95: ${result.measuredWindow.peakMetrics.deadPlayersSkippedP95.toFixed(0)}`,
     '',
     '### Thresholds',
     '',
@@ -62,7 +66,7 @@ export function renderSuiteMarkdown(result: BenchmarkSuiteResult): string {
     `generated: ${result.generatedAt}`,
     `environment: ${result.environment.label}`,
     '',
-    '| Scenario | Verdict | Tick p95 | Player KCC p95 | Snapshot/client | WT reliable | Shots ws/wt | Bottleneck |',
+    '| Scenario | Verdict | Tick p95 | Player KCC p95 | Snapshot/client | WT reliable | Shots ws/wt/play | Bottleneck |',
     '| --- | --- | --- | --- | --- | --- | --- | --- |',
     ...result.results.map(scenarioRow),
   ];
