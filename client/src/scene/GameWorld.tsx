@@ -60,6 +60,62 @@ const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
 const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
 const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
 
+/** Left-stick → actuator channel when keyboard bindings read all zeros (gamepad). */
+function snapMachineGamepadChannelValue(
+  action: string,
+  moveX: number,
+  moveY: number,
+): number {
+  const mx = Math.max(-1, Math.min(1, moveX));
+  const my = Math.max(-1, Math.min(1, moveY));
+  let v = 0;
+  switch (action) {
+    case 'motorSpin':
+    case 'hingeSpin':
+    case 'sliderPos':
+      v = my;
+      break;
+    case 'armPitch':
+    case 'flapDeflect':
+    case 'armPitchElbow':
+      v = my;
+      break;
+    case 'armYaw':
+    case 'armYawTurret':
+      v = mx;
+      break;
+    case 'throttle':
+    case 'propellerSpin':
+      v = Math.max(0, my);
+      break;
+    case 'gripperClose':
+      v = Math.max(0, my);
+      break;
+    default:
+      v = my;
+      break;
+  }
+  return Math.max(-127, Math.min(127, Math.round(v * 127)));
+}
+
+function mergeSnapMachineChannelsFromGamepad(
+  actionChannels: string[],
+  keyboardChannels: Int8Array,
+  moveX: number,
+  moveY: number,
+): Int8Array {
+  const out = new Int8Array(8);
+  const kLen = Math.min(keyboardChannels.length, 8);
+  for (let i = 0; i < kLen; i += 1) {
+    out[i] = keyboardChannels[i] ?? 0;
+  }
+  for (let idx = 0; idx < actionChannels.length && idx < 8; idx += 1) {
+    if (out[idx] !== 0) continue;
+    out[idx] = snapMachineGamepadChannelValue(actionChannels[idx] ?? '', moveX, moveY);
+  }
+  return out;
+}
+
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },
@@ -575,16 +631,23 @@ export function GameWorld({
     let liveMachineChannels: Int8Array | undefined;
     if (isOperatingMachineNow) {
       const actionChannels = prediction.getSnapMachineActionChannels();
-      liveMachineChannels = new Int8Array(8);
+      const keyboardChannels = new Int8Array(8);
       for (let idx = 0; idx < actionChannels.length && idx < 8; idx += 1) {
         const action = actionChannels[idx];
         const binding = machineBindings.find((b) => b.action === action);
         if (!binding) continue;
         let value = 0;
-        if (inputManagerRef.current?.isCodeDown(binding.posKey)) value += 1;
-        if (binding.negKey && inputManagerRef.current?.isCodeDown(binding.negKey)) value -= 1;
-        liveMachineChannels[idx] = Math.max(-127, Math.min(127, Math.round(value * 127)));
+        if (inputManagerRef.current?.isCodeDown(binding.posKey)) value += binding.scale;
+        if (binding.negKey && inputManagerRef.current?.isCodeDown(binding.negKey)) value -= binding.scale;
+        keyboardChannels[idx] = Math.max(-127, Math.min(127, Math.round(value * 127)));
       }
+      const ax = rawInputSample.action;
+      liveMachineChannels = mergeSnapMachineChannelsFromGamepad(
+        actionChannels,
+        keyboardChannels,
+        ax?.moveX ?? 0,
+        ax?.moveY ?? 0,
+      );
     }
     const inputSample = isOperatingMachineNow
       ? {

@@ -1324,12 +1324,27 @@ impl WasmSimWorld {
 
     #[wasm_bindgen(js_name = setLocalSnapMachine)]
     pub fn set_local_snap_machine(&mut self, machine_id: u32) {
+        if let Some(prev) = self.local_machine_id {
+            if prev != machine_id {
+                if let Some(m) = self.machines.get(&prev) {
+                    m.freeze_to_kinematic(&mut self.sim.rigid_bodies);
+                }
+            }
+        }
         self.local_machine_id = Some(machine_id);
         self.machine_pending_inputs.clear();
+        if let Some(m) = self.machines.get(&machine_id) {
+            m.unfreeze_to_dynamic(&mut self.sim.rigid_bodies);
+        }
     }
 
     #[wasm_bindgen(js_name = clearLocalSnapMachine)]
     pub fn clear_local_snap_machine(&mut self) {
+        if let Some(mid) = self.local_machine_id {
+            if let Some(m) = self.machines.get(&mid) {
+                m.freeze_to_kinematic(&mut self.sim.rigid_bodies);
+            }
+        }
         self.local_machine_id = None;
         self.machine_pending_inputs.clear();
     }
@@ -1373,22 +1388,10 @@ impl WasmSimWorld {
     /// enter.
     #[wasm_bindgen(js_name = getSnapMachineBindings)]
     pub fn get_snap_machine_bindings(&self, id: u32) -> String {
-        // We need the source envelope JSON to call
-        // `derive_machine_bindings`, but the installed `SnapMachine`
-        // only retains the `action_channels` + `controls`. Fall back
-        // to per-channel defaults since the common case — a machine
-        // without an explicit controls block — is handled perfectly
-        // by the default_action_key table.
-        let Some(machine) = self.machines.get(&id) else {
-            return String::new();
-        };
-        let mut rows = Vec::with_capacity(machine.action_channels().len());
-        for action in machine.action_channels() {
-            let (pos, neg) = crate::snap_machine_controls::default_action_key(action);
-            let neg_str = neg.unwrap_or("");
-            rows.push(format!("{action}\t{pos}\t{neg_str}\t1"));
-        }
-        rows.join("\n")
+        self.machines
+            .get(&id)
+            .map(SnapMachine::bindings_wire_string)
+            .unwrap_or_default()
     }
 
     /// Returns body world poses for the renderer, packed as a flat `f32`

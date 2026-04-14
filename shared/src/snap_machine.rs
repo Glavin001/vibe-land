@@ -105,6 +105,9 @@ pub struct SnapMachine {
     /// channel index → action name lives here. Both server and client must
     /// derive this identically.
     action_channels: Vec<String>,
+    /// Envelope-resolved keyboard bindings (defaults + `controls` overrides).
+    /// Stored at install so wasm can expose the same table the HUD walks.
+    bindings: Vec<crate::snap_machine_controls::MachineBinding>,
     /// Optional control profile from the envelope (for client-side keybind
     /// derivation). Cloned so the envelope JSON can be dropped after install.
     controls: Option<snap_machines_rapier::MachineControls>,
@@ -197,6 +200,8 @@ impl SnapMachine {
         let plan_for_meta = envelope.plan.clone();
         let controls = envelope.controls.take();
 
+        let bindings = crate::snap_machine_controls::derive_machine_bindings(envelope_json);
+
         let runtime = MachineRuntime::install_envelope(world, envelope)?;
 
         let mut body_ids: Vec<String> =
@@ -209,6 +214,7 @@ impl SnapMachine {
             runtime,
             body_ids,
             action_channels,
+            bindings,
             controls,
             display_name,
         })
@@ -226,6 +232,25 @@ impl SnapMachine {
 
     pub fn action_channels(&self) -> &[String] {
         &self.action_channels
+    }
+
+    /// Player-facing bindings captured at install (envelope `controls` or
+    /// defaults). Same row format as [`SnapMachine::bindings_wire_string`].
+    pub fn machine_bindings(&self) -> &[crate::snap_machine_controls::MachineBinding] {
+        &self.bindings
+    }
+
+    /// `\n`-delimited rows: `action\tposKey\tnegKey\tscale` (`negKey` may be
+    /// empty).
+    pub fn bindings_wire_string(&self) -> String {
+        self.bindings
+            .iter()
+            .map(|b| {
+                let neg = b.neg_key.as_deref().unwrap_or("");
+                format!("{}\t{}\t{}\t{}", b.action, b.pos_key, neg, b.scale)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     pub fn controls(&self) -> Option<&snap_machines_rapier::MachineControls> {
@@ -322,6 +347,20 @@ impl SnapMachine {
             rb.set_body_type(RigidBodyType::KinematicPositionBased, true);
             rb.set_linvel(Vector3::zeros(), false);
             rb.set_angvel(Vector3::zeros(), false);
+        }
+    }
+
+    /// Restore dynamic bodies so [`Self::apply_input`] can integrate motors.
+    /// Used by client wasm for the locally operated machine only.
+    pub fn unfreeze_to_dynamic(&self, bodies: &mut RigidBodySet) {
+        for id in &self.body_ids {
+            let Some(handle) = self.runtime.body_handle(id) else {
+                continue;
+            };
+            let Some(rb) = bodies.get_mut(handle) else {
+                continue;
+            };
+            rb.set_body_type(RigidBodyType::Dynamic, true);
         }
     }
 
