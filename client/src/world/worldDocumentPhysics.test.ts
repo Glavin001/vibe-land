@@ -134,6 +134,17 @@ function makeEntity(kind: DynamicEntity['kind'], id: number, x: number, y: numbe
       halfExtents: [0.5, 0.5, 0.5],
     };
   }
+  if (kind === 'battery') {
+    return {
+      id,
+      kind,
+      position: [x, y, z],
+      rotation: [0, 0, 0, 1],
+      radius: 0.4,
+      height: 0.8,
+      energy: 500,
+    };
+  }
   return {
     id,
     kind,
@@ -508,6 +519,11 @@ describe('WorldDocument local-preview scenarios', () => {
           vehicle!.position[1],
           `vehicle ${entity.id} final=(${vehicle!.position[0]}, ${vehicle!.position[1]}, ${vehicle!.position[2]})`,
         ).toBeGreaterThan(terrainY - 0.25);
+      } else if (entity.kind === 'battery') {
+        // Batteries are static non-physics pickups; the local-preview
+        // client-side arena doesn't spawn them as dynamic bodies. Skipping
+        // here keeps authored battery content out of the settling check.
+        continue;
       } else {
         const body = result.dynamicBodies.get(entity.id);
         expect(body).toBeDefined();

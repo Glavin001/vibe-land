@@ -16,6 +16,7 @@ import {
   encodeBlockEditPacket,
   type InputFrame,
   type NetPlayerState,
+  type NetBatteryState,
   type FireCmd,
   BTN_FORWARD,
   BTN_BACK,
@@ -240,9 +241,15 @@ function buildSnapshotBinary(opts: {
   serverTick?: number;
   ackInputSeq?: number;
   players?: NetPlayerState[];
+  batteries?: NetBatteryState[];
 }): Uint8Array {
   const players = opts.players ?? [];
-  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + 2 + players.length * 29;
+  const batteries = opts.batteries ?? [];
+  // Header: 1 tag + 8 time + 4 tick + 2 ack + 5*u16 counts = 25
+  // Player record: 33 bytes (adds 4 for energy_centi at the tail)
+  // Battery record: 24 bytes
+  const size =
+    1 + 8 + 4 + 2 + 2 + 2 + 2 + 2 + 2 + players.length * 33 + batteries.length * 24;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -261,6 +268,7 @@ function buildSnapshotBinary(opts: {
   view.setUint16(o, 0, true); o += 2; // projectile count
   view.setUint16(o, 0, true); o += 2; // dynamic body count
   view.setUint16(o, 0, true); o += 2; // vehicle count
+  view.setUint16(o, batteries.length, true); o += 2; // battery count
 
   for (const p of players) {
     view.setUint32(o, p.id, true); o += 4;
@@ -274,6 +282,17 @@ function buildSnapshotBinary(opts: {
     view.setInt16(o, p.pitchI16, true); o += 2;
     view.setUint8(o, p.hp); o += 1;
     view.setUint16(o, p.flags, true); o += 2;
+    view.setUint32(o, p.energyCenti, true); o += 4;
+  }
+
+  for (const b of batteries) {
+    view.setUint32(o, b.id, true); o += 4;
+    view.setInt32(o, b.pxMm, true); o += 4;
+    view.setInt32(o, b.pyMm, true); o += 4;
+    view.setInt32(o, b.pzMm, true); o += 4;
+    view.setUint32(o, b.energyCenti, true); o += 4;
+    view.setUint16(o, b.radiusCm, true); o += 2;
+    view.setUint16(o, b.heightCm, true); o += 2;
   }
 
   return buf;
@@ -289,8 +308,8 @@ describe('snapshot decode', () => {
 
   it('decodes snapshot with multiple players', () => {
     const players: NetPlayerState[] = [
-      { id: 1, pxMm: 5000, pyMm: 1000, pzMm: 3000, vxCms: 100, vyCms: 0, vzCms: 200, yawI16: 1000, pitchI16: -500, hp: 90, flags: 1 },
-      { id: 2, pxMm: -5000, pyMm: 2000, pzMm: -3000, vxCms: -100, vyCms: 50, vzCms: -200, yawI16: -1000, pitchI16: 500, hp: 55, flags: 0 },
+      { id: 1, pxMm: 5000, pyMm: 1000, pzMm: 3000, vxCms: 100, vyCms: 0, vzCms: 200, yawI16: 1000, pitchI16: -500, hp: 90, flags: 1, energyCenti: 123_456 },
+      { id: 2, pxMm: -5000, pyMm: 2000, pzMm: -3000, vxCms: -100, vyCms: 50, vzCms: -200, yawI16: -1000, pitchI16: 500, hp: 55, flags: 0, energyCenti: 0 },
     ];
     const binary = buildSnapshotBinary({
       serverTick: 42,
@@ -313,7 +332,7 @@ describe('snapshot decode', () => {
   it('preserves position precision (millimeters)', () => {
     const player: NetPlayerState = {
       id: 1, pxMm: 12345, pyMm: -6789, pzMm: 1, vxCms: 0, vyCms: 0, vzCms: 0,
-      yawI16: 0, pitchI16: 0, hp: 77, flags: 0,
+      yawI16: 0, pitchI16: 0, hp: 77, flags: 0, energyCenti: 50_000,
     };
     const binary = buildSnapshotBinary({ players: [player] });
     const packet = decodeServerDatagramPacket(binary);
@@ -322,11 +341,34 @@ describe('snapshot decode', () => {
     expect(packet.playerStates[0].pyMm).toBe(-6789);
     expect(packet.playerStates[0].pzMm).toBe(1);
     expect(packet.playerStates[0].hp).toBe(77);
+    expect(packet.playerStates[0].energyCenti).toBe(50_000);
+  });
+
+  it('decodes battery states', () => {
+    const batteries: NetBatteryState[] = [
+      { id: 0x4000_0001, pxMm: 1500, pyMm: 2000, pzMm: -500, energyCenti: 50_000, radiusCm: 40, heightCm: 80 },
+      { id: 0x4000_0002, pxMm: -500, pyMm: 300, pzMm: 1500, energyCenti: 25_000, radiusCm: 30, heightCm: 60 },
+    ];
+    const binary = buildSnapshotBinary({ players: [], batteries });
+    const packet = decodeServerDatagramPacket(binary);
+    if (packet.type !== 'snapshot') throw new Error('expected v1 snapshot');
+    expect(packet.batteryStates).toHaveLength(2);
+    expect(packet.batteryStates[0].id).toBe(0x4000_0001);
+    expect(packet.batteryStates[0].energyCenti).toBe(50_000);
+    expect(packet.batteryStates[0].radiusCm).toBe(40);
+    expect(packet.batteryStates[1].id).toBe(0x4000_0002);
+    expect(packet.batteryStates[1].heightCm).toBe(60);
   });
 });
 
-function buildSnapshotV2Binary(): Uint8Array {
-  const size = 1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 12 + 19 + 20 + 30;
+function buildSnapshotV2Binary(opts: { batteries?: number } = {}): Uint8Array {
+  const batteryCount = opts.batteries ?? 0;
+  // Header now 25 bytes (adds a u8 battery count).
+  // Self state 16 bytes (12 + u32 energy).
+  // Remote player 23 bytes (19 + u32 energy).
+  // Battery record 24 bytes.
+  const size =
+    1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 1 + 16 + 23 + 20 + 30 + batteryCount * 24;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -341,6 +383,7 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setUint8(o++, 1);
   view.setUint8(o++, 0);
   view.setUint8(o++, 1);
+  view.setUint8(o++, batteryCount);
 
   view.setInt16(o, 100, true); o += 2;
   view.setInt16(o, 0, true); o += 2;
@@ -349,6 +392,7 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt16(o, 0, true); o += 2;
   view.setUint8(o++, 100);
   view.setUint8(o++, 1);
+  view.setUint32(o, 100_000, true); o += 4; // self energy_centi
 
   view.setUint8(o++, 2);
   view.setInt16(o, 2000, true); o += 2;
@@ -361,6 +405,7 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt16(o, 0, true); o += 2;
   view.setUint8(o++, 80);
   view.setUint8(o++, 1);
+  view.setUint32(o, 90_000, true); o += 4; // remote energy_centi
 
   view.setUint16(o, 7, true); o += 2;
   view.setInt16(o, 1200, true); o += 2;
@@ -391,6 +436,16 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt16(o, 0, true); o += 2;
   view.setInt16(o, 0, true); o += 2;
 
+  for (let i = 0; i < batteryCount; i++) {
+    view.setUint32(o, 0x4000_0001 + i, true); o += 4;
+    view.setInt32(o, 1000 + i * 100, true); o += 4;
+    view.setInt32(o, 500, true); o += 4;
+    view.setInt32(o, -200, true); o += 4;
+    view.setUint32(o, 50_000 + i * 10_000, true); o += 4;
+    view.setUint16(o, 40, true); o += 2;
+    view.setUint16(o, 80, true); o += 2;
+  }
+
   return buf;
 }
 
@@ -398,16 +453,31 @@ describe('snapshot V2 decode', () => {
   it('decodes relative V2 snapshot sections', () => {
     const packet = decodeServerDatagramPacket(buildSnapshotV2Binary());
     expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') throw new Error('unreachable');
     expect(packet.serverTick).toBe(25);
     expect(packet.ackInputSeq).toBe(9);
     expect(packet.anchorPxMm).toBe(10_000);
+    expect(packet.selfState.energyCenti).toBe(100_000);
     expect(packet.remotePlayers).toHaveLength(1);
     expect(packet.remotePlayers[0].handle).toBe(2);
+    expect(packet.remotePlayers[0].energyCenti).toBe(90_000);
     expect(packet.sphereStates).toHaveLength(1);
     expect(packet.sphereStates[0].handle).toBe(7);
     expect(packet.vehicleStates).toHaveLength(1);
     expect(packet.vehicleStates[0].handle).toBe(3);
     expect(packet.vehicleStates[0].driverHandle).toBe(2);
+    expect(packet.batteryStates).toHaveLength(0);
+  });
+
+  it('decodes battery states in V2 snapshot', () => {
+    const packet = decodeServerDatagramPacket(buildSnapshotV2Binary({ batteries: 2 }));
+    expect(packet.type).toBe('snapshotV2');
+    if (packet.type !== 'snapshotV2') throw new Error('unreachable');
+    expect(packet.batteryStates).toHaveLength(2);
+    expect(packet.batteryStates[0].id).toBe(0x4000_0001);
+    expect(packet.batteryStates[0].energyCenti).toBe(50_000);
+    expect(packet.batteryStates[0].radiusCm).toBe(40);
+    expect(packet.batteryStates[1].energyCenti).toBe(60_000);
   });
 });
 

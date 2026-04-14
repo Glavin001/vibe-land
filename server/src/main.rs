@@ -40,11 +40,12 @@ use crate::{
     movement::{MoveConfig, PhysicsArena, PlayerKccMode},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
-        decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
-        make_net_player_state, mm_to_meters, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        ShotResultPacket, SnapshotPacket, WelcomePacket, HIT_ZONE_BODY, HIT_ZONE_HEAD,
-        HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_battery_state,
+        make_net_dynamic_body_state, make_net_player_state, mm_to_meters, ClientPacket, FireCmd,
+        InputCmd, NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket,
+        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -84,18 +85,37 @@ const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
 const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
-const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
-const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 12;
-const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
+// Header: 1 tag + 4 tick + 2 ack + 3*4 anchor + 4*1 counts (remote, sphere,
+// box, vehicle) + 1 battery count = 24 bytes. (Old value was 23 before the
+// battery-count byte was added.)
+const SNAPSHOT_V2_HEADER_BYTES: usize = 24;
+// Self player record grew by `u32 energy_centi` (+4 bytes): 12 -> 16.
+const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 16;
+// Remote player record grew by `u32 energy_centi` (+4 bytes): 19 -> 23.
+const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 23;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
 const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
 const SNAPSHOT_V2_VEHICLE_BYTES: usize = 30;
+// Battery record: 4 id + 3*4 position + 4 energy + 2 radius + 2 height = 24 bytes.
+const SNAPSHOT_V2_BATTERY_BYTES: usize = 24;
 
 fn rifle_damage(zone: HitZone) -> u8 {
     match zone {
         HitZone::Body => RIFLE_BODY_DAMAGE,
         HitZone::Head => RIFLE_HEAD_DAMAGE,
     }
+}
+
+/// Why a player died, used by `kill_player_with_cause` to decide whether to
+/// drop a battery at the death location.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeathCause {
+    /// HP reached zero (e.g. hitscan). Drops a battery with remaining energy.
+    HpDamage,
+    /// Energy meter reached zero. No drop (there's nothing to drop).
+    EnergyDepletion,
+    /// Player fell below the world floor. No drop (fuel lost to the void).
+    OutOfBounds,
 }
 
 // ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
@@ -1657,7 +1677,11 @@ impl MatchState {
             {
                 player_centers.push(pos);
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
-                    self.kill_player(player_id, server_time_ms);
+                    self.kill_player_with_cause(
+                        player_id,
+                        server_time_ms,
+                        DeathCause::OutOfBounds,
+                    );
                     self.void_kills += 1;
                 }
                 let alive = hp > 0 && (flags & 0x4) == 0;
@@ -1755,6 +1779,36 @@ impl MatchState {
 
         let dynamics_started = Instant::now();
         self.arena.step_dynamics(dt);
+
+        // ── Energy system: drain drivers, collect pickups, kill on depletion ──
+        // Runs after physics so we have up-to-date chassis velocities, and
+        // before the snapshot broadcast so clients see the new state this
+        // tick. Order matters: pickups run first so a player about to deplete
+        // can still be saved by an overlapping battery.
+        let alive_player_ids: Vec<u32> = self
+            .arena
+            .players
+            .iter()
+            .filter_map(|(&id, state)| (!state.dead).then_some(id))
+            .collect();
+        for &player_id in &alive_player_ids {
+            let gained: f32 = self
+                .arena
+                .collect_batteries_for_player(player_id)
+                .into_iter()
+                .map(|(_, energy)| energy)
+                .sum();
+            if gained > 0.0 {
+                if let Some(state) = self.arena.players.get_mut(&player_id) {
+                    state.energy += gained;
+                }
+            }
+        }
+        let depleted_ids = self.arena.apply_vehicle_energy_drain(dt);
+        for player_id in depleted_ids {
+            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
+        }
+
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -2169,8 +2223,58 @@ impl MatchState {
     }
 
     fn kill_player(&mut self, player_id: u32, server_time_ms: u32) {
+        self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
+    }
+
+    /// Kill a player and handle death-drop policy based on `cause`.
+    ///
+    /// - `DeathCause::HpDamage`: if the player still had energy, spawn a
+    ///   battery at their last position carrying that energy. This is the
+    ///   PvP reward loop — "shoot them to steal their fuel".
+    /// - `DeathCause::EnergyDepletion`: no battery drop (they ran out of fuel).
+    /// - `DeathCause::OutOfBounds`: no battery drop (fell into the void).
+    fn kill_player_with_cause(
+        &mut self,
+        player_id: u32,
+        server_time_ms: u32,
+        cause: DeathCause,
+    ) {
+        // Before exiting the vehicle (which may reposition the player), capture
+        // their current position and leftover energy so we can drop a battery
+        // at the exact spot they died.
+        let drop = if matches!(cause, DeathCause::HpDamage) {
+            self.arena.players.get(&player_id).and_then(|state| {
+                if !state.dead && state.energy > 0.0 {
+                    Some((state.position, state.energy))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         self.arena.exit_vehicle(player_id);
         self.arena.set_player_dead(player_id, true);
+
+        if let Some((pos, energy)) = drop {
+            let _ = self.arena.spawn_battery(
+                pos,
+                energy,
+                vibe_land_shared::constants::DEFAULT_BATTERY_RADIUS_M,
+                vibe_land_shared::constants::DEFAULT_BATTERY_HEIGHT_M,
+            );
+            // Zero out remaining energy on the corpse so it doesn't re-drop
+            // if somehow re-killed before respawn.
+            if let Some(state) = self.arena.players.get_mut(&player_id) {
+                state.energy = 0.0;
+            }
+        } else if let Some(state) = self.arena.players.get_mut(&player_id) {
+            // Energy-death path already clamped energy to 0; make sure the
+            // out-of-bounds path doesn't leave a phantom energy reading.
+            state.energy = 0.0;
+        }
+
         if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
@@ -2384,13 +2488,28 @@ impl MatchState {
         let mut player_states = Vec::with_capacity(self.players.len());
         for &player_id in self.players.keys() {
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
+                let energy = self.arena.player_energy(player_id).unwrap_or(0.0);
                 player_states.push((
                     player_id,
                     pos,
-                    make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags),
+                    make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags, energy),
                 ));
             }
         }
+
+        // Collect batteries for AoI filtering per recipient.
+        let battery_snapshots: Vec<(u32, [f32; 3], NetBatteryState)> = self
+            .arena
+            .snapshot_batteries()
+            .into_iter()
+            .map(|(id, pos, energy, radius, height)| {
+                (
+                    id,
+                    pos,
+                    make_net_battery_state(id, pos, energy, radius, height),
+                )
+            })
+            .collect();
 
         let dynamic_body_states: Vec<_> = self
             .arena
@@ -2504,6 +2623,19 @@ impl MatchState {
                     .map(|(_, _, state)| *state)
                     .collect();
 
+                let filtered_batteries: Vec<NetBatteryState> = battery_snapshots
+                    .iter()
+                    .filter_map(|(_, pos, state)| {
+                        if distance_sq(*pos, *recipient_pos)
+                            <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
+                        {
+                            Some(*state)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 let packet = ServerPacket::Snapshot(SnapshotPacket {
                     server_time_us,
                     server_tick: self.server_tick,
@@ -2515,6 +2647,7 @@ impl MatchState {
                     projectile_states: Vec::new(),
                     dynamic_body_states: filtered_dynamic_bodies,
                     vehicle_states: filtered_vehicles,
+                    battery_states: filtered_batteries,
                 });
                 let encoded = encode_server_packet(&packet);
                 snapshot_bytes_this_tick += encoded.len();
@@ -2545,6 +2678,7 @@ impl MatchState {
                 pitch_i16: local_player_state.pitch_i16,
                 hp: local_player_state.hp,
                 flags: (local_player_state.flags & 0xff) as u8,
+                energy_centi: local_player_state.energy_centi,
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
@@ -2575,6 +2709,7 @@ impl MatchState {
                     pitch_i16: state.pitch_i16,
                     hp: state.hp,
                     flags: (state.flags & 0xff) as u8,
+                    energy_centi: state.energy_centi,
                 });
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
             }
@@ -2774,6 +2909,41 @@ impl MatchState {
                 budget_remaining = budget_remaining.saturating_sub(record_size);
             }
 
+            // Battery AoI + budget selection. Keep them near the end so they
+            // get lower priority than players, vehicles, and dynamic bodies
+            // on tight budgets.
+            let mut selected_battery_states: Vec<protocol::BatteryStateV2> = Vec::new();
+            let mut battery_candidates: Vec<(f32, &NetBatteryState)> = battery_snapshots
+                .iter()
+                .filter_map(|(_, pos, state)| {
+                    let dsq = distance_sq(*pos, *recipient_pos);
+                    if dsq <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M {
+                        Some((dsq, state))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            battery_candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, state) in battery_candidates {
+                if selected_battery_states.len() >= 255 {
+                    break;
+                }
+                if budget_remaining < SNAPSHOT_V2_BATTERY_BYTES {
+                    break;
+                }
+                selected_battery_states.push(protocol::BatteryStateV2 {
+                    id: state.id,
+                    px_mm: state.px_mm,
+                    py_mm: state.py_mm,
+                    pz_mm: state.pz_mm,
+                    energy_centi: state.energy_centi,
+                    radius_cm: state.radius_cm,
+                    height_cm: state.height_cm,
+                });
+                budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_BATTERY_BYTES);
+            }
+
             let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
                 server_tick: self.server_tick,
                 ack_input_seq,
@@ -2785,6 +2955,7 @@ impl MatchState {
                 sphere_states,
                 box_states,
                 vehicle_states: selected_vehicle_states,
+                battery_states: selected_battery_states,
             });
             let encoded = encode_server_packet(&packet);
             snapshot_bytes_this_tick += encoded.len();

@@ -237,6 +237,7 @@ impl LocalPreviewSession {
         let mut player_states = Vec::new();
         if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
+            let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
                 pos,
@@ -245,6 +246,7 @@ impl LocalPreviewSession {
                 pitch,
                 hp,
                 flags,
+                energy,
             ));
         }
 
@@ -266,6 +268,7 @@ impl LocalPreviewSession {
             projectile_states: Vec::new(),
             dynamic_body_states,
             vehicle_states,
+            battery_states: Vec::new(),
         })
     }
 
@@ -407,6 +410,7 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
     out.put_u16_le(pkt.projectile_states.len() as u16);
     out.put_u16_le(pkt.dynamic_body_states.len() as u16);
     out.put_u16_le(pkt.vehicle_states.len() as u16);
+    out.put_u16_le(pkt.battery_states.len() as u16);
     for p in &pkt.player_states {
         out.put_u32_le(p.id);
         out.put_i32_le(p.px_mm);
@@ -419,6 +423,7 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
         out.put_i16_le(p.pitch_i16);
         out.put_u8(p.hp);
         out.put_u16_le(p.flags);
+        out.put_u32_le(p.energy_centi);
     }
     for p in &pkt.projectile_states {
         out.put_u32_le(p.id);
@@ -474,6 +479,15 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
             out.put_u16_le(wheel);
         }
     }
+    for b in &pkt.battery_states {
+        out.put_u32_le(b.id);
+        out.put_i32_le(b.px_mm);
+        out.put_i32_le(b.py_mm);
+        out.put_i32_le(b.pz_mm);
+        out.put_u32_le(b.energy_centi);
+        out.put_u16_le(b.radius_cm);
+        out.put_u16_le(b.height_cm);
+    }
     out.to_vec()
 }
 
@@ -522,9 +536,11 @@ mod tests {
         let projectile_count = buf.get_u16_le() as usize;
         let dynamic_count = buf.get_u16_le() as usize;
         let vehicle_count = buf.get_u16_le() as usize;
+        let _battery_count = buf.get_u16_le() as usize;
 
         for _ in 0..player_count {
-            buf.advance(29);
+            // 4+4+4+4 pos, 2*3 vel, 2+2 yaw/pitch, 1 hp, 2 flags, 4 energy = 33
+            buf.advance(33);
         }
         for _ in 0..projectile_count {
             buf.advance(31);

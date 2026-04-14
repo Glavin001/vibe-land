@@ -75,6 +75,12 @@ pub struct DynamicEntity {
     pub radius: Option<f32>,
     #[serde(default)]
     pub vehicle_type: Option<u8>,
+    /// Energy value for `Battery` entities. Ignored for other kinds.
+    #[serde(default)]
+    pub energy: Option<f32>,
+    /// Cylinder height for `Battery` entities (metres). Ignored for other kinds.
+    #[serde(default)]
+    pub height: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -83,6 +89,7 @@ pub enum DynamicEntityKind {
     Box,
     Ball,
     Vehicle,
+    Battery,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +110,9 @@ pub enum WorldDocumentError {
         entity_id: u32,
     },
     MissingRadius {
+        entity_id: u32,
+    },
+    MissingBatteryEnergy {
         entity_id: u32,
     },
 }
@@ -126,6 +136,9 @@ impl fmt::Display for WorldDocumentError {
             }
             Self::MissingRadius { entity_id } => {
                 write!(f, "dynamic entity {entity_id} missing radius")
+            }
+            Self::MissingBatteryEnergy { entity_id } => {
+                write!(f, "battery entity {entity_id} missing energy")
             }
         }
     }
@@ -240,6 +253,19 @@ pub trait WorldDocumentArena {
         position: Vector3<f32>,
         rotation: [f32; 4],
     );
+
+    /// Spawn a battery consumable at `position`. Default implementation is a
+    /// no-op so arenas that don't support pickups (e.g. local-sim prediction)
+    /// can inherit it without overriding.
+    fn spawn_battery_with_id(
+        &mut self,
+        _id: u32,
+        _position: Vector3<f32>,
+        _energy: f32,
+        _radius: f32,
+        _height: f32,
+    ) {
+    }
 
     fn rebuild_broad_phase(&mut self);
 }
@@ -617,6 +643,27 @@ impl WorldDocument {
                         entity.rotation,
                     );
                 }
+                DynamicEntityKind::Battery => {
+                    let energy = entity
+                        .energy
+                        .ok_or(WorldDocumentError::MissingBatteryEnergy {
+                            entity_id: entity.id,
+                        })?;
+                    let radius = entity
+                        .radius
+                        .unwrap_or(crate::constants::DEFAULT_BATTERY_RADIUS_M);
+                    let height = entity
+                        .height
+                        .unwrap_or(crate::constants::DEFAULT_BATTERY_HEIGHT_M);
+                    let spawn_y = entity.position[1].max(terrain_y + height * 0.5 + 0.02);
+                    arena.spawn_battery_with_id(
+                        entity.id,
+                        Vector3::new(entity.position[0], spawn_y, entity.position[2]),
+                        energy,
+                        radius,
+                        height,
+                    );
+                }
             }
         }
         Ok(())
@@ -702,6 +749,8 @@ mod tests {
                         half_extents: None,
                         radius: Some(radius),
                         vehicle_type: None,
+                        energy: None,
+                        height: None,
                     });
                     next_id += 1;
                 }
@@ -818,6 +867,8 @@ mod tests {
             half_extents: None,
             radius: Some(0.5),
             vehicle_type: None,
+            energy: None,
+            height: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -957,6 +1008,8 @@ mod tests {
             half_extents: None,
             radius: Some(0.3),
             vehicle_type: None,
+            energy: None,
+            height: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1034,6 +1087,7 @@ mod tests {
                             DynamicEntityKind::Ball => "ball",
                             DynamicEntityKind::Box => "box",
                             DynamicEntityKind::Vehicle => "vehicle",
+                            DynamicEntityKind::Battery => "battery",
                         },
                         entity.id,
                         body.1[0],

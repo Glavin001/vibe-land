@@ -53,3 +53,22 @@ export const BLOCK_REMOVE = 2;
 // ── Shape types ─────────────────────────────────
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
+
+// ── Energy / consumables ────────────────────────
+/// Energy each player starts with (and is reset to on respawn).
+export const STARTING_ENERGY = 1000.0;
+/// Energy consumed per second while sitting in a vehicle, even when idle.
+export const VEHICLE_IDLE_DRAIN_PER_SEC = 1.0;
+/// Additional energy-per-second drain scaled by the vehicle's current speed
+/// (metres per second). So `drain = IDLE + COEF * speed_mps`.
+export const VEHICLE_SPEED_DRAIN_COEF = 0.3;
+/// Extra slack (metres) added to battery pickup radius checks so pickups feel
+/// generous rather than pixel-perfect.
+export const BATTERY_PICKUP_SLACK_M = 0.3;
+/// Default cylinder radius and height used for batteries dropped at runtime
+/// (e.g. from a killed player).
+export const DEFAULT_BATTERY_RADIUS_M = 0.4;
+export const DEFAULT_BATTERY_HEIGHT_M = 0.8;
+/// Battery IDs start at this offset so they can't collide with dynamic-body /
+/// vehicle IDs in logs or debug overlays.
+export const BATTERY_ID_RANGE_START = 0x40000000;

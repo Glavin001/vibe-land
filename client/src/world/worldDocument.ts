@@ -70,12 +70,16 @@ export type StaticProp = {
 
 export type DynamicEntity = {
   id: number;
-  kind: 'box' | 'ball' | 'vehicle';
+  kind: 'box' | 'ball' | 'vehicle' | 'battery';
   position: Vec3;
   rotation: Quaternion;
   halfExtents?: Vec3;
   radius?: number;
   vehicleType?: number;
+  /** Energy value carried by `battery` entities. Ignored otherwise. */
+  energy?: number;
+  /** Cylinder height for `battery` entities (metres). Ignored otherwise. */
+  height?: number;
 };
 
 export type WorldDraftRevision = {

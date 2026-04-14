@@ -18,6 +18,7 @@ import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
+import { EnergyBar } from './ui/EnergyBar';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -664,6 +665,11 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
+      <EnergyBar
+        hp={displayStats.hp}
+        energy={displayStats.energy}
+        visible={connected}
+      />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}

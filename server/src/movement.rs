@@ -28,6 +28,17 @@ pub struct Vehicle {
     pub driver_id: Option<u32>,
 }
 
+/// A battery consumable lying on the ground. Batteries are plain data
+/// (not physics rigid bodies): pickup is a distance check in `tick()`.
+#[derive(Clone, Debug)]
+pub struct Battery {
+    pub id: u32,
+    pub position: Vec3d,
+    pub energy: f32,
+    pub radius: f32,
+    pub height: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerMotorState {
     pub collider: ColliderHandle,
@@ -39,6 +50,10 @@ pub struct PlayerMotorState {
     pub hp: u8,
     pub dead: bool,
     pub last_input: InputCmd,
+    /// Player energy in arbitrary "energy units" (unbounded). Drained while in
+    /// a vehicle, refilled by battery pickups. Reaching 0 triggers death and
+    /// respawn, just like HP.
+    pub energy: f32,
 }
 
 /// Server-side physics world: wraps `DynamicArena` (generic netcode library)
@@ -52,6 +67,9 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+
+    pub batteries: HashMap<u32, Battery>,
+    next_battery_id: u32,
 }
 
 impl PhysicsArena {
@@ -68,6 +86,8 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            batteries: HashMap::new(),
+            next_battery_id: vibe_land_shared::constants::BATTERY_ID_RANGE_START,
         }
     }
 
@@ -105,6 +125,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                energy: vibe_land_shared::constants::STARTING_ENERGY,
             },
         );
 
@@ -273,6 +294,149 @@ impl PhysicsArena {
         ))
     }
 
+    /// Current energy for `player_id`, or `None` if the player doesn't exist.
+    pub fn player_energy(&self, player_id: u32) -> Option<f32> {
+        self.players.get(&player_id).map(|state| state.energy)
+    }
+
+    /// Spawn a battery at `position` using an auto-assigned id.
+    pub fn spawn_battery(
+        &mut self,
+        position: Vec3d,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) -> u32 {
+        let id = self.next_battery_id;
+        self.next_battery_id = self.next_battery_id.saturating_add(1);
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+        id
+    }
+
+    /// Spawn a battery at an explicit id (used by world document loading).
+    pub fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3d,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+    }
+
+    pub fn remove_battery(&mut self, id: u32) -> Option<Battery> {
+        self.batteries.remove(&id)
+    }
+
+    /// Snapshot all batteries as `(id, position, energy, radius, height)`.
+    pub fn snapshot_batteries(&self) -> Vec<(u32, [f32; 3], f32, f32, f32)> {
+        self.batteries
+            .values()
+            .map(|b| {
+                (
+                    b.id,
+                    [b.position.x as f32, b.position.y as f32, b.position.z as f32],
+                    b.energy,
+                    b.radius,
+                    b.height,
+                )
+            })
+            .collect()
+    }
+
+    /// Collect any batteries overlapping the given alive player and return the
+    /// total energy gained. The player's own `energy` is **not** modified by
+    /// this call — callers decide how to apply the delta (and can log or emit
+    /// events). Returns an empty list if the player is dead or missing.
+    pub fn collect_batteries_for_player(&mut self, player_id: u32) -> Vec<(u32, f32)> {
+        let Some(player) = self.players.get(&player_id) else {
+            return Vec::new();
+        };
+        if player.dead {
+            return Vec::new();
+        }
+
+        let player_pos = player.position;
+        let cfg = self.dynamic.config();
+        let player_half_height = cfg.capsule_half_segment + cfg.capsule_radius;
+        let player_r = cfg.capsule_radius;
+        let slack = vibe_land_shared::constants::BATTERY_PICKUP_SLACK_M;
+
+        let mut collected: Vec<(u32, f32)> = Vec::new();
+        let mut collected_ids: Vec<u32> = Vec::new();
+        for battery in self.batteries.values() {
+            let dx = (battery.position.x - player_pos.x) as f32;
+            let dz = (battery.position.z - player_pos.z) as f32;
+            let dy = (battery.position.y - player_pos.y) as f32;
+            let horiz = (dx * dx + dz * dz).sqrt();
+            let horiz_limit = player_r + battery.radius + slack;
+            let vert_limit = player_half_height + battery.height * 0.5 + slack;
+            if horiz <= horiz_limit && dy.abs() <= vert_limit {
+                collected.push((battery.id, battery.energy));
+                collected_ids.push(battery.id);
+            }
+        }
+        for id in collected_ids {
+            self.batteries.remove(&id);
+        }
+        collected
+    }
+
+    /// Drain energy from every driver based on their vehicle's current speed.
+    /// Dead players are skipped. Returns the list of players whose energy
+    /// just crossed zero (so the caller can kill them with the appropriate
+    /// death cause).
+    pub fn apply_vehicle_energy_drain(&mut self, dt: f32) -> Vec<u32> {
+        use vibe_land_shared::constants::{VEHICLE_IDLE_DRAIN_PER_SEC, VEHICLE_SPEED_DRAIN_COEF};
+        let mut depleted: Vec<u32> = Vec::new();
+        // Snapshot (driver_id, speed) first so we don't borrow `self` twice.
+        let drain_inputs: Vec<(u32, f32)> = self
+            .vehicle_of_player
+            .iter()
+            .filter_map(|(&player_id, &vehicle_id)| {
+                let vehicle = self.vehicles.get(&vehicle_id)?;
+                let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
+                let v = rb.linvel();
+                let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+                Some((player_id, speed))
+            })
+            .collect();
+
+        for (player_id, speed) in drain_inputs {
+            let Some(state) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            if state.dead {
+                continue;
+            }
+            let drain = (VEHICLE_IDLE_DRAIN_PER_SEC + VEHICLE_SPEED_DRAIN_COEF * speed) * dt;
+            state.energy = (state.energy - drain).max(0.0);
+            if state.energy <= 0.0 {
+                depleted.push(player_id);
+            }
+        }
+        depleted
+    }
+
     pub fn cast_static_world_ray(
         &self,
         origin: [f32; 3],
@@ -380,6 +544,7 @@ impl PhysicsArena {
         state.hp = 100;
         state.dead = false;
         state.last_input = InputCmd::default();
+        state.energy = vibe_land_shared::constants::STARTING_ENERGY;
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
@@ -713,6 +878,18 @@ impl WorldDocumentArena for PhysicsArena {
         rotation: [f32; 4],
     ) {
         PhysicsArena::spawn_vehicle_with_id(self, id, vehicle_type, position, rotation);
+    }
+
+    fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        let pos = Vec3d::new(position.x as f64, position.y as f64, position.z as f64);
+        PhysicsArena::spawn_battery_with_id(self, id, pos, energy, radius, height);
     }
 
     fn rebuild_broad_phase(&mut self) {
@@ -1738,5 +1915,134 @@ mod tests {
             "dynamic box should remain resting on the floor, y={:.3}",
             box_state.1[1]
         );
+    }
+
+    // ──────────────────────────────────────────────
+    // Energy + battery tests
+    // ──────────────────────────────────────────────
+
+    fn battery_arena() -> PhysicsArena {
+        let mut arena = arena_with_ground();
+        arena.spawn_player(1);
+        arena
+    }
+
+    #[test]
+    fn player_spawns_with_full_energy() {
+        let arena = battery_arena();
+        assert_eq!(
+            arena.player_energy(1),
+            Some(vibe_land_shared::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn walking_does_not_drain_energy() {
+        let mut arena = battery_arena();
+        // No vehicle entered — drain should be zero for the player on foot.
+        let depleted = arena.apply_vehicle_energy_drain(1.0);
+        assert!(depleted.is_empty());
+        assert_eq!(
+            arena.player_energy(1),
+            Some(vibe_land_shared::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn vehicle_idle_energy_drain_matches_formula() {
+        let mut arena = battery_arena();
+        // Spawn a vehicle at the player's feet and put the player inside.
+        let vehicle_id = arena.spawn_vehicle(0, Vec3::new(0.0, 0.5, 0.0));
+        arena.enter_vehicle(1, vehicle_id);
+        let start = arena.player_energy(1).unwrap();
+        // Zero-velocity chassis: drain = IDLE_DRAIN_PER_SEC * dt.
+        arena.apply_vehicle_energy_drain(1.0);
+        let end = arena.player_energy(1).unwrap();
+        let delta = start - end;
+        let expected = vibe_land_shared::constants::VEHICLE_IDLE_DRAIN_PER_SEC;
+        assert!(
+            (delta - expected).abs() < 0.1,
+            "idle drain was {delta}, expected ~{expected}"
+        );
+    }
+
+    #[test]
+    fn energy_depletion_returns_depleted_player_id() {
+        let mut arena = battery_arena();
+        let vehicle_id = arena.spawn_vehicle(0, Vec3::new(0.0, 0.5, 0.0));
+        arena.enter_vehicle(1, vehicle_id);
+        // Drain everything in one giant step.
+        if let Some(state) = arena.players.get_mut(&1) {
+            state.energy = 0.5;
+        }
+        let depleted = arena.apply_vehicle_energy_drain(10.0);
+        assert_eq!(depleted, vec![1]);
+        assert_eq!(arena.player_energy(1), Some(0.0));
+    }
+
+    #[test]
+    fn collect_batteries_picks_up_overlap() {
+        let mut arena = battery_arena();
+        // Battery directly on top of the player spawn position.
+        let player_pos = arena.players.get(&1).unwrap().position;
+        arena.spawn_battery(player_pos, 500.0, 0.4, 0.8);
+        let collected = arena.collect_batteries_for_player(1);
+        assert_eq!(collected.len(), 1);
+        assert_eq!(collected[0].1, 500.0);
+        assert!(arena.batteries.is_empty(), "battery should be removed on pickup");
+    }
+
+    #[test]
+    fn collect_batteries_skips_far_batteries() {
+        let mut arena = battery_arena();
+        // Battery 20 m away from the player.
+        arena.spawn_battery(Vec3d::new(20.0, 2.0, 20.0), 500.0, 0.4, 0.8);
+        let collected = arena.collect_batteries_for_player(1);
+        assert!(collected.is_empty());
+        assert_eq!(arena.batteries.len(), 1);
+    }
+
+    #[test]
+    fn collect_batteries_skips_dead_players() {
+        let mut arena = battery_arena();
+        arena.set_player_dead(1, true);
+        let player_pos = arena.players.get(&1).unwrap().position;
+        arena.spawn_battery(player_pos, 500.0, 0.4, 0.8);
+        let collected = arena.collect_batteries_for_player(1);
+        assert!(collected.is_empty());
+        assert_eq!(arena.batteries.len(), 1);
+    }
+
+    #[test]
+    fn respawn_resets_energy() {
+        let mut arena = battery_arena();
+        if let Some(state) = arena.players.get_mut(&1) {
+            state.energy = 12.3;
+        }
+        arena.set_player_dead(1, true);
+        arena.respawn_player(1);
+        assert_eq!(
+            arena.player_energy(1),
+            Some(vibe_land_shared::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn spawn_battery_ids_are_out_of_dynamic_body_range() {
+        let mut arena = battery_arena();
+        let id = arena.spawn_battery(Vec3d::new(0.0, 2.0, 0.0), 100.0, 0.4, 0.8);
+        assert!(id >= vibe_land_shared::constants::BATTERY_ID_RANGE_START);
+    }
+
+    #[test]
+    fn snapshot_batteries_reports_all_batteries() {
+        let mut arena = battery_arena();
+        let a = arena.spawn_battery(Vec3d::new(1.0, 2.0, 0.0), 100.0, 0.4, 0.8);
+        let b = arena.spawn_battery(Vec3d::new(-1.0, 2.0, 0.0), 200.0, 0.5, 1.0);
+        let snap = arena.snapshot_batteries();
+        assert_eq!(snap.len(), 2);
+        let ids: Vec<u32> = snap.iter().map(|s| s.0).collect();
+        assert!(ids.contains(&a));
+        assert!(ids.contains(&b));
     }
 }

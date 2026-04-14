@@ -54,6 +54,10 @@ pub struct PlayerMotorState {
     pub hp: u8,
     pub dead: bool,
     pub last_input: InputCmd,
+    /// Player energy value (unbounded, in arbitrary energy units). Drained
+    /// while driving a vehicle and refilled by battery pickups. Reaching 0
+    /// kills the player like hp=0 does. See `crate::constants::STARTING_ENERGY`.
+    pub energy: f32,
 }
 
 /// Browser-local authoritative physics world: wraps `DynamicArena` and adds
@@ -109,6 +113,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                energy: crate::constants::STARTING_ENERGY,
             },
         );
 
@@ -282,6 +287,11 @@ impl PhysicsArena {
         ))
     }
 
+    /// Current energy value for `player_id`, or `None` if the player does not exist.
+    pub fn player_energy(&self, player_id: u32) -> Option<f32> {
+        self.players.get(&player_id).map(|state| state.energy)
+    }
+
     pub fn cast_static_world_ray(
         &self,
         origin: [f32; 3],
@@ -389,6 +399,7 @@ impl PhysicsArena {
         state.hp = 100;
         state.dead = false;
         state.last_input = InputCmd::default();
+        state.energy = crate::constants::STARTING_ENERGY;
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);

@@ -74,6 +74,7 @@ pub struct SelfPlayerStateV2 {
     pub pitch_i16: i16,
     pub hp: u8,
     pub flags: u8,
+    pub energy_centi: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,6 +90,21 @@ pub struct RemotePlayerStateV2 {
     pub pitch_i16: i16,
     pub hp: u8,
     pub flags: u8,
+    pub energy_centi: u32,
+}
+
+/// Wire state for a battery entity in the V2 snapshot. Batteries are a small
+///, low-cardinality set so we send full (non-delta-compressed) records each
+/// snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BatteryStateV2 {
+    pub id: u32,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub energy_centi: u32,
+    pub radius_cm: u16,
+    pub height_cm: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -156,6 +172,7 @@ pub struct SnapshotV2Packet {
     pub sphere_states: Vec<DynamicSphereStateV2>,
     pub box_states: Vec<DynamicBoxStateV2>,
     pub vehicle_states: Vec<VehicleStateV2>,
+    pub battery_states: Vec<BatteryStateV2>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -382,6 +399,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             out.put_u16_le(pkt.vehicle_states.len() as u16);
+            out.put_u16_le(pkt.battery_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -394,6 +412,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(p.pitch_i16);
                 out.put_u8(p.hp);
                 out.put_u16_le(p.flags);
+                out.put_u32_le(p.energy_centi);
             }
             for p in &pkt.projectile_states {
                 out.put_u32_le(p.id);
@@ -428,6 +447,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
+            encode_battery_states(&mut out, &pkt.battery_states);
         }
         ServerDatagramPacket::SnapshotV2(pkt) => {
             out.put_u8(PKT_SNAPSHOT_V2);
@@ -440,6 +460,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_u8(pkt.sphere_states.len() as u8);
             out.put_u8(pkt.box_states.len() as u8);
             out.put_u8(pkt.vehicle_states.len() as u8);
+            out.put_u8(pkt.battery_states.len() as u8);
 
             let s = &pkt.self_state;
             out.put_i16_le(s.vx_cms);
@@ -449,6 +470,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_i16_le(s.pitch_i16);
             out.put_u8(s.hp);
             out.put_u8(s.flags);
+            out.put_u32_le(s.energy_centi);
 
             for player in &pkt.remote_players {
                 out.put_u8(player.handle);
@@ -462,6 +484,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(player.pitch_i16);
                 out.put_u8(player.hp);
                 out.put_u8(player.flags);
+                out.put_u32_le(player.energy_centi);
             }
 
             for sphere in &pkt.sphere_states {
@@ -513,9 +536,31 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(vehicle.wy_mrads);
                 out.put_i16_le(vehicle.wz_mrads);
             }
+
+            for battery in &pkt.battery_states {
+                out.put_u32_le(battery.id);
+                out.put_i32_le(battery.px_mm);
+                out.put_i32_le(battery.py_mm);
+                out.put_i32_le(battery.pz_mm);
+                out.put_u32_le(battery.energy_centi);
+                out.put_u16_le(battery.radius_cm);
+                out.put_u16_le(battery.height_cm);
+            }
         }
     }
     out.to_vec()
+}
+
+fn encode_battery_states(out: &mut bytes::BytesMut, states: &[NetBatteryState]) {
+    for b in states {
+        out.put_u32_le(b.id);
+        out.put_i32_le(b.px_mm);
+        out.put_i32_le(b.py_mm);
+        out.put_i32_le(b.pz_mm);
+        out.put_u32_le(b.energy_centi);
+        out.put_u16_le(b.radius_cm);
+        out.put_u16_le(b.height_cm);
+    }
 }
 
 pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
@@ -656,6 +701,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.projectile_states.len() as u16);
             out.put_u16_le(pkt.dynamic_body_states.len() as u16);
             out.put_u16_le(pkt.vehicle_states.len() as u16);
+            out.put_u16_le(pkt.battery_states.len() as u16);
             for p in &pkt.player_states {
                 out.put_u32_le(p.id);
                 out.put_i32_le(p.px_mm);
@@ -668,6 +714,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(p.pitch_i16);
                 out.put_u8(p.hp);
                 out.put_u16_le(p.flags);
+                out.put_u32_le(p.energy_centi);
             }
             for p in &pkt.projectile_states {
                 out.put_u32_le(p.id);
@@ -702,6 +749,7 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
                 out.put_i16_le(d.wz_mrads);
             }
             encode_vehicle_states(&mut out, &pkt.vehicle_states);
+            encode_battery_states(&mut out, &pkt.battery_states);
         }
         ServerPacket::ShotResult(pkt) => {
             out.put_u8(PKT_SHOT_RESULT);
@@ -845,14 +893,18 @@ mod tests {
                 pitch_i16: -500,
                 hp: 88,
                 flags: 1,
+                energy_centi: 100_000,
             }],
             projectile_states: vec![],
             dynamic_body_states: vec![],
             vehicle_states: vec![],
+            battery_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_SNAPSHOT);
         let view = &encoded[1..];
+        // Count header: server_time_us (8) + server_tick (4) + ack (2) = 14,
+        // then player_count (u16) at offset 14.
         assert_eq!(u16::from_le_bytes([view[14], view[15]]), 1);
     }
 
@@ -866,10 +918,55 @@ mod tests {
             projectile_states: vec![],
             dynamic_body_states: vec![],
             vehicle_states: vec![],
+            battery_states: vec![],
         });
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];
         assert_eq!(u16::from_le_bytes([view[14], view[15]]), 0);
+    }
+
+    #[test]
+    fn snapshot_encode_preserves_player_energy_and_batteries() {
+        let packet = ServerPacket::Snapshot(SnapshotPacket {
+            server_time_us: 1_000_000,
+            server_tick: 60,
+            ack_input_seq: 42,
+            player_states: vec![NetPlayerState {
+                id: 7,
+                px_mm: 0,
+                py_mm: 0,
+                pz_mm: 0,
+                vx_cms: 0,
+                vy_cms: 0,
+                vz_cms: 0,
+                yaw_i16: 0,
+                pitch_i16: 0,
+                hp: 100,
+                flags: 0,
+                energy_centi: 123_456,
+            }],
+            projectile_states: vec![],
+            dynamic_body_states: vec![],
+            vehicle_states: vec![],
+            battery_states: vec![NetBatteryState {
+                id: 0x4000_0001,
+                px_mm: 1500,
+                py_mm: 2000,
+                pz_mm: -500,
+                energy_centi: 50_000,
+                radius_cm: 40,
+                height_cm: 80,
+            }],
+        });
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SNAPSHOT);
+        // `energy_centi` now lives at the tail of each player record; we
+        // verify via a roundtrip in the netcode client tests. For here, just
+        // assert the battery list length header.
+        let view = &encoded[1..];
+        // Header order: time (8) tick (4) ack (2) + counts: players(2) projectiles(2)
+        // dynamic(2) vehicles(2) batteries(2) = 14+10 = 24.
+        assert_eq!(u16::from_le_bytes([view[22], view[23]]), 1);
     }
 
     #[test]

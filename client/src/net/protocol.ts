@@ -60,6 +60,29 @@ export type NetPlayerState = {
   pitchI16: number;
   hp: number;
   flags: number;
+  /** Player energy in centi-units (server stores f32, wires u32 cente). Unbounded. */
+  energyCenti: number;
+};
+
+/** Battery consumable. A lightweight non-physics entity that players can walk
+ * over to refill energy. Wired in both V1 and V2 snapshots. */
+export type NetBatteryState = {
+  id: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  energyCenti: number;
+  radiusCm: number;
+  heightCm: number;
+};
+
+export type BatteryStateMeters = {
+  id: number;
+  position: [number, number, number];
+  /** Energy in raw units (centi / 100). */
+  energy: number;
+  radius: number;
+  height: number;
 };
 
 export type NetProjectileState = {
@@ -157,6 +180,7 @@ export type SnapshotPacket = {
   projectileStates: NetProjectileState[];
   dynamicBodyStates: NetDynamicBodyState[];
   vehicleStates: NetVehicleState[];
+  batteryStates: NetBatteryState[];
 };
 
 export type PlayerRosterEntry = {
@@ -189,6 +213,7 @@ export type SelfPlayerStateV2 = {
   pitchI16: number;
   hp: number;
   flags: number;
+  energyCenti: number;
 };
 
 export type RemotePlayerStateV2 = {
@@ -203,6 +228,17 @@ export type RemotePlayerStateV2 = {
   pitchI16: number;
   hp: number;
   flags: number;
+  energyCenti: number;
+};
+
+export type BatteryStateV2 = {
+  id: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  energyCenti: number;
+  radiusCm: number;
+  heightCm: number;
 };
 
 export type DynamicSphereStateV2 = {
@@ -268,6 +304,7 @@ export type SnapshotV2Packet = {
   sphereStates: DynamicSphereStateV2[];
   boxStates: DynamicBoxStateV2[];
   vehicleStates: VehicleStateV2[];
+  batteryStates: BatteryStateV2[];
 };
 
 export type ShotResultPacket = {
@@ -503,6 +540,7 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
   const projectileCount = view.getUint16(o, true); o += 2;
   const dynamicBodyCount = view.getUint16(o, true); o += 2;
   const vehicleCount = view.getUint16(o, true); o += 2;
+  const batteryCount = view.getUint16(o, true); o += 2;
 
   const playerStates: NetPlayerState[] = [];
   for (let i = 0; i < playerCount; i += 1) {
@@ -518,8 +556,9 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
       pitchI16: view.getInt16(o + 24, true),
       hp: view.getUint8(o + 26),
       flags: view.getUint16(o + 27, true),
+      energyCenti: view.getUint32(o + 29, true),
     });
-    o += 29;
+    o += 33;
   }
 
   const projectileStates: NetProjectileState[] = [];
@@ -594,6 +633,20 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
     o += 50;
   }
 
+  const batteryStates: NetBatteryState[] = [];
+  for (let i = 0; i < batteryCount; i += 1) {
+    batteryStates.push({
+      id: view.getUint32(o, true),
+      pxMm: view.getInt32(o + 4, true),
+      pyMm: view.getInt32(o + 8, true),
+      pzMm: view.getInt32(o + 12, true),
+      energyCenti: view.getUint32(o + 16, true),
+      radiusCm: view.getUint16(o + 20, true),
+      heightCm: view.getUint16(o + 22, true),
+    });
+    o += 24;
+  }
+
   return {
     type: 'snapshot',
     serverTimeUs,
@@ -603,6 +656,7 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
     projectileStates,
     dynamicBodyStates,
     vehicleStates,
+    batteryStates,
   };
 }
 
@@ -616,6 +670,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const sphereCount = view.getUint8(o++);
   const boxCount = view.getUint8(o++);
   const vehicleCount = view.getUint8(o++);
+  const batteryCount = view.getUint8(o++);
 
   const selfState: SelfPlayerStateV2 = {
     vxCms: view.getInt16(o, true),
@@ -625,8 +680,9 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     pitchI16: view.getInt16(o + 8, true),
     hp: view.getUint8(o + 10),
     flags: view.getUint8(o + 11),
+    energyCenti: view.getUint32(o + 12, true),
   };
-  o += 12;
+  o += 16;
 
   const remotePlayers: RemotePlayerStateV2[] = [];
   for (let i = 0; i < remotePlayerCount; i += 1) {
@@ -642,8 +698,9 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
       pitchI16: view.getInt16(o + 15, true),
       hp: view.getUint8(o + 17),
       flags: view.getUint8(o + 18),
+      energyCenti: view.getUint32(o + 19, true),
     });
-    o += 19;
+    o += 23;
   }
 
   const sphereStates: DynamicSphereStateV2[] = [];
@@ -708,6 +765,20 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     o += 30;
   }
 
+  const batteryStates: BatteryStateV2[] = [];
+  for (let i = 0; i < batteryCount; i += 1) {
+    batteryStates.push({
+      id: view.getUint32(o, true),
+      pxMm: view.getInt32(o + 4, true),
+      pyMm: view.getInt32(o + 8, true),
+      pzMm: view.getInt32(o + 12, true),
+      energyCenti: view.getUint32(o + 16, true),
+      radiusCm: view.getUint16(o + 20, true),
+      heightCm: view.getUint16(o + 22, true),
+    });
+    o += 24;
+  }
+
   return {
     type: 'snapshotV2',
     serverTimeUs: serverTick * Math.round(1_000_000 / 60),
@@ -721,6 +792,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     sphereStates,
     boxStates,
     vehicleStates,
+    batteryStates,
   };
 }
 

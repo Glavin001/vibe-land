@@ -27,6 +27,22 @@ pub struct NetPlayerState {
     pub pitch_i16: i16,
     pub hp: u8,
     pub flags: u16,
+    /// Player energy, transmitted as `energy * 100` clamped to u32 (centi-units).
+    /// Unbounded game value; clients display as `f32` = `energy_centi as f32 / 100`.
+    pub energy_centi: u32,
+}
+
+/// Wire state for a battery consumable. Batteries are authoritative and rare,
+/// so each snapshot carries them in full (no delta encoding, no handle table).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NetBatteryState {
+    pub id: u32,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub energy_centi: u32,
+    pub radius_cm: u16,
+    pub height_cm: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -134,6 +150,7 @@ pub struct SnapshotPacket {
     pub projectile_states: Vec<NetProjectileState>,
     pub dynamic_body_states: Vec<NetDynamicBodyState>,
     pub vehicle_states: Vec<NetVehicleState>,
+    pub battery_states: Vec<NetBatteryState>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,6 +206,23 @@ pub struct VehicleExitCmd {
 
 // ── High-level state conversion helpers ─────────
 
+/// Convert a raw `f32` energy value into the wire `u32 centi-units` encoding
+/// used by `NetPlayerState::energy_centi` and `NetBatteryState::energy_centi`.
+#[inline]
+pub fn energy_to_centi(energy: f32) -> u32 {
+    let centi = (energy.max(0.0) * 100.0).round();
+    if centi >= u32::MAX as f32 {
+        u32::MAX
+    } else {
+        centi as u32
+    }
+}
+
+#[inline]
+pub fn energy_from_centi(centi: u32) -> f32 {
+    centi as f32 / 100.0
+}
+
 /// Convert meters-based values into network format.
 pub fn make_net_player_state(
     player_id: u32,
@@ -198,6 +232,7 @@ pub fn make_net_player_state(
     pitch: f32,
     hp: u8,
     flags: u16,
+    energy: f32,
 ) -> NetPlayerState {
     NetPlayerState {
         id: player_id,
@@ -211,6 +246,25 @@ pub fn make_net_player_state(
         pitch_i16: angle_to_i16(pitch),
         hp,
         flags,
+        energy_centi: energy_to_centi(energy),
+    }
+}
+
+pub fn make_net_battery_state(
+    id: u32,
+    pos: [f32; 3],
+    energy: f32,
+    radius: f32,
+    height: f32,
+) -> NetBatteryState {
+    NetBatteryState {
+        id,
+        px_mm: meters_to_mm(pos[0]),
+        py_mm: meters_to_mm(pos[1]),
+        pz_mm: meters_to_mm(pos[2]),
+        energy_centi: energy_to_centi(energy),
+        radius_cm: (radius.max(0.0) * 100.0).round().clamp(0.0, u16::MAX as f32) as u16,
+        height_cm: (height.max(0.0) * 100.0).round().clamp(0.0, u16::MAX as f32) as u16,
     }
 }
 

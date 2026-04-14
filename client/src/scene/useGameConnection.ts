@@ -6,6 +6,7 @@ import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import type {
+  BatteryStateMeters,
   BlockEditCmd,
   DynamicBodyStateMeters,
   FireCmd,
@@ -28,6 +29,7 @@ export type ConnectionState = {
   latestServerTick: number;
   remotePlayers: Map<number, RemotePlayer>;
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
+  batteries: Map<number, BatteryStateMeters>;
   localPosition: [number, number, number];
 };
 
@@ -74,6 +76,7 @@ export function useGameConnection(
     latestServerTick: 0,
     remotePlayers: new Map(),
     dynamicBodies: new Map(),
+    batteries: new Map(),
     localPosition: [0, 2, 0],
   });
 
@@ -115,6 +118,7 @@ export function useGameConnection(
     stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
     stateRef.current.remotePlayers = client.remotePlayers;
     stateRef.current.dynamicBodies = client.dynamicBodies;
+    stateRef.current.batteries = client.batteries;
 
     clientRef.current = client;
 

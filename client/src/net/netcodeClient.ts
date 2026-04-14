@@ -17,11 +17,14 @@ import {
   netStateToMeters,
   netVehicleStateToMeters,
   q2_5mmToMeters,
+  type BatteryStateMeters,
+  type BatteryStateV2,
   type BlockEditCmd,
   type DynamicBodyMetaPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
+  type NetBatteryState,
   type NetPlayerState,
   type NetVehicleState,
   type PlayerRosterPacket,
@@ -83,10 +86,16 @@ export class NetcodeClient {
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
+  /** Local player energy in raw units (server f32 rounded from centi-units).
+   * Unbounded. Updated whenever an authoritative snapshot arrives. */
+  localPlayerEnergy = 0;
   localPlayerFlags = 0;
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
+  /** Battery consumables visible to the local player. Reconciled on each
+   * authoritative snapshot — server is always authoritative for pickups. */
+  readonly batteries = new Map<number, BatteryStateMeters>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
@@ -364,8 +373,10 @@ export class NetcodeClient {
       pitchI16: packet.selfState.pitchI16,
       hp: packet.selfState.hp,
       flags: packet.selfState.flags,
+      energyCenti: packet.selfState.energyCenti,
     };
     this.localPlayerHp = localState.hp;
+    this.localPlayerEnergy = localState.energyCenti / 100;
     this.localPlayerFlags = localState.flags;
     this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
@@ -563,6 +574,45 @@ export class NetcodeClient {
         this.vehicleInterpolator.remove(id);
       }
     }
+
+    this.reconcileBatteriesV2(packet.batteryStates);
+  }
+
+  /** Reconcile the battery map from a V2 snapshot payload. The server is
+   * always authoritative: any battery absent from the packet is removed. */
+  private reconcileBatteriesV2(list: BatteryStateV2[] | undefined): void {
+    const seen = new Set<number>();
+    for (const b of list ?? []) {
+      seen.add(b.id);
+      this.batteries.set(b.id, {
+        id: b.id,
+        position: [b.pxMm / 1000, b.pyMm / 1000, b.pzMm / 1000],
+        energy: b.energyCenti / 100,
+        radius: b.radiusCm / 100,
+        height: b.heightCm / 100,
+      });
+    }
+    for (const id of Array.from(this.batteries.keys())) {
+      if (!seen.has(id)) this.batteries.delete(id);
+    }
+  }
+
+  /** Reconcile the battery map from a V1 snapshot payload. */
+  private reconcileBatteriesV1(list: NetBatteryState[] | undefined): void {
+    const seen = new Set<number>();
+    for (const b of list ?? []) {
+      seen.add(b.id);
+      this.batteries.set(b.id, {
+        id: b.id,
+        position: [b.pxMm / 1000, b.pyMm / 1000, b.pzMm / 1000],
+        energy: b.energyCenti / 100,
+        radius: b.radiusCm / 100,
+        height: b.heightCm / 100,
+      });
+    }
+    for (const id of Array.from(this.batteries.keys())) {
+      if (!seen.has(id)) this.batteries.delete(id);
+    }
   }
 
   private predictSphereQuaternion(
@@ -700,6 +750,7 @@ export class NetcodeClient {
           knownIds.add(ps.id);
           if (ps.id === this.playerId) {
             this.localPlayerHp = ps.hp;
+            this.localPlayerEnergy = ps.energyCenti / 100;
             this.localPlayerFlags = ps.flags;
             this.config.onLocalSnapshot?.(packet.ackInputSeq, ps);
           } else {
@@ -764,6 +815,8 @@ export class NetcodeClient {
             this.vehicleInterpolator.remove(id);
           }
         }
+
+        this.reconcileBatteriesV1(packet.batteryStates);
         break;
       }
       case 'snapshotV2': {
@@ -883,6 +936,8 @@ export class NetcodeClient {
     this.vehicles.clear();
     this.vehicleLastSeenTick.clear();
     this.vehicleInterpolator.retainOnly(new Set());
+    this.batteries.clear();
+    this.localPlayerEnergy = 0;
   }
 }
 
