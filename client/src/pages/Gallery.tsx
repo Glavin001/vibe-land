@@ -1,5 +1,10 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { fetchCloudConfig, listPublishedWorlds, type GalleryWorldSummary } from '../world/worldsCloud';
+import {
+  fetchCloudConfig,
+  listPublishedWorlds,
+  screenshotUrlForWorld,
+  type GalleryWorldSummary,
+} from '../world/worldsCloud';
 
 const shellStyle: CSSProperties = {
   minHeight: '100%',
@@ -38,7 +43,24 @@ const cardStyle: CSSProperties = {
   borderRadius: 20,
   border: '1px solid rgba(145, 198, 255, 0.18)',
   background: 'linear-gradient(180deg, rgba(18, 29, 45, 0.95) 0%, rgba(8, 14, 23, 0.95) 100%)',
-  padding: '22px',
+  padding: '18px',
+  gap: 14,
+};
+
+const previewStyle: CSSProperties = {
+  width: '100%',
+  aspectRatio: '16 / 9',
+  borderRadius: 12,
+  overflow: 'hidden',
+  background: 'linear-gradient(135deg, #0f1c2f 0%, #04070d 100%)',
+  border: '1px solid rgba(145, 198, 255, 0.12)',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: 'rgba(237, 246, 255, 0.4)',
+  fontSize: 12,
+  letterSpacing: '0.18em',
+  textTransform: 'uppercase',
 };
 
 const primaryActionStyle: CSSProperties = {
@@ -147,46 +169,69 @@ export function GalleryPage() {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
               gap: 18,
             }}
           >
-            {state.worlds.map((world) => {
-              const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
-              const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
-              return (
-                <div key={world.id} style={cardStyle}>
-                  <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 8 }}>
-                    {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
-                  </div>
-                  <h2 style={{ margin: '6px 0 10px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
-                  <p
-                    style={{
-                      margin: 0,
-                      color: 'rgba(237, 246, 255, 0.72)',
-                      fontSize: 14,
-                      lineHeight: 1.5,
-                      display: '-webkit-box',
-                      WebkitLineClamp: 3,
-                      WebkitBoxOrient: 'vertical',
-                      overflow: 'hidden',
-                      flex: 1,
-                    }}
-                  >
-                    {world.description || 'No description provided.'}
-                  </p>
-                  <div style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <a href={playHref} style={primaryActionStyle}>Play</a>
-                    <a href={editHref} style={secondaryActionStyle}>Edit in builder</a>
-                  </div>
-                  <div style={{ marginTop: 10, fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
-                    id <code>{world.id}</code>
-                  </div>
-                </div>
-              );
-            })}
+            {state.worlds.map((world) => (
+              <GalleryCard key={world.id} world={world} />
+            ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function GalleryCard({ world }: { world: GalleryWorldSummary }) {
+  const [screenshotFailed, setScreenshotFailed] = useState(false);
+  const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
+  const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
+  const previewHref = playHref;
+  return (
+    <div style={cardStyle}>
+      <a
+        href={previewHref}
+        style={{ ...previewStyle, textDecoration: 'none' }}
+        aria-label={`Play ${world.name || 'Untitled World'}`}
+      >
+        {screenshotFailed ? (
+          <span>No preview</span>
+        ) : (
+          <img
+            src={screenshotUrlForWorld(world.id)}
+            alt={`Preview of ${world.name || 'Untitled World'}`}
+            loading="lazy"
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            onError={() => setScreenshotFailed(true)}
+          />
+        )}
+      </a>
+      <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff' }}>
+        {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
+      </div>
+      <h2 style={{ margin: '2px 0 4px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
+      <p
+        style={{
+          margin: 0,
+          color: 'rgba(237, 246, 255, 0.72)',
+          fontSize: 14,
+          lineHeight: 1.5,
+          display: '-webkit-box',
+          WebkitLineClamp: 3,
+          WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+          flex: 1,
+        }}
+      >
+        {world.description || 'No description provided.'}
+      </p>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <a href={playHref} style={primaryActionStyle}>Play</a>
+        <a href={editHref} style={secondaryActionStyle}>Edit in builder</a>
+      </div>
+      <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
+        id <code>{world.id}</code>
       </div>
     </div>
   );

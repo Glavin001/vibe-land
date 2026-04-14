@@ -1,9 +1,12 @@
+import { gunzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchCloudConfig,
   fetchPublishedWorld,
   listPublishedWorlds,
   publishWorld,
+  screenshotUrlForWorld,
+  uploadWorldScreenshot,
 } from './worldsCloud';
 import type { WorldDocument } from './worldDocument';
 
@@ -47,7 +50,7 @@ describe('worldsCloud', () => {
     await expect(fetchCloudConfig()).resolves.toEqual({ enabled: false });
   });
 
-  it('publishWorld POSTs serialized JSON and returns id', async () => {
+  it('publishWorld POSTs gzipped JSON and returns id', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: 'abc', createdAt: 123 }));
     const result = await publishWorld(minimalWorld);
     expect(result).toEqual({ id: 'abc', createdAt: 123 });
@@ -55,14 +58,42 @@ describe('worldsCloud', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/worlds/publish');
     expect(init?.method).toBe('POST');
-    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('application/json');
-    const body = JSON.parse(init?.body as string);
-    expect(body.meta.name).toBe('Test World');
+    const headers = init?.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBe('application/json');
+    expect(headers['Content-Encoding']).toBe('gzip');
+    const body = init?.body;
+    expect(body).toBeInstanceOf(Blob);
+    const bytes = new Uint8Array(await (body as Blob).arrayBuffer());
+    const inflated = gunzipSync(Buffer.from(bytes)).toString('utf-8');
+    const parsed = JSON.parse(inflated);
+    expect(parsed.meta.name).toBe('Test World');
   });
 
   it('publishWorld raises when the server returns an error', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(413, { error: 'too big' }));
     await expect(publishWorld(minimalWorld)).rejects.toThrow(/too big/);
+  });
+
+  it('uploadWorldScreenshot POSTs the blob to the screenshot endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { ok: true, size: 42 }));
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/jpeg' });
+    await uploadWorldScreenshot('abc', blob);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/worlds/abc/screenshot');
+    expect(init?.method).toBe('POST');
+    expect((init?.headers as Record<string, string>)['Content-Type']).toBe('image/jpeg');
+    expect(init?.body).toBe(blob);
+  });
+
+  it('uploadWorldScreenshot throws on non-2xx', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(502, { error: 'bucket unavailable' }));
+    const blob = new Blob([new Uint8Array([1])], { type: 'image/jpeg' });
+    await expect(uploadWorldScreenshot('abc', blob)).rejects.toThrow(/bucket unavailable/);
+  });
+
+  it('screenshotUrlForWorld returns the per-id endpoint URL', () => {
+    expect(screenshotUrlForWorld('abc')).toBe('/api/worlds/abc/screenshot');
+    expect(screenshotUrlForWorld('foo bar')).toBe('/api/worlds/foo%20bar/screenshot');
   });
 
   it('listPublishedWorlds returns the worlds array', async () => {

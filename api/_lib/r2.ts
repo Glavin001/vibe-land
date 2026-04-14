@@ -1,7 +1,12 @@
 import { S3Client } from '@aws-sdk/client-s3';
 
 export const PUBLISHED_PREFIX = 'published/';
+// Maximum size for the gzipped world payload accepted by /api/worlds/publish.
+// The client compresses world JSON before upload, so 5 MB gzipped leaves room
+// for worlds that expand to roughly 30–50 MB of plain JSON.
 export const MAX_PUBLISH_BYTES = 5 * 1024 * 1024; // 5 MB
+// Maximum size for a screenshot upload. JPEGs rarely exceed a few hundred KB.
+export const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024; // 2 MB
 
 type R2Env = {
   accountId: string;
@@ -53,6 +58,10 @@ export function buildPublishedKey(id: string): string {
   return `${PUBLISHED_PREFIX}${id}.world.json`;
 }
 
+export function buildScreenshotKey(id: string): string {
+  return `${PUBLISHED_PREFIX}${id}.screenshot.jpg`;
+}
+
 export function extractIdFromKey(key: string): string | null {
   if (!key.startsWith(PUBLISHED_PREFIX)) {
     return null;
@@ -63,4 +72,9 @@ export function extractIdFromKey(key: string): string | null {
     return null;
   }
   return rest.slice(0, -suffix.length);
+}
+
+const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+export function isValidWorldId(id: string): boolean {
+  return ID_PATTERN.test(id);
 }

@@ -1,9 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { gunzipSync } from 'node:zlib';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getR2Client, buildPublishedKey } from '../_lib/r2.js';
+import { getR2Client, buildPublishedKey, isValidWorldId } from '../_lib/r2.js';
 import { sendError } from '../_lib/http.js';
-
-const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== 'GET') {
@@ -24,7 +23,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const segments = url.pathname.split('/').filter(Boolean);
   const last = segments[segments.length - 1] ?? '';
   const id = decodeURIComponent(last);
-  if (!id || !ID_PATTERN.test(id)) {
+  if (!id || !isValidWorldId(id)) {
     sendError(res, 400, 'Invalid world id.');
     return;
   }
@@ -51,18 +50,35 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  res.statusCode = 200;
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Cache-Control', 'public, max-age=60');
-
-  // `Body` is a Node stream in Vercel's Node runtime. Pipe it through.
-  const anyBody = body as unknown as NodeJS.ReadableStream;
-  if (typeof anyBody.pipe === 'function') {
-    anyBody.pipe(res);
+  // Objects are stored gzipped (ContentEncoding: gzip on the S3 object).
+  // Decompress here so clients always see plain JSON, regardless of which
+  // transport layer gzips/ungzips for them. Vercel's edge will re-gzip the
+  // response based on Accept-Encoding automatically.
+  let stored: Buffer;
+  try {
+    stored = Buffer.from(await (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray());
+  } catch (err) {
+    console.error('[worlds/id] Failed to buffer body', err);
+    sendError(res, 502, 'Failed to read world body.');
     return;
   }
 
-  // Fallback: buffer the response.
-  const text = await (body as { transformToString(): Promise<string> }).transformToString();
-  res.end(text);
+  let plain: Buffer;
+  const encoding = (object.ContentEncoding ?? '').toLowerCase();
+  if (encoding.includes('gzip')) {
+    try {
+      plain = gunzipSync(stored);
+    } catch (err) {
+      console.error('[worlds/id] Failed to decompress stored world', err);
+      sendError(res, 502, 'Failed to decompress stored world.');
+      return;
+    }
+  } else {
+    plain = stored;
+  }
+
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.end(plain);
 }

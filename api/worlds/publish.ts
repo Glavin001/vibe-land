@@ -1,13 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { getR2Client, buildPublishedKey, MAX_PUBLISH_BYTES } from '../_lib/r2.js';
 import { validateWorldShape, ValidationError } from '../_lib/validate.js';
 import {
-  readJsonBody,
+  readRawBody,
   sendJson,
   sendError,
-  BadRequestError,
   PayloadTooLargeError,
 } from '../_lib/http.js';
 
@@ -23,25 +23,52 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  let body: unknown;
+  let rawBody: Buffer;
   try {
-    body = await readJsonBody(req, MAX_PUBLISH_BYTES);
+    rawBody = await readRawBody(req, MAX_PUBLISH_BYTES);
   } catch (err) {
     if (err instanceof PayloadTooLargeError) {
       sendError(res, 413, err.message);
-      return;
-    }
-    if (err instanceof BadRequestError) {
-      sendError(res, 400, err.message);
       return;
     }
     sendError(res, 400, 'Failed to read request body.');
     return;
   }
 
+  if (rawBody.length === 0) {
+    sendError(res, 400, 'Request body was empty.');
+    return;
+  }
+
+  // Clients upload the world as gzipped JSON with a Content-Encoding: gzip
+  // header so the upload itself stays small. We decompress server-side to
+  // validate the shape, then persist the ORIGINAL compressed bytes to R2
+  // (with ContentEncoding metadata) to keep storage small too.
+  const contentEncoding = (req.headers['content-encoding'] ?? '').toString().toLowerCase();
+  const isGzipped = contentEncoding.includes('gzip');
+  let decompressed: Buffer;
+  if (isGzipped) {
+    try {
+      decompressed = gunzipSync(rawBody);
+    } catch (err) {
+      sendError(res, 400, 'Failed to decompress gzipped request body.');
+      return;
+    }
+  } else {
+    decompressed = rawBody;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decompressed.toString('utf-8'));
+  } catch {
+    sendError(res, 400, 'Request body is not valid JSON.');
+    return;
+  }
+
   let shape;
   try {
-    shape = validateWorldShape(body);
+    shape = validateWorldShape(parsed);
   } catch (err) {
     if (err instanceof ValidationError) {
       sendError(res, 400, err.message);
@@ -53,16 +80,20 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
   const id = randomUUID();
   const key = buildPublishedKey(id);
-  const payload = JSON.stringify(shape.raw);
   const createdAt = Date.now();
+
+  // Always store gzipped bytes so both new uploads and any older plain
+  // requests normalize to a single on-disk format.
+  const storedBody = isGzipped ? rawBody : gzipSync(decompressed);
 
   try {
     await r2.client.send(
       new PutObjectCommand({
         Bucket: r2.bucket,
         Key: key,
-        Body: payload,
+        Body: storedBody,
         ContentType: 'application/json',
+        ContentEncoding: 'gzip',
         Metadata: {
           name: encodeMetaValue(shape.name),
           description: encodeMetaValue(shape.description),
