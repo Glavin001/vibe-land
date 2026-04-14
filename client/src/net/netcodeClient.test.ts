@@ -269,6 +269,10 @@ function makeVehicleState(opts: {
   };
 }
 
+function markClientAsLocalPreview(client: NetcodeClient): void {
+  (client as unknown as { localTransport: object | null }).localTransport = {} as object;
+}
+
 describe('NetcodeClient', () => {
   // ──────────────────────────────────────────────
   // Welcome packet
@@ -556,6 +560,103 @@ describe('NetcodeClient', () => {
       expect(client.dynamicBodies.get(7001)?.position[0]).toBeCloseTo(13);
       expect(client.vehicles.has(3)).toBe(true);
       expect(client.vehicles.get(3)?.position[0]).toBeCloseTo(18);
+    });
+
+    it('fires the V2 local snapshot callback after same-tick dynamic bodies are applied', () => {
+      let observedDynamicBodyX: number | null = null;
+      const client = new NetcodeClient({
+        onLocalSnapshot: () => {
+          observedDynamicBodyX = client.dynamicBodies.get(7001)?.position[0] ?? null;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([
+        { handle: 7, bodyId: 7001, shapeType: 1, halfExtents: [0.3, 0.3, 0.3] },
+      ]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        ackInputSeq: 9,
+        anchorPosition: [10, 2, -4],
+        sphereStates: [{ handle: 7, offset: [3, 0, -2], velocity: [0, 0, 1] }],
+      }));
+
+      expect(observedDynamicBodyX).toBeCloseTo(13);
+    });
+
+    it('keeps multiplayer local-driver vehicle snapshots out of the remote vehicle interpolator', () => {
+      let receivedAck = -1;
+      let receivedVehicleId = 0;
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+          receivedAck = ackInputSeq;
+          receivedVehicleId = vehicleState.id;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        ackInputSeq: 7,
+        players: [makeNetState({ id: 1 })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [5, 0, 0], velocity: [2, 0, 0] })],
+      }));
+
+      expect(receivedAck).toBe(7);
+      expect(receivedVehicleId).toBe(200);
+      expect(client.sampleRemoteVehicle(200, 0)).toBeNull();
+    });
+
+    it('buffers authoritative local-driver vehicle samples in local preview snapshots', () => {
+      let receivedAck = -1;
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (_vehicleState, ackInputSeq) => {
+          receivedAck = ackInputSeq;
+        },
+      });
+      markClientAsLocalPreview(client);
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        ackInputSeq: 7,
+        players: [makeNetState({ id: 1 })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [5, 0, 0], velocity: [2, 0, 0] })],
+      }), 'local');
+
+      const sample = client.sampleRemoteVehicle(200, 0);
+      expect(receivedAck).toBe(7);
+      expect(sample).not.toBeNull();
+      expect(sample?.driverPlayerId).toBe(1);
+      expect(sample?.position[0]).toBeCloseTo(5);
+      expect(sample?.linearVelocity[0]).toBeCloseTo(2);
+    });
+
+    it('buffers authoritative local-driver vehicle samples in local preview V2 snapshots', () => {
+      let receivedAck = -1;
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (_vehicleState, ackInputSeq) => {
+          receivedAck = ackInputSeq;
+        },
+      });
+      markClientAsLocalPreview(client);
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makePlayerRoster([
+        { handle: 1, playerId: 1 },
+      ]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        ackInputSeq: 9,
+        vehicleStates: [{ handle: 3, driverHandle: 1, offset: [8, 0, 0], velocity: [1, 0, 0] }],
+      }), 'local');
+
+      const sample = client.sampleRemoteVehicle(3, 0);
+      expect(receivedAck).toBe(9);
+      expect(sample).not.toBeNull();
+      expect(sample?.driverPlayerId).toBe(1);
+      expect(sample?.position[0]).toBeCloseTo(8);
+      expect(sample?.linearVelocity[0]).toBeCloseTo(1);
     });
   });
 

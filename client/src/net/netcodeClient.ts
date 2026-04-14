@@ -84,6 +84,27 @@ export class NetcodeClient {
   rttMs = 0;
   localPlayerHp = 100;
   localPlayerFlags = 0;
+
+  private pushVehicleSample(
+    vehicleId: number,
+    serverTimeUs: number,
+    meters: VehicleStateMeters,
+  ): void {
+    this.vehicleInterpolator.push(vehicleId, {
+      serverTimeUs,
+      position: meters.position,
+      quaternion: meters.quaternion,
+      linearVelocity: meters.linearVelocity,
+      angularVelocity: meters.angularVelocity,
+      wheelData: meters.wheelData,
+      driverPlayerId: meters.driverId,
+      flags: meters.flags ?? 0,
+    });
+  }
+
+  private shouldBufferLocalDrivenVehicle(driverPlayerId: number): boolean {
+    return this.localTransport != null && driverPlayerId === this.playerId && driverPlayerId !== 0;
+  }
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
@@ -367,7 +388,6 @@ export class NetcodeClient {
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
-    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
     for (const player of packet.remotePlayers) {
       const remotePlayerId = this.playerIdByHandle.get(player.handle);
@@ -493,6 +513,10 @@ export class NetcodeClient {
       }
     }
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
+    // Fire the local snapshot callback only after authoritative dynamic-body
+    // state has been applied. Multiplayer vehicle reconcile depends on the
+    // callback syncing same-tick collider state before replaying pending inputs.
+    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
     for (const vehicle of packet.vehicleStates) {
       const vehicleId = vehicle.handle;
@@ -543,17 +567,11 @@ export class NetcodeClient {
           wheelData: [0, 0, 0, 0],
         };
         this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
+        if (this.shouldBufferLocalDrivenVehicle(driverPlayerId)) {
+          this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
+        }
       } else {
-        this.vehicleInterpolator.push(vehicleId, {
-          serverTimeUs: packet.serverTimeUs,
-          position: meters.position,
-          quaternion: meters.quaternion,
-          linearVelocity: meters.linearVelocity,
-          angularVelocity: meters.angularVelocity,
-          wheelData: [0, 0, 0, 0],
-          driverPlayerId,
-          flags: vehicle.flags,
-        });
+        this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
       }
     }
     for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
@@ -696,12 +714,13 @@ export class NetcodeClient {
         this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
+        let localPlayerState: NetPlayerState | null = null;
         for (const ps of packet.playerStates) {
           knownIds.add(ps.id);
           if (ps.id === this.playerId) {
             this.localPlayerHp = ps.hp;
             this.localPlayerFlags = ps.flags;
-            this.config.onLocalSnapshot?.(packet.ackInputSeq, ps);
+            localPlayerState = ps;
           } else {
             const m = netStateToMeters(ps);
             this.interpolator.push(ps.id, {
@@ -730,6 +749,9 @@ export class NetcodeClient {
           }
         }
         this.interpolator.retainOnly(knownIds);
+        if (localPlayerState) {
+          this.config.onLocalSnapshot?.(packet.ackInputSeq, localPlayerState);
+        }
 
         // Handle vehicle states
         const knownVehicleIds = new Set<number>();
@@ -742,18 +764,11 @@ export class NetcodeClient {
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
             this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
+            if (this.shouldBufferLocalDrivenVehicle(vs.driverId)) {
+              this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
+            }
           } else {
-            // Push to interpolator for remote rendering
-            this.vehicleInterpolator.push(vs.id, {
-              serverTimeUs: packet.serverTimeUs,
-              position: m.position,
-              quaternion: m.quaternion,
-              linearVelocity: m.linearVelocity,
-              angularVelocity: m.angularVelocity,
-              wheelData: m.wheelData,
-              driverPlayerId: vs.driverId,
-              flags: vs.flags,
-            });
+            this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
           }
         }
         // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.

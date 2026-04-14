@@ -1,5 +1,15 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { decodeServerPacket, type DynamicBodyStateMeters, type SnapshotPacket, type VehicleStateMeters, netDynamicBodyStateToMeters, netVehicleStateToMeters } from '../net/protocol';
+import {
+  decodeServerPacket,
+  encodeFirePacket,
+  type DynamicBodyStateMeters,
+  type FireCmd,
+  type ServerPacket,
+  type SnapshotPacket,
+  type VehicleStateMeters,
+  netDynamicBodyStateToMeters,
+  netVehicleStateToMeters,
+} from '../net/protocol';
 import { initWasmForTests, WasmLocalSession, WasmSimWorld } from '../wasm/testInit';
 import brokenWorldDocumentJson from '../../../worlds/broken.world.json';
 import {
@@ -30,6 +40,23 @@ type LocalPreviewResult = {
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
   vehicles: Map<number, VehicleStateMeters>;
 };
+
+function drainDecodedLocalPreviewPackets(session: WasmLocalSession): ServerPacket[] {
+  const blob = session.drainPackets();
+  const packets: ServerPacket[] = [];
+  let offset = 0;
+  while (offset + 4 <= blob.length) {
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    const packetLen = view.getUint32(offset, true);
+    offset += 4;
+    expect(packetLen).toBeGreaterThan(0);
+    expect(offset + packetLen).toBeLessThanOrEqual(blob.length);
+    const packet = blob.slice(offset, offset + packetLen);
+    offset += packetLen;
+    packets.push(decodeServerPacket(packet));
+  }
+  return packets;
+}
 
 function makeFlatWorld(): WorldDocument {
   return makeFlatWorldWithGrid(8, 10);
@@ -157,15 +184,8 @@ function runLocalPreview(world: WorldDocument, steps = 240): LocalPreviewResult 
   let latestSnapshot: SnapshotPacket | null = null;
   for (let step = 0; step < steps; step += 1) {
     session.tick(1 / 60);
-    const blob = session.drainPackets();
-    let offset = 0;
-    while (offset + 4 <= blob.length) {
-      const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-      const packetLen = view.getUint32(offset, true);
-      offset += 4;
-      const packet = blob.slice(offset, offset + packetLen);
-      offset += packetLen;
-      const decoded = decodeServerPacket(packet);
+    const packets = drainDecodedLocalPreviewPackets(session);
+    for (const decoded of packets) {
       if (decoded.type === 'snapshot') {
         latestSnapshot = decoded;
       }
@@ -221,6 +241,41 @@ function applyRampRepeated(world: WorldDocument, count: number, overrides: Parti
   }
   return next;
 }
+
+describe('local preview protocol', () => {
+  it('emits shot-result packets that decode through the client protocol path', () => {
+    const session = new WasmLocalSession(serializeWorldDocument(makeFlatWorld()));
+    session.connect();
+    drainDecodedLocalPreviewPackets(session);
+
+    const fireCmd: FireCmd = {
+      seq: 1,
+      shotId: 1,
+      weapon: 1,
+      clientFireTimeUs: 0,
+      clientInterpMs: 0,
+      clientDynamicInterpMs: 0,
+      dir: [0, 1, 0],
+    };
+    session.handleClientPacket(encodeFirePacket(fireCmd));
+    session.tick(1 / 60);
+
+    const packets = drainDecodedLocalPreviewPackets(session);
+    const shotResult = packets.find((packet) => packet.type === 'shotResult');
+    expect(shotResult).toEqual({
+      type: 'shotResult',
+      shotId: 1,
+      weapon: 1,
+      confirmed: false,
+      hitPlayerId: 0,
+      hitZone: 0,
+      serverResolution: 0,
+      serverDynamicBodyId: 0,
+      serverDynamicHitToiCm: 0,
+      serverDynamicImpulseCenti: 0,
+    });
+  });
+});
 
 describe('WorldDocument local-preview scenarios', () => {
   it('flat world keeps ball, box, and vehicle supported', () => {

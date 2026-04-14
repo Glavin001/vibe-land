@@ -504,22 +504,29 @@ export function GameWorld({
     const localPreviewTransport = client?.transport === 'local-preview';
     const localFlags = client?.localPlayerFlags ?? 0;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
-    const localPreviewVehicleEntry = practiceMode && client
-      ? [...client.vehicles.entries()].find(([, vs]) => vs.driverId === client.playerId) ?? null
-      : null;
-    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
     const drivenVehicleId = prediction.getDrivenVehicleId();
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
+    const localVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
+    const localPreviewVehicleSample = localPreviewTransport && client && drivenVehicleId != null
+      ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleRenderTimeUs)
+      : null;
+    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
     const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
-    const localControlledVehiclePose = predictedVehiclePose
-      ?? (localPreviewVehicleEntry
+    const localControlledVehiclePose = localPreviewTransport
+      ? (localPreviewVehicleSample
         ? {
-            position: localPreviewVehicleEntry[1].position,
-            quaternion: localPreviewVehicleEntry[1].quaternion,
+            position: localPreviewVehicleSample.position,
+            quaternion: localPreviewVehicleSample.quaternion,
           }
-        : null);
+        : (drivenVehicleState
+          ? {
+              position: drivenVehicleState.position,
+              quaternion: drivenVehicleState.quaternion,
+            }
+          : null))
+      : predictedVehiclePose;
     let localVehicleVisualPose = localControlledVehiclePose;
-    if (localControlledVehiclePose && drivenVehicleId != null) {
+    if (localPreviewTransport && localControlledVehiclePose && drivenVehicleId != null) {
       const visualPose = localVehicleVisualPoseRef.current;
       const targetPosition = localControlledVehiclePose.position;
       const targetQuaternion = localControlledVehiclePose.quaternion;
@@ -556,7 +563,7 @@ export function GameWorld({
     } else {
       localVehicleVisualPoseRef.current.vehicleId = null;
     }
-    const isDrivingNow = localControlledVehiclePose !== null;
+    const isDrivingNow = prediction.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,

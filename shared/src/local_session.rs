@@ -205,7 +205,14 @@ impl LocalPreviewSession {
 
             let result = if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    make_shot_result(shot.shot_id, shot.weapon)
+                    make_shot_result(
+                        shot.shot_id,
+                        shot.weapon,
+                        SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+                        0,
+                        0.0,
+                        0.0,
+                    )
                 } else {
                     let impact_point = [
                         origin[0] + shot.dir[0] * dynamic_toi,
@@ -222,10 +229,17 @@ impl LocalPreviewSession {
                         impulse,
                         impact_point,
                     );
-                    make_shot_result(shot.shot_id, shot.weapon)
+                    make_shot_result(
+                        shot.shot_id,
+                        shot.weapon,
+                        SHOT_RESOLUTION_DYNAMIC,
+                        dynamic_body_id,
+                        dynamic_toi,
+                        DYNAMIC_BODY_IMPULSE,
+                    )
                 }
             } else {
-                make_shot_result(shot.shot_id, shot.weapon)
+                make_shot_result(shot.shot_id, shot.weapon, SHOT_RESOLUTION_MISS, 0, 0.0, 0.0)
             };
 
             self.outbound_packets
@@ -304,17 +318,28 @@ fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
     }
 }
 
-fn make_shot_result(shot_id: u32, weapon: u8) -> ShotResultPacket {
+fn make_shot_result(
+    shot_id: u32,
+    weapon: u8,
+    server_resolution: u8,
+    server_dynamic_body_id: u32,
+    server_dynamic_hit_toi_m: f32,
+    server_dynamic_impulse_mag: f32,
+) -> ShotResultPacket {
     ShotResultPacket {
         shot_id,
         weapon,
         confirmed: false,
         hit_player_id: 0,
         hit_zone: HIT_ZONE_NONE,
-        server_resolution: 0,
-        server_dynamic_body_id: 0,
-        server_dynamic_hit_toi_cm: 0,
-        server_dynamic_impulse_centi: 0,
+        server_resolution,
+        server_dynamic_body_id,
+        server_dynamic_hit_toi_cm: (server_dynamic_hit_toi_m.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
+        server_dynamic_impulse_centi: (server_dynamic_impulse_mag.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
     }
 }
 
@@ -387,13 +412,17 @@ fn encode_welcome_packet(pkt: &WelcomePacket) -> Vec<u8> {
 }
 
 fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
-    let mut out = BytesMut::with_capacity(12);
+    let mut out = BytesMut::with_capacity(20);
     out.put_u8(PKT_SHOT_RESULT);
     out.put_u32_le(pkt.shot_id);
     out.put_u8(pkt.weapon);
     out.put_u8(pkt.confirmed as u8);
     out.put_u32_le(pkt.hit_player_id);
     out.put_u8(pkt.hit_zone);
+    out.put_u8(pkt.server_resolution);
+    out.put_u32_le(pkt.server_dynamic_body_id);
+    out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
+    out.put_u16_le(pkt.server_dynamic_impulse_centi);
     out.to_vec()
 }
 
