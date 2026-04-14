@@ -1,7 +1,6 @@
 import type { InputBindings } from './bindings';
+import { getInputSettings } from './inputSettingsStore';
 import type { ActionSnapshot, InputContext } from './types';
-
-const POINTER_LOOK_SENSITIVITY = 0.003;
 
 export class KeyboardMouseInputSource {
   private readonly keys = new Set<string>();
@@ -97,8 +96,18 @@ export class KeyboardMouseInputSource {
       + (this.keys.has(keyboard.moveLeft) ? -1 : 0);
     const moveY = (this.keys.has(keyboard.moveForward) ? 1 : 0)
       + (this.keys.has(keyboard.moveBackward) ? -1 : 0);
-    const lookX = pointerLocked ? -this.pointerDeltaX * POINTER_LOOK_SENSITIVITY : 0;
-    const lookY = pointerLocked ? -this.pointerDeltaY * POINTER_LOOK_SENSITIVITY : 0;
+    // Mouse look sensitivity and Y/X ratio come from the calibration settings
+    // store, NOT the key bindings — those two systems are orthogonal.
+    // Bindings control which key does what; calibration controls how the
+    // look delta is scaled.
+    const mouse = getInputSettings().mouse;
+    const baseSens = mouse.sensitivity;
+    // invertY=false keeps the legacy "-pointerDeltaY" semantics.
+    const ySign = mouse.invertY ? 1 : -1;
+    const lookX = pointerLocked ? -this.pointerDeltaX * baseSens : 0;
+    // yOverXRatio multiplies only Y so calibrating X (knob 1) stays stable
+    // when Y/X ratio (knob 2) is later tuned.
+    const lookY = pointerLocked ? ySign * this.pointerDeltaY * baseSens * mouse.yOverXRatio : 0;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
 

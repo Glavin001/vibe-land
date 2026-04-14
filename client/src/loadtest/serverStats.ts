@@ -8,9 +8,17 @@ export interface MatchTimingSnapshot {
   total_ms: SummaryStatsSnapshot;
   player_sim_ms: SummaryStatsSnapshot;
   player_move_math_ms: SummaryStatsSnapshot;
+  player_query_ctx_ms: SummaryStatsSnapshot;
   player_kcc_ms: SummaryStatsSnapshot;
+  player_kcc_horizontal_ms: SummaryStatsSnapshot;
+  player_kcc_support_ms: SummaryStatsSnapshot;
+  player_kcc_merged_ms: SummaryStatsSnapshot;
+  player_support_probe_ms: SummaryStatsSnapshot;
   player_collider_sync_ms: SummaryStatsSnapshot;
+  player_dynamic_contact_query_ms: SummaryStatsSnapshot;
   player_dynamic_interaction_ms: SummaryStatsSnapshot;
+  player_dynamic_impulse_apply_ms: SummaryStatsSnapshot;
+  player_history_record_ms: SummaryStatsSnapshot;
   vehicle_ms: SummaryStatsSnapshot;
   dynamics_ms: SummaryStatsSnapshot;
   hitscan_ms: SummaryStatsSnapshot;
@@ -35,14 +43,32 @@ export interface MatchNetworkSnapshot {
   websocket_snapshot_reliable_sent: number;
   webtransport_snapshot_reliable_sent: number;
   webtransport_snapshot_datagram_sent: number;
+  strict_snapshot_drops: number;
+  strict_snapshot_drop_oversize: number;
+  strict_snapshot_drop_connection_closed: number;
+  strict_snapshot_drop_unsupported_peer: number;
+  strict_snapshot_drop_other: number;
+  dropped_outbound_packets: number;
+  dropped_outbound_snapshots: number;
   snapshot_bytes_per_client: SummaryStatsSnapshot;
   snapshot_bytes_per_tick: SummaryStatsSnapshot;
   snapshot_players_per_client: SummaryStatsSnapshot;
   snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot;
   snapshot_vehicles_per_client: SummaryStatsSnapshot;
   dynamic_bodies_considered_per_tick: SummaryStatsSnapshot;
+  dynamic_contacts_raw_per_tick: SummaryStatsSnapshot;
+  dynamic_contacts_kept_per_tick: SummaryStatsSnapshot;
   dynamic_bodies_pushed_per_tick: SummaryStatsSnapshot;
+  dynamic_impulses_applied_per_tick: SummaryStatsSnapshot;
   contacted_dynamic_mass_per_tick: SummaryStatsSnapshot;
+  player_kcc_horizontal_calls_per_tick: SummaryStatsSnapshot;
+  player_kcc_support_calls_per_tick: SummaryStatsSnapshot;
+  player_support_probe_count_per_tick: SummaryStatsSnapshot;
+  player_support_probe_hit_count_per_tick: SummaryStatsSnapshot;
+  awake_dynamic_bodies_total: SummaryStatsSnapshot;
+  awake_dynamic_bodies_near_players: SummaryStatsSnapshot;
+  players_in_vehicles: SummaryStatsSnapshot;
+  dead_players_skipped: SummaryStatsSnapshot;
 }
 
 export interface MatchLoadSnapshot {
@@ -88,6 +114,7 @@ export interface MatchStatsSnapshot {
 }
 
 export interface GlobalStatsSnapshot {
+  server_build_profile: string;
   sim_hz: number;
   snapshot_hz: number;
   matches: MatchStatsSnapshot[];
@@ -145,9 +172,16 @@ export function describeTransport(match: MatchStatsSnapshot): string {
 export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): string {
   const playerSubCandidates = [
     ['movement math', match.timings.player_move_math_ms.p95],
-    ['player KCC', match.timings.player_kcc_ms.p95],
+    ['query context', match.timings.player_query_ctx_ms.p95],
+    ['player KCC horizontal', match.timings.player_kcc_horizontal_ms.p95],
+    ['player KCC support', match.timings.player_kcc_support_ms.p95],
+    ['player KCC merged', match.timings.player_kcc_merged_ms.p95],
+    ['support probe', match.timings.player_support_probe_ms.p95],
     ['collider sync', match.timings.player_collider_sync_ms.p95],
+    ['dynamic contact query', match.timings.player_dynamic_contact_query_ms.p95],
     ['dynamic interaction', match.timings.player_dynamic_interaction_ms.p95],
+    ['dynamic impulse apply', match.timings.player_dynamic_impulse_apply_ms.p95],
+    ['history record', match.timings.player_history_record_ms.p95],
   ] as const;
   const [playerDetailName, playerDetailMs] = playerSubCandidates.reduce((best, current) =>
     current[1] > best[1] ? current : best,
@@ -178,6 +212,25 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
   }
   if (budgetMs > 0 && headroomMs <= 4.0) {
     return `Near tick budget: ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
+  }
+  if (match.load.webtransport_players > 0 && match.network.strict_snapshot_drops > 0) {
+    const dropSummary = [
+      match.network.strict_snapshot_drop_oversize > 0
+        ? `oversize ${match.network.strict_snapshot_drop_oversize}`
+        : null,
+      match.network.strict_snapshot_drop_connection_closed > 0
+        ? `closed ${match.network.strict_snapshot_drop_connection_closed}`
+        : null,
+      match.network.strict_snapshot_drop_unsupported_peer > 0
+        ? `unsupported ${match.network.strict_snapshot_drop_unsupported_peer}`
+        : null,
+      match.network.strict_snapshot_drop_other > 0
+        ? `other ${match.network.strict_snapshot_drop_other}`
+        : null,
+    ]
+      .filter((part): part is string => part != null)
+      .join(', ');
+    return `WT strict drops: ${match.network.strict_snapshot_drops} dropped snapshots${dropSummary ? ` (${dropSummary})` : ''}, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
     return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;

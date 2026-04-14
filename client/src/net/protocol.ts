@@ -326,7 +326,9 @@ export type ServerReliablePacket =
   | ChunkDiffPacket
   | SnapshotPacket
   | PlayerRosterPacket
-  | DynamicBodyMetaPacket;
+  | DynamicBodyMetaPacket
+  | ServerPingPacket
+  | PongPacket;
 export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
@@ -523,6 +525,10 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
+    case PKT_PING:
+      return { type: 'serverPing', value: view.getUint32(o, true) };
+    case PKT_PONG:
+      return { type: 'pong', value: view.getUint32(o, true) };
     default:
       throw new Error(`unknown reliable packet kind: ${kind}`);
   }

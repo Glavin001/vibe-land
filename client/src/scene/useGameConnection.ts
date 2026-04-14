@@ -40,7 +40,7 @@ export type ConnectionState = {
 export function useGameConnection(
   mode: GameMode,
   onWelcome: (id: number) => void,
-  onDisconnect: () => void,
+  onDisconnect: (reason?: string) => void,
   practiceWorldJson?: string,
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
   onServerPacket?: (packet: ServerPacket) => void,
@@ -94,7 +94,7 @@ export function useGameConnection(
         onWelcomeRef.current(id);
         setReady(true);
       },
-      onDisconnect: () => onDisconnectRef.current(),
+      onDisconnect: (reason) => onDisconnectRef.current(reason),
       onLocalSnapshot: (ackInputSeq, state) => {
         stateRef.current.localPosition = netPlayerStateToMeters(state).position;
         onLocalSnapshotRef.current?.(ackInputSeq, state);

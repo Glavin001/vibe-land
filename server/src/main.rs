@@ -32,12 +32,12 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
-use wtransport::{Connection, Endpoint, Identity, ServerConfig};
+use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     demo_world::seed_default_world,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena},
+    movement::{MoveConfig, PhysicsArena, PlayerKccMode},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
@@ -116,6 +116,30 @@ impl ClientTransport {
     }
 }
 
+fn parse_player_kcc_mode(value: Option<&str>) -> PlayerKccMode {
+    match value.unwrap_or("one_pass_support_predicate") {
+        "two_pass" => PlayerKccMode::TwoPass,
+        _ => PlayerKccMode::OnePassSupportPredicate,
+    }
+}
+
+fn parse_respawn_delay_ms(value: Option<&str>) -> u32 {
+    value
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(RESPAWN_DELAY_MS)
+}
+
+fn server_build_profile() -> &'static str {
+    #[cfg(debug_assertions)]
+    {
+        "debug"
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        "release"
+    }
+}
+
 #[derive(serde::Serialize, Clone, Default)]
 struct SummaryStatsSnapshot {
     avg: f32,
@@ -158,9 +182,17 @@ struct MatchTimingStats {
     total_ms: RollingSamples,
     player_sim_ms: RollingSamples,
     player_move_math_ms: RollingSamples,
+    player_query_ctx_ms: RollingSamples,
     player_kcc_ms: RollingSamples,
+    player_kcc_horizontal_ms: RollingSamples,
+    player_kcc_support_ms: RollingSamples,
+    player_kcc_merged_ms: RollingSamples,
+    player_support_probe_ms: RollingSamples,
     player_collider_sync_ms: RollingSamples,
+    player_dynamic_contact_query_ms: RollingSamples,
     player_dynamic_interaction_ms: RollingSamples,
+    player_dynamic_impulse_apply_ms: RollingSamples,
+    player_history_record_ms: RollingSamples,
     vehicle_ms: RollingSamples,
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
@@ -172,9 +204,17 @@ struct MatchTimingSnapshot {
     total_ms: SummaryStatsSnapshot,
     player_sim_ms: SummaryStatsSnapshot,
     player_move_math_ms: SummaryStatsSnapshot,
+    player_query_ctx_ms: SummaryStatsSnapshot,
     player_kcc_ms: SummaryStatsSnapshot,
+    player_kcc_horizontal_ms: SummaryStatsSnapshot,
+    player_kcc_support_ms: SummaryStatsSnapshot,
+    player_kcc_merged_ms: SummaryStatsSnapshot,
+    player_support_probe_ms: SummaryStatsSnapshot,
     player_collider_sync_ms: SummaryStatsSnapshot,
+    player_dynamic_contact_query_ms: SummaryStatsSnapshot,
     player_dynamic_interaction_ms: SummaryStatsSnapshot,
+    player_dynamic_impulse_apply_ms: SummaryStatsSnapshot,
+    player_history_record_ms: SummaryStatsSnapshot,
     vehicle_ms: SummaryStatsSnapshot,
     dynamics_ms: SummaryStatsSnapshot,
     hitscan_ms: SummaryStatsSnapshot,
@@ -187,9 +227,17 @@ impl MatchTimingStats {
             total_ms: self.total_ms.snapshot(),
             player_sim_ms: self.player_sim_ms.snapshot(),
             player_move_math_ms: self.player_move_math_ms.snapshot(),
+            player_query_ctx_ms: self.player_query_ctx_ms.snapshot(),
             player_kcc_ms: self.player_kcc_ms.snapshot(),
+            player_kcc_horizontal_ms: self.player_kcc_horizontal_ms.snapshot(),
+            player_kcc_support_ms: self.player_kcc_support_ms.snapshot(),
+            player_kcc_merged_ms: self.player_kcc_merged_ms.snapshot(),
+            player_support_probe_ms: self.player_support_probe_ms.snapshot(),
             player_collider_sync_ms: self.player_collider_sync_ms.snapshot(),
+            player_dynamic_contact_query_ms: self.player_dynamic_contact_query_ms.snapshot(),
             player_dynamic_interaction_ms: self.player_dynamic_interaction_ms.snapshot(),
+            player_dynamic_impulse_apply_ms: self.player_dynamic_impulse_apply_ms.snapshot(),
+            player_history_record_ms: self.player_history_record_ms.snapshot(),
             vehicle_ms: self.vehicle_ms.snapshot(),
             dynamics_ms: self.dynamics_ms.snapshot(),
             hitscan_ms: self.hitscan_ms.snapshot(),
@@ -206,8 +254,19 @@ struct MatchSnapshotStats {
     dynamic_bodies_per_client: RollingSamples,
     vehicles_per_client: RollingSamples,
     dynamic_bodies_considered_per_tick: RollingSamples,
+    dynamic_contacts_raw_per_tick: RollingSamples,
+    dynamic_contacts_kept_per_tick: RollingSamples,
     dynamic_bodies_pushed_per_tick: RollingSamples,
+    dynamic_impulses_applied_per_tick: RollingSamples,
     contacted_dynamic_mass_per_tick: RollingSamples,
+    player_kcc_horizontal_calls_per_tick: RollingSamples,
+    player_kcc_support_calls_per_tick: RollingSamples,
+    player_support_probe_count_per_tick: RollingSamples,
+    player_support_probe_hit_count_per_tick: RollingSamples,
+    awake_dynamic_bodies_total: RollingSamples,
+    awake_dynamic_bodies_near_players: RollingSamples,
+    players_in_vehicles: RollingSamples,
+    dead_players_skipped: RollingSamples,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -230,6 +289,10 @@ struct MatchNetworkSnapshot {
     webtransport_snapshot_reliable_sent: u64,
     webtransport_snapshot_datagram_sent: u64,
     strict_snapshot_drops: u64,
+    strict_snapshot_drop_oversize: u64,
+    strict_snapshot_drop_connection_closed: u64,
+    strict_snapshot_drop_unsupported_peer: u64,
+    strict_snapshot_drop_other: u64,
     dropped_outbound_packets: u64,
     dropped_outbound_snapshots: u64,
     snapshot_bytes_per_client: SummaryStatsSnapshot,
@@ -238,8 +301,19 @@ struct MatchNetworkSnapshot {
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
     snapshot_vehicles_per_client: SummaryStatsSnapshot,
     dynamic_bodies_considered_per_tick: SummaryStatsSnapshot,
+    dynamic_contacts_raw_per_tick: SummaryStatsSnapshot,
+    dynamic_contacts_kept_per_tick: SummaryStatsSnapshot,
     dynamic_bodies_pushed_per_tick: SummaryStatsSnapshot,
+    dynamic_impulses_applied_per_tick: SummaryStatsSnapshot,
     contacted_dynamic_mass_per_tick: SummaryStatsSnapshot,
+    player_kcc_horizontal_calls_per_tick: SummaryStatsSnapshot,
+    player_kcc_support_calls_per_tick: SummaryStatsSnapshot,
+    player_support_probe_count_per_tick: SummaryStatsSnapshot,
+    player_support_probe_hit_count_per_tick: SummaryStatsSnapshot,
+    awake_dynamic_bodies_total: SummaryStatsSnapshot,
+    awake_dynamic_bodies_near_players: SummaryStatsSnapshot,
+    players_in_vehicles: SummaryStatsSnapshot,
+    dead_players_skipped: SummaryStatsSnapshot,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -250,6 +324,14 @@ struct MatchLoadSnapshot {
     websocket_players: usize,
     webtransport_players: usize,
     void_kills: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StrictSnapshotDropCause {
+    Oversize,
+    ConnectionClosed,
+    UnsupportedByPeer,
+    Other,
 }
 
 #[derive(Default)]
@@ -265,6 +347,10 @@ struct MatchIoTelemetry {
     snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     snapshot_datagram_sent: std::sync::atomic::AtomicU64,
     strict_snapshot_drops: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_oversize: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_connection_closed: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_unsupported_peer: std::sync::atomic::AtomicU64,
+    strict_snapshot_drop_other: std::sync::atomic::AtomicU64,
     websocket_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_datagram_sent: std::sync::atomic::AtomicU64,
@@ -340,8 +426,26 @@ impl MatchIoTelemetry {
         }
     }
 
-    fn observe_strict_snapshot_drop(&self) {
+    fn observe_strict_snapshot_drop(&self, cause: StrictSnapshotDropCause) {
         self.strict_snapshot_drops.fetch_add(1, Ordering::Relaxed);
+        match cause {
+            StrictSnapshotDropCause::Oversize => {
+                self.strict_snapshot_drop_oversize
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::ConnectionClosed => {
+                self.strict_snapshot_drop_connection_closed
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::UnsupportedByPeer => {
+                self.strict_snapshot_drop_unsupported_peer
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            StrictSnapshotDropCause::Other => {
+                self.strict_snapshot_drop_other
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }
 
@@ -392,6 +496,7 @@ struct MatchStatsSnapshot {
 
 #[derive(serde::Serialize, Clone, Default)]
 struct GlobalStatsSnapshot {
+    server_build_profile: String,
     sim_hz: u16,
     snapshot_hz: u16,
     matches: Vec<MatchStatsSnapshot>,
@@ -411,6 +516,8 @@ struct AppState {
     cert_hash_hex: String,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
@@ -504,6 +611,14 @@ enum DynamicBodySelection {
     Box(protocol::DynamicBoxStateV2),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutboundDelivery {
+    Reliable,
+    ReliableFallback,
+    Datagram,
+    StrictDrop,
+}
+
 struct QueuedShot {
     player_id: u32,
     cmd: FireCmd,
@@ -524,6 +639,8 @@ struct MatchState {
     snapshot_stats: MatchSnapshotStats,
     void_kills: u64,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -543,6 +660,10 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     install_panic_hook();
+    #[cfg(debug_assertions)]
+    warn!(
+        "running a debug server build; authoritative player/KCC performance numbers are not representative, use `cargo run --release -p web-fps-server` for perf validation"
+    );
 
     // Build TLS identity for WebTransport.
     // If WT_CERT_PEM + WT_KEY_PEM are set, load a CA-signed cert (production).
@@ -577,10 +698,19 @@ async fn main() -> Result<()> {
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
+    let player_kcc_mode =
+        parse_player_kcc_mode(std::env::var("VIBE_SERVER_PLAYER_KCC_MODE").ok().as_deref());
+    let respawn_delay_ms = parse_respawn_delay_ms(
+        std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
+            .ok()
+            .as_deref(),
+    );
 
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
+        player_kcc_mode = ?player_kcc_mode,
+        respawn_delay_ms,
         "WebTransport snapshot transport policy loaded"
     );
 
@@ -599,6 +729,8 @@ async fn main() -> Result<()> {
             cert_hash_hex,
             wt_base_url,
             strict_snapshot_datagrams,
+            player_kcc_mode,
+            respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
@@ -750,36 +882,65 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                 continue;
             }
             let first = bytes[0];
-            let wants_datagram =
-                first == PKT_SNAPSHOT || first == PKT_SNAPSHOT_V2 || first == PKT_PING;
-            let use_datagram = wants_datagram && conn_write.send_datagram(bytes.as_slice()).is_ok();
-            if !use_datagram {
-                if (first == PKT_SNAPSHOT || first == PKT_SNAPSHOT_V2) && strict_snapshot_datagrams {
-                    telemetry.observe_strict_snapshot_drop();
+            let datagram_result = if wants_unreliable_delivery(first) {
+                Some(conn_write.send_datagram(bytes.as_slice()))
+            } else {
+                None
+            };
+            let delivery = classify_outbound_delivery(
+                first,
+                strict_snapshot_datagrams,
+                datagram_result
+                    .as_ref()
+                    .is_some_and(|result| result.is_ok()),
+            );
+            match delivery {
+                OutboundDelivery::Datagram => {
+                    telemetry.observe_outbound_datagram(
+                        bytes.len(),
+                        ClientTransport::WebTransport,
+                        is_snapshot_packet_kind(first),
+                    );
+                }
+                OutboundDelivery::StrictDrop => {
+                    telemetry.observe_strict_snapshot_drop(
+                        datagram_result
+                            .as_ref()
+                            .and_then(|result| result.as_ref().err())
+                            .map(strict_snapshot_drop_cause_from_send_error)
+                            .unwrap_or(StrictSnapshotDropCause::Other),
+                    );
                     continue;
                 }
-                if wants_datagram {
+                OutboundDelivery::ReliableFallback => {
                     telemetry.observe_datagram_fallback();
+                    buf.clear();
+                    buf.put_u32_le(bytes.len() as u32);
+                    buf.put_slice(&bytes);
+                    if let Err(err) = send_stream.write_all(&buf).await {
+                        warn!(player_id, error = ?err, "WT reliable writer stopped");
+                        break;
+                    }
+                    telemetry.observe_outbound_reliable(
+                        bytes.len(),
+                        ClientTransport::WebTransport,
+                        is_snapshot_packet_kind(first),
+                    );
                 }
-                // Reliable stream: 4-byte LE length prefix
-                buf.clear();
-                buf.put_u32_le(bytes.len() as u32);
-                buf.put_slice(&bytes);
-                if let Err(err) = send_stream.write_all(&buf).await {
-                    warn!(player_id, error = ?err, "WT reliable writer stopped");
-                    break;
+                OutboundDelivery::Reliable => {
+                    buf.clear();
+                    buf.put_u32_le(bytes.len() as u32);
+                    buf.put_slice(&bytes);
+                    if let Err(err) = send_stream.write_all(&buf).await {
+                        warn!(player_id, error = ?err, "WT reliable writer stopped");
+                        break;
+                    }
+                    telemetry.observe_outbound_reliable(
+                        bytes.len(),
+                        ClientTransport::WebTransport,
+                        is_snapshot_packet_kind(first),
+                    );
                 }
-                telemetry.observe_outbound_reliable(
-                    bytes.len(),
-                    ClientTransport::WebTransport,
-                    first == PKT_SNAPSHOT || first == PKT_SNAPSHOT_V2,
-                );
-            } else {
-                telemetry.observe_outbound_datagram(
-                    bytes.len(),
-                    ClientTransport::WebTransport,
-                    first == PKT_SNAPSHOT || first == PKT_SNAPSHOT_V2,
-                );
             }
         }
         info!(player_id, "WT writer task exited");
@@ -863,10 +1024,7 @@ async fn handle_socket(
     let writer = tokio::spawn(async move {
         while let Some(packet) = out_rx.recv().await {
             let packet_len = packet.len();
-            let is_snapshot = packet
-                .first()
-                .copied()
-                .is_some_and(|kind| kind == PKT_SNAPSHOT || kind == PKT_SNAPSHOT_V2);
+            let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
             if let Err(err) = ws_tx.send(Message::Binary(packet.into())).await {
                 warn!(player_id, error = ?err, "websocket writer stopped");
                 break;
@@ -954,11 +1112,13 @@ async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
+    player_kcc_mode: PlayerKccMode,
+    respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
-    let mut arena = PhysicsArena::new(MoveConfig::default());
+    let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
     let world = VoxelWorld::new();
     seed_default_world(&mut arena).expect("default world document should instantiate");
     let dynamic_body_handles = arena
@@ -998,6 +1158,8 @@ async fn run_match_loop(
         snapshot_stats: MatchSnapshotStats::default(),
         void_kills: 0,
         strict_snapshot_datagrams,
+        player_kcc_mode,
+        respawn_delay_ms,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
@@ -1047,6 +1209,8 @@ fn spawn_match_loop(
             match_id.clone(),
             rx,
             app.strict_snapshot_datagrams,
+            app.player_kcc_mode,
+            app.respawn_delay_ms,
             app.stats_tx.clone(),
             telemetry,
             app.stats_registry.clone(),
@@ -1260,16 +1424,48 @@ impl MatchState {
                 }
             }
             MatchEvent::Disconnect { player_id } => {
+                let disconnect_runtime = self.players.get(&player_id).map(|runtime| {
+                    (
+                        runtime.transport.as_str().to_string(),
+                        runtime.pending_inputs.len(),
+                        runtime
+                            .last_bundle_recv
+                            .map(|instant| instant.elapsed().as_secs_f32() * 1000.0),
+                    )
+                });
+                let latest_health = self
+                    .stats_registry
+                    .read()
+                    .ok()
+                    .and_then(|registry| registry.get(&self.id).cloned());
                 self.players.remove(&player_id);
                 self.release_player_handle(player_id);
                 self.arena.remove_player(player_id);
                 self.history.remove_player(player_id);
-                info!(
-                    match_id = %self.id,
-                    player_id,
-                    active_players = self.players.len(),
-                    "player disconnected from match"
-                );
+                if let Some((transport, pending_inputs, input_silence_ms)) = disconnect_runtime {
+                    info!(
+                        match_id = %self.id,
+                        player_id,
+                        transport,
+                        pending_inputs,
+                        input_silence_ms,
+                        active_players = self.players.len(),
+                        tick_ms_p95 = latest_health.as_ref().map(|stats| stats.timings.total_ms.p95),
+                        max_pending_inputs = latest_health
+                            .as_ref()
+                            .map(|stats| stats.players.iter().map(|player| player.pending_inputs).max().unwrap_or(0)),
+                        datagram_fallbacks = latest_health.as_ref().map(|stats| stats.network.datagram_fallbacks),
+                        strict_snapshot_drops = latest_health.as_ref().map(|stats| stats.network.strict_snapshot_drops),
+                        "player disconnected from match"
+                    );
+                } else {
+                    info!(
+                        match_id = %self.id,
+                        player_id,
+                        active_players = self.players.len(),
+                        "player disconnected from match"
+                    );
+                }
                 self.queue_roster_sync();
             }
             MatchEvent::Packet { player_id, packet } => {
@@ -1394,13 +1590,42 @@ impl MatchState {
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
         let mut player_move_math_ms = 0.0f32;
+        let mut player_query_ctx_ms = 0.0f32;
         let mut player_kcc_ms = 0.0f32;
+        let mut player_kcc_horizontal_ms = 0.0f32;
+        let mut player_kcc_support_ms = 0.0f32;
+        let mut player_kcc_merged_ms = 0.0f32;
+        let mut player_support_probe_ms = 0.0f32;
         let mut player_collider_sync_ms = 0.0f32;
+        let mut player_dynamic_contact_query_ms = 0.0f32;
         let mut player_dynamic_interaction_ms = 0.0f32;
+        let mut player_dynamic_impulse_apply_ms = 0.0f32;
+        let mut player_history_record_ms = 0.0f32;
         let mut dynamic_bodies_considered_per_tick = 0.0f32;
+        let mut dynamic_contacts_raw_per_tick = 0.0f32;
+        let mut dynamic_contacts_kept_per_tick = 0.0f32;
         let mut dynamic_bodies_pushed_per_tick = 0.0f32;
+        let mut dynamic_impulses_applied_per_tick = 0.0f32;
         let mut contacted_dynamic_mass_per_tick = 0.0f32;
+        let mut player_kcc_horizontal_calls_per_tick = 0.0f32;
+        let mut player_kcc_support_calls_per_tick = 0.0f32;
+        let mut player_support_probe_count_per_tick = 0.0f32;
+        let mut player_support_probe_hit_count_per_tick = 0.0f32;
+        let mut players_in_vehicles = 0.0f32;
+        let mut dead_players_skipped = 0.0f32;
+        let mut player_centers = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
+            if self.arena.vehicle_of_player.contains_key(&player_id) {
+                players_in_vehicles += 1.0;
+            }
+            if self
+                .arena
+                .players
+                .get(&player_id)
+                .is_some_and(|state| state.dead)
+            {
+                dead_players_skipped += 1.0;
+            }
             let input = self
                 .players
                 .get_mut(&player_id)
@@ -1408,23 +1633,46 @@ impl MatchState {
                 .unwrap_or_default();
             if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
                 player_move_math_ms += result.timings.move_math_ms;
+                player_query_ctx_ms += result.timings.query_ctx_ms;
                 player_kcc_ms += result.timings.kcc_query_ms;
+                player_kcc_horizontal_ms += result.timings.kcc_horizontal_ms;
+                player_kcc_support_ms += result.timings.kcc_support_ms;
+                player_kcc_merged_ms += result.timings.kcc_merged_ms;
+                player_support_probe_ms += result.timings.support_probe_ms;
                 player_collider_sync_ms += result.timings.collider_sync_ms;
+                player_dynamic_contact_query_ms += result.timings.dynamic_contact_query_ms;
                 player_dynamic_interaction_ms += result.timings.dynamic_interaction_ms;
+                player_dynamic_impulse_apply_ms += result.timings.dynamic_impulse_apply_ms;
                 dynamic_bodies_considered_per_tick += result.dynamic_stats.considered_count as f32;
+                dynamic_contacts_raw_per_tick += result.dynamic_stats.raw_contact_count as f32;
+                dynamic_contacts_kept_per_tick += result.dynamic_stats.kept_contact_count as f32;
                 dynamic_bodies_pushed_per_tick += result.dynamic_stats.pushed_count as f32;
+                dynamic_impulses_applied_per_tick +=
+                    result.dynamic_stats.impulses_applied_count as f32;
                 contacted_dynamic_mass_per_tick += result.dynamic_stats.contacted_mass;
+                if result.timings.kcc_horizontal_ms > 0.0 {
+                    player_kcc_horizontal_calls_per_tick += 1.0;
+                }
+                if result.timings.kcc_support_ms > 0.0 {
+                    player_kcc_support_calls_per_tick += 1.0;
+                }
+                player_support_probe_count_per_tick +=
+                    result.dynamic_stats.support_probe_count as f32;
+                player_support_probe_hit_count_per_tick +=
+                    result.dynamic_stats.support_probe_hit_count as f32;
             }
 
             if let Some((pos, _vel, _yaw, _pitch, hp, flags)) =
                 self.arena.snapshot_player(player_id)
             {
+                player_centers.push(pos);
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
                     self.kill_player(player_id, server_time_ms);
                     self.void_kills += 1;
                 }
                 let alive = hp > 0 && (flags & 0x4) == 0;
                 let center = pos;
+                let history_started = Instant::now();
                 self.history.record(
                     player_id,
                     HistoricalCapsule {
@@ -1436,28 +1684,78 @@ impl MatchState {
                         alive,
                     },
                 );
+                player_history_record_ms += history_started.elapsed().as_secs_f32() * 1000.0;
             }
         }
         self.timings
             .player_sim_ms
             .record(player_sim_started.elapsed().as_secs_f32() * 1000.0);
         self.timings.player_move_math_ms.record(player_move_math_ms);
+        self.timings.player_query_ctx_ms.record(player_query_ctx_ms);
         self.timings.player_kcc_ms.record(player_kcc_ms);
+        self.timings
+            .player_kcc_horizontal_ms
+            .record(player_kcc_horizontal_ms);
+        self.timings
+            .player_kcc_support_ms
+            .record(player_kcc_support_ms);
+        self.timings
+            .player_kcc_merged_ms
+            .record(player_kcc_merged_ms);
+        self.timings
+            .player_support_probe_ms
+            .record(player_support_probe_ms);
         self.timings
             .player_collider_sync_ms
             .record(player_collider_sync_ms);
         self.timings
+            .player_dynamic_contact_query_ms
+            .record(player_dynamic_contact_query_ms);
+        self.timings
             .player_dynamic_interaction_ms
             .record(player_dynamic_interaction_ms);
+        self.timings
+            .player_dynamic_impulse_apply_ms
+            .record(player_dynamic_impulse_apply_ms);
+        self.timings
+            .player_history_record_ms
+            .record(player_history_record_ms);
         self.snapshot_stats
             .dynamic_bodies_considered_per_tick
             .record(dynamic_bodies_considered_per_tick);
         self.snapshot_stats
+            .dynamic_contacts_raw_per_tick
+            .record(dynamic_contacts_raw_per_tick);
+        self.snapshot_stats
+            .dynamic_contacts_kept_per_tick
+            .record(dynamic_contacts_kept_per_tick);
+        self.snapshot_stats
             .dynamic_bodies_pushed_per_tick
             .record(dynamic_bodies_pushed_per_tick);
         self.snapshot_stats
+            .dynamic_impulses_applied_per_tick
+            .record(dynamic_impulses_applied_per_tick);
+        self.snapshot_stats
             .contacted_dynamic_mass_per_tick
             .record(contacted_dynamic_mass_per_tick);
+        self.snapshot_stats
+            .player_kcc_horizontal_calls_per_tick
+            .record(player_kcc_horizontal_calls_per_tick);
+        self.snapshot_stats
+            .player_kcc_support_calls_per_tick
+            .record(player_kcc_support_calls_per_tick);
+        self.snapshot_stats
+            .player_support_probe_count_per_tick
+            .record(player_support_probe_count_per_tick);
+        self.snapshot_stats
+            .player_support_probe_hit_count_per_tick
+            .record(player_support_probe_hit_count_per_tick);
+        self.snapshot_stats
+            .players_in_vehicles
+            .record(players_in_vehicles);
+        self.snapshot_stats
+            .dead_players_skipped
+            .record(dead_players_skipped);
 
         let vehicle_started = Instant::now();
         self.arena.step_vehicles(dt);
@@ -1468,6 +1766,14 @@ impl MatchState {
 
         let dynamics_started = Instant::now();
         self.arena.step_dynamics(dt);
+        let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
+            awake_dynamic_body_counts(&self.arena, &player_centers);
+        self.snapshot_stats
+            .awake_dynamic_bodies_total
+            .record(awake_dynamic_bodies_total as f32);
+        self.snapshot_stats
+            .awake_dynamic_bodies_near_players
+            .record(awake_dynamic_bodies_near_players as f32);
         for (body_id, pos, quat, half_extents, _vel, _angvel, shape_type) in
             self.arena.snapshot_dynamic_bodies()
         {
@@ -1663,6 +1969,22 @@ impl MatchState {
                     .webtransport_snapshot_datagram_sent
                     .load(Ordering::Relaxed),
                 strict_snapshot_drops: self.io.strict_snapshot_drops.load(Ordering::Relaxed),
+                strict_snapshot_drop_oversize: self
+                    .io
+                    .strict_snapshot_drop_oversize
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_connection_closed: self
+                    .io
+                    .strict_snapshot_drop_connection_closed
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_unsupported_peer: self
+                    .io
+                    .strict_snapshot_drop_unsupported_peer
+                    .load(Ordering::Relaxed),
+                strict_snapshot_drop_other: self
+                    .io
+                    .strict_snapshot_drop_other
+                    .load(Ordering::Relaxed),
                 dropped_outbound_packets: self.io.dropped_outbound_packets.load(Ordering::Relaxed),
                 dropped_outbound_snapshots: self
                     .io
@@ -1680,14 +2002,52 @@ impl MatchState {
                     .snapshot_stats
                     .dynamic_bodies_considered_per_tick
                     .snapshot(),
+                dynamic_contacts_raw_per_tick: self
+                    .snapshot_stats
+                    .dynamic_contacts_raw_per_tick
+                    .snapshot(),
+                dynamic_contacts_kept_per_tick: self
+                    .snapshot_stats
+                    .dynamic_contacts_kept_per_tick
+                    .snapshot(),
                 dynamic_bodies_pushed_per_tick: self
                     .snapshot_stats
                     .dynamic_bodies_pushed_per_tick
+                    .snapshot(),
+                dynamic_impulses_applied_per_tick: self
+                    .snapshot_stats
+                    .dynamic_impulses_applied_per_tick
                     .snapshot(),
                 contacted_dynamic_mass_per_tick: self
                     .snapshot_stats
                     .contacted_dynamic_mass_per_tick
                     .snapshot(),
+                player_kcc_horizontal_calls_per_tick: self
+                    .snapshot_stats
+                    .player_kcc_horizontal_calls_per_tick
+                    .snapshot(),
+                player_kcc_support_calls_per_tick: self
+                    .snapshot_stats
+                    .player_kcc_support_calls_per_tick
+                    .snapshot(),
+                player_support_probe_count_per_tick: self
+                    .snapshot_stats
+                    .player_support_probe_count_per_tick
+                    .snapshot(),
+                player_support_probe_hit_count_per_tick: self
+                    .snapshot_stats
+                    .player_support_probe_hit_count_per_tick
+                    .snapshot(),
+                awake_dynamic_bodies_total: self
+                    .snapshot_stats
+                    .awake_dynamic_bodies_total
+                    .snapshot(),
+                awake_dynamic_bodies_near_players: self
+                    .snapshot_stats
+                    .awake_dynamic_bodies_near_players
+                    .snapshot(),
+                players_in_vehicles: self.snapshot_stats.players_in_vehicles.snapshot(),
+                dead_players_skipped: self.snapshot_stats.dead_players_skipped.snapshot(),
             },
             players: player_snapshots,
         };
@@ -1738,6 +2098,10 @@ impl MatchState {
                 datagram_packets_sent = self.io.datagram_packets_sent.load(Ordering::Relaxed),
                 datagram_fallbacks,
                 strict_snapshot_drops,
+                strict_snapshot_drop_oversize = self.io.strict_snapshot_drop_oversize.load(Ordering::Relaxed),
+                strict_snapshot_drop_connection_closed = self.io.strict_snapshot_drop_connection_closed.load(Ordering::Relaxed),
+                strict_snapshot_drop_unsupported_peer = self.io.strict_snapshot_drop_unsupported_peer.load(Ordering::Relaxed),
+                strict_snapshot_drop_other = self.io.strict_snapshot_drop_other.load(Ordering::Relaxed),
                 dropped_outbound_packets,
                 snapshot_reliable_sent = self.io.snapshot_reliable_sent.load(Ordering::Relaxed),
                 snapshot_datagram_sent = self.io.snapshot_datagram_sent.load(Ordering::Relaxed),
@@ -1755,9 +2119,27 @@ impl MatchState {
                 player_sim_ms_avg = match_stats.timings.player_sim_ms.avg,
                 player_sim_ms_p95 = match_stats.timings.player_sim_ms.p95,
                 move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
+                player_query_ctx_ms_avg = match_stats.timings.player_query_ctx_ms.avg,
                 kcc_ms_avg = match_stats.timings.player_kcc_ms.avg,
+                player_kcc_mode = ?self.player_kcc_mode,
+                player_kcc_horizontal_ms_avg = match_stats.timings.player_kcc_horizontal_ms.avg,
+                player_kcc_support_ms_avg = match_stats.timings.player_kcc_support_ms.avg,
+                player_kcc_merged_ms_avg = match_stats.timings.player_kcc_merged_ms.avg,
+                player_support_probe_ms_avg = match_stats.timings.player_support_probe_ms.avg,
                 collider_sync_ms_avg = match_stats.timings.player_collider_sync_ms.avg,
+                player_dynamic_contact_query_ms_avg = match_stats.timings.player_dynamic_contact_query_ms.avg,
                 player_dynamic_interaction_ms_avg = match_stats.timings.player_dynamic_interaction_ms.avg,
+                player_dynamic_impulse_apply_ms_avg = match_stats.timings.player_dynamic_impulse_apply_ms.avg,
+                player_history_record_ms_avg = match_stats.timings.player_history_record_ms.avg,
+                dynamic_contacts_raw_per_tick_p95 = match_stats.network.dynamic_contacts_raw_per_tick.p95,
+                dynamic_contacts_kept_per_tick_p95 = match_stats.network.dynamic_contacts_kept_per_tick.p95,
+                dynamic_impulses_applied_per_tick_p95 = match_stats.network.dynamic_impulses_applied_per_tick.p95,
+                player_support_probe_count_per_tick_p95 = match_stats.network.player_support_probe_count_per_tick.p95,
+                player_support_probe_hit_count_per_tick_p95 = match_stats.network.player_support_probe_hit_count_per_tick.p95,
+                awake_dynamic_bodies_total_p95 = match_stats.network.awake_dynamic_bodies_total.p95,
+                awake_dynamic_bodies_near_players_p95 = match_stats.network.awake_dynamic_bodies_near_players.p95,
+                players_in_vehicles_p95 = match_stats.network.players_in_vehicles.p95,
+                dead_players_skipped_p95 = match_stats.network.dead_players_skipped.p95,
                 vehicle_ms_avg = match_stats.timings.vehicle_ms.avg,
                 dynamics_ms_avg = match_stats.timings.dynamics_ms.avg,
                 hitscan_ms_avg = match_stats.timings.hitscan_ms.avg,
@@ -1801,7 +2183,7 @@ impl MatchState {
         self.arena.exit_vehicle(player_id);
         self.arena.set_player_dead(player_id, true);
         if let Some(runtime) = self.players.get_mut(&player_id) {
-            runtime.respawn_at_ms = Some(server_time_ms.saturating_add(RESPAWN_DELAY_MS));
+            runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
         }
@@ -2503,6 +2885,33 @@ fn compute_density_metrics(positions: &[[f32; 3]]) -> (f32, u32) {
     (total as f32 / positions.len() as f32, max)
 }
 
+fn awake_dynamic_body_counts(arena: &PhysicsArena, player_centers: &[[f32; 3]]) -> (u32, u32) {
+    let near_radius_sq = HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M;
+    let mut awake_total = 0u32;
+    let mut awake_near_players = 0u32;
+
+    for dynamic_body in arena.dynamic.dynamic_bodies.values() {
+        let Some(rb) = arena.dynamic.sim.rigid_bodies.get(dynamic_body.body_handle) else {
+            continue;
+        };
+        if rb.is_sleeping() {
+            continue;
+        }
+        awake_total += 1;
+
+        let pos = rb.translation();
+        let body_center = [pos.x, pos.y, pos.z];
+        if player_centers
+            .iter()
+            .any(|player_center| distance_sq(body_center, *player_center) <= near_radius_sq)
+        {
+            awake_near_players += 1;
+        }
+    }
+
+    (awake_total, awake_near_players)
+}
+
 fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -2565,15 +2974,45 @@ fn packet_vehicle_count(packet: &ServerPacket) -> usize {
     }
 }
 
+fn is_snapshot_packet_kind(kind: u8) -> bool {
+    kind == PKT_SNAPSHOT || kind == PKT_SNAPSHOT_V2
+}
+
+fn wants_unreliable_delivery(kind: u8) -> bool {
+    is_snapshot_packet_kind(kind) || kind == PKT_PING
+}
+
+fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {
+    match err {
+        SendDatagramError::TooLarge => StrictSnapshotDropCause::Oversize,
+        SendDatagramError::NotConnected => StrictSnapshotDropCause::ConnectionClosed,
+        SendDatagramError::UnsupportedByPeer => StrictSnapshotDropCause::UnsupportedByPeer,
+    }
+}
+
+fn classify_outbound_delivery(
+    kind: u8,
+    strict_snapshot_datagrams: bool,
+    datagram_send_ok: bool,
+) -> OutboundDelivery {
+    if datagram_send_ok {
+        return OutboundDelivery::Datagram;
+    }
+    if is_snapshot_packet_kind(kind) && strict_snapshot_datagrams {
+        return OutboundDelivery::StrictDrop;
+    }
+    if wants_unreliable_delivery(kind) {
+        return OutboundDelivery::ReliableFallback;
+    }
+    OutboundDelivery::Reliable
+}
+
 fn try_queue_packet(
     tx: &mpsc::Sender<Vec<u8>>,
     packet: Vec<u8>,
     telemetry: &MatchIoTelemetry,
 ) -> bool {
-    let is_snapshot = packet
-        .first()
-        .copied()
-        .is_some_and(|kind| kind == PKT_SNAPSHOT || kind == PKT_SNAPSHOT_V2);
+    let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
     let is_droppable = is_snapshot || packet.first().copied().is_some_and(|kind| kind == PKT_PING);
     match tx.try_send(packet) {
         Ok(()) => true,
@@ -2619,6 +3058,7 @@ fn global_stats_from_registry(
     let mut matches: Vec<_> = registry.values().cloned().collect();
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     GlobalStatsSnapshot {
+        server_build_profile: server_build_profile().to_string(),
         sim_hz: SIM_HZ,
         snapshot_hz: SNAPSHOT_HZ,
         matches,
@@ -2651,14 +3091,17 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, rifle_damage,
-        take_input_for_tick, try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, PlayerRuntime,
-        MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PLAYER_OUTBOUND_QUEUE_CAPACITY,
-        RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
+        classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
+        enqueue_inputs, is_snapshot_packet_kind, parse_respawn_delay_ms, rifle_damage,
+        server_build_profile, strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
+        try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, OutboundDelivery, PlayerRuntime,
+        StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
     use tokio::sync::mpsc;
     use vibe_land_shared::seq::seq_is_newer;
+    use wtransport::error::SendDatagramError;
 
     fn runtime() -> PlayerRuntime {
         let (tx, _rx) = mpsc::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
@@ -2683,6 +3126,8 @@ mod tests {
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
             last_sent_dynamic_body_pose: HashMap::new(),
+            last_sent_vehicle_tick: HashMap::new(),
+            last_sent_dynamic_tick: HashMap::new(),
         }
     }
 
@@ -2755,6 +3200,25 @@ mod tests {
     }
 
     #[test]
+    fn respawn_delay_uses_default_and_accepts_override() {
+        assert_eq!(parse_respawn_delay_ms(None), super::RESPAWN_DELAY_MS);
+        assert_eq!(parse_respawn_delay_ms(Some("0")), 0);
+        assert_eq!(parse_respawn_delay_ms(Some("250")), 250);
+        assert_eq!(
+            parse_respawn_delay_ms(Some("bad-value")),
+            super::RESPAWN_DELAY_MS
+        );
+    }
+
+    #[test]
+    fn server_build_profile_matches_cfg() {
+        #[cfg(debug_assertions)]
+        assert_eq!(server_build_profile(), "debug");
+        #[cfg(not(debug_assertions))]
+        assert_eq!(server_build_profile(), "release");
+    }
+
+    #[test]
     fn try_queue_packet_drops_snapshot_when_queue_is_full() {
         let telemetry = MatchIoTelemetry::default();
         let (tx, mut rx) = mpsc::channel(1);
@@ -2772,6 +3236,70 @@ mod tests {
             1
         );
         assert_eq!(rx.try_recv().ok(), Some(vec![PKT_PING, 1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn snapshot_packet_helper_recognizes_v1_and_v2() {
+        assert!(is_snapshot_packet_kind(PKT_SNAPSHOT));
+        assert!(is_snapshot_packet_kind(PKT_SNAPSHOT_V2));
+        assert!(!is_snapshot_packet_kind(PKT_PING));
+    }
+
+    #[test]
+    fn strict_snapshot_datagrams_drop_v2_instead_of_falling_back() {
+        assert_eq!(
+            classify_outbound_delivery(PKT_SNAPSHOT_V2, true, false),
+            OutboundDelivery::StrictDrop
+        );
+        assert_eq!(
+            classify_outbound_delivery(PKT_SNAPSHOT_V2, false, false),
+            OutboundDelivery::ReliableFallback
+        );
+        assert_eq!(
+            classify_outbound_delivery(PKT_SNAPSHOT_V2, true, true),
+            OutboundDelivery::Datagram
+        );
+    }
+
+    #[test]
+    fn telemetry_counts_webtransport_snapshot_datagrams() {
+        let telemetry = MatchIoTelemetry::default();
+        telemetry.observe_outbound_datagram(256, super::ClientTransport::WebTransport, true);
+
+        assert_eq!(
+            telemetry
+                .snapshot_datagram_sent
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            telemetry
+                .webtransport_snapshot_datagram_sent
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            telemetry
+                .snapshot_reliable_sent
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[test]
+    fn strict_snapshot_drop_causes_are_classified() {
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::TooLarge),
+            StrictSnapshotDropCause::Oversize
+        );
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::NotConnected),
+            StrictSnapshotDropCause::ConnectionClosed
+        );
+        assert_eq!(
+            strict_snapshot_drop_cause_from_send_error(&SendDatagramError::UnsupportedByPeer),
+            StrictSnapshotDropCause::UnsupportedByPeer
+        );
     }
 
     #[test]

@@ -47,7 +47,11 @@ export function usePrediction(mode: GameMode) {
   return usePredictionWithWorld(mode);
 }
 
-export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
+export function usePredictionWithWorld(
+  mode: GameMode,
+  worldJson?: string,
+  localRenderSmoothingEnabled = true,
+) {
   const practiceMode = isPracticeMode(mode);
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
@@ -152,8 +156,8 @@ export function usePredictionWithWorld(mode: GameMode, worldJson?: string) {
   const getPosition = useCallback((): [number, number, number] | null => {
     const m = managerRef.current;
     if (!m) return null;
-    return m.getInterpolatedPosition();
-  }, []);
+    return localRenderSmoothingEnabled ? m.getInterpolatedPosition() : m.getPosition();
+  }, [localRenderSmoothingEnabled]);
 
   const raycastBlocks = useCallback((
     origin: [number, number, number],

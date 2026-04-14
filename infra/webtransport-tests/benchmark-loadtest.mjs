@@ -78,11 +78,12 @@ async function main() {
 
   try {
     await page.goto(pageUrl.toString(), { waitUntil: "networkidle", timeout: 30_000 });
+    const startupTimeoutMs = Math.max(60_000, (scenario.rampUpS ?? 0) * 1000 + 30_000);
     await page.waitForFunction(() => {
       return window.__VIBE_BENCHMARK_STATE__?.mode === "running"
         || window.__VIBE_BENCHMARK_STATE__?.mode === "completed"
         || window.__VIBE_BENCHMARK_STATE__?.mode === "failed";
-    }, { timeout: 30_000 });
+    }, { timeout: startupTimeoutMs });
     const timeoutMs = (scenario.durationS ?? 30) * 1000 + 45_000;
     await page.waitForFunction(() => {
       const mode = window.__VIBE_BENCHMARK_STATE__?.mode;
@@ -90,7 +91,7 @@ async function main() {
     }, { timeout: timeoutMs });
 
     const payload = await page.evaluate(() => ({
-      result: window.__VIBE_BENCHMARK_RESULT__ ?? null,
+      result: window.__VIBE_BENCHMARK_RESULT__ ?? window.__VIBE_GET_BENCHMARK_RESULT__?.() ?? null,
       state: window.__VIBE_BENCHMARK_STATE__ ?? null,
     }));
     process.stdout.write(`${JSON.stringify({
@@ -100,15 +101,22 @@ async function main() {
       pageErrors,
     })}\n`);
   } catch (error) {
-    let state = null;
+    let payload = { result: null, state: null };
     try {
-      state = await page.evaluate(() => window.__VIBE_BENCHMARK_STATE__ ?? null);
+      payload = await page.evaluate(() => ({
+        result:
+          window.__VIBE_BENCHMARK_RESULT__
+          ?? window.__VIBE_GET_BENCHMARK_RESULT__?.()
+          ?? window.__VIBE_BENCHMARK_STATE__?.result
+          ?? null,
+        state: window.__VIBE_BENCHMARK_STATE__ ?? null,
+      }));
     } catch {
-      state = null;
+      payload = { result: null, state: null };
     }
     process.stdout.write(`${JSON.stringify({
-      result: null,
-      state,
+      result: payload.result,
+      state: payload.state,
       consoleErrors,
       pageErrors,
       error: error?.message ?? String(error),

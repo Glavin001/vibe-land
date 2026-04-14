@@ -24,6 +24,7 @@
     "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
     "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local",
+    "benchmark:strict": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite strict --environment local",
     "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts"
   },
   "dependencies": {

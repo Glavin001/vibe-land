@@ -9,6 +9,7 @@ import type {
   BenchmarkEnvironmentInfo,
   BenchmarkScenarioResult,
   BenchmarkSuiteResult,
+  PlayWorkerResult,
   WebTransportWorkerResult,
 } from './src/benchmark/contracts.js';
 import type { BenchmarkScenarioSpec, BenchmarkSuiteSpec } from './src/benchmark/spec.js';
@@ -23,6 +24,7 @@ type ParsedArgs = {
   serverHost: string;
   outputDir: string;
   headless: boolean;
+  iterations: number;
 };
 
 type BrowserWorkerRun = {
@@ -32,11 +34,31 @@ type BrowserWorkerRun = {
   error?: string;
 };
 
+type PlayWorkerRun = {
+  results: PlayWorkerResult[];
+  consoleErrors: string[];
+  pageErrors: string[];
+  error?: string;
+};
+
+type PlayWorkerStatePayload = {
+  result?: PlayWorkerResult | null;
+};
+
+function isPlayWorkerResult(value: unknown): value is PlayWorkerResult {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<PlayWorkerResult>;
+  return candidate.kind === 'play' && typeof candidate.clientLabel === 'string';
+}
+
 type TimedMatchSample = {
   atMs: number;
   at: string;
   match: MatchStatsSnapshot;
   simHz: number;
+  serverBuildProfile: string;
 };
 
 class StatsStream {
@@ -67,7 +89,13 @@ class StatsStream {
           const atMs = Date.now();
           const at = new Date(atMs).toISOString();
           for (const match of snapshot.matches) {
-            this.samples.push({ atMs, at, match, simHz: snapshot.sim_hz });
+            this.samples.push({
+              atMs,
+              at,
+              match,
+              simHz: snapshot.sim_hz,
+              serverBuildProfile: snapshot.server_build_profile,
+            });
           }
         } catch {
           // ignore malformed frames
@@ -94,6 +122,11 @@ class StatsStream {
     const matchSample = this.samples.find((sample) => sample.match.id === matchId);
     return matchSample?.simHz ?? 60;
   }
+
+  serverBuildProfile(matchId: string): string | null {
+    const matchSample = this.samples.find((sample) => sample.match.id === matchId);
+    return matchSample?.serverBuildProfile ?? null;
+  }
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -108,6 +141,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     serverHost: process.env.BENCHMARK_SERVER_HOST ?? envServerHost,
     outputDir: process.env.BENCHMARK_OUTPUT_DIR ?? path.resolve(process.cwd(), 'benchmark-results'),
     headless: process.env.BENCHMARK_HEADLESS !== '0',
+    iterations: Math.max(1, Number.parseInt(process.env.BENCHMARK_ITERATIONS ?? '5', 10) || 5),
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -140,6 +174,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       case '--headed':
         args.headless = false;
         break;
+      case '--iterations':
+        args.iterations = Math.max(1, Number.parseInt(argv[i + 1] ?? '1', 10) || 1);
+        i += 1;
+        break;
       default:
         break;
     }
@@ -165,8 +203,8 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function assertClientLoadtestAvailable(clientUrl: string): Promise<void> {
-  const loadtestUrl = new URL('/loadtest?benchmark=1', clientUrl);
+async function assertClientPageAvailable(clientUrl: string, pathWithQuery: string): Promise<void> {
+  const loadtestUrl = new URL(pathWithQuery, clientUrl);
   let response: Response;
   try {
     response = await fetch(loadtestUrl, {
@@ -241,6 +279,75 @@ async function runWebTransportWorker(spec: BenchmarkScenarioSpec, clientUrl: str
   };
 }
 
+async function runPlayWorkers(spec: BenchmarkScenarioSpec, clientUrl: string, headless: boolean): Promise<PlayWorkerRun> {
+  if (spec.playClients <= 0) {
+    return { results: [], consoleErrors: [], pageErrors: [] };
+  }
+
+  const scriptPath = path.resolve(process.cwd(), '../infra/webtransport-tests/benchmark-play.mjs');
+  const args = [
+    scriptPath,
+    '--url',
+    clientUrl,
+    '--scenario',
+    JSON.stringify(spec.scenario),
+    '--clients',
+    String(spec.playClients),
+  ];
+  if (headless) {
+    args.push('--headless');
+  }
+
+  const stdoutChunks: string[] = [];
+  const stderrChunks: string[] = [];
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk.toString()));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+
+  const stdout = stdoutChunks.join('').trim();
+  if (!stdout) {
+    throw new Error(`Play worker produced no output. stderr:\n${stderrChunks.join('')}`);
+  }
+  const parsed = JSON.parse(stdout) as PlayWorkerRun & {
+    results?: Array<PlayWorkerResult | null>;
+    states?: Array<PlayWorkerStatePayload | null>;
+  };
+  if (exitCode !== 0 && (!parsed.results || parsed.results.length === 0)) {
+    return {
+      results: [],
+      consoleErrors: parsed.consoleErrors ?? [],
+      pageErrors: parsed.pageErrors ?? [],
+      error: parsed.error ?? (stderrChunks.join('') || 'play worker failed'),
+    };
+  }
+  const recoveredResults = (parsed.results ?? []).map((result, index) => {
+    if (result !== null) {
+      return result;
+    }
+    const stateResult = parsed.states?.[index]?.result;
+    return isPlayWorkerResult(stateResult) ? stateResult : null;
+  });
+  const validResults = recoveredResults.filter((result): result is PlayWorkerResult => result !== null);
+  const missingResultCount = recoveredResults.length - validResults.length;
+  const error = missingResultCount > 0
+    ? `play worker returned ${missingResultCount} missing result payload${missingResultCount === 1 ? '' : 's'}`
+    : parsed.error;
+  return {
+    results: validResults,
+    consoleErrors: parsed.consoleErrors ?? [],
+    pageErrors: parsed.pageErrors ?? [],
+    error,
+  };
+}
+
 async function assertWebTransportAutomationAvailable(): Promise<void> {
   const scriptPath = path.resolve(process.cwd(), '../infra/webtransport-tests/benchmark-loadtest.mjs');
   const stderrChunks: string[] = [];
@@ -262,13 +369,74 @@ async function assertWebTransportAutomationAvailable(): Promise<void> {
   }
 }
 
+async function assertPlayAutomationAvailable(): Promise<void> {
+  const scriptPath = path.resolve(process.cwd(), '../infra/webtransport-tests/benchmark-play.mjs');
+  const stderrChunks: string[] = [];
+  const stdoutChunks: string[] = [];
+  const exitCode = await new Promise<number>((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath, '--check'], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk.toString()));
+    child.stderr.on('data', (chunk) => stderrChunks.push(chunk.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => resolve(code ?? 1));
+  });
+
+  if (exitCode !== 0) {
+    throw new Error(stderrChunks.join('').trim() || stdoutChunks.join('').trim() || 'Play automation preflight failed.');
+  }
+}
+
 function combineConnectedRatio(
   spec: BenchmarkScenarioSpec,
   wsResult: BenchmarkScenarioResult['workers']['websocket'],
   wtResult: BenchmarkScenarioResult['workers']['webtransport'],
+  playResults: PlayWorkerResult[],
+  measuredSamples: Array<{ at: string; match: MatchStatsSnapshot }>,
 ): number {
-  const connected = (wsResult?.connectedBots ?? 0) + (wtResult?.connectedBots ?? 0);
-  return spec.scenario.botCount > 0 ? connected / spec.scenario.botCount : 1;
+  const workerConnected =
+    (wsResult?.connectedBots ?? 0)
+    + (wtResult?.connectedBots ?? 0)
+    + playResults.filter((result) => result.connected && !result.disconnected).length;
+  const requested = spec.scenario.botCount + spec.playClients;
+  const observedConnected = measuredSamples.reduce((max, sample) => (
+    Math.max(
+      max,
+      sample.match.load.websocket_players + sample.match.load.webtransport_players,
+    )
+  ), 0);
+  const connected = Math.max(workerConnected, observedConnected);
+  return requested > 0 ? connected / requested : 1;
+}
+
+function observedConnectedPlayers(
+  measuredSamples: Array<{ at: string; match: MatchStatsSnapshot }>,
+): number {
+  return measuredSamples.reduce((max, sample) => (
+    Math.max(
+      max,
+      sample.match.load.websocket_players + sample.match.load.webtransport_players,
+    )
+  ), 0);
+}
+
+function isRecoverableBrowserWorkerError(
+  error: string | undefined,
+  observedConnected: number,
+  requested: number,
+): boolean {
+  return Boolean(
+    error
+    && observedConnected >= requested
+    && error.includes('page.waitForFunction: Timeout'),
+  );
+}
+
+function invalidBenchmark(message: string): string {
+  return `Invalid benchmark: ${message}`;
 }
 
 async function writeScenarioArtifact(outputDir: string, generatedAt: string, result: BenchmarkScenarioResult): Promise<void> {
@@ -276,9 +444,28 @@ async function writeScenarioArtifact(outputDir: string, generatedAt: string, res
   await writeFile(path.join(outputDir, filename), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
 }
 
+async function writeScenarioRunsArtifact(
+  outputDir: string,
+  generatedAt: string,
+  scenarioName: string,
+  results: BenchmarkScenarioResult[],
+): Promise<void> {
+  const filename = `${generatedAt.replace(/[:.]/g, '-')}-${scenarioName}.runs.json`;
+  await writeFile(path.join(outputDir, filename), `${JSON.stringify(results, null, 2)}\n`, 'utf8');
+}
+
+function pickMedianScenarioResult(results: BenchmarkScenarioResult[]): BenchmarkScenarioResult {
+  const sorted = [...results].sort((a, b) =>
+    a.measuredWindow.peakMetrics.playerKccP95Ms - b.measuredWindow.peakMetrics.playerKccP95Ms,
+  );
+  return sorted[Math.floor(sorted.length / 2)] ?? results[0];
+}
+
 async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEnvironmentInfo, headless: boolean): Promise<BenchmarkScenarioResult> {
   console.log(`\n=== benchmark: ${spec.name} ===`);
-  console.log(`match=${spec.scenario.matchId} players=${spec.scenario.botCount} ws=${spec.scenario.transportMix.websocket} wt=${spec.scenario.transportMix.webtransport}`);
+  console.log(
+    `match=${spec.scenario.matchId} play=${spec.playClients} bots=${spec.scenario.botCount} ws=${spec.scenario.transportMix.websocket} wt=${spec.scenario.transportMix.webtransport}`,
+  );
 
   const statsStream = new StatsStream(`ws://${environment.serverHost}/ws/stats`);
   await statsStream.connect();
@@ -289,42 +476,88 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
     token: process.env.TOKEN ?? 'mvp-token',
     onStatus: (line) => console.log(`  ${line}`),
   });
+  const playPromise = runPlayWorkers(spec, environment.clientUrl, headless);
   const wtPromise = runWebTransportWorker(spec, environment.clientUrl, headless);
 
-  console.log(`  warmup ${spec.warmupS}s, measure ${spec.measureS}s`);
+  console.log(`  warmup ${spec.warmupS}s, measure ${spec.measureS}s, cooldown ${spec.cooldownS}s`);
   await sleep(spec.warmupS * 1000);
   const measureStartMs = Date.now();
   console.log('  measuring...');
   await sleep(spec.measureS * 1000);
   const measureEndMs = Date.now();
 
-  const [wsOutcome, wtOutcome] = await Promise.allSettled([wsPromise, wtPromise]);
+  const [wsOutcome, playOutcome, wtOutcome] = await Promise.allSettled([wsPromise, playPromise, wtPromise]);
   statsStream.close();
 
   const wsResult = wsOutcome.status === 'fulfilled' ? wsOutcome.value : null;
+  const playRun = playOutcome.status === 'fulfilled'
+    ? playOutcome.value
+    : { results: [], consoleErrors: [], pageErrors: [], error: playOutcome.reason instanceof Error ? playOutcome.reason.message : String(playOutcome.reason) };
   const wtRun = wtOutcome.status === 'fulfilled'
     ? wtOutcome.value
     : { result: null, consoleErrors: [], pageErrors: [], error: wtOutcome.reason instanceof Error ? wtOutcome.reason.message : String(wtOutcome.reason) };
 
   const measuredSamples = statsStream.windowSamples(spec.scenario.matchId, measureStartMs, measureEndMs);
   const measuredWindow = buildMeasuredWindow(spec.scenario.matchId, measuredSamples, statsStream.simHz(spec.scenario.matchId));
+  const serverBuildProfile = statsStream.serverBuildProfile(spec.scenario.matchId);
+  const requestedPlayers = spec.scenario.botCount + spec.playClients;
+  const observedConnected = observedConnectedPlayers(measuredSamples);
 
   const anomalies = [
     ...(wsResult?.errors ?? []),
+    ...playRun.results
+      .filter((result) => result.disconnected)
+      .map((result) => `${result.clientLabel} disconnected${result.disconnectReason ? `: ${result.disconnectReason}` : ''}`),
     ...(wtRun.result?.errors ?? []),
   ];
   if (wsOutcome.status === 'rejected') {
     anomalies.push(wsOutcome.reason instanceof Error ? wsOutcome.reason.message : String(wsOutcome.reason));
   }
-  if (wtRun.error) {
+  if (playRun.error && !isRecoverableBrowserWorkerError(playRun.error, observedConnected, requestedPlayers)) {
+    anomalies.push(playRun.error);
+  }
+  if (wtRun.error && !isRecoverableBrowserWorkerError(wtRun.error, observedConnected, requestedPlayers)) {
     anomalies.push(wtRun.error);
   }
-  const totalShotsFired = (wsResult?.shotsFired ?? 0) + (wtRun.result?.shotsFired ?? 0);
-  if (spec.scenario.behavior.fireMode !== 'off' && totalShotsFired === 0) {
-    anomalies.push('Scenario requested combat behavior, but no benchmark shots were fired.');
+  const missingPlayResults = Math.max(0, spec.playClients - playRun.results.length);
+  if (missingPlayResults > 0) {
+    anomalies.push(invalidBenchmark(
+      `missing ${missingPlayResults} of ${spec.playClients} play worker result payloads`,
+    ));
   }
-  const connectedRatio = combineConnectedRatio(spec, wsResult, wtRun.result);
-  const evaluation = evaluateScenario(spec, measuredWindow, connectedRatio, anomalies, wtRun.consoleErrors, wtRun.pageErrors);
+  if (spec.scenario.transportMix.webtransport > 0 && wtRun.result == null) {
+    anomalies.push(invalidBenchmark('missing webtransport worker result payload'));
+  }
+  if (serverBuildProfile && serverBuildProfile !== 'release') {
+    anomalies.push(
+      invalidBenchmark(
+        `server build profile is ${serverBuildProfile}; use a release server for authoritative performance benchmarks`,
+      ),
+    );
+  }
+  const totalShotsFired =
+    (wsResult?.shotsFired ?? 0)
+    + (wtRun.result?.shotsFired ?? 0)
+    + playRun.results.reduce((sum, result) => sum + result.shotsFired, 0);
+  const haveWorkerMetrics = wsResult != null || wtRun.result != null || playRun.results.length > 0;
+  if (spec.scenario.behavior.fireMode !== 'off' && haveWorkerMetrics && totalShotsFired === 0) {
+    anomalies.push(invalidBenchmark('scenario requested combat behavior, but no benchmark shots were fired'));
+  }
+  const connectedRatio = combineConnectedRatio(
+    spec,
+    wsResult,
+    wtRun.result,
+    playRun.results,
+    measuredSamples,
+  );
+  const evaluation = evaluateScenario(
+    spec,
+    measuredWindow,
+    connectedRatio,
+    anomalies,
+    [...playRun.consoleErrors, ...wtRun.consoleErrors],
+    [...playRun.pageErrors, ...wtRun.pageErrors],
+  );
   const result: BenchmarkScenarioResult = {
     scenarioName: spec.name,
     environment,
@@ -333,13 +566,14 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
     workers: {
       websocket: wsResult,
       webtransport: wtRun.result,
+      play: playRun.results,
     },
     connectedRatio,
     thresholdOutcomes: evaluation.thresholdOutcomes,
     verdict: evaluation.verdict,
     anomalies: evaluation.anomalies,
-    browserConsoleErrors: wtRun.consoleErrors,
-    browserPageErrors: wtRun.pageErrors,
+    browserConsoleErrors: [...playRun.consoleErrors, ...wtRun.consoleErrors],
+    browserPageErrors: [...playRun.pageErrors, ...wtRun.pageErrors],
   };
 
   console.log(`  verdict=${result.verdict.toUpperCase()} bottleneck=${result.measuredWindow.bottleneck}`);
@@ -359,19 +593,31 @@ async function main(): Promise<void> {
   console.log(`Running benchmark suite "${suite.name}" on ${environment.label}`);
   console.log(`Server: ${environment.serverHost}`);
   console.log(`Client: ${environment.clientUrl}`);
+  console.log(`Iterations: ${args.iterations}`);
 
   if (scenarios.some((scenario) => scenario.scenario.transportMix.webtransport > 0)) {
     await assertWebTransportAutomationAvailable();
-    await assertClientLoadtestAvailable(environment.clientUrl);
+    await assertClientPageAvailable(environment.clientUrl, '/loadtest?benchmark=1');
+  }
+  if (scenarios.some((scenario) => scenario.playClients > 0)) {
+    await assertPlayAutomationAvailable();
+    await assertClientPageAvailable(environment.clientUrl, '/play?benchmark=1');
   }
 
   await mkdir(args.outputDir, { recursive: true });
 
   const results: BenchmarkScenarioResult[] = [];
   for (const scenario of scenarios) {
-    const result = await runScenario(scenario, environment, args.headless);
-    results.push(result);
-    await writeScenarioArtifact(args.outputDir, new Date().toISOString(), result);
+    const scenarioRuns: BenchmarkScenarioResult[] = [];
+    for (let iteration = 0; iteration < args.iterations; iteration += 1) {
+      console.log(`\n--- ${scenario.name} run ${iteration + 1}/${args.iterations} ---`);
+      scenarioRuns.push(await runScenario(scenario, environment, args.headless));
+    }
+    const selected = pickMedianScenarioResult(scenarioRuns);
+    results.push(selected);
+    const generatedAt = new Date().toISOString();
+    await writeScenarioArtifact(args.outputDir, generatedAt, selected);
+    await writeScenarioRunsArtifact(args.outputDir, generatedAt, scenario.name, scenarioRuns);
   }
 
   const verdict = results.some((result) => result.verdict === 'fail')

@@ -14,8 +14,11 @@ export interface BenchmarkThresholds {
   dynamicsP95Ms: BenchmarkThresholdBand;
   snapshotBytesPerClientP95: BenchmarkThresholdBand;
   wtReliableRatio: BenchmarkThresholdBand;
+  datagramFallbacks: BenchmarkThresholdBand;
+  strictSnapshotDrops: BenchmarkThresholdBand;
   maxPendingInputs: BenchmarkThresholdBand;
   connectedRatio: BenchmarkThresholdBand;
+  deadPlayersSkippedP95: BenchmarkThresholdBand;
   voidKills: BenchmarkThresholdBand;
 }
 
@@ -24,6 +27,8 @@ export interface BenchmarkScenarioSpec {
   environment: BenchmarkEnvironment;
   warmupS: number;
   measureS: number;
+  cooldownS: number;
+  playClients: number;
   thresholds: BenchmarkThresholds;
   scenario: LoadTestScenario;
 }
@@ -34,7 +39,7 @@ export interface BenchmarkSuiteSpec {
 }
 
 export function totalScenarioDurationS(spec: BenchmarkScenarioSpec): number {
-  return spec.warmupS + spec.measureS;
+  return spec.warmupS + spec.measureS + spec.cooldownS;
 }
 
 export function createScenarioSpec(input: {
@@ -42,15 +47,20 @@ export function createScenarioSpec(input: {
   environment: BenchmarkEnvironment;
   warmupS: number;
   measureS: number;
+  cooldownS?: number;
+  playClients?: number;
   thresholds: BenchmarkThresholds;
   scenario: Partial<LoadTestScenario>;
 }): BenchmarkScenarioSpec {
-  const durationS = input.warmupS + input.measureS;
+  const cooldownS = input.cooldownS ?? 2;
+  const durationS = input.warmupS + input.measureS + cooldownS;
   return {
     name: input.name,
     environment: input.environment,
     warmupS: input.warmupS,
     measureS: input.measureS,
+    cooldownS,
+    playClients: input.playClients ?? 0,
     thresholds: input.thresholds,
     scenario: normalizeScenario({
       ...input.scenario,
