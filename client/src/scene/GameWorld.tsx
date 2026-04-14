@@ -507,12 +507,21 @@ export function GameWorld({
   // `ready`, which means the welcome packet landed and the client's
   // LocalPreviewTransport exists). Detaches automatically when the scene
   // unmounts, when the runtime reference swaps, or when we leave practice.
+  //
+  // IMPORTANT: the dep list is deliberately narrow. `usePredictionWithWorld`
+  // returns a fresh object literal each render, so including `prediction`
+  // directly would cause this effect to re-fire every frame, thrashing
+  // attach/detach. We keep a live `predictionRef` updated outside the effect
+  // and read it from the `getSelf` closure instead.
+  const predictionRef = useRef(prediction);
+  predictionRef.current = prediction;
   useEffect(() => {
     if (!practiceBots || !practiceMode || !ready) return;
     const client = clientRef.current;
     if (!client) return;
     const getSelf = () => {
-      const position = prediction.getPosition() ?? stateRef.current.localPosition;
+      const position =
+        predictionRef.current.getPosition() ?? stateRef.current.localPosition;
       return {
         id: client.playerId,
         position: [position[0], position[1], position[2]] as [number, number, number],
@@ -523,7 +532,7 @@ export function GameWorld({
     return () => {
       practiceBots.detach();
     };
-  }, [practiceBots, practiceMode, ready, clientRef, prediction, stateRef]);
+  }, [practiceBots, practiceMode, ready]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;

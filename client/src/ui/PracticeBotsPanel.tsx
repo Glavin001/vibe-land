@@ -31,7 +31,7 @@ export function PracticeBotsPanel({
 
   const count = stats?.bots ?? 0;
   const behavior = stats?.behavior ?? 'harass';
-  const maxSpeed = stats?.maxSpeed ?? 5.5;
+  const maxSpeed = stats?.maxSpeed ?? 3.0;
 
   return (
     <div style={containerStyle}>
