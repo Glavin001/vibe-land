@@ -17,7 +17,7 @@
 
 use crate::snap_machine::derive_action_channels;
 use serde_json::Value;
-use snap_machines_rapier::SerializedMachineEnvelope;
+use snap_machines_rapier::{MachineControls, MachinePlan, SerializedMachineEnvelope};
 
 /// One player-facing binding for a single named action channel.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,6 +85,17 @@ pub fn derive_machine_bindings(envelope: &Value) -> Vec<MachineBinding> {
     Vec::new()
 }
 
+/// Build bindings directly from an already-installed machine plan plus its
+/// optional keyboard controls block. This is used by the wasm bridge so the
+/// client can surface the authored snap-machines key map without retaining the
+/// full source envelope JSON after install.
+pub fn derive_machine_bindings_from_plan_and_controls(
+    plan: &MachinePlan,
+    controls: &MachineControls,
+) -> Option<Vec<MachineBinding>> {
+    bindings_from_plan_and_controls(plan, controls)
+}
+
 fn binding_from_defaults(action: String, scale: f32) -> MachineBinding {
     let (pos_key, neg_key) = default_action_key(&action);
     MachineBinding {
@@ -102,10 +113,16 @@ fn binding_from_defaults(action: String, scale: f32) -> MachineBinding {
 fn bindings_from_controls_block(
     envelope: &SerializedMachineEnvelope,
 ) -> Option<Vec<MachineBinding>> {
+    bindings_from_plan_and_controls(&envelope.plan, envelope.controls.as_ref()?)
+}
+
+fn bindings_from_plan_and_controls(
+    plan: &MachinePlan,
+    controls: &MachineControls,
+) -> Option<Vec<MachineBinding>> {
     use snap_machines_rapier::{
         MachineControlProfileKind, MachineControlTargetKind,
     };
-    let controls = envelope.controls.as_ref()?;
     let profile = controls
         .profiles
         .iter()
@@ -124,14 +141,12 @@ fn bindings_from_controls_block(
             continue;
         }
         let action = match binding.target.kind {
-            MachineControlTargetKind::Joint => envelope
-                .plan
+            MachineControlTargetKind::Joint => plan
                 .joints
                 .iter()
                 .find(|j| j.id == binding.target.id)
                 .and_then(|j| j.motor.as_ref()?.input.as_ref().map(|i| i.action.clone())),
-            MachineControlTargetKind::Behavior => envelope
-                .plan
+            MachineControlTargetKind::Behavior => plan
                 .behaviors
                 .iter()
                 .find(|b| b.id == binding.target.id)

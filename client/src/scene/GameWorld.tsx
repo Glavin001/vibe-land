@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ReactNode } from 'react';
+import { useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -67,6 +67,23 @@ const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
 const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
 const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
 const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
+
+function netSnapMachineStateToBodyPoses(state: NetSnapMachineState | undefined): Float32Array {
+  if (!state || state.bodies.length === 0) return new Float32Array(0);
+  const poses = new Float32Array(state.bodies.length * 7);
+  for (const body of state.bodies) {
+    const o = body.index * 7;
+    if (o + 6 >= poses.length) continue;
+    poses[o + 0] = body.pxMm / 1000;
+    poses[o + 1] = body.pyMm / 1000;
+    poses[o + 2] = body.pzMm / 1000;
+    poses[o + 3] = body.qxSnorm / 32767;
+    poses[o + 4] = body.qySnorm / 32767;
+    poses[o + 5] = body.qzSnorm / 32767;
+    poses[o + 6] = body.qwSnorm / 32767;
+  }
+  return poses;
+}
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -393,6 +410,15 @@ export function GameWorld({
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
   const prediction = usePredictionWithWorld(mode, worldJson, localRenderSmoothingEnabled);
+  const getRenderedSnapMachineBodyPoses = useCallback((machineId: number): Float32Array => {
+    if (practiceMode) {
+      const machineState = clientRef.current?.machines.get(machineId);
+      if (machineState) {
+        return netSnapMachineStateToBodyPoses(machineState);
+      }
+    }
+    return prediction.getSnapMachineBodyPoses(machineId);
+  }, [practiceMode, prediction]);
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
@@ -449,6 +475,12 @@ export function GameWorld({
       prediction.syncRemoteSnapMachine(ms);
     } : undefined,
   );
+  const getAuthoritativeDebugRenderBuffers = useCallback((modeBits: number) => {
+    if (!practiceMode) {
+      return null;
+    }
+    return clientRef.current?.getDebugRenderBuffers(modeBits) ?? null;
+  }, [practiceMode, clientRef]);
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
@@ -1510,8 +1542,14 @@ export function GameWorld({
       if (!isDrivingNow && !isOperatingMachine) {
         for (const entity of worldDocument.dynamicEntities) {
           if (entity.kind !== 'snapMachine') continue;
-          const dx = entity.position[0] - pos[0];
-          const dz = entity.position[2] - pos[2];
+          const machineState = practiceMode
+            ? client?.machines.get(entity.id)
+            : null;
+          const originBody = machineState?.bodies[0];
+          const machineX = originBody ? originBody.pxMm / 1000 : entity.position[0];
+          const machineZ = originBody ? originBody.pzMm / 1000 : entity.position[2];
+          const dx = machineX - pos[0];
+          const dz = machineZ - pos[2];
           const dist = Math.sqrt(dx * dx + dz * dz);
           if (dist < nearestMachineDist) {
             nearestMachineDist = dist;
@@ -1556,7 +1594,7 @@ export function GameWorld({
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
-      <SnapMachines world={worldDocument} getBodyPoses={prediction.getSnapMachineBodyPoses} />
+      <SnapMachines world={worldDocument} getBodyPoses={getRenderedSnapMachineBodyPoses} />
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock
@@ -1566,7 +1604,11 @@ export function GameWorld({
         />
       ))}
 
-      <RapierDebugLines prediction={prediction} modeBits={rapierDebugModeBits} />
+      <RapierDebugLines
+        prediction={prediction}
+        getDebugRenderBuffers={getAuthoritativeDebugRenderBuffers}
+        modeBits={rapierDebugModeBits}
+      />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
@@ -1627,9 +1669,11 @@ function rapierDebugModeLabel(modeBits: number): string {
 
 function RapierDebugLines({
   prediction,
+  getDebugRenderBuffers,
   modeBits,
 }: {
   prediction: ReturnType<typeof usePredictionWithWorld>;
+  getDebugRenderBuffers?: (modeBits: number) => { vertices: Float32Array; colors: Float32Array } | null;
   modeBits: number;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -1657,7 +1701,7 @@ function RapierDebugLines({
       return;
     }
 
-    const buffers = prediction.getDebugRenderBuffers(modeBits);
+    const buffers = getDebugRenderBuffers?.(modeBits) ?? prediction.getDebugRenderBuffers(modeBits);
     if (!buffers) {
       geometry.setDrawRange(0, 0);
       return;

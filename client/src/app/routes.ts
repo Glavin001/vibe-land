@@ -1,8 +1,9 @@
 import type { GameMode } from './gameMode';
+import type { WorldDocument } from '../world/worldDocument';
 
 export type AppRoute =
   | { kind: 'launcher' }
-  | { kind: 'game'; mode: GameMode }
+  | { kind: 'game'; mode: GameMode; worldDocument?: WorldDocument; routeLabel?: string }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'godmode' };

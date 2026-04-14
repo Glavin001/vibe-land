@@ -31,6 +31,7 @@ import {
   type ServerWorldPacket,
   type VehicleStateMeters,
 } from './protocol';
+import type { WasmDebugRenderBuffers } from '../wasm/sharedPhysics';
 
 export type RemotePlayer = {
   id: number;
@@ -204,6 +205,13 @@ export class NetcodeClient {
     if (!this.wtClient) {
       this.socket?.ping();
     }
+  }
+
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    if (modeBits === 0) {
+      return null;
+    }
+    return this.localTransport?.getDebugRenderBuffers(modeBits) ?? null;
   }
 
   disconnect(): void {

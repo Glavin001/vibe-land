@@ -1373,15 +1373,31 @@ impl WasmSimWorld {
     /// enter.
     #[wasm_bindgen(js_name = getSnapMachineBindings)]
     pub fn get_snap_machine_bindings(&self, id: u32) -> String {
-        // We need the source envelope JSON to call
-        // `derive_machine_bindings`, but the installed `SnapMachine`
-        // only retains the `action_channels` + `controls`. Fall back
-        // to per-channel defaults since the common case — a machine
-        // without an explicit controls block — is handled perfectly
-        // by the default_action_key table.
         let Some(machine) = self.machines.get(&id) else {
             return String::new();
         };
+        if let Some(controls) = machine.controls() {
+            if let Some(bindings) =
+                crate::snap_machine_controls::derive_machine_bindings_from_plan_and_controls(
+                    machine.plan(),
+                    controls,
+                )
+            {
+                return bindings
+                    .into_iter()
+                    .map(|binding| {
+                        format!(
+                            "{}\t{}\t{}\t{}",
+                            binding.action,
+                            binding.pos_key,
+                            binding.neg_key.as_deref().unwrap_or(""),
+                            binding.scale
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+        }
         let mut rows = Vec::with_capacity(machine.action_channels().len());
         for action in machine.action_channels() {
             let (pos, neg) = crate::snap_machine_controls::default_action_key(action);
@@ -1657,6 +1673,11 @@ impl WasmLocalSession {
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = debugRender)]
+    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
+        DebugRenderBuffers::from_line_buffers(self.inner.debug_render(mode_bits))
     }
 }
 

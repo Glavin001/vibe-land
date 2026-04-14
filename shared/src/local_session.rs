@@ -6,6 +6,7 @@ use crate::{
         PKT_MACHINE_EXIT, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
         PKT_VEHICLE_EXIT, PKT_WELCOME,
     },
+    debug_render::{DebugLineBuffers, default_debug_pipeline, render_debug_buffers},
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
@@ -39,6 +40,7 @@ pub struct LocalPreviewSession {
     queued_shots: Vec<FireCmd>,
     outbound_packets: Vec<Vec<u8>>,
     server_tick: u32,
+    debug_pipeline: rapier3d::pipeline::DebugRenderPipeline,
 }
 
 impl LocalPreviewSession {
@@ -65,6 +67,7 @@ impl LocalPreviewSession {
             queued_shots: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
+            debug_pipeline: default_debug_pipeline(),
         })
     }
 
@@ -180,6 +183,24 @@ impl LocalPreviewSession {
             out.extend_from_slice(&packet);
         }
         out.to_vec()
+    }
+
+    pub fn debug_render(&mut self, mode_bits: u32) -> DebugLineBuffers {
+        self.arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut self.arena.dynamic.sim.colliders);
+        self.arena.dynamic.sync_broad_phase();
+        render_debug_buffers(
+            &mut self.debug_pipeline,
+            mode_bits,
+            &self.arena.dynamic.sim.rigid_bodies,
+            &self.arena.dynamic.sim.colliders,
+            &self.arena.dynamic.impulse_joints,
+            &self.arena.dynamic.multibody_joints,
+            &self.arena.dynamic.sim.narrow_phase,
+        )
     }
 
     fn process_hitscan(&mut self, server_time_ms: u32) {
