@@ -234,6 +234,11 @@ export function SnapMachines({ world, getBodyPoses }: SnapMachinesProps) {
     };
   }, [snapMachines]);
 
+  // Run after parent `GameWorld` `useFrame` (priority 0): R3F calls lower
+  // priorities first, so we must read `getBodyPoses` *after* wasm ticks
+  // (`updateSnapMachine` / `syncRemoteSnapMachine`) or we alternate one
+  // frame of stale poses with the authored `machineRoot` layout — visible
+  // as pose flicker in the recording.
   useFrame(() => {
     for (const [machineId, data] of machineDataRef.current) {
       const poses = getBodyPoses(machineId);
@@ -255,7 +260,7 @@ export function SnapMachines({ world, getBodyPoses }: SnapMachinesProps) {
         group.quaternion.set(poses[o + 3], poses[o + 4], poses[o + 5], poses[o + 6]);
       }
     }
-  });
+  }, 1);
 
   return <group ref={groupRef} />;
 }
