@@ -25,6 +25,7 @@ type GameSceneProps = {
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
+  practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
 };
@@ -47,6 +48,7 @@ export function GameScene({
   worldDocument,
   benchmarkAutopilot,
   practiceBots,
+  practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   sceneExtras,
 }: GameSceneProps) {
@@ -83,6 +85,7 @@ export function GameScene({
           rapierDebugModeBits={rapierDebugModeBits}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
+          practiceBotsDebugOverlay={practiceBotsDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           sceneExtras={sceneExtras}
         />

@@ -187,60 +187,82 @@ export function App({
   // drill targets aren't fighting terrain or props for visibility.
   const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
 
-  // Practice-mode bot runtime. Lazily constructed the first time the user
-  // spawns a bot via the panel (navmesh build takes a beat and isn't worth
-  // paying upfront for users who never enable bots).
-  const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
+  // Practice-mode bot runtime. We pre-build it asynchronously in a useEffect
+  // when practice mode connects, so the user's first slider drag isn't
+  // blocked by the (~1s) navmesh construction inside the constructor —
+  // which previously made the slider feel unresponsive.
+  const [practiceBotRuntime, setPracticeBotRuntime] = useState<PracticeBotRuntime | null>(null);
   const [practiceBotStats, setPracticeBotStats] = useState<PracticeBotStats | null>(null);
+  const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const refreshPracticeBotStats = useCallback(() => {
-    const runtime = practiceBotRuntimeRef.current;
-    setPracticeBotStats(runtime ? runtime.stats() : null);
-  }, []);
-  const ensurePracticeBotRuntime = useCallback((): PracticeBotRuntime => {
-    let runtime = practiceBotRuntimeRef.current;
-    if (!runtime) {
-      runtime = new PracticeBotRuntime(effectiveWorldDocument, { maxAgentRadius: 0.6 });
-      practiceBotRuntimeRef.current = runtime;
-    }
-    return runtime;
-  }, [effectiveWorldDocument]);
+    setPracticeBotStats((prev) => {
+      const runtime = practiceBotRuntime;
+      if (!runtime) return prev === null ? prev : null;
+      return runtime.stats();
+    });
+  }, [practiceBotRuntime]);
   const handleSetBotCount = useCallback((count: number) => {
-    if (count <= 0 && !practiceBotRuntimeRef.current) {
-      return;
-    }
-    const runtime = ensurePracticeBotRuntime();
+    const runtime = practiceBotRuntime;
+    if (!runtime) return;
     runtime.setBotCount(count);
     refreshPracticeBotStats();
-  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
+  }, [practiceBotRuntime, refreshPracticeBotStats]);
   const handleClearBots = useCallback(() => {
-    practiceBotRuntimeRef.current?.clear();
+    practiceBotRuntime?.clear();
     refreshPracticeBotStats();
-  }, [refreshPracticeBotStats]);
+  }, [practiceBotRuntime, refreshPracticeBotStats]);
   const handleSetBotBehavior = useCallback((kind: PracticeBotBehaviorKind) => {
-    const runtime = ensurePracticeBotRuntime();
+    const runtime = practiceBotRuntime;
+    if (!runtime) return;
     runtime.setBehavior(kind);
     refreshPracticeBotStats();
-  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
+  }, [practiceBotRuntime, refreshPracticeBotStats]);
   const handleSetBotMaxSpeed = useCallback((speed: number) => {
-    const runtime = ensurePracticeBotRuntime();
+    const runtime = practiceBotRuntime;
+    if (!runtime) return;
     runtime.setMaxSpeed(speed);
     refreshPracticeBotStats();
-  }, [ensurePracticeBotRuntime, refreshPracticeBotStats]);
-  // Tear down bots when leaving practice mode or switching worlds (calibration).
+  }, [practiceBotRuntime, refreshPracticeBotStats]);
+  const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
+    setPracticeBotDebugOverlay(value);
+  }, []);
+  // Pre-build the runtime once practice mode is active. The navmesh build
+  // is synchronous so we defer it via a microtask; keeps the first paint
+  // unblocked but the runtime is ready by the time the user opens the
+  // panel.
   useEffect(() => {
     if (!practiceMode) {
-      practiceBotRuntimeRef.current?.clear();
-      practiceBotRuntimeRef.current = null;
+      if (practiceBotRuntime) {
+        practiceBotRuntime.clear();
+        practiceBotRuntime.detach();
+      }
+      setPracticeBotRuntime(null);
       setPracticeBotStats(null);
+      return;
     }
-  }, [practiceMode]);
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      if (cancelled) return;
+      const runtime = new PracticeBotRuntime(effectiveWorldDocument, { maxAgentRadius: 0.6 });
+      setPracticeBotRuntime(runtime);
+      setPracticeBotStats(runtime.stats());
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [practiceMode, effectiveWorldDocument]);
+  // Tear down the previous runtime whenever it gets replaced (world swap,
+  // mode swap, unmount).
   useEffect(() => {
-    // Clear out bots when the active world swaps so they don't rely on a
-    // stale navmesh. The panel will re-create them on demand.
-    practiceBotRuntimeRef.current?.clear();
-    practiceBotRuntimeRef.current = null;
-    setPracticeBotStats(null);
-  }, [effectiveWorldDocument]);
+    return () => {
+      if (practiceBotRuntime) {
+        practiceBotRuntime.clear();
+        practiceBotRuntime.detach();
+      }
+    };
+  }, [practiceBotRuntime]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -728,10 +750,12 @@ export function App({
       <PracticeBotsPanel
         visible={practiceMode && connected && !calibrationOpen}
         stats={practiceBotStats}
+        debugOverlay={practiceBotDebugOverlay}
         onSetBotCount={handleSetBotCount}
         onClear={handleClearBots}
         onSetBehavior={handleSetBotBehavior}
         onSetMaxSpeed={handleSetBotMaxSpeed}
+        onToggleDebugOverlay={handleToggleBotDebugOverlay}
       />
       <DebugOverlay
         stats={displayStats}
@@ -768,7 +792,8 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
-          practiceBots={practiceMode ? practiceBotRuntimeRef.current : null}
+          practiceBots={practiceMode ? practiceBotRuntime : null}
+          practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
         />

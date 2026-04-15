@@ -27,6 +27,7 @@ import type { LocalPreviewTransport } from '../../net/localPreviewTransport';
 import type { WorldDocument } from '../../world/worldDocument';
 import { buildInputFromButtons } from '../../scene/inputBuilder';
 import { FLAG_DEAD } from '../../net/protocol';
+import { pathCorridor } from 'navcat/blocks';
 
 /**
  * Accessor for the local (human) player's authoritative state. The
@@ -50,6 +51,7 @@ import {
 import { BotCrowd, createBotCrowd, type BotHandle } from '../crowd/BotCrowd';
 import type {
   BotIntent,
+  BotMode,
   BotSelfState,
   ObservedPlayer,
   Vec3Tuple,
@@ -82,6 +84,35 @@ export interface PracticeBotStats {
   navTriangles: number;
   /** True while the runtime is actively ticking (session connected). */
   running: boolean;
+}
+
+/**
+ * Snapshot of one bot's planning state, surfaced for the in-scene debug
+ * overlay. Pure data — no THREE / R3F dependencies so the renderer can
+ * decide how to visualize each piece.
+ */
+export interface BotDebugInfo {
+  id: number;
+  /** World-space position (server-authoritative if attached). */
+  position: Vec3Tuple;
+  /** The destination this bot is currently routing toward, if any. */
+  target: Vec3Tuple | null;
+  /** Funnel-algorithm steering corners from `position` to `target`. */
+  pathPoints: Vec3Tuple[];
+  /** Crowd's planned velocity for this tick. */
+  desiredVelocity: Vec3Tuple;
+  /** KCC-driven actual velocity from the last sync. */
+  velocity: Vec3Tuple;
+  /** Behavior label from the practice UI dropdown. */
+  behaviorKind: PracticeBotBehaviorKind;
+  /** Decision mode emitted by the brain on the last tick. */
+  mode: BotMode;
+  /** Currently targeted remote player, if any. */
+  targetPlayerId: number | null;
+  /** Configured max speed override (m/s). */
+  maxSpeed: number;
+  /** Whether the brain wanted to fire on the last tick. */
+  firePrimary: boolean;
 }
 
 interface PracticeBot {
@@ -277,6 +308,77 @@ export class PracticeBotRuntime {
       this.transport?.disconnectBot(bot.id);
     }
     this.bots.clear();
+  }
+
+  /**
+   * Per-bot diagnostics for the in-scene debug overlay. Reads navcat's
+   * crowd state (corridor, target, desired velocity) and combines it with
+   * the latest brain decision label so callers can render "what is this
+   * bot thinking" in the world.
+   *
+   * Returns an empty array if the runtime is unattached or has no bots.
+   * Cheap enough to call every render frame.
+   */
+  getBotDebugInfos(): BotDebugInfo[] {
+    if (this.bots.size === 0) return [];
+    const out: BotDebugInfo[] = [];
+    for (const bot of this.bots.values()) {
+      const agent = this.crowd.getAgent(bot.handle.id);
+      if (!agent) continue;
+      // Prefer the snapshot-driven server position if the runtime is
+      // attached (more accurate than the crowd's internal sim, since
+      // the crowd is just a planner here). Fall back to agent.position.
+      const remote = this.client?.remotePlayers.get(bot.id);
+      const position: Vec3Tuple = remote
+        ? [remote.position[0], remote.position[1], remote.position[2]]
+        : [agent.position[0], agent.position[1], agent.position[2]];
+
+      // Steering corners: navcat's path-corridor exposes a string-pulled
+      // straight path (the funnel-algorithm corners the agent is aiming
+      // at). Each corner is a world-space point along the bot's planned
+      // route to its target.
+      const corners = pathCorridor.findCorners(
+        agent.corridor,
+        this.crowd.navMesh,
+        8,
+      );
+      const pathPoints: Vec3Tuple[] = [];
+      pathPoints.push([position[0], position[1], position[2]]);
+      if (corners) {
+        for (const corner of corners) {
+          pathPoints.push([
+            corner.position[0],
+            corner.position[1],
+            corner.position[2],
+          ]);
+        }
+      }
+
+      out.push({
+        id: bot.id,
+        position,
+        target: bot.handle.targetPosition
+          ? [
+              bot.handle.targetPosition[0],
+              bot.handle.targetPosition[1],
+              bot.handle.targetPosition[2],
+            ]
+          : null,
+        pathPoints,
+        desiredVelocity: [
+          agent.desiredVelocity[0],
+          agent.desiredVelocity[1],
+          agent.desiredVelocity[2],
+        ],
+        velocity: [agent.velocity[0], agent.velocity[1], agent.velocity[2]],
+        behaviorKind: bot.behaviorKind,
+        mode: bot.lastIntent.mode,
+        targetPlayerId: bot.lastIntent.targetPlayerId,
+        maxSpeed: this.maxSpeed,
+        firePrimary: bot.lastIntent.firePrimary,
+      });
+    }
+    return out;
   }
 
   /** Internal tick — runs every `1 / tickHz` seconds when attached. */

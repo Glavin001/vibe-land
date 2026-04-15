@@ -6,10 +6,13 @@ interface PracticeBotsPanelProps {
   visible: boolean;
   /** Current runtime stats. When the runtime has been cleaned up this is null. */
   stats: PracticeBotStats | null;
+  /** Whether the in-scene bot debug overlay is currently rendering. */
+  debugOverlay: boolean;
   onSetBotCount: (count: number) => void;
   onClear: () => void;
   onSetBehavior: (kind: PracticeBotBehaviorKind) => void;
   onSetMaxSpeed: (speed: number) => void;
+  onToggleDebugOverlay: (value: boolean) => void;
 }
 
 const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: string }> = [
@@ -21,10 +24,12 @@ const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: st
 export function PracticeBotsPanel({
   visible,
   stats,
+  debugOverlay,
   onSetBotCount,
   onClear,
   onSetBehavior,
   onSetMaxSpeed,
+  onToggleDebugOverlay,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
   if (!visible) return null;
@@ -77,6 +82,9 @@ export function PracticeBotsPanel({
               step={0.25}
               value={maxSpeed}
               onChange={(event) => onSetMaxSpeed(Number(event.target.value))}
+              onInput={(event) =>
+                onSetMaxSpeed(Number((event.target as HTMLInputElement).value))
+              }
               style={sliderStyle}
             />
             <input
@@ -87,11 +95,11 @@ export function PracticeBotsPanel({
               value={maxSpeed}
               onChange={(event) => {
                 const next = Number(event.target.value);
-                if (Number.isFinite(next)) onSetMaxSpeed(next);
+                if (Number.isFinite(next) && next > 0) onSetMaxSpeed(next);
               }}
-              style={{ ...numberInputStyle, width: 64 }}
+              style={numberInputStyle}
             />
-            <span style={{ ...valueStyle, minWidth: 36 }}>m/s</span>
+            <span style={unitStyle}>m/s</span>
           </div>
           <div style={{ ...rowStyle, alignItems: 'flex-start' }}>
             <label style={labelStyle}>Behavior</label>
@@ -112,6 +120,17 @@ export function PracticeBotsPanel({
                 </label>
               ))}
             </div>
+          </div>
+          <div style={rowStyle}>
+            <label style={labelStyle}>Debug</label>
+            <label style={toggleLabelStyle}>
+              <input
+                type="checkbox"
+                checked={debugOverlay}
+                onChange={(event) => onToggleDebugOverlay(event.target.checked)}
+              />
+              <span>show path / target / state in scene</span>
+            </label>
           </div>
           <div style={rowStyle}>
             <button type="button" style={actionButtonStyle} onClick={() => onSetBotCount(count + 1)}>
@@ -170,7 +189,10 @@ const panelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 8,
-  minWidth: 280,
+  // Wide enough that the slider has comfortable drag distance after the
+  // label, number input, and unit suffix take their share. Cramped
+  // sliders feel "broken" — they hit-test poorly.
+  minWidth: 360,
   boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
 };
 
@@ -203,6 +225,22 @@ const numberInputStyle: CSSProperties = {
   padding: '2px 4px',
   fontSize: 12,
   textAlign: 'right',
+};
+
+const unitStyle: CSSProperties = {
+  fontSize: 11,
+  color: 'rgba(255,255,255,0.55)',
+  minWidth: 28,
+};
+
+const toggleLabelStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  flex: 1,
+  fontSize: 12,
+  color: 'rgba(255,255,255,0.85)',
+  cursor: 'pointer',
 };
 
 const valueStyle: CSSProperties = {

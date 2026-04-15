@@ -39,6 +39,7 @@ import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
+import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
@@ -192,6 +193,12 @@ type GameWorldProps = {
    * automatically on unmount.
    */
   practiceBots?: PracticeBotRuntime | null;
+  /**
+   * When true, render the in-scene bot debug overlay (path lines,
+   * target markers, brain state labels). Only meaningful in practice
+   * mode and when a `practiceBots` runtime is attached.
+   */
+  practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
@@ -395,6 +402,7 @@ export function GameWorld({
   rapierDebugModeBits = 0,
   benchmarkAutopilot,
   practiceBots,
+  practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   sceneExtras,
 }: GameWorldProps) {
@@ -1482,6 +1490,10 @@ export function GameWorld({
 
       {/* Crosshair */}
       <CrosshairHUD />
+
+      {practiceMode && practiceBots && practiceBotsDebugOverlay && (
+        <BotsDebugOverlay runtime={practiceBots} />
+      )}
 
       {sceneExtras}
     </>
