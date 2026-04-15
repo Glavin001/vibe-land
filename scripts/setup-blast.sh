@@ -7,14 +7,11 @@
 # Idempotent: safe to re-run. The target directory is gitignored so it
 # never lands in the vibe-land history. Invoked automatically by
 # `make setup`.
-#
-# If patches/blast-stress-solver.patch exists, it is applied on top of
-# the pinned SHA (also idempotent: already-applied patches are skipped).
 
 set -euo pipefail
 
 REPO_URL="https://github.com/Glavin001/PhysX.git"
-BRANCH="claude/rust-stress-solver-backend-NST8X"
+BRANCH="claude/fix-wasm-build-UyQBU"
 
 # Resolve repo root regardless of cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,7 +19,6 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 VENDOR_DIR="${REPO_ROOT}/third_party/physx"
 PINNED_SHA_FILE="${REPO_ROOT}/scripts/blast-pinned-sha.txt"
-PATCH_FILE="${REPO_ROOT}/patches/blast-stress-solver.patch"
 
 if [[ ! -f "${PINNED_SHA_FILE}" ]]; then
   echo "[setup-blast] missing pinned SHA file at ${PINNED_SHA_FILE}" >&2
@@ -64,19 +60,6 @@ CRATE_DIR="${VENDOR_DIR}/blast/blast-stress-solver-rs"
 if [[ ! -f "${CRATE_DIR}/Cargo.toml" ]]; then
   echo "[setup-blast] expected crate missing at ${CRATE_DIR}" >&2
   exit 1
-fi
-
-if [[ -f "${PATCH_FILE}" ]]; then
-  if git -C "${VENDOR_DIR}" apply --check "${PATCH_FILE}" 2>/dev/null; then
-    echo "[setup-blast] applying ${PATCH_FILE}"
-    git -C "${VENDOR_DIR}" apply "${PATCH_FILE}"
-  elif git -C "${VENDOR_DIR}" apply --reverse --check "${PATCH_FILE}" 2>/dev/null; then
-    echo "[setup-blast] ${PATCH_FILE} already applied"
-  else
-    echo "[setup-blast] WARNING: ${PATCH_FILE} no longer applies cleanly" >&2
-    echo "[setup-blast]   (patch file is out of date — regenerate it against the pinned SHA)" >&2
-    exit 1
-  fi
 fi
 
 echo "[setup-blast] ready: ${CRATE_DIR}"

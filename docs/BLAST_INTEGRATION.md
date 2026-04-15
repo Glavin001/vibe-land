@@ -9,8 +9,10 @@ how to maintain it.
 
 - **What**: `blast-stress-solver`, an in-development Rust crate in
   [`Glavin001/PhysX`](https://github.com/Glavin001/PhysX) on branch
-  `claude/rust-stress-solver-backend-NST8X`, is pulled in as a path
-  dependency of the `shared` crate.
+  `claude/fix-wasm-build-UyQBU`, is pulled in as a path dependency of
+  the `shared` crate.  That branch bakes the libc-stub / wasi-less
+  wasm build fixes we previously shipped as a local patch, so
+  vibe-land no longer needs a `patches/blast-stress-solver.patch`.
 - **Where it runs**: only inside the browser wasm bundle
   (`client/src/wasm/pkg/vibe_land_shared_bg.wasm`). Native
   `cargo check` / `cargo build -p web-fps-server` never touches the
@@ -25,19 +27,18 @@ how to maintain it.
 
 The upstream PhysX repo is large (>1 GB full clone) and cannot live in
 vibe-land's history. `scripts/setup-blast.sh` clones it into
-`third_party/physx/` at a pinned commit, applies
-`patches/blast-stress-solver.patch`, and is idempotent so subsequent
-`make setup` runs are no-ops.
+`third_party/physx/` at a pinned commit, and is idempotent so
+subsequent `make setup` runs are no-ops.
 
 - **Pinned SHA**: `scripts/blast-pinned-sha.txt` (single line, no
   trailing whitespace).
-- **Patch file**: `patches/blast-stress-solver.patch`. Carries every
-  vibe-land-specific edit to the upstream PhysX tree — see
-  [Patch contents](#patch-contents) below.
 - **Vendor path**: `third_party/physx/` is in `.gitignore`.
-- **Re-pin**: edit `scripts/blast-pinned-sha.txt`, then
-  `make blast-update`. If upstream moved code that patches touched,
-  regenerate the patch (see [Regenerating the patch](#regenerating-the-patch)).
+- **Re-pin**: edit `scripts/blast-pinned-sha.txt` and
+  `scripts/setup-blast.sh` (`BRANCH`), then `make blast-update`.
+- **No local patch**: the wasm build fixes now live upstream on
+  branch `claude/fix-wasm-build-UyQBU`, so there is no
+  `patches/` directory. If you need a fresh vibe-land-only edit,
+  fork upstream first and re-pin against your fork.
 
 ## Crate wiring
 
@@ -173,10 +174,12 @@ You can verify this by running `wasm-objdump -j Import -x
 client/src/wasm/pkg/vibe_land_shared_bg.wasm` after a build; only
 wasm-bindgen glue imports should appear.
 
-## Patch contents
+## Upstream fixes (previously a local patch)
 
-`patches/blast-stress-solver.patch` carries these vibe-land-specific
-edits to the upstream PhysX tree:
+The wasm32-unknown-unknown build fixes that vibe-land used to carry
+as `patches/blast-stress-solver.patch` have been upstreamed to the
+`claude/fix-wasm-build-UyQBU` branch of `Glavin001/PhysX`.  These
+are:
 
 1. `blast-stress-solver-rs/build.rs` — probe for `wasi-sysroot` /
    `libc++-*-dev-wasm32` headers and pass the right
@@ -184,21 +187,18 @@ edits to the upstream PhysX tree:
    `wasm32-unknown-unknown`. Also link `c++abi` for the tiny exception
    surface libc++ still references under `-fno-exceptions`.
 2. `blast-stress-solver-rs/src/wasm_runtime_shims.rs` — Rust
-   stubs for every libc symbol libc++ pulls in (see above).
+   stubs for every libc symbol libc++ pulls in (see above), plus
+   `aligned_alloc` / `fputc`.
 3. `blast-stress-solver-rs/src/wasm_cxa_stubs.rs` — trap stubs for
    `__cxa_allocate_exception` / `__cxa_throw`.
-4. `blast-stress-solver-rs/src/lib.rs` — `#[cfg(target_arch =
-   "wasm32")]` gates for the two new modules.
-5. `blast/include/shared/NvFoundation/NvPreprocessor.h` — wasm /
+4. `blast/include/shared/NvFoundation/NvPreprocessor.h` — wasm /
    clang compatibility macros.
-6. `blast/source/sdk/globals/NvBlastGlobals.cpp` — tiny fix for
+5. `blast/source/sdk/globals/NvBlastGlobals.cpp` — tiny fix for
    an `inline`-related clang error.
-7. `blast/source/shared/NsFoundation/include/NsArray.h` — wasm
+6. `blast/source/shared/NsFoundation/include/NsArray.h` — wasm
    compatibility tweak.
-
-All of these are intended to be upstreamed to `Glavin001/PhysX` as
-proper fixes; none of them are binary post-processing or runtime
-workarounds.
+7. `blast-stress-solver-rs/tests/wasm_smoke_test.rs` — regression
+   suite that keeps the above fixes honest upstream.
 
 ## Build order
 
@@ -217,27 +217,6 @@ No post-processors, no wasm-binary patching.  Rerunning after an
 incremental Rust change is safe and fast.  Switching between
 stub and real backends is a full rebuild (Cargo feature change) but
 the stub build is effectively instantaneous.
-
-## Regenerating the patch
-
-After editing files under `third_party/physx/` (e.g. to fix an
-upstream compatibility issue), regenerate the patch file from inside
-the vendor tree:
-
-```sh
-cd third_party/physx
-git add -A
-git diff --cached HEAD > ../../patches/blast-stress-solver.patch
-git restore --staged .
-```
-
-Verify it still applies cleanly in reverse (which is how
-`setup-blast.sh` detects an already-applied patch):
-
-```sh
-cd third_party/physx
-git apply --reverse --check ../../patches/blast-stress-solver.patch
-```
 
 ## Non-negotiable invariants
 

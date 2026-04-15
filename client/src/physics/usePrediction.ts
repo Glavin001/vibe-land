@@ -81,6 +81,12 @@ export function usePredictionWithWorld(
       // bundle — stop + restart `npm run dev` to trigger `predev`
       // → `build:wasm`.
       if (practiceMode) {
+        // Turn on verbose destructibles logging in practice mode so the
+        // browser console shows spawn info, every awake-chunk-count
+        // change, and fracture events.  This is the smoking gun for
+        // "drive through the wall" bugs: if awake never goes >0 on
+        // impact, contacts aren't reaching the solver.
+        sim.setDestructiblesLogging(true);
         const instanceCount = sim.getDestructibleInstanceCount();
         const chunkCount = sim.getDestructibleChunkCount();
         // eslint-disable-next-line no-console

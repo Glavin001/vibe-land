@@ -114,6 +114,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   getDestructibleChunkCount(): number;
   getDestructibleInstanceCount(): number;
   drainDestructibleFractureEvents(): Uint32Array;
+  setDestructiblesLogging(enabled: boolean): void;
 };
 type WasmSimWorldCtor = {
   new (): WasmSimWorldInstance;

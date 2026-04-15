@@ -21,6 +21,7 @@ use rapier3d::prelude::{
     ActiveHooks, ImpulseJointSet, InteractionGroups, MultibodyJointSet, RigidBodyHandle,
     RigidBodyType,
 };
+use wasm_bindgen::prelude::*;
 
 use blast_stress_solver::rapier::{DestructibleSet, FracturePolicy};
 use blast_stress_solver::scenarios::{
@@ -29,6 +30,43 @@ use blast_stress_solver::scenarios::{
 use blast_stress_solver::types::{SolverSettings, Vec3 as BlastVec3};
 
 use crate::simulation::SimWorld;
+
+// Minimal `console.log` binding — avoids pulling in `web_sys` just for
+// a handful of diagnostic lines.  Calls are gated through
+// `destructibles_log_enabled()` so production builds can silence them
+// without recompiling.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console)]
+    fn log(s: &str);
+}
+
+/// Runtime toggle for destructibles debug logging.  Flipped on by
+/// [`set_destructibles_logging`] (exposed via `wasm_api.rs`).  Default
+/// off so production users don't see console spam.
+static mut DESTRUCTIBLES_LOG_ENABLED: bool = false;
+
+/// Safe getter — wasm is strictly single-threaded so the unsafe access
+/// to the static is sound.
+#[inline]
+pub fn destructibles_log_enabled() -> bool {
+    unsafe { DESTRUCTIBLES_LOG_ENABLED }
+}
+
+/// Enable/disable destructibles debug logging at runtime.  Called from
+/// `WasmSimWorld::setDestructiblesLogging`.
+pub fn set_destructibles_log_enabled(enabled: bool) {
+    unsafe {
+        DESTRUCTIBLES_LOG_ENABLED = enabled;
+    }
+}
+
+#[inline]
+fn dlog(msg: &str) {
+    if destructibles_log_enabled() {
+        log(msg);
+    }
+}
 
 /// Solver material constants, mirroring `scaled_solver_settings` in the
 /// upstream `blast-stress-demo-rs/src/main.rs`.  These are tuned to be
@@ -97,6 +135,9 @@ pub struct DestructibleInstance {
     node_count: u32,
     /// Cached transforms buffer (stride = [`CHUNK_TRANSFORM_STRIDE`]).
     transforms: Vec<f32>,
+    /// Last reported "awake chunk count" — used by the debug logger to
+    /// emit a line only when the value changes, instead of every tick.
+    last_logged_awake: i32,
 }
 
 impl DestructibleInstance {
@@ -223,6 +264,7 @@ impl DestructibleRegistry {
 
         let node_count = set.solver().node_count();
         let transforms_len = node_count as usize * CHUNK_TRANSFORM_STRIDE;
+        let handle_count = handles.len();
         let index = self.instances.len();
         self.id_to_index.insert(id, index);
         self.instances.push(DestructibleInstance {
@@ -232,7 +274,18 @@ impl DestructibleRegistry {
             set,
             node_count,
             transforms: vec![0.0; transforms_len],
+            last_logged_awake: -1,
         });
+        dlog(&format!(
+            "[destructibles] spawn id={} kind={:?} nodes={} bodies={} pose=({:.2},{:.2},{:.2})",
+            id,
+            kind,
+            node_count,
+            handle_count,
+            pose.translation.x,
+            pose.translation.y,
+            pose.translation.z,
+        ));
         true
     }
 
@@ -319,12 +372,18 @@ impl DestructibleRegistry {
                 // the full split cohort list.
                 self.fracture_events.push(instance.id);
                 self.fracture_events.push(step_result.fractures as u32);
+                dlog(&format!(
+                    "[destructibles] FRACTURE id={} fractures={} splits={}",
+                    instance.id, step_result.fractures, step_result.split_events,
+                ));
             }
 
             // Rebuild the per-instance transforms buffer.  We iterate
             // nodes in stable node-index order so chunk indices stay
             // consistent across frames (chunk_index == node_index).
             // World-space pose = owning_body.pose() * local_offset.
+            let mut awake_count: u32 = 0;
+            let mut peak_speed_sq: f32 = 0.0;
             instance.transforms.clear();
             for node_index in 0..instance.node_count {
                 let chunk_index = node_index;
@@ -359,6 +418,14 @@ impl DestructibleRegistry {
                 let world_point = body_iso.transform_point(&local_point);
                 let rot = body_iso.rotation;
                 let active = matches!(rb.body_type(), RigidBodyType::Dynamic) && !rb.is_sleeping();
+                if active {
+                    awake_count += 1;
+                    let lv = rb.linvel();
+                    let speed_sq = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z;
+                    if speed_sq > peak_speed_sq {
+                        peak_speed_sq = speed_sq;
+                    }
+                }
                 instance.transforms.extend_from_slice(&[
                     instance.id as f32,
                     chunk_index as f32,
@@ -374,6 +441,27 @@ impl DestructibleRegistry {
                 ]);
             }
             self.transforms.extend_from_slice(&instance.transforms);
+
+            // Only log when the awake-chunk count changes, so the
+            // console doesn't flood every frame.  Seeing the first
+            // "awake_count > 0" tells the user that a contact actually
+            // landed on a chunk — which is the smoking gun for the
+            // "drive through the wall" bug.
+            if destructibles_log_enabled()
+                && (awake_count as i32) != instance.last_logged_awake
+            {
+                instance.last_logged_awake = awake_count as i32;
+                let peak_speed = peak_speed_sq.sqrt();
+                log(&format!(
+                    "[destructibles] tick id={} awake={}/{} peakSpeed={:.2} fractures={} splits={}",
+                    instance.id,
+                    awake_count,
+                    instance.node_count,
+                    peak_speed,
+                    step_result.fractures,
+                    step_result.split_events,
+                ));
+            }
         }
     }
 

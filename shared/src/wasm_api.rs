@@ -10,7 +10,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
-use crate::destructibles::{pose_from_world_doc, DestructibleRegistry};
+use crate::destructibles::{
+    pose_from_world_doc, set_destructibles_log_enabled, DestructibleRegistry,
+};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
 use crate::protocol::InputCmd;
@@ -292,6 +294,18 @@ impl WasmSimWorld {
         self.destructibles
             .drain_fracture_events()
             .into_boxed_slice()
+    }
+
+    /// Toggle verbose destructibles logging.  When enabled, the wasm
+    /// backend prints `[destructibles] ...` lines on spawn, on every
+    /// awake-chunk-count change, and on every fracture event.
+    ///
+    /// Off by default; the client flips it on in dev builds so the
+    /// user can diagnose why a vehicle/ball/player passes through a
+    /// destructible (are contacts arriving at all?).
+    #[wasm_bindgen(js_name = setDestructiblesLogging)]
+    pub fn set_destructibles_logging(&mut self, enabled: bool) {
+        set_destructibles_log_enabled(enabled);
     }
 
     /// Remove a collider by its ID (returned from `addCuboid`).

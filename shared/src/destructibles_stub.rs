@@ -99,6 +99,14 @@ impl Default for DestructibleRegistry {
     }
 }
 
+/// Debug logging toggle — no-op on the stub backend.
+pub fn set_destructibles_log_enabled(_enabled: bool) {}
+
+/// Debug logging query — always `false` on the stub backend.
+pub fn destructibles_log_enabled() -> bool {
+    false
+}
+
 /// Same signature as the real backend's helper so callers don't need
 /// to branch.
 pub fn pose_from_world_doc(position: [f32; 3], rotation: [f32; 4]) -> Isometry3<f32> {
