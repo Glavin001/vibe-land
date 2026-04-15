@@ -265,6 +265,7 @@ function ActionButtons() {
 
 function TouchButton({ def }: { def: ButtonDef }) {
   const pointerIdRef = useRef<number | null>(null);
+  const lastPosRef = useRef<{ x: number; y: number } | null>(null);
   const [active, setActive] = useState(false);
 
   const begin = useCallback(() => {
@@ -304,6 +305,7 @@ function TouchButton({ def }: { def: ButtonDef }) {
       onPointerDown={(e) => {
         if (pointerIdRef.current !== null) return;
         pointerIdRef.current = e.pointerId;
+        lastPosRef.current = { x: e.clientX, y: e.clientY };
         try {
           e.currentTarget.setPointerCapture(e.pointerId);
         } catch {
@@ -312,20 +314,32 @@ function TouchButton({ def }: { def: ButtonDef }) {
         e.stopPropagation();
         begin();
       }}
+      onPointerMove={(e) => {
+        if (pointerIdRef.current !== e.pointerId) return;
+        const last = lastPosRef.current;
+        if (!last) return;
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        lastPosRef.current = { x: e.clientX, y: e.clientY };
+        touchInputSource.addLookDelta(dx, dy);
+      }}
       onPointerUp={(e) => {
         if (pointerIdRef.current !== e.pointerId) return;
         pointerIdRef.current = null;
+        lastPosRef.current = null;
         e.stopPropagation();
         end();
       }}
       onPointerCancel={(e) => {
         if (pointerIdRef.current !== e.pointerId) return;
         pointerIdRef.current = null;
+        lastPosRef.current = null;
         end();
       }}
       onLostPointerCapture={(e) => {
         if (pointerIdRef.current !== e.pointerId) return;
         pointerIdRef.current = null;
+        lastPosRef.current = null;
         end();
       }}
     >
