@@ -20,16 +20,8 @@ blast-update: setup-blast
 	@echo "Created .env from .env.example — edit as needed."
 
 ## Build the shared WASM module (run after any change to shared/).
-## Post-processors:
-##  - patch-wasi-stubs.mjs: inlines no-op JS stubs for wasi_snapshot_preview1
-##    imports the Blast C++ backend drags in via libc++ / wasi-libc.
-##  - patch-wasm-dtors.mjs: neutralises __funcs_on_exit / __stdio_exit in the
-##    wasm binary so wasm-bindgen's command_export wrappers stop trapping on
-##    every call.  See docs/BLAST_INTEGRATION.md for why both are needed.
 setup-wasm:
 	cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
-	node scripts/patch-wasi-stubs.mjs
-	node scripts/patch-wasm-dtors.mjs
 
 ## Install client npm dependencies
 setup-client:
