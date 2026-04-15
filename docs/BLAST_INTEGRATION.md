@@ -41,21 +41,65 @@ vibe-land's history. `scripts/setup-blast.sh` clones it into
 
 ## Crate wiring
 
-`shared/Cargo.toml` declares the dep under the wasm32 block so it's
-only compiled for the browser target:
+`shared/Cargo.toml` declares the dep as **optional** under the wasm32
+block so it's only compiled for the browser target *and* only when
+the `destructibles` Cargo feature is enabled:
 
 ```toml
+[features]
+destructibles = ["dep:blast-stress-solver"]
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 blast-stress-solver = {
   path = "../third_party/physx/blast/blast-stress-solver-rs",
   default-features = false,
   features = ["scenarios", "rapier"],
+  optional = true,
 }
 ```
 
-`shared/src/destructibles.rs` is gated
-`#![cfg(target_arch = "wasm32")]` and wraps the Blast API for the rest
-of the shared crate. `shared/src/wasm_api.rs` exposes
+### Why optional + stub crate
+
+Cargo eagerly resolves every path dependency during metadata
+resolution — even when the target `cfg` or Cargo feature that gates
+it is off.  That means `cargo check`, `cargo metadata`, and
+`wasm-pack build` all need a valid `Cargo.toml` at
+`third_party/physx/blast/blast-stress-solver-rs/`, even on machines
+that have no intention of ever compiling the real Blast backend
+(e.g. Vercel preview builds, fresh dev boxes that haven't run
+`make setup`).
+
+To keep the build resolvable everywhere we ship a tiny placeholder
+crate at [`stubs/blast-stress-solver-rs/`](../stubs/blast-stress-solver-rs)
+and drop it into place via
+[`scripts/ensure-blast-stub.sh`](../scripts/ensure-blast-stub.sh)
+whenever `third_party/physx/` is missing.  The stub is idempotent
+and a no-op when the real clone is already present.
+
+`scripts/build-shared-wasm.sh` then decides whether to pass
+`--features destructibles` to `wasm-pack build`:
+
+- **Real PhysX clone present** (`third_party/physx/.git` exists):
+  builds with `--features destructibles`, compiling the real Blast
+  C++ backend into the wasm bundle.
+- **Stub only**: builds without the feature, so the optional dep is
+  never touched, and `destructibles.rs` re-exports a no-op backend
+  from `destructibles_stub.rs`.  The JS destructibles API on
+  `WasmSimWorld` stays intact (every method is still exported) —
+  calls simply don't do anything and the client sees an empty
+  registry.
+
+The split lives in three files under `shared/src/`:
+
+- `destructibles.rs` — thin wrapper that re-exports either the real
+  or stub backend based on `cfg(feature = "destructibles")`.
+- `destructibles_real.rs` — the real implementation gated on
+  `cfg(all(target_arch = "wasm32", feature = "destructibles"))`.
+- `destructibles_stub.rs` — the no-op backend gated on
+  `cfg(all(target_arch = "wasm32", not(feature = "destructibles")))`.
+
+`shared/src/wasm_api.rs` imports from `crate::destructibles::*`
+without caring which backend is active. `shared/src/wasm_api.rs` exposes
 `spawnDestructible`, `despawnDestructible`, `stepDestructibles`,
 `getDestructibleChunkCount`, `getDestructibleInstanceCount`,
 `getDestructibleChunkTransforms`, and
@@ -158,14 +202,21 @@ workarounds.
 
 ## Build order
 
-`make setup-wasm` is a single step:
+`make setup-wasm` (and `npm run build:wasm`) drives two scripts:
 
 ```sh
-cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+# 1. Place the stub crate if third_party/physx is missing.
+./scripts/ensure-blast-stub.sh
+
+# 2. Auto-detects whether the real PhysX clone is available and
+#    passes `--features destructibles` accordingly.
+./scripts/build-shared-wasm.sh
 ```
 
-No post-processors, no wasm-binary patching. Rerunning after an
-incremental Rust change is safe and fast.
+No post-processors, no wasm-binary patching.  Rerunning after an
+incremental Rust change is safe and fast.  Switching between
+stub and real backends is a full rebuild (Cargo feature change) but
+the stub build is effectively instantaneous.
 
 ## Regenerating the patch
 
@@ -191,15 +242,23 @@ git apply --reverse --check ../../patches/blast-stress-solver.patch
 ## Non-negotiable invariants
 
 - The Blast dep **must** stay under
-  `[target.'cfg(target_arch = "wasm32")'.dependencies]`. Moving it
-  to top-level dependencies will try to compile the Blast C++
-  backend on every server / CI machine — none of them have the
-  wasi C++ toolchain.
-- `destructibles.rs` and `wasm_cxa_stubs.rs` are
-  `#![cfg(target_arch = "wasm32")]` only. Don't drop the gate.
-- Fresh clones must run `make setup` (which invokes
-  `setup-blast.sh`) before the first `make setup-wasm`, or the
-  path dependency will error out.
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]` *and*
+  `optional = true`.  Moving it to top-level or non-optional
+  dependencies will try to compile the Blast C++ backend on every
+  server / CI machine — none of them have the wasi C++ toolchain.
+- `destructibles.rs`, `destructibles_real.rs`, `destructibles_stub.rs`,
+  `wasm_api.rs`, and `wasm_cxa_stubs.rs` are all
+  `#![cfg(target_arch = "wasm32")]` only.  Don't drop the gate.
+- The `destructibles_real.rs` file is additionally gated on
+  `feature = "destructibles"`, and `destructibles_stub.rs` on
+  `not(feature = "destructibles")`.  Keep both gates in sync with
+  `shared/src/lib.rs`.
+- Fresh clones without `make setup` still build via the stub
+  placeholder — the real destructible structures just don't show up
+  until `scripts/setup-blast.sh` has run.
+- `stubs/blast-stress-solver-rs/` is a **checked-in** placeholder
+  crate.  Do **not** add any real symbols to it; its only job is to
+  satisfy cargo's path resolution when the real tree is missing.
 - The shared physics test suite (`worldDocumentPhysics.test.ts`)
   loads the **default** `trail.world.json`. Do not add
   destructibles to that file — use `PRACTICE_DESTRUCTIBLES` in

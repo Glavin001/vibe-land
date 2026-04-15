@@ -1,0 +1,21 @@
+[package]
+name = "blast-stress-solver"
+version = "0.0.0-stub"
+edition = "2021"
+description = "Placeholder crate that stands in for the real NVIDIA Blast stress solver when the PhysX clone is not available (see docs/BLAST_INTEGRATION.md)."
+license = "BSD-3-Clause"
+
+# The real crate lives in `Glavin001/PhysX` and is dropped into
+# `third_party/physx/blast/blast-stress-solver-rs/` by
+# `scripts/setup-blast.sh`.  Cargo still needs a valid `Cargo.toml`
+# at that path during metadata resolution even when the
+# `vibe-land-shared/destructibles` feature is off, so
+# `scripts/ensure-blast-stub.sh` copies this stub into place when the
+# real tree is missing (e.g. Vercel preview builds).  Nothing in
+# `vibe-land-shared` references any symbol from this crate unless the
+# `destructibles` feature is explicitly enabled.
+
+[features]
+default = []
+rapier = []
+scenarios = []

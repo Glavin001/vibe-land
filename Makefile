@@ -20,8 +20,24 @@ blast-update: setup-blast
 	@echo "Created .env from .env.example — edit as needed."
 
 ## Build the shared WASM module (run after any change to shared/).
+##
+## `ensure-blast-stub.sh` drops a placeholder crate into
+## `third_party/physx/blast/blast-stress-solver-rs/` when the real
+## PhysX clone is missing, so Cargo's optional path dependency
+## always resolves (see docs/BLAST_INTEGRATION.md).  If the real
+## clone is present we also pass `--features destructibles` to
+## compile the real Blast backend into the wasm module; otherwise
+## the no-op backend keeps the JS bindings intact without the C++
+## toolchain.
 setup-wasm:
-	cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+	./scripts/ensure-blast-stub.sh
+	@if [ -d third_party/physx/.git ]; then \
+	  echo "[make setup-wasm] building shared wasm WITH destructibles feature"; \
+	  cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg -- --features destructibles; \
+	else \
+	  echo "[make setup-wasm] building shared wasm WITHOUT destructibles feature (no PhysX clone)"; \
+	  cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg; \
+	fi
 
 ## Install client npm dependencies
 setup-client:
