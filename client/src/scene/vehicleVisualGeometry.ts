@@ -5,7 +5,7 @@ export const VEHICLE_WHEEL_CONNECTION_OFFSETS: ReadonlyArray<readonly [number, n
   [-0.9, -0.3, -1.1],
   [0.9, -0.3, -1.1],
 ] as const;
-export const VEHICLE_SUSPENSION_REST_LENGTH_M = 0.3;
+export const VEHICLE_SUSPENSION_REST_LENGTH_M = 0.42;
 export const VEHICLE_WHEEL_RADIUS_M = 0.35;
 
 // The physics wheel anchor is the suspension connection point. The visual wheel

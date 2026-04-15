@@ -16,17 +16,15 @@ export const VEHICLE_VISUAL_SNAP_DISTANCE = 0.35;
 export const VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE = 0.08;
 export const VEHICLE_VISUAL_SNAP_ROT_THRESHOLD = 0.04;
 export const VEHICLE_INPUT_REDUNDANCY = 4;
-export const VEHICLE_MAX_INPUT_REDUNDANCY = 32;
 export const VEHICLE_MAX_PENDING_INPUTS = 30;
+export const VEHICLE_CLIENT_CATCHUP_THRESHOLD = 8;
+export const VEHICLE_CLIENT_CATCHUP_KEEP = VEHICLE_INPUT_REDUNDANCY;
 
 function seqIsNewer(a: number, b: number): boolean {
   return ((a - b) & 0xffff) < 0x8000 && a !== b;
 }
 
-function vehicleInputSendWindowSize(pendingCount: number): number {
-  if (pendingCount >= 32) return VEHICLE_MAX_INPUT_REDUNDANCY;
-  if (pendingCount >= 16) return 16;
-  if (pendingCount >= 8) return 8;
+function vehicleInputSendWindowSize(_pendingCount: number): number {
   return VEHICLE_INPUT_REDUNDANCY;
 }
 
@@ -189,12 +187,6 @@ export class VehiclePredictionManager {
 
     this.sim.syncRemoteVehicle(vehicleId, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
     this.sim.setLocalVehicle(vehicleId);
-    // Match reconcile_vehicle's contact warm-up on first enter so suspension
-    // constraints are initialized from the authoritative pose before the first
-    // predicted input tick.
-    for (let i = 0; i < 3; i++) {
-      this.sim.stepDynamics(FIXED_DT);
-    }
   }
 
   /** Exit vehicle — deactivate prediction. */
@@ -285,6 +277,7 @@ export class VehiclePredictionManager {
           this.pendingInputCreatedAtMs.delete(input.seq);
         }
       }
+      this.collapseRealtimeVehicleBacklog();
     }
 
     if (this.pendingInputsForSend.length === 0) return [];
@@ -489,6 +482,22 @@ export class VehiclePredictionManager {
 
   dispose(): void {
     this.exitVehicle();
+  }
+
+  private collapseRealtimeVehicleBacklog(): void {
+    if (this.isLocalPreview || this.pendingInputsForSend.length <= VEHICLE_CLIENT_CATCHUP_THRESHOLD) {
+      return;
+    }
+
+    const removeCount = Math.max(0, this.pendingInputsForSend.length - VEHICLE_CLIENT_CATCHUP_KEEP);
+    const removed = this.pendingInputsForSend.splice(0, removeCount);
+    for (const input of removed) {
+      this.pendingInputCreatedAtMs.delete(input.seq);
+    }
+    const newestRemoved = removed.at(-1);
+    if (newestRemoved) {
+      this.sim.pruneVehiclePendingInputsThrough(newestRemoved.seq);
+    }
   }
 }
 

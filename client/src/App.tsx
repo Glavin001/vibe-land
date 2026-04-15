@@ -17,11 +17,17 @@ import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
-import { debugStatsToMarkdown, DebugOverlay } from './ui/DebugOverlay';
+import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
+import {
+  createVehicleBenchmarkAccumulator,
+  sampleVehicleBenchmarkAccumulator,
+  type VehicleBenchmarkAccumulator,
+} from './benchmark/vehicleAccumulator';
+import { createBenchmarkWorldPreset } from './benchmark/worldPresets';
 import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocument';
 import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
@@ -155,6 +161,9 @@ export function App({
     updateFrame,
     recordSnapshot,
     getStatsSnapshot,
+    getDeepCaptureMarkdown,
+    deepCaptureEnabled,
+    deepCaptureSampleCount,
     rapierDebugModeBits,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
@@ -164,6 +173,7 @@ export function App({
   const benchmarkStartedAtRef = useRef<string | null>(null);
   const benchmarkDisconnectReasonRef = useRef<string | null>(null);
   const benchmarkResultRef = useRef<PlayWorkerResult | null>(null);
+  const vehicleBenchmarkAccumulatorRef = useRef<VehicleBenchmarkAccumulator>(createVehicleBenchmarkAccumulator());
   const autoConnectAttemptedRef = useRef(false);
 
   // Calibration wizard state (firing range only).
@@ -179,7 +189,13 @@ export function App({
 
   // While the wizard is open, render a deliberately-empty flat world so
   // drill targets aren't fighting terrain or props for visibility.
-  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
+  const benchmarkWorldDocument = useMemo(
+    () => benchmarkConfig?.scenario.playBenchmark?.worldPreset
+      ? createBenchmarkWorldPreset(benchmarkConfig.scenario.playBenchmark.worldPreset, worldDocument)
+      : worldDocument,
+    [benchmarkConfig, worldDocument],
+  );
+  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : benchmarkWorldDocument;
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -219,9 +235,19 @@ export function App({
       + stats.datagramSnapshotsReceived
       + stats.localSnapshotsReceived
       + stats.directSnapshotsReceived;
+    if (benchmarkConfig.scenario.playBenchmark?.mode === 'vehicle_driver') {
+      sampleVehicleBenchmarkAccumulator(vehicleBenchmarkAccumulatorRef.current, stats, performance.now());
+    }
+    const vehicleBenchmark = vehicleBenchmarkAccumulatorRef.current;
+    const vehicleMetric = <K extends keyof VehicleBenchmarkAccumulator>(key: K, fallback: number): number => (
+      vehicleBenchmark.samples > 0 ? Number(vehicleBenchmark[key]) : fallback
+    );
     return {
       kind: 'play',
       clientLabel: benchmarkConfig.clientLabel,
+      playBenchmarkMode: benchmarkConfig.scenario.playBenchmark?.mode ?? 'on_foot',
+      playBenchmarkWorldPreset: benchmarkConfig.scenario.playBenchmark?.worldPreset ?? 'default',
+      playBenchmarkDriverProfile: benchmarkConfig.scenario.playBenchmark?.driverProfile ?? 'mixed',
       transport: stats.transport,
       connected: playerId > 0,
       disconnected,
@@ -233,6 +259,39 @@ export function App({
       pendingInputsPeak5s: stats.pendingInputsPeak5s,
       playerCorrectionPeak5sM: stats.playerCorrectionPeak5sM,
       dynamicCorrectionPeak5sM: stats.dynamicCorrectionPeak5sM,
+      vehicleBenchmarkSamples: vehicleBenchmark.samples,
+      vehicleMaxSpeedMs: vehicleMetric('maxSpeedMs', Math.max(stats.vehicleLocalSpeedMs, stats.vehicleServerSpeedMs)),
+      vehiclePendingInputs: vehicleMetric('vehiclePendingInputs', stats.vehiclePendingInputs),
+      vehicleAckSeq: stats.vehicleAckSeq,
+      vehicleLatestLocalSeq: stats.vehicleLatestLocalSeq,
+      vehicleAckBacklogMs: vehicleMetric('vehicleAckBacklogMs', stats.vehicleAckBacklogMs),
+      vehicleResendWindow: stats.vehicleResendWindow,
+      vehicleCurrentAuthDeltaM: vehicleMetric('vehicleCurrentAuthDeltaM', stats.vehicleCurrentAuthDeltaM),
+      vehicleMeshCurrentAuthDeltaM: vehicleMetric('vehicleMeshCurrentAuthDeltaM', stats.vehicleMeshCurrentAuthDeltaM),
+      vehicleExpectedLeadM: stats.vehicleExpectedLeadM,
+      vehicleCurrentAuthUnexplainedDeltaM: vehicleMetric('vehicleCurrentAuthUnexplainedDeltaM', stats.vehicleCurrentAuthUnexplainedDeltaM),
+      vehicleRestJitterRms5sM: vehicleMetric('vehicleRestJitterRms5sM', stats.vehicleRestJitterRms5sM),
+      vehicleStraightJitterRms5sM: vehicleMetric('vehicleStraightJitterRms5sM', stats.vehicleStraightJitterRms5sM),
+      vehicleRawHeaveDeltaRms5sM: vehicleMetric('vehicleRawHeaveDeltaRms5sM', stats.vehicleRawHeaveDeltaRms5sM),
+      vehicleRawPlanarDeltaRms5sM: vehicleMetric('vehicleRawPlanarDeltaRms5sM', stats.vehicleRawPlanarDeltaRms5sM),
+      vehicleRawYawDeltaRms5sRad: vehicleMetric('vehicleRawYawDeltaRms5sRad', stats.vehicleRawYawDeltaRms5sRad),
+      vehicleRawPitchDeltaRms5sRad: vehicleMetric('vehicleRawPitchDeltaRms5sRad', stats.vehicleRawPitchDeltaRms5sRad),
+      vehicleRawRollDeltaRms5sRad: vehicleMetric('vehicleRawRollDeltaRms5sRad', stats.vehicleRawRollDeltaRms5sRad),
+      vehicleResidualPlanarDeltaRms5sM: vehicleMetric('vehicleResidualPlanarDeltaRms5sM', stats.vehicleResidualPlanarDeltaRms5sM),
+      vehicleResidualHeaveDeltaRms5sM: vehicleMetric('vehicleResidualHeaveDeltaRms5sM', stats.vehicleResidualHeaveDeltaRms5sM),
+      vehicleResidualYawDeltaRms5sRad: vehicleMetric('vehicleResidualYawDeltaRms5sRad', stats.vehicleResidualYawDeltaRms5sRad),
+      vehicleWheelContactBitChanges5s: vehicleMetric('vehicleWheelContactBitChanges5s', stats.vehicleWheelContactBitChanges5s),
+      vehicleGroundedTransitions5s: vehicleMetric('vehicleGroundedTransitions5s', stats.vehicleGroundedTransitions5s),
+      vehicleSuspensionLengthDeltaRms5sM: vehicleMetric('vehicleSuspensionLengthDeltaRms5sM', stats.vehicleSuspensionLengthDeltaRms5sM),
+      vehicleSuspensionForceDeltaRms5sN: vehicleMetric('vehicleSuspensionForceDeltaRms5sN', stats.vehicleSuspensionForceDeltaRms5sN),
+      vehicleSuspensionLengthSpreadPeak5sM: vehicleMetric('vehicleSuspensionLengthSpreadPeak5sM', stats.vehicleSuspensionLengthSpreadPeak5sM),
+      vehicleSuspensionForceSpreadPeak5sN: vehicleMetric('vehicleSuspensionForceSpreadPeak5sN', stats.vehicleSuspensionForceSpreadPeak5sN),
+      vehicleWheelContactNormalDeltaRms5sRad: vehicleMetric('vehicleWheelContactNormalDeltaRms5sRad', stats.vehicleWheelContactNormalDeltaRms5sRad),
+      vehicleWheelGroundObjectSwitches5s: vehicleMetric('vehicleWheelGroundObjectSwitches5s', stats.vehicleWheelGroundObjectSwitches5s),
+      vehicleMeshFrameDeltaRms5sM: vehicleMetric('vehicleMeshFrameDeltaRms5sM', stats.vehicleMeshFrameDeltaRms5sM),
+      vehicleCameraFrameDeltaRms5sM: vehicleMetric('vehicleCameraFrameDeltaRms5sM', stats.vehicleCameraFrameDeltaRms5sM),
+      vehiclePredictedAuthDeltaRms5sM: vehicleMetric('vehiclePredictedAuthDeltaRms5sM', stats.vehiclePredictedAuthDeltaRms5sM),
+      vehiclePredictedAuthDeltaPeak5sM: vehicleMetric('vehiclePredictedAuthDeltaPeak5sM', stats.vehiclePredictedAuthDeltaPeak5sM),
       shotsFired: stats.shotsFired,
       disconnectReason: overrideReason ?? benchmarkDisconnectReasonRef.current,
     };
@@ -331,6 +390,7 @@ export function App({
       benchmarkStartedAtRef.current = null;
       benchmarkDisconnectReasonRef.current = null;
       benchmarkResultRef.current = null;
+      vehicleBenchmarkAccumulatorRef.current = createVehicleBenchmarkAccumulator();
       publishBenchmarkState('running', practiceMode ? 'Starting firing range...' : 'Connecting...', null);
     }
   }, [benchmarkConfig, practiceMode, publishBenchmarkState]);
@@ -389,6 +449,9 @@ export function App({
     }
     publishBenchmarkState('idle', status, null);
     const intervalId = window.setInterval(() => {
+      if (benchmarkConfig.scenario.playBenchmark?.mode === 'vehicle_driver' && !benchmarkResultRef.current) {
+        sampleVehicleBenchmarkAccumulator(vehicleBenchmarkAccumulatorRef.current, getStatsSnapshot(), performance.now());
+      }
       if (benchmarkResultRef.current) {
         publishBenchmarkState(
           benchmarkResultRef.current.disconnected ? 'failed' : 'completed',
@@ -404,7 +467,7 @@ export function App({
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [benchmarkConfig, publishBenchmarkState, status]);
+  }, [benchmarkConfig, getStatsSnapshot, publishBenchmarkState, status]);
 
   useEffect(() => {
     if (!benchmarkConfig) {
@@ -454,6 +517,8 @@ export function App({
         userAgent: navigator.userAgent,
         renderStatsText: renderStatsParentRef.current?.innerText ?? '',
         localRenderSmoothingEnabled,
+        deepCaptureEnabled,
+        deepCaptureReport: getDeepCaptureMarkdown(),
       });
       try {
         await navigator.clipboard.writeText(markdown);
@@ -481,7 +546,7 @@ export function App({
         window.clearTimeout(copyNoticeTimerRef.current);
       }
     };
-  }, [connected, getStatsSnapshot, localRenderSmoothingEnabled, status]);
+  }, [connected, deepCaptureEnabled, getDeepCaptureMarkdown, getStatsSnapshot, localRenderSmoothingEnabled, status]);
 
   const crosshairColor =
     crosshairState === 'head'
@@ -664,12 +729,14 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
-      <DebugOverlay
-        stats={displayStats}
-        visible={debugVisible}
-        localRenderSmoothingEnabled={localRenderSmoothingEnabled}
-        onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
-      />
+        <DebugOverlay
+          stats={displayStats}
+          visible={debugVisible}
+          localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+          onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
+          deepCaptureEnabled={deepCaptureEnabled}
+          deepCaptureSampleCount={deepCaptureSampleCount}
+        />
       {debugVisible && (
         <div
           ref={renderStatsParentRef}

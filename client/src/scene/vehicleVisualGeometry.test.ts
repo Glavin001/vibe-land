@@ -9,12 +9,13 @@ describe('vehicleVisualGeometry', () => {
   it('places wheel visuals at the suspension rest position below the connection point', () => {
     const anchors = getVehicleWheelVisualAnchors();
 
-    expect(anchors).toEqual([
-      [-0.9, -0.6, 1.1],
-      [0.9, -0.6, 1.1],
-      [-0.9, -0.6, -1.1],
-      [0.9, -0.6, -1.1],
-    ]);
+    expect(anchors).toEqual(
+      VEHICLE_WHEEL_CONNECTION_OFFSETS.map(([x, y, z]) => [
+        x,
+        y - VEHICLE_SUSPENSION_REST_LENGTH_M,
+        z,
+      ]),
+    );
   });
 
   it('preserves x/z wheel placement while only shifting along suspension direction', () => {

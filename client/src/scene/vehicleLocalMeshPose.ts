@@ -24,14 +24,16 @@ const PRACTICE_VERTICAL_RATE = 12.0;
 const PRACTICE_YAW_RATE = 24.0;
 const PRACTICE_TILT_RATE = 10.0;
 
-const MULTIPLAYER_PLANAR_RATE = 14.0;
-const MULTIPLAYER_VERTICAL_RATE = 10.0;
-const MULTIPLAYER_YAW_RATE = 12.0;
+const MULTIPLAYER_PLANAR_STEP_MIN_M = 0.18;
+const MULTIPLAYER_PLANAR_STEP_EXTRA_M = 0.12;
+const MULTIPLAYER_PLANAR_STEP_SPEED_SCALE = 1.6;
+const MULTIPLAYER_YAW_RATE = 28.0;
+const MULTIPLAYER_HEAVE_RATE = 10.0;
 const MULTIPLAYER_TILT_RATE = 10.0;
 
-const MULTIPLAYER_SNAP_DISTANCE_M = 0.9;
-const MULTIPLAYER_SNAP_VERTICAL_M = 0.2;
-const MULTIPLAYER_SNAP_ROT_RAD = 0.2;
+const MULTIPLAYER_SNAP_DISTANCE_M = 3.5;
+const MULTIPLAYER_SNAP_VERTICAL_M = 0.75;
+const MULTIPLAYER_SNAP_ROT_RAD = 0.75;
 const PRACTICE_SNAP_DISTANCE_M = 1.5;
 const PRACTICE_SNAP_VERTICAL_M = 0.35;
 const PRACTICE_SNAP_ROT_RAD = 0.35;
@@ -47,11 +49,30 @@ function quaternionAngle(a: THREE.Quaternion, b: THREE.Quaternion): number {
   return 2 * Math.acos(dot);
 }
 
+function stepPlanarToward(
+  position: THREE.Vector3,
+  targetX: number,
+  targetZ: number,
+  maxStepM: number,
+): void {
+  const dx = targetX - position.x;
+  const dz = targetZ - position.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance <= maxStepM || distance <= 1e-6) {
+    position.x = targetX;
+    position.z = targetZ;
+    return;
+  }
+  const scale = maxStepM / distance;
+  position.x += dx * scale;
+  position.z += dz * scale;
+}
+
 function shouldSnapVehicleMeshPose(
   positionDeltaM: number,
   verticalDeltaM: number,
   rotationDeltaRad: number,
-  groundedWheels: number,
+  _groundedWheels: number,
   mode: VehicleMeshPoseMode,
 ): boolean {
   const snapDistance = mode === 'practice' ? PRACTICE_SNAP_DISTANCE_M : MULTIPLAYER_SNAP_DISTANCE_M;
@@ -59,8 +80,7 @@ function shouldSnapVehicleMeshPose(
   const snapRotation = mode === 'practice' ? PRACTICE_SNAP_ROT_RAD : MULTIPLAYER_SNAP_ROT_RAD;
   return positionDeltaM >= snapDistance
     || Math.abs(verticalDeltaM) >= snapVertical
-    || rotationDeltaRad >= snapRotation
-    || groundedWheels < 2;
+    || rotationDeltaRad >= snapRotation;
 }
 
 export function updateLocalVehicleMeshPose(
@@ -107,20 +127,33 @@ export function updateLocalVehicleMeshPose(
       state.quaternion.copy(targetQuat);
       state.euler.copy(targetEuler);
     } else {
-      const planarRate = mode === 'practice' ? PRACTICE_PLANAR_RATE : MULTIPLAYER_PLANAR_RATE;
-      const baseVerticalRate = mode === 'practice' ? PRACTICE_VERTICAL_RATE : MULTIPLAYER_VERTICAL_RATE;
-      const baseYawRate = mode === 'practice' ? PRACTICE_YAW_RATE : MULTIPLAYER_YAW_RATE;
-      const baseTiltRate = mode === 'practice' ? PRACTICE_TILT_RATE : MULTIPLAYER_TILT_RATE;
-      const verticalRate = baseVerticalRate + Math.min(speedMs * 0.2, 8.0);
-      const yawRate = baseYawRate + Math.min(speedMs * 0.12, 6.0);
-      const tiltRate = baseTiltRate + Math.min(speedMs * 0.08, 4.0);
-
-      state.position.x = THREE.MathUtils.damp(state.position.x, targetPose.position[0], planarRate, frameDeltaSec);
-      state.position.y = THREE.MathUtils.damp(state.position.y, targetPose.position[1], verticalRate, frameDeltaSec);
-      state.position.z = THREE.MathUtils.damp(state.position.z, targetPose.position[2], planarRate, frameDeltaSec);
-      state.euler.x = dampAngle(state.euler.x, targetEuler.x, tiltRate, frameDeltaSec);
-      state.euler.y = dampAngle(state.euler.y, targetEuler.y, yawRate, frameDeltaSec);
-      state.euler.z = dampAngle(state.euler.z, targetEuler.z, tiltRate, frameDeltaSec);
+      if (mode === 'practice') {
+        const verticalRate = PRACTICE_VERTICAL_RATE + Math.min(speedMs * 0.2, 8.0);
+        const yawRate = PRACTICE_YAW_RATE + Math.min(speedMs * 0.12, 6.0);
+        const tiltRate = PRACTICE_TILT_RATE + Math.min(speedMs * 0.08, 4.0);
+        state.position.x = THREE.MathUtils.damp(state.position.x, targetPose.position[0], PRACTICE_PLANAR_RATE, frameDeltaSec);
+        state.position.y = THREE.MathUtils.damp(state.position.y, targetPose.position[1], verticalRate, frameDeltaSec);
+        state.position.z = THREE.MathUtils.damp(state.position.z, targetPose.position[2], PRACTICE_PLANAR_RATE, frameDeltaSec);
+        state.euler.x = dampAngle(state.euler.x, targetEuler.x, tiltRate, frameDeltaSec);
+        state.euler.y = dampAngle(state.euler.y, targetEuler.y, yawRate, frameDeltaSec);
+        state.euler.z = dampAngle(state.euler.z, targetEuler.z, tiltRate, frameDeltaSec);
+      } else {
+        const maxPlanarStepM = Math.max(
+          MULTIPLAYER_PLANAR_STEP_MIN_M,
+          speedMs * frameDeltaSec * MULTIPLAYER_PLANAR_STEP_SPEED_SCALE + MULTIPLAYER_PLANAR_STEP_EXTRA_M,
+        );
+        const heaveRate = MULTIPLAYER_HEAVE_RATE + Math.min(speedMs * 0.2, 8.0);
+        const yawRate = MULTIPLAYER_YAW_RATE + Math.min(speedMs * 0.08, 6.0);
+        const tiltRate = MULTIPLAYER_TILT_RATE + Math.min(speedMs * 0.08, 4.0);
+        // Keep normal local motion exact, but cap single-frame visual outliers
+        // caused by prediction/contact discontinuities so they do not render as
+        // chassis teleports.
+        stepPlanarToward(state.position, targetPose.position[0], targetPose.position[2], maxPlanarStepM);
+        state.position.y = THREE.MathUtils.damp(state.position.y, targetPose.position[1], heaveRate, frameDeltaSec);
+        state.euler.x = dampAngle(state.euler.x, targetEuler.x, tiltRate, frameDeltaSec);
+        state.euler.y = dampAngle(state.euler.y, targetEuler.y, yawRate, frameDeltaSec);
+        state.euler.z = dampAngle(state.euler.z, targetEuler.z, tiltRate, frameDeltaSec);
+      }
       state.quaternion.setFromEuler(state.euler);
     }
   }

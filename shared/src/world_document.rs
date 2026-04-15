@@ -630,9 +630,13 @@ pub fn identity_rotation() -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::BTN_FORWARD;
     use crate::local_arena::{MoveConfig, PhysicsArena};
+    use crate::protocol::InputCmd;
+    use crate::vehicle::read_vehicle_debug_snapshot;
 
     const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/broken.world.json");
+    const DT: f32 = 1.0 / 60.0;
 
     fn apply_demo_brushes(world: &mut WorldDocument) {
         for _ in 0..18 {
@@ -710,6 +714,70 @@ mod tests {
         entities
     }
 
+    fn nearest_vehicle_to_origin(arena: &PhysicsArena) -> u32 {
+        arena
+            .vehicles
+            .iter()
+            .min_by(|(_, a), (_, b)| {
+                let a_pos = arena
+                    .dynamic
+                    .sim
+                    .rigid_bodies
+                    .get(a.chassis_body)
+                    .expect("vehicle body exists")
+                    .translation();
+                let b_pos = arena
+                    .dynamic
+                    .sim
+                    .rigid_bodies
+                    .get(b.chassis_body)
+                    .expect("vehicle body exists")
+                    .translation();
+                let a_dist = a_pos.x * a_pos.x + a_pos.z * a_pos.z;
+                let b_dist = b_pos.x * b_pos.x + b_pos.z * b_pos.z;
+                a_dist.total_cmp(&b_dist)
+            })
+            .map(|(id, _)| *id)
+            .expect("world should contain a vehicle")
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    fn contact_bits(arena: &PhysicsArena, vehicle_id: u32) -> u8 {
+        arena
+            .vehicles
+            .get(&vehicle_id)
+            .expect("vehicle exists")
+            .controller
+            .wheels()
+            .iter()
+            .enumerate()
+            .fold(0u8, |mask, (index, wheel)| {
+                if wheel.raycast_info().is_in_contact {
+                    mask | (1 << index)
+                } else {
+                    mask
+                }
+            })
+    }
+
+    fn grounded_wheels(arena: &PhysicsArena, vehicle_id: u32) -> u8 {
+        arena
+            .vehicles
+            .get(&vehicle_id)
+            .expect("vehicle exists")
+            .controller
+            .wheels()
+            .iter()
+            .filter(|wheel| wheel.raycast_info().is_in_contact)
+            .count() as u8
+    }
+
     #[test]
     fn demo_document_has_valid_height_count() {
         let world = WorldDocument::demo();
@@ -736,8 +804,7 @@ mod tests {
             .expect("instantiate demo world");
 
         for _ in 0..300 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
@@ -826,8 +893,7 @@ mod tests {
             .expect("instantiate brushed world");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
@@ -873,8 +939,7 @@ mod tests {
             .expect("instantiate brushed open-terrain stack");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
@@ -901,8 +966,7 @@ mod tests {
             .expect("instantiate brushed default world");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         for (ball_id, pos, _, _, _, _, _) in arena.snapshot_dynamic_bodies() {
@@ -928,8 +992,7 @@ mod tests {
             .expect("instantiate brushed default world");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         for vehicle in arena.snapshot_vehicles() {
@@ -943,6 +1006,140 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    #[test]
+    fn demo_world_straight_vehicle_drive_has_stable_contacts() {
+        let world = WorldDocument::demo();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate demo world");
+        arena.spawn_player(1);
+        let vehicle_id = nearest_vehicle_to_origin(&arena);
+        arena.enter_vehicle(1, vehicle_id);
+
+        let mut prev_pos: Option<Vector3<f32>> = None;
+        let mut prev_vel = Vector3::zeros();
+        let mut prev_grounded: Option<u8> = None;
+        let mut prev_bits: Option<u8> = None;
+        let mut prev_forces: Option<[f32; 4]> = None;
+
+        let mut residual_planar_samples = Vec::new();
+        let mut residual_heave_samples = Vec::new();
+        let mut suspension_force_delta_samples = Vec::new();
+        let mut grounded_transitions = 0usize;
+        let mut contact_bit_changes = 0usize;
+        let mut min_grounded = 4u8;
+        let mut max_speed = 0.0f32;
+
+        for tick in 0..720 {
+            let input = InputCmd {
+                seq: tick as u16,
+                buttons: if tick < 90 { 0 } else { BTN_FORWARD },
+                move_x: 0,
+                move_y: if tick < 90 { 0 } else { 83 },
+                yaw: 0.0,
+                pitch: 0.0,
+            };
+            arena.simulate_player_tick(1, &input, DT);
+            arena.step_vehicles_and_dynamics(DT);
+
+            let vehicle = arena.vehicles.get(&vehicle_id).expect("vehicle exists");
+            let rb = arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(vehicle.chassis_body)
+                .expect("vehicle body exists");
+            let pos = *rb.translation();
+            let vel = *rb.linvel();
+            let speed = vel.norm();
+            max_speed = max_speed.max(speed);
+            let grounded = grounded_wheels(&arena, vehicle_id);
+            let bits = contact_bits(&arena, vehicle_id);
+            let debug = read_vehicle_debug_snapshot(
+                &arena.dynamic.sim,
+                vehicle.chassis_body,
+                &vehicle.controller,
+            )
+            .expect("vehicle debug snapshot");
+
+            if tick >= 180 {
+                min_grounded = min_grounded.min(grounded);
+                if let Some(prev_grounded) = prev_grounded {
+                    if grounded != prev_grounded {
+                        grounded_transitions += 1;
+                    }
+                }
+                if let Some(prev_bits) = prev_bits {
+                    contact_bit_changes += (bits ^ prev_bits).count_ones() as usize;
+                }
+                if let Some(prev_forces) = prev_forces {
+                    let force_delta = debug
+                        .suspension_forces
+                        .iter()
+                        .zip(prev_forces.iter())
+                        .map(|(a, b)| {
+                            let delta = a - b;
+                            delta * delta
+                        })
+                        .sum::<f32>()
+                        / 4.0;
+                    suspension_force_delta_samples.push(force_delta.sqrt());
+                }
+                if let Some(prev_pos) = prev_pos {
+                    let delta = pos - prev_pos;
+                    let expected = (prev_vel + vel) * 0.5 * DT;
+                    let residual = delta - expected;
+                    residual_planar_samples
+                        .push((residual.x * residual.x + residual.z * residual.z).sqrt());
+                    residual_heave_samples.push(residual.y.abs());
+                }
+            }
+
+            prev_pos = Some(pos);
+            prev_vel = vel;
+            prev_grounded = Some(grounded);
+            prev_bits = Some(bits);
+            prev_forces = Some(debug.suspension_forces);
+        }
+
+        let residual_planar_rms = rms(&residual_planar_samples);
+        let residual_heave_rms = rms(&residual_heave_samples);
+        let suspension_force_delta_rms = rms(&suspension_force_delta_samples);
+        let summary = format!(
+            "max_speed={max_speed:.3}m/s min_grounded={min_grounded} grounded_transitions={grounded_transitions} contact_bit_changes={contact_bit_changes} residual_planar_rms={residual_planar_rms:.3}m residual_heave_rms={residual_heave_rms:.3}m suspension_force_delta_rms={suspension_force_delta_rms:.1}N"
+        );
+
+        assert!(
+            max_speed >= 8.0,
+            "straight drive did not reach QA speed: {summary}"
+        );
+        assert!(
+            min_grounded >= 2,
+            "straight drive lost contact on authored terrain: {summary}"
+        );
+        assert!(
+            grounded_transitions <= 10,
+            "straight drive grounded state churned too often: {summary}"
+        );
+        assert!(
+            contact_bit_changes <= 10,
+            "straight drive wheel contact bits churned too often: {summary}"
+        );
+        assert!(
+            residual_planar_rms <= 0.14,
+            "straight drive residual planar jitter too high: {summary}"
+        );
+        assert!(
+            residual_heave_rms <= 0.09,
+            "straight drive residual heave jitter too high: {summary}"
+        );
+        assert!(
+            suspension_force_delta_rms <= 5000.0,
+            "straight drive suspension force delta too high: {summary}"
+        );
     }
 
     #[test]
@@ -965,8 +1162,7 @@ mod tests {
             .expect("instantiate brushed repro ball world");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         let body = arena
@@ -993,8 +1189,7 @@ mod tests {
             .expect("instantiate broken world");
 
         for _ in 0..360 {
-            arena.step_vehicles(1.0 / 60.0);
-            arena.step_dynamics(1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
         }
 
         for entity in &world.dynamic_entities {

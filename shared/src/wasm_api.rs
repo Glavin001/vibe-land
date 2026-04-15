@@ -17,7 +17,8 @@ use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
     apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
-    step_vehicle_dynamics, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_WHEEL_OFFSETS,
+    read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
+    VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS, VEHICLE_WHEEL_OFFSETS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -988,6 +989,7 @@ impl WasmSimWorld {
     pub fn set_local_vehicle(&mut self, vehicle_id: u32) {
         self.local_vehicle_id = Some(vehicle_id);
         self.vehicle_pending_inputs.clear();
+        self.refresh_local_vehicle_contacts();
     }
 
     /// Clear the local vehicle (called on exit).
@@ -1067,8 +1069,7 @@ impl WasmSimWorld {
             self.vehicle_pending_inputs.drain(0..excess);
         }
 
-        self.apply_vehicle_input(vid, &input, dt);
-        self.step_vehicle_pipeline(dt);
+        self.step_local_vehicle_input(vid, &input, dt);
 
         self.get_vehicle_state(vid)
     }
@@ -1171,19 +1172,15 @@ impl WasmSimWorld {
             }
         }
 
-        // Warm up contacts before replay: run a few zero-input steps so the
-        // pipeline builds constraint data from the server-reset position.
-        // Without this, the first replay steps use cold (uninitialized) contact
-        // data, producing different forces than the warm-started server physics.
-        for _ in 0..3 {
-            self.step_vehicle_pipeline(dt);
-        }
+        // Refresh wheel raycasts from the reset pose without advancing time.
+        // Stepping full dynamics here would incorrectly add extra vehicle motion
+        // before replaying the pending input history.
+        self.refresh_local_vehicle_contacts();
 
         // Replay pending inputs.
         let inputs: Vec<InputCmd> = self.vehicle_pending_inputs.clone();
         for input in &inputs {
-            self.apply_vehicle_input(vid, input, dt);
-            self.step_vehicle_pipeline(dt);
+            self.step_local_vehicle_input(vid, input, dt);
         }
 
         let state = self.get_vehicle_state(vid);
@@ -1202,53 +1199,74 @@ impl WasmSimWorld {
         let Some(vehicle) = self.vehicles.get(&vid) else {
             return Box::new([]);
         };
-        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+        let Some(debug) =
+            read_vehicle_debug_snapshot(&self.sim, vehicle.chassis_body, &vehicle.controller)
+        else {
             return Box::new([]);
         };
-
-        let linvel = rb.linvel();
-        let speed = linvel.norm() as f64;
-        let grounded_wheels = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .filter(|wheel| wheel.raycast_info().is_in_contact)
-            .count() as f64;
-        let steering = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .take(2)
-            .map(|wheel| wheel.steering as f64)
-            .sum::<f64>()
-            / 2.0;
-        let engine_force = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .skip(2)
-            .map(|wheel| wheel.engine_force as f64)
-            .sum::<f64>()
-            / 2.0;
-        let brake = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .map(|wheel| wheel.brake as f64)
-            .fold(0.0, f64::max);
-
-        Box::new([speed, grounded_wheels, steering, engine_force, brake])
+        let mut out = Vec::with_capacity(64);
+        out.push(debug.speed as f64);
+        out.push(debug.grounded_wheels as f64);
+        out.push(debug.steering as f64);
+        out.push(debug.engine_force as f64);
+        out.push(debug.brake as f64);
+        out.push(debug.linear_velocity[0] as f64);
+        out.push(debug.linear_velocity[1] as f64);
+        out.push(debug.linear_velocity[2] as f64);
+        out.push(debug.angular_velocity[0] as f64);
+        out.push(debug.angular_velocity[1] as f64);
+        out.push(debug.angular_velocity[2] as f64);
+        out.push(debug.wheel_contact_bits as f64);
+        out.extend(debug.suspension_lengths.into_iter().map(|v| v as f64));
+        out.extend(debug.suspension_forces.into_iter().map(|v| v as f64));
+        out.extend(
+            debug
+                .suspension_relative_velocities
+                .into_iter()
+                .map(|v| v as f64),
+        );
+        for point in debug.wheel_hard_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for point in debug.wheel_contact_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for normal in debug.wheel_contact_normals {
+            out.extend(normal.into_iter().map(|v| v as f64));
+        }
+        out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
+        out.into_boxed_slice()
     }
 
     #[wasm_bindgen(js_name = getVehiclePendingCount)]
     pub fn get_vehicle_pending_count(&self) -> u32 {
         self.vehicle_pending_inputs.len() as u32
     }
+
+    #[wasm_bindgen(js_name = pruneVehiclePendingInputsThrough)]
+    pub fn prune_vehicle_pending_inputs_through(&mut self, ack_seq: u16) {
+        self.vehicle_pending_inputs
+            .retain(|input| seq_is_newer(input.seq, ack_seq));
+    }
 }
 
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
 
 impl WasmSimWorld {
+    fn refresh_local_vehicle_contacts(&mut self) {
+        let Some(vid) = self.local_vehicle_id else {
+            return;
+        };
+        let Some(vehicle) = self.vehicles.get_mut(&vid) else {
+            return;
+        };
+        refresh_vehicle_contacts(
+            &mut self.sim,
+            vehicle.chassis_collider,
+            &mut vehicle.controller,
+        );
+    }
+
     fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd, dt: f32) {
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
@@ -1261,6 +1279,14 @@ impl WasmSimWorld {
             input,
             dt,
         );
+    }
+
+    fn step_local_vehicle_input(&mut self, vid: u32, input: &InputCmd, dt: f32) {
+        let substep_dt = dt / VEHICLE_CONTROLLER_SUBSTEPS as f32;
+        for _ in 0..VEHICLE_CONTROLLER_SUBSTEPS {
+            self.apply_vehicle_input(vid, input, substep_dt);
+            self.step_vehicle_pipeline(substep_dt);
+        }
     }
 
     fn step_vehicle_pipeline(&mut self, dt: f32) {

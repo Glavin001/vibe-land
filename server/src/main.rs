@@ -35,7 +35,7 @@ use tracing::{error, info, warn};
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
-    demo_world::seed_default_world,
+    demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena, PlayerKccMode},
     protocol::{
@@ -53,7 +53,7 @@ const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_PENDING_INPUTS: usize = 120;
-const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 8;
+const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
@@ -465,6 +465,8 @@ struct PlayerStatsSnapshot {
     transport: String,
     one_way_ms: u32,
     pending_inputs: usize,
+    last_received_input_seq: Option<u16>,
+    last_ack_input_seq: u16,
     hp: u8,
     pos_m: [f32; 3],
     vel_ms: [f32; 3],
@@ -1121,7 +1123,7 @@ async fn run_match_loop(
 ) {
     let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
     let world = VoxelWorld::new();
-    seed_default_world(&mut arena).expect("default world document should instantiate");
+    seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
     let dynamic_body_handles = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -1432,6 +1434,8 @@ impl MatchState {
                         runtime
                             .last_bundle_recv
                             .map(|instant| instant.elapsed().as_secs_f32() * 1000.0),
+                        runtime.last_received_input_seq,
+                        runtime.last_ack_input_seq,
                     )
                 });
                 let latest_health = self
@@ -1443,13 +1447,22 @@ impl MatchState {
                 self.release_player_handle(player_id);
                 self.arena.remove_player(player_id);
                 self.history.remove_player(player_id);
-                if let Some((transport, pending_inputs, input_silence_ms)) = disconnect_runtime {
+                if let Some((
+                    transport,
+                    pending_inputs,
+                    input_silence_ms,
+                    last_received_input_seq,
+                    last_ack_input_seq,
+                )) = disconnect_runtime
+                {
                     info!(
                         match_id = %self.id,
                         player_id,
                         transport,
                         pending_inputs,
                         input_silence_ms,
+                        last_received_input_seq,
+                        last_ack_input_seq,
                         active_players = self.players.len(),
                         tick_ms_p95 = latest_health.as_ref().map(|stats| stats.timings.total_ms.p95),
                         max_pending_inputs = latest_health
@@ -1544,10 +1557,17 @@ impl MatchState {
                     }
                     ClientPacket::VehicleEnter(cmd) => {
                         if !is_dead {
+                            let _ = runtime;
                             if let Some(vehicle_id) =
                                 self.resolve_vehicle_runtime_id(cmd.vehicle_id)
                             {
                                 self.arena.enter_vehicle(player_id, vehicle_id);
+                                if self.arena.vehicle_of_player.get(&player_id) == Some(&vehicle_id)
+                                {
+                                    if let Some(runtime) = self.players.get_mut(&player_id) {
+                                        clear_runtime_inputs_for_vehicle_entry(runtime);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1757,14 +1777,7 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
-        let vehicle_started = Instant::now();
-        self.arena.step_vehicles(dt);
-        self.timings
-            .vehicle_ms
-            .record(vehicle_started.elapsed().as_secs_f32() * 1000.0);
-
-        let dynamics_started = Instant::now();
-        self.arena.step_dynamics(dt);
+        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -1789,9 +1802,8 @@ impl MatchState {
                 },
             );
         }
-        self.timings
-            .dynamics_ms
-            .record(dynamics_started.elapsed().as_secs_f32() * 1000.0);
+        self.timings.dynamics_ms.record(dynamics_ms);
+        self.timings.vehicle_ms.record(vehicle_ms);
 
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
@@ -1867,6 +1879,8 @@ impl MatchState {
                     transport: runtime.transport.as_str().to_string(),
                     one_way_ms: runtime.estimated_one_way_ms,
                     pending_inputs: runtime.pending_inputs.len(),
+                    last_received_input_seq: runtime.last_received_input_seq,
+                    last_ack_input_seq: runtime.last_ack_input_seq,
                     hp,
                     pos_m: pos,
                     vel_ms: vel,
@@ -2904,6 +2918,22 @@ fn take_input_for_tick_with_vehicle_catchup(
     take_input_for_tick(runtime)
 }
 
+fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
+    let ack_seq = runtime
+        .last_received_input_seq
+        .unwrap_or(runtime.last_ack_input_seq);
+    runtime.pending_inputs.clear();
+    runtime.last_ack_input_seq = ack_seq;
+    runtime.last_applied_input = InputCmd {
+        seq: ack_seq,
+        buttons: 0,
+        move_x: 0,
+        move_y: 0,
+        yaw: runtime.last_applied_input.yaw,
+        pitch: runtime.last_applied_input.pitch,
+    };
+}
+
 fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
     for cmd in cmds {
         let is_new = runtime
@@ -3156,9 +3186,10 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
-        enqueue_inputs, is_snapshot_packet_kind, parse_respawn_delay_ms, rifle_damage,
-        server_build_profile, strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
+        classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
+        parse_respawn_delay_ms, rifle_damage, server_build_profile,
+        strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
         MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
         MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
@@ -3260,26 +3291,45 @@ mod tests {
     #[test]
     fn vehicle_catchup_skips_stale_inputs_and_acks_newest_control() {
         let mut runtime = runtime();
-        enqueue_inputs(&mut runtime, (21..=30).map(input).collect());
+        enqueue_inputs(&mut runtime, (21..=24).map(input).collect());
 
         let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
 
-        assert_eq!(applied.seq, 30);
+        assert_eq!(applied.seq, 24);
         assert!(runtime.pending_inputs.is_empty());
-        assert_eq!(runtime.last_ack_input_seq, 30);
-        assert_eq!(runtime.last_applied_input.seq, 30);
+        assert_eq!(runtime.last_ack_input_seq, 24);
+        assert_eq!(runtime.last_applied_input.seq, 24);
+    }
+
+    #[test]
+    fn vehicle_entry_clears_stale_walk_inputs_and_bulk_acks_received_seq() {
+        let mut runtime = runtime();
+        runtime.last_applied_input.yaw = 1.25;
+        runtime.last_applied_input.pitch = -0.5;
+        enqueue_inputs(&mut runtime, (21..=25).map(input).collect());
+
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+
+        assert!(runtime.pending_inputs.is_empty());
+        assert_eq!(runtime.last_ack_input_seq, 25);
+        assert_eq!(runtime.last_applied_input.seq, 25);
+        assert_eq!(runtime.last_applied_input.buttons, 0);
+        assert_eq!(runtime.last_applied_input.move_x, 0);
+        assert_eq!(runtime.last_applied_input.move_y, 0);
+        assert_eq!(runtime.last_applied_input.yaw, 1.25);
+        assert_eq!(runtime.last_applied_input.pitch, -0.5);
     }
 
     #[test]
     fn vehicle_catchup_preserves_reset_pressed_in_skipped_history() {
         let mut runtime = runtime();
-        let mut frames: Vec<_> = (21..=30).map(input).collect();
-        frames[3].buttons |= BTN_RELOAD;
+        let mut frames: Vec<_> = (21..=24).map(input).collect();
+        frames[1].buttons |= BTN_RELOAD;
         enqueue_inputs(&mut runtime, frames);
 
         let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
 
-        assert_eq!(applied.seq, 30);
+        assert_eq!(applied.seq, 24);
         assert_ne!(applied.buttons & BTN_RELOAD, 0);
     }
 

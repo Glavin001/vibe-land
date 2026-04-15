@@ -5,6 +5,8 @@ import { DEFAULT_STATS } from './DebugOverlay';
 const FPS_SAMPLE_COUNT = 60;
 const OVERLAY_UPDATE_INTERVAL_MS = 100; // 10Hz UI refresh
 const JITTER_SAMPLE_COUNT = 30; // rolling window of snapshot intervals
+const DEEP_CAPTURE_WINDOW_MS = 10_000;
+const DEEP_CAPTURE_EXPORT_MAX_SAMPLES = 120;
 const RAPIER_DEBUG_MODES = [
   { bits: 0, label: 'off' },
   { bits: 0b11, label: 'shapes' },
@@ -12,10 +14,166 @@ const RAPIER_DEBUG_MODES = [
   { bits: 0b1111111, label: 'full' },
 ] as const;
 
+export type VehicleDeepCaptureSample = {
+  atMs: number;
+  frameTimeMs: number;
+  speedMs: number;
+  groundedWheels: number;
+  wheelContactBits: number;
+  wheelContactBitChanges: number;
+  wheelContactNormalDeltaRad: number;
+  wheelGroundObjectSwitches: number;
+  ackBacklogMs: number;
+  resendWindow: number;
+  replayErrorM: number;
+  correctionM: number;
+  predictedFrameDeltaM: number;
+  predictedPlanarDeltaM: number;
+  predictedHeaveDeltaM: number;
+  predictedYawDeltaRad: number;
+  predictedPitchDeltaRad: number;
+  predictedRollDeltaRad: number;
+  predictedResidualDeltaM: number;
+  predictedResidualPlanarDeltaM: number;
+  predictedResidualHeaveDeltaM: number;
+  predictedResidualYawDeltaRad: number;
+  predictedResidualPitchDeltaRad: number;
+  predictedResidualRollDeltaRad: number;
+  meshFrameDeltaM: number;
+  meshFrameRotDeltaRad: number;
+  meshOffsetToPredictedM: number;
+  meshOffsetToCurrentAuthM: number;
+  cameraFrameDeltaM: number;
+  cameraFrameRotDeltaRad: number;
+  suspensionLengthSpreadM: number;
+  suspensionForceSpreadN: number;
+  suspensionLengthDeltaM: number;
+  suspensionForceDeltaN: number;
+  currentAuthDeltaM: number;
+  currentAuthPlanarDeltaM: number;
+  currentAuthVerticalDeltaM: number;
+  currentAuthUnexplainedDeltaM: number;
+  expectedLeadM: number;
+  groundedTransitionThisFrame: boolean;
+};
+
+function rms(values: number[]): number {
+  if (values.length === 0) return 0;
+  let sumSquares = 0;
+  for (const value of values) sumSquares += value * value;
+  return Math.sqrt(sumSquares / values.length);
+}
+
+function peak(values: number[]): number {
+  let max = 0;
+  for (const value of values) {
+    if (value > max) max = value;
+  }
+  return max;
+}
+
+function downsampleDeepCaptureSamples(
+  samples: VehicleDeepCaptureSample[],
+  maxSamples = DEEP_CAPTURE_EXPORT_MAX_SAMPLES,
+): VehicleDeepCaptureSample[] {
+  if (samples.length <= maxSamples) return samples;
+  const step = Math.ceil(samples.length / maxSamples);
+  const downsampled: VehicleDeepCaptureSample[] = [];
+  for (let index = 0; index < samples.length; index += step) {
+    downsampled.push(samples[index]);
+  }
+  const last = samples[samples.length - 1];
+  if (downsampled[downsampled.length - 1] !== last) {
+    downsampled.push(last);
+  }
+  return downsampled;
+}
+
+export function buildVehicleDeepCaptureMarkdown(samples: VehicleDeepCaptureSample[]): string {
+  if (samples.length === 0) {
+    return [
+      '## Vehicle Deep Capture',
+      '- state: enabled but empty',
+    ].join('\n');
+  }
+
+  const startMs = samples[0].atMs;
+  const endMs = samples[samples.length - 1].atMs;
+  const predictedPlanar = samples.map((sample) => sample.predictedPlanarDeltaM);
+  const predictedYaw = samples.map((sample) => sample.predictedYawDeltaRad);
+  const residualPlanar = samples.map((sample) => sample.predictedResidualPlanarDeltaM);
+  const residualHeave = samples.map((sample) => sample.predictedResidualHeaveDeltaM);
+  const meshFrame = samples.map((sample) => sample.meshFrameDeltaM);
+  const cameraFrame = samples.map((sample) => sample.cameraFrameDeltaM);
+  const unexplained = samples.map((sample) => sample.currentAuthUnexplainedDeltaM);
+  const currentAuth = samples.map((sample) => sample.currentAuthDeltaM);
+  const groundedTransitions = samples.reduce((count, sample) => count + (sample.groundedTransitionThisFrame ? 1 : 0), 0);
+  const wheelContactBitChanges = samples.reduce((count, sample) => count + sample.wheelContactBitChanges, 0);
+  const wheelContactNormalDelta = samples.map((sample) => sample.wheelContactNormalDeltaRad);
+  const wheelGroundObjectSwitches = samples.reduce((count, sample) => count + sample.wheelGroundObjectSwitches, 0);
+  const suspensionForceDelta = samples.map((sample) => sample.suspensionForceDeltaN);
+  const suspensionLengthDelta = samples.map((sample) => sample.suspensionLengthDeltaM);
+  const downsampled = downsampleDeepCaptureSamples(samples);
+
+  const lines = [
+    '## Vehicle Deep Capture',
+    `- window_ms: ${(endMs - startMs).toFixed(1)}`,
+    `- samples: ${samples.length}`,
+    `- predicted_planar_rms_10s_m: ${rms(predictedPlanar).toFixed(3)}`,
+    `- predicted_planar_peak_10s_m: ${peak(predictedPlanar).toFixed(3)}`,
+    `- predicted_yaw_rms_10s_rad: ${rms(predictedYaw).toFixed(3)}`,
+    `- predicted_yaw_peak_10s_rad: ${peak(predictedYaw).toFixed(3)}`,
+    `- predicted_residual_planar_rms_10s_m: ${rms(residualPlanar).toFixed(3)}`,
+    `- predicted_residual_planar_peak_10s_m: ${peak(residualPlanar).toFixed(3)}`,
+    `- predicted_residual_heave_rms_10s_m: ${rms(residualHeave).toFixed(3)}`,
+    `- predicted_residual_heave_peak_10s_m: ${peak(residualHeave).toFixed(3)}`,
+    `- mesh_frame_rms_10s_m: ${rms(meshFrame).toFixed(3)}`,
+    `- mesh_frame_peak_10s_m: ${peak(meshFrame).toFixed(3)}`,
+    `- camera_frame_rms_10s_m: ${rms(cameraFrame).toFixed(3)}`,
+    `- camera_frame_peak_10s_m: ${peak(cameraFrame).toFixed(3)}`,
+    `- suspension_length_delta_rms_10s_m: ${rms(suspensionLengthDelta).toFixed(3)}`,
+    `- suspension_force_delta_rms_10s_n: ${rms(suspensionForceDelta).toFixed(3)}`,
+    `- current_auth_rms_10s_m: ${rms(currentAuth).toFixed(3)}`,
+    `- current_auth_peak_10s_m: ${peak(currentAuth).toFixed(3)}`,
+    `- unexplained_auth_rms_10s_m: ${rms(unexplained).toFixed(3)}`,
+    `- unexplained_auth_peak_10s_m: ${peak(unexplained).toFixed(3)}`,
+    `- grounded_transitions_10s: ${groundedTransitions}`,
+    `- wheel_contact_bit_changes_10s: ${wheelContactBitChanges}`,
+    `- wheel_contact_normal_delta_rms_10s_rad: ${rms(wheelContactNormalDelta).toFixed(3)}`,
+    `- wheel_ground_object_switches_10s: ${wheelGroundObjectSwitches}`,
+    '```text',
+    't_ms speed gw bits ack_ms exp_lead unexpl_auth curr_auth pred_planar resid_planar resid_heave mesh_frame normal_d ground_sw susp_len_d susp_force_d replay corr',
+    ...downsampled.map((sample) => [
+      (sample.atMs - startMs).toFixed(1),
+      sample.speedMs.toFixed(3),
+      sample.groundedWheels,
+      sample.wheelContactBits.toString(2).padStart(4, '0'),
+      sample.ackBacklogMs.toFixed(1),
+      sample.expectedLeadM.toFixed(3),
+      sample.currentAuthUnexplainedDeltaM.toFixed(3),
+      sample.currentAuthDeltaM.toFixed(3),
+      sample.predictedPlanarDeltaM.toFixed(3),
+      sample.predictedResidualPlanarDeltaM.toFixed(3),
+      sample.predictedResidualHeaveDeltaM.toFixed(3),
+      sample.meshFrameDeltaM.toFixed(3),
+      sample.wheelContactNormalDeltaRad.toFixed(3),
+      sample.wheelGroundObjectSwitches,
+      sample.suspensionLengthDeltaM.toFixed(3),
+      sample.suspensionForceDeltaN.toFixed(3),
+      sample.replayErrorM.toFixed(3),
+      sample.correctionM.toFixed(3),
+    ].join(' ')),
+    '```',
+  ];
+
+  return lines.join('\n');
+}
+
 export function useDebugStats() {
   const [visible, setVisible] = useState(false);
   const [displayStats, setDisplayStats] = useState<DebugStats>({ ...DEFAULT_STATS });
   const [rapierDebugPresetIndex, setRapierDebugPresetIndex] = useState(0);
+  const [deepCaptureEnabled, setDeepCaptureEnabled] = useState(false);
   const statsRef = useRef<DebugStats>({ ...DEFAULT_STATS });
   const frameTimes = useRef<number[]>([]);
   const snapshotTimestamps = useRef<number[]>([]);
@@ -23,6 +181,8 @@ export function useDebugStats() {
   const lastSnapshotTs = useRef<number>(0);
   const lastUiUpdate = useRef(0);
   const visibleRef = useRef(false);
+  const deepCaptureEnabledRef = useRef(false);
+  const deepCaptureSamplesRef = useRef<VehicleDeepCaptureSample[]>([]);
 
   // F3 toggle
   useEffect(() => {
@@ -42,6 +202,16 @@ export function useDebugStats() {
             return (index + 1) % RAPIER_DEBUG_MODES.length;
           }
           return index === 0 ? 1 : 0;
+        });
+        return;
+      }
+      if (e.code === 'F7') {
+        e.preventDefault();
+        setDeepCaptureEnabled((enabled) => {
+          const next = !enabled;
+          deepCaptureEnabledRef.current = next;
+          deepCaptureSamplesRef.current = [];
+          return next;
         });
       }
     };
@@ -120,18 +290,107 @@ export function useDebugStats() {
       meshDeltaPeak5sM: number;
       restJitterRms5sM: number;
       straightJitterRms5sM: number;
+      rawHeaveDeltaRms5sM: number;
+      rawHeaveDeltaPeak5sM: number;
+      rawPlanarDeltaRms5sM: number;
+      rawPlanarDeltaPeak5sM: number;
+      rawYawDeltaRms5sRad: number;
+      rawYawDeltaPeak5sRad: number;
+      rawPitchDeltaRms5sRad: number;
+      rawPitchDeltaPeak5sRad: number;
+      rawRollDeltaRms5sRad: number;
+      rawRollDeltaPeak5sRad: number;
+      residualDeltaRms5sM: number;
+      residualDeltaPeak5sM: number;
+      residualPlanarDeltaRms5sM: number;
+      residualPlanarDeltaPeak5sM: number;
+      residualHeaveDeltaRms5sM: number;
+      residualHeaveDeltaPeak5sM: number;
+      residualYawDeltaRms5sRad: number;
+      residualYawDeltaPeak5sRad: number;
+      residualPitchDeltaRms5sRad: number;
+      residualPitchDeltaPeak5sRad: number;
+      residualRollDeltaRms5sRad: number;
+      residualRollDeltaPeak5sRad: number;
+      rawRestHeaveDeltaRms5sM: number;
+      rawStraightHeaveDeltaRms5sM: number;
+      wheelContactBits: number;
+      wheelContactBitChanges5s: number;
+      wheelContactNormals: Array<[number, number, number]>;
+      wheelContactNormalDeltaRms5sRad: number;
+      wheelGroundObjectIds: [number, number, number, number];
+      wheelGroundObjectSwitches5s: number;
+      suspensionLengths: [number, number, number, number];
+      suspensionForces: [number, number, number, number];
+      suspensionRelativeVelocities: [number, number, number, number];
+      suspensionLengthSpreadM: number;
+      suspensionLengthSpreadPeak5sM: number;
+      suspensionLengthDeltaRms5sM: number;
+      suspensionForceSpreadN: number;
+      suspensionForceSpreadPeak5sN: number;
+      suspensionForceDeltaRms5sN: number;
+      meshFrameDeltaRms5sM: number;
+      meshFrameDeltaPeak5sM: number;
+      meshFrameRotDeltaRms5sRad: number;
+      meshFrameRotDeltaPeak5sRad: number;
+      cameraFrameDeltaRms5sM: number;
+      cameraFrameDeltaPeak5sM: number;
+      cameraFrameRotDeltaRms5sRad: number;
+      cameraFrameRotDeltaPeak5sRad: number;
+      groundedTransitions5s: number;
+      groundedMin5s: number;
+      groundedMax5s: number;
       latestAuthDeltaM: number;
       sampledAuthDeltaM: number;
       meshAuthDeltaM: number;
       latestVsSampledAuthDeltaM: number;
       currentAuthDeltaM: number;
       meshCurrentAuthDeltaM: number;
+      expectedLeadM: number;
+      currentAuthUnexplainedDeltaM: number;
+      currentAuthPlanarDeltaM: number;
+      currentAuthVerticalDeltaM: number;
       authObservedAgeMs: number;
       authSampleOffsetMs: number;
       authSampleServerDeltaMs: number;
       authCurrentOffsetMs: number;
       predictedAuthDeltaRms5sM: number;
       predictedAuthDeltaPeak5sM: number;
+      capture: {
+        predictedFrameDeltaM: number;
+        predictedPlanarDeltaM: number;
+        predictedHeaveDeltaM: number;
+        predictedYawDeltaRad: number;
+        predictedPitchDeltaRad: number;
+        predictedRollDeltaRad: number;
+        predictedResidualDeltaM: number;
+        predictedResidualPlanarDeltaM: number;
+        predictedResidualHeaveDeltaM: number;
+        predictedResidualYawDeltaRad: number;
+        predictedResidualPitchDeltaRad: number;
+        predictedResidualRollDeltaRad: number;
+        meshFrameDeltaM: number;
+        meshFrameRotDeltaRad: number;
+        cameraFrameDeltaM: number;
+        cameraFrameRotDeltaRad: number;
+        groundedTransitionThisFrame: boolean;
+        wheelContactBits: number;
+        wheelContactBitChangesThisFrame: number;
+        wheelContactNormalDeltaRad: number;
+        wheelGroundObjectSwitchesThisFrame: number;
+        suspensionLengthSpreadM: number;
+        suspensionForceSpreadN: number;
+        suspensionLengthDeltaM: number;
+        suspensionForceDeltaN: number;
+        expectedLeadM: number;
+        currentAuthUnexplainedDeltaM: number;
+        currentAuthPlanarDeltaM: number;
+        currentAuthVerticalDeltaM: number;
+        predictedPosition: [number, number, number] | null;
+        meshPosition: [number, number, number] | null;
+        currentAuthPosition: [number, number, number] | null;
+        cameraPosition: [number, number, number];
+      };
     },
     telemetry: {
       lastSnapshotGapMs: number;
@@ -313,16 +572,86 @@ export function useDebugStats() {
     s.vehicleBrake = vehicle.brake;
     s.vehicleMeshDeltaM = vehicle.meshDeltaM;
     s.vehicleMeshRotDeltaRad = vehicle.meshRotDeltaRad;
+    s.vehiclePredictedFrameDeltaM = vehicle.capture.predictedFrameDeltaM;
+    s.vehiclePredictedPlanarDeltaM = vehicle.capture.predictedPlanarDeltaM;
+    s.vehiclePredictedHeaveDeltaM = vehicle.capture.predictedHeaveDeltaM;
+    s.vehiclePredictedYawDeltaRad = vehicle.capture.predictedYawDeltaRad;
+    s.vehiclePredictedPitchDeltaRad = vehicle.capture.predictedPitchDeltaRad;
+    s.vehiclePredictedRollDeltaRad = vehicle.capture.predictedRollDeltaRad;
+    s.vehiclePredictedResidualDeltaM = vehicle.capture.predictedResidualDeltaM;
+    s.vehiclePredictedResidualPlanarDeltaM = vehicle.capture.predictedResidualPlanarDeltaM;
+    s.vehiclePredictedResidualHeaveDeltaM = vehicle.capture.predictedResidualHeaveDeltaM;
+    s.vehiclePredictedResidualYawDeltaRad = vehicle.capture.predictedResidualYawDeltaRad;
+    s.vehiclePredictedResidualPitchDeltaRad = vehicle.capture.predictedResidualPitchDeltaRad;
+    s.vehiclePredictedResidualRollDeltaRad = vehicle.capture.predictedResidualRollDeltaRad;
+    s.vehicleMeshFrameDeltaM = vehicle.capture.meshFrameDeltaM;
+    s.vehicleMeshFrameRotDeltaRad = vehicle.capture.meshFrameRotDeltaRad;
+    s.vehicleCameraFrameDeltaM = vehicle.capture.cameraFrameDeltaM;
+    s.vehicleCameraFrameRotDeltaRad = vehicle.capture.cameraFrameRotDeltaRad;
     s.vehicleMeshDeltaRms5sM = vehicle.meshDeltaRms5sM;
     s.vehicleMeshDeltaPeak5sM = vehicle.meshDeltaPeak5sM;
     s.vehicleRestJitterRms5sM = vehicle.restJitterRms5sM;
     s.vehicleStraightJitterRms5sM = vehicle.straightJitterRms5sM;
+    s.vehicleRawHeaveDeltaRms5sM = vehicle.rawHeaveDeltaRms5sM;
+    s.vehicleRawHeaveDeltaPeak5sM = vehicle.rawHeaveDeltaPeak5sM;
+    s.vehicleRawPlanarDeltaRms5sM = vehicle.rawPlanarDeltaRms5sM;
+    s.vehicleRawPlanarDeltaPeak5sM = vehicle.rawPlanarDeltaPeak5sM;
+    s.vehicleRawYawDeltaRms5sRad = vehicle.rawYawDeltaRms5sRad;
+    s.vehicleRawYawDeltaPeak5sRad = vehicle.rawYawDeltaPeak5sRad;
+    s.vehicleRawPitchDeltaRms5sRad = vehicle.rawPitchDeltaRms5sRad;
+    s.vehicleRawPitchDeltaPeak5sRad = vehicle.rawPitchDeltaPeak5sRad;
+    s.vehicleRawRollDeltaRms5sRad = vehicle.rawRollDeltaRms5sRad;
+    s.vehicleRawRollDeltaPeak5sRad = vehicle.rawRollDeltaPeak5sRad;
+    s.vehicleResidualDeltaRms5sM = vehicle.residualDeltaRms5sM;
+    s.vehicleResidualDeltaPeak5sM = vehicle.residualDeltaPeak5sM;
+    s.vehicleResidualPlanarDeltaRms5sM = vehicle.residualPlanarDeltaRms5sM;
+    s.vehicleResidualPlanarDeltaPeak5sM = vehicle.residualPlanarDeltaPeak5sM;
+    s.vehicleResidualHeaveDeltaRms5sM = vehicle.residualHeaveDeltaRms5sM;
+    s.vehicleResidualHeaveDeltaPeak5sM = vehicle.residualHeaveDeltaPeak5sM;
+    s.vehicleResidualYawDeltaRms5sRad = vehicle.residualYawDeltaRms5sRad;
+    s.vehicleResidualYawDeltaPeak5sRad = vehicle.residualYawDeltaPeak5sRad;
+    s.vehicleResidualPitchDeltaRms5sRad = vehicle.residualPitchDeltaRms5sRad;
+    s.vehicleResidualPitchDeltaPeak5sRad = vehicle.residualPitchDeltaPeak5sRad;
+    s.vehicleResidualRollDeltaRms5sRad = vehicle.residualRollDeltaRms5sRad;
+    s.vehicleResidualRollDeltaPeak5sRad = vehicle.residualRollDeltaPeak5sRad;
+    s.vehicleRawRestHeaveDeltaRms5sM = vehicle.rawRestHeaveDeltaRms5sM;
+    s.vehicleRawStraightHeaveDeltaRms5sM = vehicle.rawStraightHeaveDeltaRms5sM;
+    s.vehicleWheelContactBits = vehicle.wheelContactBits;
+    s.vehicleWheelContactBitChanges5s = vehicle.wheelContactBitChanges5s;
+    s.vehicleWheelContactNormals = vehicle.wheelContactNormals.map((normal) => [...normal] as [number, number, number]);
+    s.vehicleWheelContactNormalDeltaRms5sRad = vehicle.wheelContactNormalDeltaRms5sRad;
+    s.vehicleWheelGroundObjectIds = [...vehicle.wheelGroundObjectIds] as [number, number, number, number];
+    s.vehicleWheelGroundObjectSwitches5s = vehicle.wheelGroundObjectSwitches5s;
+    s.vehicleSuspensionLengths = [...vehicle.suspensionLengths] as [number, number, number, number];
+    s.vehicleSuspensionForces = [...vehicle.suspensionForces] as [number, number, number, number];
+    s.vehicleSuspensionRelativeVelocities = [...vehicle.suspensionRelativeVelocities] as [number, number, number, number];
+    s.vehicleSuspensionLengthSpreadM = vehicle.suspensionLengthSpreadM;
+    s.vehicleSuspensionLengthSpreadPeak5sM = vehicle.suspensionLengthSpreadPeak5sM;
+    s.vehicleSuspensionLengthDeltaRms5sM = vehicle.suspensionLengthDeltaRms5sM;
+    s.vehicleSuspensionForceSpreadN = vehicle.suspensionForceSpreadN;
+    s.vehicleSuspensionForceSpreadPeak5sN = vehicle.suspensionForceSpreadPeak5sN;
+    s.vehicleSuspensionForceDeltaRms5sN = vehicle.suspensionForceDeltaRms5sN;
+    s.vehicleMeshFrameDeltaRms5sM = vehicle.meshFrameDeltaRms5sM;
+    s.vehicleMeshFrameDeltaPeak5sM = vehicle.meshFrameDeltaPeak5sM;
+    s.vehicleMeshFrameRotDeltaRms5sRad = vehicle.meshFrameRotDeltaRms5sRad;
+    s.vehicleMeshFrameRotDeltaPeak5sRad = vehicle.meshFrameRotDeltaPeak5sRad;
+    s.vehicleCameraFrameDeltaRms5sM = vehicle.cameraFrameDeltaRms5sM;
+    s.vehicleCameraFrameDeltaPeak5sM = vehicle.cameraFrameDeltaPeak5sM;
+    s.vehicleCameraFrameRotDeltaRms5sRad = vehicle.cameraFrameRotDeltaRms5sRad;
+    s.vehicleCameraFrameRotDeltaPeak5sRad = vehicle.cameraFrameRotDeltaPeak5sRad;
+    s.vehicleGroundedTransitions5s = vehicle.groundedTransitions5s;
+    s.vehicleGroundedMin5s = vehicle.groundedMin5s;
+    s.vehicleGroundedMax5s = vehicle.groundedMax5s;
     s.vehicleLatestAuthDeltaM = vehicle.latestAuthDeltaM;
     s.vehicleSampledAuthDeltaM = vehicle.sampledAuthDeltaM;
     s.vehicleMeshAuthDeltaM = vehicle.meshAuthDeltaM;
     s.vehicleLatestVsSampledAuthDeltaM = vehicle.latestVsSampledAuthDeltaM;
     s.vehicleCurrentAuthDeltaM = vehicle.currentAuthDeltaM;
     s.vehicleMeshCurrentAuthDeltaM = vehicle.meshCurrentAuthDeltaM;
+    s.vehicleExpectedLeadM = vehicle.expectedLeadM;
+    s.vehicleCurrentAuthUnexplainedDeltaM = vehicle.currentAuthUnexplainedDeltaM;
+    s.vehicleCurrentAuthPlanarDeltaM = vehicle.currentAuthPlanarDeltaM;
+    s.vehicleCurrentAuthVerticalDeltaM = vehicle.currentAuthVerticalDeltaM;
     s.vehicleAuthObservedAgeMs = vehicle.authObservedAgeMs;
     s.vehicleAuthSampleOffsetMs = vehicle.authSampleOffsetMs;
     s.vehicleAuthSampleServerDeltaMs = vehicle.authSampleServerDeltaMs;
@@ -339,6 +668,55 @@ export function useDebugStats() {
     s.heapUsedMb = heapUsedMb;
     s.heapTotalMb = heapTotalMb;
 
+    if (deepCaptureEnabledRef.current && vehicle.id !== 0) {
+      const captureSamples = deepCaptureSamplesRef.current;
+      captureSamples.push({
+        atMs: now,
+        frameTimeMs,
+        speedMs: vehicle.localSpeedMs,
+        groundedWheels: vehicle.groundedWheels,
+        wheelContactBits: vehicle.capture.wheelContactBits,
+        wheelContactBitChanges: vehicle.capture.wheelContactBitChangesThisFrame,
+        wheelContactNormalDeltaRad: vehicle.capture.wheelContactNormalDeltaRad,
+        wheelGroundObjectSwitches: vehicle.capture.wheelGroundObjectSwitchesThisFrame,
+        ackBacklogMs: physics.vehicleAckBacklogMs,
+        resendWindow: physics.vehicleResendWindow,
+        replayErrorM: physics.vehicleReplayErrorM,
+        correctionM: physics.vehicleCorrectionMagnitude,
+        predictedFrameDeltaM: vehicle.capture.predictedFrameDeltaM,
+        predictedPlanarDeltaM: vehicle.capture.predictedPlanarDeltaM,
+        predictedHeaveDeltaM: vehicle.capture.predictedHeaveDeltaM,
+        predictedYawDeltaRad: vehicle.capture.predictedYawDeltaRad,
+        predictedPitchDeltaRad: vehicle.capture.predictedPitchDeltaRad,
+        predictedRollDeltaRad: vehicle.capture.predictedRollDeltaRad,
+        predictedResidualDeltaM: vehicle.capture.predictedResidualDeltaM,
+        predictedResidualPlanarDeltaM: vehicle.capture.predictedResidualPlanarDeltaM,
+        predictedResidualHeaveDeltaM: vehicle.capture.predictedResidualHeaveDeltaM,
+        predictedResidualYawDeltaRad: vehicle.capture.predictedResidualYawDeltaRad,
+        predictedResidualPitchDeltaRad: vehicle.capture.predictedResidualPitchDeltaRad,
+        predictedResidualRollDeltaRad: vehicle.capture.predictedResidualRollDeltaRad,
+        meshFrameDeltaM: vehicle.capture.meshFrameDeltaM,
+        meshFrameRotDeltaRad: vehicle.capture.meshFrameRotDeltaRad,
+        meshOffsetToPredictedM: vehicle.meshDeltaM,
+        meshOffsetToCurrentAuthM: vehicle.meshCurrentAuthDeltaM,
+        cameraFrameDeltaM: vehicle.capture.cameraFrameDeltaM,
+        cameraFrameRotDeltaRad: vehicle.capture.cameraFrameRotDeltaRad,
+        suspensionLengthSpreadM: vehicle.capture.suspensionLengthSpreadM,
+        suspensionForceSpreadN: vehicle.capture.suspensionForceSpreadN,
+        suspensionLengthDeltaM: vehicle.capture.suspensionLengthDeltaM,
+        suspensionForceDeltaN: vehicle.capture.suspensionForceDeltaN,
+        currentAuthDeltaM: vehicle.currentAuthDeltaM,
+        currentAuthPlanarDeltaM: vehicle.capture.currentAuthPlanarDeltaM,
+        currentAuthVerticalDeltaM: vehicle.capture.currentAuthVerticalDeltaM,
+        currentAuthUnexplainedDeltaM: vehicle.capture.currentAuthUnexplainedDeltaM,
+        expectedLeadM: vehicle.capture.expectedLeadM,
+        groundedTransitionThisFrame: vehicle.capture.groundedTransitionThisFrame,
+      });
+      while (captureSamples.length > 0 && now - captureSamples[0].atMs > DEEP_CAPTURE_WINDOW_MS) {
+        captureSamples.shift();
+      }
+    }
+
     // Throttled React state update for overlay rendering (10Hz)
     if (visibleRef.current && now - lastUiUpdate.current >= OVERLAY_UPDATE_INTERVAL_MS) {
       lastUiUpdate.current = now;
@@ -347,6 +725,12 @@ export function useDebugStats() {
   }, []);
 
   const getStatsSnapshot = useCallback((): DebugStats => ({ ...statsRef.current }), []);
+  const getDeepCaptureMarkdown = useCallback((): string | null => {
+    if (deepCaptureSamplesRef.current.length === 0) {
+      return deepCaptureEnabledRef.current ? buildVehicleDeepCaptureMarkdown([]) : null;
+    }
+    return buildVehicleDeepCaptureMarkdown([...deepCaptureSamplesRef.current]);
+  }, []);
 
   return {
     visible,
@@ -354,6 +738,9 @@ export function useDebugStats() {
     updateFrame,
     recordSnapshot,
     getStatsSnapshot,
+    getDeepCaptureMarkdown,
+    deepCaptureEnabled,
+    deepCaptureSampleCount: deepCaptureSamplesRef.current.length,
     rapierDebugModeBits: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].bits,
     rapierDebugLabel: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].label,
   };

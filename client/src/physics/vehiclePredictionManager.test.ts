@@ -4,8 +4,8 @@ import type { NetVehicleState } from '../net/protocol';
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import {
   FIXED_DT,
-  VEHICLE_MAX_INPUT_REDUNDANCY,
   VEHICLE_MAX_PENDING_INPUTS,
+  VEHICLE_CLIENT_CATCHUP_KEEP,
   VehiclePredictionManager,
 } from './vehiclePredictionManager';
 
@@ -21,6 +21,7 @@ class FakeVehicleSim {
   clearLocalVehicleCalls = 0;
   stepDynamicsCalls = 0;
   reconcileVehicleCalls = 0;
+  pruneVehiclePendingInputsThroughCalls = 0;
   nextReconcileResult: number[] | null = null;
 
   syncRemoteVehicle(): void {
@@ -63,6 +64,11 @@ class FakeVehicleSim {
 
   getVehiclePendingCount(): number {
     return this.pendingSeqs.length;
+  }
+
+  pruneVehiclePendingInputsThrough(ackSeq: number): void {
+    this.pruneVehiclePendingInputsThroughCalls += 1;
+    this.pendingSeqs = this.pendingSeqs.filter((seq) => seqIsNewer(seq, ackSeq));
   }
 }
 
@@ -118,22 +124,21 @@ describe('VehiclePredictionManager', () => {
     expect(nextTick.map((frame) => frame.seq)).toEqual([2]);
   });
 
-  it('keeps generating fresh vehicle ticks when backlog exceeds the old cap', () => {
+  it('keeps generating fresh vehicle ticks while collapsing stale replay backlog', () => {
     const { sim, manager, input } = createManager();
 
     for (let seq = 1; seq <= VEHICLE_MAX_PENDING_INPUTS; seq += 1) {
       const sent = manager.update(FIXED_DT, input);
       expect(sent.at(-1)?.seq).toBe(seq);
     }
-    expect(sim.getVehiclePendingCount()).toBe(VEHICLE_MAX_PENDING_INPUTS);
+    expect(sim.getVehiclePendingCount()).toBeGreaterThanOrEqual(VEHICLE_CLIENT_CATCHUP_KEEP);
+    expect(sim.getVehiclePendingCount()).toBeLessThanOrEqual(8);
+    expect(sim.pruneVehiclePendingInputsThroughCalls).toBeGreaterThan(0);
     expect(sim.tickedSeqs).toHaveLength(VEHICLE_MAX_PENDING_INPUTS);
 
     const continued = manager.update(FIXED_DT, input);
     expect(sim.tickedSeqs).toHaveLength(VEHICLE_MAX_PENDING_INPUTS + 1);
-    expect(continued.map((frame) => frame.seq)).toEqual([
-      16, 17, 18, 19, 20, 21, 22, 23,
-      24, 25, 26, 27, 28, 29, 30, 31,
-    ]);
+    expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
   });
 
   it('local preview enter and exit do not activate a second local vehicle sim', () => {
@@ -146,6 +151,14 @@ describe('VehiclePredictionManager', () => {
     manager.exitVehicle();
 
     expect(sim.clearLocalVehicleCalls).toBe(0);
+  });
+
+  it('multiplayer enter does not advance vehicle time during contact warm-up', () => {
+    const { sim } = createManager();
+
+    expect(sim.syncRemoteVehicleCalls).toBe(1);
+    expect(sim.setLocalVehicleCalls).toBe(1);
+    expect(sim.stepDynamicsCalls).toBe(0);
   });
 
   it('local preview keeps generating fixed-step inputs without ticking local vehicle physics', () => {
@@ -180,23 +193,21 @@ describe('VehiclePredictionManager', () => {
     }
 
     const continued = manager.update(FIXED_DT, input);
-    expect(continued.map((frame) => frame.seq)).toEqual([
-      16, 17, 18, 19, 20, 21, 22, 23,
-      24, 25, 26, 27, 28, 29, 30, 31,
-    ]);
+    expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
   });
 
-  it('widens vehicle resend window aggressively when unacked backlog becomes unhealthy', () => {
-    const { manager, input } = createManager();
+  it('keeps vehicle resend bursts fixed-width even when unacked backlog becomes unhealthy', () => {
+    const { sim, manager, input } = createManager();
 
     for (let seq = 1; seq <= 40; seq += 1) {
       manager.update(FIXED_DT, input);
     }
 
     const resent = manager.update(0, input);
-    expect(resent).toHaveLength(VEHICLE_MAX_INPUT_REDUNDANCY);
-    expect(resent[0].seq).toBe(9);
+    expect(resent).toHaveLength(4);
+    expect(resent[0].seq).toBe(37);
     expect(resent.at(-1)?.seq).toBe(40);
+    expect(sim.getVehiclePendingCount()).toBeLessThanOrEqual(8);
   });
 
   it('snaps tiny local vehicle corrections instead of smoothing them into vibration', () => {

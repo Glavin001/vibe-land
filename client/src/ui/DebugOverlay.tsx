@@ -104,16 +104,86 @@ export type DebugStats = {
   vehicleBrake: number;
   vehicleMeshDeltaM: number;
   vehicleMeshRotDeltaRad: number;
+  vehiclePredictedFrameDeltaM: number;
+  vehiclePredictedPlanarDeltaM: number;
+  vehiclePredictedHeaveDeltaM: number;
+  vehiclePredictedYawDeltaRad: number;
+  vehiclePredictedPitchDeltaRad: number;
+  vehiclePredictedRollDeltaRad: number;
+  vehiclePredictedResidualDeltaM: number;
+  vehiclePredictedResidualPlanarDeltaM: number;
+  vehiclePredictedResidualHeaveDeltaM: number;
+  vehiclePredictedResidualYawDeltaRad: number;
+  vehiclePredictedResidualPitchDeltaRad: number;
+  vehiclePredictedResidualRollDeltaRad: number;
+  vehicleMeshFrameDeltaM: number;
+  vehicleMeshFrameRotDeltaRad: number;
+  vehicleCameraFrameDeltaM: number;
+  vehicleCameraFrameRotDeltaRad: number;
   vehicleMeshDeltaRms5sM: number;
   vehicleMeshDeltaPeak5sM: number;
   vehicleRestJitterRms5sM: number;
   vehicleStraightJitterRms5sM: number;
+  vehicleRawHeaveDeltaRms5sM: number;
+  vehicleRawHeaveDeltaPeak5sM: number;
+  vehicleRawPlanarDeltaRms5sM: number;
+  vehicleRawPlanarDeltaPeak5sM: number;
+  vehicleRawYawDeltaRms5sRad: number;
+  vehicleRawYawDeltaPeak5sRad: number;
+  vehicleRawPitchDeltaRms5sRad: number;
+  vehicleRawPitchDeltaPeak5sRad: number;
+  vehicleRawRollDeltaRms5sRad: number;
+  vehicleRawRollDeltaPeak5sRad: number;
+  vehicleResidualDeltaRms5sM: number;
+  vehicleResidualDeltaPeak5sM: number;
+  vehicleResidualPlanarDeltaRms5sM: number;
+  vehicleResidualPlanarDeltaPeak5sM: number;
+  vehicleResidualHeaveDeltaRms5sM: number;
+  vehicleResidualHeaveDeltaPeak5sM: number;
+  vehicleResidualYawDeltaRms5sRad: number;
+  vehicleResidualYawDeltaPeak5sRad: number;
+  vehicleResidualPitchDeltaRms5sRad: number;
+  vehicleResidualPitchDeltaPeak5sRad: number;
+  vehicleResidualRollDeltaRms5sRad: number;
+  vehicleResidualRollDeltaPeak5sRad: number;
+  vehicleRawRestHeaveDeltaRms5sM: number;
+  vehicleRawStraightHeaveDeltaRms5sM: number;
+  vehicleWheelContactBits: number;
+  vehicleWheelContactBitChanges5s: number;
+  vehicleWheelContactNormals: Array<[number, number, number]>;
+  vehicleWheelContactNormalDeltaRms5sRad: number;
+  vehicleWheelGroundObjectIds: [number, number, number, number];
+  vehicleWheelGroundObjectSwitches5s: number;
+  vehicleSuspensionLengths: [number, number, number, number];
+  vehicleSuspensionForces: [number, number, number, number];
+  vehicleSuspensionRelativeVelocities: [number, number, number, number];
+  vehicleSuspensionLengthSpreadM: number;
+  vehicleSuspensionLengthSpreadPeak5sM: number;
+  vehicleSuspensionLengthDeltaRms5sM: number;
+  vehicleSuspensionForceSpreadN: number;
+  vehicleSuspensionForceSpreadPeak5sN: number;
+  vehicleSuspensionForceDeltaRms5sN: number;
+  vehicleMeshFrameDeltaRms5sM: number;
+  vehicleMeshFrameDeltaPeak5sM: number;
+  vehicleMeshFrameRotDeltaRms5sRad: number;
+  vehicleMeshFrameRotDeltaPeak5sRad: number;
+  vehicleCameraFrameDeltaRms5sM: number;
+  vehicleCameraFrameDeltaPeak5sM: number;
+  vehicleCameraFrameRotDeltaRms5sRad: number;
+  vehicleCameraFrameRotDeltaPeak5sRad: number;
+  vehicleGroundedTransitions5s: number;
+  vehicleGroundedMin5s: number;
+  vehicleGroundedMax5s: number;
   vehicleLatestAuthDeltaM: number;
   vehicleSampledAuthDeltaM: number;
   vehicleMeshAuthDeltaM: number;
   vehicleLatestVsSampledAuthDeltaM: number;
   vehicleCurrentAuthDeltaM: number;
   vehicleMeshCurrentAuthDeltaM: number;
+  vehicleExpectedLeadM: number;
+  vehicleCurrentAuthUnexplainedDeltaM: number;
+  vehicleCurrentAuthPlanarDeltaM: number;
+  vehicleCurrentAuthVerticalDeltaM: number;
   vehicleAuthObservedAgeMs: number;
   vehicleAuthSampleOffsetMs: number;
   vehicleAuthSampleServerDeltaMs: number;
@@ -235,16 +305,86 @@ export const DEFAULT_STATS: DebugStats = {
   vehicleBrake: 0,
   vehicleMeshDeltaM: 0,
   vehicleMeshRotDeltaRad: 0,
+  vehiclePredictedFrameDeltaM: 0,
+  vehiclePredictedPlanarDeltaM: 0,
+  vehiclePredictedHeaveDeltaM: 0,
+  vehiclePredictedYawDeltaRad: 0,
+  vehiclePredictedPitchDeltaRad: 0,
+  vehiclePredictedRollDeltaRad: 0,
+  vehiclePredictedResidualDeltaM: 0,
+  vehiclePredictedResidualPlanarDeltaM: 0,
+  vehiclePredictedResidualHeaveDeltaM: 0,
+  vehiclePredictedResidualYawDeltaRad: 0,
+  vehiclePredictedResidualPitchDeltaRad: 0,
+  vehiclePredictedResidualRollDeltaRad: 0,
+  vehicleMeshFrameDeltaM: 0,
+  vehicleMeshFrameRotDeltaRad: 0,
+  vehicleCameraFrameDeltaM: 0,
+  vehicleCameraFrameRotDeltaRad: 0,
   vehicleMeshDeltaRms5sM: 0,
   vehicleMeshDeltaPeak5sM: 0,
   vehicleRestJitterRms5sM: 0,
   vehicleStraightJitterRms5sM: 0,
+  vehicleRawHeaveDeltaRms5sM: 0,
+  vehicleRawHeaveDeltaPeak5sM: 0,
+  vehicleRawPlanarDeltaRms5sM: 0,
+  vehicleRawPlanarDeltaPeak5sM: 0,
+  vehicleRawYawDeltaRms5sRad: 0,
+  vehicleRawYawDeltaPeak5sRad: 0,
+  vehicleRawPitchDeltaRms5sRad: 0,
+  vehicleRawPitchDeltaPeak5sRad: 0,
+  vehicleRawRollDeltaRms5sRad: 0,
+  vehicleRawRollDeltaPeak5sRad: 0,
+  vehicleResidualDeltaRms5sM: 0,
+  vehicleResidualDeltaPeak5sM: 0,
+  vehicleResidualPlanarDeltaRms5sM: 0,
+  vehicleResidualPlanarDeltaPeak5sM: 0,
+  vehicleResidualHeaveDeltaRms5sM: 0,
+  vehicleResidualHeaveDeltaPeak5sM: 0,
+  vehicleResidualYawDeltaRms5sRad: 0,
+  vehicleResidualYawDeltaPeak5sRad: 0,
+  vehicleResidualPitchDeltaRms5sRad: 0,
+  vehicleResidualPitchDeltaPeak5sRad: 0,
+  vehicleResidualRollDeltaRms5sRad: 0,
+  vehicleResidualRollDeltaPeak5sRad: 0,
+  vehicleRawRestHeaveDeltaRms5sM: 0,
+  vehicleRawStraightHeaveDeltaRms5sM: 0,
+  vehicleWheelContactBits: 0,
+  vehicleWheelContactBitChanges5s: 0,
+  vehicleWheelContactNormals: [],
+  vehicleWheelContactNormalDeltaRms5sRad: 0,
+  vehicleWheelGroundObjectIds: [0, 0, 0, 0],
+  vehicleWheelGroundObjectSwitches5s: 0,
+  vehicleSuspensionLengths: [0, 0, 0, 0],
+  vehicleSuspensionForces: [0, 0, 0, 0],
+  vehicleSuspensionRelativeVelocities: [0, 0, 0, 0],
+  vehicleSuspensionLengthSpreadM: 0,
+  vehicleSuspensionLengthSpreadPeak5sM: 0,
+  vehicleSuspensionLengthDeltaRms5sM: 0,
+  vehicleSuspensionForceSpreadN: 0,
+  vehicleSuspensionForceSpreadPeak5sN: 0,
+  vehicleSuspensionForceDeltaRms5sN: 0,
+  vehicleMeshFrameDeltaRms5sM: 0,
+  vehicleMeshFrameDeltaPeak5sM: 0,
+  vehicleMeshFrameRotDeltaRms5sRad: 0,
+  vehicleMeshFrameRotDeltaPeak5sRad: 0,
+  vehicleCameraFrameDeltaRms5sM: 0,
+  vehicleCameraFrameDeltaPeak5sM: 0,
+  vehicleCameraFrameRotDeltaRms5sRad: 0,
+  vehicleCameraFrameRotDeltaPeak5sRad: 0,
+  vehicleGroundedTransitions5s: 0,
+  vehicleGroundedMin5s: 0,
+  vehicleGroundedMax5s: 0,
   vehicleLatestAuthDeltaM: 0,
   vehicleSampledAuthDeltaM: 0,
   vehicleMeshAuthDeltaM: 0,
   vehicleLatestVsSampledAuthDeltaM: 0,
   vehicleCurrentAuthDeltaM: 0,
   vehicleMeshCurrentAuthDeltaM: 0,
+  vehicleExpectedLeadM: 0,
+  vehicleCurrentAuthUnexplainedDeltaM: 0,
+  vehicleCurrentAuthPlanarDeltaM: 0,
+  vehicleCurrentAuthVerticalDeltaM: 0,
   vehicleAuthObservedAgeMs: -1,
   vehicleAuthSampleOffsetMs: -1,
   vehicleAuthSampleServerDeltaMs: -1,
@@ -270,10 +410,25 @@ type DebugMarkdownExtras = {
   userAgent?: string;
   renderStatsText?: string;
   localRenderSmoothingEnabled?: boolean;
+  deepCaptureEnabled?: boolean;
+  deepCaptureReport?: string | null;
 };
 
 function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
+}
+
+function fmtBits(bits: number): string {
+  return `0b${bits.toString(2).padStart(4, '0')}`;
+}
+
+function fmtTuple(values: readonly number[], decimals = 3): string {
+  return `[${values.map((value) => fmt(value, decimals)).join(', ')}]`;
+}
+
+function fmtVec3Tuple(values: Array<[number, number, number]>, decimals = 2): string {
+  if (values.length === 0) return '[]';
+  return `[${values.map((value) => fmtTuple(value, decimals)).join(', ')}]`;
 }
 
 function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string {
@@ -349,16 +504,86 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- vehicle_corr_age_ms: ${stats.vehicleCorrectionAgeMs >= 0 ? fmt(stats.vehicleCorrectionAgeMs, 2) : 'n/a'}`,
     `- vehicle_mesh_delta_m: ${fmt(stats.vehicleMeshDeltaM, 3)}`,
     `- vehicle_mesh_rot_delta_rad: ${fmt(stats.vehicleMeshRotDeltaRad, 3)}`,
+    `- vehicle_predicted_frame_delta_m: ${fmt(stats.vehiclePredictedFrameDeltaM, 3)}`,
+    `- vehicle_predicted_planar_delta_m: ${fmt(stats.vehiclePredictedPlanarDeltaM, 3)}`,
+    `- vehicle_predicted_heave_delta_m: ${fmt(stats.vehiclePredictedHeaveDeltaM, 3)}`,
+    `- vehicle_predicted_yaw_delta_rad: ${fmt(stats.vehiclePredictedYawDeltaRad, 3)}`,
+    `- vehicle_predicted_pitch_delta_rad: ${fmt(stats.vehiclePredictedPitchDeltaRad, 3)}`,
+    `- vehicle_predicted_roll_delta_rad: ${fmt(stats.vehiclePredictedRollDeltaRad, 3)}`,
+    `- vehicle_predicted_residual_delta_m: ${fmt(stats.vehiclePredictedResidualDeltaM, 3)}`,
+    `- vehicle_predicted_residual_planar_delta_m: ${fmt(stats.vehiclePredictedResidualPlanarDeltaM, 3)}`,
+    `- vehicle_predicted_residual_heave_delta_m: ${fmt(stats.vehiclePredictedResidualHeaveDeltaM, 3)}`,
+    `- vehicle_predicted_residual_yaw_delta_rad: ${fmt(stats.vehiclePredictedResidualYawDeltaRad, 3)}`,
+    `- vehicle_predicted_residual_pitch_delta_rad: ${fmt(stats.vehiclePredictedResidualPitchDeltaRad, 3)}`,
+    `- vehicle_predicted_residual_roll_delta_rad: ${fmt(stats.vehiclePredictedResidualRollDeltaRad, 3)}`,
+    `- vehicle_mesh_frame_delta_m: ${fmt(stats.vehicleMeshFrameDeltaM, 3)}`,
+    `- vehicle_mesh_frame_rot_delta_rad: ${fmt(stats.vehicleMeshFrameRotDeltaRad, 3)}`,
+    `- vehicle_camera_frame_delta_m: ${fmt(stats.vehicleCameraFrameDeltaM, 3)}`,
+    `- vehicle_camera_frame_rot_delta_rad: ${fmt(stats.vehicleCameraFrameRotDeltaRad, 3)}`,
     `- vehicle_mesh_delta_rms_5s_m: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}`,
     `- vehicle_mesh_delta_peak_5s_m: ${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}`,
     `- vehicle_rest_jitter_rms_5s_m: ${fmt(stats.vehicleRestJitterRms5sM, 3)}`,
     `- vehicle_straight_jitter_rms_5s_m: ${fmt(stats.vehicleStraightJitterRms5sM, 3)}`,
+    `- vehicle_raw_heave_delta_rms_5s_m: ${fmt(stats.vehicleRawHeaveDeltaRms5sM, 3)}`,
+    `- vehicle_raw_heave_delta_peak_5s_m: ${fmt(stats.vehicleRawHeaveDeltaPeak5sM, 3)}`,
+    `- vehicle_raw_planar_delta_rms_5s_m: ${fmt(stats.vehicleRawPlanarDeltaRms5sM, 3)}`,
+    `- vehicle_raw_planar_delta_peak_5s_m: ${fmt(stats.vehicleRawPlanarDeltaPeak5sM, 3)}`,
+    `- vehicle_raw_yaw_delta_rms_5s_rad: ${fmt(stats.vehicleRawYawDeltaRms5sRad, 3)}`,
+    `- vehicle_raw_yaw_delta_peak_5s_rad: ${fmt(stats.vehicleRawYawDeltaPeak5sRad, 3)}`,
+    `- vehicle_raw_pitch_delta_rms_5s_rad: ${fmt(stats.vehicleRawPitchDeltaRms5sRad, 3)}`,
+    `- vehicle_raw_pitch_delta_peak_5s_rad: ${fmt(stats.vehicleRawPitchDeltaPeak5sRad, 3)}`,
+    `- vehicle_raw_roll_delta_rms_5s_rad: ${fmt(stats.vehicleRawRollDeltaRms5sRad, 3)}`,
+    `- vehicle_raw_roll_delta_peak_5s_rad: ${fmt(stats.vehicleRawRollDeltaPeak5sRad, 3)}`,
+    `- vehicle_residual_delta_rms_5s_m: ${fmt(stats.vehicleResidualDeltaRms5sM, 3)}`,
+    `- vehicle_residual_delta_peak_5s_m: ${fmt(stats.vehicleResidualDeltaPeak5sM, 3)}`,
+    `- vehicle_residual_planar_delta_rms_5s_m: ${fmt(stats.vehicleResidualPlanarDeltaRms5sM, 3)}`,
+    `- vehicle_residual_planar_delta_peak_5s_m: ${fmt(stats.vehicleResidualPlanarDeltaPeak5sM, 3)}`,
+    `- vehicle_residual_heave_delta_rms_5s_m: ${fmt(stats.vehicleResidualHeaveDeltaRms5sM, 3)}`,
+    `- vehicle_residual_heave_delta_peak_5s_m: ${fmt(stats.vehicleResidualHeaveDeltaPeak5sM, 3)}`,
+    `- vehicle_residual_yaw_delta_rms_5s_rad: ${fmt(stats.vehicleResidualYawDeltaRms5sRad, 3)}`,
+    `- vehicle_residual_yaw_delta_peak_5s_rad: ${fmt(stats.vehicleResidualYawDeltaPeak5sRad, 3)}`,
+    `- vehicle_residual_pitch_delta_rms_5s_rad: ${fmt(stats.vehicleResidualPitchDeltaRms5sRad, 3)}`,
+    `- vehicle_residual_pitch_delta_peak_5s_rad: ${fmt(stats.vehicleResidualPitchDeltaPeak5sRad, 3)}`,
+    `- vehicle_residual_roll_delta_rms_5s_rad: ${fmt(stats.vehicleResidualRollDeltaRms5sRad, 3)}`,
+    `- vehicle_residual_roll_delta_peak_5s_rad: ${fmt(stats.vehicleResidualRollDeltaPeak5sRad, 3)}`,
+    `- vehicle_raw_rest_heave_delta_rms_5s_m: ${fmt(stats.vehicleRawRestHeaveDeltaRms5sM, 3)}`,
+    `- vehicle_raw_straight_heave_delta_rms_5s_m: ${fmt(stats.vehicleRawStraightHeaveDeltaRms5sM, 3)}`,
+    `- vehicle_wheel_contact_bits: ${fmtBits(stats.vehicleWheelContactBits)}`,
+    `- vehicle_wheel_contact_bit_changes_5s: ${fmt(stats.vehicleWheelContactBitChanges5s, 0)}`,
+    `- vehicle_wheel_contact_normals: ${fmtVec3Tuple(stats.vehicleWheelContactNormals, 2)}`,
+    `- vehicle_wheel_contact_normal_delta_rms_5s_rad: ${fmt(stats.vehicleWheelContactNormalDeltaRms5sRad, 3)}`,
+    `- vehicle_wheel_ground_object_ids: ${fmtTuple(stats.vehicleWheelGroundObjectIds, 0)}`,
+    `- vehicle_wheel_ground_object_switches_5s: ${fmt(stats.vehicleWheelGroundObjectSwitches5s, 0)}`,
+    `- vehicle_suspension_lengths_m: ${fmtTuple(stats.vehicleSuspensionLengths, 3)}`,
+    `- vehicle_suspension_forces_n: ${fmtTuple(stats.vehicleSuspensionForces, 1)}`,
+    `- vehicle_suspension_relative_velocities_ms: ${fmtTuple(stats.vehicleSuspensionRelativeVelocities, 3)}`,
+    `- vehicle_suspension_length_spread_m: ${fmt(stats.vehicleSuspensionLengthSpreadM, 3)}`,
+    `- vehicle_suspension_length_spread_peak_5s_m: ${fmt(stats.vehicleSuspensionLengthSpreadPeak5sM, 3)}`,
+    `- vehicle_suspension_length_delta_rms_5s_m: ${fmt(stats.vehicleSuspensionLengthDeltaRms5sM, 3)}`,
+    `- vehicle_suspension_force_spread_n: ${fmt(stats.vehicleSuspensionForceSpreadN, 1)}`,
+    `- vehicle_suspension_force_spread_peak_5s_n: ${fmt(stats.vehicleSuspensionForceSpreadPeak5sN, 1)}`,
+    `- vehicle_suspension_force_delta_rms_5s_n: ${fmt(stats.vehicleSuspensionForceDeltaRms5sN, 1)}`,
+    `- vehicle_mesh_frame_delta_rms_5s_m: ${fmt(stats.vehicleMeshFrameDeltaRms5sM, 3)}`,
+    `- vehicle_mesh_frame_delta_peak_5s_m: ${fmt(stats.vehicleMeshFrameDeltaPeak5sM, 3)}`,
+    `- vehicle_mesh_frame_rot_delta_rms_5s_rad: ${fmt(stats.vehicleMeshFrameRotDeltaRms5sRad, 3)}`,
+    `- vehicle_mesh_frame_rot_delta_peak_5s_rad: ${fmt(stats.vehicleMeshFrameRotDeltaPeak5sRad, 3)}`,
+    `- vehicle_camera_frame_delta_rms_5s_m: ${fmt(stats.vehicleCameraFrameDeltaRms5sM, 3)}`,
+    `- vehicle_camera_frame_delta_peak_5s_m: ${fmt(stats.vehicleCameraFrameDeltaPeak5sM, 3)}`,
+    `- vehicle_camera_frame_rot_delta_rms_5s_rad: ${fmt(stats.vehicleCameraFrameRotDeltaRms5sRad, 3)}`,
+    `- vehicle_camera_frame_rot_delta_peak_5s_rad: ${fmt(stats.vehicleCameraFrameRotDeltaPeak5sRad, 3)}`,
+    `- vehicle_grounded_transitions_5s: ${stats.vehicleGroundedTransitions5s}`,
+    `- vehicle_grounded_min_5s: ${fmt(stats.vehicleGroundedMin5s, 0)}`,
+    `- vehicle_grounded_max_5s: ${fmt(stats.vehicleGroundedMax5s, 0)}`,
     `- vehicle_latest_auth_delta_m: ${fmt(stats.vehicleLatestAuthDeltaM, 3)}`,
     `- vehicle_sampled_auth_delta_m: ${fmt(stats.vehicleSampledAuthDeltaM, 3)}`,
     `- vehicle_mesh_auth_delta_m: ${fmt(stats.vehicleMeshAuthDeltaM, 3)}`,
     `- vehicle_latest_vs_sampled_auth_delta_m: ${fmt(stats.vehicleLatestVsSampledAuthDeltaM, 3)}`,
     `- vehicle_current_auth_delta_m: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}`,
     `- vehicle_mesh_current_auth_delta_m: ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}`,
+    `- vehicle_expected_lead_m: ${fmt(stats.vehicleExpectedLeadM, 3)}`,
+    `- vehicle_current_auth_unexplained_delta_m: ${fmt(stats.vehicleCurrentAuthUnexplainedDeltaM, 3)}`,
+    `- vehicle_current_auth_planar_delta_m: ${fmt(stats.vehicleCurrentAuthPlanarDeltaM, 3)}`,
+    `- vehicle_current_auth_vertical_delta_m: ${fmt(stats.vehicleCurrentAuthVerticalDeltaM, 3)}`,
     `- vehicle_auth_observed_age_ms: ${stats.vehicleAuthObservedAgeMs >= 0 ? fmt(stats.vehicleAuthObservedAgeMs, 2) : 'n/a'}`,
     `- vehicle_auth_sample_offset_ms: ${stats.vehicleAuthSampleOffsetMs >= 0 ? fmt(stats.vehicleAuthSampleOffsetMs, 2) : 'n/a'}`,
     `- vehicle_auth_sample_server_delta_ms: ${stats.vehicleAuthSampleServerDeltaMs >= 0 ? fmt(stats.vehicleAuthSampleServerDeltaMs, 2) : 'n/a'}`,
@@ -438,6 +663,14 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     lines.push('', '## Recent Events', '```text', ...stats.recentEvents, '```');
   }
 
+  if (extras.deepCaptureEnabled != null) {
+    lines.push('', '## Deep Capture', `- enabled: ${extras.deepCaptureEnabled ? 'yes' : 'no'}`);
+  }
+
+  if (extras.deepCaptureReport) {
+    lines.push('', extras.deepCaptureReport);
+  }
+
   return lines.join('\n');
 }
 
@@ -446,11 +679,15 @@ export function DebugOverlay({
   visible,
   localRenderSmoothingEnabled = true,
   onToggleLocalRenderSmoothing,
+  deepCaptureEnabled = false,
+  deepCaptureSampleCount = 0,
 }: {
   stats: DebugStats;
   visible: boolean;
   localRenderSmoothingEnabled?: boolean;
   onToggleLocalRenderSmoothing?: () => void;
+  deepCaptureEnabled?: boolean;
+  deepCaptureSampleCount?: number;
 }) {
   if (!visible) return null;
 
@@ -536,6 +773,7 @@ export function DebugOverlay({
           >
             <div>F3 show / hide</div>
             <div>F4 copy report</div>
+            <div>F7 deep capture</div>
           </div>
         </div>
 
@@ -640,10 +878,24 @@ export function DebugOverlay({
         {`Vehicle pending age: ${fmt(stats.vehiclePendingInputsAgeMs, 1)}ms  corr age: ${stats.vehicleCorrectionAgeMs >= 0 ? fmt(stats.vehicleCorrectionAgeMs, 1) : 'n/a'}ms`}
         {`Vehicle pos/vel/rot err: ${fmt(stats.vehiclePosErrorM, 3)}m ${fmt(stats.vehicleVelErrorMs, 3)}m/s ${fmt(stats.vehicleRotErrorRad, 3)}rad`}
         {`Vehicle mesh delta/rot: ${fmt(stats.vehicleMeshDeltaM, 3)}m ${fmt(stats.vehicleMeshRotDeltaRad, 3)}rad`}
+        {`Vehicle pred frame/planar/heave/yaw: ${fmt(stats.vehiclePredictedFrameDeltaM, 3)}/${fmt(stats.vehiclePredictedPlanarDeltaM, 3)}/${fmt(stats.vehiclePredictedHeaveDeltaM, 3)}m ${fmt(stats.vehiclePredictedYawDeltaRad, 3)}rad`}
+        {`Vehicle residual frame/planar/heave: ${fmt(stats.vehiclePredictedResidualDeltaM, 3)}/${fmt(stats.vehiclePredictedResidualPlanarDeltaM, 3)}/${fmt(stats.vehiclePredictedResidualHeaveDeltaM, 3)}m`}
+        {`Vehicle mesh/camera frame delta: ${fmt(stats.vehicleMeshFrameDeltaM, 3)}/${fmt(stats.vehicleCameraFrameDeltaM, 3)}m`}
         {`Vehicle mesh rms/peak 5s: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}m`}
+        {`Vehicle mesh frame rms/peak 5s: ${fmt(stats.vehicleMeshFrameDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshFrameDeltaPeak5sM, 3)}m`}
+        {`Vehicle mesh frame rot rms/peak 5s: ${fmt(stats.vehicleMeshFrameRotDeltaRms5sRad, 3)}/${fmt(stats.vehicleMeshFrameRotDeltaPeak5sRad, 3)}rad`}
+        {`Vehicle camera frame rms/peak 5s: ${fmt(stats.vehicleCameraFrameDeltaRms5sM, 3)}/${fmt(stats.vehicleCameraFrameDeltaPeak5sM, 3)}m`}
         {`Vehicle rest/straight jitter rms: ${fmt(stats.vehicleRestJitterRms5sM, 3)}/${fmt(stats.vehicleStraightJitterRms5sM, 3)}m`}
+        {`Vehicle raw planar/heave rms: ${fmt(stats.vehicleRawPlanarDeltaRms5sM, 3)}/${fmt(stats.vehicleRawHeaveDeltaRms5sM, 3)}m`}
+        {`Vehicle raw yaw/pitch/roll rms: ${fmt(stats.vehicleRawYawDeltaRms5sRad, 3)}/${fmt(stats.vehicleRawPitchDeltaRms5sRad, 3)}/${fmt(stats.vehicleRawRollDeltaRms5sRad, 3)}rad`}
+        {`Vehicle residual planar/heave rms: ${fmt(stats.vehicleResidualPlanarDeltaRms5sM, 3)}/${fmt(stats.vehicleResidualHeaveDeltaRms5sM, 3)}m`}
+        {`Wheel bits/changes 5s: ${fmtBits(stats.vehicleWheelContactBits)} / ${fmt(stats.vehicleWheelContactBitChanges5s, 0)}`}
+        {`Susp spread len/force: ${fmt(stats.vehicleSuspensionLengthSpreadM, 3)}m / ${fmt(stats.vehicleSuspensionForceSpreadN, 1)}N`}
+        {`Susp delta len/force rms: ${fmt(stats.vehicleSuspensionLengthDeltaRms5sM, 3)}m / ${fmt(stats.vehicleSuspensionForceDeltaRms5sN, 1)}N`}
         {`Vehicle pred/auth rms/peak 5s: ${fmt(stats.vehiclePredictedAuthDeltaRms5sM, 3)}/${fmt(stats.vehiclePredictedAuthDeltaPeak5sM, 3)}m`}
         {`Vehicle current auth delta: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}m  mesh/current ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}m`}
+        {`Vehicle expected lead/unexplained: ${fmt(stats.vehicleExpectedLeadM, 3)}/${fmt(stats.vehicleCurrentAuthUnexplainedDeltaM, 3)}m`}
+        {`Vehicle grounded min/max/transitions 5s: ${fmt(stats.vehicleGroundedMin5s, 0)}/${fmt(stats.vehicleGroundedMax5s, 0)}/${stats.vehicleGroundedTransitions5s}`}
         {`Physics step: ${fmt(stats.physicsStepMs, 2)}ms`}
       </Section>
 
@@ -668,8 +920,20 @@ export function DebugOverlay({
           {`Pos delta: ${fmt(stats.vehiclePosDeltaM, 3)}m  wheels: ${stats.vehicleGroundedWheels}/4`}
           {`Pred/latest/sample auth: ${fmt(stats.vehicleLatestAuthDeltaM, 3)} / ${fmt(stats.vehicleSampledAuthDeltaM, 3)} / ${fmt(stats.vehicleLatestVsSampledAuthDeltaM, 3)}m`}
           {`Pred/current auth: ${fmt(stats.vehicleCurrentAuthDeltaM, 3)}m  mesh/current ${fmt(stats.vehicleMeshCurrentAuthDeltaM, 3)}m`}
+          {`Expected lead/unexplained: ${fmt(stats.vehicleExpectedLeadM, 3)} / ${fmt(stats.vehicleCurrentAuthUnexplainedDeltaM, 3)}m`}
+          {`Current auth planar/vertical: ${fmt(stats.vehicleCurrentAuthPlanarDeltaM, 3)} / ${fmt(stats.vehicleCurrentAuthVerticalDeltaM, 3)}m`}
           {`Mesh/auth delta: ${fmt(stats.vehicleMeshAuthDeltaM, 3)}m  auth age/sample/current: ${stats.vehicleAuthObservedAgeMs >= 0 ? fmt(stats.vehicleAuthObservedAgeMs, 1) : 'n/a'} / ${stats.vehicleAuthSampleOffsetMs >= 0 ? fmt(stats.vehicleAuthSampleOffsetMs, 1) : 'n/a'} / ${stats.vehicleAuthCurrentOffsetMs >= 0 ? fmt(stats.vehicleAuthCurrentOffsetMs, 1) : 'n/a'}ms`}
-          {`Mesh delta: ${fmt(stats.vehicleMeshDeltaM, 3)}m  rms/peak: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshDeltaPeak5sM, 3)}m`}
+          {`Pred frame/planar/heave/yaw: ${fmt(stats.vehiclePredictedFrameDeltaM, 3)}/${fmt(stats.vehiclePredictedPlanarDeltaM, 3)}/${fmt(stats.vehiclePredictedHeaveDeltaM, 3)}m ${fmt(stats.vehiclePredictedYawDeltaRad, 3)}rad`}
+          {`Residual frame/planar/heave: ${fmt(stats.vehiclePredictedResidualDeltaM, 3)}/${fmt(stats.vehiclePredictedResidualPlanarDeltaM, 3)}/${fmt(stats.vehiclePredictedResidualHeaveDeltaM, 3)}m`}
+          {`Mesh offset/frame rms: ${fmt(stats.vehicleMeshDeltaRms5sM, 3)}/${fmt(stats.vehicleMeshFrameDeltaRms5sM, 3)}m`}
+          {`Camera frame rms/peak: ${fmt(stats.vehicleCameraFrameDeltaRms5sM, 3)}/${fmt(stats.vehicleCameraFrameDeltaPeak5sM, 3)}m`}
+          {`Raw planar/heave rest/straight rms: ${fmt(stats.vehicleRawPlanarDeltaRms5sM, 3)}/${fmt(stats.vehicleRawRestHeaveDeltaRms5sM, 3)}/${fmt(stats.vehicleRawStraightHeaveDeltaRms5sM, 3)}m`}
+          {`Residual planar/heave/yaw rms: ${fmt(stats.vehicleResidualPlanarDeltaRms5sM, 3)}/${fmt(stats.vehicleResidualHeaveDeltaRms5sM, 3)}m ${fmt(stats.vehicleResidualYawDeltaRms5sRad, 3)}rad`}
+          {`Raw yaw/pitch/roll peak: ${fmt(stats.vehicleRawYawDeltaPeak5sRad, 3)}/${fmt(stats.vehicleRawPitchDeltaPeak5sRad, 3)}/${fmt(stats.vehicleRawRollDeltaPeak5sRad, 3)}rad`}
+          {`Wheel bits/changes 5s: ${fmtBits(stats.vehicleWheelContactBits)} / ${fmt(stats.vehicleWheelContactBitChanges5s, 0)}`}
+          {`Susp len spread/delta: ${fmt(stats.vehicleSuspensionLengthSpreadM, 3)} / ${fmt(stats.vehicleSuspensionLengthDeltaRms5sM, 3)}m`}
+          {`Susp force spread/delta: ${fmt(stats.vehicleSuspensionForceSpreadN, 1)} / ${fmt(stats.vehicleSuspensionForceDeltaRms5sN, 1)}N`}
+          {`Grounded min/max/transitions 5s: ${fmt(stats.vehicleGroundedMin5s, 0)}/${fmt(stats.vehicleGroundedMax5s, 0)}/${stats.vehicleGroundedTransitions5s}`}
           {`Steer: ${fmt(stats.vehicleSteering, 3)}  engine: ${fmt(stats.vehicleEngineForce, 0)}  brake: ${fmt(stats.vehicleBrake, 0)}`}
         </Section>
       )}
@@ -704,6 +968,8 @@ export function DebugOverlay({
         }}
       >
         {`Copy markdown: F4 or ${typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl'}+Shift+D`}
+        {'\n'}
+        {`Deep capture: ${deepCaptureEnabled ? `ON (${deepCaptureSampleCount} samples)` : 'OFF'}  Toggle: F7`}
       </div>
     </div>
   );

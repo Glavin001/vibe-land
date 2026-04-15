@@ -29,6 +29,7 @@ import {
   type ServerPacket,
   type ServerWorldPacket,
   type VehicleStateMeters,
+  FLAG_IN_VEHICLE,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -110,6 +111,7 @@ export class NetcodeClient {
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
+  private localDrivenVehicleId: number | null = null;
   private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
   private readonly debugTelemetry = new NetDebugTelemetry();
 
@@ -386,6 +388,10 @@ export class NetcodeClient {
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
+    const localPlayerInVehicle = (localState.flags & FLAG_IN_VEHICLE) !== 0;
+    if (!localPlayerInVehicle) {
+      this.localDrivenVehicleId = null;
+    }
 
     for (const player of packet.remotePlayers) {
       const remotePlayerId = this.playerIdByHandle.get(player.handle);
@@ -516,11 +522,26 @@ export class NetcodeClient {
     // callback syncing same-tick collider state before replaying pending inputs.
     this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
+    let inferredLocalDrivenVehicle = false;
     for (const vehicle of packet.vehicleStates) {
       const vehicleId = vehicle.handle;
-      const driverPlayerId = vehicle.driverHandle === 0
+      const resolvedDriverPlayerId = vehicle.driverHandle === 0
         ? 0
         : (this.playerIdByHandle.get(vehicle.driverHandle) ?? 0);
+      const isRememberedLocalVehicle = vehicle.driverHandle !== 0 && this.localDrivenVehicleId === vehicleId;
+      const shouldInferLocalDrivenVehicle: boolean = vehicle.driverHandle !== 0
+        && resolvedDriverPlayerId === 0
+        && localPlayerInVehicle
+        && !inferredLocalDrivenVehicle
+        && (this.localDrivenVehicleId === null || this.localDrivenVehicleId === vehicleId);
+      const driverPlayerId = resolvedDriverPlayerId !== 0
+        ? resolvedDriverPlayerId
+        : (isRememberedLocalVehicle || shouldInferLocalDrivenVehicle)
+          ? this.playerId
+          : 0;
+      if (vehicle.driverHandle === 0 && this.localDrivenVehicleId === vehicleId) {
+        this.localDrivenVehicleId = null;
+      }
       const meters: VehicleStateMeters = {
         id: vehicleId,
         vehicleType: vehicle.vehicleType,
@@ -545,6 +566,8 @@ export class NetcodeClient {
       this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
       this.vehicleServerTimeUs.set(vehicleId, packet.serverTimeUs);
       if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
+        this.localDrivenVehicleId = vehicleId;
+        inferredLocalDrivenVehicle = inferredLocalDrivenVehicle || shouldInferLocalDrivenVehicle;
         const localVehicleState: NetVehicleState = {
           id: vehicleId,
           vehicleType: vehicle.vehicleType,
@@ -760,7 +783,10 @@ export class NetcodeClient {
 
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
+            this.localDrivenVehicleId = vs.id;
             this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
+          } else if (vs.driverId === 0 && this.localDrivenVehicleId === vs.id) {
+            this.localDrivenVehicleId = null;
           }
           this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
         }

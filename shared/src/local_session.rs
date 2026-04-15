@@ -144,8 +144,7 @@ impl LocalPreviewSession {
 
         let input = take_input_for_tick(&mut self.player);
         self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
-        self.arena.step_vehicles(dt);
-        self.arena.step_dynamics(dt);
+        self.arena.step_vehicles_and_dynamics(dt);
         self.process_hitscan(server_time_ms);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {

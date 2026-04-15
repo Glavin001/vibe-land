@@ -8,10 +8,18 @@ use crate::protocol::InputCmd;
 pub const VEHICLE_MAX_STEER_RAD: f32 = 0.5;
 pub const VEHICLE_ENGINE_FORCE: f32 = 4000.0; // 2 rear wheels × 4000 N / ~600 kg ≈ 13 m/s² — sporty car
 pub const VEHICLE_BRAKE_FORCE: f32 = 2000.0;
-pub const VEHICLE_SUSPENSION_STIFFNESS: f32 = 80.0;
-pub const VEHICLE_SUSPENSION_DAMPING: f32 = 20.0; // critically-damped at ~300kg chassis
-pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.3;
-pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.2;
+pub const VEHICLE_MAX_FORWARD_SPEED_MS: f32 = 18.0;
+pub const VEHICLE_MAX_REVERSE_SPEED_MS: f32 = 9.0;
+pub const VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS: f32 = 4.0;
+pub const VEHICLE_SUSPENSION_STIFFNESS: f32 = 55.0;
+// Rapier's vehicle controller multiplies damping by chassis mass. These values
+// are intentionally lower than the old single 20.0 rebound value: high rebound
+// damping caused authored-terrain straight drives to fully drop wheel contact.
+pub const VEHICLE_SUSPENSION_COMPRESSION_DAMPING: f32 = 5.0;
+pub const VEHICLE_SUSPENSION_DAMPING: f32 = 7.0;
+pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.42;
+pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.32;
+pub const VEHICLE_MAX_SUSPENSION_FORCE: f32 = 6000.0;
 pub const VEHICLE_WHEEL_RADIUS: f32 = 0.35;
 pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
 // Chassis collider density — cuboid 0.9*0.3*1.8m * 8 corners * density ≈ mass in kg.

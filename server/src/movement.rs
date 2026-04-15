@@ -13,6 +13,7 @@ pub use vibe_land_shared::simulation::{
 };
 use vibe_land_shared::vehicle::{
     apply_vehicle_input_step, create_vehicle_physics, make_vehicle_snapshot,
+    VEHICLE_CONTROLLER_SUBSTEPS,
 };
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -515,6 +516,35 @@ impl PhysicsArena {
                 dt,
             );
         }
+    }
+
+    /// Step raycast vehicle controllers and the rigid-body pipeline together.
+    ///
+    /// Rapier's raycast vehicle controller is stiff: applying one full 60 Hz
+    /// suspension update and then integrating dynamics separately lets wheel
+    /// contact impulses oscillate visibly. Production must use the same
+    /// substepped controller cadence as the deterministic vehicle tests.
+    pub fn step_vehicles_and_dynamics(&mut self, dt: f32) -> (f32, f32) {
+        if self.vehicles.is_empty() {
+            let dynamics_started = Instant::now();
+            self.step_dynamics(dt);
+            return (0.0, dynamics_started.elapsed().as_secs_f32() * 1000.0);
+        }
+
+        let substep_dt = dt / VEHICLE_CONTROLLER_SUBSTEPS as f32;
+        let mut vehicle_ms = 0.0;
+        let mut dynamics_ms = 0.0;
+        for _ in 0..VEHICLE_CONTROLLER_SUBSTEPS {
+            let vehicle_started = Instant::now();
+            self.step_vehicles(substep_dt);
+            vehicle_ms += vehicle_started.elapsed().as_secs_f32() * 1000.0;
+
+            let dynamics_started = Instant::now();
+            self.step_dynamics(substep_dt);
+            dynamics_ms += dynamics_started.elapsed().as_secs_f32() * 1000.0;
+        }
+        self.dynamic.sim.integration_parameters.dt = dt;
+        (vehicle_ms, dynamics_ms)
     }
 
     /// Put `player_id` into `vehicle_id`.

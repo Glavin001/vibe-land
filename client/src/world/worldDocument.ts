@@ -158,6 +158,16 @@ export function cloneWorldDocument(world: WorldDocument): WorldDocument {
   return JSON.parse(JSON.stringify(world)) as WorldDocument;
 }
 
+export function removeVehicleEntitiesFromWorldDocument(world: WorldDocument): WorldDocument {
+  if (!world.dynamicEntities.some((entity) => entity.kind === 'vehicle')) {
+    return world;
+  }
+  return {
+    ...world,
+    dynamicEntities: world.dynamicEntities.filter((entity) => entity.kind !== 'vehicle'),
+  };
+}
+
 export function buildDraftRevision(world: WorldDocument, summary: string, now = new Date()): WorldDraftRevision {
   return {
     id: `${now.getTime()}`,
