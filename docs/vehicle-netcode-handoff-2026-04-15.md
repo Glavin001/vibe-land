@@ -1,5 +1,108 @@
 # Vehicle Netcode Handoff - 2026-04-15
 
+## Standalone Context
+
+This document is self-contained context for continuing the `vibe-land` multiplayer vehicle investigation without reading the prior chat history.
+
+`vibe-land` is a browser multiplayer FPS/vehicle sandbox with:
+
+```text
+Rust authoritative game server: server/
+Shared Rust/WASM simulation code: shared/
+Client React/Three.js app: client/
+Active multiplayer route: /play
+Active local practice route: /practice
+```
+
+The user-facing problem is specifically on `/play`, when the local player is driving a vehicle in multiplayer. The local driver sees the vehicle chassis jitter, vibrate, rubber-band, or teleport while driving, including when driving straight on terrain that looks relatively flat. Remote observers can sometimes see a smoother vehicle than the local driver. `/practice` currently feels good to the user and should stay local/non-predictive; it must not run multiplayer prediction/reconciliation plumbing unless that plumbing is purely in-memory and does not involve WebTransport/server authority.
+
+This investigation started because an earlier WIP commit made `/play` vehicle driving much worse:
+
+```text
+last known good base/main: 5328a443892ac974086a13993545e5c67af79a9b
+bad WIP branch commit: 9b96e4e44ae052fb94d11ca15f57b8127be146cc
+current clean investigation branch: fix/vehicle-netcode-clean
+current WIP checkpoint commit: fd07e00 WIP capture vehicle netcode diagnostics
+```
+
+The clean branch was created from the last known good base and then selectively rebuilt with diagnostics, benchmark infrastructure, and a subset of fixes. This branch is still not a finished fix. It intentionally contains some experimental changes that the next engineer may need to revert.
+
+The product expectation is:
+
+```text
+/practice: local single-player authority, no network transport, no server reconciliation, no client-side prediction/replay loop needed for the local vehicle.
+/play: multiplayer server-authoritative simulation with local client prediction for responsiveness, but server/client reconciliation must be visually stable and quantitatively bounded.
+```
+
+The core engineering goal is not just to hide jitter with smoothing. The goal is to make the local predicted vehicle, authoritative server vehicle, replay/reconcile state, render mesh, and camera agree closely enough that visual smoothing is only polishing, not masking meter-scale divergence.
+
+Definition of success for `/play` local driving:
+
+```text
+vehiclePendingInputs: normally <= 6, hard fail > 8
+vehicleAckBacklogMs: normally <= 100ms, hard fail > 150ms
+vehicleCurrentAuthDeltaM: normally <= 0.10m, hard fail > 0.20m
+vehicleMeshCurrentAuthDeltaM: normally <= 0.08m, hard fail > 0.15m
+vehicleCurrentAuthUnexplainedDeltaM: normally <= 0.20m, hard fail > 0.35m
+vehicleStraightJitterRms5sM: normally <= 0.05m, hard fail > 0.08m
+vehicleResidualPlanarDeltaRms5sM: normally <= 0.08m, hard fail > 0.14m
+vehicleResidualHeaveDeltaRms5sM: normally <= 0.05m, hard fail > 0.09m
+vehicleWheelContactBitChanges5s: normally <= 10, hard fail > 16
+vehicleGroundedTransitions5s: normally <= 8, hard fail > 12
+vehicleSuspensionForceDeltaRms5sN: normally <= 2500N, hard fail > 5000N
+```
+
+The current branch still exceeds several of these thresholds. Do not treat it as ready for final human QA.
+
+## Minimal Reproduction Workflow
+
+To reproduce the current automated failing case, run the server and client locally, then run the vehicle QA benchmark. The benchmark drives the vehicle forward on `/play` and records the same debug metrics exposed in the in-game F3 overlay/deep capture.
+
+Start the server:
+
+```bash
+BIND_ADDR=127.0.0.1:4301 WT_BIND_ADDR=127.0.0.1:4302 WT_HOST=127.0.0.1 WT_STRICT_SNAPSHOT_DATAGRAMS=1 VIBE_SERVER_RESPAWN_DELAY_MS=0 RUST_LOG=info cargo run --release -p web-fps-server
+```
+
+Start the client in another shell:
+
+```bash
+SERVER_HOST=127.0.0.1 SERVER_PORT=4301 CLIENT_PORT=3301 npm run dev
+```
+
+Run the reproducing benchmark:
+
+```bash
+BENCHMARK_CLIENT_URL=http://127.0.0.1:3301 BENCHMARK_SERVER_HOST=127.0.0.1:4301 npm run benchmark -- --suite vehicle-qa --scenario terrain_vehicle_straight_1 --environment local --iterations 1 --headless
+```
+
+The benchmark writes JSON under:
+
+```text
+client/benchmark-results/
+```
+
+The latest representative failing automated result in this document is:
+
+```text
+client/benchmark-results/2026-04-15T22-13-39-881Z-vehicle-qa.json
+```
+
+That result is a failure even though the benchmark successfully drives:
+
+```text
+vehicleMaxSpeedMs: 21.920
+vehicleCurrentAuthDeltaM: 2.818, target <= 0.20
+vehicleMeshCurrentAuthDeltaM: 2.570, target <= 0.15
+vehicleCurrentAuthUnexplainedDeltaM: 0.595, target <= 0.35
+vehicleStraightJitterRms5sM: 0.245, target <= 0.08
+vehicleResidualPlanarDeltaRms5sM: 0.901, target <= 0.14
+vehicleResidualHeaveDeltaRms5sM: 0.279, target <= 0.09
+vehicleSuspensionForceDeltaRms5sN: 5526.416, target <= 5000
+```
+
+Manual reproduction is still possible by opening `/play`, entering a vehicle, pressing F3 to enable the debug overlay, and driving straight. The user-visible symptom is local-driver chassis jitter/rubber-banding; the expected diagnostic signature is elevated residual motion, predicted/auth disagreement, contact churn, or correction activity.
+
 ## Executive Summary
 
 The current branch is `fix/vehicle-netcode-clean`. The WIP is **not ready for player QA**. The multiplayer `/play` vehicle still fails automated QA and still matches the user-visible symptom: local driver vehicle jitter/rubber-banding while driving straight on the default terrain.
@@ -15,33 +118,51 @@ This document is intended as a handoff for the next engineer. It includes exact 
 
 ## Current WIP Scope
 
-`git diff --stat` currently reports:
+The current WIP was committed as:
 
 ```text
-32 files changed, 4110 insertions(+), 223 deletions(-)
+fd07e00 WIP capture vehicle netcode diagnostics
 ```
 
-Main changed areas:
+Commit scope:
 
 ```text
+40 files changed, 5678 insertions(+), 223 deletions(-)
+```
+
+Changed areas in that checkpoint:
+
+```text
+.gitignore
 client/benchmark.ts
 client/src/App.tsx
 client/src/benchmark/contracts.ts
+client/src/benchmark/defaultSuite.test.ts
 client/src/benchmark/defaultSuite.ts
+client/src/benchmark/vehicleAccumulator.test.ts
 client/src/benchmark/vehicleAccumulator.ts
+client/src/benchmark/worldPresets.test.ts
 client/src/benchmark/worldPresets.ts
+client/src/loadtest/scenario.test.ts
 client/src/loadtest/scenario.ts
+client/src/net/netcodeClient.test.ts
 client/src/net/netcodeClient.ts
 client/src/net/webTransportClient.ts
 client/src/physics/usePrediction.ts
+client/src/physics/vehiclePredictionManager.test.ts
 client/src/physics/vehiclePredictionManager.ts
 client/src/scene/GameWorld.tsx
+client/src/scene/vehicleLocalMeshPose.test.ts
 client/src/scene/vehicleLocalMeshPose.ts
+client/src/scene/vehicleVisualGeometry.test.ts
 client/src/scene/vehicleVisualGeometry.ts
+client/src/ui/DebugOverlay.test.ts
 client/src/ui/DebugOverlay.tsx
 client/src/ui/useDebugStats.ts
 client/src/wasm/sharedPhysics.ts
+client/src/world/worldDocument.test.ts
 client/src/world/worldDocument.ts
+docs/vehicle-netcode-handoff-2026-04-15.md
 netcode/src/sim_world.rs
 server/src/demo_world.rs
 server/src/main.rs
@@ -54,16 +175,42 @@ shared/src/wasm_api.rs
 shared/src/world_document.rs
 ```
 
-New untracked test/support files:
+There should not be required untracked source files for the handoff checkpoint. Benchmark result JSON/log files may exist locally, but they are not required to build the branch.
+
+## Architecture and Terms Used Below
+
+The vehicle is server-authoritative in `/play`:
 
 ```text
-client/src/benchmark/defaultSuite.test.ts
-client/src/benchmark/vehicleAccumulator.test.ts
-client/src/benchmark/vehicleAccumulator.ts
-client/src/benchmark/worldPresets.test.ts
-client/src/benchmark/worldPresets.ts
-client/src/world/worldDocument.test.ts
-logs/
+client sends input bundles over WebTransport
+server simulates authoritative vehicle state
+server sends snapshots/datagrams back to the client
+client predicts locally for immediate responsiveness
+client reconciles predicted state against acked authoritative snapshots
+client renders a smoothed local vehicle mesh/camera from predicted/auth data
+```
+
+Important terms:
+
+```text
+pending inputs: local vehicle inputs the client has predicted but the server has not yet acked
+ack backlog: pending input count converted to milliseconds at 60Hz
+replay error: error after rewinding/replaying local pending inputs from an authoritative baseline
+auth delta: distance between local predicted pose and server authoritative pose
+expected lead: how far the predicted client should be ahead of an older server snapshot based on speed and snapshot age
+unexplained delta: auth delta minus expected network lead; this is the suspicious part
+residual motion: frame-to-frame movement left after subtracting expected velocity/angular-velocity integration
+contact churn: wheel contact bits, grounded count, ground object IDs, or contact normals changing rapidly
+mesh delta: render mesh smoothing offset from the underlying predicted vehicle pose
+```
+
+Why `/practice` being good does not prove `/play` is fixed:
+
+```text
+/practice has no server snapshots pulling the vehicle back 30 times/sec.
+/practice does not need to maintain a pending input replay window.
+/practice does not need to reconcile with delayed authoritative data.
+/practice is therefore a useful physics/feel check, but not a multiplayer netcode proof.
 ```
 
 ## User-Observed Failure Data
@@ -1153,4 +1300,3 @@ vehicleStraightJitterRms5sM: 0.245m, target <= 0.08m
 vehicleResidualPlanarDeltaRms5sM: 0.901m, target <= 0.14m
 vehicleSuspensionForceDeltaRms5sN: 5526N, target <= 5000N
 ```
-
