@@ -185,11 +185,15 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     // fix regresses, the vehicle travels roughly the same distance in
     // both sims and the assertion fires loudly.
     //
-    // We deliberately *don't* assert that chunks get visibly displaced
-    // from the impact: Blast's stress solver holds bonded chunks rigid
-    // under non-fatal forces, so a single vehicle nudge can leave every
-    // cell pinned at its spawn pose even though the collision reached
-    // the solver.  "The vehicle stopped" is the real collision signal.
+    // Originally this test asserted "vehicle stopped before Z=9.0 wall
+    // face" as the collision signal.  That was the right check for an
+    // indestructible wall, but once impact-driven fracturing was wired
+    // in (see `destructibles_real::drain_contact_forces`) the car
+    // legitimately crashes *through* the wall — it's a destructible
+    // after all.  We now verify collision by checking that either a
+    // fracture event fired or chunks were visibly displaced during the
+    // drive, and that the vehicle's mid-crash trajectory was disturbed
+    // relative to the control.
 
     // Identity rotation → chassis +Z is forward (see
     // `create_vehicle_physics` in shared/src/vehicle.rs:
@@ -227,7 +231,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     function driveForwardFor(
       world: WorldDocument,
       ticks: number,
-    ): { finalZ: number } {
+    ): { finalZ: number; chunkDisplacement: number } {
       const sim = new WasmSimWorld();
       sim.loadWorldDocument(serializeWorldDocument(world));
       sim.rebuildBroadPhase();
@@ -245,13 +249,31 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       for (let t = 0; t < 10; t += 1) {
         sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
       }
+      // Snapshot the pre-drive chunk poses so we can measure whether
+      // the wall was actually impacted (vs. phased through).
+      const startTransforms = Float32Array.from(sim.getDestructibleChunkTransforms());
       let finalZ = VEHICLE_SPAWN[2];
       for (let t = 0; t < ticks; t += 1) {
         const state = sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
         finalZ = state[2];
       }
+      // Measure max chunk displacement from the pre-drive snapshot.
+      // Stride is 11 f32s per chunk (see
+      // `CHUNK_TRANSFORM_STRIDE` in shared/src/destructibles_real.rs):
+      // [posX, posY, posZ, qx, qy, qz, qw, …].
+      const endTransforms = sim.getDestructibleChunkTransforms();
+      let chunkDisplacement = 0;
+      const stride = 11;
+      const n = Math.min(startTransforms.length, endTransforms.length);
+      for (let i = 0; i + stride <= n; i += stride) {
+        const dx = endTransforms[i] - startTransforms[i];
+        const dy = endTransforms[i + 1] - startTransforms[i + 1];
+        const dz = endTransforms[i + 2] - startTransforms[i + 2];
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (d > chunkDisplacement) chunkDisplacement = d;
+      }
       sim.free();
-      return { finalZ };
+      return { finalZ, chunkDisplacement };
     }
 
     // ── Control run: no wall in the way ─────────────────────────────
@@ -261,6 +283,9 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     // all.  If this fails the test setup is broken, not the collision
     // path.
     expect(control.finalZ).toBeGreaterThan(2);
+    // Control has no destructibles, so the displacement must be zero
+    // (no chunks at all).
+    expect(control.chunkDisplacement).toBe(0);
 
     // ── Wall run: same scenario, wall 8m ahead ──────────────────────
     const wallWorld = buildBase();
@@ -276,19 +301,21 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const impact = driveForwardFor(wallWorld, DRIVE_TICKS);
 
     // ── Assertions ──────────────────────────────────────────────────
-    // 1. The wall must have stopped / slowed the vehicle — its final
-    //    Z with the wall present must be meaningfully smaller than
-    //    the control run's final Z.  Before the fix both runs ended
-    //    at essentially the same Z (the vehicle phased through the
-    //    wall); this assertion fires within millimetres in that
-    //    degenerate case.
+    // 1. The wall must have slowed the vehicle during impact — its
+    //    final Z with the wall present must be meaningfully smaller
+    //    than the control run's final Z.  Before the collision fix
+    //    both runs ended at essentially the same Z (the vehicle
+    //    phased straight through).  Even with impact-driven
+    //    fracturing the wall shaves off some forward momentum.
     const travelDelta = control.finalZ - impact.finalZ;
     expect(travelDelta).toBeGreaterThan(1.0);
 
-    // 2. The vehicle must not have ended up significantly past the
-    //    wall's front face (wall centre at Z=8, ~0.5m thick).  If it
-    //    did, the chassis phased through.
-    expect(impact.finalZ).toBeLessThan(9.0);
+    // 2. At least one chunk must have been visibly displaced.  If the
+    //    vehicle phased through without touching anything, every
+    //    chunk stays rigid at its spawn pose and `chunkDisplacement`
+    //    is ~0.  A successful impact moves the leading chunks by at
+    //    least several centimetres as they fracture or scatter.
+    expect(impact.chunkDisplacement).toBeGreaterThan(0.1);
   });
 
   it('a falling ball comes to rest on top of a destructible wall', () => {
@@ -457,6 +484,103 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     // Give a generous upper bound: 4.6 fires loudly if the KCC lets
     // the capsule walk straight through.
     expect(impact.finalZ).toBeLessThan(4.6);
+  });
+
+  it('driving a vehicle into a wall injects stress and eventually fractures it', () => {
+    // Impact-driven fracturing regression test.  Before the
+    // `ChannelEventCollector` wiring was added, vehicle contacts never
+    // reached Blast's stress solver — walls could only break from their
+    // own gravity (unsupported chunks tearing off over time).  This
+    // test drives a vehicle into a wall at full throttle for several
+    // seconds and asserts that either a fracture event fires or at
+    // least one chunk is visibly displaced from its spawn pose.
+    //
+    // We use OR-logic because the stress solver's exact behaviour
+    // depends on the scaled material thresholds in
+    // `destructibles_real.rs::scaled_solver_settings` — what we care
+    // about is that *something* moved beyond static support.
+    const VEHICLE_ID = 95;
+    const WALL_ID = 9301;
+    const WALL_POSITION: [number, number, number] = [0, 0.5, 8];
+    const VEHICLE_SPAWN: [number, number, number] = [0, 1.2, 0];
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480; // 8 seconds of continuous throttle
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: {
+        name: 'Vehicle fracturing a destructible wall',
+        description: 'Long drive into a wall to verify stress solver fractures.',
+      },
+      terrain: {
+        tileGridSize: 9,
+        tileHalfExtentM: 16,
+        tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }],
+      },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        {
+          id: WALL_ID,
+          kind: 'wall',
+          position: WALL_POSITION,
+          rotation: [0, 0, 0, 1],
+        },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(
+      VEHICLE_ID, 0,
+      VEHICLE_SPAWN[0], VEHICLE_SPAWN[1], VEHICLE_SPAWN[2],
+      0, 0, 0, 1,
+    );
+    sim.setLocalVehicle(VEHICLE_ID);
+
+    // Settle chassis for a few ticks with no throttle.
+    for (let t = 0; t < 10; t += 1) {
+      sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    }
+
+    // Snapshot the initial chunk poses so we can measure displacement.
+    const startTransforms = Float32Array.from(sim.getDestructibleChunkTransforms());
+    const chunkCount = sim.getDestructibleChunkCount();
+    expect(chunkCount).toBeGreaterThan(0);
+
+    // Hammer the wall at full throttle.
+    let totalFractureCount = 0;
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const events = sim.drainDestructibleFractureEvents();
+      // Events are [id, count, id, count, ...] — sum the counts.
+      for (let i = 1; i < events.length; i += 2) {
+        totalFractureCount += events[i];
+      }
+    }
+
+    const endTransforms = sim.getDestructibleChunkTransforms();
+    let maxDisplacement = 0;
+    for (let i = 0; i < chunkCount; i += 1) {
+      const base = i * CHUNK_TRANSFORM_STRIDE;
+      if (base + 4 >= endTransforms.length || base + 4 >= startTransforms.length) break;
+      const dx = endTransforms[base + 2] - startTransforms[base + 2];
+      const dy = endTransforms[base + 3] - startTransforms[base + 3];
+      const dz = endTransforms[base + 4] - startTransforms[base + 4];
+      const d = Math.hypot(dx, dy, dz);
+      if (d > maxDisplacement) maxDisplacement = d;
+    }
+
+    // Either the solver reported a fracture event OR a chunk physically
+    // detached and moved.  A working impact path produces both; a
+    // broken path produces neither.
+    const impacted = totalFractureCount > 0 || maxDisplacement > 0.5;
+    expect({ totalFractureCount, maxDisplacement, impacted }).toMatchObject({
+      impacted: true,
+    });
+
+    sim.free();
   });
 
   it('despawn removes the destructible and clears the chunk buffer', () => {

@@ -17,7 +17,10 @@
 use std::collections::HashMap;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
-use rapier3d::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType};
+use rapier3d::prelude::{
+    ActiveEvents, CollisionEvent, CollisionEventFlags, ColliderHandle, ContactForceEvent,
+    ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType,
+};
 use wasm_bindgen::prelude::*;
 
 use blast_stress_solver::rapier::{DestructibleSet, FracturePolicy};
@@ -154,6 +157,12 @@ pub struct DestructibleRegistry {
     /// Aggregated fracture event queue (destructible id, chunk id pairs).
     /// Drained by the client via `getDestructibleFractureEvents`.
     fracture_events: Vec<u32>,
+    /// Monotonic sim clock in seconds — incremented every
+    /// [`DestructibleRegistry::step`] by `dt`.  Passed to
+    /// `DestructibleSet::mark_body_support_contact` so support-contact
+    /// staleness tracking works without the caller having to thread a
+    /// clock through.
+    sim_time_secs: f32,
 }
 
 impl DestructibleRegistry {
@@ -163,6 +172,7 @@ impl DestructibleRegistry {
             id_to_index: HashMap::new(),
             transforms: Vec::new(),
             fracture_events: Vec::new(),
+            sim_time_secs: 0.0,
         }
     }
 
@@ -238,16 +248,29 @@ impl DestructibleRegistry {
         // Blast's scenario builders construct everything at the origin.
         // Translate every owning body into the requested world pose, and
         // wake dynamic bodies so gravity / contact forces take effect
-        // immediately.
+        // immediately.  Also opt every chunk collider into
+        // `CONTACT_FORCE_EVENTS` so vehicle / ball impacts reach the
+        // stress solver via the drain in
+        // `DestructibleRegistry::drain_contact_forces`.
         for handle in &handles {
-            let Some(rb) = sim.rigid_bodies.get_mut(*handle) else {
-                continue;
+            let collider_handles: Vec<ColliderHandle> = {
+                let Some(rb) = sim.rigid_bodies.get_mut(*handle) else {
+                    continue;
+                };
+                let local = *rb.position();
+                let world = pose * local;
+                rb.set_position(world, false);
+                if matches!(rb.body_type(), RigidBodyType::Dynamic) {
+                    rb.wake_up(true);
+                }
+                rb.colliders().to_vec()
             };
-            let local = *rb.position();
-            let world = pose * local;
-            rb.set_position(world, false);
-            if matches!(rb.body_type(), RigidBodyType::Dynamic) {
-                rb.wake_up(true);
+            for ch in collider_handles {
+                if let Some(col) = sim.colliders.get_mut(ch) {
+                    let events = col.active_events() | ActiveEvents::CONTACT_FORCE_EVENTS;
+                    col.set_active_events(events);
+                    col.set_contact_force_event_threshold(0.0);
+                }
             }
         }
 
@@ -340,6 +363,17 @@ impl DestructibleRegistry {
         true
     }
 
+    /// Current monotonic sim clock in seconds — incremented every
+    /// [`DestructibleRegistry::step`] by the fixed tick `dt`
+    /// (`1.0 / 60.0`).  Public so
+    /// [`crate::wasm_api::WasmSimWorld::step_vehicle_pipeline`] can pass
+    /// a consistent timestamp into
+    /// [`DestructibleRegistry::drain_collision_events`] before calling
+    /// `step`.
+    pub fn sim_time_secs(&self) -> f32 {
+        self.sim_time_secs
+    }
+
     /// Advance every destructible one tick, updating chunk transforms and
     /// the fracture event queue.  Must be called after any input-driven
     /// contacts have been applied (i.e. after `step_vehicle_pipeline`).
@@ -349,6 +383,11 @@ impl DestructibleRegistry {
         impulse_joints: &mut ImpulseJointSet,
         multibody_joints: &mut MultibodyJointSet,
     ) {
+        // Fixed sim tick — Rapier default integration uses 1/60s and
+        // `step_vehicle_dynamics` substeps from there.  Keeping this in
+        // sync keeps the support-contact staleness heuristic well-tuned.
+        const FIXED_DT: f32 = 1.0 / 60.0;
+        self.sim_time_secs += FIXED_DT;
         self.transforms.clear();
 
         for instance in &mut self.instances {
@@ -452,6 +491,246 @@ impl DestructibleRegistry {
             }
             self.transforms.extend_from_slice(&instance.transforms);
         }
+    }
+
+    /// Drain pending Rapier `ContactForceEvent`s and inject them into the
+    /// appropriate `DestructibleSet` as stress loads via
+    /// [`DestructibleSet::add_force`].
+    ///
+    /// This is how vehicle / ball impacts crack a wall or topple a tower
+    /// — without it, walls only break from their own gravity.  The pattern
+    /// here mirrors `drain_contact_forces` in
+    /// `third_party/physx/blast/blast-stress-demo-rs/src/main.rs` (lines
+    /// 3974–4092): for every event, find which destructible owns the
+    /// collider, compute the impact force direction from the partner
+    /// body's velocity, convert to the chunk body's local frame, and
+    /// splash the force across sibling nodes within `SPLASH_RADIUS` using
+    /// a quadratic `(1 - d/r)^2` falloff kernel.
+    ///
+    /// Must be called **before** [`step`](Self::step) so collider→node
+    /// lookups still resolve against the pre-step handle map (fractures
+    /// inside `step` can invalidate collider handles).
+    pub fn drain_contact_forces(
+        &mut self,
+        sim: &SimWorld,
+        contact_rx: &std::sync::mpsc::Receiver<ContactForceEvent>,
+    ) {
+        // Tuned for vibe-land practice mode (see tests in
+        // `client/src/world/destructiblesPhysics.test.ts`).  The demo
+        // routes only hand-tagged projectiles through this code path so
+        // it can afford `CONTACT_FORCE_SCALE = 30.0`.  We route every
+        // contact pair, so a tiny ball resting on a wall would otherwise
+        // inject `m·g·30` every tick and slowly crack the wall under its
+        // own passenger.  A threshold on `total_force_magnitude` cheaply
+        // filters out normal-force resting contacts: a ~0.5 kg ball at
+        // rest produces ~5 N, a ~1.5 t vehicle crash produces hundreds
+        // of kN, so a 500 N cutoff cleanly separates the two.
+        const SPLASH_RADIUS: f32 = 2.0;
+        const CONTACT_FORCE_SCALE: f32 = 10.0;
+        const MIN_IMPACT_FORCE_N: f32 = 500.0;
+        // Belt-and-braces: also require the partner body to be moving.
+        // A settled vehicle idling against a wall would otherwise drip
+        // stress in via `total_force_magnitude` from gravity on its
+        // 1.5 t chassis.
+        const MIN_IMPACT_SPEED_M_S: f32 = 1.5;
+
+        let mut processed = 0usize;
+        while let Ok(event) = contact_rx.try_recv() {
+            // Locate which destructible instance owns one of the two
+            // colliders in the contact pair, and which collider is the
+            // "partner" body driving the impact.
+            let mut hit: Option<(usize, u32, ColliderHandle)> = None;
+            for (idx, inst) in self.instances.iter().enumerate() {
+                if let Some(n) = inst.set.collider_node(event.collider2) {
+                    hit = Some((idx, n, event.collider1));
+                    break;
+                }
+                if let Some(n) = inst.set.collider_node(event.collider1) {
+                    hit = Some((idx, n, event.collider2));
+                    break;
+                }
+            }
+            let Some((inst_idx, node_index, other_collider)) = hit else {
+                continue;
+            };
+
+            // Cheap force-magnitude gate up front: light bodies (balls,
+            // player capsules) generate only a few newtons of contact
+            // force even at running speed, which is well below the
+            // threshold, so their stress is never routed to the solver.
+            if event.total_force_magnitude < MIN_IMPACT_FORCE_N {
+                continue;
+            }
+
+            // Resolve the partner rigid body and require it to be
+            // moving meaningfully.  Static / near-stationary partners
+            // (resting balls, settled player capsules) are ignored so
+            // destructibles don't slowly disintegrate under their own
+            // passengers.
+            let partner_body_handle = sim
+                .colliders
+                .get(other_collider)
+                .and_then(|c| c.parent());
+            let Some(partner_body) = partner_body_handle
+                .and_then(|h| sim.rigid_bodies.get(h))
+            else {
+                continue;
+            };
+            let partner_linvel = *partner_body.linvel();
+            let partner_speed_sq = partner_linvel.norm_squared();
+            if partner_speed_sq < MIN_IMPACT_SPEED_M_S * MIN_IMPACT_SPEED_M_S {
+                continue;
+            }
+            let direction = partner_linvel / partner_speed_sq.sqrt();
+
+            let force_world = direction * event.total_force_magnitude;
+
+            let inst = &mut self.instances[inst_idx];
+            let Some(body_handle) = inst.set.node_body(node_index) else {
+                continue;
+            };
+            let Some(body) = sim.rigid_bodies.get(body_handle) else {
+                continue;
+            };
+            // Convert force into the body's local frame — the solver
+            // expects forces in the same frame as `node_local_offset`.
+            let rotation = body.position().rotation;
+            let local_force_nalgebra = rotation.inverse() * force_world;
+            let local_force = BlastVec3::new(
+                local_force_nalgebra.x,
+                local_force_nalgebra.y,
+                local_force_nalgebra.z,
+            );
+            let Some(hit_local) = inst.set.node_local_offset(node_index) else {
+                continue;
+            };
+
+            // Collect sibling nodes + falloff weights up front so we
+            // don't re-borrow `inst` mutably while iterating.
+            let body_nodes: Vec<u32> = inst.set.body_nodes_slice(body_handle).to_vec();
+            let mut splash: Vec<(u32, BlastVec3, f32)> = Vec::with_capacity(body_nodes.len());
+            for &other_node in &body_nodes {
+                let Some(other_local) = inst.set.node_local_offset(other_node) else {
+                    continue;
+                };
+                let dx = other_local.x - hit_local.x;
+                let dy = other_local.y - hit_local.y;
+                let dz = other_local.z - hit_local.z;
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist > SPLASH_RADIUS {
+                    continue;
+                }
+                let falloff = if other_node == node_index {
+                    1.0
+                } else {
+                    let t = (1.0 - dist / SPLASH_RADIUS).max(0.0);
+                    t * t
+                };
+                if falloff <= 0.0 {
+                    continue;
+                }
+                splash.push((other_node, other_local, falloff));
+            }
+            for (other_node, other_local, falloff) in splash {
+                let f = BlastVec3::new(
+                    local_force.x * CONTACT_FORCE_SCALE * falloff,
+                    local_force.y * CONTACT_FORCE_SCALE * falloff,
+                    local_force.z * CONTACT_FORCE_SCALE * falloff,
+                );
+                inst.set.add_force(other_node, other_local, f);
+            }
+            processed += 1;
+        }
+        if processed > 0 {
+            dlog(&format!(
+                "[destructibles] drain_contact_forces processed={}",
+                processed
+            ));
+        }
+    }
+
+    /// Drain pending Rapier `CollisionEvent`s and update the support-contact
+    /// tracker in each `DestructibleSet`.  Mirrors `register_support_contact`
+    /// + `drain_collision_events` in the demo (lines 3895–3966): when a
+    /// chunk body touches a fixed / support body, call
+    /// [`DestructibleSet::mark_body_support_contact`] so the stress solver
+    /// knows it has a stable anchor and doesn't prematurely shed static
+    /// chunks.
+    ///
+    /// Like `drain_contact_forces`, must be called before
+    /// [`step`](Self::step).
+    pub fn drain_collision_events(
+        &mut self,
+        sim: &mut SimWorld,
+        collision_rx: &std::sync::mpsc::Receiver<CollisionEvent>,
+    ) {
+        let now = self.sim_time_secs;
+        while let Ok(event) = collision_rx.try_recv() {
+            let CollisionEvent::Started(c1, c2, flags) = event else {
+                continue;
+            };
+            if flags.contains(CollisionEventFlags::SENSOR) {
+                continue;
+            }
+            self.register_support_contact(sim, c1, c2, now);
+            self.register_support_contact(sim, c2, c1, now);
+        }
+    }
+
+    fn register_support_contact(
+        &mut self,
+        sim: &mut SimWorld,
+        tracked_collider: ColliderHandle,
+        other_collider: ColliderHandle,
+        now_secs: f32,
+    ) {
+        // Find which instance owns `tracked_collider`.
+        let mut inst_idx = None;
+        let mut node_index = 0u32;
+        for (idx, inst) in self.instances.iter().enumerate() {
+            if let Some(n) = inst.set.collider_node(tracked_collider) {
+                inst_idx = Some(idx);
+                node_index = n;
+                break;
+            }
+        }
+        let Some(inst_idx) = inst_idx else {
+            return;
+        };
+        let inst = &mut self.instances[inst_idx];
+        if inst.set.is_support(node_index) {
+            return;
+        }
+        let Some(body_handle) = inst.set.node_body(node_index) else {
+            return;
+        };
+        // Resolve the other collider's parent and check whether it
+        // qualifies as a support (fixed body, or already-supported
+        // destructible chunk).
+        let other_parent = match sim.colliders.get(other_collider).and_then(|c| c.parent()) {
+            Some(p) if p != body_handle => p,
+            _ => return,
+        };
+        let other_is_fixed = sim
+            .rigid_bodies
+            .get(other_parent)
+            .map(|body| body.is_fixed())
+            .unwrap_or(false);
+        let other_is_support_node = inst
+            .set
+            .collider_node(other_collider)
+            .map(|on| inst.set.is_support(on))
+            .unwrap_or(false);
+        let other_body_has_support = inst.set.body_has_support(other_parent);
+        if !(other_is_fixed || other_is_support_node || other_body_has_support) {
+            return;
+        }
+        inst.set.mark_body_support_contact(
+            body_handle,
+            now_secs,
+            &mut sim.rigid_bodies,
+            &mut sim.colliders,
+        );
     }
 
     /// Current aggregated chunk transforms (stride =

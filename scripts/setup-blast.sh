@@ -62,4 +62,35 @@ if [[ ! -f "${CRATE_DIR}/Cargo.toml" ]]; then
   exit 1
 fi
 
+# Apply any patches from `patches/` that target files inside the vendored
+# blast crate.  Patches live in-tree so that every branch/checkout produces
+# the same blast sources, even though the `third_party/physx` directory
+# itself is gitignored.  Each `.patch` here is diffed *relative to the
+# `third_party/physx` repo root* so we `git apply` from that directory.
+#
+# Currently shipped patches:
+#   - blast-wasm-instant.patch: replaces `std::time::Instant::now()` call
+#     sites inside `blast-stress-solver-rs` with a wasm-safe shim (the real
+#     clock panics on `wasm32-unknown-unknown`).  See comments in the patch
+#     for full context.
+PATCH_DIR="${REPO_ROOT}/patches"
+if [[ -d "${PATCH_DIR}" ]]; then
+  shopt -s nullglob
+  for patch in "${PATCH_DIR}"/blast-*.patch; do
+    patch_name="$(basename "${patch}")"
+    if git -C "${VENDOR_DIR}" apply --reverse --check "${patch}" >/dev/null 2>&1; then
+      echo "[setup-blast] patch already applied: ${patch_name}"
+      continue
+    fi
+    if ! git -C "${VENDOR_DIR}" apply --check "${patch}" >/dev/null 2>&1; then
+      echo "[setup-blast] patch ${patch_name} does not apply cleanly; aborting" >&2
+      git -C "${VENDOR_DIR}" apply --check "${patch}" || true
+      exit 1
+    fi
+    echo "[setup-blast] applying patch: ${patch_name}"
+    git -C "${VENDOR_DIR}" apply "${patch}"
+  done
+  shopt -u nullglob
+fi
+
 echo "[setup-blast] ready: ${CRATE_DIR}"

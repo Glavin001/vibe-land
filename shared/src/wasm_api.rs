@@ -108,6 +108,18 @@ pub struct WasmSimWorld {
     // Destructible structures (Blast stress solver).  Single-player only;
     // see `destructibles.rs` and `docs/BLAST_INTEGRATION.md`.
     destructibles: DestructibleRegistry,
+
+    // Rapier event channels.  The vehicle pipeline passes a
+    // `ChannelEventCollector` wrapping these senders as its event
+    // handler; `step_vehicle_pipeline` drains them into the destructible
+    // stress solver before stepping it.  Present even when
+    // destructibles are stubbed out so the pipeline can always use the
+    // same event handler path — the stub `drain_*` methods just
+    // discard the events.
+    collision_tx: std::sync::mpsc::Sender<CollisionEvent>,
+    collision_rx: std::sync::mpsc::Receiver<CollisionEvent>,
+    contact_force_tx: std::sync::mpsc::Sender<ContactForceEvent>,
+    contact_force_rx: std::sync::mpsc::Receiver<ContactForceEvent>,
 }
 
 #[wasm_bindgen]
@@ -115,6 +127,8 @@ impl WasmSimWorld {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         install_panic_hook_once();
+        let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
+        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         Self {
             sim: SimWorld::new(MoveConfig::default()),
             player_collider: None,
@@ -137,6 +151,10 @@ impl WasmSimWorld {
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
             destructibles: DestructibleRegistry::new(),
+            collision_tx,
+            collision_rx,
+            contact_force_tx,
+            contact_force_rx,
         }
     }
 
@@ -726,12 +744,18 @@ impl WasmSimWorld {
             // feel immediate for both walking and driving.
             let dyn_groups =
                 InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+            // Enable contact-force events so dynamic balls hitting
+            // destructibles are routed through the Blast stress solver.
+            // Threshold 0.0 = fire for every contact; the solver
+            // weights forces with its own falloff kernel.
             let collider = if shape_type == 1 {
                 ColliderBuilder::ball(hx)
                     .density(1.0)
                     .restitution(0.6)
                     .friction(0.2)
                     .collision_groups(dyn_groups)
+                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             } else {
@@ -740,6 +764,8 @@ impl WasmSimWorld {
                     .restitution(0.3)
                     .friction(0.6)
                     .collision_groups(dyn_groups)
+                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             };
@@ -1395,6 +1421,12 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
+        // Rapier expects the event handler by shared reference.  A new
+        // `ChannelEventCollector` is cheap (two `Sender` clones) and
+        // avoids holding a mutable borrow of `self` while the body
+        // fields below are mutably borrowed.
+        let collector =
+            ChannelEventCollector::new(self.collision_tx.clone(), self.contact_force_tx.clone());
         step_vehicle_dynamics(
             &mut self.sim,
             &self.gravity,
@@ -1402,17 +1434,32 @@ impl WasmSimWorld {
             &mut self.vehicle_joints,
             &mut self.vehicle_multibody_joints,
             &mut self.vehicle_ccd,
+            &collector,
             dt,
         );
+        drop(collector);
         // After the rigid-body pipeline has resolved contacts for this
-        // frame, advance the destructible stress solvers so any fractures
-        // happen inside the same frame the player sees the collision in.
+        // frame, route the contact-force / collision events into the
+        // destructible stress solvers *before* stepping them so
+        // fractures happen in the same frame as the collision.  Drain
+        // order matters: `drain_contact_forces` reads collider→node
+        // mappings that can be invalidated by splits inside
+        // `destructibles.step`.
         if !self.destructibles.is_empty() {
+            self.destructibles
+                .drain_collision_events(&mut self.sim, &self.collision_rx);
+            self.destructibles
+                .drain_contact_forces(&self.sim, &self.contact_force_rx);
             self.destructibles.step(
                 &mut self.sim,
                 &mut self.vehicle_joints,
                 &mut self.vehicle_multibody_joints,
             );
+        } else {
+            // Drain-and-drop so the unbounded channels don't grow
+            // without bound in worlds without destructibles.
+            while self.contact_force_rx.try_recv().is_ok() {}
+            while self.collision_rx.try_recv().is_ok() {}
         }
     }
 

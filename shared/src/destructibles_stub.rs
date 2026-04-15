@@ -14,7 +14,7 @@
 //! See `docs/BLAST_INTEGRATION.md` for the full story.
 
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
-use rapier3d::prelude::{ImpulseJointSet, MultibodyJointSet};
+use rapier3d::prelude::{CollisionEvent, ContactForceEvent, ImpulseJointSet, MultibodyJointSet};
 
 use crate::simulation::SimWorld;
 
@@ -82,6 +82,31 @@ impl DestructibleRegistry {
         _impulse_joints: &mut ImpulseJointSet,
         _multibody_joints: &mut MultibodyJointSet,
     ) {
+    }
+
+    pub fn sim_time_secs(&self) -> f32 {
+        0.0
+    }
+
+    /// Drain and discard; matches the real backend's signature so
+    /// `wasm_api.rs` can call it unconditionally.  The stub has no
+    /// destructibles, so there's nothing to inject into.
+    pub fn drain_contact_forces(
+        &mut self,
+        _sim: &SimWorld,
+        contact_rx: &std::sync::mpsc::Receiver<ContactForceEvent>,
+    ) {
+        while contact_rx.try_recv().is_ok() {}
+    }
+
+    /// Drain and discard; matches the real backend's signature so
+    /// `wasm_api.rs` can call it unconditionally.
+    pub fn drain_collision_events(
+        &mut self,
+        _sim: &mut SimWorld,
+        collision_rx: &std::sync::mpsc::Receiver<CollisionEvent>,
+    ) {
+        while collision_rx.try_recv().is_ok() {}
     }
 
     pub fn chunk_transforms_slice(&self) -> &[f32] {
