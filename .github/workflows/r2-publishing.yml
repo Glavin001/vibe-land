@@ -67,8 +67,6 @@ jobs:
     name: End-to-end against filesystem backend
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      WORLDS_STORAGE_DIR: ${{ runner.temp }}/vibe-land-worlds
     steps:
       - uses: actions/checkout@v4
 
@@ -79,6 +77,13 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             client/package-lock.json
+
+      - name: Configure filesystem storage location
+        # $RUNNER_TEMP is a shell variable that GitHub Actions exports to
+        # every step. We can't reference `runner.temp` at the job-level env
+        # block (it's "Unrecognized named-value"), so we write the resolved
+        # path into $GITHUB_ENV here and every subsequent step inherits it.
+        run: echo "WORLDS_STORAGE_DIR=$RUNNER_TEMP/vibe-land-worlds" >> "$GITHUB_ENV"
 
       - name: Install root dependencies
         run: npm install
