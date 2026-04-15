@@ -17,7 +17,10 @@
 use std::collections::HashMap;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
-use rapier3d::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType};
+use rapier3d::prelude::{
+    ActiveHooks, ImpulseJointSet, InteractionGroups, MultibodyJointSet, RigidBodyHandle,
+    RigidBodyType,
+};
 
 use blast_stress_solver::rapier::{DestructibleSet, FracturePolicy};
 use blast_stress_solver::scenarios::{
@@ -206,6 +209,8 @@ impl DestructibleRegistry {
             rb.set_position(world, false);
         }
 
+        sanitize_chunk_bodies(sim, handles.iter().copied());
+
         // Ensure all dynamic chunk bodies are woken so the solver sees
         // gravity / contact forces immediately after spawning.
         for handle in &handles {
@@ -291,6 +296,22 @@ impl DestructibleRegistry {
                 impulse_joints,
                 multibody_joints,
             );
+
+            // Fractures create brand-new rigid bodies + colliders each
+            // frame and Blast's body_tracker re-applies the
+            // `FILTER_CONTACT_PAIRS` active-hook flag on every new
+            // chunk.  We have to re-sanitize after every step or the
+            // fragments fall through the world.  We walk every node's
+            // currently-owning body so we cover both pre- and
+            // post-fracture bodies in one pass.
+            let mut touched: std::collections::HashSet<RigidBodyHandle> =
+                std::collections::HashSet::new();
+            for node_index in 0..instance.node_count {
+                if let Some(handle) = instance.set.node_body(node_index) {
+                    touched.insert(handle);
+                }
+            }
+            sanitize_chunk_bodies(sim, touched.into_iter());
 
             if step_result.fractures > 0 || step_result.split_events > 0 {
                 // Emit a single (destructibleId, fractureCount) event per
@@ -386,6 +407,52 @@ pub fn pose_from_world_doc(position: [f32; 3], rotation: [f32; 4]) -> Isometry3<
     let q = Quaternion::new(rotation[3], rotation[0], rotation[1], rotation[2]);
     let unit = UnitQuaternion::from_quaternion(q);
     Isometry3::from_parts(translation, unit)
+}
+
+/// Strip Blast's default `FILTER_CONTACT_PAIRS`/`FILTER_INTERSECTION_PAIR`
+/// active-hook flags from every collider attached to the given chunk
+/// bodies, and force `InteractionGroups::all()` on both collision and
+/// solver groups.
+///
+/// Rationale:
+///
+/// Blast's `body_tracker::build_node_collider` sets
+/// `ActiveHooks::FILTER_CONTACT_PAIRS | FILTER_INTERSECTION_PAIR` on
+/// every chunk collider so the caller's own `PhysicsHooks` can veto
+/// contact pairs on a per-frame basis.  vibe-land passes the unit
+/// type `&()` as its hooks, whose default `filter_contact_pair` impl
+/// returns `None` — Rapier reads that as "reject this contact".  The
+/// net effect is that the chunk colliders are visible (debug draw
+/// shows them) but Rapier drops every contact pair that involves one,
+/// so vehicles, balls, and the player capsule pass straight through.
+///
+/// Clearing the flags lets contacts flow through the normal solver
+/// path.  We also force `InteractionGroups::all()` on both collision
+/// and solver groups so Blast's internal debris collision mode
+/// (`DebrisCollisionMode::DebrisGroundOnly`, etc.) can't later put a
+/// chunk in a group that doesn't line up with vibe-land's group
+/// layout (`GROUP_1` = terrain/chassis, `GROUP_2` = balls,
+/// `GROUP_3` = player capsule).
+fn sanitize_chunk_bodies<I: IntoIterator<Item = RigidBodyHandle>>(
+    sim: &mut SimWorld,
+    body_handles: I,
+) {
+    let mut collider_handles: Vec<_> = Vec::new();
+    for bh in body_handles {
+        if let Some(rb) = sim.rigid_bodies.get(bh) {
+            collider_handles.extend(rb.colliders().iter().copied());
+        }
+    }
+    for ch in collider_handles {
+        if let Some(collider) = sim.colliders.get_mut(ch) {
+            let mut hooks = collider.active_hooks();
+            hooks.remove(ActiveHooks::FILTER_CONTACT_PAIRS);
+            hooks.remove(ActiveHooks::FILTER_INTERSECTION_PAIR);
+            collider.set_active_hooks(hooks);
+            collider.set_collision_groups(InteractionGroups::all());
+            collider.set_solver_groups(InteractionGroups::all());
+        }
+    }
 }
 
 #[allow(dead_code)]
