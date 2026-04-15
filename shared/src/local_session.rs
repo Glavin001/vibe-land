@@ -156,15 +156,22 @@ impl LocalSession {
         true
     }
 
+    /// Push a bot's input packet. Bots use the same wire format as the
+    /// human client; supported kinds are `PKT_INPUT_BUNDLE`, `PKT_FIRE`,
+    /// `PKT_VEHICLE_ENTER`, and `PKT_VEHICLE_EXIT`. Vehicle enter/exit
+    /// routes straight through `arena.enter_vehicle` /
+    /// `arena.exit_vehicle`, which already take a generic player id.
     pub fn handle_bot_packet(&mut self, bot_id: u32, bytes: &[u8]) -> Result<(), String> {
         if bot_id == LOCAL_PLAYER_ID {
             return Err("cannot push bot input for local player id".to_string());
         }
-        let Some(runtime) = self.players.get_mut(&bot_id) else {
-            return Err(format!("unknown bot id {bot_id}"));
-        };
-        if !runtime.is_bot {
-            return Err(format!("player {bot_id} is not a bot"));
+        {
+            let Some(runtime) = self.players.get(&bot_id) else {
+                return Err(format!("unknown bot id {bot_id}"));
+            };
+            if !runtime.is_bot {
+                return Err(format!("player {bot_id} is not a bot"));
+            }
         }
         if bytes.is_empty() {
             return Err("empty bot packet".to_string());
@@ -173,7 +180,30 @@ impl LocalSession {
         match buf.get_u8() {
             PKT_INPUT_BUNDLE => {
                 let frames = decode_input_bundle_frames(&mut buf)?;
+                let runtime = self
+                    .players
+                    .get_mut(&bot_id)
+                    .expect("bot runtime existed in the check above");
                 enqueue_inputs(runtime, frames);
+                Ok(())
+            }
+            PKT_FIRE => {
+                let shot = decode_fire_cmd(&mut buf)?;
+                self.queued_shots.push((bot_id, shot));
+                Ok(())
+            }
+            PKT_VEHICLE_ENTER => {
+                let vehicle_id = decode_vehicle_enter(&mut buf)?;
+                if self.arena.vehicles.contains_key(&vehicle_id) {
+                    self.arena.enter_vehicle(bot_id, vehicle_id);
+                }
+                Ok(())
+            }
+            PKT_VEHICLE_EXIT => {
+                let vehicle_id = decode_vehicle_exit(&mut buf)?;
+                if self.arena.vehicle_of_player.get(&bot_id) == Some(&vehicle_id) {
+                    self.arena.exit_vehicle(bot_id);
+                }
                 Ok(())
             }
             other => Err(format!("unsupported bot packet kind {other}")),
@@ -1204,8 +1234,10 @@ mod tests {
             !initial_vehicle.is_empty(),
             "demo local session should expose at least one vehicle"
         );
-        let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
-        assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
+        let (vehicle_id, _, _, _, _) = *initial_vehicle
+            .iter()
+            .find(|(_, driver, _, _, _)| *driver == 0)
+            .expect("at least one authored vehicle should start unoccupied");
 
         session
             .handle_client_packet(&encode_vehicle_enter_packet_for_test(vehicle_id))
@@ -1296,6 +1328,131 @@ mod tests {
         assert!(
             dz > 0.0,
             "bot should have moved after 10 ticks of forward input"
+        );
+    }
+
+    fn encode_vehicle_exit_packet_for_test(vehicle_id: u32) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(5);
+        out.put_u8(PKT_VEHICLE_EXIT);
+        out.put_u32_le(vehicle_id);
+        out.to_vec()
+    }
+
+    #[test]
+    fn bot_can_enter_and_drive_a_vehicle() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(404));
+
+        // Tick once so the vehicle state is represented in a snapshot the
+        // test can inspect.
+        session.tick(1.0 / 60.0);
+        let initial_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("initial snapshot after connect_bot");
+        let initial_vehicles = decode_snapshot_vehicle_states(&initial_snapshot);
+        assert!(
+            !initial_vehicles.is_empty(),
+            "demo local preview should expose at least one authored vehicle"
+        );
+        let (vehicle_id, _, start_px, _, start_pz) = *initial_vehicles
+            .iter()
+            .find(|(_, driver, _, _, _)| *driver == 0)
+            .expect("at least one authored vehicle should start unoccupied");
+
+        // Route the enter packet through `handle_bot_packet` — this is the
+        // path `PracticeBotRuntime` uses when a bot reaches the
+        // `entering_vehicle` FSM state.
+        session
+            .handle_bot_packet(404, &encode_vehicle_enter_packet_for_test(vehicle_id))
+            .expect("bot vehicle enter should be accepted");
+        session.tick(1.0 / 60.0);
+
+        // The arena should now record the bot as the vehicle's driver, and
+        // `vehicle_of_player` should mirror that.
+        assert_eq!(
+            session.arena.vehicle_of_player.get(&404),
+            Some(&vehicle_id),
+            "bot should be seated in the vehicle after handle_bot_packet"
+        );
+        let seated_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after bot entered vehicle");
+        let seated_vehicles = decode_snapshot_vehicle_states(&seated_snapshot);
+        let (_, seated_driver_id, _, _, _) = *seated_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("seated vehicle should still be in the snapshot");
+        assert_eq!(
+            seated_driver_id, 404,
+            "snapshot driver_id should reflect the seated bot"
+        );
+
+        // Push a forward-throttle input bundle and tick for ~0.5 s of sim
+        // time. With `input_to_vehicle_cmd` driving the raycast vehicle,
+        // chassis-local forward (−Z) should translate the vehicle along
+        // world −Z (authored vehicle spawns unrotated in the demo world).
+        let frame = InputCmd {
+            seq: 1,
+            buttons: 0,
+            move_x: 0,
+            move_y: 127,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let bytes = encode_single_input_bundle(&frame);
+        session
+            .handle_bot_packet(404, &bytes)
+            .expect("bot input bundle should be accepted while driving");
+        for _ in 0..30 {
+            session.tick(1.0 / 60.0);
+        }
+        let driven_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .rev()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after driving the vehicle");
+        let driven_vehicles = decode_snapshot_vehicle_states(&driven_snapshot);
+        let (_, _, end_px, _, end_pz) = *driven_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("driven vehicle should still be in the snapshot");
+        let dx = (end_px - start_px).abs();
+        let dz = (end_pz - start_pz).abs();
+        assert!(
+            dx > 0 || dz > 0,
+            "bot-driven vehicle should have moved from its spawn after 30 forward ticks"
+        );
+
+        // Exit cleanly via `handle_bot_packet` and confirm the driver slot
+        // clears.
+        session
+            .handle_bot_packet(404, &encode_vehicle_exit_packet_for_test(vehicle_id))
+            .expect("bot vehicle exit should be accepted");
+        session.tick(1.0 / 60.0);
+        assert!(
+            !session.arena.vehicle_of_player.contains_key(&404),
+            "bot should no longer be seated after exit packet"
+        );
+        let exited_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after bot exited");
+        let exited_vehicles = decode_snapshot_vehicle_states(&exited_snapshot);
+        let (_, exited_driver_id, _, _, _) = *exited_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("exited vehicle should still be in the snapshot");
+        assert_eq!(
+            exited_driver_id, 0,
+            "vehicle should be unoccupied again after exit"
         );
     }
 

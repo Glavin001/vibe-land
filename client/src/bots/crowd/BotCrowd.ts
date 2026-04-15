@@ -7,18 +7,22 @@ import {
   createFindNearestPolyResult,
   DEFAULT_QUERY_FILTER,
   findNearestPoly,
+  findPath,
   findRandomPoint,
+  FindPathResultFlags,
   INVALID_NODE_REF,
   type NavMesh,
   type NodeRef,
+  type QueryFilter,
   type Vec3,
 } from 'navcat';
 
 import type { WorldDocument } from '../../world/worldDocument';
-import type { Vec3Tuple } from '../types';
+import type { Vec3Tuple, VehicleProfile } from '../types';
 import {
   buildBotNavMesh,
   buildBotNavMeshFromSharedProfile,
+  buildVehicleBotNavMesh,
   type BotNavMesh,
   type BuildBotNavMeshOptions,
   type BuildBotNavMeshFromSharedProfileOptions,
@@ -274,6 +278,56 @@ export class BotCrowd {
     if (!result.success) return null;
     return [result.position[0], result.position[1], result.position[2]];
   }
+
+  /**
+   * Overrides the query filter on a previously-added agent. Used by the
+   * vehicle FSM when a bot switches between foot and vehicle mode so A*
+   * recosts the remaining corridor through the lens of the new chassis.
+   *
+   * Returns false if the agent id is unknown.
+   */
+  setAgentQueryFilter(agentOrHandleId: string | BotHandle, filter: QueryFilter): boolean {
+    const id = typeof agentOrHandleId === 'string' ? agentOrHandleId : agentOrHandleId.id;
+    const agent = this.crowd.agents[id];
+    if (!agent) return false;
+    agent.queryFilter = filter;
+    return true;
+  }
+
+  /**
+   * One-shot path query — runs navcat's {@link findPath} with the given
+   * filter and sums Euclidean distances between straight-path points.
+   * Returns `null` if the path is partial or fails (caller should treat
+   * that as "unreachable for this transport mode").
+   *
+   * This is the core of the walk-vs-drive comparison in the bot brain:
+   * divide the returned length by the relevant cruise speed and you get
+   * a travel-time estimate. The `filter`'s `getCost` influence is *not*
+   * reflected in the returned length (A* uses it for corridor selection,
+   * but we measure the physical distance of the resulting corridor).
+   */
+  estimatePathLength(start: Vec3Tuple, end: Vec3Tuple, filter: QueryFilter): number | null {
+    const startVec: Vec3 = [start[0], start[1], start[2]];
+    const endVec: Vec3 = [end[0], end[1], end[2]];
+    const halfExtents: Vec3 = [
+      this.snapHalfExtents[0],
+      this.snapHalfExtents[1],
+      this.snapHalfExtents[2],
+    ];
+    const result = findPath(this.nav.navMesh, startVec, endVec, halfExtents, filter);
+    if (!result.success) return null;
+    // Reject partial paths — the caller wants an all-or-nothing answer.
+    if ((result.flags & FindPathResultFlags.PARTIAL_PATH) !== 0) return null;
+    const pts = result.path;
+    if (pts.length < 2) return 0;
+    let total = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      const a = pts[i - 1].position;
+      const b = pts[i].position;
+      total += Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    }
+    return total;
+  }
 }
 
 export function createBotCrowd(world: WorldDocument, options: BotCrowdOptions): BotCrowd {
@@ -292,5 +346,33 @@ export async function createBotCrowdFromSharedProfile(
   const maxAgentRadius = options.maxAgentRadius ?? 2.5;
   const crowdInstance = crowd.create(maxAgentRadius);
   const snap = options.snapHalfExtents ?? DEFAULT_SNAP_HALF_EXTENTS;
+  return new BotCrowd(nav, crowdInstance, snap);
+}
+
+/**
+ * Builds a {@link BotCrowd} backed by a **vehicle-sized** navmesh.
+ *
+ * Geometry is produced by {@link buildVehicleBotNavMesh}, which inflates
+ * `walkableRadius` to the profile's chassis radius and tightens the
+ * climb + slope limits. The resulting crowd uses a larger
+ * `maxAgentRadius` (at least `profile.agentRadius + 0.3`) so navcat's
+ * neighbor grid is sized correctly for the wider agents.
+ *
+ * Use this alongside the existing foot crowd in {@link PracticeBotRuntime}
+ * so each bot can switch between the two depending on whether it's on
+ * foot or seated in a vehicle.
+ */
+export function createVehicleBotCrowd(
+  world: WorldDocument,
+  profile: VehicleProfile,
+  options: { maxAgentRadius?: number; snapHalfExtents?: Vec3Tuple } = {},
+): BotCrowd {
+  const nav = buildVehicleBotNavMesh(world, profile);
+  const maxAgentRadius = Math.max(options.maxAgentRadius ?? 0, profile.agentRadius + 0.3, 2.5);
+  const crowdInstance = crowd.create(maxAgentRadius);
+  // Wider snap extents — the vehicle mesh sits a bit higher off the
+  // terrain after erosion, so the foot-tier `[2, 4, 2]` sometimes misses
+  // the closest poly for a vehicle spawn point right on the asphalt.
+  const snap: Vec3Tuple = options.snapHalfExtents ?? [3, 6, 3];
   return new BotCrowd(nav, crowdInstance, snap);
 }
