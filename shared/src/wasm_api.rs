@@ -970,13 +970,52 @@ impl WasmSimWorld {
     pub fn set_local_vehicle(&mut self, vehicle_id: u32) {
         self.local_vehicle_id = Some(vehicle_id);
         self.vehicle_pending_inputs.clear();
+        // Snap the player pose onto the chassis immediately so
+        // `getPosition()` is correct from the moment the driver takes the
+        // wheel, even before the first `tickVehicle` runs.
+        self.sync_player_to_local_chassis();
     }
 
     /// Clear the local vehicle (called on exit).
     #[wasm_bindgen(js_name = clearLocalVehicle)]
     pub fn clear_local_vehicle(&mut self) {
+        // `self.position` is kept at the chassis center by `tick_vehicle`'s
+        // continuous drive sync, so apply the same offset as the server's
+        // `PhysicsArena::exit_vehicle` here so client prediction matches
+        // authority and the on-foot KCC resumes from a safe pose.
+        if self.local_vehicle_id.is_some() {
+            self.position.x += 2.5;
+            self.position.y += 1.0;
+            self.velocity = Vec3d::zeros();
+            self.on_ground = false;
+            if let Some(collider) = self.player_collider {
+                self.sim.sync_player_collider(collider, &self.position);
+            }
+        }
         self.local_vehicle_id = None;
         self.vehicle_pending_inputs.clear();
+    }
+
+    /// Internal: sync the player's predicted pose to the locally-driven
+    /// vehicle's chassis. No-op if there is no local vehicle or the
+    /// chassis rigid body has been removed.
+    fn sync_player_to_local_chassis(&mut self) {
+        let Some(vid) = self.local_vehicle_id else {
+            return;
+        };
+        let Some(vehicle) = self.vehicles.get(&vid) else {
+            return;
+        };
+        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+            return;
+        };
+        let p = *rb.translation();
+        self.position = Vec3d::new(p.x as f64, p.y as f64, p.z as f64);
+        self.velocity = Vec3d::zeros();
+        self.on_ground = false;
+        if let Some(collider) = self.player_collider {
+            self.sim.sync_player_collider(collider, &self.position);
+        }
     }
 
     /// Sync a remote vehicle's chassis pose/velocity (kinematic update).
@@ -1051,6 +1090,13 @@ impl WasmSimWorld {
 
         self.apply_vehicle_input(vid, &input);
         self.step_vehicle_pipeline(dt);
+
+        // Continuous drive sync: keep `self.position` glued to the chassis
+        // so any code reading `getPosition()` during driving gets the real
+        // location. Mirrors the server's `PhysicsArena::simulate_player_tick`
+        // driving branch so client prediction and authority stay aligned,
+        // and the next on-foot tick after exit starts from a sensible pose.
+        self.sync_player_to_local_chassis();
 
         self.get_vehicle_state(vid)
     }
@@ -1167,6 +1213,10 @@ impl WasmSimWorld {
             self.apply_vehicle_input(vid, input);
             self.step_vehicle_pipeline(dt);
         }
+
+        // Keep the driver's player pose aligned with the (now reconciled)
+        // chassis so `getPosition()` returns the real location.
+        self.sync_player_to_local_chassis();
 
         let state = self.get_vehicle_state(vid);
         let (after_px, after_py, after_pz) = (state[0] as f32, state[1] as f32, state[2] as f32);

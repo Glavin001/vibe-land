@@ -302,6 +302,11 @@ export function usePredictionWithWorld(
     if (!vm) return;
     managerRef.current?.setNextSeq(vm.getNextSeq());
     vm.exitVehicle();
+    // vm.exitVehicle() -> sim.clearLocalVehicle() has applied the post-exit
+    // offset on the WASM side; refresh JS interpolation state so the next
+    // camera frame reads the new position rather than the stale pre-entry
+    // one (update() is skipped while driving, so currPosition is stale).
+    managerRef.current?.resyncFromSim();
   }, []);
 
   const updateVehicle = useCallback((

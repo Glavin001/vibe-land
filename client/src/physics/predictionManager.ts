@@ -219,6 +219,23 @@ export class PredictionManager {
     return [p[0], p[1], p[2]];
   }
 
+  /**
+   * Resync the visual interpolation state from the current WASM sim
+   * position. Called after vehicle exit: while driving, `update()` is
+   * skipped so `prevPosition` / `currPosition` / `accumulator` stay frozen
+   * at entry-time values. After `clearLocalVehicle` has applied the
+   * post-exit offset on the WASM side, this refreshes the JS state so the
+   * next camera frame reads the new position rather than the stale one.
+   */
+  resyncFromSim(): void {
+    if (!this.initialized) return;
+    const p = this.sim.getPosition();
+    this.currPosition = [p[0], p[1], p[2]];
+    this.prevPosition = [p[0], p[1], p[2]];
+    this.correctionOffset = [0, 0, 0];
+    this.accumulator = 0;
+  }
+
   getCorrectionOffset(): [number, number, number] {
     return [...this.correctionOffset] as [number, number, number];
   }

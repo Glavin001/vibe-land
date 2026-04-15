@@ -182,9 +182,27 @@ impl PhysicsArena {
         input: &InputCmd,
         dt: f32,
     ) -> Option<PlayerTickResult> {
-        if self.vehicle_of_player.contains_key(&player_id) {
+        // Players driving a vehicle don't move independently. Store the
+        // input (consumed by step_vehicles) and continuously sync the
+        // player's position to the chassis so any system reading
+        // state.position sees the real location rather than the stale
+        // pre-entry pose. Mirrors server::movement::PhysicsArena.
+        if let Some(&vehicle_id) = self.vehicle_of_player.get(&player_id) {
             if let Some(state) = self.players.get_mut(&player_id) {
                 state.last_input = input.clone();
+            }
+            if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
+                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
+                    let p = *rb.translation();
+                    if let Some(state) = self.players.get_mut(&player_id) {
+                        state.position = Vec3d::new(p.x as f64, p.y as f64, p.z as f64);
+                        state.velocity = Vec3d::zeros();
+                        state.on_ground = false;
+                        let collider = state.collider;
+                        let position = state.position;
+                        self.dynamic.sim.sync_player_collider(collider, &position);
+                    }
+                }
             }
             return None;
         }
@@ -245,23 +263,11 @@ impl PhysicsArena {
         if state.dead {
             flags |= FLAG_DEAD;
         }
-
-        if let Some(&vehicle_id) = self.vehicle_of_player.get(&player_id) {
+        // `state.position` is continuously synced to the chassis while the
+        // player is driving (see `simulate_player_tick`), so no special case
+        // is needed here — just tag the flag so clients know.
+        if self.vehicle_of_player.contains_key(&player_id) {
             flags |= FLAG_IN_VEHICLE;
-            if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
-                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
-                    let p = rb.translation();
-                    let v = rb.linvel();
-                    return Some((
-                        [p.x, p.y, p.z],
-                        [v.x, v.y, v.z],
-                        state.yaw as f32,
-                        state.pitch as f32,
-                        state.hp,
-                        flags,
-                    ));
-                }
-            }
         }
 
         Some((
@@ -565,21 +571,22 @@ impl PhysicsArena {
     }
 
     pub fn exit_vehicle(&mut self, player_id: u32) {
-        if let Some(vehicle_id) = self.detach_player_from_vehicles(player_id) {
-            if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
-                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
-                    let p = *rb.translation();
-                    if let Some(state) = self.players.get_mut(&player_id) {
-                        state.position =
-                            Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
-                        if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                            c.set_collision_groups(InteractionGroups::all());
-                        }
-                        self.dynamic
-                            .sim
-                            .sync_player_collider(state.collider, &state.position);
-                    }
+        if self.detach_player_from_vehicles(player_id).is_some() {
+            if let Some(state) = self.players.get_mut(&player_id) {
+                // state.position is already the chassis center (kept in sync
+                // every tick by simulate_player_tick's driving branch).
+                // Offset to place the player beside the vehicle instead of
+                // inside the chassis collider.
+                state.position.x += 2.5;
+                state.position.y += 1.0;
+                state.velocity = Vec3d::zeros();
+                state.on_ground = false;
+                if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
+                    c.set_collision_groups(InteractionGroups::all());
                 }
+                let collider = state.collider;
+                let position = state.position;
+                self.dynamic.sim.sync_player_collider(collider, &position);
             }
         }
     }
