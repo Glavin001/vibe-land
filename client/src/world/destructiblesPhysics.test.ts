@@ -291,6 +291,174 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     expect(impact.finalZ).toBeLessThan(9.0);
   });
 
+  it('a falling ball comes to rest on top of a destructible wall', () => {
+    // Regression probe for the player / ball / vehicle contact path.
+    // The vehicle case is covered by the `driving a vehicle into a wall`
+    // test above — this one adds ball coverage because the user
+    // reported that balls rolled straight through the wall.  A ball
+    // dropped from well above the wall's top face should collide with
+    // the chunk colliders and settle near the top, not pass straight
+    // through to the terrain.
+    const SHAPE_BALL = 1;
+    const BALL_ID = 9100;
+    const BALL_RADIUS = 0.3;
+    const WALL_ID = 9101;
+    // Wall default dims from shared/src/scenarios/wall.rs: span=6, height=3,
+    // thickness=0.32.  Place it at y=0.5 so its top face is at ~y=3.5.
+    const WALL_POSITION: [number, number, number] = [0, 0.5, 0];
+    const DROP_HEIGHT = 8.0;
+    const DT = 1 / 60;
+    const STEPS = 240;
+
+    function buildBase(): WorldDocument {
+      const gridSize = 9;
+      return {
+        version: 2,
+        meta: {
+          name: 'Ball onto destructible wall',
+          description: 'Flat tile with optional wall under the ball drop.',
+        },
+        terrain: {
+          tileGridSize: gridSize,
+          tileHalfExtentM: 16,
+          tiles: [{
+            tileX: 0,
+            tileZ: 0,
+            heights: makeFlatTileHeights(gridSize),
+          }],
+        },
+        staticProps: [],
+        dynamicEntities: [],
+        destructibles: [],
+      };
+    }
+
+    function dropBall(world: WorldDocument): { restY: number } {
+      const sim = new WasmSimWorld();
+      sim.loadWorldDocument(serializeWorldDocument(world));
+      // Spawn ball directly above the wall centre.  `syncDynamicBody`
+      // creates a dynamic rigid body at the first call.
+      sim.syncDynamicBody(
+        BALL_ID,
+        SHAPE_BALL,
+        BALL_RADIUS, 0, 0,
+        0, DROP_HEIGHT, 0,
+        0, 0, 0, 1,
+        0, 0, 0,
+        0, 0, 0,
+      );
+      sim.rebuildBroadPhase();
+      for (let t = 0; t < STEPS; t += 1) {
+        sim.stepDynamics(DT);
+      }
+      const state = sim.getDynamicBodyState(BALL_ID);
+      const restY = state[1];
+      sim.free();
+      return { restY };
+    }
+
+    // Control: no wall — ball should fall all the way to the terrain.
+    const control = dropBall(buildBase());
+    expect(control.restY).toBeLessThan(1.0);
+
+    // With wall: ball should land on or very close to the wall top
+    // face (~y=3.5).  If the chunks silently reject contacts the ball
+    // falls past them and ends up near the terrain just like the
+    // control.
+    const wallWorld = buildBase();
+    wallWorld.destructibles = [
+      {
+        id: WALL_ID,
+        kind: 'wall',
+        position: WALL_POSITION,
+        rotation: [0, 0, 0, 1],
+      },
+    ];
+    const impact = dropBall(wallWorld);
+    expect(impact.restY).toBeGreaterThan(2.5);
+  });
+
+  it('a player walking forward is stopped by a destructible wall', () => {
+    // Regression probe for the player-capsule / KCC path.  The player
+    // uses Rapier's `KinematicCharacterController` via shape-casts
+    // through the query pipeline, which is a completely different
+    // code path from the dynamic rigid-body pipeline the ball and
+    // vehicle use.  At `yaw=0` the player's forward direction is +Z
+    // (see `build_wish_dir` in shared/src/movement.rs).
+    const BTN_FORWARD = 1 << 0;
+    const WALL_ID = 9201;
+    // Wall default thickness=0.32 → front face at z ≈ 4.84.  The
+    // player spawn at z=0 has a clear 4m run-up.
+    const WALL_POSITION: [number, number, number] = [0, 0.5, 5];
+    const DT = 1 / 60;
+    const STEPS = 240;
+
+    function buildBase(): WorldDocument {
+      const gridSize = 9;
+      return {
+        version: 2,
+        meta: {
+          name: 'Player walking into destructible wall',
+          description: 'Flat tile with optional wall 5m in front of spawn.',
+        },
+        terrain: {
+          tileGridSize: gridSize,
+          tileHalfExtentM: 16,
+          tiles: [{
+            tileX: 0,
+            tileZ: 0,
+            heights: makeFlatTileHeights(gridSize),
+          }],
+        },
+        staticProps: [],
+        dynamicEntities: [],
+        destructibles: [],
+      };
+    }
+
+    function walkForward(world: WorldDocument): { finalZ: number } {
+      const sim = new WasmSimWorld();
+      sim.loadWorldDocument(serializeWorldDocument(world));
+      sim.spawnPlayer(0, 2, 0);
+      sim.rebuildBroadPhase();
+      // Settle player onto the ground for a few ticks with no input.
+      for (let t = 0; t < 10; t += 1) {
+        sim.tick(t, 0, 0, 0, 0, 0, DT);
+      }
+      // Walk forward for the remainder of the budget.
+      let finalZ = 0;
+      for (let t = 0; t < STEPS; t += 1) {
+        const state = sim.tick(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+        finalZ = state[2];
+      }
+      sim.free();
+      return { finalZ };
+    }
+
+    const control = walkForward(buildBase());
+    // Player should have walked at least a few metres forward in the
+    // control run — if not, test setup is broken.
+    expect(control.finalZ).toBeGreaterThan(2);
+
+    const wallWorld = buildBase();
+    wallWorld.destructibles = [
+      {
+        id: WALL_ID,
+        kind: 'wall',
+        position: WALL_POSITION,
+        rotation: [0, 0, 0, 1],
+      },
+    ];
+    const impact = walkForward(wallWorld);
+
+    // With the wall in place the player must stop short of the wall.
+    // The wall front face is at ~z=4.84, minus a capsule radius of
+    // ~0.4 → the capsule should halt somewhere around z ≤ 4.5.
+    // Give a generous upper bound: 4.6 fires loudly if the KCC lets
+    // the capsule walk straight through.
+    expect(impact.finalZ).toBeLessThan(4.6);
+  });
+
   it('despawn removes the destructible and clears the chunk buffer', () => {
     const sim = new WasmSimWorld();
     sim.loadWorldDocument(serializeWorldDocument(makeWallWorld()));
