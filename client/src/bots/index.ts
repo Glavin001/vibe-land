@@ -59,6 +59,7 @@ export {
   PracticeBotRuntime,
   PRACTICE_BOT_ID_BASE,
   type BotDebugInfo,
+  type BotObstacleDebugInfo,
   type LocalSelfAccessor,
   type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,

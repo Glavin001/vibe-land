@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Html } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { BotDebugInfo, PracticeBotRuntime } from '../bots';
+import type { BotDebugInfo, BotObstacleDebugInfo, PracticeBotRuntime } from '../bots';
 
 interface BotsDebugOverlayProps {
   runtime: PracticeBotRuntime;
@@ -61,10 +61,19 @@ interface BotSlot {
   info: BotDebugInfo | null;
 }
 
+interface ObstacleSlot {
+  group: THREE.Group;
+  ring: THREE.Mesh;
+  pillar: THREE.Mesh;
+}
+
+const OBSTACLE_COLOR = new THREE.Color(0xff5050);
+
 export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
   const rootRef = useRef<THREE.Group>(null);
   const pathLinesRef = useRef<THREE.LineSegments | null>(null);
   const slotsRef = useRef<Map<number, BotSlot>>(new Map());
+  const obstacleSlotsRef = useRef<Map<number, ObstacleSlot>>(new Map());
   // Latest debug infos written by useFrame each frame. Mirrored into
   // React state at 10Hz for the HTML labels (they don't need 60Hz).
   const latestInfosRef = useRef<BotDebugInfo[]>([]);
@@ -108,6 +117,15 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
         (slot.ringMesh.material as THREE.Material).dispose();
       }
       slots.clear();
+      const obstacleSlots = obstacleSlotsRef.current;
+      for (const slot of obstacleSlots.values()) {
+        slot.group.removeFromParent();
+        slot.ring.geometry.dispose();
+        (slot.ring.material as THREE.Material).dispose();
+        slot.pillar.geometry.dispose();
+        (slot.pillar.material as THREE.Material).dispose();
+      }
+      obstacleSlots.clear();
     };
   }, [pathGeometry, pathMaterial]);
 
@@ -212,6 +230,39 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
     pathGeometry.attributes.color.needsUpdate = true;
     pathGeometry.setDrawRange(0, vertexCount);
     pathGeometry.computeBoundingSphere();
+
+    // Update obstacle markers (currently: vehicles). Shows the bots the
+    // footprint of every vehicle pseudo-agent, so you can see what their
+    // crowd-level avoidance is actually steering around.
+    const obstacles: BotObstacleDebugInfo[] = runtime.getObstacleDebugInfos();
+    const obstacleSlots = obstacleSlotsRef.current;
+    const seenObstacles = new Set<number>();
+    for (const obs of obstacles) {
+      seenObstacles.add(obs.sourceId);
+      let slot = obstacleSlots.get(obs.sourceId);
+      if (!slot) {
+        slot = makeObstacleSlot();
+        obstacleSlots.set(obs.sourceId, slot);
+        root.add(slot.group);
+      }
+      slot.group.position.set(obs.position[0], obs.position[1], obs.position[2]);
+      // Scale the ring in X/Z to the obstacle's radius (it was created
+      // with radius 1 so we can scale it here without rebuilding the
+      // geometry).
+      slot.ring.scale.set(obs.radius, 1, obs.radius);
+      slot.pillar.scale.set(obs.radius, obs.height / 2, obs.radius);
+      slot.pillar.position.y = obs.height / 2;
+    }
+    for (const [id, slot] of obstacleSlots) {
+      if (!seenObstacles.has(id)) {
+        slot.group.removeFromParent();
+        slot.ring.geometry.dispose();
+        (slot.ring.material as THREE.Material).dispose();
+        slot.pillar.geometry.dispose();
+        (slot.pillar.material as THREE.Material).dispose();
+        obstacleSlots.delete(id);
+      }
+    }
   });
 
   return (
@@ -304,6 +355,39 @@ function makeSlot(): BotSlot {
   targetMesh.visible = false;
 
   return { group, targetMesh, velArrow, ringMesh, info: null };
+}
+
+function makeObstacleSlot(): ObstacleSlot {
+  const group = new THREE.Group();
+  group.name = 'bot-obstacle-slot';
+  // Unit-radius ring; the overlay update loop scales this per frame to
+  // match each obstacle's real radius.
+  const ringGeometry = new THREE.RingGeometry(0.96, 1.0, 48);
+  ringGeometry.rotateX(-Math.PI / 2);
+  const ringMaterial = new THREE.MeshBasicMaterial({
+    color: OBSTACLE_COLOR,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.75,
+    depthWrite: false,
+  });
+  const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+  ring.position.y = 0.05;
+  group.add(ring);
+  // Subtle translucent pillar so the obstacle reads as a volume from a
+  // first-person camera, not just a floor ring.
+  const pillarGeometry = new THREE.CylinderGeometry(1.0, 1.0, 2, 24, 1, true);
+  const pillarMaterial = new THREE.MeshBasicMaterial({
+    color: OBSTACLE_COLOR,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity: 0.12,
+    depthWrite: false,
+  });
+  const pillar = new THREE.Mesh(pillarGeometry, pillarMaterial);
+  pillar.position.y = 1;
+  group.add(pillar);
+  return { group, ring, pillar };
 }
 
 function describeTarget(info: BotDebugInfo): string {

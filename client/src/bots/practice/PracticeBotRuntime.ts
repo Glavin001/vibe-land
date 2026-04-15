@@ -87,6 +87,22 @@ export interface PracticeBotStats {
 }
 
 /**
+ * Snapshot of an obstacle (currently: vehicle) that the bot crowd
+ * treats as a navmesh-level avoider. Returned from
+ * {@link PracticeBotRuntime.getObstacleDebugInfos} so the debug overlay
+ * can draw footprints at the positions the bots are actually steering
+ * around.
+ */
+export interface BotObstacleDebugInfo {
+  kind: 'vehicle';
+  /** Source id — vehicle id in `client.vehicles`. */
+  sourceId: number;
+  position: Vec3Tuple;
+  radius: number;
+  height: number;
+}
+
+/**
  * Snapshot of one bot's planning state, surfaced for the in-scene debug
  * overlay. Pure data — no THREE / R3F dependencies so the renderer can
  * decide how to visualize each piece.
@@ -131,6 +147,13 @@ const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
 // `shared/src/simulation.rs::update_player_motion`.
 const DEFAULT_MAX_SPEED = 3.0;
 const DEFAULT_TICK_HZ = 60;
+// Vehicle chassis half-extents from `shared/src/movement.rs`
+// (`VEHICLE_CHASSIS_HALF_EXTENTS`). The circumscribed XZ radius is the
+// diagonal, which is what we use when registering the vehicle as a
+// navcat pseudo-agent. Slight padding (+0.2m) gives the bot a small
+// berth so it doesn't scrape the bodywork.
+const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
+const VEHICLE_OBSTACLE_HEIGHT = 1.2;
 
 /**
  * Runtime for practice-mode bots that spawns them as full players in the
@@ -149,6 +172,13 @@ export class PracticeBotRuntime {
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private lastTickMs = 0;
   private running = false;
+  /**
+   * Map of vehicleId → navcat agentId for stationary "pseudo-agents"
+   * that represent live vehicles to the crowd planner. Each tick we
+   * mirror `client.vehicles` into this map so bots steer around vehicles
+   * without them being baked into the static navmesh.
+   */
+  private readonly vehicleObstacleAgents = new Map<number, string>();
 
   constructor(world: WorldDocument, options: PracticeBotRuntimeOptions = {}) {
     this.crowd = createBotCrowd(world, {
@@ -202,6 +232,12 @@ export class PracticeBotRuntime {
         this.transport.disconnectBot(bot.id);
       }
     }
+    // Drop vehicle pseudo-agents — they're tied to the session whose
+    // `client.vehicles` map just went away.
+    for (const agentId of this.vehicleObstacleAgents.values()) {
+      this.crowd.removeObstacleAgent(agentId);
+    }
+    this.vehicleObstacleAgents.clear();
     this.transport = null;
     this.client = null;
     this.getSelf = null;
@@ -308,6 +344,72 @@ export class PracticeBotRuntime {
       this.transport?.disconnectBot(bot.id);
     }
     this.bots.clear();
+    for (const agentId of this.vehicleObstacleAgents.values()) {
+      this.crowd.removeObstacleAgent(agentId);
+    }
+    this.vehicleObstacleAgents.clear();
+  }
+
+  /**
+   * Returns one {@link BotObstacleDebugInfo} per live vehicle pseudo-
+   * agent, for the in-scene debug overlay. Cheap enough to call every
+   * render frame.
+   */
+  getObstacleDebugInfos(): BotObstacleDebugInfo[] {
+    if (!this.client) return [];
+    const out: BotObstacleDebugInfo[] = [];
+    for (const [vehicleId, agentId] of this.vehicleObstacleAgents) {
+      const agent = this.crowd.getAgent(agentId);
+      if (!agent) continue;
+      out.push({
+        kind: 'vehicle',
+        sourceId: vehicleId,
+        position: [agent.position[0], agent.position[1], agent.position[2]],
+        radius: agent.radius,
+        height: agent.height,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Mirror `client.vehicles` into the crowd as stationary pseudo-agents so
+   * bots see them as obstacles. Call this at the top of every `tick()`
+   * just before `crowd.step`.
+   */
+  private syncVehicleObstacles(client: NetcodeClient): void {
+    const seen = new Set<number>();
+    for (const [vehicleId, state] of client.vehicles) {
+      seen.add(vehicleId);
+      const position: Vec3Tuple = [
+        state.position[0],
+        state.position[1],
+        state.position[2],
+      ];
+      const velocity: Vec3Tuple = [
+        state.linearVelocity[0],
+        state.linearVelocity[1],
+        state.linearVelocity[2],
+      ];
+      let agentId = this.vehicleObstacleAgents.get(vehicleId);
+      if (!agentId) {
+        agentId = this.crowd.addObstacleAgent(
+          position,
+          VEHICLE_OBSTACLE_RADIUS,
+          VEHICLE_OBSTACLE_HEIGHT,
+        );
+        this.vehicleObstacleAgents.set(vehicleId, agentId);
+      }
+      this.crowd.setObstacleAgentPose(agentId, position, velocity);
+    }
+    // Drop pseudo-agents for vehicles that have since disappeared
+    // (despawned or the session swapped worlds).
+    for (const [vehicleId, agentId] of this.vehicleObstacleAgents) {
+      if (!seen.has(vehicleId)) {
+        this.crowd.removeObstacleAgent(agentId);
+        this.vehicleObstacleAgents.delete(vehicleId);
+      }
+    }
   }
 
   /**
@@ -417,6 +519,13 @@ export class PracticeBotRuntime {
         this.crowd.syncBotPosition(bot.handle, remote.position);
       }
     }
+
+    // Mirror live vehicles into the navcat crowd as stationary pseudo-
+    // agents so real bots' separation / obstacle-avoidance routes around
+    // them. Vehicles are dynamic (they move at runtime) and therefore
+    // aren't baked into the static navmesh; without this step bots would
+    // path straight through parked cars.
+    this.syncVehicleObstacles(client);
 
     this.crowd.step(dt);
 

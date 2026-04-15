@@ -126,6 +126,64 @@ export class BotCrowd {
     return removed;
   }
 
+  /**
+   * Adds a **static pseudo-agent** to the crowd for use as a dynamic
+   * obstacle (e.g. a vehicle that can roll into the bots' pathing space).
+   * The returned string id is a raw navcat agent id — pass it back to
+   * {@link setObstacleAgentPose} / {@link removeObstacleAgent}.
+   *
+   * The pseudo-agent has `maxSpeed = 0` and `updateFlags = 0`, so navcat
+   * won't try to move it; it exists solely so real bot agents' separation
+   * + obstacle-avoidance logic routes around it.
+   */
+  addObstacleAgent(position: Vec3Tuple, radius: number, height: number): string {
+    const snap = this.findNearestWalkable(position);
+    const initial: Vec3 = snap
+      ? ([snap.position[0], snap.position[1], snap.position[2]] as Vec3)
+      : ([position[0], position[1], position[2]] as Vec3);
+    const params: AgentParams = {
+      radius,
+      height,
+      maxAcceleration: 0,
+      maxSpeed: 0,
+      collisionQueryRange: 0,
+      separationWeight: 0,
+      updateFlags: 0,
+      queryFilter: DEFAULT_QUERY_FILTER,
+      obstacleAvoidance: crowd.DEFAULT_OBSTACLE_AVOIDANCE_PARAMS,
+      autoTraverseOffMeshConnections: false,
+    };
+    return crowd.addAgent(this.crowd, this.nav.navMesh, initial, params);
+  }
+
+  /**
+   * Updates a pseudo-agent's world position (and optional velocity for
+   * anticipatory avoidance). Safe to call every tick. Returns false if
+   * the id is unknown.
+   */
+  setObstacleAgentPose(
+    agentId: string,
+    position: Vec3Tuple,
+    velocity?: Vec3Tuple,
+  ): boolean {
+    const agent = this.crowd.agents[agentId];
+    if (!agent) return false;
+    agent.position[0] = position[0];
+    agent.position[1] = position[1];
+    agent.position[2] = position[2];
+    if (velocity) {
+      agent.velocity[0] = velocity[0];
+      agent.velocity[1] = velocity[1];
+      agent.velocity[2] = velocity[2];
+    }
+    return true;
+  }
+
+  /** Removes a previously added obstacle pseudo-agent. */
+  removeObstacleAgent(agentId: string): boolean {
+    return crowd.removeAgent(this.crowd, agentId);
+  }
+
   /** Look up a previously added handle by id. */
   getHandle(id: string): BotHandle | undefined {
     return this.handles.get(id);
@@ -236,7 +294,11 @@ export class BotCrowd {
  */
 export function createBotCrowd(world: WorldDocument, options: BotCrowdOptions = {}): BotCrowd {
   const nav = buildBotNavMesh(world, options);
-  const maxAgentRadius = options.maxAgentRadius ?? 0.6;
+  // Default `maxAgentRadius` is sized for vehicle-scale obstacles (the
+  // biggest thing we register via `addObstacleAgent`). Bots themselves are
+  // smaller (≈0.45), but navcat uses this value to pre-size its neighbor
+  // lookup so the largest possible agent still fits.
+  const maxAgentRadius = options.maxAgentRadius ?? 2.5;
   const crowdInstance = crowd.create(maxAgentRadius);
   const snap = options.snapHalfExtents ?? DEFAULT_SNAP_HALF_EXTENTS;
   return new BotCrowd(nav, crowdInstance, snap);
