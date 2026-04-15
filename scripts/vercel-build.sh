@@ -118,12 +118,37 @@ echo "[vercel-build] BLAST_WASM_CXX_LIB_DIR=${BLAST_WASM_CXX_LIB_DIR}"
 # Force the `cc` crate to use wasi-sdk's clang for the wasm32 target.
 # Without these env vars `cc` picks up the system clang (Amazon Linux's
 # default clang is too old and/or has no wasm32 support configured).
+#
+# We set BOTH `wasm32_unknown_unknown` and `wasm32_wasi` variants plus
+# plain `CC`/`CXX`/`AR` fallbacks because `blast-stress-solver/build.rs`
+# overrides the target with `build.target("wasm32-wasi")` once it
+# detects we're cross-compiling from `wasm32-unknown-unknown`, which
+# makes the `cc` crate probe `CXX_wasm32_wasi` / `CXX_wasm32-wasi`
+# instead of `CXX_wasm32_unknown_unknown`.
 export CC_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang"
 export CXX_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang++"
 export AR_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/llvm-ar"
+export CC_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang"
+export CXX_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang++"
+export AR_wasm32_wasi="${WASI_SDK_ROOT}/bin/llvm-ar"
+# `cc` also probes `TARGET_CC` / `TARGET_CXX` / `TARGET_AR` as a
+# catch-all before falling back to plain `CC`/`CXX`/`AR`.
+export TARGET_CC="${WASI_SDK_ROOT}/bin/clang"
+export TARGET_CXX="${WASI_SDK_ROOT}/bin/clang++"
+export TARGET_AR="${WASI_SDK_ROOT}/bin/llvm-ar"
+# Last-resort plain fallbacks so any `cc`/`cmake` invocation on the
+# wasm path picks up wasi-sdk instead of searching PATH.
+export CC="${WASI_SDK_ROOT}/bin/clang"
+export CXX="${WASI_SDK_ROOT}/bin/clang++"
+export AR="${WASI_SDK_ROOT}/bin/llvm-ar"
+# Put wasi-sdk on PATH as a belt-and-braces fallback for any code
+# path that just shells out to `clang++` without checking env vars.
+export PATH="${WASI_SDK_ROOT}/bin:${PATH}"
 
 for var in BLAST_WASM_SYSROOT BLAST_WASM_CXX_INCLUDE BLAST_WASM_CXX_LIB_DIR \
-           CC_wasm32_unknown_unknown CXX_wasm32_unknown_unknown AR_wasm32_unknown_unknown; do
+           CC_wasm32_unknown_unknown CXX_wasm32_unknown_unknown AR_wasm32_unknown_unknown \
+           CC_wasm32_wasi CXX_wasm32_wasi AR_wasm32_wasi \
+           CC CXX AR; do
   eval "val=\${$var}"
   if [[ ! -e "${val}" ]]; then
     echo "[vercel-build] WARNING: ${var}=${val} does not exist" >&2
@@ -156,7 +181,21 @@ fi
 WASM_SIZE=$(stat -c %s "${WASM_FILE}" 2>/dev/null || stat -f %z "${WASM_FILE}")
 echo "[vercel-build] wasm size: ${WASM_SIZE} bytes"
 
-if strings "${WASM_FILE}" | grep -q "NvBlastExtStressSolver"; then
+# wasm-opt strips most C++ mangled symbol names, but the panic/
+# assertion strings that the Blast C++ backend embeds survive because
+# they're data.  We probe for one of those (`ExtStressSolver`) plus
+# the rust-side crate path as a belt-and-braces check.
+#
+# NOTE: `grep -q` exits on first match, which closes the pipe; under
+# `set -euo pipefail` that makes `strings` trip SIGPIPE and fails the
+# whole pipeline.  Materialise the strings dump once to avoid it.
+WASM_STRINGS_DUMP="$(mktemp)"
+strings "${WASM_FILE}" > "${WASM_STRINGS_DUMP}"
+BLAST_SYMS_OK=1
+grep -q "ExtStressSolver" "${WASM_STRINGS_DUMP}" || BLAST_SYMS_OK=0
+grep -q "blast-stress-solver-rs" "${WASM_STRINGS_DUMP}" || BLAST_SYMS_OK=0
+rm -f "${WASM_STRINGS_DUMP}"
+if [[ "${BLAST_SYMS_OK}" == "1" ]]; then
   echo "[vercel-build] ✓ wasm contains real Blast stress solver symbols"
 else
   echo "[vercel-build] FATAL: wasm is missing Blast symbols — destructibles build degraded to stub" >&2
