@@ -73,6 +73,21 @@ export function usePredictionWithWorld(
       } else if (!practiceMode) {
         sim.seedDemoTerrain();
       }
+      // One-time diagnostic so you can verify from DevTools that the
+      // Blast-enabled wasm is actually loaded and destructibles were
+      // spawned by `loadWorldDocument`.  If instanceCount is 0 in
+      // practice, either the wasm is a stub build (missing
+      // `third_party/physx/`) or the dev server is serving a stale
+      // bundle — stop + restart `npm run dev` to trigger `predev`
+      // → `build:wasm`.
+      if (practiceMode) {
+        const instanceCount = sim.getDestructibleInstanceCount();
+        const chunkCount = sim.getDestructibleChunkCount();
+        // eslint-disable-next-line no-console
+        console.info(
+          `[destructibles] practice sim initialised: instances=${instanceCount} chunks=${chunkCount}`,
+        );
+      }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
       sim.rebuildBroadPhase();
