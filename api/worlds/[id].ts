@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gunzipSync } from 'node:zlib';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getR2Client, buildPublishedKey, isValidWorldId } from '../_lib/r2.js';
+import { getWorldStorage, isValidWorldId } from '../_lib/storage.js';
 import { sendError } from '../_lib/http.js';
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -10,9 +9,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  const r2 = getR2Client();
-  if (!r2) {
-    sendError(res, 503, 'Cloudflare R2 is not configured on this deployment.');
+  const storage = getWorldStorage();
+  if (!storage) {
+    sendError(res, 503, 'World storage is not configured on this deployment.');
     return;
   }
 
@@ -28,53 +27,34 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  let object;
+  let content;
   try {
-    object = await r2.client.send(
-      new GetObjectCommand({ Bucket: r2.bucket, Key: buildPublishedKey(id) }),
-    );
+    content = await storage.getWorld(id);
   } catch (err) {
-    const name = (err as { name?: string } | null)?.name;
-    if (name === 'NoSuchKey' || name === 'NotFound') {
-      sendError(res, 404, 'World not found.');
-      return;
-    }
-    console.error('[worlds/id] Failed to fetch object', err);
+    console.error('[worlds/id] Failed to fetch world', err);
     sendError(res, 502, 'Failed to fetch world.');
     return;
   }
-
-  const body = object.Body;
-  if (!body) {
-    sendError(res, 502, 'World body missing.');
+  if (!content) {
+    sendError(res, 404, 'World not found.');
     return;
   }
 
-  // Objects are stored gzipped (ContentEncoding: gzip on the S3 object).
-  // Decompress here so clients always see plain JSON, regardless of which
-  // transport layer gzips/ungzips for them. Vercel's edge will re-gzip the
-  // response based on Accept-Encoding automatically.
-  let stored: Buffer;
-  try {
-    stored = Buffer.from(await (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray());
-  } catch (err) {
-    console.error('[worlds/id] Failed to buffer body', err);
-    sendError(res, 502, 'Failed to read world body.');
-    return;
-  }
-
+  // Storage implementations always hand us gzipped bytes (R2 stores them
+  // with ContentEncoding: gzip, the filesystem backend never decompresses
+  // on write). Decompress here so clients always see plain JSON, regardless
+  // of transport layer behaviour.
   let plain: Buffer;
-  const encoding = (object.ContentEncoding ?? '').toLowerCase();
-  if (encoding.includes('gzip')) {
+  if (content.contentEncoding === 'gzip') {
     try {
-      plain = gunzipSync(stored);
+      plain = gunzipSync(content.bytes);
     } catch (err) {
       console.error('[worlds/id] Failed to decompress stored world', err);
       sendError(res, 502, 'Failed to decompress stored world.');
       return;
     }
   } else {
-    plain = stored;
+    plain = content.bytes;
   }
 
   res.statusCode = 200;

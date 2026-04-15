@@ -1,13 +1,19 @@
-// End-to-end smoke test for the world-publishing API against a real
-// S3-compatible backend. Brings up nothing on its own – assumes MinIO is
-// already running locally (e.g. via `npm run r2:up`). Spins up an in-process
-// http.Server that routes to the actual /api handlers exported from
-// api/worlds/*.ts, then exercises:
+// End-to-end smoke test for the world-publishing API. Works against either
+// storage backend:
 //
-//   GET  /api/worlds/config              -> { enabled: true }
+//   * Filesystem backend: set WORLDS_STORAGE_DIR=/some/path before running.
+//     No external services required.
+//   * R2/S3 backend: leave WORLDS_STORAGE_DIR unset. Defaults point at MinIO
+//     on localhost:9000 (brought up with `npm run r2:up`), but any
+//     S3-compatible endpoint with the usual R2_* env vars will work too.
+//
+// Either way, the script spins up an in-process http.Server that routes to
+// the actual /api handlers exported from api/worlds/*.ts and exercises:
+//
+//   GET  /api/worlds/config              -> { enabled: true, storage }
 //   POST /api/worlds/publish             -> generates id, stores gzipped JSON
 //   POST /api/worlds/<id>/screenshot     -> stores JPEG
-//   GET  /api/worlds                     -> lists the world (HEAD per item)
+//   GET  /api/worlds                     -> lists both worlds
 //   GET  /api/worlds/<id>                -> returns plain JSON (decompressed)
 //   GET  /api/worlds/<id>/screenshot     -> returns the JPEG bytes
 //   POST /api/worlds/publish (collision) -> still succeeds (HEAD probe path)
@@ -19,14 +25,19 @@ import http from 'node:http';
 import { gzipSync } from 'node:zlib';
 import { AddressInfo } from 'node:net';
 
-// Configure env BEFORE importing api modules so the cached S3 client picks
-// up the local endpoint.
-process.env.R2_ENDPOINT = process.env.R2_ENDPOINT ?? 'http://localhost:9000';
-process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID ?? 'minioadmin';
-process.env.R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY ?? 'minioadmin';
-process.env.R2_BUCKET = process.env.R2_BUCKET ?? 'vibe-land-dev';
-process.env.R2_REGION = process.env.R2_REGION ?? 'us-east-1';
-process.env.R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE ?? '1';
+const usingFilesystem = Boolean(process.env.WORLDS_STORAGE_DIR?.trim());
+if (!usingFilesystem) {
+  // Configure env BEFORE importing api modules so the cached S3 client picks
+  // up the endpoint. Only defaults kick in – explicitly-set R2_* env vars
+  // win, so the same script works for MinIO, real R2, or LocalStack.
+  process.env.R2_ENDPOINT = process.env.R2_ENDPOINT ?? 'http://localhost:9000';
+  process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID ?? 'minioadmin';
+  process.env.R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY ?? 'minioadmin';
+  process.env.R2_BUCKET = process.env.R2_BUCKET ?? 'vibe-land-dev';
+  process.env.R2_REGION = process.env.R2_REGION ?? 'us-east-1';
+  process.env.R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE ?? '1';
+}
+const expectedStorageKind = usingFilesystem ? 'local' : 'r2';
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse) => void | Promise<void>;
 
@@ -83,11 +94,12 @@ const minimalWorld = {
 
 try {
   // 1. config
-  console.log('GET /api/worlds/config');
+  console.log(`GET /api/worlds/config (backend: ${expectedStorageKind})`);
   const configRes = await fetch(`${base}/api/worlds/config`);
   check('200 OK', configRes.status === 200, `got ${configRes.status}`);
-  const configJson = (await configRes.json()) as { enabled: boolean };
+  const configJson = (await configRes.json()) as { enabled: boolean; storage?: string };
   check('enabled is true', configJson.enabled === true, JSON.stringify(configJson));
+  check(`storage is ${expectedStorageKind}`, configJson.storage === expectedStorageKind, JSON.stringify(configJson));
 
   // 2. publish a world
   console.log('POST /api/worlds/publish (gzipped)');

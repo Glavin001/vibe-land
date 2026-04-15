@@ -63,8 +63,40 @@ jobs:
             src/world/worldsCloud.test.ts \
             src/world/publishedHistory.test.ts
 
+  e2e-local-fs:
+    name: End-to-end against filesystem backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORLDS_STORAGE_DIR: ${{ runner.temp }}/vibe-land-worlds
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install client dependencies (for tsx)
+        run: npm --prefix client install
+
+      - name: Run end-to-end smoke test (filesystem backend)
+        run: npm run r2:test
+
+      - name: Sanity-check the on-disk layout
+        if: always()
+        run: |
+          ls -la "$WORLDS_STORAGE_DIR/published" || true
+          find "$WORLDS_STORAGE_DIR" -maxdepth 3 -type f || true
+
   e2e-minio:
-    name: End-to-end against MinIO
+    name: End-to-end against MinIO (R2-compatible)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -109,7 +141,7 @@ jobs:
           docker logs vibe-land-minio-init || true
           exit 1
 
-      - name: Run end-to-end smoke test
+      - name: Run end-to-end smoke test (R2 backend via MinIO)
         run: npm run r2:test
 
       - name: Show MinIO logs on failure

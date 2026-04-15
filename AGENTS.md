@@ -112,9 +112,18 @@ Firewall requirements for WebTransport:
 - Open UDP `WT_BIND_ADDR` port (default **4002**) inbound — both UFW and any cloud-level firewall (e.g. Hetzner).
 - `ufw allow 4002/udp`
 
-### Cloudflare R2 publishing + local MinIO
+### World publishing backends (filesystem or R2)
 
-The world builder at `/builder/world` can publish worlds to Cloudflare R2; published worlds appear in `/gallery` and can be played from the gallery via `/practice/shared/<id>`. The feature is gated on server-side env vars and is hidden when they're unset.
+The world builder at `/builder/world` can publish worlds to durable storage; published worlds appear in `/gallery` and can be played from the gallery via `/practice/shared/<id>`. The feature is gated on server-side env vars and is hidden when nothing is configured.
+
+Two backends are supported behind a single `WorldStorage` interface (`api/_lib/storage.ts`):
+
+| Backend | Env var(s) | When to use |
+| --- | --- | --- |
+| **Filesystem** (`api/_lib/fsStorage.ts`) | `WORLDS_STORAGE_DIR=/path/to/dir` | Local dev without docker, self-hosted installs with a persistent disk, cheapest path for single-machine deployments. Takes precedence when set. |
+| **R2 / any S3-compatible** (`api/_lib/r2Storage.ts`) | `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` + `R2_BUCKET` (or `R2_ENDPOINT` to target MinIO/LocalStack) | Vercel deployments, multi-instance setups, Cloudflare R2 in production. |
+
+Both backends implement write-once semantics (the filesystem uses POSIX `O_EXCL`; R2 uses `IfNoneMatch: '*'`), gzip-compressed world payloads, and share the same on-disk key layout (`published/<id>.world.json` + `published/<id>.screenshot.jpg`). The filesystem backend adds a sidecar `published/<id>.meta.json` because the filesystem doesn't have an equivalent of S3 user metadata.
 
 Endpoints (Vercel serverless functions in `/api`):
 
@@ -127,6 +136,19 @@ Endpoints (Vercel serverless functions in `/api`):
 
 The R2 client lives in `api/_lib/r2.ts` and supports any S3-compatible backend via `R2_ENDPOINT`. With a custom endpoint set, path-style addressing is enabled automatically so `localhost` works without wildcard DNS.
 
+#### End-to-end smoke test (`npm run r2:test`)
+
+One script at `scripts/test-r2-e2e.mts` exercises the full publishing pipeline against either backend. It boots an in-process `http.Server`, routes to the real `api/worlds/*.ts` handlers, and runs the 23-check suite (publish / list / get / screenshot upload / screenshot get / 404 on missing world / config backend-kind check). It picks the backend automatically:
+
+```bash
+# Filesystem backend — no external services, just a writable directory.
+WORLDS_STORAGE_DIR=/tmp/vibe-land-worlds npm run r2:test
+
+# R2 backend via MinIO — starts a local S3-compatible server first.
+npm run r2:up
+npm run r2:test
+```
+
 #### Local MinIO via docker-compose
 
 `docker-compose.yml` at the repo root brings up MinIO + a one-shot bucket-init container. The compose file uses **`network_mode: host`** for both services so it works on Docker daemons without iptables/bridge NAT (e.g. sandboxes).
@@ -138,15 +160,7 @@ npm run r2:down    # stop, keep data
 npm run r2:reset   # stop and wipe the named volume
 ```
 
-Then add the MinIO block from `.env.example` to a `.env.local` at the repo root and either run `vercel dev` or run the standalone end-to-end test:
-
-```bash
-npm run r2:test    # spins up an in-process http server, routes to the real
-                   # api/ handlers, and exercises publish/list/get/screenshot
-                   # against the running MinIO. Exits non-zero on any failure.
-```
-
-The test script is at `scripts/test-r2-e2e.mts` and uses the existing `client/node_modules/.bin/tsx` to run TypeScript with NodeNext `.js` extension imports.
+Then add the MinIO block from `.env.example` to a `.env.local` at the repo root and either run `vercel dev` or run the e2e test above.
 
 ##### Booting Docker on a sandbox without root systemd
 

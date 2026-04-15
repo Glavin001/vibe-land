@@ -1,22 +1,15 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  PutObjectCommand,
-} from '@aws-sdk/client-s3';
-import {
-  buildPublishedKey,
-  buildScreenshotKey,
-  getR2Client,
+  getWorldStorage,
   isValidWorldId,
   MAX_SCREENSHOT_BYTES,
-} from '../../_lib/r2.js';
+} from '../../_lib/storage.js';
 import { readRawBody, sendError, sendJson, PayloadTooLargeError } from '../../_lib/http.js';
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const r2 = getR2Client();
-  if (!r2) {
-    sendError(res, 503, 'Cloudflare R2 is not configured on this deployment.');
+  const storage = getWorldStorage();
+  if (!storage) {
+    sendError(res, 503, 'World storage is not configured on this deployment.');
     return;
   }
 
@@ -31,82 +24,44 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   if (req.method === 'GET') {
-    return handleGet(r2, id, res);
-  }
-  if (req.method === 'POST' || req.method === 'PUT') {
-    return handlePost(r2, id, req, res);
-  }
-  sendError(res, 405, 'Method not allowed.');
-}
-
-async function handleGet(
-  r2: NonNullable<ReturnType<typeof getR2Client>>,
-  id: string,
-  res: ServerResponse,
-): Promise<void> {
-  let object;
-  try {
-    object = await r2.client.send(
-      new GetObjectCommand({ Bucket: r2.bucket, Key: buildScreenshotKey(id) }),
-    );
-  } catch (err) {
-    const name = (err as { name?: string } | null)?.name;
-    if (name === 'NoSuchKey' || name === 'NotFound') {
+    let content;
+    try {
+      content = await storage.getScreenshot(id);
+    } catch (err) {
+      console.error('[worlds/id/screenshot] Failed to fetch screenshot', err);
+      sendError(res, 502, 'Failed to fetch screenshot.');
+      return;
+    }
+    if (!content) {
       sendError(res, 404, 'Screenshot not found.');
       return;
     }
-    console.error('[worlds/id/screenshot] Failed to fetch object', err);
-    sendError(res, 502, 'Failed to fetch screenshot.');
+    res.statusCode = 200;
+    res.setHeader('Content-Type', content.contentType);
+    // Screenshots are immutable for the life of a published world, so cache
+    // aggressively to reduce storage egress on gallery paint.
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    res.end(content.bytes);
     return;
   }
 
-  const body = object.Body;
-  if (!body) {
-    sendError(res, 502, 'Screenshot body missing.');
+  if (req.method !== 'POST' && req.method !== 'PUT') {
+    sendError(res, 405, 'Method not allowed.');
     return;
   }
 
-  res.statusCode = 200;
-  res.setHeader('Content-Type', object.ContentType || 'image/jpeg');
-  // Screenshots are immutable for the life of a published world, so cache
-  // aggressively to reduce R2 egress on gallery paint.
-  res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
-
-  const anyBody = body as unknown as NodeJS.ReadableStream & { transformToByteArray?: () => Promise<Uint8Array> };
-  if (typeof anyBody.pipe === 'function') {
-    anyBody.pipe(res);
-    return;
-  }
-  if (typeof anyBody.transformToByteArray === 'function') {
-    const bytes = await anyBody.transformToByteArray();
-    res.end(Buffer.from(bytes));
-    return;
-  }
-  sendError(res, 502, 'Unsupported screenshot body type.');
-}
-
-async function handlePost(
-  r2: NonNullable<ReturnType<typeof getR2Client>>,
-  id: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<void> {
   // Require the world to already exist before we store a screenshot so
-  // random keys can't litter the bucket with orphaned images. Anyone can
-  // still overwrite an existing screenshot — that matches the current
-  // publish auth model (feature-flag only, no per-user auth).
+  // random ids can't litter storage with orphaned images.
+  let worldExists = false;
   try {
-    await r2.client.send(
-      new HeadObjectCommand({ Bucket: r2.bucket, Key: buildPublishedKey(id) }),
-    );
+    worldExists = await storage.hasWorld(id);
   } catch (err) {
-    const name = (err as { name?: string } | null)?.name;
-    if (name === 'NoSuchKey' || name === 'NotFound') {
-      sendError(res, 404, 'World not found; publish it first.');
-      return;
-    }
-    console.error('[worlds/id/screenshot] Failed to HEAD world', err);
+    console.error('[worlds/id/screenshot] Failed to verify world', err);
     sendError(res, 502, 'Failed to verify world.');
+    return;
+  }
+  if (!worldExists) {
+    sendError(res, 404, 'World not found; publish it first.');
     return;
   }
 
@@ -134,15 +89,7 @@ async function handlePost(
   }
 
   try {
-    await r2.client.send(
-      new PutObjectCommand({
-        Bucket: r2.bucket,
-        Key: buildScreenshotKey(id),
-        Body: body,
-        ContentType: contentType,
-        CacheControl: 'public, max-age=86400, immutable',
-      }),
-    );
+    await storage.putScreenshot(id, body, contentType);
   } catch (err) {
     console.error('[worlds/id/screenshot] Failed to upload screenshot', err);
     sendError(res, 502, 'Failed to upload screenshot.');
