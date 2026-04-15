@@ -112,6 +112,57 @@ Firewall requirements for WebTransport:
 - Open UDP `WT_BIND_ADDR` port (default **4002**) inbound — both UFW and any cloud-level firewall (e.g. Hetzner).
 - `ufw allow 4002/udp`
 
+### Cloudflare R2 publishing + local MinIO
+
+The world builder at `/builder/world` can publish worlds to Cloudflare R2; published worlds appear in `/gallery` and can be played from the gallery via `/practice/shared/<id>`. The feature is gated on server-side env vars and is hidden when they're unset.
+
+Endpoints (Vercel serverless functions in `/api`):
+
+- `GET /api/worlds/config` → `{ enabled }` based on whether R2 creds are present
+- `POST /api/worlds/publish` → server generates a UUID, HEAD-checks for collisions, stores gzipped JSON
+- `GET  /api/worlds` → ListObjectsV2 + per-item HeadObject (decodes base64 metadata)
+- `GET  /api/worlds/<id>` → fetches and decompresses
+- `POST /api/worlds/<id>/screenshot` → uploads JPEG (requires the world to exist)
+- `GET  /api/worlds/<id>/screenshot` → streams the JPEG
+
+The R2 client lives in `api/_lib/r2.ts` and supports any S3-compatible backend via `R2_ENDPOINT`. With a custom endpoint set, path-style addressing is enabled automatically so `localhost` works without wildcard DNS.
+
+#### Local MinIO via docker-compose
+
+`docker-compose.yml` at the repo root brings up MinIO + a one-shot bucket-init container. The compose file uses **`network_mode: host`** for both services so it works on Docker daemons without iptables/bridge NAT (e.g. sandboxes).
+
+```bash
+npm run r2:up      # boot MinIO on :9000 (S3) and :9001 (web console)
+npm run r2:logs    # tail minio logs
+npm run r2:down    # stop, keep data
+npm run r2:reset   # stop and wipe the named volume
+```
+
+Then add the MinIO block from `.env.example` to a `.env.local` at the repo root and either run `vercel dev` or run the standalone end-to-end test:
+
+```bash
+npm run r2:test    # spins up an in-process http server, routes to the real
+                   # api/ handlers, and exercises publish/list/get/screenshot
+                   # against the running MinIO. Exits non-zero on any failure.
+```
+
+The test script is at `scripts/test-r2-e2e.mts` and uses the existing `client/node_modules/.bin/tsx` to run TypeScript with NodeNext `.js` extension imports.
+
+##### Booting Docker on a sandbox without root systemd
+
+Some environments (e.g. CI sandboxes) ship the Docker binaries but no daemon. To get a working `dockerd` for the compose stack:
+
+```bash
+# Terminal 1 (run in background)
+sudo dockerd --storage-driver=vfs --iptables=false > /tmp/dockerd.log 2>&1 &
+
+# Terminal 2 — open the socket for the unprivileged shell, then verify
+sudo chmod 666 /var/run/docker.sock
+docker info     # should show "Storage Driver: vfs"
+```
+
+The `--iptables=false` flag is important because most sandboxes can't manage netfilter rules. The compose file is configured to use host networking precisely so the resulting daemon (which has no working bridge NAT or embedded DNS) still routes container-to-container traffic via `localhost`.
+
 ### Non-obvious notes
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.

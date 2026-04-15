@@ -15,9 +15,10 @@ services:
   minio:
     image: minio/minio:latest
     container_name: vibe-land-minio
-    ports:
-      - "9000:9000"  # S3 API (used by the api/ serverless functions)
-      - "9001:9001"  # Web console at http://localhost:9001 (minioadmin/minioadmin)
+    # Host networking so the daemon doesn't need iptables-managed bridge NAT.
+    # The container binds 9000 (S3 API) and 9001 (web console) directly on the
+    # host, so api/ functions reach R2 at http://localhost:9000.
+    network_mode: host
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -29,6 +30,7 @@ services:
   minio-init:
     image: minio/mc:latest
     container_name: vibe-land-minio-init
+    network_mode: host
     depends_on:
       - minio
     environment:
@@ -41,7 +43,7 @@ services:
       - |
         set -e
         echo "waiting for minio server..."
-        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+        until mc alias set local http://localhost:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
           sleep 1
         done
         mc mb --ignore-existing "local/$$BUCKET_NAME"
