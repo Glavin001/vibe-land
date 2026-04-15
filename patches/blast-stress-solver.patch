@@ -265,10 +265,10 @@ index 0000000..ccedcf8
 +// `command_export` shims.  Nothing ever calls the exit hooks, so we
 +// don't need to shadow them.
 diff --git a/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs b/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
-index c12a319..d05b333 100644
+index c12a319..06b8041 100644
 --- a/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
 +++ b/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
-@@ -1,60 +1,538 @@
+@@ -1,60 +1,558 @@
 +//! Pure-Rust stubs for every libc symbol the Blast C++ backend (plus
 +//! its transitive libc++ dependency) references on
 +//! `wasm32-unknown-unknown`.
@@ -366,15 +366,13 @@ index c12a319..d05b333 100644
 +// Fatal exit
 +// -----------------------------------------------------------------------------
 +
- #[unsafe(no_mangle)]
--pub extern "C" fn __wasi_proc_exit(_code: u32) -> ! {
--    std::process::abort()
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn abort() -> ! {
 +    // Emit a wasm `unreachable`, which traps the module.  Unlike
 +    // `std::process::abort`, this does not call any exit handlers.
 +    core::arch::wasm32::unreachable()
- }
- 
++}
++
 +// -----------------------------------------------------------------------------
 +// C++ static dtors
 +// -----------------------------------------------------------------------------
@@ -382,16 +380,15 @@ index c12a319..d05b333 100644
 +// libc++ registers every `thread_local` and function-local `static`
 +// destructor via `__cxa_atexit`.  In library mode we never run them,
 +// so just report success and drop the registration on the floor.
- #[unsafe(no_mangle)]
--pub extern "C" fn __wasi_fd_close(_fd: u32) -> u16 {
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn __cxa_atexit(
 +    _func: *mut c_void,
 +    _arg: *mut c_void,
 +    _dso_handle: *mut c_void,
 +) -> c_int {
-     0
- }
- 
++    0
++}
++
 +// -----------------------------------------------------------------------------
 +// String / memory helpers
 +// -----------------------------------------------------------------------------
@@ -479,6 +476,26 @@ index c12a319..d05b333 100644
 +}
 +
 +#[unsafe(no_mangle)]
++pub unsafe extern "C" fn fputc(c: c_int, _stream: *mut c_void) -> c_int {
++    c
++}
++
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn putc(c: c_int, _stream: *mut c_void) -> c_int {
++    c
++}
++
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn fputs(_s: *const c_char, _stream: *mut c_void) -> c_int {
++    0
++}
++
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn puts(_s: *const c_char) -> c_int {
++    0
++}
++
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn fprintf(
 +    _stream: *mut c_void,
 +    _fmt: *const c_char,
@@ -522,25 +539,37 @@ index c12a319..d05b333 100644
 +    0
 +}
 +
-+#[unsafe(no_mangle)]
+ #[unsafe(no_mangle)]
+-pub extern "C" fn __wasi_proc_exit(_code: u32) -> ! {
+-    std::process::abort()
 +pub unsafe extern "C" fn sscanf(
 +    _s: *const c_char,
 +    _fmt: *const c_char,
 +    _arg: *mut c_void,
 +) -> c_int {
 +    0
-+}
-+
-+#[unsafe(no_mangle)]
+ }
+ 
+ #[unsafe(no_mangle)]
+-pub extern "C" fn __wasi_fd_close(_fd: u32) -> u16 {
 +pub unsafe extern "C" fn vsscanf(
 +    _s: *const c_char,
 +    _fmt: *const c_char,
 +    _ap: *mut c_void,
 +) -> c_int {
-+    0
-+}
-+
-+#[unsafe(no_mangle)]
+     0
+ }
+ 
+ #[unsafe(no_mangle)]
+-pub extern "C" fn __wasi_fd_write(
+-    _fd: u32,
+-    _iovs: *const core::ffi::c_void,
+-    _iovs_len: usize,
+-    nwritten: *mut usize,
+-) -> u16 {
+-    if !nwritten.is_null() {
+-        // The packaged wasm backend does not rely on stdio output.
+-        unsafe { *nwritten = 0 };
 +pub unsafe extern "C" fn vasprintf(
 +    _strp: *mut *mut c_char,
 +    _fmt: *const c_char,
@@ -554,16 +583,7 @@ index c12a319..d05b333 100644
 +    -1
 +}
 +
- #[unsafe(no_mangle)]
--pub extern "C" fn __wasi_fd_write(
--    _fd: u32,
--    _iovs: *const core::ffi::c_void,
--    _iovs_len: usize,
--    nwritten: *mut usize,
--) -> u16 {
--    if !nwritten.is_null() {
--        // The packaged wasm backend does not rely on stdio output.
--        unsafe { *nwritten = 0 };
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn ungetc(_c: c_int, _stream: *mut c_void) -> c_int {
 +    -1
 +}
@@ -636,7 +656,9 @@ index c12a319..d05b333 100644
 +) -> f32 {
 +    if !endptr.is_null() {
 +        *endptr = core::ptr::null_mut();
-+    }
+     }
+-    if !bytes.is_null() {
+-        unsafe { *bytes = 0 };
 +    0.0
 +}
 +
@@ -664,12 +686,10 @@ index c12a319..d05b333 100644
 +) {
 +    if !result.is_null() {
 +        core::ptr::write_bytes(result, 0, 16);
-     }
--    if !bytes.is_null() {
--        unsafe { *bytes = 0 };
++    }
 +    if !endptr.is_null() {
 +        *endptr = core::ptr::null_mut();
-     }
++    }
 +}
 +
 +// -----------------------------------------------------------------------------
@@ -717,7 +737,7 @@ index c12a319..d05b333 100644
 +        c + 32
 +    } else {
 +        c
-+    }
+     }
 +}
 +
 +#[unsafe(no_mangle)]
@@ -765,11 +785,10 @@ index c12a319..d05b333 100644
 +    _len: usize,
 +    _ps: *mut c_void,
 +) -> usize {
-     0
- }
- 
- #[unsafe(no_mangle)]
--pub extern "C" fn __wasi_environ_get(_environ: *mut *mut u8, _environ_buf: *mut u8) -> u16 {
++    0
++}
++
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn mbsnrtowcs(
 +    _dst: *mut u32,
 +    _src: *mut *const c_char,
@@ -777,13 +796,10 @@ index c12a319..d05b333 100644
 +    _len: usize,
 +    _ps: *mut c_void,
 +) -> usize {
-     0
- }
- 
- #[unsafe(no_mangle)]
--pub extern "C" fn __wasi_fd_seek(_fd: u32, _offset: i64, _whence: u8, new_offset: *mut u64) -> u16 {
--    if !new_offset.is_null() {
--        unsafe { *new_offset = 0 };
++    0
++}
++
++#[unsafe(no_mangle)]
 +pub unsafe extern "C" fn wcsnrtombs(
 +    _dst: *mut c_char,
 +    _src: *mut *const u32,
@@ -806,15 +822,19 @@ index c12a319..d05b333 100644
 +    _n: usize,
 +    _ps: *mut c_void,
 +) -> usize {
-+    0
-+}
-+
-+#[unsafe(no_mangle)]
+     0
+ }
+ 
+ #[unsafe(no_mangle)]
+-pub extern "C" fn __wasi_environ_get(_environ: *mut *mut u8, _environ_buf: *mut u8) -> u16 {
 +pub unsafe extern "C" fn mbtowc(_pwc: *mut u32, _s: *const c_char, _n: usize) -> c_int {
-+    0
-+}
-+
-+#[unsafe(no_mangle)]
+     0
+ }
+ 
+ #[unsafe(no_mangle)]
+-pub extern "C" fn __wasi_fd_seek(_fd: u32, _offset: i64, _whence: u8, new_offset: *mut u64) -> u16 {
+-    if !new_offset.is_null() {
+-        unsafe { *new_offset = 0 };
 +pub unsafe extern "C" fn mbrlen(_s: *const c_char, _n: usize, _ps: *mut c_void) -> usize {
 +    0
 +}

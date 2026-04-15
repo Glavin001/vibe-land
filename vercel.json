@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm --prefix client install",
-  "buildCommand": "npm --prefix client run build:vercel-local-preview",
+  "installCommand": "echo skip-install",
+  "buildCommand": "./scripts/vercel-build.sh",
   "outputDirectory": "client/dist",
   "framework": null,
   "cleanUrls": true,
