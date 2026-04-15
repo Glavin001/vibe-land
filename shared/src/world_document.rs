@@ -335,6 +335,24 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         );
     }
 
+    fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        let pos = crate::local_arena::Vec3d::new(
+            position.x as f64,
+            position.y as f64,
+            position.z as f64,
+        );
+        crate::local_arena::PhysicsArena::spawn_battery_with_id(
+            self, id, pos, energy, radius, height,
+        );
+    }
+
     fn rebuild_broad_phase(&mut self) {
         crate::local_arena::PhysicsArena::rebuild_broad_phase(self);
     }

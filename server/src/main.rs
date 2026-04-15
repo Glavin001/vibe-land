@@ -2349,6 +2349,27 @@ impl MatchState {
                 continue;
             }
 
+            // Shooting costs energy. Deduct now; if the shot empties the
+            // reserve the player dies before the bullet resolves (no
+            // battery drop — it's an energy-depletion death).
+            let mut shooter_died = false;
+            if let Some(shooter_mut) = self.arena.players.get_mut(&queued.player_id) {
+                shooter_mut.energy =
+                    (shooter_mut.energy - vibe_land_shared::constants::RIFLE_SHOT_ENERGY_COST)
+                        .max(0.0);
+                if shooter_mut.energy <= 0.0 {
+                    shooter_died = true;
+                }
+            }
+            if shooter_died {
+                self.kill_player_with_cause(
+                    queued.player_id,
+                    server_time_ms,
+                    DeathCause::EnergyDepletion,
+                );
+                continue;
+            }
+
             let origin_time_ms = self.compute_fire_server_time_ms(&queued.cmd, server_time_ms);
             let target_time_ms = origin_time_ms
                 .saturating_sub((queued.cmd.client_interp_ms as u32).min(MAX_LAG_COMP_MS));

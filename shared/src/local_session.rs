@@ -21,6 +21,8 @@ const LOCAL_RIFLE_INTERVAL_MS: u32 = 100;
 const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
 const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
 const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
+const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
+const LOCAL_OUT_OF_BOUNDS_Y_M: f32 = -12.0;
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -29,6 +31,14 @@ struct PlayerRuntime {
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     next_allowed_fire_ms: u32,
+    respawn_at_ms: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalDeathCause {
+    HpDamage,
+    EnergyDepletion,
+    OutOfBounds,
 }
 
 pub struct LocalPreviewSession {
@@ -142,15 +152,91 @@ impl LocalPreviewSession {
         self.server_tick += 1;
         let server_time_ms = self.server_time_ms();
 
+        self.process_respawn(server_time_ms);
+
         let input = take_input_for_tick(&mut self.player);
         self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
         self.arena.step_vehicles(dt);
         self.arena.step_dynamics(dt);
         self.process_hitscan(server_time_ms);
 
+        // ── Energy system: drive drain, pickups, death on empty ──
+        // Matches the server tick loop so /practice and /godmode mirror /play.
+        // Pickup first so an overlapping battery can save a dying driver.
+        let gained: f32 = self
+            .arena
+            .collect_batteries_for_player(LOCAL_PLAYER_ID)
+            .into_iter()
+            .map(|(_, energy)| energy)
+            .sum();
+        if gained > 0.0 {
+            if let Some(state) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                state.energy += gained;
+            }
+        }
+        let depleted = self.arena.apply_vehicle_energy_drain(dt);
+        if depleted.contains(&LOCAL_PLAYER_ID) {
+            self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+        }
+
+        // Out-of-bounds check: fell off the world.
+        if let Some((pos, _, _, _, hp, _)) = self.arena.snapshot_player(LOCAL_PLAYER_ID) {
+            if hp > 0 && pos[1] < LOCAL_OUT_OF_BOUNDS_Y_M {
+                self.kill_local_player(server_time_ms, LocalDeathCause::OutOfBounds);
+            }
+        }
+
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
         }
+    }
+
+    fn process_respawn(&mut self, server_time_ms: u32) {
+        let Some(deadline) = self.player.respawn_at_ms else {
+            return;
+        };
+        if deadline > server_time_ms {
+            return;
+        }
+        self.player.respawn_at_ms = None;
+        self.player.pending_inputs.clear();
+        self.player.last_applied_input = InputCmd::default();
+        let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
+    }
+
+    /// Kill the local player. On HP-damage deaths with leftover energy, drop
+    /// a battery at the death location (matches the multiplayer PvP loop).
+    fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
+        let drop = if matches!(cause, LocalDeathCause::HpDamage) {
+            self.arena.players.get(&LOCAL_PLAYER_ID).and_then(|state| {
+                if !state.dead && state.energy > 0.0 {
+                    Some((state.position, state.energy))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        self.arena.exit_vehicle(LOCAL_PLAYER_ID);
+        self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
+
+        if let Some((pos, energy)) = drop {
+            let _ = self.arena.spawn_battery(
+                pos,
+                energy,
+                crate::constants::DEFAULT_BATTERY_RADIUS_M,
+                crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+            );
+        }
+        if let Some(state) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+            state.energy = 0.0;
+        }
+        self.player.respawn_at_ms =
+            Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
+        self.player.pending_inputs.clear();
+        self.player.last_applied_input = InputCmd::default();
     }
 
     pub fn drain_packets(&mut self) -> Vec<Vec<u8>> {
@@ -186,6 +272,24 @@ impl LocalPreviewSession {
                 continue;
             };
             if hp == 0 {
+                continue;
+            }
+            // Shooting costs energy. Drain now; if the shot empties the
+            // reserve we die mid-fire (energy-depletion, no drop).
+            let mut empty = false;
+            if let Some(state) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                if state.dead {
+                    continue;
+                }
+                state.energy = (state.energy
+                    - crate::constants::RIFLE_SHOT_ENERGY_COST)
+                    .max(0.0);
+                if state.energy <= 0.0 {
+                    empty = true;
+                }
+            }
+            if empty {
+                self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
                 continue;
             }
 
@@ -259,6 +363,14 @@ impl LocalPreviewSession {
             })
             .collect();
         let vehicle_states = self.arena.snapshot_vehicles();
+        let battery_states = self
+            .arena
+            .snapshot_batteries()
+            .into_iter()
+            .map(|(id, pos, energy, radius, height)| {
+                make_net_battery_state(id, pos, energy, radius, height)
+            })
+            .collect();
 
         encode_snapshot_packet(&SnapshotPacket {
             server_time_us: self.server_time_us(),
@@ -268,7 +380,7 @@ impl LocalPreviewSession {
             projectile_states: Vec::new(),
             dynamic_body_states,
             vehicle_states,
-            battery_states: Vec::new(),
+            battery_states,
         })
     }
 
@@ -643,5 +755,153 @@ mod tests {
             latest_driver_id, LOCAL_PLAYER_ID,
             "local preview vehicle should be driven by the local player after enter"
         );
+    }
+
+    fn encode_fire_cmd(dir: [f32; 3]) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(32);
+        out.put_u8(PKT_FIRE);
+        out.put_u16_le(1); // seq
+        out.put_u32_le(1); // shot_id
+        out.put_u8(crate::constants::WEAPON_HITSCAN);
+        out.put_u64_le(0); // client fire time us
+        out.put_u16_le(0); // client interp
+        out.put_u16_le(0); // dynamic interp
+        out.put_i16_le(crate::unit_conv::f32_to_snorm16(dir[0]));
+        out.put_i16_le(crate::unit_conv::f32_to_snorm16(dir[1]));
+        out.put_i16_le(crate::unit_conv::f32_to_snorm16(dir[2]));
+        out.to_vec()
+    }
+
+    #[test]
+    fn local_player_spawns_with_full_energy() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        assert_eq!(
+            session.arena.player_energy(LOCAL_PLAYER_ID),
+            Some(crate::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn local_walking_does_not_drain_energy() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        for _ in 0..120 {
+            session.tick(1.0 / 60.0);
+        }
+        assert_eq!(
+            session.arena.player_energy(LOCAL_PLAYER_ID),
+            Some(crate::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn local_shooting_deducts_energy() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        // Advance a few ticks so the fire cooldown is irrelevant.
+        for _ in 0..5 {
+            session.tick(1.0 / 60.0);
+        }
+        let before = session.arena.player_energy(LOCAL_PLAYER_ID).unwrap();
+        let bytes = encode_fire_cmd([1.0, 0.0, 0.0]);
+        session.handle_client_packet(&bytes).unwrap();
+        session.tick(1.0 / 60.0);
+        let after = session.arena.player_energy(LOCAL_PLAYER_ID).unwrap();
+        let delta = before - after;
+        assert!(
+            (delta - crate::constants::RIFLE_SHOT_ENERGY_COST).abs() < 0.01,
+            "expected shot to deduct ~{} energy, got {}",
+            crate::constants::RIFLE_SHOT_ENERGY_COST,
+            delta
+        );
+    }
+
+    #[test]
+    fn local_shot_at_empty_energy_kills_and_schedules_respawn() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        for _ in 0..5 {
+            session.tick(1.0 / 60.0);
+        }
+        // Set energy just below one shot cost so firing empties the reserve.
+        if let Some(state) = session.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+            state.energy = crate::constants::RIFLE_SHOT_ENERGY_COST * 0.5;
+        }
+        let bytes = encode_fire_cmd([1.0, 0.0, 0.0]);
+        session.handle_client_packet(&bytes).unwrap();
+        session.tick(1.0 / 60.0);
+        let state = session.arena.players.get(&LOCAL_PLAYER_ID).unwrap();
+        assert!(state.dead, "player should be dead after draining energy");
+        assert_eq!(state.energy, 0.0);
+        assert!(
+            session.player.respawn_at_ms.is_some(),
+            "respawn should be scheduled after energy death"
+        );
+    }
+
+    #[test]
+    fn local_battery_pickup_refills_energy() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        // Spawn a battery right on top of the player and tick once.
+        let player_pos = session
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .unwrap()
+            .position;
+        let battery_id = session.arena.spawn_battery(player_pos, 250.0, 0.4, 0.8);
+        let before = session.arena.player_energy(LOCAL_PLAYER_ID).unwrap();
+        session.tick(1.0 / 60.0);
+        let after = session.arena.player_energy(LOCAL_PLAYER_ID).unwrap();
+        assert!(
+            (after - before - 250.0).abs() < 0.01,
+            "expected +250 energy, got {}",
+            after - before
+        );
+        assert!(
+            !session.arena.batteries.contains_key(&battery_id),
+            "picked-up battery id should be gone from the arena"
+        );
+    }
+
+    #[test]
+    fn local_respawn_restores_energy_after_delay() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        if let Some(state) = session.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+            state.energy = 1.0;
+        }
+        // Drive the player through the death path by killing directly.
+        session.kill_local_player(session.server_time_ms(), LocalDeathCause::EnergyDepletion);
+        assert!(session.arena.players.get(&LOCAL_PLAYER_ID).unwrap().dead);
+        // Advance through the respawn delay.
+        for _ in 0..(LOCAL_RESPAWN_DELAY_MS as usize / 16 + 5) {
+            session.tick(1.0 / 60.0);
+        }
+        let state = session.arena.players.get(&LOCAL_PLAYER_ID).unwrap();
+        assert!(!state.dead);
+        assert_eq!(state.energy, crate::constants::STARTING_ENERGY);
+    }
+
+    #[test]
+    fn local_hp_death_drops_battery_with_remaining_energy() {
+        let mut session = LocalPreviewSession::new();
+        session.connect();
+        if let Some(state) = session.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+            state.energy = 420.0;
+        }
+        let before = session.arena.batteries.len();
+        session.kill_local_player(session.server_time_ms(), LocalDeathCause::HpDamage);
+        let after = session.arena.batteries.len();
+        assert_eq!(after, before + 1, "HP death should drop exactly one battery");
+        let dropped = session
+            .arena
+            .batteries
+            .values()
+            .find(|b| (b.energy - 420.0).abs() < 0.01)
+            .expect("dropped battery should carry leftover energy");
+        assert!(dropped.energy > 0.0);
     }
 }

@@ -62,6 +62,10 @@ export const VEHICLE_IDLE_DRAIN_PER_SEC = 1.0;
 /// Additional energy-per-second drain scaled by the vehicle's current speed
 /// (metres per second). So `drain = IDLE + COEF * speed_mps`.
 export const VEHICLE_SPEED_DRAIN_COEF = 0.3;
+/// Energy consumed by a single rifle shot. Firing is expensive to keep
+/// ammo-as-fuel meaningful: at the default starting energy of 1000, a
+/// player gets ~100 shots before needing to refill.
+export const RIFLE_SHOT_ENERGY_COST = 10.0;
 /// Extra slack (metres) added to battery pickup radius checks so pickups feel
 /// generous rather than pixel-perfect.
 export const BATTERY_PICKUP_SLACK_M = 0.3;

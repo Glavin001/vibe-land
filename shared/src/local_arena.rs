@@ -43,6 +43,18 @@ pub struct Vehicle {
     pub driver_id: Option<u32>,
 }
 
+/// A battery consumable lying on the ground. Mirrors the server-side type.
+/// Batteries are plain data (not physics bodies) — pickup is a tick-time
+/// distance check.
+#[derive(Clone, Debug)]
+pub struct Battery {
+    pub id: u32,
+    pub position: Vec3d,
+    pub energy: f32,
+    pub radius: f32,
+    pub height: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct PlayerMotorState {
     pub collider: ColliderHandle,
@@ -69,6 +81,8 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+    pub batteries: HashMap<u32, Battery>,
+    next_battery_id: u32,
 }
 
 impl PhysicsArena {
@@ -80,6 +94,8 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            batteries: HashMap::new(),
+            next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
         }
     }
 
@@ -290,6 +306,145 @@ impl PhysicsArena {
     /// Current energy value for `player_id`, or `None` if the player does not exist.
     pub fn player_energy(&self, player_id: u32) -> Option<f32> {
         self.players.get(&player_id).map(|state| state.energy)
+    }
+
+    /// Spawn a battery at `position` using an auto-assigned id.
+    pub fn spawn_battery(
+        &mut self,
+        position: Vec3d,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) -> u32 {
+        let id = self.next_battery_id;
+        self.next_battery_id = self.next_battery_id.saturating_add(1);
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+        id
+    }
+
+    /// Spawn a battery at an explicit id (used by world document loading).
+    pub fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3d,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+    }
+
+    pub fn remove_battery(&mut self, id: u32) -> Option<Battery> {
+        self.batteries.remove(&id)
+    }
+
+    /// Snapshot all batteries as `(id, position, energy, radius, height)`.
+    pub fn snapshot_batteries(&self) -> Vec<(u32, [f32; 3], f32, f32, f32)> {
+        self.batteries
+            .values()
+            .map(|b| {
+                (
+                    b.id,
+                    [
+                        b.position.x as f32,
+                        b.position.y as f32,
+                        b.position.z as f32,
+                    ],
+                    b.energy,
+                    b.radius,
+                    b.height,
+                )
+            })
+            .collect()
+    }
+
+    /// Collect any batteries overlapping the given alive player. Returns the
+    /// list of `(id, energy)` that were picked up. The player's `energy` field
+    /// is **not** modified by this call — callers apply the delta themselves.
+    pub fn collect_batteries_for_player(&mut self, player_id: u32) -> Vec<(u32, f32)> {
+        let Some(player) = self.players.get(&player_id) else {
+            return Vec::new();
+        };
+        if player.dead {
+            return Vec::new();
+        }
+
+        let player_pos = player.position;
+        let cfg = self.dynamic.config();
+        let player_half_height = cfg.capsule_half_segment + cfg.capsule_radius;
+        let player_r = cfg.capsule_radius;
+        let slack = crate::constants::BATTERY_PICKUP_SLACK_M;
+
+        let mut collected: Vec<(u32, f32)> = Vec::new();
+        let mut collected_ids: Vec<u32> = Vec::new();
+        for battery in self.batteries.values() {
+            let dx = (battery.position.x - player_pos.x) as f32;
+            let dz = (battery.position.z - player_pos.z) as f32;
+            let dy = (battery.position.y - player_pos.y) as f32;
+            let horiz = (dx * dx + dz * dz).sqrt();
+            let horiz_limit = player_r + battery.radius + slack;
+            let vert_limit = player_half_height + battery.height * 0.5 + slack;
+            if horiz <= horiz_limit && dy.abs() <= vert_limit {
+                collected.push((battery.id, battery.energy));
+                collected_ids.push(battery.id);
+            }
+        }
+        for id in collected_ids {
+            self.batteries.remove(&id);
+        }
+        collected
+    }
+
+    /// Drain energy from every driver based on their vehicle's current speed.
+    /// Dead players are skipped. Returns the list of player ids whose energy
+    /// just crossed zero.
+    pub fn apply_vehicle_energy_drain(&mut self, dt: f32) -> Vec<u32> {
+        use crate::constants::{VEHICLE_IDLE_DRAIN_PER_SEC, VEHICLE_SPEED_DRAIN_COEF};
+        let mut depleted: Vec<u32> = Vec::new();
+        let drain_inputs: Vec<(u32, f32)> = self
+            .vehicle_of_player
+            .iter()
+            .filter_map(|(&player_id, &vehicle_id)| {
+                let vehicle = self.vehicles.get(&vehicle_id)?;
+                let rb = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
+                let v = rb.linvel();
+                let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+                Some((player_id, speed))
+            })
+            .collect();
+
+        for (player_id, speed) in drain_inputs {
+            let Some(state) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            if state.dead {
+                continue;
+            }
+            let drain = (VEHICLE_IDLE_DRAIN_PER_SEC + VEHICLE_SPEED_DRAIN_COEF * speed) * dt;
+            state.energy = (state.energy - drain).max(0.0);
+            if state.energy <= 0.0 {
+                depleted.push(player_id);
+            }
+        }
+        depleted
     }
 
     pub fn cast_static_world_ray(
