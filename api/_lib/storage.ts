@@ -11,6 +11,33 @@
 //
 // If neither is configured the feature is disabled; /api/worlds/config will
 // report { enabled: false } and the client UI stays hidden.
+//
+// ## Upload model
+//
+// The world builder uploads two blobs per publish: the gzipped world JSON
+// and a JPEG screenshot. Rather than streaming both bodies through the
+// serverless function, the publish handler calls `reserveUpload()` which
+// returns **upload instructions** the client then executes directly:
+//
+//   * R2 backend returns two presigned PUT URLs. The client PUTs both blobs
+//     straight to R2. No bytes touch the Vercel function on the write path.
+//     Bucket-level Write-Once semantics via IfNoneMatch:'*' + a 60-second
+//     URL expiry keep the server in control of what can be uploaded.
+//
+//   * Filesystem backend returns two function-local PUT URLs pointing at
+//     /api/worlds/<id>/upload?target=world|screenshot. The client still
+//     streams through the function, but reserveUpload reserves the id
+//     upfront (by writing a reservation sidecar) so each upload can be
+//     validated against the reservation and cannot overwrite an existing
+//     world or screenshot.
+//
+// Both backends enforce:
+//   * a 60-second expiry
+//   * a max Content-Length (5 MB world, 2 MB screenshot)
+//   * write-once per key (IfNoneMatch for R2, wx flag for the filesystem)
+
+import { FsWorldStorage } from './fsStorage.js';
+import { getR2WorldStorage } from './r2Storage.js';
 
 // Maximum size for the gzipped world payload accepted by /api/worlds/publish.
 // The client compresses world JSON before upload, so 5 MB gzipped leaves
@@ -18,6 +45,11 @@
 export const MAX_PUBLISH_BYTES = 5 * 1024 * 1024;
 // Maximum size for a screenshot upload.
 export const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
+// Upload URLs (both presigned R2 PUTs and filesystem direct-upload URLs)
+// expire this many seconds after reservation. 60s is plenty of time for the
+// client to PUT a few MB even on slow connections, and short enough that a
+// leaked URL or a cancelled publish can't be replayed much later.
+export const UPLOAD_EXPIRY_SECONDS = 60;
 
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 export function isValidWorldId(id: string): boolean {
@@ -52,30 +84,57 @@ export type ScreenshotContent = {
 
 export type StorageKind = 'r2' | 'local';
 
+// Shape of a single upload target returned from `reserveUpload`. The client
+// must PUT to `url` with the exact `headers` map for the upload to be
+// accepted by the backend. For R2 the URL is a fully-qualified presigned
+// URL; for the filesystem backend it's a relative path handled by the
+// direct-upload endpoint.
+export type UploadTarget = {
+  url: string;
+  method: 'PUT';
+  headers: Record<string, string>;
+  contentLength: number;
+};
+
+export type UploadInstructions = {
+  mode: 'presigned' | 'direct';
+  world: UploadTarget;
+  screenshot: UploadTarget;
+};
+
+export type ReserveUploadParams = {
+  name: string;
+  description: string;
+  version: number;
+  worldContentLength: number;
+  screenshotContentLength: number;
+};
+
+export type Reservation = {
+  id: string;
+  createdAt: number;
+  // Unix-ms timestamp at which the upload URLs expire.
+  expiresAt: number;
+  instructions: UploadInstructions;
+};
+
 export interface WorldStorage {
   readonly kind: StorageKind;
 
   /**
-   * Writes a new world. Must reject with `WriteConflictError` if a world
-   * already exists at the given id – implementations are write-once per id.
+   * Reserves a fresh world id and returns upload instructions the client
+   * uses to PUT the world and screenshot bodies directly. Implementations
+   * MUST verify that nothing already exists at the reserved id and reject
+   * attempts to overwrite it. Expiry and per-backend details are documented
+   * at the top of this file.
    */
-  putWorld(id: string, gzippedBytes: Buffer, metadata: WorldMetadata): Promise<void>;
+  reserveUpload(params: ReserveUploadParams): Promise<Reservation>;
 
-  /**
-   * Returns true if a world with the given id already exists.
-   * Used by the publish handler to avoid uuid collisions on PUT.
-   */
   hasWorld(id: string): Promise<boolean>;
 
   getWorld(id: string): Promise<WorldContent | null>;
 
   listWorlds(limit: number): Promise<WorldSummary[]>;
-
-  /**
-   * Writes (or overwrites) the screenshot for an existing world. The caller
-   * is responsible for verifying the world exists first.
-   */
-  putScreenshot(id: string, bytes: Buffer, contentType: string): Promise<void>;
 
   getScreenshot(id: string): Promise<ScreenshotContent | null>;
 }
@@ -87,8 +146,12 @@ export class WriteConflictError extends Error {
   }
 }
 
-import { FsWorldStorage } from './fsStorage.js';
-import { getR2WorldStorage } from './r2Storage.js';
+export class AllocationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AllocationError';
+  }
+}
 
 // Re-evaluated on every call so hot-reloading and tests that mutate
 // process.env between requests always see the latest config.

@@ -8,15 +8,17 @@
 //     S3-compatible endpoint with the usual R2_* env vars will work too.
 //
 // Either way, the script spins up an in-process http.Server that routes to
-// the actual /api handlers exported from api/worlds/*.ts and exercises:
+// the actual /api handlers exported from api/worlds/*.ts and exercises the
+// full two-phase publish protocol:
 //
-//   GET  /api/worlds/config              -> { enabled: true, storage }
-//   POST /api/worlds/publish             -> generates id, stores gzipped JSON
-//   POST /api/worlds/<id>/screenshot     -> stores JPEG
-//   GET  /api/worlds                     -> lists both worlds
-//   GET  /api/worlds/<id>                -> returns plain JSON (decompressed)
-//   GET  /api/worlds/<id>/screenshot     -> returns the JPEG bytes
-//   POST /api/worlds/publish (collision) -> still succeeds (HEAD probe path)
+//   1. POST /api/worlds/publish            -> reserves id, returns upload URLs
+//   2. PUT  <returned world url>           -> uploads gzipped world bytes
+//   3. PUT  <returned screenshot url>      -> uploads jpeg bytes
+//   4. GET  /api/worlds/config             -> { enabled, storage }
+//   5. GET  /api/worlds                    -> list sees both worlds
+//   6. GET  /api/worlds/<id>               -> returns plain JSON
+//   7. GET  /api/worlds/<id>/screenshot    -> returns jpeg bytes
+//   8. POST /api/worlds/<id>/screenshot    -> must return 405 (removed)
 //
 // Run via: client/node_modules/.bin/tsx scripts/test-r2-e2e.mts
 //          or `npm run r2:test` from the repo root.
@@ -38,6 +40,7 @@ if (!usingFilesystem) {
   process.env.R2_FORCE_PATH_STYLE = process.env.R2_FORCE_PATH_STYLE ?? '1';
 }
 const expectedStorageKind = usingFilesystem ? 'local' : 'r2';
+const expectedMode = usingFilesystem ? 'direct' : 'presigned';
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse) => void | Promise<void>;
 
@@ -46,8 +49,10 @@ const publish = (await import('../api/worlds/publish.js')).default as Handler;
 const list = (await import('../api/worlds/index.js')).default as Handler;
 const getOne = (await import('../api/worlds/[id].js')).default as Handler;
 const screenshot = (await import('../api/worlds/[id]/screenshot.js')).default as Handler;
+const upload = (await import('../api/worlds/[id]/upload.js')).default as Handler;
 
 const SCREENSHOT_RE = /^\/api\/worlds\/([^/]+)\/screenshot\/?$/;
+const UPLOAD_RE = /^\/api\/worlds\/([^/]+)\/upload\/?$/;
 const ID_RE = /^\/api\/worlds\/([^/]+)\/?$/;
 
 const server = http.createServer(async (req, res) => {
@@ -58,6 +63,7 @@ const server = http.createServer(async (req, res) => {
     if (path === '/api/worlds' || path === '/api/worlds/') return await list(req, res);
     if (path === '/api/worlds/publish') return await publish(req, res);
     if (SCREENSHOT_RE.test(path)) return await screenshot(req, res);
+    if (UPLOAD_RE.test(path)) return await upload(req, res);
     if (ID_RE.test(path)) return await getOne(req, res);
     res.statusCode = 404;
     res.setHeader('Content-Type', 'application/json');
@@ -91,6 +97,62 @@ const minimalWorld = {
   staticProps: [],
   dynamicEntities: [],
 };
+const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+
+// Direct-upload URLs returned by the filesystem backend are relative and
+// need to be resolved against our test server. Presigned URLs come back
+// absolute so fetch() picks the right host.
+function resolveUploadUrl(url: string): string {
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  return `${base}${url}`;
+}
+
+type Reservation = {
+  id: string;
+  createdAt: number;
+  expiresAt: number;
+  mode: 'presigned' | 'direct';
+  world: { url: string; method: 'PUT'; contentLength: number; headers: Record<string, string> };
+  screenshot: { url: string; method: 'PUT'; contentLength: number; headers: Record<string, string> };
+};
+
+async function runPublish(opts: { name: string; description: string; gzippedWorld: Buffer; jpeg: Buffer }): Promise<Reservation> {
+  const reserveRes = await fetch(`${base}/api/worlds/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: opts.name,
+      description: opts.description,
+      version: 2,
+      worldContentLength: opts.gzippedWorld.length,
+      screenshotContentLength: opts.jpeg.length,
+    }),
+  });
+  if (reserveRes.status !== 201) {
+    throw new Error(`publish reservation failed: ${reserveRes.status} ${await reserveRes.text()}`);
+  }
+  const reservation = (await reserveRes.json()) as Reservation;
+
+  const worldUpload = await fetch(resolveUploadUrl(reservation.world.url), {
+    method: 'PUT',
+    headers: reservation.world.headers,
+    body: opts.gzippedWorld,
+  });
+  if (!worldUpload.ok) {
+    throw new Error(`world upload failed: ${worldUpload.status} ${await worldUpload.text()}`);
+  }
+
+  const screenshotUpload = await fetch(resolveUploadUrl(reservation.screenshot.url), {
+    method: 'PUT',
+    headers: reservation.screenshot.headers,
+    body: opts.jpeg,
+  });
+  if (!screenshotUpload.ok) {
+    throw new Error(`screenshot upload failed: ${screenshotUpload.status} ${await screenshotUpload.text()}`);
+  }
+
+  return reservation;
+}
 
 try {
   // 1. config
@@ -101,69 +163,89 @@ try {
   check('enabled is true', configJson.enabled === true, JSON.stringify(configJson));
   check(`storage is ${expectedStorageKind}`, configJson.storage === expectedStorageKind, JSON.stringify(configJson));
 
-  // 2. publish a world
-  console.log('POST /api/worlds/publish (gzipped)');
-  const json = JSON.stringify(minimalWorld);
-  const gzipped = gzipSync(Buffer.from(json, 'utf-8'));
-  const publishRes = await fetch(`${base}/api/worlds/publish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
-    body: gzipped,
+  // 2. publish (two-phase) — first world
+  console.log('POST /api/worlds/publish + PUT world + PUT screenshot');
+  const worldJson = JSON.stringify(minimalWorld);
+  const gzippedWorld = gzipSync(Buffer.from(worldJson, 'utf-8'));
+  const first = await runPublish({
+    name: minimalWorld.meta.name,
+    description: minimalWorld.meta.description,
+    gzippedWorld,
+    jpeg: fakeJpeg,
   });
-  check('201 Created', publishRes.status === 201, `got ${publishRes.status}`);
-  const publishJson = (await publishRes.json()) as { id: string; createdAt: number };
-  check('id present', typeof publishJson.id === 'string' && publishJson.id.length >= 8);
-  check('createdAt present', typeof publishJson.createdAt === 'number');
-  const id = publishJson.id;
-  console.log(`    -> id ${id}`);
+  check(`mode is ${expectedMode}`, first.mode === expectedMode, first.mode);
+  check('id present', typeof first.id === 'string' && first.id.length >= 8);
+  check('expiresAt > createdAt', first.expiresAt > first.createdAt);
+  check('expiresAt within ~60s', first.expiresAt - first.createdAt <= 61_000);
+  check('world contentLength echoes our upload size', first.world.contentLength === gzippedWorld.length);
+  check('screenshot contentLength echoes our upload size', first.screenshot.contentLength === fakeJpeg.length);
+  console.log(`    -> id ${first.id}`);
 
-  // 3. publish another to verify collision-safe path tolerates back-to-back PUTs
+  // 3. publish a second world so list has two entries
   console.log('POST /api/worlds/publish (second world)');
-  const second = await fetch(`${base}/api/worlds/publish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' },
-    body: gzipSync(Buffer.from(JSON.stringify({
-      ...minimalWorld,
-      meta: { name: 'Second world', description: '' },
-    }), 'utf-8')),
+  const secondJson = JSON.stringify({ ...minimalWorld, meta: { name: 'Second world', description: '' } });
+  const secondGzipped = gzipSync(Buffer.from(secondJson, 'utf-8'));
+  const second = await runPublish({
+    name: 'Second world',
+    description: '',
+    gzippedWorld: secondGzipped,
+    jpeg: fakeJpeg,
   });
-  check('second 201', second.status === 201);
-  const secondJson = (await second.json()) as { id: string };
-  check('second id differs', secondJson.id !== id);
+  check('second id differs', second.id !== first.id);
 
-  // 4. upload a screenshot
-  console.log(`POST /api/worlds/${id}/screenshot`);
-  const fakeJpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
-  const ssRes = await fetch(`${base}/api/worlds/${id}/screenshot`, {
+  // 4. publish with a size that lies → should be caught either at upload
+  //    (presigned signature mismatch / fs size mismatch). We don't check the
+  //    specific error class here because R2 and filesystem report different
+  //    status codes – we just assert non-2xx.
+  console.log('POST /api/worlds/publish + lying about sizes');
+  const lyingReserve = await fetch(`${base}/api/worlds/publish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'liar',
+      description: '',
+      version: 2,
+      worldContentLength: 10,
+      screenshotContentLength: 10,
+    }),
+  });
+  check('reservation itself still OK', lyingReserve.status === 201);
+  if (lyingReserve.status === 201) {
+    const lyingRes = (await lyingReserve.json()) as Reservation;
+    const wrongUpload = await fetch(resolveUploadUrl(lyingRes.world.url), {
+      method: 'PUT',
+      headers: lyingRes.world.headers,
+      // 42 bytes, not the 10 we reserved
+      body: Buffer.alloc(42, 0xaa),
+    });
+    check('upload with wrong size rejected', !wrongUpload.ok, `got ${wrongUpload.status}`);
+  }
+
+  // 5. POST /api/worlds/<id>/screenshot is removed → must be 405
+  console.log('POST /api/worlds/<id>/screenshot (removed endpoint)');
+  const legacyPost = await fetch(`${base}/api/worlds/${first.id}/screenshot`, {
     method: 'POST',
     headers: { 'Content-Type': 'image/jpeg' },
     body: fakeJpeg,
   });
-  check('201 Created', ssRes.status === 201, `got ${ssRes.status}`);
-  const ssJson = (await ssRes.json()) as { ok: boolean; size: number };
-  check('size matches', ssJson.size === fakeJpeg.length);
+  check('legacy POST returns 405', legacyPost.status === 405, `got ${legacyPost.status}`);
 
-  // 5. screenshot for an unknown id should 404
-  console.log('POST /api/worlds/nonexistent-1234/screenshot');
-  const ssBad = await fetch(`${base}/api/worlds/nonexistent-1234/screenshot`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'image/jpeg' },
-    body: fakeJpeg,
-  });
-  check('404 for missing world', ssBad.status === 404, `got ${ssBad.status}`);
-
-  // 6. list worlds
+  // 6. list
   console.log('GET /api/worlds');
   const listRes = await fetch(`${base}/api/worlds`);
   check('200 OK', listRes.status === 200);
   const listJson = (await listRes.json()) as { worlds: Array<{ id: string; name: string }> };
-  check('list contains both ids', listJson.worlds.some((w) => w.id === id) && listJson.worlds.some((w) => w.id === secondJson.id), JSON.stringify(listJson.worlds.map((w) => w.id)));
-  const target = listJson.worlds.find((w) => w.id === id);
+  check(
+    'list contains both ids',
+    listJson.worlds.some((w) => w.id === first.id) && listJson.worlds.some((w) => w.id === second.id),
+    JSON.stringify(listJson.worlds.map((w) => w.id)),
+  );
+  const target = listJson.worlds.find((w) => w.id === first.id);
   check('list metadata.name decoded', target?.name === 'E2E Smoke World', target?.name);
 
-  // 7. get the world back as plain JSON
-  console.log(`GET /api/worlds/${id}`);
-  const getRes = await fetch(`${base}/api/worlds/${id}`);
+  // 7. get world back as plain JSON
+  console.log(`GET /api/worlds/${first.id}`);
+  const getRes = await fetch(`${base}/api/worlds/${first.id}`);
   check('200 OK', getRes.status === 200);
   check('Content-Type application/json', (getRes.headers.get('content-type') ?? '').includes('application/json'));
   const got = (await getRes.json()) as typeof minimalWorld;
@@ -171,9 +253,9 @@ try {
   check('round-trip version', got.version === 2);
   check('round-trip arrays', Array.isArray(got.staticProps) && Array.isArray(got.dynamicEntities));
 
-  // 8. get the screenshot back
-  console.log(`GET /api/worlds/${id}/screenshot`);
-  const ssGet = await fetch(`${base}/api/worlds/${id}/screenshot`);
+  // 8. get screenshot back
+  console.log(`GET /api/worlds/${first.id}/screenshot`);
+  const ssGet = await fetch(`${base}/api/worlds/${first.id}/screenshot`);
   check('200 OK', ssGet.status === 200);
   check('Content-Type image/jpeg', (ssGet.headers.get('content-type') ?? '').startsWith('image/'));
   const bytes = new Uint8Array(await ssGet.arrayBuffer());

@@ -50,7 +50,6 @@ import {
   fetchCloudConfig,
   fetchPublishedWorld,
   publishWorld,
-  uploadWorldScreenshot,
 } from '../world/worldsCloud';
 import { captureCanvasScreenshot } from '../world/canvasScreenshot';
 import { recordPublishedWorld } from '../world/publishedHistory';
@@ -87,7 +86,7 @@ type PublishStatus =
   | { kind: 'capturing' }
   | { kind: 'preview'; dataUrl: string; blob: Blob }
   | { kind: 'publishing'; dataUrl: string }
-  | { kind: 'success'; id: string; shareUrl: string; clipboardOk: boolean; screenshotWarning?: string }
+  | { kind: 'success'; id: string; shareUrl: string; clipboardOk: boolean }
   | { kind: 'error'; message: string };
 
 export type GodModePageProps = {
@@ -474,7 +473,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     const { dataUrl, blob } = publishStatus;
     setPublishStatus({ kind: 'publishing', dataUrl });
     try {
-      const result = await publishWorld(worldRef.current);
+      // publishWorld reserves an id and streams the gzipped world + the
+      // screenshot directly to the storage backend in parallel. For the R2
+      // backend this means the bytes go straight to R2 via presigned URLs
+      // and never touch our function.
+      const result = await publishWorld(worldRef.current, blob);
       // Remember this publication on the local device so the user can see a
       // private gallery of their own worlds even without an account system.
       recordPublishedWorld({
@@ -482,14 +485,6 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         name: worldRef.current.meta.name || 'Untitled World',
         publishedAt: result.createdAt,
       });
-      // A screenshot upload failure is non-fatal – the world is already
-      // published and the gallery can render without a preview image.
-      let screenshotWarning: string | undefined;
-      try {
-        await uploadWorldScreenshot(result.id, blob);
-      } catch (err) {
-        screenshotWarning = err instanceof Error ? err.message : 'Screenshot upload failed.';
-      }
       const shareUrl = `${window.location.origin}/builder/world?published=${encodeURIComponent(result.id)}`;
       let clipboardOk = false;
       try {
@@ -503,7 +498,6 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         id: result.id,
         shareUrl,
         clipboardOk,
-        screenshotWarning,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown publish error.';
@@ -1044,11 +1038,6 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 Published as <code>{publishStatus.id}</code>.{' '}
                 {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
                 <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
-                {publishStatus.screenshotWarning && (
-                  <div style={{ marginTop: 6, color: '#ffd89b' }}>
-                    Screenshot upload skipped: {publishStatus.screenshotWarning}
-                  </div>
-                )}
               </div>
             )}
             {publishStatus.kind === 'error' && (

@@ -1,18 +1,45 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { gunzipSync, gzipSync } from 'node:zlib';
 import {
+  AllocationError,
   getWorldStorage,
   MAX_PUBLISH_BYTES,
+  MAX_SCREENSHOT_BYTES,
   WriteConflictError,
 } from '../_lib/storage.js';
-import { validateWorldShape, ValidationError } from '../_lib/validate.js';
 import {
-  readRawBody,
+  readJsonBody,
   sendJson,
   sendError,
+  BadRequestError,
   PayloadTooLargeError,
 } from '../_lib/http.js';
+
+// POST /api/worlds/publish
+//
+// Request body (JSON):
+//   {
+//     "name":                   string,   // arbitrary length, UTF-8 OK
+//     "description":            string,   // same, may be empty
+//     "version":                number,   // WorldDocument version
+//     "worldContentLength":     number,   // bytes of the gzipped world JSON
+//     "screenshotContentLength":number,   // bytes of the JPEG screenshot
+//   }
+//
+// Response (201 Created):
+//   {
+//     "id":        "<uuid>",
+//     "createdAt": 1776283086502,
+//     "expiresAt": 1776283146502,
+//     "mode":      "presigned" | "direct",
+//     "world":       { url, method, contentLength, headers },
+//     "screenshot":  { url, method, contentLength, headers },
+//   }
+//
+// The client then PUTs the gzipped world bytes to `world.url` with the
+// exact `world.headers` map and in parallel PUTs the JPEG bytes to
+// `screenshot.url`. Both upload URLs expire in 60 seconds.
+
+const MAX_METADATA_BYTES = 16 * 1024; // 16 KiB of JSON is more than enough
 
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== 'POST') {
@@ -26,108 +53,85 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  let rawBody: Buffer;
+  let rawBody: unknown;
   try {
-    rawBody = await readRawBody(req, MAX_PUBLISH_BYTES);
+    rawBody = await readJsonBody(req, MAX_METADATA_BYTES);
   } catch (err) {
     if (err instanceof PayloadTooLargeError) {
       sendError(res, 413, err.message);
+      return;
+    }
+    if (err instanceof BadRequestError) {
+      sendError(res, 400, err.message);
       return;
     }
     sendError(res, 400, 'Failed to read request body.');
     return;
   }
 
-  if (rawBody.length === 0) {
-    sendError(res, 400, 'Request body was empty.');
+  if (!rawBody || typeof rawBody !== 'object') {
+    sendError(res, 400, 'Request body must be a JSON object.');
     return;
   }
+  const body = rawBody as Record<string, unknown>;
 
-  // Clients upload the world as gzipped JSON with a Content-Encoding: gzip
-  // header so the upload itself stays small. We decompress server-side to
-  // validate the shape, then persist the ORIGINAL compressed bytes so
-  // storage stays small too.
-  const contentEncoding = (req.headers['content-encoding'] ?? '').toString().toLowerCase();
-  const isGzipped = contentEncoding.includes('gzip');
-  let decompressed: Buffer;
-  if (isGzipped) {
-    try {
-      decompressed = gunzipSync(rawBody);
-    } catch {
-      sendError(res, 400, 'Failed to decompress gzipped request body.');
-      return;
-    }
-  } else {
-    decompressed = rawBody;
-  }
+  const name = typeof body.name === 'string' && body.name.trim().length > 0
+    ? body.name.trim()
+    : 'Untitled World';
+  const description = typeof body.description === 'string' ? body.description : '';
+  const version = typeof body.version === 'number' && Number.isFinite(body.version) ? body.version : 2;
+  const worldContentLength = asInt(body.worldContentLength);
+  const screenshotContentLength = asInt(body.screenshotContentLength);
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(decompressed.toString('utf-8'));
-  } catch {
-    sendError(res, 400, 'Request body is not valid JSON.');
+  if (worldContentLength === null || worldContentLength <= 0) {
+    sendError(res, 400, 'worldContentLength must be a positive integer.');
     return;
   }
-
-  let shape;
-  try {
-    shape = validateWorldShape(parsed);
-  } catch (err) {
-    if (err instanceof ValidationError) {
-      sendError(res, 400, err.message);
-      return;
-    }
-    sendError(res, 400, 'Invalid world document.');
+  if (screenshotContentLength === null || screenshotContentLength <= 0) {
+    sendError(res, 400, 'screenshotContentLength must be a positive integer.');
     return;
   }
-
-  // Normalize to a gzipped buffer so both code paths hit a single write.
-  const storedBody = isGzipped ? rawBody : gzipSync(decompressed);
-  const createdAt = Date.now();
-
-  // Server owns id assignment. Generate a UUID, verify nothing is already
-  // stored there via hasWorld(), and retry on the astronomically-unlikely
-  // collision. The actual putWorld is defensive and throws WriteConflictError
-  // if something raced it between hasWorld() and putWorld(), so a concurrent
-  // publish at the same key still can't overwrite an existing world.
-  let id: string | null = null;
-  const maxAttempts = 8;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const candidateId = randomUUID();
-    let collision: boolean;
-    try {
-      collision = await storage.hasWorld(candidateId);
-    } catch (err) {
-      console.error('[worlds/publish] hasWorld failed', err);
-      sendError(res, 502, 'Failed to reserve world id.');
-      return;
-    }
-    if (!collision) {
-      id = candidateId;
-      break;
-    }
+  if (worldContentLength > MAX_PUBLISH_BYTES) {
+    sendError(res, 413, `worldContentLength exceeds the ${MAX_PUBLISH_BYTES} byte cap.`);
+    return;
   }
-  if (!id) {
-    sendError(res, 503, 'Failed to allocate a unique world id; please retry.');
+  if (screenshotContentLength > MAX_SCREENSHOT_BYTES) {
+    sendError(res, 413, `screenshotContentLength exceeds the ${MAX_SCREENSHOT_BYTES} byte cap.`);
     return;
   }
 
   try {
-    await storage.putWorld(id, storedBody, {
-      name: shape.name,
-      description: shape.description,
-      version: shape.version,
-      createdAt,
+    const reservation = await storage.reserveUpload({
+      name,
+      description,
+      version,
+      worldContentLength,
+      screenshotContentLength,
+    });
+    sendJson(res, 201, {
+      id: reservation.id,
+      createdAt: reservation.createdAt,
+      expiresAt: reservation.expiresAt,
+      mode: reservation.instructions.mode,
+      world: reservation.instructions.world,
+      screenshot: reservation.instructions.screenshot,
     });
   } catch (err) {
     if (err instanceof WriteConflictError) {
       sendError(res, 409, 'Id collision detected; retry the publish.');
       return;
     }
-    console.error('[worlds/publish] Failed to store world', err);
-    sendError(res, 502, 'Failed to store world.');
-    return;
+    if (err instanceof AllocationError) {
+      sendError(res, 503, err.message);
+      return;
+    }
+    console.error('[worlds/publish] reserveUpload failed', err);
+    sendError(res, 502, 'Failed to reserve upload.');
   }
+}
 
-  sendJson(res, 201, { id, createdAt });
+function asInt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  if (value !== Math.floor(value)) return null;
+  return value;
 }

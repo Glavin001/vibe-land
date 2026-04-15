@@ -127,12 +127,23 @@ Both backends implement write-once semantics (the filesystem uses POSIX `O_EXCL`
 
 Endpoints (Vercel serverless functions in `/api`):
 
-- `GET /api/worlds/config` → `{ enabled }` based on whether R2 creds are present
-- `POST /api/worlds/publish` → server generates a UUID, HEAD-checks for collisions, stores gzipped JSON
+- `GET  /api/worlds/config` → `{ enabled, storage }` — storage is `'r2'` or `'local'`
+- `POST /api/worlds/publish` → reserves a fresh UUID, HEAD-probes for collisions, returns two **upload URLs** (one for the gzipped world JSON, one for the screenshot JPEG) along with the exact headers the client must send. For R2 these are presigned PUT URLs that expire in 60 s and include signed `Content-Length` + `If-None-Match: *` + metadata headers. For the filesystem backend they point at `/api/worlds/<id>/upload?target=world|screenshot` on the same function.
+- `PUT  /api/worlds/<id>/upload?target=world|screenshot` → filesystem-only direct upload target; R2 never routes through this handler. Enforces the reservation and the exact reserved content length.
 - `GET  /api/worlds` → ListObjectsV2 + per-item HeadObject (decodes base64 metadata)
 - `GET  /api/worlds/<id>` → fetches and decompresses
-- `POST /api/worlds/<id>/screenshot` → uploads JPEG (requires the world to exist)
-- `GET  /api/worlds/<id>/screenshot` → streams the JPEG
+- `GET  /api/worlds/<id>/screenshot` → streams the JPEG. `POST` has been removed — screenshots are uploaded via the URL returned from `POST /api/worlds/publish`.
+
+#### Publish protocol
+
+Two phases so the world + screenshot bytes can bypass the serverless function when running against R2:
+
+1. Client computes both blob sizes, POSTs `{ name, description, version, worldContentLength, screenshotContentLength }` to `/api/worlds/publish`.
+2. Server verifies neither the world nor the screenshot key already exists, generates a UUID, presigns two PUT URLs (R2) or writes a reservation sidecar file (filesystem), and responds with both URLs + their required header maps.
+3. Client PUTs both blobs to the returned URLs in parallel. For R2 the bytes go directly from the browser to R2 — the function is entirely off the write path. The 60-second URL expiry limits leakage if a URL escapes the browser; `If-None-Match: '*'` + signed `Content-Length` prevent overwrites and size games.
+4. If either upload fails the whole publish fails; a retry just allocates a new id.
+
+The filesystem backend keeps the same client contract but streams the bodies through the function because there's no way to mint a presigned URL to a local directory. It reserves the id by writing a short-lived `.reservation.json` sidecar that the direct-upload endpoint checks before accepting bytes.
 
 The R2 client lives in `api/_lib/r2.ts` and supports any S3-compatible backend via `R2_ENDPOINT`. With a custom endpoint set, path-style addressing is enabled automatically so `localhost` works without wildcard DNS.
 

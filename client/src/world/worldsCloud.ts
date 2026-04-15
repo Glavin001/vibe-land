@@ -3,6 +3,7 @@ import { serializeWorldDocument } from './worldDocument';
 
 export type CloudConfig = {
   enabled: boolean;
+  storage?: 'r2' | 'local' | null;
 };
 
 export type GalleryWorldSummary = {
@@ -14,9 +15,26 @@ export type GalleryWorldSummary = {
   hasScreenshot?: boolean;
 };
 
+type UploadTarget = {
+  url: string;
+  method: 'PUT';
+  contentLength: number;
+  headers: Record<string, string>;
+};
+
+type ReservationResponse = {
+  id: string;
+  createdAt: number;
+  expiresAt: number;
+  mode: 'presigned' | 'direct';
+  world: UploadTarget;
+  screenshot: UploadTarget;
+};
+
 export type PublishResult = {
   id: string;
   createdAt: number;
+  mode: 'presigned' | 'direct';
 };
 
 export async function fetchCloudConfig(): Promise<CloudConfig> {
@@ -25,50 +43,115 @@ export async function fetchCloudConfig(): Promise<CloudConfig> {
     throw new Error(`Failed to load cloud config (HTTP ${response.status})`);
   }
   const data = (await response.json()) as Partial<CloudConfig>;
-  return { enabled: Boolean(data.enabled) };
+  return { enabled: Boolean(data.enabled), storage: data.storage ?? null };
 }
 
-export async function publishWorld(world: WorldDocument): Promise<PublishResult> {
+/**
+ * Publish a world + its screenshot preview to the configured storage
+ * backend. Uses a two-phase protocol:
+ *
+ *  1. POST /api/worlds/publish with metadata + both byte lengths so the
+ *     server can reserve a fresh id and return upload URLs (presigned R2
+ *     PUTs when running against R2, or direct-upload URLs when running
+ *     against the filesystem backend).
+ *  2. PUT the gzipped world bytes and the JPEG screenshot bytes to the
+ *     returned URLs in parallel. For R2 this means the blobs flow
+ *     straight from the browser to R2 — they never pass through the
+ *     serverless function.
+ *
+ * Throws if either upload fails. The caller is responsible for any retry
+ * logic; a second publish simply allocates a new id.
+ */
+export async function publishWorld(
+  world: WorldDocument,
+  screenshot: Blob,
+): Promise<PublishResult> {
   const json = serializeWorldDocument(world);
-  const gzipped = await gzipString(json);
-  // Wrap in a Blob so TS recognises it as BodyInit. Copy into a fresh
-  // ArrayBuffer so the BlobPart parameter type (which expects
-  // Uint8Array<ArrayBuffer>, not Uint8Array<ArrayBufferLike>) is satisfied on
-  // newer TypeScript lib versions.
-  const bodyBuffer = gzipped.buffer.slice(
-    gzipped.byteOffset,
-    gzipped.byteOffset + gzipped.byteLength,
-  ) as ArrayBuffer;
-  const body = new Blob([bodyBuffer], { type: 'application/octet-stream' });
-  const response = await fetch('/api/worlds/publish', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Content-Encoding': 'gzip',
-    },
-    body,
+  const gzippedWorld = await gzipString(json);
+  const worldBlob = new Blob([toAsciiArrayBuffer(gzippedWorld)], {
+    type: 'application/json',
   });
-  if (!response.ok) {
-    throw new Error(await describeError(response, 'publish world'));
-  }
-  const data = (await response.json()) as Partial<PublishResult>;
-  if (!data.id || typeof data.id !== 'string') {
-    throw new Error('Publish response did not include an id.');
-  }
+
+  const reservation = await reserveUpload({
+    name: world.meta.name,
+    description: world.meta.description,
+    version: world.version,
+    worldContentLength: worldBlob.size,
+    screenshotContentLength: screenshot.size,
+  });
+
+  // Fire the two uploads in parallel. Fail the whole publish if either PUT
+  // returns non-2xx. Because the id is freshly reserved, a retry just
+  // allocates a new id – we never need to clean up half-uploaded state.
+  await Promise.all([
+    putTo(reservation.world, worldBlob, 'world'),
+    putTo(reservation.screenshot, screenshot, 'screenshot'),
+  ]);
+
   return {
-    id: data.id,
-    createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now(),
+    id: reservation.id,
+    createdAt: reservation.createdAt,
+    mode: reservation.mode,
   };
 }
 
-export async function uploadWorldScreenshot(id: string, image: Blob): Promise<void> {
-  const response = await fetch(`/api/worlds/${encodeURIComponent(id)}/screenshot`, {
+async function reserveUpload(body: {
+  name: string;
+  description: string;
+  version: number;
+  worldContentLength: number;
+  screenshotContentLength: number;
+}): Promise<ReservationResponse> {
+  const response = await fetch('/api/worlds/publish', {
     method: 'POST',
-    headers: { 'Content-Type': image.type || 'image/jpeg' },
-    body: image,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new Error(await describeError(response, 'upload screenshot'));
+    throw new Error(await describeError(response, 'reserve upload'));
+  }
+  const data = (await response.json()) as Partial<ReservationResponse>;
+  if (
+    !data.id
+    || typeof data.id !== 'string'
+    || typeof data.createdAt !== 'number'
+    || typeof data.expiresAt !== 'number'
+    || !data.world
+    || !data.screenshot
+    || (data.mode !== 'presigned' && data.mode !== 'direct')
+  ) {
+    throw new Error('Malformed publish response.');
+  }
+  return {
+    id: data.id,
+    createdAt: data.createdAt,
+    expiresAt: data.expiresAt,
+    mode: data.mode,
+    world: data.world,
+    screenshot: data.screenshot,
+  };
+}
+
+async function putTo(target: UploadTarget, body: Blob, label: string): Promise<void> {
+  if (body.size !== target.contentLength) {
+    throw new Error(
+      `Refusing to upload ${label}: size ${body.size} doesn't match reserved ${target.contentLength}`,
+    );
+  }
+  const response = await fetch(target.url, {
+    method: target.method,
+    headers: target.headers,
+    body,
+  });
+  if (!response.ok) {
+    const status = response.status;
+    let detail = '';
+    try {
+      detail = (await response.text()).slice(0, 400);
+    } catch {
+      // ignore
+    }
+    throw new Error(`Failed to upload ${label} (HTTP ${status})${detail ? `: ${detail}` : ''}`);
   }
 }
 
@@ -114,4 +197,14 @@ export async function gzipString(input: string): Promise<Uint8Array> {
   const stream = blob.stream().pipeThrough(new CompressionStream('gzip'));
   const buffer = await new Response(stream).arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+// Copy a Uint8Array into a fresh ArrayBuffer. This is needed because
+// `new Blob([uint8array])` works at runtime but TypeScript's BlobPart
+// parameter wants Uint8Array<ArrayBuffer> (not SharedArrayBuffer-backed).
+function toAsciiArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 }

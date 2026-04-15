@@ -1,6 +1,10 @@
-// R2 / S3-compatible backend for the world-publishing feature. Wraps
-// @aws-sdk/client-s3 behind the WorldStorage interface.
+// R2 / S3-compatible backend for the world-publishing feature.
+//
+// Uses @aws-sdk/client-s3 for reads and @aws-sdk/s3-request-presigner for
+// writes. The write path generates presigned PUT URLs so the gzipped world
+// and the JPEG screenshot never flow through the serverless function.
 
+import { randomUUID } from 'node:crypto';
 import {
   GetObjectCommand,
   HeadObjectCommand,
@@ -8,14 +12,19 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
-import type {
-  ScreenshotContent,
-  WorldContent,
-  WorldMetadata,
-  WorldStorage,
-  WorldSummary,
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  AllocationError,
+  MAX_PUBLISH_BYTES,
+  MAX_SCREENSHOT_BYTES,
+  UPLOAD_EXPIRY_SECONDS,
+  type Reservation,
+  type ReserveUploadParams,
+  type ScreenshotContent,
+  type WorldContent,
+  type WorldStorage,
+  type WorldSummary,
 } from './storage.js';
-import { WriteConflictError } from './storage.js';
 
 const PUBLISHED_PREFIX = 'published/';
 const WORLD_SUFFIX = '.world.json';
@@ -38,9 +47,6 @@ type R2Env = {
 //  * Any S3-compatible server (MinIO, LocalStack, etc.): set R2_ENDPOINT
 //    directly. Path-style addressing is enabled automatically so emulators
 //    that don't do wildcard DNS (like localhost) keep working.
-//
-// Either way we also need R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and
-// R2_BUCKET. If any of those are missing the feature stays disabled.
 function readR2Env(): R2Env | null {
   const accessKeyId = process.env.R2_ACCESS_KEY_ID;
   const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
@@ -144,33 +150,125 @@ export class R2WorldStorage implements WorldStorage {
     private readonly bucket: string,
   ) {}
 
-  async putWorld(id: string, gzippedBytes: Buffer, metadata: WorldMetadata): Promise<void> {
-    try {
-      await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: worldKey(id),
-          Body: gzippedBytes,
-          ContentType: 'application/json',
-          ContentEncoding: 'gzip',
-          // Belt-and-braces write-once guard so a concurrent PUT between our
-          // HEAD probe and this call can't overwrite an existing world.
-          IfNoneMatch: '*',
-          Metadata: {
-            name: encodeMetaValue(metadata.name),
-            description: encodeMetaValue(metadata.description),
-            createdat: metadata.createdAt.toString(),
-            version: metadata.version.toString(),
-          },
-        }),
-      );
-    } catch (err) {
-      const name = (err as { name?: string } | null)?.name;
-      if (name === 'PreconditionFailed') {
-        throw new WriteConflictError(id);
-      }
-      throw err;
+  async reserveUpload(params: ReserveUploadParams): Promise<Reservation> {
+    if (params.worldContentLength <= 0 || params.worldContentLength > MAX_PUBLISH_BYTES) {
+      throw new AllocationError(`worldContentLength out of range (1..${MAX_PUBLISH_BYTES})`);
     }
+    if (params.screenshotContentLength <= 0 || params.screenshotContentLength > MAX_SCREENSHOT_BYTES) {
+      throw new AllocationError(`screenshotContentLength out of range (1..${MAX_SCREENSHOT_BYTES})`);
+    }
+
+    // Find a free id. UUID v4 collisions are astronomically unlikely but
+    // we still HEAD-probe as defence in depth — and it also catches the
+    // case where a previous presigned URL from a recent publish already
+    // landed an object at this key.
+    const id = await this.allocateId();
+    const createdAt = Date.now();
+    const expiresAt = createdAt + UPLOAD_EXPIRY_SECONDS * 1000;
+
+    // Metadata is baked into the presigned URL (and therefore the signed
+    // `x-amz-meta-*` request headers). The client MUST send these exact
+    // header values when PUTting or the signature check fails.
+    const name = encodeMetaValue(params.name);
+    const description = encodeMetaValue(params.description);
+    const metadata = {
+      name,
+      description,
+      createdat: createdAt.toString(),
+      version: params.version.toString(),
+    };
+
+    const worldCommand = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: worldKey(id),
+      ContentType: 'application/json',
+      ContentEncoding: 'gzip',
+      ContentLength: params.worldContentLength,
+      // Belt-and-braces write-once guard. If anything races us between the
+      // HEAD probe above and the client's PUT, this makes the PUT fail
+      // with PreconditionFailed rather than silently overwriting.
+      IfNoneMatch: '*',
+      Metadata: metadata,
+    });
+    // By default the SDK hoists x-amz-meta-* headers into the URL query
+    // string. If the client then ALSO sends them as HTTP headers MinIO/R2
+    // rejects the request with "headers present which were not signed".
+    // Keep them in the signed header set so the client's PUT matches what
+    // we signed.
+    const worldUnhoistable = new Set([
+      'content-type',
+      'content-encoding',
+      'if-none-match',
+      'x-amz-meta-name',
+      'x-amz-meta-description',
+      'x-amz-meta-createdat',
+      'x-amz-meta-version',
+    ]);
+    const worldUrl = await getSignedUrl(this.client, worldCommand, {
+      expiresIn: UPLOAD_EXPIRY_SECONDS,
+      unhoistableHeaders: worldUnhoistable,
+    });
+
+    const screenshotCommand = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: screenshotKey(id),
+      ContentType: 'image/jpeg',
+      ContentLength: params.screenshotContentLength,
+      IfNoneMatch: '*',
+      CacheControl: 'public, max-age=86400, immutable',
+    });
+    const screenshotUnhoistable = new Set([
+      'content-type',
+      'if-none-match',
+      'cache-control',
+    ]);
+    const screenshotUrl = await getSignedUrl(this.client, screenshotCommand, {
+      expiresIn: UPLOAD_EXPIRY_SECONDS,
+      unhoistableHeaders: screenshotUnhoistable,
+    });
+
+    return {
+      id,
+      createdAt,
+      expiresAt,
+      instructions: {
+        mode: 'presigned',
+        world: {
+          url: worldUrl,
+          method: 'PUT',
+          contentLength: params.worldContentLength,
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip',
+            'If-None-Match': '*',
+            'x-amz-meta-name': metadata.name,
+            'x-amz-meta-description': metadata.description,
+            'x-amz-meta-createdat': metadata.createdat,
+            'x-amz-meta-version': metadata.version,
+          },
+        },
+        screenshot: {
+          url: screenshotUrl,
+          method: 'PUT',
+          contentLength: params.screenshotContentLength,
+          headers: {
+            'Content-Type': 'image/jpeg',
+            'If-None-Match': '*',
+            'Cache-Control': 'public, max-age=86400, immutable',
+          },
+        },
+      },
+    };
+  }
+
+  private async allocateId(): Promise<string> {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = randomUUID();
+      if (!(await this.hasWorld(candidate))) {
+        return candidate;
+      }
+    }
+    throw new AllocationError('Failed to allocate a unique world id after 8 attempts.');
   }
 
   async hasWorld(id: string): Promise<boolean> {
@@ -263,18 +361,6 @@ export class R2WorldStorage implements WorldStorage {
     );
 
     return summaries.sort((a, b) => b.createdAt - a.createdAt);
-  }
-
-  async putScreenshot(id: string, bytes: Buffer, contentType: string): Promise<void> {
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: screenshotKey(id),
-        Body: bytes,
-        ContentType: contentType,
-        CacheControl: 'public, max-age=86400, immutable',
-      }),
-    );
   }
 
   async getScreenshot(id: string): Promise<ScreenshotContent | null> {
