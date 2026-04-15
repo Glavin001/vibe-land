@@ -36,6 +36,10 @@ struct PlayerRuntime {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LocalDeathCause {
+    /// Only fires when a test calls `kill_local_player` directly. In the
+    /// real practice/godmode loop there is no HP-damage source (no enemies),
+    /// so this arm is dead-code outside `#[cfg(test)]`.
+    #[allow(dead_code)]
     HpDamage,
     EnergyDepletion,
     OutOfBounds,

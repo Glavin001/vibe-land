@@ -163,7 +163,7 @@ type FrameDebugCallback = (
     recentEvents: string[];
   },
   position: [number, number, number],
-  player: { velocity: [number, number, number]; hp: number; localFlags: number },
+  player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
 ) => void;
 
 type GameWorldProps = {
