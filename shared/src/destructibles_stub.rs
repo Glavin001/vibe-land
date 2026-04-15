@@ -91,6 +91,10 @@ impl DestructibleRegistry {
     pub fn drain_fracture_events(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.fracture_events)
     }
+
+    pub fn describe(&self, _sim: &SimWorld) -> String {
+        String::new()
+    }
 }
 
 impl Default for DestructibleRegistry {

@@ -308,6 +308,17 @@ impl WasmSimWorld {
         set_destructibles_log_enabled(enabled);
     }
 
+    /// Returns a human-readable description of every currently-spawned
+    /// destructible instance — body-type breakdown, collider count,
+    /// sample collision groups / active hooks, and world-space AABB.
+    /// Used by `usePrediction` at load time to surface the actual
+    /// Rapier state for the chunks in the browser console so "drive
+    /// through the wall" bugs can be diagnosed without a debugger.
+    #[wasm_bindgen(js_name = describeDestructibles)]
+    pub fn describe_destructibles(&self) -> String {
+        self.destructibles.describe(&self.sim)
+    }
+
     /// Remove a collider by its ID (returned from `addCuboid`).
     #[wasm_bindgen(js_name = removeCuboid)]
     pub fn remove_cuboid(&mut self, id: u32) {

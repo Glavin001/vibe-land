@@ -68,6 +68,13 @@ export function usePredictionWithWorld(
       if (disposed) return;
 
       const sim = new WasmSimWorld();
+      // Flip the destructibles logging toggle BEFORE `loadWorldDocument`
+      // so the per-spawn `[destructibles] spawn ...` lines actually
+      // land in the console.  Otherwise the spawn calls happen inside
+      // `loadWorldDocument` and we silently miss them.
+      if (practiceMode) {
+        sim.setDestructiblesLogging(true);
+      }
       if (worldJson) {
         sim.loadWorldDocument(worldJson);
       } else if (!practiceMode) {
@@ -81,18 +88,55 @@ export function usePredictionWithWorld(
       // bundle — stop + restart `npm run dev` to trigger `predev`
       // → `build:wasm`.
       if (practiceMode) {
-        // Turn on verbose destructibles logging in practice mode so the
-        // browser console shows spawn info, every awake-chunk-count
-        // change, and fracture events.  This is the smoking gun for
-        // "drive through the wall" bugs: if awake never goes >0 on
-        // impact, contacts aren't reaching the solver.
-        sim.setDestructiblesLogging(true);
         const instanceCount = sim.getDestructibleInstanceCount();
         const chunkCount = sim.getDestructibleChunkCount();
         // eslint-disable-next-line no-console
         console.info(
           `[destructibles] practice sim initialised: instances=${instanceCount} chunks=${chunkCount}`,
         );
+        // Drive one solver step so the chunk transforms buffer is
+        // populated (the buffer is rebuilt each `step` and is empty
+        // before the first call).
+        sim.stepDestructibles();
+        // Dump aggregate chunk AABB so we can verify the chunks
+        // actually end up at the world coordinates we think they do
+        // (rules out "they're there, you just can't reach them" bugs).
+        const transforms = sim.getDestructibleChunkTransforms();
+        if (transforms.length > 0) {
+          const STRIDE = 11;
+          let minX = Infinity;
+          let minY = Infinity;
+          let minZ = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          let maxZ = -Infinity;
+          for (let i = 0; i < transforms.length; i += STRIDE) {
+            const x = transforms[i + 2];
+            const y = transforms[i + 3];
+            const z = transforms[i + 4];
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (z < minZ) minZ = z;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+            if (z > maxZ) maxZ = z;
+          }
+          // eslint-disable-next-line no-console
+          console.info(
+            `[destructibles] chunk AABB: min=(${minX.toFixed(2)}, ${minY.toFixed(2)}, ${minZ.toFixed(2)}) max=(${maxX.toFixed(2)}, ${maxY.toFixed(2)}, ${maxZ.toFixed(2)})`,
+          );
+        }
+        // Full Rapier-side breakdown: body types, collider count,
+        // sample collision groups / active hooks, world-space AABB.
+        // This lets us see whether the chunks are Dynamic vs Fixed,
+        // whether the sanitize helper actually cleared the
+        // `FILTER_CONTACT_PAIRS` hook, and whether the collision groups
+        // line up with what the player capsule's KCC filter accepts.
+        const describe = sim.describeDestructibles();
+        if (describe.length > 0) {
+          // eslint-disable-next-line no-console
+          console.info(describe.trimEnd());
+        }
       }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);

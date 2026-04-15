@@ -17,10 +17,7 @@
 use std::collections::HashMap;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
-use rapier3d::prelude::{
-    ActiveHooks, ImpulseJointSet, InteractionGroups, MultibodyJointSet, RigidBodyHandle,
-    RigidBodyType,
-};
+use rapier3d::prelude::{ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType};
 use wasm_bindgen::prelude::*;
 
 use blast_stress_solver::rapier::{DestructibleSet, FracturePolicy};
@@ -135,9 +132,6 @@ pub struct DestructibleInstance {
     node_count: u32,
     /// Cached transforms buffer (stride = [`CHUNK_TRANSFORM_STRIDE`]).
     transforms: Vec<f32>,
-    /// Last reported "awake chunk count" — used by the debug logger to
-    /// emit a line only when the value changes, instead of every tick.
-    last_logged_awake: i32,
 }
 
 impl DestructibleInstance {
@@ -241,6 +235,10 @@ impl DestructibleRegistry {
         // at the requested world position/rotation.
         let handles = set.initialize(&mut sim.rigid_bodies, &mut sim.colliders);
 
+        // Blast's scenario builders construct everything at the origin.
+        // Translate every owning body into the requested world pose, and
+        // wake dynamic bodies so gravity / contact forces take effect
+        // immediately.
         for handle in &handles {
             let Some(rb) = sim.rigid_bodies.get_mut(*handle) else {
                 continue;
@@ -248,19 +246,32 @@ impl DestructibleRegistry {
             let local = *rb.position();
             let world = pose * local;
             rb.set_position(world, false);
+            if matches!(rb.body_type(), RigidBodyType::Dynamic) {
+                rb.wake_up(true);
+            }
         }
 
-        sanitize_chunk_bodies(sim, handles.iter().copied());
-
-        // Ensure all dynamic chunk bodies are woken so the solver sees
-        // gravity / contact forces immediately after spawning.
+        // Rapier does *not* propagate a `set_position` on a body to its
+        // attached colliders' world positions until the next
+        // `pipeline.step()`.  vibe-land's KCC / broad-phase queries run
+        // **before** the physics step on the same tick, so without this
+        // explicit flush the freshly-spawned chunks remain at origin
+        // inside the broad-phase BVH and the player capsule / vehicle /
+        // ball walks straight through them.
+        //
+        // Fix: propagate the body positions to collider world poses,
+        // mark every chunk collider as modified, and flush the
+        // broad-phase BVH.
+        sim.rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut sim.colliders);
         for handle in &handles {
-            if let Some(rb) = sim.rigid_bodies.get_mut(*handle) {
-                if matches!(rb.body_type(), RigidBodyType::Dynamic) {
-                    rb.wake_up(true);
+            if let Some(rb) = sim.rigid_bodies.get(*handle) {
+                for ch in rb.colliders() {
+                    sim.modified_colliders.push(*ch);
                 }
             }
         }
+        sim.sync_broad_phase();
 
         let node_count = set.solver().node_count();
         let transforms_len = node_count as usize * CHUNK_TRANSFORM_STRIDE;
@@ -274,7 +285,6 @@ impl DestructibleRegistry {
             set,
             node_count,
             transforms: vec![0.0; transforms_len],
-            last_logged_awake: -1,
         });
         dlog(&format!(
             "[destructibles] spawn id={} kind={:?} nodes={} bodies={} pose=({:.2},{:.2},{:.2})",
@@ -350,21 +360,31 @@ impl DestructibleRegistry {
                 multibody_joints,
             );
 
-            // Fractures create brand-new rigid bodies + colliders each
-            // frame and Blast's body_tracker re-applies the
-            // `FILTER_CONTACT_PAIRS` active-hook flag on every new
-            // chunk.  We have to re-sanitize after every step or the
-            // fragments fall through the world.  We walk every node's
-            // currently-owning body so we cover both pre- and
-            // post-fracture bodies in one pass.
-            let mut touched: std::collections::HashSet<RigidBodyHandle> =
-                std::collections::HashSet::new();
-            for node_index in 0..instance.node_count {
-                if let Some(handle) = instance.set.node_body(node_index) {
-                    touched.insert(handle);
+            // Fractures create brand-new rigid bodies + colliders via
+            // Blast's split migrator.  Those bodies start out at the
+            // correct world pose already (Blast carries the parent pose
+            // forward into each child), but the newly-attached
+            // colliders still need their AABBs pushed into the
+            // broad-phase BVH so contacts with them land this tick.
+            if step_result.split_events > 0 || step_result.new_bodies > 0 {
+                sim.rigid_bodies
+                    .propagate_modified_body_positions_to_colliders(&mut sim.colliders);
+                let mut touched: std::collections::HashSet<RigidBodyHandle> =
+                    std::collections::HashSet::new();
+                for node_index in 0..instance.node_count {
+                    if let Some(handle) = instance.set.node_body(node_index) {
+                        touched.insert(handle);
+                    }
                 }
+                for bh in touched {
+                    if let Some(rb) = sim.rigid_bodies.get(bh) {
+                        for ch in rb.colliders() {
+                            sim.modified_colliders.push(*ch);
+                        }
+                    }
+                }
+                sim.sync_broad_phase();
             }
-            sanitize_chunk_bodies(sim, touched.into_iter());
 
             if step_result.fractures > 0 || step_result.split_events > 0 {
                 // Emit a single (destructibleId, fractureCount) event per
@@ -382,8 +402,6 @@ impl DestructibleRegistry {
             // nodes in stable node-index order so chunk indices stay
             // consistent across frames (chunk_index == node_index).
             // World-space pose = owning_body.pose() * local_offset.
-            let mut awake_count: u32 = 0;
-            let mut peak_speed_sq: f32 = 0.0;
             instance.transforms.clear();
             for node_index in 0..instance.node_count {
                 let chunk_index = node_index;
@@ -418,14 +436,6 @@ impl DestructibleRegistry {
                 let world_point = body_iso.transform_point(&local_point);
                 let rot = body_iso.rotation;
                 let active = matches!(rb.body_type(), RigidBodyType::Dynamic) && !rb.is_sleeping();
-                if active {
-                    awake_count += 1;
-                    let lv = rb.linvel();
-                    let speed_sq = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z;
-                    if speed_sq > peak_speed_sq {
-                        peak_speed_sq = speed_sq;
-                    }
-                }
                 instance.transforms.extend_from_slice(&[
                     instance.id as f32,
                     chunk_index as f32,
@@ -441,27 +451,6 @@ impl DestructibleRegistry {
                 ]);
             }
             self.transforms.extend_from_slice(&instance.transforms);
-
-            // Only log when the awake-chunk count changes, so the
-            // console doesn't flood every frame.  Seeing the first
-            // "awake_count > 0" tells the user that a contact actually
-            // landed on a chunk — which is the smoking gun for the
-            // "drive through the wall" bug.
-            if destructibles_log_enabled()
-                && (awake_count as i32) != instance.last_logged_awake
-            {
-                instance.last_logged_awake = awake_count as i32;
-                let peak_speed = peak_speed_sq.sqrt();
-                log(&format!(
-                    "[destructibles] tick id={} awake={}/{} peakSpeed={:.2} fractures={} splits={}",
-                    instance.id,
-                    awake_count,
-                    instance.node_count,
-                    peak_speed,
-                    step_result.fractures,
-                    step_result.split_events,
-                ));
-            }
         }
     }
 
@@ -475,6 +464,103 @@ impl DestructibleRegistry {
     /// buffer.
     pub fn drain_fracture_events(&mut self) -> Vec<u32> {
         std::mem::take(&mut self.fracture_events)
+    }
+
+    /// Diagnostic string describing every destructible instance:
+    /// owning-body breakdown, collider count, collider membership/filter
+    /// groups, active-hook flags, and world-space AABB.  Used by
+    /// `usePrediction` to dump what the chunks actually look like to
+    /// Rapier at load time so we can prove (or disprove) that they're
+    /// reachable by the query pipeline + contact solver.
+    pub fn describe(&self, sim: &SimWorld) -> String {
+        use std::collections::HashSet;
+        let mut out = String::new();
+        for instance in &self.instances {
+            let mut body_set: HashSet<RigidBodyHandle> = HashSet::new();
+            for node_index in 0..instance.node_count {
+                if let Some(h) = instance.set.node_body(node_index) {
+                    body_set.insert(h);
+                }
+            }
+            let mut dynamic_bodies = 0usize;
+            let mut fixed_bodies = 0usize;
+            let mut kinematic_bodies = 0usize;
+            let mut collider_count = 0usize;
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            let mut sample_mem = 0u32;
+            let mut sample_filter = 0u32;
+            let mut sample_hooks = 0u32;
+            let mut sampled = false;
+            let mut sample_body_pos = [0.0f32; 3];
+            for (i, bh) in body_set.iter().enumerate() {
+                let Some(rb) = sim.rigid_bodies.get(*bh) else {
+                    continue;
+                };
+                if i == 0 {
+                    let t = rb.position().translation;
+                    sample_body_pos = [t.x, t.y, t.z];
+                }
+                match rb.body_type() {
+                    RigidBodyType::Dynamic => dynamic_bodies += 1,
+                    RigidBodyType::Fixed => fixed_bodies += 1,
+                    _ => kinematic_bodies += 1,
+                }
+                for ch in rb.colliders() {
+                    if let Some(col) = sim.colliders.get(*ch) {
+                        collider_count += 1;
+                        let aabb = col.compute_aabb();
+                        if aabb.mins.x < min[0] {
+                            min[0] = aabb.mins.x;
+                        }
+                        if aabb.mins.y < min[1] {
+                            min[1] = aabb.mins.y;
+                        }
+                        if aabb.mins.z < min[2] {
+                            min[2] = aabb.mins.z;
+                        }
+                        if aabb.maxs.x > max[0] {
+                            max[0] = aabb.maxs.x;
+                        }
+                        if aabb.maxs.y > max[1] {
+                            max[1] = aabb.maxs.y;
+                        }
+                        if aabb.maxs.z > max[2] {
+                            max[2] = aabb.maxs.z;
+                        }
+                        if !sampled {
+                            sample_mem = col.collision_groups().memberships.bits();
+                            sample_filter = col.collision_groups().filter.bits();
+                            sample_hooks = col.active_hooks().bits();
+                            sampled = true;
+                        }
+                    }
+                }
+            }
+            out.push_str(&format!(
+                "[destructibles] describe id={} kind={:?} bodies={}(dyn={},fix={},kin={}) bodyPos=({:.2},{:.2},{:.2}) colliders={} sampleGroups=mem=0x{:x},filter=0x{:x} hooks=0x{:x} aabb=({:.2},{:.2},{:.2})..({:.2},{:.2},{:.2})\n",
+                instance.id,
+                instance.kind,
+                body_set.len(),
+                dynamic_bodies,
+                fixed_bodies,
+                kinematic_bodies,
+                sample_body_pos[0],
+                sample_body_pos[1],
+                sample_body_pos[2],
+                collider_count,
+                sample_mem,
+                sample_filter,
+                sample_hooks,
+                min[0],
+                min[1],
+                min[2],
+                max[0],
+                max[1],
+                max[2],
+            ));
+        }
+        out
     }
 }
 
@@ -495,52 +581,6 @@ pub fn pose_from_world_doc(position: [f32; 3], rotation: [f32; 4]) -> Isometry3<
     let q = Quaternion::new(rotation[3], rotation[0], rotation[1], rotation[2]);
     let unit = UnitQuaternion::from_quaternion(q);
     Isometry3::from_parts(translation, unit)
-}
-
-/// Strip Blast's default `FILTER_CONTACT_PAIRS`/`FILTER_INTERSECTION_PAIR`
-/// active-hook flags from every collider attached to the given chunk
-/// bodies, and force `InteractionGroups::all()` on both collision and
-/// solver groups.
-///
-/// Rationale:
-///
-/// Blast's `body_tracker::build_node_collider` sets
-/// `ActiveHooks::FILTER_CONTACT_PAIRS | FILTER_INTERSECTION_PAIR` on
-/// every chunk collider so the caller's own `PhysicsHooks` can veto
-/// contact pairs on a per-frame basis.  vibe-land passes the unit
-/// type `&()` as its hooks, whose default `filter_contact_pair` impl
-/// returns `None` — Rapier reads that as "reject this contact".  The
-/// net effect is that the chunk colliders are visible (debug draw
-/// shows them) but Rapier drops every contact pair that involves one,
-/// so vehicles, balls, and the player capsule pass straight through.
-///
-/// Clearing the flags lets contacts flow through the normal solver
-/// path.  We also force `InteractionGroups::all()` on both collision
-/// and solver groups so Blast's internal debris collision mode
-/// (`DebrisCollisionMode::DebrisGroundOnly`, etc.) can't later put a
-/// chunk in a group that doesn't line up with vibe-land's group
-/// layout (`GROUP_1` = terrain/chassis, `GROUP_2` = balls,
-/// `GROUP_3` = player capsule).
-fn sanitize_chunk_bodies<I: IntoIterator<Item = RigidBodyHandle>>(
-    sim: &mut SimWorld,
-    body_handles: I,
-) {
-    let mut collider_handles: Vec<_> = Vec::new();
-    for bh in body_handles {
-        if let Some(rb) = sim.rigid_bodies.get(bh) {
-            collider_handles.extend(rb.colliders().iter().copied());
-        }
-    }
-    for ch in collider_handles {
-        if let Some(collider) = sim.colliders.get_mut(ch) {
-            let mut hooks = collider.active_hooks();
-            hooks.remove(ActiveHooks::FILTER_CONTACT_PAIRS);
-            hooks.remove(ActiveHooks::FILTER_INTERSECTION_PAIR);
-            collider.set_active_hooks(hooks);
-            collider.set_collision_groups(InteractionGroups::all());
-            collider.set_solver_groups(InteractionGroups::all());
-        }
-    }
 }
 
 #[allow(dead_code)]
