@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { PracticeBotBehaviorKind, PracticeBotStats } from '../bots';
 
 interface PracticeBotsPanelProps {
@@ -21,6 +21,45 @@ const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: st
   { value: 'hold', label: 'Hold anchor', desc: 'Bots stay near their spawn anchor' },
 ];
 
+/**
+ * Native ranges and number inputs are notoriously fragile when used as
+ * fully controlled React inputs — a re-render that lands mid-drag can
+ * snap the slider back to the last committed value, making it feel
+ * "stuck". To avoid that, the inputs in this panel are **uncontrolled**:
+ *
+ * - `defaultValue` initializes them once.
+ * - `onInput` pushes drag-time updates straight to the runtime via the
+ *   parent callback (no React state in the loop).
+ * - A small `useEffect` writes the latest external value into the input
+ *   via a ref *only* when the user is not currently dragging. That way
+ *   external state changes (e.g. another control or a programmatic
+ *   reset) still update the input, but a controlled-component fight
+ *   never happens during interactive drags.
+ */
+function useDraggableInputSync(
+  externalValue: number,
+): readonly [
+  React.RefObject<HTMLInputElement>,
+  () => void,
+  () => void,
+] {
+  const ref = useRef<HTMLInputElement>(null);
+  const draggingRef = useRef(false);
+  useEffect(() => {
+    if (draggingRef.current) return;
+    if (!ref.current) return;
+    const next = String(externalValue);
+    if (ref.current.value !== next) ref.current.value = next;
+  }, [externalValue]);
+  const onPointerDown = () => {
+    draggingRef.current = true;
+  };
+  const onPointerUp = () => {
+    draggingRef.current = false;
+  };
+  return [ref, onPointerDown, onPointerUp];
+}
+
 export function PracticeBotsPanel({
   visible,
   stats,
@@ -32,11 +71,17 @@ export function PracticeBotsPanel({
   onToggleDebugOverlay,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
-  if (!visible) return null;
 
   const count = stats?.bots ?? 0;
   const behavior = stats?.behavior ?? 'harass';
   const maxSpeed = stats?.maxSpeed ?? 3.0;
+
+  const [countSliderRef, countDragStart, countDragEnd] = useDraggableInputSync(count);
+  const [countNumberRef, , ] = useDraggableInputSync(count);
+  const [speedSliderRef, speedDragStart, speedDragEnd] = useDraggableInputSync(maxSpeed);
+  const [speedNumberRef, , ] = useDraggableInputSync(maxSpeed);
+
+  if (!visible) return null;
 
   return (
     <div style={containerStyle}>
@@ -52,20 +97,27 @@ export function PracticeBotsPanel({
           <div style={rowStyle}>
             <label style={labelStyle}>Count</label>
             <input
+              ref={countSliderRef}
               type="range"
               min={0}
               max={16}
               step={1}
-              value={count}
-              onChange={(event) => onSetBotCount(Number(event.target.value))}
+              defaultValue={count}
+              onInput={(event) =>
+                onSetBotCount(Number((event.target as HTMLInputElement).value))
+              }
+              onPointerDown={countDragStart}
+              onPointerUp={countDragEnd}
+              onPointerCancel={countDragEnd}
               style={sliderStyle}
             />
             <input
+              ref={countNumberRef}
               type="number"
               min={0}
               max={32}
               step={1}
-              value={count}
+              defaultValue={count}
               onChange={(event) => {
                 const next = Number.parseInt(event.target.value, 10);
                 if (Number.isFinite(next)) onSetBotCount(next);
@@ -76,23 +128,27 @@ export function PracticeBotsPanel({
           <div style={rowStyle}>
             <label style={labelStyle}>Speed</label>
             <input
+              ref={speedSliderRef}
               type="range"
               min={0.5}
               max={8}
               step={0.25}
-              value={maxSpeed}
-              onChange={(event) => onSetMaxSpeed(Number(event.target.value))}
+              defaultValue={maxSpeed}
               onInput={(event) =>
                 onSetMaxSpeed(Number((event.target as HTMLInputElement).value))
               }
+              onPointerDown={speedDragStart}
+              onPointerUp={speedDragEnd}
+              onPointerCancel={speedDragEnd}
               style={sliderStyle}
             />
             <input
+              ref={speedNumberRef}
               type="number"
               min={0.5}
               max={12}
               step={0.25}
-              value={maxSpeed}
+              defaultValue={maxSpeed}
               onChange={(event) => {
                 const next = Number(event.target.value);
                 if (Number.isFinite(next) && next > 0) onSetMaxSpeed(next);
@@ -145,9 +201,16 @@ export function PracticeBotsPanel({
               Clear
             </button>
           </div>
+          <div style={liveValueStyle}>
+            <span>{count} bots</span>
+            <span>·</span>
+            <span>{maxSpeed.toFixed(2)} m/s</span>
+            <span>·</span>
+            <span>{behavior}</span>
+          </div>
           {stats && (
             <div style={footerStyle}>
-              navmesh: {stats.navTriangles.toLocaleString()} tris · bots rendered as remote players
+              navmesh: {stats.navTriangles.toLocaleString()} tris · bots are real players in WASM
             </div>
           )}
         </div>
@@ -241,6 +304,17 @@ const toggleLabelStyle: CSSProperties = {
   fontSize: 12,
   color: 'rgba(255,255,255,0.85)',
   cursor: 'pointer',
+};
+
+const liveValueStyle: CSSProperties = {
+  display: 'flex',
+  gap: 6,
+  alignItems: 'center',
+  fontSize: 11,
+  color: 'rgba(255,255,255,0.7)',
+  paddingTop: 4,
+  borderTop: '1px dashed rgba(255,255,255,0.08)',
+  fontVariantNumeric: 'tabular-nums',
 };
 
 const valueStyle: CSSProperties = {

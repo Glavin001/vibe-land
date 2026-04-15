@@ -189,53 +189,58 @@ export function App({
 
   // Practice-mode bot runtime. We pre-build it asynchronously in a useEffect
   // when practice mode connects, so the user's first slider drag isn't
-  // blocked by the (~1s) navmesh construction inside the constructor —
-  // which previously made the slider feel unresponsive.
+  // blocked by the (~1s) navmesh construction inside the constructor.
+  //
+  // We keep BOTH a ref and React state pointing at the same runtime
+  // instance: the ref so event handlers can always see the latest value
+  // synchronously without waiting for React's next commit (avoids the
+  // "first interaction does nothing" race), and the state so prop
+  // changes flow into GameWorld and the bot panel naturally.
+  const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
   const [practiceBotRuntime, setPracticeBotRuntime] = useState<PracticeBotRuntime | null>(null);
   const [practiceBotStats, setPracticeBotStats] = useState<PracticeBotStats | null>(null);
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const refreshPracticeBotStats = useCallback(() => {
-    setPracticeBotStats((prev) => {
-      const runtime = practiceBotRuntime;
-      if (!runtime) return prev === null ? prev : null;
-      return runtime.stats();
-    });
-  }, [practiceBotRuntime]);
+    const runtime = practiceBotRuntimeRef.current;
+    setPracticeBotStats(runtime ? runtime.stats() : null);
+  }, []);
   const handleSetBotCount = useCallback((count: number) => {
-    const runtime = practiceBotRuntime;
+    const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
     runtime.setBotCount(count);
     refreshPracticeBotStats();
-  }, [practiceBotRuntime, refreshPracticeBotStats]);
+  }, [refreshPracticeBotStats]);
   const handleClearBots = useCallback(() => {
-    practiceBotRuntime?.clear();
+    practiceBotRuntimeRef.current?.clear();
     refreshPracticeBotStats();
-  }, [practiceBotRuntime, refreshPracticeBotStats]);
+  }, [refreshPracticeBotStats]);
   const handleSetBotBehavior = useCallback((kind: PracticeBotBehaviorKind) => {
-    const runtime = practiceBotRuntime;
+    const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
     runtime.setBehavior(kind);
     refreshPracticeBotStats();
-  }, [practiceBotRuntime, refreshPracticeBotStats]);
+  }, [refreshPracticeBotStats]);
   const handleSetBotMaxSpeed = useCallback((speed: number) => {
-    const runtime = practiceBotRuntime;
+    const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
     runtime.setMaxSpeed(speed);
     refreshPracticeBotStats();
-  }, [practiceBotRuntime, refreshPracticeBotStats]);
+  }, [refreshPracticeBotStats]);
   const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
     setPracticeBotDebugOverlay(value);
   }, []);
   // Pre-build the runtime once practice mode is active. The navmesh build
-  // is synchronous so we defer it via a microtask; keeps the first paint
-  // unblocked but the runtime is ready by the time the user opens the
-  // panel.
+  // is synchronous so we defer it via a macrotask; the first paint stays
+  // unblocked but the runtime is ready before the user can interact with
+  // any panel control.
   useEffect(() => {
     if (!practiceMode) {
-      if (practiceBotRuntime) {
-        practiceBotRuntime.clear();
-        practiceBotRuntime.detach();
+      const existing = practiceBotRuntimeRef.current;
+      if (existing) {
+        existing.clear();
+        existing.detach();
       }
+      practiceBotRuntimeRef.current = null;
       setPracticeBotRuntime(null);
       setPracticeBotStats(null);
       return;
@@ -244,25 +249,21 @@ export function App({
     const handle = window.setTimeout(() => {
       if (cancelled) return;
       const runtime = new PracticeBotRuntime(effectiveWorldDocument, { maxAgentRadius: 0.6 });
+      practiceBotRuntimeRef.current = runtime;
       setPracticeBotRuntime(runtime);
       setPracticeBotStats(runtime.stats());
     }, 0);
     return () => {
       cancelled = true;
       window.clearTimeout(handle);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [practiceMode, effectiveWorldDocument]);
-  // Tear down the previous runtime whenever it gets replaced (world swap,
-  // mode swap, unmount).
-  useEffect(() => {
-    return () => {
-      if (practiceBotRuntime) {
-        practiceBotRuntime.clear();
-        practiceBotRuntime.detach();
+      const existing = practiceBotRuntimeRef.current;
+      if (existing) {
+        existing.clear();
+        existing.detach();
+        practiceBotRuntimeRef.current = null;
       }
     };
-  }, [practiceBotRuntime]);
+  }, [practiceMode, effectiveWorldDocument]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);

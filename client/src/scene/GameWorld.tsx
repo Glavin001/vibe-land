@@ -528,8 +528,17 @@ export function GameWorld({
     const client = clientRef.current;
     if (!client) return;
     const getSelf = () => {
-      const position =
-        predictionRef.current.getPosition() ?? stateRef.current.localPosition;
+      // When the human is in a vehicle, the on-foot prediction capsule
+      // is parked / static and `prediction.getPosition()` no longer
+      // tracks where the player actually is. The snapshot already
+      // resolves the vehicle's chassis position (see
+      // `local_arena.rs::snapshot_player`), so prefer
+      // `state.localPosition` in that case. On foot, prediction is the
+      // smoothed source-of-truth.
+      const inVehicle = (client.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
+      const position = inVehicle
+        ? stateRef.current.localPosition
+        : predictionRef.current.getPosition() ?? stateRef.current.localPosition;
       return {
         id: client.playerId,
         position: [position[0], position[1], position[2]] as [number, number, number],
