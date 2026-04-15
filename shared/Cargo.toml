@@ -36,8 +36,4 @@ console_error_panic_hook = "0.1"
 # by `scripts/setup-blast.sh`. It is only compiled for wasm32 so native
 # `cargo check` / `cargo build -p vibe-land-server` on Linux developers
 # does not need a wasi C++ toolchain. See docs/BLAST_INTEGRATION.md.
-blast-stress-solver = {
-  path = "../third_party/physx/blast/blast-stress-solver-rs",
-  default-features = false,
-  features = ["scenarios", "rapier"],
-}
+blast-stress-solver = { path = "../third_party/physx/blast/blast-stress-solver-rs", default-features = false, features = ["scenarios", "rapier"] }
