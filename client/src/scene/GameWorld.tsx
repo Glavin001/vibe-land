@@ -47,9 +47,25 @@ import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } fr
  * Practice-mode destructible structures.  Injected into the world
  * document at runtime (instead of authored in `trail.world.json`) so
  * the shared physics test suite — which exercises the default world —
- * stays unaffected by the Blast solver.  Positions are tuned so a
- * player spawning at (0, *, 0) and driving the trail car can
- * reach both the wall and the tower within a few seconds.
+ * stays unaffected by the Blast solver.
+ *
+ * The trail world's practice spawn / vehicles cluster around
+ * `(0..8, *, 0)` on flat terrain (`terrain Y ≈ 0` for roughly
+ * `x ∈ [-10, 12], z ∈ [-10, 6]`), with a ball pit at
+ * `x ∈ [8, 15], z ∈ [8, 15]`.  Positions below are chosen to sit in
+ * the flat area a short drive from each vehicle, in their own empty
+ * space (no overlap with the origin car, the second car at
+ * `(8, 2, 0)`, the ball pit, or the hilly terrain outside the
+ * plaza).
+ *
+ * Y values account for the scenario local geometry:
+ *   - `build_wall_scenario` (WallOptions::default) spans 6m along
+ *     local X, 0.32m thick along Z, local y ∈ [0, 3].  Pose y=0
+ *     sits the wall's base flush with flat ground.
+ *   - `build_tower_scenario` (TowerOptions::default) is a
+ *     4×4-column × 8-story column (~2m × 4m × 2m) with a fixed
+ *     support row at local y=-0.5.  Pose y=0.5 keeps the dynamic
+ *     structure above ground while the support row anchors it.
  */
 const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
   id: number;
@@ -57,8 +73,10 @@ const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
   position: [number, number, number];
   rotation: [number, number, number, number];
 }> = [
-  { id: 2000, kind: 'wall', position: [-6, 0.5, -18], rotation: [0, 0, 0, 1] },
-  { id: 2001, kind: 'tower', position: [8, 0.6, -20], rotation: [0, 0, 0, 1] },
+  // Wall: 6m NW of the origin vehicle — drive forward-left to hit.
+  { id: 2000, kind: 'wall', position: [-6, 0, -6], rotation: [0, 0, 0, 1] },
+  // Tower: 5m N of the second vehicle at (8, *, 0) — drive forward to hit.
+  { id: 2001, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
 ];
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
