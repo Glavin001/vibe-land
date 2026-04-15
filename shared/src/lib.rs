@@ -1,5 +1,7 @@
 pub mod constants;
 pub mod debug_render;
+#[cfg(target_arch = "wasm32")]
+pub mod destructibles;
 pub mod local_arena;
 pub mod local_session;
 pub mod local_world;

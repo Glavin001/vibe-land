@@ -17,6 +17,10 @@ pub struct WorldDocument {
     pub terrain: WorldTerrain,
     pub static_props: Vec<StaticProp>,
     pub dynamic_entities: Vec<DynamicEntity>,
+    /// Blast-driven destructible structures (wall/tower).  Optional so
+    /// legacy world documents without the field still parse cleanly.
+    #[serde(default)]
+    pub destructibles: Vec<DestructibleDoc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +87,27 @@ pub enum DynamicEntityKind {
     Box,
     Ball,
     Vehicle,
+}
+
+/// A destructible structure placed in the world, backed by the Blast
+/// stress-solver (see `destructibles` module).  The Blast scenario is
+/// chosen by `kind`; position/rotation place the resulting chunks in the
+/// world.  `id` must be unique within the document.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DestructibleDoc {
+    pub id: u32,
+    pub kind: DestructibleKind,
+    pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DestructibleKind {
+    Wall,
+    Tower,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

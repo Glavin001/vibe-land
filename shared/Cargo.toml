@@ -3,6 +3,16 @@ name = "vibe-land-shared"
 version = "0.1.0"
 edition = "2021"
 
+[package.metadata.wasm-pack.profile.release]
+# wasm-opt is run manually by `make client-build` / production CI where
+# binaryen is actually available; developer machines and the sandboxed
+# claude-code environment cannot always download it. Skip it here so
+# `wasm-pack build` works offline.
+wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev]
+wasm-opt = false
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -22,3 +32,12 @@ simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
+# blast-stress-solver is built from a local clone of Glavin001/PhysX produced
+# by `scripts/setup-blast.sh`. It is only compiled for wasm32 so native
+# `cargo check` / `cargo build -p vibe-land-server` on Linux developers
+# does not need a wasi C++ toolchain. See docs/BLAST_INTEGRATION.md.
+blast-stress-solver = {
+  path = "../third_party/physx/blast/blast-stress-solver-rs",
+  default-features = false,
+  features = ["scenarios", "rapier", "wasi-libc"],
+}

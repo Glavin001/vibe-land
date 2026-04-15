@@ -290,6 +290,26 @@ export function usePredictionWithWorld(
     simRef.current?.syncBroadPhase();
   }, [practiceMode]);
 
+  // ── Destructible structures (Blast stress solver) ─────────────
+  // Practice-mode only. Thin passthroughs to the WASM sim; the sim's
+  // `tick`/`step_vehicle_pipeline` path advances the stress solvers
+  // automatically, so we only expose read-only accessors here.
+  const getDestructibleChunkTransforms = useCallback((): Float32Array => {
+    return simRef.current?.getDestructibleChunkTransforms() ?? new Float32Array(0);
+  }, []);
+
+  const getDestructibleChunkCount = useCallback((): number => {
+    return simRef.current?.getDestructibleChunkCount() ?? 0;
+  }, []);
+
+  const getDestructibleInstanceCount = useCallback((): number => {
+    return simRef.current?.getDestructibleInstanceCount() ?? 0;
+  }, []);
+
+  const drainDestructibleFractureEvents = useCallback((): Uint32Array => {
+    return simRef.current?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
+  }, []);
+
   const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
     const vm = vehicleManagerRef.current;
     if (!vm) return;
@@ -590,6 +610,10 @@ export function usePredictionWithWorld(
     getDrivenVehicleId,
     getLocalVehicleDebug,
     isInVehicle,
+    getDestructibleChunkTransforms,
+    getDestructibleChunkCount,
+    getDestructibleInstanceCount,
+    drainDestructibleFractureEvents,
   };
 }
 

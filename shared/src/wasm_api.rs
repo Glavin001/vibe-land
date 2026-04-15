@@ -10,6 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
+use crate::destructibles::{pose_from_world_doc, DestructibleRegistry};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
 use crate::protocol::InputCmd;
@@ -19,7 +20,9 @@ use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
     create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics, vehicle_suspension_filter,
 };
-use crate::world_document::{StaticPropKind, WorldDocument};
+use crate::world_document::{
+    DestructibleKind as DocDestructibleKind, StaticPropKind, WorldDocument,
+};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -99,6 +102,10 @@ pub struct WasmSimWorld {
     vehicle_pending_inputs: Vec<InputCmd>,
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
+
+    // Destructible structures (Blast stress solver).  Single-player only;
+    // see `destructibles.rs` and `docs/BLAST_INTEGRATION.md`.
+    destructibles: DestructibleRegistry,
 }
 
 #[wasm_bindgen]
@@ -127,6 +134,7 @@ impl WasmSimWorld {
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
+            destructibles: DestructibleRegistry::new(),
         }
     }
 
@@ -199,7 +207,91 @@ impl WasmSimWorld {
             }
         }
 
+        for doc in &world.destructibles {
+            let pose = pose_from_world_doc(doc.position, doc.rotation);
+            match doc.kind {
+                DocDestructibleKind::Wall => {
+                    self.destructibles.spawn_wall(&mut self.sim, doc.id, pose);
+                }
+                DocDestructibleKind::Tower => {
+                    self.destructibles.spawn_tower(&mut self.sim, doc.id, pose);
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    // ── Destructibles (Blast stress solver) ──────────
+
+    /// Spawn a destructible structure at `pose`.  `kind` must be `"wall"`
+    /// or `"tower"`.  Returns `true` if the instance was created.
+    #[wasm_bindgen(js_name = spawnDestructible)]
+    pub fn spawn_destructible(
+        &mut self,
+        kind: &str,
+        id: u32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+    ) -> bool {
+        let pose = pose_from_world_doc([px, py, pz], [qx, qy, qz, qw]);
+        match kind {
+            "wall" => self.destructibles.spawn_wall(&mut self.sim, id, pose),
+            "tower" => self.destructibles.spawn_tower(&mut self.sim, id, pose),
+            _ => false,
+        }
+    }
+
+    #[wasm_bindgen(js_name = despawnDestructible)]
+    pub fn despawn_destructible(&mut self, id: u32) -> bool {
+        self.destructibles.despawn(
+            &mut self.sim,
+            &mut self.vehicle_joints,
+            &mut self.vehicle_multibody_joints,
+            id,
+        )
+    }
+
+    /// Advance the destructible stress solvers.  Normally folded into
+    /// `tick` / `step_vehicle_pipeline`; exposed so tests can drive the
+    /// solver directly without a player capsule.
+    #[wasm_bindgen(js_name = stepDestructibles)]
+    pub fn step_destructibles(&mut self) {
+        self.destructibles.step(
+            &mut self.sim,
+            &mut self.vehicle_joints,
+            &mut self.vehicle_multibody_joints,
+        );
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleChunkTransforms)]
+    pub fn get_destructible_chunk_transforms(&self) -> Box<[f32]> {
+        self.destructibles
+            .chunk_transforms_slice()
+            .to_vec()
+            .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleChunkCount)]
+    pub fn get_destructible_chunk_count(&self) -> u32 {
+        self.destructibles.total_chunk_count() as u32
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleInstanceCount)]
+    pub fn get_destructible_instance_count(&self) -> u32 {
+        self.destructibles.len() as u32
+    }
+
+    #[wasm_bindgen(js_name = drainDestructibleFractureEvents)]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.destructibles
+            .drain_fracture_events()
+            .into_boxed_slice()
     }
 
     /// Remove a collider by its ID (returned from `addCuboid`).
@@ -307,7 +399,10 @@ impl WasmSimWorld {
         // Keep stepping when a local vehicle is active, or when this KCC tick
         // actually applied dynamic-body impulses so the contact response starts
         // immediately for the local player.
-        if self.local_vehicle_id.is_some() || !tick.dynamic_impulses.is_empty() {
+        if self.local_vehicle_id.is_some()
+            || !tick.dynamic_impulses.is_empty()
+            || !self.destructibles.is_empty()
+        {
             self.step_vehicle_pipeline(dt);
         }
 
@@ -1284,6 +1379,16 @@ impl WasmSimWorld {
             &mut self.vehicle_ccd,
             dt,
         );
+        // After the rigid-body pipeline has resolved contacts for this
+        // frame, advance the destructible stress solvers so any fractures
+        // happen inside the same frame the player sees the collision in.
+        if !self.destructibles.is_empty() {
+            self.destructibles.step(
+                &mut self.sim,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+            );
+        }
     }
 
     fn get_vehicle_state(&self, vid: u32) -> Box<[f64]> {

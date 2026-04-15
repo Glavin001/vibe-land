@@ -94,6 +94,26 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
     vy: number,
     vz: number,
   ): void;
+  // Destructible structures (Blast stress solver).  Declared here so
+  // `WasmSimWorldInstance` stays the single-source-of-truth type used
+  // by `usePrediction` and the `DestructibleChunks` renderer.
+  spawnDestructible(
+    kind: 'wall' | 'tower',
+    id: number,
+    px: number,
+    py: number,
+    pz: number,
+    qx: number,
+    qy: number,
+    qz: number,
+    qw: number,
+  ): boolean;
+  despawnDestructible(id: number): boolean;
+  stepDestructibles(): void;
+  getDestructibleChunkTransforms(): Float32Array;
+  getDestructibleChunkCount(): number;
+  getDestructibleInstanceCount(): number;
+  drainDestructibleFractureEvents(): Uint32Array;
 };
 type WasmSimWorldCtor = {
   new (): WasmSimWorldInstance;

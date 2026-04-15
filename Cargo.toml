@@ -1,5 +1,11 @@
 [workspace]
 members = ["netcode", "shared", "server"]
+# The vendored PhysX tree (cloned by scripts/setup-blast.sh into
+# third_party/physx/) contains its own Rust crates (blast-stress-solver,
+# blast-stress-demo, …). Exclude the whole directory so cargo doesn't try
+# to fold those into this workspace and so native `cargo check` never
+# reaches the Blast C++ build path.
+exclude = ["third_party"]
 resolver = "2"
 
 [profile.release]

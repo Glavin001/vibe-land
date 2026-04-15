@@ -116,6 +116,7 @@ Firewall requirements for WebTransport:
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.
 - The shared WASM crate (`shared/`) is compiled separately with `wasm-pack` and output to `client/pkg/`. This must be rebuilt whenever `shared/` changes.
+- `make setup` now clones the pinned NVIDIA Blast stress solver into `third_party/physx/` (gitignored) via `scripts/setup-blast.sh`. The `blast-stress-solver` dep is wasm-only — `cargo check` / `cargo build -p web-fps-server` on a server dev box never touches the Blast C++ sources. See `docs/BLAST_INTEGRATION.md` for the full toolchain, including the two wasm post-processors (`scripts/patch-wasi-stubs.mjs`, `scripts/patch-wasm-dtors.mjs`) that run automatically from `make setup-wasm`.
 - The web client is a single SPA build. Runtime route selection decides between `/play` multiplayer and `/practice` firing range; build mode no longer selects that behavior.
 - `VITE_MULTIPLAYER_HTTP_ORIGIN` is optional. Leave it unset for same-origin deployments; set it when the SPA is hosted separately from the Rust/WebTransport backend.
 - The `rapier3d` 0.30 API is used. Key notes: `KinematicCharacterController` is in `rapier3d::control`.

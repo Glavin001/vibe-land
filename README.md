@@ -25,7 +25,7 @@ The client now ships as one SPA build with multiple entry routes:
 
 - `/` launcher
 - `/play` multiplayer
-- `/practice` firing range (browser-only single-player)
+- `/practice` firing range (browser-only single-player) — includes breakable wall + tower driven by the NVIDIA Blast stress solver (see `docs/BLAST_INTEGRATION.md`)
 - `/stats` server stats
 - `/loadtest` browser load test
 

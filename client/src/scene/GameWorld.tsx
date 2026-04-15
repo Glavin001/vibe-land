@@ -40,7 +40,26 @@ import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPla
 import type { LoadTestScenario } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { DestructibleChunks } from './DestructibleChunks';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
+
+/**
+ * Practice-mode destructible structures.  Injected into the world
+ * document at runtime (instead of authored in `trail.world.json`) so
+ * the shared physics test suite — which exercises the default world —
+ * stays unaffected by the Blast solver.  Positions are tuned so a
+ * player spawning at (0, *, 0) and driving the trail car can
+ * reach both the wall and the tower within a few seconds.
+ */
+const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
+  id: number;
+  kind: 'wall' | 'tower';
+  position: [number, number, number];
+  rotation: [number, number, number, number];
+}> = [
+  { id: 2000, kind: 'wall', position: [-6, 0.5, -18], rotation: [0, 0, 0, 1] },
+  { id: 2001, kind: 'tower', position: [8, 0.6, -20], rotation: [0, 0, 0, 1] },
+];
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const LOCAL_RIFLE_INTERVAL_MS = 100;
@@ -389,7 +408,28 @@ export function GameWorld({
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
-  const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
+  // In practice mode we overlay Blast destructibles onto the base world
+  // document so they flow through `loadWorldDocument` → `spawn_wall` /
+  // `spawn_tower` and through `<DestructibleChunks>` rendering without
+  // touching the authored `trail.world.json` (which the shared physics
+  // test suite loads).
+  const effectiveWorldDocument = useMemo(() => {
+    if (!practiceMode) return worldDocument;
+    if (worldDocument.destructibles.length > 0) return worldDocument;
+    return {
+      ...worldDocument,
+      destructibles: PRACTICE_DESTRUCTIBLES.map((d) => ({
+        id: d.id,
+        kind: d.kind,
+        position: [...d.position] as [number, number, number],
+        rotation: [...d.rotation] as [number, number, number, number],
+      })),
+    };
+  }, [practiceMode, worldDocument]);
+  const worldJson = useMemo(
+    () => serializeWorldDocument(effectiveWorldDocument),
+    [effectiveWorldDocument],
+  );
   const prediction = usePredictionWithWorld(mode, worldJson, localRenderSmoothingEnabled);
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
@@ -1407,8 +1447,14 @@ export function GameWorld({
         shadow-normalBias={0.03}
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
-      <WorldTerrain world={worldDocument} />
-      <WorldStaticProps world={worldDocument} />
+      <WorldTerrain world={effectiveWorldDocument} />
+      <WorldStaticProps world={effectiveWorldDocument} />
+      {practiceMode && effectiveWorldDocument.destructibles.length > 0 && (
+        <DestructibleChunks
+          world={effectiveWorldDocument}
+          getChunkTransforms={prediction.getDestructibleChunkTransforms}
+        />
+      )}
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock
