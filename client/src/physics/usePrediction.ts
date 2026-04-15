@@ -363,8 +363,13 @@ export function usePredictionWithWorld(
     px: number, py: number, pz: number,
     qx: number, qy: number, qz: number, qw: number,
   ): void => {
-    simRef.current?.spawnSnapMachine(id, envelopeJson, px, py, pz, qx, qy, qz, qw);
-  }, []);
+    const sim = simRef.current;
+    if (!sim) return;
+    sim.spawnSnapMachine(id, envelopeJson, px, py, pz, qx, qy, qz, qw);
+    if (practiceMode) {
+      sim.setSnapMachineCollisionEnabled(id, false);
+    }
+  }, [practiceMode]);
 
   const removeSnapMachine = useCallback((id: number): void => {
     simRef.current?.removeSnapMachine(id);

@@ -107,6 +107,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
     qz: number,
     qw: number,
   ): void;
+  setSnapMachineCollisionEnabled(id: number, enabled: boolean): void;
   removeSnapMachine(id: number): void;
   setLocalSnapMachine(machineId: number): void;
   clearLocalSnapMachine(): void;

@@ -325,6 +325,33 @@ impl SnapMachine {
         }
     }
 
+    /// Override every collider's interaction groups for this machine.
+    ///
+    /// Used by the client-side `/practice` mirror world so the local
+    /// player predictor does not collide against a second copy of the
+    /// machine. The authoritative local-preview session remains the
+    /// only collision owner for snap-machines in that mode.
+    pub fn set_collision_groups(
+        &self,
+        bodies: &RigidBodySet,
+        colliders: &mut ColliderSet,
+        groups: InteractionGroups,
+    ) {
+        for id in &self.body_ids {
+            let Some(handle) = self.runtime.body_handle(id) else {
+                continue;
+            };
+            let Some(rb) = bodies.get(handle) else {
+                continue;
+            };
+            for collider_handle in rb.colliders() {
+                if let Some(collider) = colliders.get_mut(*collider_handle) {
+                    collider.set_collision_groups(groups);
+                }
+            }
+        }
+    }
+
     /// Server → client reconcile: overwrite each body's pose/velocity from
     /// an authoritative snapshot. `bodies_by_index` is parallel to
     /// `body_ids()`.

@@ -1322,6 +1322,34 @@ impl WasmSimWorld {
         }
     }
 
+    /// In `/practice`, snap-machines are rendered from the authoritative
+    /// local-preview session, not this client prediction mirror. Disable
+    /// player-vs-machine contacts here so the predictor cannot hit an
+    /// invisible stale copy after enter/exit.
+    #[wasm_bindgen(js_name = setSnapMachineCollisionEnabled)]
+    pub fn set_snap_machine_collision_enabled(&mut self, id: u32, enabled: bool) {
+        let Some(machine) = self.machines.get(&id) else {
+            return;
+        };
+        let groups = if enabled {
+            InteractionGroups::all()
+        } else {
+            InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2)
+        };
+        machine.set_collision_groups(&self.sim.rigid_bodies, &mut self.sim.colliders, groups);
+        for body_id in machine.body_ids() {
+            let Some(handle) = machine.body_handle(body_id) else {
+                continue;
+            };
+            let Some(rb) = self.sim.rigid_bodies.get(handle) else {
+                continue;
+            };
+            for collider_handle in rb.colliders() {
+                self.sim.modified_colliders.push(*collider_handle);
+            }
+        }
+    }
+
     #[wasm_bindgen(js_name = setLocalSnapMachine)]
     pub fn set_local_snap_machine(&mut self, machine_id: u32) {
         self.local_machine_id = Some(machine_id);
