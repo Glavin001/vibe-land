@@ -47,7 +47,14 @@ export type BotBrainMode =
   | 'follow_target'
   | 'recover_center'
   | 'hold_anchor'
-  | 'dead';
+  | 'dead'
+  // Vehicle FSM modes — only emitted by the bots-framework nav brain when
+  // vehicle mode is enabled. Loadtest runners never set these directly,
+  // but the mode field is forwarded verbatim so the type needs to match.
+  | 'walking_to_vehicle'
+  | 'entering_vehicle'
+  | 'driving'
+  | 'exiting_vehicle';
 
 export interface BotBrainState {
   mode: BotBrainMode;

@@ -30,9 +30,18 @@ export {
 export {
   BotCrowd,
   createBotCrowd,
+  createVehicleBotCrowd,
   type BotCrowdOptions,
   type BotHandle,
 } from './crowd/BotCrowd';
+export { createVehicleQueryFilter } from './crowd/vehicleQueryFilter';
+export {
+  vehicleAgentStateToIntent,
+  vehicleAgentToIntent,
+  rotateVectorByQuaternionInverse,
+  type Quaternion,
+  type VehicleSteeringOptions,
+} from './agent/vehicleSteering';
 export { BotBrain, type BotBrainOptions } from './agent/BotBrain';
 export {
   agentStateToIntent,
@@ -54,10 +63,12 @@ export type {
   BotSelfState,
   ObservedPlayer,
   Vec3Tuple,
+  VehicleProfile,
 } from './types';
 export {
   PracticeBotRuntime,
   PRACTICE_BOT_ID_BASE,
+  DEFAULT_VEHICLE_PROFILE,
   type BotDebugInfo,
   type BotObstacleDebugInfo,
   type LocalSelfAccessor,

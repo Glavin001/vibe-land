@@ -145,6 +145,37 @@ export class LocalPreviewTransport {
     this.flushPackets();
   }
 
+  /**
+   * Seats a bot in a vehicle. The bot's WASM `PlayerRuntime` must already
+   * be connected (see {@link connectBot}). Routes through
+   * `LocalPreviewSession::handle_bot_packet`, which calls
+   * `arena.enter_vehicle` with the bot's player id. If the vehicle is
+   * already occupied, the existing driver is bumped out by the arena
+   * (matches the human path).
+   */
+  sendBotVehicleEnter(botId: number, vehicleId: number, seat = 0): void {
+    if (!this.session || this.closed) return;
+    const bytes = encodeVehicleEnterPacket(vehicleId, seat);
+    try {
+      this.session.handleBotPacket(botId, bytes);
+    } catch (error) {
+      console.warn('[local-preview] bot vehicle-enter rejected', error);
+    }
+    this.flushPackets();
+  }
+
+  /** Removes a bot from its currently occupied vehicle. No-op if not driving. */
+  sendBotVehicleExit(botId: number, vehicleId: number): void {
+    if (!this.session || this.closed) return;
+    const bytes = encodeVehicleExitPacket(vehicleId);
+    try {
+      this.session.handleBotPacket(botId, bytes);
+    } catch (error) {
+      console.warn('[local-preview] bot vehicle-exit rejected', error);
+    }
+    this.flushPackets();
+  }
+
   sendBlockEdit(cmd: BlockEditCmd): void {
     this.sendRaw(encodeBlockEditPacket(cmd));
   }

@@ -25,6 +25,7 @@ import {
 import type { NavMesh } from 'navcat';
 
 import type { WorldDocument } from '../../world/worldDocument';
+import type { VehicleProfile } from '../types';
 import { buildWorldGeometry, type BotWorldGeometry } from './worldGeometry';
 
 export type NavMeshMode = 'solo' | 'tiled';
@@ -168,4 +169,38 @@ export function buildBotNavMesh(world: WorldDocument, options: BuildBotNavMeshOp
   };
   const result = generateTiledNavMesh(navMeshInput, opts);
   return { navMesh: result.navMesh, geometry, mode, result };
+}
+
+/**
+ * Builds a second, vehicle-sized navmesh for the same world. The walkable
+ * radius is inflated to {@link VehicleProfile.agentRadius} so narrow alleys
+ * and doorways that a player can squeeze through on foot are automatically
+ * excluded — the vehicle simply can't path there.
+ *
+ * The climb height is dropped to match a car's max step-over (a wheeled
+ * chassis can't take 0.55 m curbs) and the slope angle is tightened too so
+ * drivable polygons only cover geometry a raycast-vehicle can physically
+ * traverse.
+ *
+ * Callers should not rebuild this mesh every tick — build once per world
+ * and reuse it across all vehicle-mode bots.
+ */
+export function buildVehicleBotNavMesh(
+  world: WorldDocument,
+  profile: VehicleProfile,
+  overrides: BuildBotNavMeshOptions = {},
+): BotNavMesh {
+  return buildBotNavMesh(world, {
+    // Vehicle chassis is fatter than a player capsule — use the profile
+    // radius so narrow alleys collapse out of the walkable set.
+    walkableRadius: profile.agentRadius,
+    walkableHeight: profile.agentHeight,
+    // A car can step over maybe ~15 cm; anything more is a cliff from the
+    // chassis's perspective.
+    walkableClimb: 0.15,
+    // Same constraint in rotational form — 25° is already quite steep
+    // for a wheeled vehicle.
+    walkableSlopeAngleDegrees: 25,
+    ...overrides,
+  });
 }

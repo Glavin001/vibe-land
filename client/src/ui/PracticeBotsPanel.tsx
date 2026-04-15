@@ -13,6 +13,7 @@ interface PracticeBotsPanelProps {
   onSetBehavior: (kind: PracticeBotBehaviorKind) => void;
   onSetMaxSpeed: (speed: number) => void;
   onToggleDebugOverlay: (value: boolean) => void;
+  onSetUseVehicles: (value: boolean) => void;
 }
 
 const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: string }> = [
@@ -69,12 +70,14 @@ export function PracticeBotsPanel({
   onSetBehavior,
   onSetMaxSpeed,
   onToggleDebugOverlay,
+  onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
 
   const count = stats?.bots ?? 0;
   const behavior = stats?.behavior ?? 'harass';
   const maxSpeed = stats?.maxSpeed ?? 3.0;
+  const useVehicles = stats?.useVehicles ?? false;
 
   const [countSliderRef, countDragStart, countDragEnd] = useDraggableInputSync(count);
   const [countNumberRef, , ] = useDraggableInputSync(count);
@@ -176,6 +179,17 @@ export function PracticeBotsPanel({
                 </label>
               ))}
             </div>
+          </div>
+          <div style={rowStyle}>
+            <label style={labelStyle}>Vehicles</label>
+            <label style={toggleLabelStyle}>
+              <input
+                type="checkbox"
+                checked={useVehicles}
+                onChange={(event) => onSetUseVehicles(event.target.checked)}
+              />
+              <span>bots can drive vehicles to reach targets</span>
+            </label>
           </div>
           <div style={rowStyle}>
             <label style={labelStyle}>Debug</label>

@@ -229,6 +229,12 @@ export function App({
   const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
     setPracticeBotDebugOverlay(value);
   }, []);
+  const handleSetBotUseVehicles = useCallback((value: boolean) => {
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setUseVehicles(value);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
   // Pre-build the runtime once practice mode is active. The navmesh build
   // is synchronous so we defer it via a macrotask; the first paint stays
   // unblocked but the runtime is ready before the user can interact with
@@ -757,6 +763,7 @@ export function App({
         onSetBehavior={handleSetBotBehavior}
         onSetMaxSpeed={handleSetBotMaxSpeed}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
+        onSetUseVehicles={handleSetBotUseVehicles}
       />
       <DebugOverlay
         stats={displayStats}
