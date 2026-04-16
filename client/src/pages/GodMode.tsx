@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
-import { Sky, TransformControls } from '@react-three/drei';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { TransformControls } from '@react-three/drei';
+import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
@@ -1203,6 +1203,20 @@ export function GodModePage() {
   );
 }
 
+/** Solid backdrop + fog — avoids Drei Sky (large atmosphere shader) on drivers where it fails to draw. */
+function GodModeSceneBackground() {
+  const { scene } = useThree();
+  useEffect(() => {
+    scene.background = new THREE.Color(0x7ab8e8);
+    scene.fog = new THREE.FogExp2(0xa8cfe8, 0.012);
+    return () => {
+      scene.background = null;
+      scene.fog = null;
+    };
+  }, [scene]);
+  return null;
+}
+
 function GodModeEditorScene({
   world,
   tool,
@@ -1499,7 +1513,7 @@ function GodModeEditorScene({
 
   return (
     <Canvas
-      shadows
+      gl={{ alpha: false, antialias: true, stencil: false, depth: true }}
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
       style={{ width: '100%', height: '100%' }}
       onCreated={(state) => {
@@ -1523,10 +1537,12 @@ function GodModeEditorScene({
         }
       }}
     >
-      <ambientLight intensity={0.55} />
-      <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
-      <Sky sunPosition={[24, 12, 8]} />
-      <WorldTerrain
+      <Suspense fallback={null}>
+        <GodModeSceneBackground />
+        <ambientLight intensity={0.55} />
+        <hemisphereLight args={[0xb8d4ff, 0x3a4a38, 0.35]} position={[0, 48, 0]} />
+        <directionalLight position={[32, 48, 12]} intensity={1.15} />
+        <WorldTerrain
         world={world}
         onPointerDown={handleTerrainPointerDown}
         onPointerMove={handleTerrainPointerMove}
@@ -1609,8 +1625,6 @@ function GodModeEditorScene({
             ref={(object) => registerSelectableObject(`static:${entity.id}`, object)}
             position={entity.position}
             quaternion={new THREE.Quaternion(...entity.rotation)}
-            castShadow
-            receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
               if (event.button !== 0 || event.altKey) return;
@@ -1627,8 +1641,6 @@ function GodModeEditorScene({
             ref={(object) => registerSelectableObject(`dynamic:${entity.id}`, object)}
             position={entity.position}
             quaternion={new THREE.Quaternion(...entity.rotation)}
-            castShadow
-            receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
               if (event.button !== 0 || event.altKey) return;
@@ -1676,6 +1688,7 @@ function GodModeEditorScene({
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
         </mesh>
       )}
+      </Suspense>
       <GodModeCameraControls tool={tool} />
     </Canvas>
   );
