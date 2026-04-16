@@ -2380,6 +2380,7 @@ const titleStyle: CSSProperties = {
   margin: '10px 0 8px',
   fontSize: 42,
   lineHeight: 1,
+  fontWeight: 700,
 };
 
 const bodyStyle: CSSProperties = {

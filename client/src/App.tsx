@@ -583,7 +583,7 @@ export function App({
           onClick={handleConnect}
         >
           <div style={{ textAlign: 'center' }}>
-            <h1 style={{ fontSize: 48, marginBottom: 16 }}>vibe-land</h1>
+            <h1 style={{ fontSize: 48, marginBottom: 16, fontWeight: 700 }}>vibe-land</h1>
             <p style={{ fontSize: 14, opacity: 0.5, marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.18em' }}>
               {pathLabel}
             </p>

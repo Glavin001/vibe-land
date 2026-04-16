@@ -1,102 +1,84 @@
-import type { CSSProperties } from 'react';
+const cardClass =
+  'flex-[1_1_280px] min-w-0 block no-underline text-inherit rounded-[20px] border border-[rgba(145,198,255,0.18)] bg-[linear-gradient(180deg,rgba(18,29,45,0.95)_0%,rgba(8,14,23,0.95)_100%)] p-6 transition-colors hover:border-[rgba(145,198,255,0.38)] hover:bg-[linear-gradient(180deg,rgba(22,36,56,0.95)_0%,rgba(10,18,30,0.95)_100%)]';
 
-const shellStyle: CSSProperties = {
-  minHeight: '100%',
-  background:
-    'radial-gradient(circle at top, rgba(93, 215, 255, 0.14), transparent 32%), linear-gradient(180deg, #08111d 0%, #04070d 100%)',
-  color: '#edf6ff',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '32px',
-};
+interface CardProps {
+  href: string;
+  tag: string;
+  title: string;
+  description: string;
+  note: string;
+  noteColor: string;
+}
 
-const panelStyle: CSSProperties = {
-  width: 'min(1040px, 100%)',
-  background: 'rgba(6, 12, 20, 0.86)',
-  border: '1px solid rgba(110, 190, 255, 0.2)',
-  borderRadius: 28,
-  boxShadow: '0 30px 90px rgba(0, 0, 0, 0.45)',
-  padding: '40px',
-};
-
-const cardStyle: CSSProperties = {
-  flex: '1 1 280px',
-  minWidth: 0,
-  display: 'block',
-  textDecoration: 'none',
-  color: 'inherit',
-  borderRadius: 20,
-  border: '1px solid rgba(145, 198, 255, 0.18)',
-  background: 'linear-gradient(180deg, rgba(18, 29, 45, 0.95) 0%, rgba(8, 14, 23, 0.95) 100%)',
-  padding: '24px',
-};
+function NavCard({ href, tag, title, description, note, noteColor }: CardProps) {
+  return (
+    <a href={href} className={cardClass}>
+      <div className="text-xs uppercase tracking-[0.18em] text-[#87d6ff] mb-2.5">{tag}</div>
+      <h2 className="m-0 text-[30px] font-semibold">{title}</h2>
+      <p className="my-3 text-[rgba(237,246,255,0.74)] leading-relaxed">{description}</p>
+      <div className={`text-sm ${noteColor}`}>{note}</div>
+    </a>
+  );
+}
 
 export function HomePage() {
   return (
-    <div style={shellStyle}>
-      <div style={panelStyle}>
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ letterSpacing: '0.28em', fontSize: 12, textTransform: 'uppercase', color: '#79baf5' }}>
+    <div className="font-sans min-h-full flex items-center justify-center p-8 text-[#edf6ff] bg-[radial-gradient(circle_at_top,rgba(93,215,255,0.14),transparent_32%),linear-gradient(180deg,#08111d_0%,#04070d_100%)]">
+      <div className="w-full max-w-[1040px] bg-[rgba(6,12,20,0.86)] border border-[rgba(110,190,255,0.2)] rounded-[28px] shadow-[0_30px_90px_rgba(0,0,0,0.45)] p-10">
+
+        {/* Header */}
+        <div className="mb-7">
+          <div className="tracking-[0.28em] text-xs uppercase text-[#79baf5]">
             vibe-land
           </div>
-          <h1 style={{ fontSize: 'clamp(44px, 8vw, 88px)', lineHeight: 0.95, margin: '12px 0 14px', fontWeight: 700 }}>
+          <h1 className="text-[clamp(44px,8vw,88px)] leading-[0.95] my-3 font-bold">
             One build. Two ways to play.
           </h1>
-          <p style={{ maxWidth: 760, fontSize: 18, lineHeight: 1.6, color: 'rgba(237, 246, 255, 0.74)' }}>
+          <p className="max-w-[760px] text-lg leading-relaxed text-[rgba(237,246,255,0.74)]">
             Multiplayer and the firing range now ship in the same web app. Use direct links for fast entry, or start here.
           </p>
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, marginBottom: 18 }}>
-          <a href="/play" style={cardStyle}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
-              /play
-            </div>
-            <h2 style={{ margin: 0, fontSize: 30 }}>Multiplayer</h2>
-            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
-              Join the networked game. WebTransport is preferred, with WebSocket fallback when needed.
-            </p>
-            <div style={{ color: '#fff5b1', fontSize: 14 }}>Best when the game backend is reachable from this browser.</div>
-          </a>
-
-          <a href="/practice" style={cardStyle}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
-              /practice
-            </div>
-            <h2 style={{ margin: 0, fontSize: 30 }}>Firing Range</h2>
-            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
-              Run the local WASM simulation in-browser with no Rust server required. This is the current single-player mode.
-            </p>
-            <div style={{ color: '#b9ffc3', fontSize: 14 }}>Works offline after assets are cached.</div>
-          </a>
-
-          <a href="/builder/world" style={cardStyle}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
-              /builder/world
-            </div>
-            <h2 style={{ margin: 0, fontSize: 30 }}>World Builder</h2>
-            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
-              Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document.
-            </p>
-            <div style={{ color: '#ffe0a2', fontSize: 14 }}>Browser-local authoring with JSON import and export.</div>
-          </a>
-
-          <a href="/gallery" style={cardStyle}>
-            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
-              /gallery
-            </div>
-            <h2 style={{ margin: 0, fontSize: 30 }}>Gallery</h2>
-            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
-              Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker.
-            </p>
-            <div style={{ color: '#cdb1ff', fontSize: 14 }}>Available when the deployment has Cloudflare R2 configured.</div>
-          </a>
+        {/* Mode cards */}
+        <div className="flex flex-wrap gap-[18px] mb-[18px]">
+          <NavCard
+            href="/play"
+            tag="/play"
+            title="Multiplayer"
+            description="Join the networked game. WebTransport is preferred, with WebSocket fallback when needed."
+            note="Best when the game backend is reachable from this browser."
+            noteColor="text-[#fff5b1]"
+          />
+          <NavCard
+            href="/practice"
+            tag="/practice"
+            title="Firing Range"
+            description="Run the local WASM simulation in-browser with no Rust server required. This is the current single-player mode."
+            note="Works offline after assets are cached."
+            noteColor="text-[#b9ffc3]"
+          />
+          <NavCard
+            href="/builder/world"
+            tag="/builder/world"
+            title="World Builder"
+            description="Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document."
+            note="Browser-local authoring with JSON import and export."
+            noteColor="text-[#ffe0a2]"
+          />
+          <NavCard
+            href="/gallery"
+            tag="/gallery"
+            title="Gallery"
+            description="Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker."
+            note="Available when the deployment has Cloudflare R2 configured."
+            noteColor="text-[#cdb1ff]"
+          />
         </div>
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, fontSize: 14, color: 'rgba(237, 246, 255, 0.62)' }}>
-          <a href="/stats" style={{ color: '#9cd4ff' }}>Server stats</a>
-          <a href="/loadtest" style={{ color: '#9cd4ff' }}>Load test</a>
+        {/* Footer links */}
+        <div className="flex flex-wrap gap-3 text-sm text-[rgba(237,246,255,0.62)]">
+          <a href="/stats" className="text-[#9cd4ff] hover:text-[#c4e8ff] transition-colors">Server stats</a>
+          <a href="/loadtest" className="text-[#9cd4ff] hover:text-[#c4e8ff] transition-colors">Load test</a>
         </div>
       </div>
     </div>

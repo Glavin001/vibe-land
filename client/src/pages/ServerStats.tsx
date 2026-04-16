@@ -2281,6 +2281,7 @@ const styles = {
     fontSize: 30,
     lineHeight: 1.1,
     letterSpacing: '-0.02em',
+    fontWeight: 700,
   },
   headerMeta: {
     marginTop: 8,
@@ -2429,6 +2430,7 @@ const styles = {
     margin: 0,
     fontSize: 24,
     lineHeight: 1.1,
+    fontWeight: 700,
   },
   matchScenario: {
     color: CYAN,
