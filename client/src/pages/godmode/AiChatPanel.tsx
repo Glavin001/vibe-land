@@ -9,10 +9,11 @@ import {
   type ChangeEvent,
   type ForwardedRef,
   type FormEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { forwardRef } from 'react';
-import type { ChatMessage, ChatPart } from '../../ai/chatTypes';
+import type { ChatImagePart, ChatMessage, ChatPart } from '../../ai/chatTypes';
 import {
   MODELS,
   PROVIDER_LABELS,
@@ -26,7 +27,7 @@ import {
   saveSettings,
   type AiChatSettings,
 } from '../../ai/settingsStore';
-import { useGodModeChat } from '../../ai/useGodModeChat';
+import { useGodModeChat, type ImageAttachment } from '../../ai/useGodModeChat';
 import type { WorldAccessors } from '../../ai/worldToolHelpers';
 
 export type AiChatPanelHandle = {
@@ -96,8 +97,44 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     setSettings((current) => ({ ...current, apiKeys: {} }));
   }, []);
 
+  const onPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(event.clipboardData.items);
+    const imageItems = items.filter((item) => item.type.startsWith('image/'));
+    if (imageItems.length === 0) return;
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setAttachments((prev) => [
+          ...prev,
+          { dataUrl: reader.result as string, mediaType: item.type },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const onFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setAttachments((prev) => [
+          ...prev,
+          { dataUrl: reader.result as string, mediaType: file.type },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
   const [draft, setDraft] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(!apiKey);
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messageListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -112,10 +149,12 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       event.preventDefault();
       if (!chat.canSend) return;
       const text = draft;
+      const atts = attachments;
       setDraft('');
-      void chat.sendMessage(text);
+      setAttachments([]);
+      void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
     },
-    [chat, draft],
+    [attachments, chat, draft],
   );
 
   const onKeyDown = useCallback(
@@ -124,11 +163,13 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
         event.preventDefault();
         if (!chat.canSend) return;
         const text = draft;
+        const atts = attachments;
         setDraft('');
-        void chat.sendMessage(text);
+        setAttachments([]);
+        void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
       }
     },
-    [chat, draft],
+    [attachments, chat, draft],
   );
 
   const modelOptions = useMemo(() => MODELS[settings.provider], [settings.provider]);
@@ -247,10 +288,36 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       )}
 
       <form onSubmit={onSubmit} style={composerStyle}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={onFileChange}
+        />
+        {attachments.length > 0 && (
+          <div style={thumbnailStripStyle}>
+            {attachments.map((att, i) => (
+              <div key={i} style={thumbnailWrapStyle}>
+                <img src={att.dataUrl} style={thumbnailStyle} alt="" />
+                <button
+                  type="button"
+                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                  style={thumbnailRemoveStyle}
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={placeholderHint}
           rows={3}
           style={textareaStyle}
@@ -262,13 +329,27 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
               Stop
             </button>
           ) : (
-            <button
-              type="submit"
-              disabled={!chat.canSend || draft.trim().length === 0}
-              style={chat.canSend && draft.trim().length > 0 ? primaryButtonStyle : disabledButtonStyle}
-            >
-              Send
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                style={secondaryButtonStyle}
+                title="Attach image"
+              >
+                Attach
+              </button>
+              <button
+                type="submit"
+                disabled={!chat.canSend || (draft.trim().length === 0 && attachments.length === 0)}
+                style={
+                  chat.canSend && (draft.trim().length > 0 || attachments.length > 0)
+                    ? primaryButtonStyle
+                    : disabledButtonStyle
+                }
+              >
+                Send
+              </button>
+            </>
           )}
         </div>
       </form>
@@ -294,6 +375,9 @@ function PartView({ part }: { part: ChatPart }) {
   }
   if (part.type === 'reasoning') {
     return <div style={reasoningPartStyle}>{part.text}</div>;
+  }
+  if (part.type === 'image') {
+    return <img src={(part as ChatImagePart).dataUrl} style={attachedImageStyle} alt="Attached image" />;
   }
   if (part.type === 'tool-call') {
     const code = extractCode(part.input);
@@ -373,6 +457,7 @@ const titleStyle: CSSProperties = {
   margin: '4px 0 2px',
   fontSize: 24,
   lineHeight: 1.1,
+  fontWeight: 700,
 };
 
 const mutedStyle: CSSProperties = {
@@ -654,4 +739,55 @@ const textareaStyle: CSSProperties = {
   fontSize: 13,
   fontFamily: 'inherit',
   lineHeight: 1.4,
+};
+
+const thumbnailStripStyle: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 6,
+};
+
+const thumbnailWrapStyle: CSSProperties = {
+  position: 'relative',
+  width: 52,
+  height: 52,
+  flexShrink: 0,
+};
+
+const thumbnailStyle: CSSProperties = {
+  width: 52,
+  height: 52,
+  objectFit: 'cover',
+  borderRadius: 6,
+  border: '1px solid rgba(116, 212, 255, 0.3)',
+  display: 'block',
+};
+
+const thumbnailRemoveStyle: CSSProperties = {
+  position: 'absolute',
+  top: -6,
+  right: -6,
+  width: 16,
+  height: 16,
+  borderRadius: '50%',
+  background: 'rgba(255, 133, 115, 0.9)',
+  color: '#38130e',
+  border: 'none',
+  cursor: 'pointer',
+  fontSize: 11,
+  lineHeight: '16px',
+  textAlign: 'center',
+  padding: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontWeight: 700,
+};
+
+const attachedImageStyle: CSSProperties = {
+  maxWidth: '100%',
+  maxHeight: 200,
+  borderRadius: 8,
+  border: '1px solid rgba(116, 212, 255, 0.2)',
+  display: 'block',
 };

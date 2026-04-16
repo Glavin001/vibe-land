@@ -1,6 +1,6 @@
 pub mod constants;
 pub mod debug_render;
-pub mod local_arena;
+pub mod physics_arena;
 pub mod local_session;
 pub mod local_world;
 pub mod movement;

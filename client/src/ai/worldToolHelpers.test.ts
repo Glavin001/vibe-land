@@ -31,6 +31,7 @@ function makeAccessors(initial: WorldDocument): {
   let current = initial;
   let edits = 0;
   let aiEditCount = 0;
+  const splines = new Map<string, import('./splineData').SplineData>();
   const accessors: WorldAccessors = {
     getWorld: () => current,
     commitEdit: (updater, options) => {
@@ -41,6 +42,25 @@ function makeAccessors(initial: WorldDocument): {
       if (options?.isAiEdit) aiEditCount += 1;
       return true;
     },
+    applyWithoutCommit: (updater) => {
+      const next = updater(current);
+      if (next === current) return false;
+      current = next;
+      edits += 1;
+      return true;
+    },
+    restoreWorld: (snapshot) => {
+      current = snapshot;
+    },
+    commitAsAi: () => {
+      // no-op in tests
+    },
+    rollbackToCommit: () => {
+      return { ok: false, message: 'not implemented in tests' };
+    },
+    getSplines: () => splines,
+    setSpline: (id, spline) => { splines.set(id, spline); },
+    deleteSpline: (id) => splines.delete(id),
   };
   return {
     accessors,
@@ -296,5 +316,54 @@ describe('buildWorldCtx', () => {
     expect(stats.minHeight).toBe(1);
     expect(stats.maxHeight).toBe(9);
     expect(stats.avgHeight).toBeCloseTo(5, 5);
+  });
+
+  it('registerCustomStencil returns registered:true for a valid definition', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.registerCustomStencil({
+      id: 'test-stencil',
+      name: 'Test Stencil',
+      applyFn: 'ctx.forEachSample((x, z, h) => h + 1);',
+    });
+    expect(result.registered).toBe(true);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('registerCustomStencil returns error for invalid definition', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.registerCustomStencil({
+      id: '',
+      name: 'Bad',
+      applyFn: 'return;',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    expect(result.registered).toBe(false);
+    expect(result.error).toBeDefined();
+  });
+
+  it('applyCustomStencil modifies terrain and returns mutation stats', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    ctx.registerCustomStencil({
+      id: 'raise-2',
+      name: 'Raise 2',
+      applyFn: 'ctx.forEachSample((x, z, h) => h + 2);',
+    });
+    const result = ctx.applyCustomStencil('raise-2', 0, 0);
+    expect(result.changed).toBe(true);
+    expect(typeof result.samplesAffected).toBe('number');
+    expect((result.samplesAffected ?? 0)).toBeGreaterThan(0);
+    const after = env.current().terrain.tiles[0].heights;
+    expect(after.every((h) => h === 2)).toBe(true);
+  });
+
+  it('applyCustomStencil returns error for unknown stencil id', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.applyCustomStencil('nonexistent', 0, 0);
+    expect(result.changed).toBe(false);
+    expect(result.error).toMatch(/nonexistent/);
   });
 });

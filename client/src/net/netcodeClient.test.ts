@@ -13,6 +13,7 @@ import {
   metersToMm,
   angleToI16,
   FLAG_ON_GROUND,
+  FLAG_IN_VEHICLE,
 } from './protocol';
 
 function makeNetState(opts: {
@@ -98,6 +99,7 @@ function makeSnapshotV2(opts: {
   ackInputSeq?: number;
   anchorPosition?: [number, number, number];
   selfVelocity?: [number, number, number];
+  selfFlags?: number;
   remotePlayers?: Array<{
     handle: number;
     offset: [number, number, number];
@@ -142,7 +144,7 @@ function makeSnapshotV2(opts: {
       yawI16: angleToI16(0),
       pitchI16: angleToI16(0),
       hp: 100,
-      flags: FLAG_ON_GROUND,
+      flags: opts.selfFlags ?? FLAG_ON_GROUND,
     },
     remotePlayers: (opts.remotePlayers ?? []).map((player) => ({
       handle: player.handle,
@@ -556,6 +558,115 @@ describe('NetcodeClient', () => {
       expect(client.dynamicBodies.get(7001)?.position[0]).toBeCloseTo(13);
       expect(client.vehicles.has(3)).toBe(true);
       expect(client.vehicles.get(3)?.position[0]).toBeCloseTo(18);
+    });
+
+    it('fires the V2 local snapshot callback after same-tick dynamic bodies are applied', () => {
+      let observedDynamicBodyX: number | null = null;
+      const client = new NetcodeClient({
+        onLocalSnapshot: () => {
+          observedDynamicBodyX = client.dynamicBodies.get(7001)?.position[0] ?? null;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makeDynamicBodyMeta([
+        { handle: 7, bodyId: 7001, shapeType: 1, halfExtents: [0.3, 0.3, 0.3] },
+      ]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        ackInputSeq: 9,
+        anchorPosition: [10, 2, -4],
+        sphereStates: [{ handle: 7, offset: [3, 0, -2], velocity: [0, 0, 1] }],
+      }));
+
+      expect(observedDynamicBodyX).toBeCloseTo(13);
+    });
+
+    it('keeps multiplayer local-driver vehicle snapshots out of the remote vehicle interpolator', () => {
+      let receivedAck = -1;
+      let receivedVehicleId = 0;
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+          receivedAck = ackInputSeq;
+          receivedVehicleId = vehicleState.id;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshot({
+        serverTick: 10,
+        ackInputSeq: 7,
+        players: [makeNetState({ id: 1 })],
+        vehicleStates: [makeVehicleState({ id: 200, driverId: 1, position: [5, 0, 0], velocity: [2, 0, 0] })],
+      }));
+
+      const sample = client.sampleRemoteVehicle(200, 0);
+      expect(receivedAck).toBe(7);
+      expect(receivedVehicleId).toBe(200);
+      expect(sample).not.toBeNull();
+      expect(sample?.driverPlayerId).toBe(1);
+      expect(sample?.position[0]).toBeCloseTo(5);
+    });
+
+    it('continues routing V2 local vehicle acks when the compact driver handle is temporarily unresolved', () => {
+      const receivedAcks: number[] = [];
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (_vehicleState, ackInputSeq) => {
+          receivedAcks.push(ackInputSeq);
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+      client.handlePacket(makePlayerRoster([
+        { handle: 1, playerId: 1 },
+      ]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        ackInputSeq: 9,
+        vehicleStates: [{ handle: 3, driverHandle: 1, offset: [8, 0, 0], velocity: [1, 0, 0] }],
+      }));
+      client.handlePacket(makePlayerRoster([]));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 26,
+        ackInputSeq: 10,
+        selfFlags: FLAG_ON_GROUND | FLAG_IN_VEHICLE,
+        vehicleStates: [{ handle: 3, driverHandle: 1, offset: [8.1, 0, 0], velocity: [1, 0, 0] }],
+      }));
+
+      expect(receivedAcks).toEqual([9, 10]);
+      expect(client.vehicles.get(3)?.driverId).toBe(1);
+      expect(client.sampleRemoteVehicle(3, 0)?.driverPlayerId).toBe(1);
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 27,
+        ackInputSeq: 11,
+        vehicleStates: [{ handle: 3, driverHandle: 0, offset: [8.2, 0, 0], velocity: [0, 0, 0] }],
+      }));
+
+      expect(receivedAcks).toEqual([9, 10]);
+      expect(client.vehicles.get(3)?.driverId).toBe(0);
+    });
+
+    it('infers the local V2 driven vehicle from self vehicle state when roster metadata arrives late', () => {
+      let receivedAck = -1;
+      const client = new NetcodeClient({
+        onLocalVehicleSnapshot: (_vehicleState, ackInputSeq) => {
+          receivedAck = ackInputSeq;
+        },
+      });
+      client.handlePacket(makeWelcome(1));
+
+      client.handlePacket(makeSnapshotV2({
+        serverTick: 25,
+        ackInputSeq: 9,
+        selfFlags: FLAG_ON_GROUND | FLAG_IN_VEHICLE,
+        vehicleStates: [{ handle: 3, driverHandle: 1, offset: [8, 0, 0], velocity: [1, 0, 0] }],
+      }));
+
+      expect(receivedAck).toBe(9);
+      expect(client.vehicles.get(3)?.driverId).toBe(1);
+      expect(client.sampleRemoteVehicle(3, 0)?.driverPlayerId).toBe(1);
     });
   });
 

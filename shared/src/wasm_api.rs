@@ -8,16 +8,18 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
-use crate::local_session::LocalPreviewSession;
-use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
-use crate::protocol::InputCmd;
+use crate::local_session::LocalSession;
+use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
+use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics, vehicle_suspension_filter,
+    apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
+    read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
+    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS,
+    VEHICLE_WHEEL_OFFSETS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -27,6 +29,30 @@ static PANIC_HOOK: Once = Once::new();
 
 fn install_panic_hook_once() {
     PANIC_HOOK.call_once(console_error_panic_hook::set_once);
+}
+
+/// Returns chassis half-extents as [x, y, z].
+#[wasm_bindgen]
+pub fn vehicle_chassis_half_extents() -> Box<[f32]> {
+    Box::new(VEHICLE_CHASSIS_HALF_EXTENTS)
+}
+
+/// Returns wheel offsets as a flat array [x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3] (FL, FR, RL, RR).
+#[wasm_bindgen]
+pub fn vehicle_wheel_offsets() -> Box<[f32]> {
+    VEHICLE_WHEEL_OFFSETS.concat().into_boxed_slice()
+}
+
+/// Returns the suspension rest length in metres.
+#[wasm_bindgen]
+pub fn vehicle_suspension_rest_length() -> f32 {
+    VEHICLE_SUSPENSION_REST_LENGTH
+}
+
+/// Returns the wheel radius in metres.
+#[wasm_bindgen]
+pub fn vehicle_wheel_radius() -> f32 {
+    VEHICLE_WHEEL_RADIUS
 }
 
 struct WasmVehicle {
@@ -970,11 +996,24 @@ impl WasmSimWorld {
     pub fn set_local_vehicle(&mut self, vehicle_id: u32) {
         self.local_vehicle_id = Some(vehicle_id);
         self.vehicle_pending_inputs.clear();
+        self.refresh_local_vehicle_contacts();
     }
 
     /// Clear the local vehicle (called on exit).
     #[wasm_bindgen(js_name = clearLocalVehicle)]
     pub fn clear_local_vehicle(&mut self) {
+        if let Some(vehicle_id) = self.local_vehicle_id {
+            if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
+                if let Some(chassis_state) =
+                    read_vehicle_chassis_state(&self.sim, vehicle.chassis_body)
+                {
+                    self.position = vehicle_exit_position(&chassis_state);
+                    if let Some(collider) = self.player_collider {
+                        self.sim.sync_player_collider(collider, &self.position);
+                    }
+                }
+            }
+        }
         self.local_vehicle_id = None;
         self.vehicle_pending_inputs.clear();
     }
@@ -1049,8 +1088,7 @@ impl WasmSimWorld {
             self.vehicle_pending_inputs.drain(0..excess);
         }
 
-        self.apply_vehicle_input(vid, &input);
-        self.step_vehicle_pipeline(dt);
+        self.step_local_vehicle_input(vid, &input, dt);
 
         self.get_vehicle_state(vid)
     }
@@ -1153,19 +1191,15 @@ impl WasmSimWorld {
             }
         }
 
-        // Warm up contacts before replay: run a few zero-input steps so the
-        // pipeline builds constraint data from the server-reset position.
-        // Without this, the first replay steps use cold (uninitialized) contact
-        // data, producing different forces than the warm-started server physics.
-        for _ in 0..3 {
-            self.step_vehicle_pipeline(dt);
-        }
+        // Refresh wheel raycasts from the reset pose without advancing time.
+        // Stepping full dynamics here would incorrectly add extra vehicle motion
+        // before replaying the pending input history.
+        self.refresh_local_vehicle_contacts();
 
         // Replay pending inputs.
         let inputs: Vec<InputCmd> = self.vehicle_pending_inputs.clone();
         for input in &inputs {
-            self.apply_vehicle_input(vid, input);
-            self.step_vehicle_pipeline(dt);
+            self.step_local_vehicle_input(vid, input, dt);
         }
 
         let state = self.get_vehicle_state(vid);
@@ -1184,91 +1218,94 @@ impl WasmSimWorld {
         let Some(vehicle) = self.vehicles.get(&vid) else {
             return Box::new([]);
         };
-        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+        let Some(debug) =
+            read_vehicle_debug_snapshot(&self.sim, vehicle.chassis_body, &vehicle.controller)
+        else {
             return Box::new([]);
         };
-
-        let linvel = rb.linvel();
-        let speed = linvel.norm() as f64;
-        let grounded_wheels = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .filter(|wheel| wheel.raycast_info().is_in_contact)
-            .count() as f64;
-        let steering = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .take(2)
-            .map(|wheel| wheel.steering as f64)
-            .sum::<f64>()
-            / 2.0;
-        let engine_force = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .skip(2)
-            .map(|wheel| wheel.engine_force as f64)
-            .sum::<f64>()
-            / 2.0;
-        let brake = vehicle
-            .controller
-            .wheels()
-            .iter()
-            .map(|wheel| wheel.brake as f64)
-            .fold(0.0, f64::max);
-
-        Box::new([speed, grounded_wheels, steering, engine_force, brake])
+        let mut out = Vec::with_capacity(64);
+        out.push(debug.speed as f64);
+        out.push(debug.grounded_wheels as f64);
+        out.push(debug.steering as f64);
+        out.push(debug.engine_force as f64);
+        out.push(debug.brake as f64);
+        out.push(debug.linear_velocity[0] as f64);
+        out.push(debug.linear_velocity[1] as f64);
+        out.push(debug.linear_velocity[2] as f64);
+        out.push(debug.angular_velocity[0] as f64);
+        out.push(debug.angular_velocity[1] as f64);
+        out.push(debug.angular_velocity[2] as f64);
+        out.push(debug.wheel_contact_bits as f64);
+        out.extend(debug.suspension_lengths.into_iter().map(|v| v as f64));
+        out.extend(debug.suspension_forces.into_iter().map(|v| v as f64));
+        out.extend(
+            debug
+                .suspension_relative_velocities
+                .into_iter()
+                .map(|v| v as f64),
+        );
+        for point in debug.wheel_hard_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for point in debug.wheel_contact_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for normal in debug.wheel_contact_normals {
+            out.extend(normal.into_iter().map(|v| v as f64));
+        }
+        out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
+        out.into_boxed_slice()
     }
 
     #[wasm_bindgen(js_name = getVehiclePendingCount)]
     pub fn get_vehicle_pending_count(&self) -> u32 {
         self.vehicle_pending_inputs.len() as u32
     }
+
+    #[wasm_bindgen(js_name = pruneVehiclePendingInputsThrough)]
+    pub fn prune_vehicle_pending_inputs_through(&mut self, ack_seq: u16) {
+        self.vehicle_pending_inputs
+            .retain(|input| seq_is_newer(input.seq, ack_seq));
+    }
 }
 
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
 
 impl WasmSimWorld {
-    fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd) {
-        let reset_requested = input.buttons & BTN_RELOAD != 0;
-        let (steering, engine_force, brake) = vehicle_wheel_params(input);
-
+    fn refresh_local_vehicle_contacts(&mut self) {
+        let Some(vid) = self.local_vehicle_id else {
+            return;
+        };
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
         };
-        if reset_requested {
-            if let Some(rb) = self.sim.rigid_bodies.get_mut(vehicle.chassis_body) {
-                reset_vehicle_body(rb);
-            }
-        }
-        for (i, wheel) in vehicle.controller.wheels_mut().iter_mut().enumerate() {
-            if i < 2 {
-                wheel.steering = if reset_requested { 0.0 } else { steering };
-            }
-            wheel.engine_force = if !reset_requested && i >= 2 {
-                engine_force
-            } else {
-                0.0
-            };
-            wheel.brake = if reset_requested { 0.0 } else { brake };
-        }
-
-        let chassis_collider = vehicle.chassis_collider;
-        let filter = vehicle_suspension_filter(chassis_collider);
-        let dt = 1.0_f32 / 60.0; // used internally for suspension forces
-        let queries = self.sim.broad_phase.as_query_pipeline_mut(
-            self.sim.narrow_phase.query_dispatcher(),
-            &mut self.sim.rigid_bodies,
-            &mut self.sim.colliders,
-            filter,
+        refresh_vehicle_contacts(
+            &mut self.sim,
+            vehicle.chassis_collider,
+            &mut vehicle.controller,
         );
-        // update_vehicle applies suspension impulses but not integration
+    }
+
+    fn apply_vehicle_input(&mut self, vid: u32, input: &InputCmd, dt: f32) {
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
         };
-        vehicle.controller.update_vehicle(dt, queries);
+        apply_vehicle_input_step(
+            &mut self.sim,
+            vehicle.chassis_body,
+            vehicle.chassis_collider,
+            &mut vehicle.controller,
+            input,
+            dt,
+        );
+    }
+
+    fn step_local_vehicle_input(&mut self, vid: u32, input: &InputCmd, dt: f32) {
+        let substep_dt = dt / VEHICLE_CONTROLLER_SUBSTEPS as f32;
+        for _ in 0..VEHICLE_CONTROLLER_SUBSTEPS {
+            self.apply_vehicle_input(vid, input, substep_dt);
+            self.step_vehicle_pipeline(substep_dt);
+        }
     }
 
     fn step_vehicle_pipeline(&mut self, dt: f32) {
@@ -1290,23 +1327,31 @@ impl WasmSimWorld {
         let Some(vehicle) = self.vehicles.get(&vid) else {
             return Box::new([0.0; 10]);
         };
-        let Some(rb) = self.sim.rigid_bodies.get(vehicle.chassis_body) else {
+        let Some(state) = read_vehicle_chassis_state(&self.sim, vehicle.chassis_body) else {
             return Box::new([0.0; 10]);
         };
-        let p = rb.translation();
-        let r = rb.rotation();
-        let v = rb.linvel();
         Box::new([
-            p.x as f64, p.y as f64, p.z as f64, r.i as f64, r.j as f64, r.k as f64, r.w as f64,
-            v.x as f64, v.y as f64, v.z as f64,
+            state.position[0] as f64,
+            state.position[1] as f64,
+            state.position[2] as f64,
+            state.quaternion[0] as f64,
+            state.quaternion[1] as f64,
+            state.quaternion[2] as f64,
+            state.quaternion[3] as f64,
+            state.linear_velocity[0] as f64,
+            state.linear_velocity[1] as f64,
+            state.linear_velocity[2] as f64,
         ])
     }
 }
 
 #[wasm_bindgen]
 pub struct WasmLocalSession {
-    inner: LocalPreviewSession,
+    inner: LocalSession,
 }
+
+const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
+const LOCAL_VEHICLE_STATE_STRIDE: usize = 21;
 
 #[wasm_bindgen]
 impl WasmLocalSession {
@@ -1314,9 +1359,10 @@ impl WasmLocalSession {
     pub fn new(world_json: Option<String>) -> Result<Self, JsValue> {
         install_panic_hook_once();
         let inner = match world_json {
-            Some(world_json) => LocalPreviewSession::from_world_json(&world_json)
-                .map_err(|err| JsValue::from_str(&err))?,
-            None => LocalPreviewSession::new(),
+            Some(world_json) => {
+                LocalSession::from_world_json(&world_json).map_err(|err| JsValue::from_str(&err))?
+            }
+            None => LocalSession::new(),
         };
         Ok(Self { inner })
     }
@@ -1336,14 +1382,230 @@ impl WasmLocalSession {
             .map_err(|err| JsValue::from_str(&err))
     }
 
+    #[wasm_bindgen(js_name = enqueueInput)]
+    pub fn enqueue_input(
+        &mut self,
+        seq: u16,
+        buttons: u16,
+        move_x: i8,
+        move_y: i8,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        self.inner.enqueue_input(InputCmd {
+            seq,
+            buttons,
+            move_x,
+            move_y,
+            yaw,
+            pitch,
+        });
+    }
+
+    #[wasm_bindgen(js_name = queueFire)]
+    pub fn queue_fire(
+        &mut self,
+        seq: u16,
+        shot_id: u32,
+        weapon: u8,
+        client_fire_time_us: f64,
+        client_interp_ms: u16,
+        client_dynamic_interp_ms: u16,
+        dir_x: f32,
+        dir_y: f32,
+        dir_z: f32,
+    ) {
+        self.inner.queue_fire_cmd(FireCmd {
+            seq,
+            shot_id,
+            weapon,
+            client_fire_time_us: client_fire_time_us.max(0.0).round() as u64,
+            client_interp_ms,
+            client_dynamic_interp_ms,
+            dir: [dir_x, dir_y, dir_z],
+        });
+    }
+
+    #[wasm_bindgen(js_name = enterVehicle)]
+    pub fn enter_vehicle(&mut self, vehicle_id: u32) {
+        self.inner.enter_vehicle(vehicle_id);
+    }
+
+    #[wasm_bindgen(js_name = exitVehicle)]
+    pub fn exit_vehicle(&mut self, vehicle_id: u32) {
+        self.inner.exit_vehicle(vehicle_id);
+    }
+
     pub fn tick(&mut self, dt: f32) {
         self.inner.tick(dt);
+    }
+
+    #[wasm_bindgen(js_name = getSnapshotMeta)]
+    pub fn get_snapshot_meta(&self) -> Box<[f64]> {
+        Box::new([
+            self.inner.server_time_us() as f64,
+            self.inner.server_tick() as f64,
+            self.inner.ack_input_seq() as f64,
+            self.inner.player_id() as f64,
+        ])
+    }
+
+    #[wasm_bindgen(js_name = getLocalPlayerState)]
+    pub fn get_local_player_state(&self) -> Box<[f64]> {
+        flatten_player_state(self.inner.local_player_state())
+    }
+
+    #[wasm_bindgen(js_name = getDynamicBodyStates)]
+    pub fn get_dynamic_body_states(&self) -> Box<[f64]> {
+        let states = self.inner.dynamic_body_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_DYNAMIC_BODY_STATE_STRIDE);
+        for state in &states {
+            push_dynamic_body_state(&mut out, state);
+        }
+        out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getVehicleStates)]
+    pub fn get_vehicle_states(&self) -> Box<[f64]> {
+        let states = self.inner.vehicle_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_VEHICLE_STATE_STRIDE);
+        for state in &states {
+            push_vehicle_state(&mut out, state);
+        }
+        out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = castSceneRay)]
+    pub fn cast_scene_ray(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        max_toi: f32,
+    ) -> Box<[f32]> {
+        match self
+            .inner
+            .cast_scene_ray([ox, oy, oz], [dx, dy, dz], max_toi)
+        {
+            Some(toi) => Box::new([toi]),
+            None => Box::new([]),
+        }
+    }
+
+    #[wasm_bindgen(js_name = getVehicleDebug)]
+    pub fn get_vehicle_debug(&self, vehicle_id: u32) -> Box<[f64]> {
+        let Some(debug) = self.inner.vehicle_debug(vehicle_id) else {
+            return Box::new([]);
+        };
+        let mut out = Vec::with_capacity(64);
+        out.push(debug.speed as f64);
+        out.push(debug.grounded_wheels as f64);
+        out.push(debug.steering as f64);
+        out.push(debug.engine_force as f64);
+        out.push(debug.brake as f64);
+        out.push(debug.linear_velocity[0] as f64);
+        out.push(debug.linear_velocity[1] as f64);
+        out.push(debug.linear_velocity[2] as f64);
+        out.push(debug.angular_velocity[0] as f64);
+        out.push(debug.angular_velocity[1] as f64);
+        out.push(debug.angular_velocity[2] as f64);
+        out.push(debug.wheel_contact_bits as f64);
+        out.extend(debug.suspension_lengths.into_iter().map(|v| v as f64));
+        out.extend(debug.suspension_forces.into_iter().map(|v| v as f64));
+        out.extend(
+            debug
+                .suspension_relative_velocities
+                .into_iter()
+                .map(|v| v as f64),
+        );
+        for point in debug.wheel_hard_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for point in debug.wheel_contact_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for normal in debug.wheel_contact_normals {
+            out.extend(normal.into_iter().map(|v| v as f64));
+        }
+        out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
+        out.into_boxed_slice()
     }
 
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
     }
+}
+
+fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
+    let Some(state) = state else {
+        return Box::new([]);
+    };
+    Box::new([
+        state.id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.yaw_i16 as f64,
+        state.pitch_i16 as f64,
+        state.hp as f64,
+        state.flags as f64,
+    ])
+}
+
+fn push_dynamic_body_state(out: &mut Vec<f64>, state: &NetDynamicBodyState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.shape_type as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.qx_snorm as f64,
+        state.qy_snorm as f64,
+        state.qz_snorm as f64,
+        state.qw_snorm as f64,
+        state.hx_cm as f64,
+        state.hy_cm as f64,
+        state.hz_cm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.wx_mrads as f64,
+        state.wy_mrads as f64,
+        state.wz_mrads as f64,
+    ]);
+}
+
+fn push_vehicle_state(out: &mut Vec<f64>, state: &NetVehicleState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.vehicle_type as f64,
+        state.flags as f64,
+        state.driver_id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.qx_snorm as f64,
+        state.qy_snorm as f64,
+        state.qz_snorm as f64,
+        state.qw_snorm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.wx_mrads as f64,
+        state.wy_mrads as f64,
+        state.wz_mrads as f64,
+        state.wheel_data[0] as f64,
+        state.wheel_data[1] as f64,
+        state.wheel_data[2] as f64,
+        state.wheel_data[3] as f64,
+    ]);
 }
 
 /// Clock-sync estimator exposed to JavaScript via WASM.

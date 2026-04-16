@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ReactNode } from 'react';
+import { useRef, useEffect, useMemo, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -6,10 +6,11 @@ import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
 import type { InputBindings } from '../input/bindings';
 import type { CrosshairAimState } from './aimTargeting';
-import type { RemotePlayer } from './useGameConnection';
-import { useGameConnection } from './useGameConnection';
+import type { RemotePlayer } from '../net/netcodeClient';
+import { useGameRuntime } from '../runtime/useGameRuntime';
+import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
-import { usePredictionWithWorld } from '../physics/usePrediction';
+import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -34,17 +35,34 @@ import {
   FLAG_IN_VEHICLE,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
+  RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import { netPlayerStateToMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
-import type { LoadTestScenario } from '../loadtest/scenario';
+import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
-import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
+import {
+  DEFAULT_WORLD_DOCUMENT,
+  removeVehicleEntitiesFromWorldDocument,
+  serializeWorldDocument,
+  type WorldDocument,
+} from '../world/worldDocument';
+import {
+  getVehicleChassisHalfExtents,
+  getVehicleWheelConnectionOffsets,
+  getVehicleWheelRadiusM,
+  getVehicleWheelVisualAnchors,
+} from './vehicleVisualGeometry';
+import {
+  resetLocalVehicleMeshPose,
+  updateLocalVehicleMeshPose,
+  type LocalVehicleVisualPoseState,
+} from './vehicleLocalMeshPose';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
-const LOCAL_RIFLE_INTERVAL_MS = 100;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
@@ -53,19 +71,7 @@ const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
-const VEHICLE_CHASSIS_HALF_EXTENTS = { x: 0.9, y: 0.3, z: 1.8 } as const;
-const VEHICLE_WHEEL_ANCHORS: ReadonlyArray<readonly [number, number, number]> = [
-  [-0.9, 0.0, 1.1],
-  [0.9, 0.0, 1.1],
-  [-0.9, 0.0, -1.1],
-  [0.9, 0.0, -1.1],
-] as const;
-const VEHICLE_WHEEL_RADIUS_M = 0.35;
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
-const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
-const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
-const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
-const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -96,6 +102,10 @@ type FrameDebugCallback = (
     lastDynamicShotAgeMs: number;
     vehiclePendingInputs: number;
     vehicleAckSeq: number;
+    vehicleLatestLocalSeq: number;
+    vehiclePendingInputsAgeMs: number;
+    vehicleAckBacklogMs: number;
+    vehicleResendWindow: number;
     vehicleReplayErrorM: number;
     vehiclePosErrorM: number;
     vehicleVelErrorMs: number;
@@ -114,6 +124,113 @@ type FrameDebugCallback = (
     steering: number;
     engineForce: number;
     brake: number;
+    meshDeltaM: number;
+    meshRotDeltaRad: number;
+    meshDeltaRms5sM: number;
+    meshDeltaPeak5sM: number;
+    restJitterRms5sM: number;
+    straightJitterRms5sM: number;
+    rawHeaveDeltaRms5sM: number;
+    rawHeaveDeltaPeak5sM: number;
+    rawPlanarDeltaRms5sM: number;
+    rawPlanarDeltaPeak5sM: number;
+    rawYawDeltaRms5sRad: number;
+    rawYawDeltaPeak5sRad: number;
+    rawPitchDeltaRms5sRad: number;
+    rawPitchDeltaPeak5sRad: number;
+    rawRollDeltaRms5sRad: number;
+    rawRollDeltaPeak5sRad: number;
+    residualDeltaRms5sM: number;
+    residualDeltaPeak5sM: number;
+    residualPlanarDeltaRms5sM: number;
+    residualPlanarDeltaPeak5sM: number;
+    residualHeaveDeltaRms5sM: number;
+    residualHeaveDeltaPeak5sM: number;
+    residualYawDeltaRms5sRad: number;
+    residualYawDeltaPeak5sRad: number;
+    residualPitchDeltaRms5sRad: number;
+    residualPitchDeltaPeak5sRad: number;
+    residualRollDeltaRms5sRad: number;
+    residualRollDeltaPeak5sRad: number;
+    rawRestHeaveDeltaRms5sM: number;
+    rawStraightHeaveDeltaRms5sM: number;
+    wheelContactBits: number;
+    wheelContactBitChanges5s: number;
+    wheelContactNormals: Array<[number, number, number]>;
+    wheelContactNormalDeltaRms5sRad: number;
+    wheelGroundObjectIds: [number, number, number, number];
+    wheelGroundObjectSwitches5s: number;
+    suspensionLengths: [number, number, number, number];
+    suspensionForces: [number, number, number, number];
+    suspensionRelativeVelocities: [number, number, number, number];
+    suspensionLengthSpreadM: number;
+    suspensionLengthSpreadPeak5sM: number;
+    suspensionLengthDeltaRms5sM: number;
+    suspensionForceSpreadN: number;
+    suspensionForceSpreadPeak5sN: number;
+    suspensionForceDeltaRms5sN: number;
+    meshFrameDeltaRms5sM: number;
+    meshFrameDeltaPeak5sM: number;
+    meshFrameRotDeltaRms5sRad: number;
+    meshFrameRotDeltaPeak5sRad: number;
+    cameraFrameDeltaRms5sM: number;
+    cameraFrameDeltaPeak5sM: number;
+    cameraFrameRotDeltaRms5sRad: number;
+    cameraFrameRotDeltaPeak5sRad: number;
+    groundedTransitions5s: number;
+    groundedMin5s: number;
+    groundedMax5s: number;
+    latestAuthDeltaM: number;
+    sampledAuthDeltaM: number;
+    meshAuthDeltaM: number;
+    latestVsSampledAuthDeltaM: number;
+    currentAuthDeltaM: number;
+    meshCurrentAuthDeltaM: number;
+    expectedLeadM: number;
+    currentAuthUnexplainedDeltaM: number;
+    currentAuthPlanarDeltaM: number;
+    currentAuthVerticalDeltaM: number;
+    authObservedAgeMs: number;
+    authSampleOffsetMs: number;
+    authSampleServerDeltaMs: number;
+    authCurrentOffsetMs: number;
+    predictedAuthDeltaRms5sM: number;
+    predictedAuthDeltaPeak5sM: number;
+    capture: {
+      predictedFrameDeltaM: number;
+      predictedPlanarDeltaM: number;
+      predictedHeaveDeltaM: number;
+      predictedYawDeltaRad: number;
+      predictedPitchDeltaRad: number;
+      predictedRollDeltaRad: number;
+      predictedResidualDeltaM: number;
+      predictedResidualPlanarDeltaM: number;
+      predictedResidualHeaveDeltaM: number;
+      predictedResidualYawDeltaRad: number;
+      predictedResidualPitchDeltaRad: number;
+      predictedResidualRollDeltaRad: number;
+      meshFrameDeltaM: number;
+      meshFrameRotDeltaRad: number;
+      cameraFrameDeltaM: number;
+      cameraFrameRotDeltaRad: number;
+      groundedTransitionThisFrame: boolean;
+      wheelContactBits: number;
+      wheelContactBitChangesThisFrame: number;
+      wheelContactNormalDeltaRad: number;
+      wheelGroundObjectSwitchesThisFrame: number;
+      suspensionLengthSpreadM: number;
+      suspensionForceSpreadN: number;
+      suspensionLengthDeltaM: number;
+      suspensionForceDeltaN: number;
+      expectedLeadM: number;
+      currentAuthUnexplainedDeltaM: number;
+      currentAuthPlanarDeltaM: number;
+      currentAuthVerticalDeltaM: number;
+      predictedPosition: [number, number, number] | null;
+      meshPosition: [number, number, number] | null;
+      currentAuthPosition: [number, number, number] | null;
+      cameraPosition: [number, number, number];
+    };
   },
   telemetry: {
     lastSnapshotGapMs: number;
@@ -204,11 +321,47 @@ type VehicleRenderState = {
   wheels: VehicleWheelVisualState[];
 };
 
+type VehicleSupportLabelState = {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  texture: THREE.CanvasTexture;
+  sprite: THREE.Sprite;
+};
+
+type VehicleSupportDebugState = {
+  group: THREE.Group;
+  rays: THREE.Line[];
+  normals: THREE.Line[];
+  contacts: THREE.Mesh[];
+  labels: VehicleSupportLabelState[];
+};
+
+type LocalVehicleMotionState = {
+  vehicleId: number | null;
+  position: THREE.Vector3;
+  euler: THREE.Euler;
+  quaternion: THREE.Quaternion;
+  groundedWheels: number;
+  linearVelocity: [number, number, number];
+  angularVelocity: [number, number, number];
+  wheelContactBits: number;
+  suspensionLengths: [number, number, number, number];
+  suspensionForces: [number, number, number, number];
+  suspensionRelativeVelocities: [number, number, number, number];
+  wheelContactNormals: Array<[number, number, number]>;
+  wheelGroundObjectIds: [number, number, number, number];
+};
+
+type BenchmarkVehicleDriverState = {
+  enteredVehicleAtMs: number | null;
+  lastEnterPressedAtMs: number | null;
+};
+
 function collectRemoteShotHits(
   remotePlayers: Map<number, RemotePlayer>,
-  remoteInterpolator: ReturnType<typeof useGameConnection>['stateRef']['current']['remoteInterpolator'],
+  remoteInterpolator: GameRuntimeClient['interpolator'],
   renderTimeUs: number,
-  prediction: ReturnType<typeof usePredictionWithWorld>,
+  runtime: Pick<GameRuntimeClient, 'classifyHitscanPlayer'>,
   aimOrigin: [number, number, number],
   aimDirection: [number, number, number],
   blockerDistance: number | null,
@@ -217,7 +370,7 @@ function collectRemoteShotHits(
   for (const [id, rp] of remotePlayers) {
     const sample = remoteInterpolator.sample(id, renderTimeUs);
     const position = sample?.position ?? rp.position;
-    const hit = prediction.classifyHitscanPlayer(aimOrigin, aimDirection, position, blockerDistance);
+    const hit = runtime.classifyHitscanPlayer(aimOrigin, aimDirection, position, blockerDistance);
     if (!hit) continue;
     remoteHits.push({
       distance: hit.distance,
@@ -340,12 +493,344 @@ function nearestDynamicBodyCandidate(
   return best;
 }
 
-type LocalVehicleVisualPoseState = {
-  vehicleId: number | null;
-  position: THREE.Vector3;
-  quaternion: THREE.Quaternion;
-  euler: THREE.Euler;
-};
+type TimedScalar = { atMs: number; value: number };
+
+function trimTimedScalars(samples: TimedScalar[], nowMs: number, windowMs = 5000): void {
+  while (samples.length > 0 && nowMs - samples[0].atMs > windowMs) {
+    samples.shift();
+  }
+}
+
+function rmsTimedScalars(samples: TimedScalar[]): number {
+  if (samples.length === 0) return 0;
+  let sumSquares = 0;
+  for (const sample of samples) {
+    sumSquares += sample.value * sample.value;
+  }
+  return Math.sqrt(sumSquares / samples.length);
+}
+
+function peakTimedScalars(samples: TimedScalar[]): number {
+  let peak = 0;
+  for (const sample of samples) {
+    if (sample.value > peak) peak = sample.value;
+  }
+  return peak;
+}
+
+function minTimedScalars(samples: TimedScalar[]): number {
+  if (samples.length === 0) return 0;
+  let min = Number.POSITIVE_INFINITY;
+  for (const sample of samples) {
+    if (sample.value < min) min = sample.value;
+  }
+  return Number.isFinite(min) ? min : 0;
+}
+
+function maxTimedScalars(samples: TimedScalar[]): number {
+  if (samples.length === 0) return 0;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const sample of samples) {
+    if (sample.value > max) max = sample.value;
+  }
+  return Number.isFinite(max) ? max : 0;
+}
+
+function countTimedScalars(samples: TimedScalar[]): number {
+  return samples.length;
+}
+
+function popcount8(value: number): number {
+  let bits = value & 0xff;
+  let count = 0;
+  while (bits !== 0) {
+    bits &= bits - 1;
+    count += 1;
+  }
+  return count;
+}
+
+function distanceVec3(a: [number, number, number], b: [number, number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+function spread4(values: readonly [number, number, number, number]): number {
+  let min = values[0];
+  let max = values[0];
+  for (let index = 1; index < values.length; index += 1) {
+    const value = values[index];
+    if (value < min) min = value;
+    if (value > max) max = value;
+  }
+  return max - min;
+}
+
+function rmsDelta4(
+  current: readonly [number, number, number, number],
+  previous: readonly [number, number, number, number],
+): number {
+  let sumSquares = 0;
+  for (let index = 0; index < current.length; index += 1) {
+    const delta = current[index] - previous[index];
+    sumSquares += delta * delta;
+  }
+  return Math.sqrt(sumSquares / current.length);
+}
+
+function wheelContactNormalDelta(
+  currentNormals: Array<[number, number, number]>,
+  previousNormals: Array<[number, number, number]>,
+  currentBits: number,
+  previousBits: number,
+): number {
+  let sumSquares = 0;
+  let count = 0;
+  for (let index = 0; index < 4; index += 1) {
+    if (((currentBits & previousBits) & (1 << index)) === 0) continue;
+    const current = currentNormals[index];
+    const previous = previousNormals[index];
+    if (!current || !previous) continue;
+    const currentLen = Math.hypot(current[0], current[1], current[2]);
+    const previousLen = Math.hypot(previous[0], previous[1], previous[2]);
+    if (currentLen <= 0.0001 || previousLen <= 0.0001) continue;
+    const dot = THREE.MathUtils.clamp(
+      (current[0] * previous[0] + current[1] * previous[1] + current[2] * previous[2]) / (currentLen * previousLen),
+      -1,
+      1,
+    );
+    const angle = Math.acos(dot);
+    sumSquares += angle * angle;
+    count += 1;
+  }
+  return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+}
+
+function wheelGroundObjectSwitches(
+  currentIds: readonly [number, number, number, number],
+  previousIds: readonly [number, number, number, number],
+  currentBits: number,
+  previousBits: number,
+): number {
+  let switches = 0;
+  for (let index = 0; index < 4; index += 1) {
+    if (((currentBits & previousBits) & (1 << index)) !== 0 && currentIds[index] !== previousIds[index]) {
+      switches += 1;
+    }
+  }
+  return switches;
+}
+
+function angleDeltaRad(current: number, previous: number): number {
+  return THREE.MathUtils.euclideanModulo(current - previous + Math.PI, Math.PI * 2) - Math.PI;
+}
+
+function quaternionAngle(a: THREE.Quaternion, b: THREE.Quaternion): number {
+  const dot = Math.min(1, Math.abs(a.dot(b)));
+  return 2 * Math.acos(dot);
+}
+
+function clearTimedScalars(...groups: TimedScalar[][]): void {
+  for (const group of groups) {
+    group.length = 0;
+  }
+}
+
+function updateLineGeometry(
+  line: THREE.Line,
+  start: THREE.Vector3,
+  end: THREE.Vector3,
+  color: number,
+): void {
+  const geometry = line.geometry as THREE.BufferGeometry;
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute;
+  position.setXYZ(0, start.x, start.y, start.z);
+  position.setXYZ(1, end.x, end.y, end.z);
+  position.needsUpdate = true;
+  geometry.computeBoundingSphere();
+  const material = line.material as THREE.LineBasicMaterial;
+  material.color.setHex(color);
+}
+
+function createVehicleSupportLabel(index: number): VehicleSupportLabelState {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 96;
+  const ctx = canvas.getContext('2d')!;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+  }));
+  sprite.name = `wheel_support_label_${index}`;
+  sprite.scale.set(1.6, 0.6, 1);
+  return { canvas, ctx, texture, sprite };
+}
+
+function drawVehicleSupportLabel(
+  label: VehicleSupportLabelState,
+  title: string,
+  contact: boolean,
+  suspensionLengthM: number,
+  suspensionForceN: number,
+  groundObjectId: number,
+  contactNormalY: number,
+): void {
+  const { ctx, canvas, texture } = label;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = contact ? 'rgba(16, 96, 28, 0.82)' : 'rgba(110, 20, 20, 0.82)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 22px monospace';
+  ctx.fillText(title, 12, 26);
+  ctx.font = '18px monospace';
+  ctx.fillText(`hit ${contact ? '1' : '0'} len ${suspensionLengthM.toFixed(2)}`, 12, 54);
+  ctx.fillText(`f ${suspensionForceN.toFixed(0)} g ${groundObjectId} ny ${contactNormalY.toFixed(2)}`, 12, 80);
+  texture.needsUpdate = true;
+}
+
+function createVehicleSupportDebugState(): VehicleSupportDebugState {
+  const group = new THREE.Group();
+  group.name = 'vehicle_support_debug';
+  const rays: THREE.Line[] = [];
+  const normals: THREE.Line[] = [];
+  const contacts: THREE.Mesh[] = [];
+  const labels: VehicleSupportLabelState[] = [];
+  for (let index = 0; index < 4; index += 1) {
+    const rayGeometry = new THREE.BufferGeometry();
+    rayGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const ray = new THREE.Line(rayGeometry, new THREE.LineBasicMaterial({
+      color: 0xff3355,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+    }));
+    ray.name = `wheel_support_ray_${index}`;
+    group.add(ray);
+    rays.push(ray);
+
+    const normalGeometry = new THREE.BufferGeometry();
+    normalGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const normal = new THREE.Line(normalGeometry, new THREE.LineBasicMaterial({
+      color: 0x44d7ff,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    }));
+    normal.name = `wheel_support_normal_${index}`;
+    group.add(normal);
+    normals.push(normal);
+
+    const contact = new THREE.Mesh(
+      new THREE.SphereGeometry(0.08, 10, 8),
+      new THREE.MeshBasicMaterial({
+        color: 0x33ff88,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+      }),
+    );
+    contact.name = `wheel_support_contact_${index}`;
+    contact.visible = false;
+    group.add(contact);
+    contacts.push(contact);
+
+    const label = createVehicleSupportLabel(index);
+    group.add(label.sprite);
+    labels.push(label);
+  }
+  return { group, rays, normals, contacts, labels };
+}
+
+function updateVehicleSupportDebug(
+  vehicleMeshGroup: THREE.Group,
+  localVehicleDebug: {
+    wheelContactBits: number;
+    suspensionLengths: [number, number, number, number];
+    suspensionForces: [number, number, number, number];
+    wheelHardPoints?: Array<[number, number, number]>;
+    wheelContactPoints?: Array<[number, number, number]>;
+    wheelContactNormals?: Array<[number, number, number]>;
+    wheelGroundObjectIds?: [number, number, number, number];
+  } | null,
+  enabled: boolean,
+): void {
+  let debugState = vehicleMeshGroup.userData.supportDebug as VehicleSupportDebugState | undefined;
+  if (!debugState) {
+    debugState = createVehicleSupportDebugState();
+    debugState.group.visible = false;
+    vehicleMeshGroup.add(debugState.group);
+    vehicleMeshGroup.userData.supportDebug = debugState;
+  }
+
+  debugState.group.visible = enabled && localVehicleDebug != null;
+  if (!debugState.group.visible || !localVehicleDebug) return;
+
+  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets();
+  const wheelRadiusM = getVehicleWheelRadiusM();
+  const down = new THREE.Vector3(0, -1, 0);
+  const up = new THREE.Vector3(0, 1, 0);
+  const inverseWorldQuat = vehicleMeshGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
+  for (let index = 0; index < 4; index += 1) {
+    const [ax, ay, az] = wheelConnectionOffsets[index];
+    const suspensionLength = localVehicleDebug.suspensionLengths[index] ?? 0;
+    const contact = (localVehicleDebug.wheelContactBits & (1 << index)) !== 0;
+    const rayLength = suspensionLength + wheelRadiusM;
+    const hardPointWs = localVehicleDebug.wheelHardPoints?.[index];
+    const contactPointWs = localVehicleDebug.wheelContactPoints?.[index];
+    const contactNormalWs = localVehicleDebug.wheelContactNormals?.[index];
+    const start = hardPointWs
+      ? vehicleMeshGroup.worldToLocal(new THREE.Vector3(hardPointWs[0], hardPointWs[1], hardPointWs[2]))
+      : new THREE.Vector3(ax, ay, az);
+    const end = contactPointWs
+      ? vehicleMeshGroup.worldToLocal(new THREE.Vector3(contactPointWs[0], contactPointWs[1], contactPointWs[2]))
+      : new THREE.Vector3(ax, ay - rayLength, az);
+    const contactNormal = contactNormalWs
+      ? new THREE.Vector3(contactNormalWs[0], contactNormalWs[1], contactNormalWs[2]).normalize().applyQuaternion(inverseWorldQuat)
+      : up;
+    const normalY = contactNormalWs?.[1] ?? 0;
+    const ray = debugState.rays[index];
+    const normal = debugState.normals[index];
+    const contactMarker = debugState.contacts[index];
+    const label = debugState.labels[index];
+
+    updateLineGeometry(ray, start, end, contact ? 0x22ff77 : 0xff4466);
+    ray.visible = true;
+
+    if (contact) {
+      updateLineGeometry(normal, end, end.clone().addScaledVector(contactNormal, 0.35), 0x55d8ff);
+      normal.visible = true;
+      contactMarker.visible = true;
+      contactMarker.position.copy(end);
+      (contactMarker.material as THREE.MeshBasicMaterial).color.setHex(0x22ff77);
+    } else {
+      updateLineGeometry(normal, end, end.clone().addScaledVector(down, 0.2), 0xffaa33);
+      normal.visible = true;
+      contactMarker.visible = true;
+      contactMarker.position.copy(end);
+      (contactMarker.material as THREE.MeshBasicMaterial).color.setHex(0xff4466);
+    }
+
+    drawVehicleSupportLabel(
+      label,
+      `W${index}`,
+      contact,
+      suspensionLength,
+      localVehicleDebug.suspensionForces[index] ?? 0,
+      localVehicleDebug.wheelGroundObjectIds?.[index] ?? 0,
+      normalY,
+    );
+    label.sprite.visible = true;
+    label.sprite.position.set(ax, ay + 0.45, az);
+  }
+}
 
 function resolvedInputFromBotIntent(
   buttons: number,
@@ -373,6 +858,94 @@ function resolvedInputFromBotIntent(
   };
 }
 
+function makeIdleResolvedInput(
+  yaw: number,
+  pitch: number,
+  activeFamily: import('../input/types').ResolvedGameInput['activeFamily'],
+): import('../input/types').ResolvedGameInput {
+  return {
+    activeFamily,
+    moveX: 0,
+    moveY: 0,
+    yaw,
+    pitch,
+    buttons: 0,
+    firePrimary: false,
+    interactPressed: false,
+    blockRemovePressed: false,
+    blockPlacePressed: false,
+    materialSlot1Pressed: false,
+    materialSlot2Pressed: false,
+  };
+}
+
+function resolveVehicleBenchmarkInput(
+  state: BenchmarkVehicleDriverState,
+  nowMs: number,
+  isDriving: boolean,
+  nearestVehicleId: number | null,
+  yaw: number,
+  pitch: number,
+  activeFamily: import('../input/types').ResolvedGameInput['activeFamily'],
+  driverProfile: PlayBenchmarkDriverProfile,
+): import('../input/types').ResolvedGameInput {
+  const input = makeIdleResolvedInput(yaw, pitch, activeFamily);
+  if (!isDriving) {
+    state.enteredVehicleAtMs = null;
+    if (
+      nearestVehicleId != null
+      && (state.lastEnterPressedAtMs == null || nowMs - state.lastEnterPressedAtMs >= 750)
+    ) {
+      input.interactPressed = true;
+      state.lastEnterPressedAtMs = nowMs;
+    }
+    return input;
+  }
+
+  if (state.enteredVehicleAtMs == null) {
+    state.enteredVehicleAtMs = nowMs;
+  }
+
+  const elapsedS = (nowMs - state.enteredVehicleAtMs) / 1000;
+  if (driverProfile === 'straight' || driverProfile === 'straight_fast') {
+    if (elapsedS < 1.0) {
+      return input;
+    }
+    input.moveY = driverProfile === 'straight_fast' ? 1.0 : 0.65;
+    return input;
+  }
+  if (elapsedS < 1.0) {
+    return input;
+  }
+  if (elapsedS < 3.0) {
+    input.moveY = 0.35;
+    return input;
+  }
+  if (elapsedS < 7.0) {
+    input.moveY = 1.0;
+    return input;
+  }
+  if (elapsedS < 9.0) {
+    return input;
+  }
+  if (elapsedS < 11.0) {
+    input.moveY = -1.0;
+    return input;
+  }
+  if (elapsedS < 14.0) {
+    input.moveX = -0.22;
+    input.moveY = 0.8;
+    return input;
+  }
+  if (elapsedS < 17.0) {
+    input.moveX = 0.22;
+    input.moveY = 0.8;
+    return input;
+  }
+  input.moveY = -0.4;
+  return input;
+}
+
 export function GameWorld({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
@@ -391,7 +964,12 @@ export function GameWorld({
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
-  const prediction = usePredictionWithWorld(mode, worldJson, localRenderSmoothingEnabled);
+  const predictionWorldJson = useMemo(
+    () => practiceMode
+      ? worldJson
+      : serializeWorldDocument(removeVehicleEntitiesFromWorldDocument(worldDocument)),
+    [practiceMode, worldDocument, worldJson],
+  );
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
@@ -400,36 +978,14 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
-  const { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
+  const { ready, renderBlocks, runtimeRef } = useGameRuntime(
     mode,
+    worldJson,
+    predictionWorldJson,
     onWelcome,
     onDisconnect,
-    practiceMode ? worldJson : undefined,
-    prediction.ready
-      ? (ackInputSeq, state) => {
-          // Sync dynamic bodies BEFORE reconciliation so that input replay
-          // collides with the correct (same-tick) collider positions.
-          const bodies = Array.from(stateRef.current.dynamicBodies.values());
-          prediction.updateDynamicBodies(bodies);
-          // Skip player KCC reconcile while driving — player position on server
-          // is the chassis position, which would cause a spurious large correction
-          // offset on the idle player collider.
-          if (!prediction.isInVehicle()) {
-            prediction.reconcile(ackInputSeq, state);
-          }
-        }
-      : undefined,
-    (packet) => {
-      if (packet.type === 'chunkFull' || packet.type === 'chunkDiff') {
-        prediction.applyWorldPacket(packet);
-      }
-      if (packet.type === 'snapshot') {
-        onSnapshotRef.current?.();
-      }
-    },
-    prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
-      prediction.reconcileVehicle(vs, ackInputSeq);
-    } : undefined,
+    () => onSnapshotRef.current?.(),
+    localRenderSmoothingEnabled,
   );
   const { camera, gl } = useThree();
 
@@ -454,11 +1010,15 @@ export function GameWorld({
       ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
       : null,
   );
+  const benchmarkVehicleDriverRef = useRef<BenchmarkVehicleDriverState>({
+    enteredVehicleAtMs: null,
+    lastEnterPressedAtMs: null,
+  });
+  const vehicleSupportDebugEnabledRef = useRef(false);
 
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
   const vehicleMeshes = useRef<Map<number, THREE.Group>>(new Map());
-  const knownVehicleIds = useRef<Set<number>>(new Set());
   const nearestVehicleIdRef = useRef<number | null>(null);
   const smoothCamPos = useRef(new THREE.Vector3()); // smoothed chase camera position
   const smoothVehicleFocus = useRef(new THREE.Vector3()); // smoothed look-at target for vehicle camera
@@ -473,6 +1033,81 @@ export function GameWorld({
   const lastVehicleLookAtMsRef = useRef(performance.now());
   const shotTraceBeamRef = useRef<THREE.Mesh>(null);
   const shotTraceImpactRef = useRef<THREE.Mesh>(null);
+  const localVehicleMeshDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRestJitterSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleStraightJitterSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehiclePredictedAuthDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawHeaveSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawPitchSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawRollSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawPlanarSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawYawSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualPlanarSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualHeaveSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualYawSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualPitchSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleResidualRollSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawRestHeaveSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawStraightHeaveSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleWheelContactBitChangeSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleSuspensionLengthDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleSuspensionForceDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleSuspensionLengthSpreadSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleSuspensionForceSpreadSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleContactNormalDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleGroundObjectSwitchSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleMeshFrameDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleMeshFrameRotSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleCameraFrameDeltaSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleCameraFrameRotSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleGroundedTransitionSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleGroundedSamplesRef = useRef<TimedScalar[]>([]);
+  const localVehicleRawJitterStateRef = useRef<LocalVehicleMotionState>({
+    vehicleId: null,
+    position: new THREE.Vector3(),
+    euler: new THREE.Euler(0, 0, 0, 'YXZ'),
+    quaternion: new THREE.Quaternion(),
+    groundedWheels: 0,
+    linearVelocity: [0, 0, 0],
+    angularVelocity: [0, 0, 0],
+    wheelContactBits: 0,
+    suspensionLengths: [0, 0, 0, 0],
+    suspensionForces: [0, 0, 0, 0],
+    suspensionRelativeVelocities: [0, 0, 0, 0],
+    wheelContactNormals: [],
+    wheelGroundObjectIds: [0, 0, 0, 0],
+  });
+  const localVehicleMeshMotionStateRef = useRef<LocalVehicleMotionState>({
+    vehicleId: null,
+    position: new THREE.Vector3(),
+    euler: new THREE.Euler(0, 0, 0, 'YXZ'),
+    quaternion: new THREE.Quaternion(),
+    groundedWheels: 0,
+    linearVelocity: [0, 0, 0],
+    angularVelocity: [0, 0, 0],
+    wheelContactBits: 0,
+    suspensionLengths: [0, 0, 0, 0],
+    suspensionForces: [0, 0, 0, 0],
+    suspensionRelativeVelocities: [0, 0, 0, 0],
+    wheelContactNormals: [],
+    wheelGroundObjectIds: [0, 0, 0, 0],
+  });
+  const localVehicleCameraMotionStateRef = useRef<LocalVehicleMotionState>({
+    vehicleId: null,
+    position: new THREE.Vector3(),
+    euler: new THREE.Euler(0, 0, 0, 'YXZ'),
+    quaternion: new THREE.Quaternion(),
+    groundedWheels: 0,
+    linearVelocity: [0, 0, 0],
+    angularVelocity: [0, 0, 0],
+    wheelContactBits: 0,
+    suspensionLengths: [0, 0, 0, 0],
+    suspensionForces: [0, 0, 0, 0],
+    suspensionRelativeVelocities: [0, 0, 0, 0],
+    wheelContactNormals: [],
+    wheelGroundObjectIds: [0, 0, 0, 0],
+  });
 
   useEffect(() => {
     const manager = new GameInputManager();
@@ -489,75 +1124,404 @@ export function GameWorld({
   }, []);
 
   useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code === 'F8') {
+        event.preventDefault();
+        vehicleSupportDebugEnabledRef.current = !vehicleSupportDebugEnabledRef.current;
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
     botBrainRef.current = benchmarkAutopilot?.enabled
       ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
       : null;
+    benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
+    benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
-    const state = stateRef.current;
-
     const now = performance.now();
     const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
     lastFrameTime.current = now;
-    const client = clientRef.current;
-    const localPreviewTransport = client?.transport === 'local-preview';
+    const client = runtimeRef.current;
+    const state = client?.state;
+    if (!client || !state) return;
+    const prediction = client;
+    const localAuthorityTransport = client?.transport === 'local';
     const localFlags = client?.localPlayerFlags ?? 0;
-    const localDead = (localFlags & FLAG_DEAD) !== 0;
-    const localPreviewVehicleEntry = practiceMode && client
-      ? [...client.vehicles.entries()].find(([, vs]) => vs.driverId === client.playerId) ?? null
+    const localPlayerStateMeters = client.usesLocalAuthority && client.getPosition()
+      ? {
+          position: client.getPosition()!,
+          velocity: client.getDebugStats().velocity,
+        }
       : null;
-    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
-    const drivenVehicleId = prediction.getDrivenVehicleId();
+    const localDead = (localFlags & FLAG_DEAD) !== 0;
+    const drivenVehicleId = client?.getDrivenVehicleId() ?? null;
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
-    const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
-    const localControlledVehiclePose = predictedVehiclePose
-      ?? (localPreviewVehicleEntry
+    const localVehicleRenderTimeUs = client?.serverClock.renderTimeUs((client?.interpolationDelayMs ?? 0) * 1000) ?? 0;
+    const localVehicleNowTimeUs = client?.serverClock.serverNowUs();
+    const localVehicleAuthoritativeSample = client && drivenVehicleId != null
+      ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleRenderTimeUs)
+      : null;
+    const localVehicleAuthoritativeNowSample = client && drivenVehicleId != null && localVehicleNowTimeUs != null
+      ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleNowTimeUs)
+      : null;
+    const predictedVehiclePose = client.getVehiclePose();
+    const localVehicleDebug = drivenVehicleId != null
+      ? client?.getLocalVehicleDebug(drivenVehicleId) ?? null
+      : null;
+    const localControlledVehiclePose = localAuthorityTransport
+      ? (localVehicleAuthoritativeSample
         ? {
-            position: localPreviewVehicleEntry[1].position,
-            quaternion: localPreviewVehicleEntry[1].quaternion,
+            position: localVehicleAuthoritativeSample.position,
+            quaternion: localVehicleAuthoritativeSample.quaternion,
           }
-        : null);
+        : (drivenVehicleState
+          ? {
+              position: drivenVehicleState.position,
+              quaternion: drivenVehicleState.quaternion,
+            }
+          : null))
+      : predictedVehiclePose;
+    const localVehicleCurrentAuthDeltaM = localControlledVehiclePose && localVehicleAuthoritativeNowSample
+      ? distanceVec3(localControlledVehiclePose.position, localVehicleAuthoritativeNowSample.position)
+      : 0;
     let localVehicleVisualPose = localControlledVehiclePose;
+    let localVehicleMeshDeltaM = 0;
+    let localVehicleMeshRotDeltaRad = 0;
+    let localVehicleRawFrameDeltaM = 0;
+    let localVehicleRawPlanarDeltaM = 0;
+    let localVehicleRawHeaveDeltaM = 0;
+    let localVehicleRawYawDeltaRad = 0;
+    let localVehicleRawPitchDeltaRad = 0;
+    let localVehicleRawRollDeltaRad = 0;
+    let localVehicleResidualFrameDeltaM = 0;
+    let localVehicleResidualPlanarDeltaM = 0;
+    let localVehicleResidualHeaveDeltaM = 0;
+    let localVehicleResidualYawDeltaRad = 0;
+    let localVehicleResidualPitchDeltaRad = 0;
+    let localVehicleResidualRollDeltaRad = 0;
+    let localVehicleMeshFrameDeltaM = 0;
+    let localVehicleMeshFrameRotDeltaRad = 0;
+    let localVehicleCameraFrameDeltaM = 0;
+    let localVehicleCameraFrameRotDeltaRad = 0;
+    let localVehicleGroundedTransitionThisFrame = false;
+    let localVehicleWheelContactBits = localVehicleDebug?.wheelContactBits ?? 0;
+    let localVehicleWheelContactBitChangesThisFrame = 0;
+    let localVehicleWheelContactNormalDeltaRad = 0;
+    let localVehicleGroundObjectSwitchesThisFrame = 0;
+    let localVehicleSuspensionLengths: [number, number, number, number] = localVehicleDebug?.suspensionLengths ?? [0, 0, 0, 0];
+    let localVehicleSuspensionForces: [number, number, number, number] = localVehicleDebug?.suspensionForces ?? [0, 0, 0, 0];
+    let localVehicleSuspensionRelativeVelocities: [number, number, number, number] = localVehicleDebug?.suspensionRelativeVelocities ?? [0, 0, 0, 0];
+    let localVehicleWheelContactNormals = localVehicleDebug?.wheelContactNormals ?? [];
+    let localVehicleWheelGroundObjectIds: [number, number, number, number] = localVehicleDebug?.wheelGroundObjectIds ?? [0, 0, 0, 0];
+    let localVehicleSuspensionLengthSpreadM = spread4(localVehicleSuspensionLengths);
+    let localVehicleSuspensionForceSpreadN = spread4(localVehicleSuspensionForces);
+    let localVehicleSuspensionLengthDeltaM = 0;
+    let localVehicleSuspensionForceDeltaN = 0;
     if (localControlledVehiclePose && drivenVehicleId != null) {
-      const visualPose = localVehicleVisualPoseRef.current;
-      const targetPosition = localControlledVehiclePose.position;
-      const targetQuaternion = localControlledVehiclePose.quaternion;
-      const targetQuat = new THREE.Quaternion(
-        targetQuaternion[0],
-        targetQuaternion[1],
-        targetQuaternion[2],
-        targetQuaternion[3],
+      const result = updateLocalVehicleMeshPose(
+        localVehicleVisualPoseRef.current,
+        drivenVehicleId,
+        localControlledVehiclePose,
+        frameDelta,
+        localVehicleDebug?.speedMs ?? 0,
+        localVehicleDebug?.groundedWheels ?? 0,
+        localAuthorityTransport ? 'practice' : 'multiplayer',
       );
-      const targetEuler = new THREE.Euler().setFromQuaternion(targetQuat, 'YXZ');
-      const speedMs = localVehicleDebug?.speedMs ?? 0;
-      const planarRate = LOCAL_VEHICLE_RENDER_PLANAR_RATE;
-      const verticalRate = LOCAL_VEHICLE_RENDER_VERTICAL_RATE + Math.min(speedMs * 0.25, 8.0);
-      const yawRate = LOCAL_VEHICLE_RENDER_YAW_RATE + Math.min(speedMs * 0.2, 10.0);
-      const tiltRate = LOCAL_VEHICLE_RENDER_TILT_RATE + Math.min(speedMs * 0.12, 5.0);
-      if (visualPose.vehicleId !== drivenVehicleId) {
-        visualPose.vehicleId = drivenVehicleId;
-        visualPose.position.set(targetPosition[0], targetPosition[1], targetPosition[2]);
-        visualPose.quaternion.copy(targetQuat);
-        visualPose.euler.copy(targetEuler);
-      } else {
-        visualPose.position.x = THREE.MathUtils.damp(visualPose.position.x, targetPosition[0], planarRate, frameDelta);
-        visualPose.position.y = THREE.MathUtils.damp(visualPose.position.y, targetPosition[1], verticalRate, frameDelta);
-        visualPose.position.z = THREE.MathUtils.damp(visualPose.position.z, targetPosition[2], planarRate, frameDelta);
-        visualPose.euler.x = dampAngle(visualPose.euler.x, targetEuler.x, tiltRate, frameDelta);
-        visualPose.euler.y = dampAngle(visualPose.euler.y, targetEuler.y, yawRate, frameDelta);
-        visualPose.euler.z = dampAngle(visualPose.euler.z, targetEuler.z, tiltRate, frameDelta);
-        visualPose.quaternion.setFromEuler(visualPose.euler);
-      }
-      localVehicleVisualPose = {
-        position: [visualPose.position.x, visualPose.position.y, visualPose.position.z],
-        quaternion: [visualPose.quaternion.x, visualPose.quaternion.y, visualPose.quaternion.z, visualPose.quaternion.w],
-      };
+      localVehicleVisualPose = result.pose;
+      localVehicleMeshDeltaM = result.metrics.positionDeltaM;
+      localVehicleMeshRotDeltaRad = result.metrics.rotationDeltaRad;
     } else {
-      localVehicleVisualPoseRef.current.vehicleId = null;
+      resetLocalVehicleMeshPose(localVehicleVisualPoseRef.current);
     }
-    const isDrivingNow = localControlledVehiclePose !== null;
+    const isMultiplayerLocalVehicle = !localAuthorityTransport && predictedVehiclePose != null && drivenVehicleId != null;
+    const multiplayerVehiclePose = isMultiplayerLocalVehicle ? localControlledVehiclePose : null;
+    if (multiplayerVehiclePose && drivenVehicleId != null) {
+      const rawJitterState = localVehicleRawJitterStateRef.current;
+      const groundedWheels = localVehicleDebug?.groundedWheels ?? 0;
+      const currentLinearVelocity = localVehicleDebug?.linearVelocity ?? [0, 0, 0];
+      const currentAngularVelocity = localVehicleDebug?.angularVelocity ?? [0, 0, 0];
+      localVehicleWheelContactBits = localVehicleDebug?.wheelContactBits ?? 0;
+      localVehicleSuspensionLengths = localVehicleDebug?.suspensionLengths ?? [0, 0, 0, 0];
+      localVehicleSuspensionForces = localVehicleDebug?.suspensionForces ?? [0, 0, 0, 0];
+      localVehicleSuspensionRelativeVelocities = localVehicleDebug?.suspensionRelativeVelocities ?? [0, 0, 0, 0];
+      localVehicleWheelContactNormals = localVehicleDebug?.wheelContactNormals ?? [];
+      localVehicleWheelGroundObjectIds = localVehicleDebug?.wheelGroundObjectIds ?? [0, 0, 0, 0];
+      localVehicleSuspensionLengthSpreadM = spread4(localVehicleSuspensionLengths);
+      localVehicleSuspensionForceSpreadN = spread4(localVehicleSuspensionForces);
+      const currentRawQuat = new THREE.Quaternion(
+        multiplayerVehiclePose.quaternion[0],
+        multiplayerVehiclePose.quaternion[1],
+        multiplayerVehiclePose.quaternion[2],
+        multiplayerVehiclePose.quaternion[3],
+      );
+      const currentRawEuler = new THREE.Euler().setFromQuaternion(currentRawQuat, 'YXZ');
+      const rawDx = multiplayerVehiclePose.position[0] - rawJitterState.position.x;
+      const rawDy = multiplayerVehiclePose.position[1] - rawJitterState.position.y;
+      const rawDz = multiplayerVehiclePose.position[2] - rawJitterState.position.z;
+      const rawPositionDeltaM = Math.hypot(rawDx, rawDy, rawDz);
+      const resetRawJitter = rawJitterState.vehicleId !== drivenVehicleId || rawPositionDeltaM >= 6.0;
+      if (resetRawJitter) {
+        clearTimedScalars(
+          localVehicleRawHeaveSamplesRef.current,
+          localVehicleRawPlanarSamplesRef.current,
+          localVehicleRawYawSamplesRef.current,
+          localVehicleRawPitchSamplesRef.current,
+          localVehicleRawRollSamplesRef.current,
+          localVehicleResidualSamplesRef.current,
+          localVehicleResidualPlanarSamplesRef.current,
+          localVehicleResidualHeaveSamplesRef.current,
+          localVehicleResidualYawSamplesRef.current,
+          localVehicleResidualPitchSamplesRef.current,
+          localVehicleResidualRollSamplesRef.current,
+          localVehicleRawRestHeaveSamplesRef.current,
+          localVehicleRawStraightHeaveSamplesRef.current,
+          localVehicleWheelContactBitChangeSamplesRef.current,
+          localVehicleSuspensionLengthDeltaSamplesRef.current,
+          localVehicleSuspensionForceDeltaSamplesRef.current,
+          localVehicleSuspensionLengthSpreadSamplesRef.current,
+          localVehicleSuspensionForceSpreadSamplesRef.current,
+          localVehicleContactNormalDeltaSamplesRef.current,
+          localVehicleGroundObjectSwitchSamplesRef.current,
+          localVehicleGroundedTransitionSamplesRef.current,
+          localVehicleGroundedSamplesRef.current,
+        );
+      } else {
+        localVehicleRawFrameDeltaM = rawPositionDeltaM;
+        localVehicleRawPlanarDeltaM = Math.hypot(rawDx, rawDz);
+        localVehicleRawHeaveDeltaM = Math.abs(rawDy);
+        localVehicleRawYawDeltaRad = Math.abs(angleDeltaRad(currentRawEuler.y, rawJitterState.euler.y));
+        localVehicleRawPitchDeltaRad = Math.abs(angleDeltaRad(currentRawEuler.x, rawJitterState.euler.x));
+        localVehicleRawRollDeltaRad = Math.abs(angleDeltaRad(currentRawEuler.z, rawJitterState.euler.z));
+        const expectedDx = ((rawJitterState.linearVelocity[0] + currentLinearVelocity[0]) * 0.5) * frameDelta;
+        const expectedDy = ((rawJitterState.linearVelocity[1] + currentLinearVelocity[1]) * 0.5) * frameDelta;
+        const expectedDz = ((rawJitterState.linearVelocity[2] + currentLinearVelocity[2]) * 0.5) * frameDelta;
+        const residualDx = rawDx - expectedDx;
+        const residualDy = rawDy - expectedDy;
+        const residualDz = rawDz - expectedDz;
+        localVehicleResidualFrameDeltaM = Math.hypot(residualDx, residualDy, residualDz);
+        localVehicleResidualPlanarDeltaM = Math.hypot(residualDx, residualDz);
+        localVehicleResidualHeaveDeltaM = Math.abs(residualDy);
+        const expectedYawDelta = ((rawJitterState.angularVelocity[1] + currentAngularVelocity[1]) * 0.5) * frameDelta;
+        const expectedPitchDelta = ((rawJitterState.angularVelocity[0] + currentAngularVelocity[0]) * 0.5) * frameDelta;
+        const expectedRollDelta = ((rawJitterState.angularVelocity[2] + currentAngularVelocity[2]) * 0.5) * frameDelta;
+        localVehicleResidualYawDeltaRad = Math.abs(localVehicleRawYawDeltaRad - expectedYawDelta);
+        localVehicleResidualPitchDeltaRad = Math.abs(localVehicleRawPitchDeltaRad - expectedPitchDelta);
+        localVehicleResidualRollDeltaRad = Math.abs(localVehicleRawRollDeltaRad - expectedRollDelta);
+        localVehicleWheelContactBitChangesThisFrame = popcount8(localVehicleWheelContactBits ^ rawJitterState.wheelContactBits);
+        localVehicleWheelContactNormalDeltaRad = wheelContactNormalDelta(
+          localVehicleWheelContactNormals,
+          rawJitterState.wheelContactNormals,
+          localVehicleWheelContactBits,
+          rawJitterState.wheelContactBits,
+        );
+        localVehicleGroundObjectSwitchesThisFrame = wheelGroundObjectSwitches(
+          localVehicleWheelGroundObjectIds,
+          rawJitterState.wheelGroundObjectIds,
+          localVehicleWheelContactBits,
+          rawJitterState.wheelContactBits,
+        );
+        localVehicleSuspensionLengthDeltaM = rmsDelta4(
+          localVehicleSuspensionLengths,
+          rawJitterState.suspensionLengths,
+        );
+        localVehicleSuspensionForceDeltaN = rmsDelta4(
+          localVehicleSuspensionForces,
+          rawJitterState.suspensionForces,
+        );
+        localVehicleRawHeaveSamplesRef.current.push({ atMs: now, value: localVehicleRawHeaveDeltaM });
+        localVehicleRawPlanarSamplesRef.current.push({ atMs: now, value: localVehicleRawPlanarDeltaM });
+        localVehicleRawYawSamplesRef.current.push({ atMs: now, value: localVehicleRawYawDeltaRad });
+        localVehicleRawPitchSamplesRef.current.push({ atMs: now, value: localVehicleRawPitchDeltaRad });
+        localVehicleRawRollSamplesRef.current.push({ atMs: now, value: localVehicleRawRollDeltaRad });
+        localVehicleResidualSamplesRef.current.push({ atMs: now, value: localVehicleResidualFrameDeltaM });
+        localVehicleResidualPlanarSamplesRef.current.push({ atMs: now, value: localVehicleResidualPlanarDeltaM });
+        localVehicleResidualHeaveSamplesRef.current.push({ atMs: now, value: localVehicleResidualHeaveDeltaM });
+        localVehicleResidualYawSamplesRef.current.push({ atMs: now, value: localVehicleResidualYawDeltaRad });
+        localVehicleResidualPitchSamplesRef.current.push({ atMs: now, value: localVehicleResidualPitchDeltaRad });
+        localVehicleResidualRollSamplesRef.current.push({ atMs: now, value: localVehicleResidualRollDeltaRad });
+        localVehicleSuspensionLengthSpreadSamplesRef.current.push({ atMs: now, value: localVehicleSuspensionLengthSpreadM });
+        localVehicleSuspensionForceSpreadSamplesRef.current.push({ atMs: now, value: localVehicleSuspensionForceSpreadN });
+        localVehicleSuspensionLengthDeltaSamplesRef.current.push({ atMs: now, value: localVehicleSuspensionLengthDeltaM });
+        localVehicleSuspensionForceDeltaSamplesRef.current.push({ atMs: now, value: localVehicleSuspensionForceDeltaN });
+        localVehicleContactNormalDeltaSamplesRef.current.push({ atMs: now, value: localVehicleWheelContactNormalDeltaRad });
+        if (localVehicleGroundObjectSwitchesThisFrame > 0) {
+          localVehicleGroundObjectSwitchSamplesRef.current.push({
+            atMs: now,
+            value: localVehicleGroundObjectSwitchesThisFrame,
+          });
+        }
+        trimTimedScalars(localVehicleRawHeaveSamplesRef.current, now);
+        trimTimedScalars(localVehicleRawPlanarSamplesRef.current, now);
+        trimTimedScalars(localVehicleRawYawSamplesRef.current, now);
+        trimTimedScalars(localVehicleRawPitchSamplesRef.current, now);
+        trimTimedScalars(localVehicleRawRollSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualPlanarSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualHeaveSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualYawSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualPitchSamplesRef.current, now);
+        trimTimedScalars(localVehicleResidualRollSamplesRef.current, now);
+        trimTimedScalars(localVehicleSuspensionLengthSpreadSamplesRef.current, now);
+        trimTimedScalars(localVehicleSuspensionForceSpreadSamplesRef.current, now);
+        trimTimedScalars(localVehicleSuspensionLengthDeltaSamplesRef.current, now);
+        trimTimedScalars(localVehicleSuspensionForceDeltaSamplesRef.current, now);
+        trimTimedScalars(localVehicleContactNormalDeltaSamplesRef.current, now);
+        trimTimedScalars(localVehicleGroundObjectSwitchSamplesRef.current, now);
+        if ((localVehicleDebug?.speedMs ?? 0) < 1 && groundedWheels === 4) {
+          localVehicleRawRestHeaveSamplesRef.current.push({ atMs: now, value: localVehicleRawHeaveDeltaM });
+        }
+        trimTimedScalars(localVehicleRawRestHeaveSamplesRef.current, now);
+        if (Math.abs(localVehicleDebug?.steering ?? 0) < 0.05 && groundedWheels >= 3) {
+          localVehicleRawStraightHeaveSamplesRef.current.push({ atMs: now, value: localVehicleRawHeaveDeltaM });
+        }
+        trimTimedScalars(localVehicleRawStraightHeaveSamplesRef.current, now);
+        if (groundedWheels !== rawJitterState.groundedWheels) {
+          localVehicleGroundedTransitionThisFrame = true;
+          localVehicleGroundedTransitionSamplesRef.current.push({ atMs: now, value: 1 });
+        }
+        if (localVehicleWheelContactBitChangesThisFrame > 0) {
+          localVehicleWheelContactBitChangeSamplesRef.current.push({
+            atMs: now,
+            value: localVehicleWheelContactBitChangesThisFrame,
+          });
+        }
+      }
+      localVehicleGroundedSamplesRef.current.push({ atMs: now, value: groundedWheels });
+      trimTimedScalars(localVehicleGroundedTransitionSamplesRef.current, now);
+      trimTimedScalars(localVehicleWheelContactBitChangeSamplesRef.current, now);
+      trimTimedScalars(localVehicleGroundedSamplesRef.current, now);
+      rawJitterState.vehicleId = drivenVehicleId;
+      rawJitterState.position.set(
+        multiplayerVehiclePose.position[0],
+        multiplayerVehiclePose.position[1],
+        multiplayerVehiclePose.position[2],
+      );
+      rawJitterState.quaternion.copy(currentRawQuat);
+      rawJitterState.euler.copy(currentRawEuler);
+      rawJitterState.groundedWheels = groundedWheels;
+      rawJitterState.linearVelocity = [...currentLinearVelocity] as [number, number, number];
+      rawJitterState.angularVelocity = [...currentAngularVelocity] as [number, number, number];
+      rawJitterState.wheelContactBits = localVehicleWheelContactBits;
+      rawJitterState.suspensionLengths = [...localVehicleSuspensionLengths] as [number, number, number, number];
+      rawJitterState.suspensionForces = [...localVehicleSuspensionForces] as [number, number, number, number];
+      rawJitterState.suspensionRelativeVelocities = [...localVehicleSuspensionRelativeVelocities] as [number, number, number, number];
+      rawJitterState.wheelContactNormals = localVehicleWheelContactNormals.map((normal) => [...normal] as [number, number, number]);
+      rawJitterState.wheelGroundObjectIds = [...localVehicleWheelGroundObjectIds] as [number, number, number, number];
+
+      const visualVehiclePose = localVehicleVisualPose ?? multiplayerVehiclePose;
+      const meshMotionState = localVehicleMeshMotionStateRef.current;
+      const currentMeshQuat = new THREE.Quaternion(
+        visualVehiclePose.quaternion[0],
+        visualVehiclePose.quaternion[1],
+        visualVehiclePose.quaternion[2],
+        visualVehiclePose.quaternion[3],
+      );
+      const currentMeshEuler = new THREE.Euler().setFromQuaternion(currentMeshQuat, 'YXZ');
+      const meshFrameDeltaM = meshMotionState.vehicleId === drivenVehicleId
+        ? Math.hypot(
+            visualVehiclePose.position[0] - meshMotionState.position.x,
+            visualVehiclePose.position[1] - meshMotionState.position.y,
+            visualVehiclePose.position[2] - meshMotionState.position.z,
+          )
+        : 0;
+      const resetMeshMotion = meshMotionState.vehicleId !== drivenVehicleId || meshFrameDeltaM >= 6.0;
+      if (resetMeshMotion) {
+        clearTimedScalars(
+          localVehicleMeshDeltaSamplesRef.current,
+          localVehicleRestJitterSamplesRef.current,
+          localVehicleStraightJitterSamplesRef.current,
+          localVehicleMeshFrameDeltaSamplesRef.current,
+          localVehicleMeshFrameRotSamplesRef.current,
+        );
+      } else {
+        localVehicleMeshFrameDeltaM = meshFrameDeltaM;
+        localVehicleMeshFrameRotDeltaRad = quaternionAngle(meshMotionState.quaternion, currentMeshQuat);
+        localVehicleMeshDeltaSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+        localVehicleMeshFrameDeltaSamplesRef.current.push({ atMs: now, value: localVehicleMeshFrameDeltaM });
+        localVehicleMeshFrameRotSamplesRef.current.push({ atMs: now, value: localVehicleMeshFrameRotDeltaRad });
+        if ((localVehicleDebug?.speedMs ?? 0) < 1 && (localVehicleDebug?.groundedWheels ?? 0) === 4) {
+          localVehicleRestJitterSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+        }
+        if (Math.abs(localVehicleDebug?.steering ?? 0) < 0.05 && (localVehicleDebug?.groundedWheels ?? 0) >= 3) {
+          localVehicleStraightJitterSamplesRef.current.push({ atMs: now, value: localVehicleMeshDeltaM });
+        }
+      }
+      trimTimedScalars(localVehicleMeshDeltaSamplesRef.current, now);
+      trimTimedScalars(localVehicleRestJitterSamplesRef.current, now);
+      trimTimedScalars(localVehicleStraightJitterSamplesRef.current, now);
+      trimTimedScalars(localVehicleMeshFrameDeltaSamplesRef.current, now);
+      trimTimedScalars(localVehicleMeshFrameRotSamplesRef.current, now);
+      meshMotionState.vehicleId = drivenVehicleId;
+      meshMotionState.position.set(
+        visualVehiclePose.position[0],
+        visualVehiclePose.position[1],
+        visualVehiclePose.position[2],
+      );
+      meshMotionState.quaternion.copy(currentMeshQuat);
+      meshMotionState.euler.copy(currentMeshEuler);
+      meshMotionState.groundedWheels = groundedWheels;
+
+      if (localVehicleAuthoritativeSample) {
+        localVehiclePredictedAuthDeltaSamplesRef.current.push({
+          atMs: now,
+          value: distanceVec3(multiplayerVehiclePose.position, localVehicleAuthoritativeSample.position),
+        });
+      }
+      trimTimedScalars(localVehicleMeshDeltaSamplesRef.current, now);
+      trimTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current, now);
+    } else {
+      clearTimedScalars(
+        localVehicleMeshDeltaSamplesRef.current,
+        localVehicleRestJitterSamplesRef.current,
+        localVehicleStraightJitterSamplesRef.current,
+        localVehiclePredictedAuthDeltaSamplesRef.current,
+        localVehicleRawHeaveSamplesRef.current,
+        localVehicleRawPlanarSamplesRef.current,
+        localVehicleRawYawSamplesRef.current,
+        localVehicleRawPitchSamplesRef.current,
+        localVehicleRawRollSamplesRef.current,
+        localVehicleResidualSamplesRef.current,
+        localVehicleResidualPlanarSamplesRef.current,
+        localVehicleResidualHeaveSamplesRef.current,
+        localVehicleResidualYawSamplesRef.current,
+        localVehicleResidualPitchSamplesRef.current,
+        localVehicleResidualRollSamplesRef.current,
+        localVehicleRawRestHeaveSamplesRef.current,
+        localVehicleRawStraightHeaveSamplesRef.current,
+        localVehicleWheelContactBitChangeSamplesRef.current,
+        localVehicleSuspensionLengthDeltaSamplesRef.current,
+        localVehicleSuspensionForceDeltaSamplesRef.current,
+        localVehicleSuspensionLengthSpreadSamplesRef.current,
+        localVehicleSuspensionForceSpreadSamplesRef.current,
+        localVehicleContactNormalDeltaSamplesRef.current,
+        localVehicleGroundObjectSwitchSamplesRef.current,
+        localVehicleMeshFrameDeltaSamplesRef.current,
+        localVehicleMeshFrameRotSamplesRef.current,
+        localVehicleCameraFrameDeltaSamplesRef.current,
+        localVehicleCameraFrameRotSamplesRef.current,
+        localVehicleGroundedTransitionSamplesRef.current,
+        localVehicleGroundedSamplesRef.current,
+      );
+      localVehicleRawJitterStateRef.current.vehicleId = null;
+      localVehicleRawJitterStateRef.current.groundedWheels = 0;
+      localVehicleRawJitterStateRef.current.linearVelocity = [0, 0, 0];
+      localVehicleRawJitterStateRef.current.angularVelocity = [0, 0, 0];
+      localVehicleRawJitterStateRef.current.wheelContactBits = 0;
+      localVehicleRawJitterStateRef.current.suspensionLengths = [0, 0, 0, 0];
+      localVehicleRawJitterStateRef.current.suspensionForces = [0, 0, 0, 0];
+      localVehicleRawJitterStateRef.current.suspensionRelativeVelocities = [0, 0, 0, 0];
+      localVehicleRawJitterStateRef.current.wheelContactNormals = [];
+      localVehicleRawJitterStateRef.current.wheelGroundObjectIds = [0, 0, 0, 0];
+      localVehicleMeshMotionStateRef.current.vehicleId = null;
+      localVehicleCameraMotionStateRef.current.vehicleId = null;
+    }
+    const isDrivingNow = client.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,
@@ -593,9 +1557,27 @@ export function GameWorld({
       pitchRef.current = look.pitch;
     }
 
-    const autopilotEnabled = Boolean(benchmarkAutopilot?.enabled && botBrainRef.current && !isDrivingNow);
-    const autopilotInput = autopilotEnabled
-      ? (() => {
+    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
+    const botAutopilotEnabled = Boolean(
+      benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
+      && botBrainRef.current
+      && !isDrivingNow,
+    );
+    const autopilotInput = vehicleBenchmarkEnabled
+      ? resolveVehicleBenchmarkInput(
+          benchmarkVehicleDriverRef.current,
+          now,
+          isDrivingNow,
+          nearestVehicleIdRef.current,
+          yawRef.current,
+          pitchRef.current,
+          inputSample.activeFamily,
+          benchmarkAutopilot.scenario.playBenchmark?.driverProfile ?? 'mixed',
+        )
+      : botAutopilotEnabled
+        ? (() => {
           const localPosition = prediction.getPosition() ?? state.localPosition;
           const localState = {
             position: localPosition,
@@ -626,57 +1608,13 @@ export function GameWorld({
           pitchRef.current = intent.pitch;
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
         })()
-      : null;
+        : null;
     const resolvedInput = autopilotInput ?? (isDrivingNow
       ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
       : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
 
     // --- Vehicle spawn/despawn sync ---
-    if (client && prediction.ready) {
-      const serverVehicles = client.vehicles;
-      // Spawn newly seen vehicles into WASM
-      for (const [id, vs] of serverVehicles) {
-        if (!knownVehicleIds.current.has(id)) {
-          knownVehicleIds.current.add(id);
-          prediction.spawnVehicle(
-            id, vs.vehicleType ?? 0,
-            vs.position[0], vs.position[1], vs.position[2],
-            vs.quaternion[0], vs.quaternion[1], vs.quaternion[2], vs.quaternion[3],
-          );
-        }
-      }
-      // Remove despawned vehicles from WASM
-      for (const id of knownVehicleIds.current) {
-        if (!serverVehicles.has(id)) {
-          knownVehicleIds.current.delete(id);
-          prediction.removeVehicle(id);
-        }
-      }
-
-      const remoteVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
-      let syncedRemoteVehicles = false;
-      for (const [id, vs] of serverVehicles) {
-        if (prediction.isInVehicle() && prediction.getDrivenVehicleId() === id) {
-          continue;
-        }
-        const sample = localPreviewTransport
-          ? null
-          : client.sampleRemoteVehicle(id, remoteVehicleRenderTimeUs);
-        const position = sample?.position ?? vs.position;
-        const quaternion = sample?.quaternion ?? vs.quaternion;
-        const linearVelocity = sample?.linearVelocity ?? vs.linearVelocity;
-        prediction.syncRemoteVehicle(
-          id,
-          position[0], position[1], position[2],
-          quaternion[0], quaternion[1], quaternion[2], quaternion[3],
-          linearVelocity[0], linearVelocity[1], linearVelocity[2],
-        );
-        syncedRemoteVehicles = true;
-      }
-      if (syncedRemoteVehicles) {
-        prediction.syncBroadPhase();
-      }
-    }
+    prediction.syncVehicleAuthority();
 
     // --- Enter/Exit vehicle on E press ---
     if (resolvedInput.interactPressed) {
@@ -689,15 +1627,15 @@ export function GameWorld({
         if (client) {
           for (const [id, vs] of client.vehicles) {
             if (vs.driverId === client.playerId) {
-              sendVehicleExit(id);
+              client.sendVehicleExit(id);
               break;
             }
           }
         }
       } else if (nearestVehicleIdRef.current !== null) {
         const vehicleId = nearestVehicleIdRef.current;
-        const vs = client?.vehicles.get(vehicleId);
-        if (vs && vs.driverId === 0 && (practiceMode || prediction.ready)) {
+        const vs = client.vehicles.get(vehicleId);
+        if (vs && vs.driverId === 0) {
           // Enter vehicle — build a NetVehicleState from the VehicleStateMeters
           const initState: NetVehicleState = {
             id: vehicleId,
@@ -720,7 +1658,7 @@ export function GameWorld({
             flags: vs.flags ?? 0,
           };
           prediction.enterVehicle(vehicleId, initState);
-          sendVehicleEnter(vehicleId, 0);
+          client.sendVehicleEnter(vehicleId, 0);
           // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
           smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
           smoothVehicleFocus.current.set(vs.position[0], vs.position[1] + 1.0, vs.position[2]);
@@ -731,21 +1669,11 @@ export function GameWorld({
       }
     }
 
-    if (prediction.ready) {
-      if (prediction.isInVehicle()) {
-        // Vehicle prediction — skip player KCC tick
-        prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
-      } else {
-        // Shared input bundling lives here for both modes. In local practice mode
-        // the loopback session remains authoritative, but the client predicts and
-        // reconciles the local player so high-refresh rendering stays smooth.
-        prediction.update(frameDelta, resolvedInput, sendInputs);
-      }
-    }
+    prediction.submitInput(frameDelta, resolvedInput);
 
     const canUseAimActions = !isDrivingNow && !localDead
       && (
-        autopilotEnabled
+        botAutopilotEnabled
         || pointerLocked
         || inputSample.activeFamily === 'gamepad'
         || inputSample.activeFamily === 'touch'
@@ -753,7 +1681,7 @@ export function GameWorld({
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
-        nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
+        nextLocalFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
         const sceneHit = prediction.raycastScene(
@@ -778,42 +1706,19 @@ export function GameWorld({
           CROSSHAIR_MAX_DISTANCE,
           blockerDistance,
         );
-        const dynamicRenderTimeUs = client.getDynamicBodyRenderTimeUs();
         const renderedBodies = Array.from(state.dynamicBodies.keys()).map((id) => {
-          const proxyBody = prediction.getDynamicBodyRenderState(id);
-          const remoteSample = client.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
-          const renderBody = proxyBody ?? (remoteSample
-            ? {
-                id,
-                position: remoteSample.position,
-                halfExtents: remoteSample.halfExtents,
-              }
-            : {
-                id,
-                position: state.dynamicBodies.get(id)!.position,
-                halfExtents: state.dynamicBodies.get(id)!.halfExtents,
-              });
+          const renderBody = prediction.getRenderedDynamicBodyState(id) ?? {
+            id,
+            position: state.dynamicBodies.get(id)!.position,
+            halfExtents: state.dynamicBodies.get(id)!.halfExtents,
+          };
           return {
             id,
             position: renderBody.position,
             halfExtents: renderBody.halfExtents,
           };
         });
-        const proxyBodies = Array.from(state.dynamicBodies.keys())
-          .map((id) => {
-            const proxyBody = prediction.getDynamicBodyPhysicsState(id);
-            if (!proxyBody) return null;
-            return {
-              id,
-              position: proxyBody.position,
-              halfExtents: proxyBody.halfExtents,
-            };
-          })
-          .filter((body): body is {
-            id: number;
-            position: [number, number, number];
-            halfExtents: [number, number, number];
-          } => body != null);
+        const proxyBodies = prediction.listDynamicBodyProxyStates();
         const renderedHit = approxRenderedDynamicBodyHit(
           aimOrigin,
           fireDir,
@@ -914,8 +1819,8 @@ export function GameWorld({
           remoteHits,
           sceneHit?.toi ?? null,
         );
-        sendFire({
-          seq: prediction.getNextSeq(),
+        client.sendFire({
+          seq: prediction.peekNextInputSeq(),
           shotId,
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),
@@ -925,7 +1830,7 @@ export function GameWorld({
         });
       }
 
-      if (!practiceMode && (resolvedInput.blockRemovePressed || resolvedInput.blockPlacePressed)) {
+      if (prediction.supportsBlockEditing() && (resolvedInput.blockRemovePressed || resolvedInput.blockPlacePressed)) {
         const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const hit = prediction.raycastBlocks(
           [camera.position.x, camera.position.y, camera.position.z],
@@ -937,13 +1842,13 @@ export function GameWorld({
             const cmd = prediction.buildBlockEdit(hit.removeCell, BLOCK_REMOVE, 0);
             if (cmd) {
               prediction.applyOptimisticEdit(cmd);
-              sendBlockEdit(cmd);
+              client.sendBlockEdit(cmd);
             }
           } else if (resolvedInput.blockPlacePressed && prediction.getBlockMaterial(hit.placeCell) === 0) {
             const cmd = prediction.buildBlockEdit(hit.placeCell, BLOCK_ADD, selectedMaterialRef.current);
             if (cmd) {
               prediction.applyOptimisticEdit(cmd);
-              sendBlockEdit(cmd);
+              client.sendBlockEdit(cmd);
             }
           }
         }
@@ -952,7 +1857,7 @@ export function GameWorld({
 
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
-    const vehiclePoseForCamera = localVehicleVisualPose;
+    const vehiclePoseForCamera = localVehicleVisualPose ?? localControlledVehiclePose;
     const predictedPos = prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
@@ -998,6 +1903,38 @@ export function GameWorld({
       camera.lookAt(lookX, lookY, lookZ);
     }
 
+    if (isDriving && drivenVehicleId != null) {
+      const cameraMotionState = localVehicleCameraMotionStateRef.current;
+      const currentCameraEuler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+      const cameraFrameDeltaM = cameraMotionState.vehicleId === drivenVehicleId
+        ? camera.position.distanceTo(cameraMotionState.position)
+        : 0;
+      const resetCameraMotion = cameraMotionState.vehicleId !== drivenVehicleId || cameraFrameDeltaM >= 12.0;
+      if (resetCameraMotion) {
+        clearTimedScalars(
+          localVehicleCameraFrameDeltaSamplesRef.current,
+          localVehicleCameraFrameRotSamplesRef.current,
+        );
+      } else {
+        localVehicleCameraFrameDeltaM = cameraFrameDeltaM;
+        localVehicleCameraFrameRotDeltaRad = quaternionAngle(cameraMotionState.quaternion, camera.quaternion);
+        localVehicleCameraFrameDeltaSamplesRef.current.push({ atMs: now, value: localVehicleCameraFrameDeltaM });
+        localVehicleCameraFrameRotSamplesRef.current.push({ atMs: now, value: localVehicleCameraFrameRotDeltaRad });
+      }
+      trimTimedScalars(localVehicleCameraFrameDeltaSamplesRef.current, now);
+      trimTimedScalars(localVehicleCameraFrameRotSamplesRef.current, now);
+      cameraMotionState.vehicleId = drivenVehicleId;
+      cameraMotionState.position.copy(camera.position);
+      cameraMotionState.quaternion.copy(camera.quaternion);
+      cameraMotionState.euler.copy(currentCameraEuler);
+    } else {
+      clearTimedScalars(
+        localVehicleCameraFrameDeltaSamplesRef.current,
+        localVehicleCameraFrameRotSamplesRef.current,
+      );
+      localVehicleCameraMotionStateRef.current.vehicleId = null;
+    }
+
     // Debug logging
     logTimer.current++;
     if (logTimer.current % 120 === 0) {
@@ -1030,11 +1967,58 @@ export function GameWorld({
           )
         : 0;
       const vehiclePosDeltaM = localControlledVehiclePose && drivenVehicleState
+        ? distanceVec3(localControlledVehiclePose.position, drivenVehicleState.position)
+        : 0;
+      const vehicleSampledAuthDeltaM = localControlledVehiclePose && localVehicleAuthoritativeSample
+        ? distanceVec3(localControlledVehiclePose.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleMeshAuthDeltaM = localVehicleVisualPose && localVehicleAuthoritativeSample
+        ? distanceVec3(localVehicleVisualPose.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleLatestVsSampledAuthDeltaM = drivenVehicleState && localVehicleAuthoritativeSample
+        ? distanceVec3(drivenVehicleState.position, localVehicleAuthoritativeSample.position)
+        : 0;
+      const vehicleMeshCurrentAuthDeltaM = localVehicleVisualPose && localVehicleAuthoritativeNowSample
+        ? distanceVec3(localVehicleVisualPose.position, localVehicleAuthoritativeNowSample.position)
+        : 0;
+      const vehicleAuthObservedAgeMs = client && drivenVehicleId != null
+        ? (client.getVehicleObservedAgeMs(drivenVehicleId) ?? -1)
+        : -1;
+      const vehicleAuthSampleOffsetMs = localVehicleAuthoritativeSample
+        ? Math.max(0, (state.serverClock.serverNowUs() - localVehicleAuthoritativeSample.serverTimeUs) / 1000)
+        : -1;
+      const vehicleAuthSampleServerDeltaMs = vehicleAuthObservedAgeMs >= 0 && vehicleAuthSampleOffsetMs >= 0
+        ? vehicleAuthObservedAgeMs - vehicleAuthSampleOffsetMs
+        : -1;
+      const vehicleAuthCurrentOffsetMs = localVehicleAuthoritativeNowSample && localVehicleNowTimeUs != null
+        ? Math.max(0, (localVehicleNowTimeUs - localVehicleAuthoritativeNowSample.serverTimeUs) / 1000)
+        : -1;
+      const vehicleCurrentAuthPlanarDeltaM = localControlledVehiclePose && localVehicleAuthoritativeNowSample
         ? Math.hypot(
-            localControlledVehiclePose.position[0] - drivenVehicleState.position[0],
-            localControlledVehiclePose.position[1] - drivenVehicleState.position[1],
-            localControlledVehiclePose.position[2] - drivenVehicleState.position[2],
+            localControlledVehiclePose.position[0] - localVehicleAuthoritativeNowSample.position[0],
+            localControlledVehiclePose.position[2] - localVehicleAuthoritativeNowSample.position[2],
           )
+        : 0;
+      const vehicleCurrentAuthVerticalDeltaM = localControlledVehiclePose && localVehicleAuthoritativeNowSample
+        ? Math.abs(localControlledVehiclePose.position[1] - localVehicleAuthoritativeNowSample.position[1])
+        : 0;
+      const vehicleExpectedLeadM = localVehicleAuthoritativeNowSample
+        ? Math.hypot(
+            localVehicleAuthoritativeNowSample.linearVelocity[0],
+            localVehicleAuthoritativeNowSample.linearVelocity[1],
+            localVehicleAuthoritativeNowSample.linearVelocity[2],
+          ) * Math.max(0, physStats.vehicleAckBacklogMs / 1000)
+        : 0;
+      const vehicleCurrentAuthUnexplainedDeltaM = localControlledVehiclePose && localVehicleAuthoritativeNowSample
+        ? (() => {
+            const backlogSec = Math.max(0, physStats.vehicleAckBacklogMs / 1000);
+            const extrapolatedCurrentAuthPosition: [number, number, number] = [
+              localVehicleAuthoritativeNowSample.position[0] + localVehicleAuthoritativeNowSample.linearVelocity[0] * backlogSec,
+              localVehicleAuthoritativeNowSample.position[1] + localVehicleAuthoritativeNowSample.linearVelocity[1] * backlogSec,
+              localVehicleAuthoritativeNowSample.position[2] + localVehicleAuthoritativeNowSample.linearVelocity[2] * backlogSec,
+            ];
+            return distanceVec3(localControlledVehiclePose.position, extrapolatedCurrentAuthPosition);
+          })()
         : 0;
       onDebugFrameRef.current(
         frameDelta * 1000,
@@ -1064,6 +2048,113 @@ export function GameWorld({
           steering: localVehicleDebug?.steering ?? 0,
           engineForce: localVehicleDebug?.engineForce ?? 0,
           brake: localVehicleDebug?.brake ?? 0,
+          meshDeltaM: localVehicleMeshDeltaM,
+          meshRotDeltaRad: localVehicleMeshRotDeltaRad,
+          meshDeltaRms5sM: rmsTimedScalars(localVehicleMeshDeltaSamplesRef.current),
+          meshDeltaPeak5sM: peakTimedScalars(localVehicleMeshDeltaSamplesRef.current),
+          restJitterRms5sM: rmsTimedScalars(localVehicleRestJitterSamplesRef.current),
+          straightJitterRms5sM: rmsTimedScalars(localVehicleStraightJitterSamplesRef.current),
+          rawHeaveDeltaRms5sM: rmsTimedScalars(localVehicleRawHeaveSamplesRef.current),
+          rawHeaveDeltaPeak5sM: peakTimedScalars(localVehicleRawHeaveSamplesRef.current),
+          rawPlanarDeltaRms5sM: rmsTimedScalars(localVehicleRawPlanarSamplesRef.current),
+          rawPlanarDeltaPeak5sM: peakTimedScalars(localVehicleRawPlanarSamplesRef.current),
+          rawYawDeltaRms5sRad: rmsTimedScalars(localVehicleRawYawSamplesRef.current),
+          rawYawDeltaPeak5sRad: peakTimedScalars(localVehicleRawYawSamplesRef.current),
+          rawPitchDeltaRms5sRad: rmsTimedScalars(localVehicleRawPitchSamplesRef.current),
+          rawPitchDeltaPeak5sRad: peakTimedScalars(localVehicleRawPitchSamplesRef.current),
+          rawRollDeltaRms5sRad: rmsTimedScalars(localVehicleRawRollSamplesRef.current),
+          rawRollDeltaPeak5sRad: peakTimedScalars(localVehicleRawRollSamplesRef.current),
+          residualDeltaRms5sM: rmsTimedScalars(localVehicleResidualSamplesRef.current),
+          residualDeltaPeak5sM: peakTimedScalars(localVehicleResidualSamplesRef.current),
+          residualPlanarDeltaRms5sM: rmsTimedScalars(localVehicleResidualPlanarSamplesRef.current),
+          residualPlanarDeltaPeak5sM: peakTimedScalars(localVehicleResidualPlanarSamplesRef.current),
+          residualHeaveDeltaRms5sM: rmsTimedScalars(localVehicleResidualHeaveSamplesRef.current),
+          residualHeaveDeltaPeak5sM: peakTimedScalars(localVehicleResidualHeaveSamplesRef.current),
+          residualYawDeltaRms5sRad: rmsTimedScalars(localVehicleResidualYawSamplesRef.current),
+          residualYawDeltaPeak5sRad: peakTimedScalars(localVehicleResidualYawSamplesRef.current),
+          residualPitchDeltaRms5sRad: rmsTimedScalars(localVehicleResidualPitchSamplesRef.current),
+          residualPitchDeltaPeak5sRad: peakTimedScalars(localVehicleResidualPitchSamplesRef.current),
+          residualRollDeltaRms5sRad: rmsTimedScalars(localVehicleResidualRollSamplesRef.current),
+          residualRollDeltaPeak5sRad: peakTimedScalars(localVehicleResidualRollSamplesRef.current),
+          rawRestHeaveDeltaRms5sM: rmsTimedScalars(localVehicleRawRestHeaveSamplesRef.current),
+          rawStraightHeaveDeltaRms5sM: rmsTimedScalars(localVehicleRawStraightHeaveSamplesRef.current),
+          wheelContactBits: localVehicleWheelContactBits,
+          wheelContactBitChanges5s: countTimedScalars(localVehicleWheelContactBitChangeSamplesRef.current),
+          wheelContactNormals: localVehicleWheelContactNormals.map((normal) => [...normal] as [number, number, number]),
+          wheelContactNormalDeltaRms5sRad: rmsTimedScalars(localVehicleContactNormalDeltaSamplesRef.current),
+          wheelGroundObjectIds: [...localVehicleWheelGroundObjectIds] as [number, number, number, number],
+          wheelGroundObjectSwitches5s: countTimedScalars(localVehicleGroundObjectSwitchSamplesRef.current),
+          suspensionLengths: localVehicleSuspensionLengths,
+          suspensionForces: localVehicleSuspensionForces,
+          suspensionRelativeVelocities: localVehicleSuspensionRelativeVelocities,
+          suspensionLengthSpreadM: localVehicleSuspensionLengthSpreadM,
+          suspensionLengthSpreadPeak5sM: peakTimedScalars(localVehicleSuspensionLengthSpreadSamplesRef.current),
+          suspensionLengthDeltaRms5sM: rmsTimedScalars(localVehicleSuspensionLengthDeltaSamplesRef.current),
+          suspensionForceSpreadN: localVehicleSuspensionForceSpreadN,
+          suspensionForceSpreadPeak5sN: peakTimedScalars(localVehicleSuspensionForceSpreadSamplesRef.current),
+          suspensionForceDeltaRms5sN: rmsTimedScalars(localVehicleSuspensionForceDeltaSamplesRef.current),
+          meshFrameDeltaRms5sM: rmsTimedScalars(localVehicleMeshFrameDeltaSamplesRef.current),
+          meshFrameDeltaPeak5sM: peakTimedScalars(localVehicleMeshFrameDeltaSamplesRef.current),
+          meshFrameRotDeltaRms5sRad: rmsTimedScalars(localVehicleMeshFrameRotSamplesRef.current),
+          meshFrameRotDeltaPeak5sRad: peakTimedScalars(localVehicleMeshFrameRotSamplesRef.current),
+          cameraFrameDeltaRms5sM: rmsTimedScalars(localVehicleCameraFrameDeltaSamplesRef.current),
+          cameraFrameDeltaPeak5sM: peakTimedScalars(localVehicleCameraFrameDeltaSamplesRef.current),
+          cameraFrameRotDeltaRms5sRad: rmsTimedScalars(localVehicleCameraFrameRotSamplesRef.current),
+          cameraFrameRotDeltaPeak5sRad: peakTimedScalars(localVehicleCameraFrameRotSamplesRef.current),
+          groundedTransitions5s: countTimedScalars(localVehicleGroundedTransitionSamplesRef.current),
+          groundedMin5s: minTimedScalars(localVehicleGroundedSamplesRef.current),
+          groundedMax5s: maxTimedScalars(localVehicleGroundedSamplesRef.current),
+          latestAuthDeltaM: vehiclePosDeltaM,
+          sampledAuthDeltaM: vehicleSampledAuthDeltaM,
+          meshAuthDeltaM: vehicleMeshAuthDeltaM,
+          latestVsSampledAuthDeltaM: vehicleLatestVsSampledAuthDeltaM,
+          currentAuthDeltaM: localVehicleCurrentAuthDeltaM,
+          meshCurrentAuthDeltaM: vehicleMeshCurrentAuthDeltaM,
+          expectedLeadM: vehicleExpectedLeadM,
+          currentAuthUnexplainedDeltaM: vehicleCurrentAuthUnexplainedDeltaM,
+          currentAuthPlanarDeltaM: vehicleCurrentAuthPlanarDeltaM,
+          currentAuthVerticalDeltaM: vehicleCurrentAuthVerticalDeltaM,
+          authObservedAgeMs: vehicleAuthObservedAgeMs,
+          authSampleOffsetMs: vehicleAuthSampleOffsetMs,
+          authSampleServerDeltaMs: vehicleAuthSampleServerDeltaMs,
+          authCurrentOffsetMs: vehicleAuthCurrentOffsetMs,
+          predictedAuthDeltaRms5sM: rmsTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current),
+          predictedAuthDeltaPeak5sM: peakTimedScalars(localVehiclePredictedAuthDeltaSamplesRef.current),
+          capture: {
+            predictedFrameDeltaM: localVehicleRawFrameDeltaM,
+            predictedPlanarDeltaM: localVehicleRawPlanarDeltaM,
+            predictedHeaveDeltaM: localVehicleRawHeaveDeltaM,
+            predictedYawDeltaRad: localVehicleRawYawDeltaRad,
+            predictedPitchDeltaRad: localVehicleRawPitchDeltaRad,
+            predictedRollDeltaRad: localVehicleRawRollDeltaRad,
+            predictedResidualDeltaM: localVehicleResidualFrameDeltaM,
+            predictedResidualPlanarDeltaM: localVehicleResidualPlanarDeltaM,
+            predictedResidualHeaveDeltaM: localVehicleResidualHeaveDeltaM,
+            predictedResidualYawDeltaRad: localVehicleResidualYawDeltaRad,
+            predictedResidualPitchDeltaRad: localVehicleResidualPitchDeltaRad,
+            predictedResidualRollDeltaRad: localVehicleResidualRollDeltaRad,
+            meshFrameDeltaM: localVehicleMeshFrameDeltaM,
+            meshFrameRotDeltaRad: localVehicleMeshFrameRotDeltaRad,
+            cameraFrameDeltaM: localVehicleCameraFrameDeltaM,
+            cameraFrameRotDeltaRad: localVehicleCameraFrameRotDeltaRad,
+            groundedTransitionThisFrame: localVehicleGroundedTransitionThisFrame,
+            wheelContactBits: localVehicleWheelContactBits,
+            wheelContactBitChangesThisFrame: localVehicleWheelContactBitChangesThisFrame,
+            wheelContactNormalDeltaRad: localVehicleWheelContactNormalDeltaRad,
+            wheelGroundObjectSwitchesThisFrame: localVehicleGroundObjectSwitchesThisFrame,
+            suspensionLengthSpreadM: localVehicleSuspensionLengthSpreadM,
+            suspensionForceSpreadN: localVehicleSuspensionForceSpreadN,
+            suspensionLengthDeltaM: localVehicleSuspensionLengthDeltaM,
+            suspensionForceDeltaN: localVehicleSuspensionForceDeltaN,
+            expectedLeadM: vehicleExpectedLeadM,
+            currentAuthUnexplainedDeltaM: vehicleCurrentAuthUnexplainedDeltaM,
+            currentAuthPlanarDeltaM: vehicleCurrentAuthPlanarDeltaM,
+            currentAuthVerticalDeltaM: vehicleCurrentAuthVerticalDeltaM,
+            predictedPosition: localControlledVehiclePose ? [...localControlledVehiclePose.position] as [number, number, number] : null,
+            meshPosition: localVehicleVisualPose ? [...localVehicleVisualPose.position] as [number, number, number] : null,
+            currentAuthPosition: localVehicleAuthoritativeNowSample ? [...localVehicleAuthoritativeNowSample.position] as [number, number, number] : null,
+            cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+          },
         },
         client?.getDebugTelemetrySnapshot() ?? {
           lastSnapshotGapMs: 0,
@@ -1143,7 +2234,7 @@ export function GameWorld({
         nearestVehicleId: nearestVehicleIdRef.current,
         remotePlayers: remoteSummaries,
         stats: {
-          fps: 0,
+          ...DEFAULT_STATS,
           frameTimeMs: frameDelta * 1000,
           drawCalls: gl.info.render.calls,
           triangles: gl.info.render.triangles,
@@ -1156,85 +2247,14 @@ export function GameWorld({
           dynamicBodyInterpolationDelayMs: client?.dynamicBodyInterpolationDelayMs ?? 0,
           clockOffsetUs: state.serverClock.getOffsetUs(),
           remotePlayers: state.remotePlayers.size,
-          snapshotsPerSec: 0,
-          jitterMs: 0,
-          lastSnapshotGapMs: 0,
-          snapshotGapP95Ms: 0,
-          snapshotGapMaxMs: 0,
-          lastSnapshotSource: 'none',
-          staleSnapshotsDropped: 0,
-          reliableSnapshotsReceived: 0,
-          datagramSnapshotsReceived: 0,
-          localSnapshotsReceived: 0,
-          directSnapshotsReceived: 0,
-          rapierDebugLabel: '',
-          rapierDebugModeBits: 0,
           pendingInputs: physStats.pendingInputs,
           predictionTicks: physStats.predictionTicks,
           playerCorrectionMagnitude: physStats.playerCorrectionMagnitude,
           vehicleCorrectionMagnitude: physStats.vehicleCorrectionMagnitude,
-          dynamicGlobalMaxCorrectionMagnitude: 0,
-          dynamicNearPlayerMaxCorrectionMagnitude: 0,
-          dynamicInteractiveMaxCorrectionMagnitude: 0,
-          dynamicOverThresholdCount: 0,
-          dynamicTrackedBodies: 0,
-          dynamicInteractiveBodies: 0,
-          lastDynamicShotBodyId: 0,
-          lastDynamicShotAgeMs: -1,
-          lastShotPredictedBodyId: 0,
-          lastShotProxyHitBodyId: 0,
-          lastShotProxyHitToi: -1,
-          lastShotBlockedByBlocker: false,
-          lastShotLocalPredictedDeltaM: -1,
-          lastShotDynamicSampleAgeMs: -1,
-          lastShotPredictedBodyRecentInteraction: false,
-          lastShotBlockerDistance: -1,
-          lastShotRenderedBodyId: 0,
-          lastShotRenderedBodyToi: -1,
-          lastShotRenderProxyDeltaM: -1,
-          lastShotRenderedBodyProxyPresent: false,
-          lastShotRenderedBodyProxyToi: -1,
-          lastShotRenderedBodyProxyCenterDeltaM: -1,
-          lastShotNearestProxyBodyId: 0,
-          lastShotNearestProxyBodyToi: -1,
-          lastShotNearestProxyBodyMissDistanceM: -1,
-          lastShotNearestProxyBodyRadiusM: -1,
-          lastShotNearestRenderedBodyId: 0,
-          lastShotNearestRenderedBodyToi: -1,
-          lastShotNearestRenderedBodyMissDistanceM: -1,
-          lastShotNearestRenderedBodyRadiusM: -1,
-          lastShotServerResolution: 0,
-          lastShotServerDynamicBodyId: 0,
-          lastShotServerDynamicHitToiM: -1,
-          lastShotServerDynamicImpulseMag: -1,
-          playerCorrectionPeak5sM: 0,
-          vehicleCorrectionPeak5sM: 0,
-          dynamicCorrectionPeak5sM: 0,
-          pendingInputsPeak5s: 0,
-          vehiclePendingInputs: 0,
-          vehicleAckSeq: 0,
-          vehicleReplayErrorM: 0,
-          vehiclePosErrorM: 0,
-          vehicleVelErrorMs: 0,
-          vehicleRotErrorRad: 0,
-          vehicleCorrectionAgeMs: -1,
           physicsStepMs: physStats.physicsStepMs,
           shotsFired: client?.getDebugTelemetrySnapshot().shotsFired ?? 0,
-          shotsPending: 0,
-          shotAuthoritativeMoves: 0,
-          shotMismatches: 0,
           lastShotOutcome: client?.getDebugTelemetrySnapshot().lastShotOutcome ?? 'none',
-          lastShotOutcomeAgeMs: -1,
-          recentEvents: [],
           vehicleDebugId: drivenVehicleId ?? 0,
-          vehicleDriverConfirmed: false,
-          vehicleLocalSpeedMs: 0,
-          vehicleServerSpeedMs: 0,
-          vehiclePosDeltaM: 0,
-          vehicleGroundedWheels: 0,
-          vehicleSteering: 0,
-          vehicleEngineForce: 0,
-          vehicleBrake: 0,
           playerId: state.playerId,
           position: pos as [number, number, number],
           velocity: physStats.velocity,
@@ -1243,8 +2263,6 @@ export function GameWorld({
           onGround: ((client?.localPlayerFlags ?? 0) & 0x1) !== 0,
           inVehicle: ((client?.localPlayerFlags ?? 0) & 0x2) !== 0,
           dead: ((client?.localPlayerFlags ?? 0) & 0x4) !== 0,
-          heapUsedMb: -1,
-          heapTotalMb: -1,
         },
       });
     }
@@ -1259,7 +2277,7 @@ export function GameWorld({
     let crosshairAimState: CrosshairAimState = 'idle';
     let closestAimDistance = Number.POSITIVE_INFINITY;
 
-    if (!practiceMode && canUseAimActions) {
+    if (prediction.supportsRemotePlayerHitscan() && canUseAimActions) {
       const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
       const aimDirection = aimDirectionFromAngles(yawRef.current, pitchRef.current);
       const sceneHit = prediction.raycastScene(aimOrigin, aimDirection, CROSSHAIR_MAX_DISTANCE);
@@ -1366,27 +2384,9 @@ export function GameWorld({
     const dbGroup = dynamicBodyGroupRef.current;
     if (dbGroup) {
       const activeBodies = new Set<number>();
-      const dynamicRenderTimeUs = client?.getDynamicBodyRenderTimeUs() ?? 0;
       for (const [id, body] of state.dynamicBodies) {
         activeBodies.add(id);
-        const proxyBody = prediction.getDynamicBodyRenderState(id);
-        const remoteSample = localPreviewTransport
-          ? null
-          : client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
-        const useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
-        const renderBody = useProxyBody && proxyBody
-          ? proxyBody
-          : (remoteSample
-            ? {
-                id,
-                shapeType: remoteSample.shapeType,
-                position: remoteSample.position,
-                quaternion: remoteSample.quaternion,
-                halfExtents: remoteSample.halfExtents,
-                velocity: remoteSample.velocity,
-                angularVelocity: remoteSample.angularVelocity,
-              }
-            : body);
+        const renderBody = prediction.getRenderedDynamicBodyState(id) ?? body;
         let mesh = dynamicBodyMeshes.current.get(id);
         if (!mesh) {
           let geom: THREE.BufferGeometry;
@@ -1469,7 +2469,7 @@ export function GameWorld({
           vPos = localVehiclePos.position;
           vQuat = localVehiclePos.quaternion;
         } else {
-          const sample = localPreviewTransport
+          const sample = localAuthorityTransport
             ? null
             : client.sampleRemoteVehicle(id, renderTimeUs);
           vPos = sample?.position ?? vs.position;
@@ -1480,6 +2480,11 @@ export function GameWorld({
         vehicleMeshGroup.quaternion.set(vQuat[0], vQuat[1], vQuat[2], vQuat[3]);
 
         updateVehicleWheelVisuals(vehicleMeshGroup, vs, isLocalVehicle ? localVehicleDebug : null, vPos, vQuat, frameDelta);
+        updateVehicleSupportDebug(
+          vehicleMeshGroup,
+          isLocalVehicle ? localVehicleDebug : null,
+          vehicleSupportDebugEnabledRef.current,
+        );
 
         // Proximity check (only when not driving)
         if (!isDrivingNow && vs.driverId === 0) {
@@ -1538,7 +2543,7 @@ export function GameWorld({
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
 
-      {prediction.renderBlocks.map((block) => (
+      {renderBlocks.map((block) => (
         <WorldBlock
           key={block.key}
           position={block.position}
@@ -1546,7 +2551,7 @@ export function GameWorld({
         />
       ))}
 
-      <RapierDebugLines prediction={prediction} modeBits={rapierDebugModeBits} />
+      <RapierDebugLines runtimeRef={runtimeRef} modeBits={rapierDebugModeBits} />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
@@ -1606,10 +2611,10 @@ function rapierDebugModeLabel(modeBits: number): string {
 }
 
 function RapierDebugLines({
-  prediction,
+  runtimeRef,
   modeBits,
 }: {
-  prediction: ReturnType<typeof usePredictionWithWorld>;
+  runtimeRef: RefObject<GameRuntimeClient | null>;
   modeBits: number;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -1629,15 +2634,16 @@ function RapierDebugLines({
   }, []);
 
   useFrame(() => {
+    const runtime = runtimeRef.current;
     const geometry = geometryRef.current;
-    if (!geometry) return;
+    if (!geometry || !runtime) return;
 
     if (modeBits === 0) {
       geometry.setDrawRange(0, 0);
       return;
     }
 
-    const buffers = prediction.getDebugRenderBuffers(modeBits);
+    const buffers = runtime.getDebugRenderBuffers(modeBits);
     if (!buffers) {
       geometry.setDrawRange(0, 0);
       return;
@@ -1747,6 +2753,8 @@ function updateLocalShotTraceVisuals(
 
 function createVehicleMesh(_id: number): THREE.Group {
   const group = new THREE.Group();
+  const wheelVisualAnchors = getVehicleWheelVisualAnchors();
+  const chassisHalfExtents = getVehicleChassisHalfExtents();
   group.userData.renderState = {
     lastBodyPosition: null,
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
@@ -1754,9 +2762,9 @@ function createVehicleMesh(_id: number): THREE.Group {
 
   // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
   const chassisGeom = new THREE.BoxGeometry(
-    VEHICLE_CHASSIS_HALF_EXTENTS.x * 2,
-    VEHICLE_CHASSIS_HALF_EXTENTS.y * 2,
-    VEHICLE_CHASSIS_HALF_EXTENTS.z * 2,
+    chassisHalfExtents.x * 2,
+    chassisHalfExtents.y * 2,
+    chassisHalfExtents.z * 2,
   );
   const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
   const chassis = new THREE.Mesh(chassisGeom, chassisMat);
@@ -1775,16 +2783,17 @@ function createVehicleMesh(_id: number): THREE.Group {
   const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
   const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
   const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.position.set(0, 0.04, VEHICLE_CHASSIS_HALF_EXTENTS.z - 0.42);
+  nose.position.set(0, 0.04, chassisHalfExtents.z - 0.42);
   nose.castShadow = true;
   group.add(nose);
 
   // Wheels: FL, FR, RL, RR
-  const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
+  const wheelRadiusM = getVehicleWheelRadiusM();
+  const wheelGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, 0.3, 12);
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
-    pivot.position.set(...VEHICLE_WHEEL_ANCHORS[i]);
+    pivot.position.set(...wheelVisualAnchors[i]);
     pivot.name = `wheel_pivot_${i}`;
     group.add(pivot);
 
@@ -1818,6 +2827,7 @@ function updateVehicleWheelVisuals(
 ): void {
   const renderState = vehicleMeshGroup.userData.renderState as VehicleRenderState | undefined;
   if (!renderState) return;
+  const wheelRadiusM = getVehicleWheelRadiusM();
 
   const bodySpeed = estimateVehicleForwardSpeed(renderState.lastBodyPosition, position, quaternion, frameDeltaSec);
   renderState.lastBodyPosition = [...position];
@@ -1850,7 +2860,7 @@ function updateVehicleWheelVisuals(
 
     // Wheel spin is integrated locally from chassis motion instead of directly
     // snapping to low-rate replicated wheel angles, which causes visible wobble.
-    wheelState.spinAngle += (fallbackSignedSpeed / VEHICLE_WHEEL_RADIUS_M) * frameDeltaSec;
+    wheelState.spinAngle += (fallbackSignedSpeed / wheelRadiusM) * frameDeltaSec;
     pivot.rotation.y = wheelState.steerAngle;
     spinGroup.rotation.x = wheelState.spinAngle;
   }
@@ -1876,12 +2886,6 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
-}
-
-function dampAngle(current: number, target: number, lambda: number, dt: number): number {
-  const delta = THREE.MathUtils.euclideanModulo(target - current + Math.PI, Math.PI * 2) - Math.PI;
-  const alpha = 1 - Math.exp(-lambda * dt);
-  return current + delta * alpha;
 }
 
 function createPlayerMesh(id: number): THREE.Group {

@@ -1,0 +1,161 @@
+name: R2 publishing CI
+
+# Verifies the world-publishing pipeline that lives under `api/worlds/*` and
+# the client surfaces in `client/src/world/*` by running both the unit tests
+# and a true end-to-end smoke test against a real S3-compatible backend
+# (MinIO, brought up via the same docker-compose used for local dev).
+#
+# The unit test job covers route parsing, the cloud client wrappers (gzip
+# round-trip, screenshot upload, error mapping), and the localStorage history
+# store. The e2e job invokes the real `api/` handler functions in-process via
+# `scripts/test-r2-e2e.mts`, exercising publish + list + get + screenshot
+# upload + screenshot get against MinIO running in a sibling container.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'api/**'
+      - 'client/src/world/worldsCloud.ts'
+      - 'client/src/world/worldsCloud.test.ts'
+      - 'client/src/world/publishedHistory.ts'
+      - 'client/src/world/publishedHistory.test.ts'
+      - 'client/src/world/canvasScreenshot.ts'
+      - 'client/src/app/routes.ts'
+      - 'client/src/app/routes.test.ts'
+      - 'client/src/pages/Gallery.tsx'
+      - 'client/src/pages/SharedPractice.tsx'
+      - 'client/src/pages/GodMode.tsx'
+      - 'client/src/main.tsx'
+      - 'docker-compose.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/test-r2-e2e.mts'
+      - '.github/workflows/r2-publishing.yml'
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Client unit tests (R2 surfaces)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm install
+
+      - name: Vitest – routes, cloud client, published history
+        working-directory: client
+        run: |
+          npx vitest run \
+            src/app/routes.test.ts \
+            src/world/worldsCloud.test.ts \
+            src/world/publishedHistory.test.ts
+
+  e2e-local-fs:
+    name: End-to-end against filesystem backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      - name: Configure filesystem storage location
+        # $RUNNER_TEMP is a shell variable that GitHub Actions exports to
+        # every step. We can't reference `runner.temp` at the job-level env
+        # block (it's "Unrecognized named-value"), so we write the resolved
+        # path into $GITHUB_ENV here and every subsequent step inherits it.
+        run: echo "WORLDS_STORAGE_DIR=$RUNNER_TEMP/vibe-land-worlds" >> "$GITHUB_ENV"
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install client dependencies (for tsx)
+        run: npm --prefix client install
+
+      - name: Run end-to-end smoke test (filesystem backend)
+        run: npm run r2:test
+
+      - name: Sanity-check the on-disk layout
+        if: always()
+        run: |
+          ls -la "$WORLDS_STORAGE_DIR/published" || true
+          find "$WORLDS_STORAGE_DIR" -maxdepth 3 -type f || true
+
+  e2e-minio:
+    name: End-to-end against MinIO (R2-compatible)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      - name: Install root dependencies (@aws-sdk/client-s3)
+        run: npm install
+
+      - name: Install client dependencies (for tsx)
+        run: npm --prefix client install
+
+      - name: Boot MinIO via docker compose
+        run: docker compose up -d
+
+      - name: Wait for the bucket-init container to finish
+        run: |
+          set -e
+          for i in $(seq 1 60); do
+            status=$(docker inspect -f '{{.State.Status}}' vibe-land-minio-init 2>/dev/null || echo "missing")
+            echo "minio-init status: $status (attempt $i)"
+            if [ "$status" = "exited" ]; then
+              code=$(docker inspect -f '{{.State.ExitCode}}' vibe-land-minio-init)
+              echo "init exit code: $code"
+              docker logs vibe-land-minio-init
+              if [ "$code" != "0" ]; then
+                echo "init container exited non-zero"
+                exit 1
+              fi
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "init container did not exit within 60s"
+          docker logs vibe-land-minio-init || true
+          exit 1
+
+      - name: Run end-to-end smoke test (R2 backend via MinIO)
+        run: npm run r2:test
+
+      - name: Show MinIO logs on failure
+        if: failure()
+        run: |
+          docker compose ps || true
+          docker compose logs minio || true
+          docker compose logs minio-init || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
