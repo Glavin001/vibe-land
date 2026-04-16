@@ -31,13 +31,16 @@ use blast_stress_solver::types::{SolverSettings, Vec3 as BlastVec3};
 
 use crate::simulation::SimWorld;
 
-/// Collision groups for Blast chunk colliders must match static terrain in
-/// [`vibe_netcode::sim_world::SimWorld`]: membership `GROUP_1`, filter
-/// [`Group::all()`].  The upstream stress-solver scenarios use a narrower
-/// filter (often `GROUP_1` only).  That blocks the player capsule
-/// (`GROUP_3`) on the KCC obstacle query and lets vehicles / balls phase
-/// through when paired filters disagree.  Re-apply after spawn and after
-/// any fracture that adds colliders.
+/// Collision + solver groups for Blast chunk colliders must match static
+/// terrain in [`vibe_netcode::sim_world::SimWorld`]: membership `GROUP_1`,
+/// filter [`Group::all()`].
+///
+/// Blast's `DestructibleSet::step` calls into `BodyTracker` which assigns
+/// debris / "multi" bodies to `GROUP_2` / `GROUP_3` with filters that **do
+/// not** include the vehicle chassis (`GROUP_1` membership, filter
+/// `GROUP_1 | GROUP_2` — see [`crate::vehicle::create_vehicle_physics`]).
+/// Without re-applying every tick, cars drive through bricks. The player
+/// capsule uses `GROUP_3` and still collides because our filter is `all()`.
 fn destructible_chunk_collision_groups() -> InteractionGroups {
     InteractionGroups::new(Group::GROUP_1, Group::all())
 }
@@ -54,6 +57,9 @@ fn apply_destructible_groups_to_body(
     for ch in collider_handles {
         if let Some(col) = sim.colliders.get_mut(ch) {
             col.set_collision_groups(groups);
+            // Must match `collision_groups` — Blast sets both from the same
+            // `InteractionGroups` in `apply_collision_groups_for_body`.
+            col.set_solver_groups(groups);
         }
         sim.modified_colliders.push(ch);
     }
@@ -313,7 +319,9 @@ impl DestructibleRegistry {
                     col.set_contact_force_event_threshold(0.0);
                     // Match `SimWorld` static geometry (`GROUP_1` + filter all) so
                     // KCC, vehicles, and dynamic props all collide with chunks.
-                    col.set_collision_groups(destructible_chunk_collision_groups());
+                    let g = destructible_chunk_collision_groups();
+                    col.set_collision_groups(g);
+                    col.set_solver_groups(g);
                 }
             }
         }
@@ -442,6 +450,12 @@ impl DestructibleRegistry {
                 impulse_joints,
                 multibody_joints,
             );
+
+            // Blast reapplies its debris/multi collision + solver groups inside
+            // `step` — every frame, not only on splits. Re-apply vibe-land
+            // groups so vehicles (chassis filter `GROUP_1|GROUP_2`) still hit
+            // chunk colliders (`GROUP_1` + `all()` filter).
+            apply_destructible_groups_to_instance_bodies(sim, instance);
 
             // Fractures create brand-new rigid bodies + colliders via
             // Blast's split migrator.  Those bodies start out at the
