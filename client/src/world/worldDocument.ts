@@ -502,6 +502,294 @@ export function applyTerrainRampStencil(world: WorldDocument, ramp: TerrainRampS
   return mutated ? next : world;
 }
 
+export function flattenTerrainBrush(
+  world: WorldDocument,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+  targetHeight: number,
+  strength: number,
+): WorldDocument {
+  const next: WorldDocument = {
+    ...world,
+    terrain: { ...world.terrain, tiles: [...world.terrain.tiles] },
+  };
+  const clampedTarget = clampNumber(targetHeight, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+  const clampedStrength = clampNumber(strength, 0, 1);
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
+    for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+        const distance = Math.hypot(x - centerX, z - centerZ);
+        if (distance > radius) {
+          continue;
+        }
+        const falloff = 1 - distance / radius;
+        const index = row * next.terrain.tileGridSize + col;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        const delta = clampedStrength * falloff * falloff * (clampedTarget - currentHeight);
+        const nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        if (Math.abs(nextHeight - currentHeight) <= 1e-6) {
+          continue;
+        }
+        if (nextTile === sourceTile) {
+          nextTile = { ...sourceTile, heights: [...sourceTile.heights] };
+          next.terrain.tiles[tileIndex] = nextTile;
+        }
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
+      }
+    }
+  }
+  return mutated ? next : world;
+}
+
+export function smoothTerrainBrush(
+  world: WorldDocument,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+  strength: number,
+): WorldDocument {
+  const next: WorldDocument = {
+    ...world,
+    terrain: { ...world.terrain, tiles: [...world.terrain.tiles] },
+  };
+  const clampedStrength = clampNumber(strength, 0, 1);
+  const step = terrainTileSideLength(world) / (world.terrain.tileGridSize - 1);
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
+    for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+        const distance = Math.hypot(x - centerX, z - centerZ);
+        if (distance > radius) {
+          continue;
+        }
+        const falloff = 1 - distance / radius;
+        const index = row * next.terrain.tileGridSize + col;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        // Read 4 cardinal neighbors from the ORIGINAL world to avoid directional bias
+        const nH = sampleTerrainHeightAtWorldPosition(world, x, z - step);
+        const sH = sampleTerrainHeightAtWorldPosition(world, x, z + step);
+        const wH = sampleTerrainHeightAtWorldPosition(world, x - step, z);
+        const eH = sampleTerrainHeightAtWorldPosition(world, x + step, z);
+        const avg = (nH + sH + wH + eH) * 0.25;
+        const delta = clampedStrength * falloff * falloff * (avg - currentHeight);
+        const nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        if (Math.abs(nextHeight - currentHeight) <= 1e-6) {
+          continue;
+        }
+        if (nextTile === sourceTile) {
+          nextTile = { ...sourceTile, heights: [...sourceTile.heights] };
+          next.terrain.tiles[tileIndex] = nextTile;
+        }
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
+      }
+    }
+  }
+  return mutated ? next : world;
+}
+
+export function applyTerrainNoiseBrush(
+  world: WorldDocument,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+  amplitude: number,
+  scale: number,
+  octaves: number,
+  seed: number,
+): WorldDocument {
+  const next: WorldDocument = {
+    ...world,
+    terrain: { ...world.terrain, tiles: [...world.terrain.tiles] },
+  };
+  const clampedOctaves = Math.max(1, Math.min(8, Math.round(octaves)));
+  const safeScale = scale > 0 ? scale : 1;
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
+    for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+        const distance = Math.hypot(x - centerX, z - centerZ);
+        if (distance > radius) {
+          continue;
+        }
+        const falloff = 1 - distance / radius;
+        const noiseVal = fbmNoise2D(x / safeScale, z / safeScale, clampedOctaves, seed | 0);
+        const delta = amplitude * noiseVal * falloff * falloff;
+        const index = row * next.terrain.tileGridSize + col;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        const nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        if (Math.abs(nextHeight - currentHeight) <= 1e-6) {
+          continue;
+        }
+        if (nextTile === sourceTile) {
+          nextTile = { ...sourceTile, heights: [...sourceTile.heights] };
+          next.terrain.tiles[tileIndex] = nextTile;
+        }
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
+      }
+    }
+  }
+  return mutated ? next : world;
+}
+
+export function sampleTerrainHeightGrid(
+  world: WorldDocument,
+  minX: number,
+  minZ: number,
+  maxX: number,
+  maxZ: number,
+  step: number,
+): Array<{ x: number; z: number; height: number }> {
+  const safeStep = Math.max(0.01, step);
+  const results: Array<{ x: number; z: number; height: number }> = [];
+  for (let z = minZ; z <= maxZ + 1e-9; z += safeStep) {
+    for (let x = minX; x <= maxX + 1e-9; x += safeStep) {
+      results.push({ x, z, height: sampleTerrainHeightAtWorldPosition(world, x, z) });
+    }
+  }
+  return results;
+}
+
+export function getTerrainRegionStats(
+  world: WorldDocument,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+): {
+  sampleCount: number;
+  minHeight: number;
+  maxHeight: number;
+  avgHeight: number;
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+} {
+  let sampleCount = 0;
+  let minHeight = Number.POSITIVE_INFINITY;
+  let maxHeight = Number.NEGATIVE_INFINITY;
+  let heightSum = 0;
+
+  for (const tile of world.terrain.tiles) {
+    for (let row = 0; row < world.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < world.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(world, tile, row, col);
+        if (Math.hypot(x - centerX, z - centerZ) > radius) {
+          continue;
+        }
+        const height = tile.heights[row * world.terrain.tileGridSize + col] ?? 0;
+        sampleCount += 1;
+        if (height < minHeight) minHeight = height;
+        if (height > maxHeight) maxHeight = height;
+        heightSum += height;
+      }
+    }
+  }
+
+  const bounds = { minX: centerX - radius, maxX: centerX + radius, minZ: centerZ - radius, maxZ: centerZ + radius };
+  if (sampleCount === 0) {
+    return { sampleCount: 0, minHeight: 0, maxHeight: 0, avgHeight: 0, bounds };
+  }
+  return { sampleCount, minHeight, maxHeight, avgHeight: heightSum / sampleCount, bounds };
+}
+
+export function carveTerrainSpline(
+  world: WorldDocument,
+  points: Array<{ x: number; z: number }>,
+  width: number,
+  falloffM: number,
+  mode: 'lower' | 'raise' | 'flatten',
+  strength: number,
+  targetHeight?: number,
+): WorldDocument {
+  if (points.length < 2) {
+    return world;
+  }
+  const next: WorldDocument = {
+    ...world,
+    terrain: { ...world.terrain, tiles: [...world.terrain.tiles] },
+  };
+  const clampedStrength = clampNumber(strength, 0, 1);
+  const halfWidth = Math.max(0, width) * 0.5;
+  const safeFalloff = Math.max(0, falloffM);
+  const safeTarget = clampNumber(targetHeight ?? 0, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+  const totalInfluenceWidth = halfWidth + safeFalloff;
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let nextTile = next.terrain.tiles[tileIndex];
+    for (let row = 0; row < next.terrain.tileGridSize; row += 1) {
+      for (let col = 0; col < next.terrain.tileGridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+
+        let minDist = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < points.length - 1; i += 1) {
+          const d = distanceToSegment(x, z, points[i].x, points[i].z, points[i + 1].x, points[i + 1].z);
+          if (d < minDist) minDist = d;
+        }
+        if (minDist > totalInfluenceWidth) {
+          continue;
+        }
+
+        let influence: number;
+        if (minDist <= halfWidth) {
+          influence = 1;
+        } else {
+          const beyond = minDist - halfWidth;
+          const t = clampNumber(1 - beyond / Math.max(1e-9, safeFalloff), 0, 1);
+          influence = t * t;
+        }
+
+        const index = row * next.terrain.tileGridSize + col;
+        const currentHeight = sourceTile.heights[index] ?? 0;
+        let nextHeight = currentHeight;
+
+        if (mode === 'flatten') {
+          const delta = clampedStrength * influence * (safeTarget - currentHeight);
+          nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        } else if (mode === 'lower') {
+          if (currentHeight <= safeTarget) {
+            continue;
+          }
+          const delta = clampedStrength * influence * (safeTarget - currentHeight);
+          nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        } else {
+          if (currentHeight >= safeTarget) {
+            continue;
+          }
+          const delta = clampedStrength * influence * (safeTarget - currentHeight);
+          nextHeight = clampNumber(currentHeight + delta, TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT);
+        }
+
+        if (Math.abs(nextHeight - currentHeight) <= 1e-6) {
+          continue;
+        }
+        if (nextTile === sourceTile) {
+          nextTile = { ...sourceTile, heights: [...sourceTile.heights] };
+          next.terrain.tiles[tileIndex] = nextTile;
+        }
+        nextTile.heights[index] = nextHeight;
+        mutated = true;
+      }
+    }
+  }
+  return mutated ? next : world;
+}
+
 export function getTerrainRampEndpointHeights(ramp: Pick<TerrainRampStencil, 'length' | 'gradePct' | 'targetHeight' | 'targetEdge' | 'targetKind'>): {
   startHeight: number;
   endHeight: number;
@@ -875,14 +1163,65 @@ function normalizeQuaternion(value: unknown): Quaternion {
   return identityQuaternion();
 }
 
+function distanceToSegment(
+  px: number, pz: number,
+  ax: number, az: number,
+  bx: number, bz: number,
+): number {
+  const abx = bx - ax;
+  const abz = bz - az;
+  const lenSq = abx * abx + abz * abz;
+  if (lenSq < 1e-12) {
+    return Math.hypot(px - ax, pz - az);
+  }
+  const t = clampNumber(((px - ax) * abx + (pz - az) * abz) / lenSq, 0, 1);
+  return Math.hypot(px - (ax + t * abx), pz - (az + t * abz));
+}
+
+function hashSeed(seed: number, ix: number, iz: number): number {
+  let h = (seed ^ (ix * 374761393) ^ (iz * 668265263)) | 0;
+  h = (h ^ (h >>> 13)) | 0;
+  h = Math.imul(h, 1274126177) | 0;
+  h = h ^ (h >>> 16);
+  return (h & 0x7fffffff) / 0x7fffffff;
+}
+
+function valueNoise2D(x: number, z: number, seed: number): number {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fz = z - iz;
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const uz = fz * fz * fz * (fz * (fz * 6 - 15) + 10);
+  const v00 = hashSeed(seed, ix, iz);
+  const v10 = hashSeed(seed, ix + 1, iz);
+  const v01 = hashSeed(seed, ix, iz + 1);
+  const v11 = hashSeed(seed, ix + 1, iz + 1);
+  return lerp(lerp(v00, v10, ux), lerp(v01, v11, ux), uz);
+}
+
+function fbmNoise2D(x: number, z: number, octaves: number, seed: number): number {
+  let value = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  let maxValue = 0;
+  for (let i = 0; i < octaves; i += 1) {
+    value += (valueNoise2D(x * frequency, z * frequency, seed + i * 127) - 0.5) * amplitude;
+    maxValue += amplitude * 0.5;
+    amplitude *= 0.5;
+    frequency *= 2;
+  }
+  return maxValue > 0 ? value / maxValue : 0;
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function clampNumber(value: number, min: number, max: number): number {
+export function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function lerp(a: number, b: number, t: number): number {
+export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }

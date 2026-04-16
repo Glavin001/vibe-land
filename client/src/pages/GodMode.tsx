@@ -56,14 +56,24 @@ import { recordPublishedWorld } from '../world/publishedHistory';
 import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
+  generateCommitId,
   redoWorldEdit,
   undoWorldEdit,
+  type CommitEntry,
   type WorldEditHistory,
 } from './godModeHistory';
+import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { CustomStencilPanel } from './godmode/CustomStencilPanel';
+import { CustomStencilPreview } from './godmode/CustomStencilPreview';
+import { useHumanEditTracker } from './godmode/useHumanEditTracker';
+import type { SplineData } from '../ai/splineData';
+import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
+import { useCustomStencils } from '../ai/customStencilStore';
+import type { WorldAccessors } from '../ai/worldToolHelpers';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
-type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile';
+type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 type SelectedTarget =
   | { kind: 'static'; id: number }
@@ -120,6 +130,9 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [rampSideFalloff, setRampSideFalloff] = useState(2);
   const [rampStartFalloff, setRampStartFalloff] = useState(0);
   const [rampEndFalloff, setRampEndFalloff] = useState(0);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const customStencils = useCustomStencils();
+  const [customStencilParams, setCustomStencilParams] = useState<Record<string, Record<string, unknown>>>({});
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
@@ -143,6 +156,19 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const worldRef = useRef(world);
   const editHistoryRef = useRef(editHistory);
   const editTransactionRef = useRef<WorldDocument | null>(null);
+  const isAiEditRef = useRef(false);
+  const aiChatRef = useRef<AiChatPanelHandle>(null);
+  const splinesRef = useRef<Map<string, SplineData>>(new Map());
+
+  const activeCustomStencilId = typeof terrainToolMode === 'string' && terrainToolMode.startsWith('custom:')
+    ? terrainToolMode.slice(7)
+    : null;
+  const activeCustomStencil = activeCustomStencilId
+    ? customStencils.find((s) => s.id === activeCustomStencilId) ?? null
+    : null;
+  const activeCustomParams = activeCustomStencilId
+    ? { ...activeCustomStencil?.defaultParams, ...customStencilParams[activeCustomStencilId] }
+    : {};
 
   useEffect(() => {
     worldRef.current = world;
@@ -172,13 +198,20 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     return true;
   }, [replaceWorldState]);
 
-  const applyCommittedWorldEdit = useCallback((updater: (current: WorldDocument) => WorldDocument) => {
+  const applyCommittedWorldEdit = useCallback((
+    updater: (current: WorldDocument) => WorldDocument,
+    commitInfo?: { commitId?: string; commitMessage?: string; source?: CommitEntry['source'] },
+  ) => {
     const current = worldRef.current;
     const next = updater(current);
     if (next === current) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, current, next);
+    const transition = commitWorldEdit(editHistoryRef.current, current, next, {
+      commitId: commitInfo?.commitId ?? generateCommitId(),
+      commitMessage: commitInfo?.commitMessage ?? 'Manual edit',
+      source: commitInfo?.source ?? 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -199,7 +232,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     if (!startWorld) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current);
+    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current, {
+      commitId: generateCommitId(),
+      commitMessage: 'Manual edit',
+      source: 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -210,6 +247,69 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const cancelTrackedWorldEdit = useCallback(() => {
     editTransactionRef.current = null;
   }, []);
+
+  const aiAccessors = useMemo<WorldAccessors>(() => ({
+    getWorld: () => worldRef.current,
+    commitEdit: (updater, options) => {
+      const wasAiEdit = isAiEditRef.current;
+      if (options?.isAiEdit) {
+        isAiEditRef.current = true;
+      }
+      try {
+        return applyCommittedWorldEdit(updater);
+      } finally {
+        isAiEditRef.current = wasAiEdit;
+      }
+    },
+    applyWithoutCommit: (updater) => {
+      return applyPreviewWorldEdit(updater);
+    },
+    restoreWorld: (snapshot) => {
+      replaceWorldState(snapshot);
+    },
+    commitAsAi: (snapshotBefore, commitId, commitMessage) => {
+      const transition = commitWorldEdit(editHistoryRef.current, snapshotBefore, worldRef.current, {
+        commitId,
+        commitMessage,
+        source: 'ai',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+      }
+    },
+    rollbackToCommit: (targetCommitId) => {
+      const history = editHistoryRef.current;
+      const idx = history.undoStack.findIndex((entry) => entry.commitId === targetCommitId);
+      if (idx === -1) {
+        return { ok: false, message: `Commit ${targetCommitId} not found in history.` };
+      }
+      const targetWorld = cloneWorldDocument(history.undoStack[idx].world);
+      const rollbackCommitId = generateCommitId();
+      const transition = commitWorldEdit(editHistoryRef.current, worldRef.current, targetWorld, {
+        commitId: rollbackCommitId,
+        commitMessage: `Rollback to ${targetCommitId}`,
+        source: 'rollback',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+        replaceWorldState(targetWorld);
+      }
+      return { ok: true, message: `Rolled back to commit ${targetCommitId}`, commitId: rollbackCommitId };
+    },
+    getSplines: () => splinesRef.current,
+    setSpline: (id, spline) => { splinesRef.current.set(id, spline); },
+    deleteSpline: (id) => splinesRef.current.delete(id),
+  }), [applyCommittedWorldEdit, applyPreviewWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleHumanEdit = useCallback((summary: string) => {
+    aiChatRef.current?.pushHumanEdit(summary);
+  }, []);
+
+  useHumanEditTracker({
+    world,
+    isAiEditRef,
+    onHumanEdit: handleHumanEdit,
+  });
 
   const handleUndo = useCallback(() => {
     cancelTrackedWorldEdit();
@@ -230,6 +330,25 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     replaceEditHistoryState(transition.history);
     replaceWorldState(transition.world);
   }, [cancelTrackedWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleHumanCommit = useCallback(() => {
+    const msg = commitMessageDraft.trim();
+    if (!msg) return;
+    // Push a named commit entry onto the undo stack labeling the current state.
+    // We use a self-referencing snapshot so the entry acts as a named bookmark.
+    const entry: CommitEntry = {
+      commitId: generateCommitId(),
+      commitMessage: msg,
+      world: cloneWorldDocument(worldRef.current),
+      timestamp: Date.now(),
+      source: 'human',
+    };
+    replaceEditHistoryState({
+      undoStack: [entry, ...editHistoryRef.current.undoStack].slice(0, 64),
+      redoStack: [],
+    });
+    setCommitMessageDraft('');
+  }, [commitMessageDraft, replaceEditHistoryState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -912,6 +1031,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           endFalloffM: rampEndFalloff,
         }));
       }}
+      activeCustomStencil={activeCustomStencil}
+      activeCustomParams={activeCustomParams}
+      onApplyCustomStencil={(x, z) => {
+        if (!activeCustomStencil) return;
+        applyPreviewWorldEdit((current) =>
+          applyCustomStencilToWorld(current, activeCustomStencil, activeCustomParams, x, z),
+        );
+      }}
       onCanvasReady={(canvas) => {
         editorCanvasRef.current = canvas;
       }}
@@ -934,6 +1061,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     rampTargetKind,
     rampWidth,
     rampYawDegrees,
+    activeCustomStencil,
+    activeCustomParams,
     terrainToolMode,
     beginTrackedWorldEdit,
     commitTrackedWorldEdit,
@@ -1070,6 +1199,35 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
             <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
           </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={commitMessageDraft}
+              onChange={(e) => setCommitMessageDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
+              placeholder="Commit message..."
+              style={{ flex: 1, padding: '5px 8px', fontSize: 12, background: 'rgba(20, 34, 48, 0.96)', color: '#eef7ff', border: '1px solid rgba(167, 208, 237, 0.18)', borderRadius: 8, fontFamily: 'inherit' }}
+            />
+            <button type="button" onClick={handleHumanCommit} style={secondaryButtonStyle} disabled={!commitMessageDraft.trim()}>Commit</button>
+          </div>
+          {editHistory.undoStack.length > 0 && (
+            <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+              {editHistory.undoStack.map((entry) => (
+                <div key={entry.commitId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', borderRadius: 6, background: 'rgba(0,0,0,0.18)' }}>
+                  <code style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(134,214,245,0.7)', flexShrink: 0 }}>{entry.commitId}</code>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(238,247,255,0.82)' }}>{entry.commitMessage}</span>
+                  <span style={{
+                    fontSize: 9,
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                    flexShrink: 0,
+                    background: entry.source === 'ai' ? 'rgba(116,212,255,0.2)' : entry.source === 'rollback' ? 'rgba(255,200,100,0.2)' : 'rgba(255,255,255,0.08)',
+                    color: entry.source === 'ai' ? '#bae8ff' : entry.source === 'rollback' ? '#ffe0a0' : 'rgba(238,247,255,0.5)',
+                  }}>{entry.source}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={mutedTextStyle}>
             Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>
@@ -1090,6 +1248,22 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                     <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
                     <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
                     <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
+                    {customStencils.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setTerrainToolMode(`custom:${s.id}`);
+                          if (!customStencilParams[s.id]) {
+                            setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
+                          }
+                        }}
+                        style={terrainToolMode === `custom:${s.id}` ? activeButtonStyle : secondaryButtonStyle}
+                        title={s.description}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
                   </div>
                   {terrainToolMode === 'sculpt' ? (
                     <>
@@ -1221,11 +1395,20 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                     <div style={mutedTextStyle}>
                       Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
                     </div>
-                  ) : (
+                  ) : terrainToolMode === 'delete-tile' ? (
                     <div style={mutedTextStyle}>
                       Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
                     </div>
-                  )}
+                  ) : activeCustomStencil ? (
+                    <CustomStencilPanel
+                      stencil={activeCustomStencil}
+                      params={activeCustomParams}
+                      onChange={(nextParams) => {
+                        if (!activeCustomStencilId) return;
+                        setCustomStencilParams((prev) => ({ ...prev, [activeCustomStencilId]: nextParams }));
+                      }}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>
@@ -1353,6 +1536,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           />
         )}
       </main>
+
+      <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
     </div>
   );
 }
@@ -1523,6 +1708,9 @@ function GodModeEditorScene({
   onAddTile,
   onDeleteTile,
   onApplyRamp,
+  activeCustomStencil,
+  activeCustomParams,
+  onApplyCustomStencil,
   onCanvasReady,
 }: {
   world: WorldDocument;
@@ -1559,6 +1747,9 @@ function GodModeEditorScene({
   onAddTile: (tileX: number, tileZ: number) => void;
   onDeleteTile: (tileX: number, tileZ: number) => void;
   onApplyRamp: (x: number, z: number) => void;
+  activeCustomStencil: CustomStencilDefinition | null;
+  activeCustomParams: Record<string, unknown>;
+  onApplyCustomStencil: (x: number, z: number) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
 }) {
   const paintingRef = useRef(false);
@@ -1586,7 +1777,7 @@ function GodModeEditorScene({
     if (brushCursorRef.current) {
       brushCursorRef.current.position.set(event.point.x, event.point.y + 0.06, event.point.z);
     }
-    if (terrainToolMode === 'ramp') {
+    if (terrainToolMode === 'ramp' || terrainToolMode.startsWith('custom:')) {
       setTerrainPointerPoint(nextPoint);
     }
     if (terrainToolMode === 'delete-tile') {
@@ -1617,6 +1808,13 @@ function GodModeEditorScene({
       onApplyRamp(event.point.x, event.point.z);
       return;
     }
+    if (tool === 'terrain' && terrainToolMode.startsWith('custom:')) {
+      onTerrainEditStart();
+      setIsRampApplying(true);
+      setTerrainPointerPoint(nextPoint);
+      onApplyCustomStencil(event.point.x, event.point.z);
+      return;
+    }
     if (tool === 'terrain' && terrainToolMode === 'delete-tile' && typeof tileX === 'number' && typeof tileZ === 'number') {
       setHoveredTerrainTile({ tileX, tileZ });
       onDeleteTile(tileX, tileZ);
@@ -1624,7 +1822,7 @@ function GodModeEditorScene({
       return;
     }
     onSelect(null);
-  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
+  }, [onApplyCustomStencil, onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     const wasEditing = paintingRef.current || isRampApplying;
@@ -1744,10 +1942,14 @@ function GodModeEditorScene({
       }
       if (terrainToolMode === 'ramp' && isRampApplying) {
         onApplyRamp(point[0], point[2]);
+        return;
+      }
+      if (terrainToolMode.startsWith('custom:') && isRampApplying) {
+        onApplyCustomStencil(point[0], point[2]);
       }
     }, 80);
     return () => window.clearInterval(interval);
-  }, [isRampApplying, onApplyRamp, onPaint, terrainToolMode, tool]);
+  }, [isRampApplying, onApplyCustomStencil, onApplyRamp, onPaint, terrainToolMode, tool]);
 
   const hoveredTerrainTileCenter = useMemo(() => {
     if (!hoveredTerrainTile) {
@@ -1852,6 +2054,15 @@ function GodModeEditorScene({
           sideFalloffM={rampSideFalloff}
           startFalloffM={rampStartFalloff}
           endFalloffM={rampEndFalloff}
+        />
+      )}
+      {tool === 'terrain' && activeCustomStencil && terrainPointerPoint && (
+        <CustomStencilPreview
+          world={world}
+          stencilDef={activeCustomStencil}
+          params={activeCustomParams}
+          centerX={terrainPointerPoint[0]}
+          centerZ={terrainPointerPoint[2]}
         />
       )}
       <group>
@@ -2312,7 +2523,7 @@ function slugify(value: string): string {
 
 const pageStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '340px minmax(0, 1fr)',
+  gridTemplateColumns: '340px minmax(0, 1fr) 380px',
   height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
