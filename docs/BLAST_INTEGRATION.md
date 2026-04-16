@@ -2,112 +2,73 @@
 
 Vibe-land's practice mode ships two breakable structures — a wall and a
 tower — powered by the NVIDIA Blast stress solver. This doc explains
-how that dependency is wired in, what the wasm toolchain requires, and
-how to maintain it.
+how that dependency is wired in and how to maintain it.
 
 ## Summary
 
-- **What**: `blast-stress-solver`, an in-development Rust crate in
-  [`Glavin001/PhysX`](https://github.com/Glavin001/PhysX) on branch
-  `claude/fix-wasm-build-UyQBU`, is pulled in as a path dependency of
-  the `shared` crate.  That branch bakes the libc-stub / wasi-less
-  wasm build fixes we previously shipped as a local patch, so
-  vibe-land no longer needs a `patches/blast-stress-solver.patch`.
+- **What**: `blast-stress-solver` is a Rust crate published on
+  [crates.io](https://crates.io/crates/blast-stress-solver) that wraps
+  the NVIDIA Blast C++ stress solver with a Rapier3D integration layer.
+  The crate ships prebuilt static libraries for `wasm32-unknown-unknown`
+  so no local C++ toolchain or PhysX clone is required.
 - **Where it runs**: only inside the browser wasm bundle
   (`client/src/wasm/pkg/vibe_land_shared_bg.wasm`). Native
   `cargo check` / `cargo build -p web-fps-server` never touches the
   Blast C++ sources.
 - **What it adds**: a `DestructibleRegistry` living on
   `WasmSimWorld` that owns one Blast `DestructibleSet` per world
-  instance, drives fractures from the existing Rapier contact
-  pipeline, and streams per-chunk transforms to the client every
-  frame through `getDestructibleChunkTransforms`.
-
-## Vendoring
-
-The upstream PhysX repo is large (>1 GB full clone) and cannot live in
-vibe-land's history. `scripts/setup-blast.sh` clones it into
-`third_party/physx/` at a pinned commit, and is idempotent so
-subsequent `make setup` runs are no-ops.
-
-- **Pinned SHA**: `scripts/blast-pinned-sha.txt` (single line, no
-  trailing whitespace).
-- **Vendor path**: `third_party/physx/` is in `.gitignore`.
-- **Re-pin**: edit `scripts/blast-pinned-sha.txt` and
-  `scripts/setup-blast.sh` (`BRANCH`), then `make blast-update`.
-- **No local patch**: the wasm build fixes now live upstream on
-  branch `claude/fix-wasm-build-UyQBU`, so there is no
-  `patches/` directory. If you need a fresh vibe-land-only edit,
-  fork upstream first and re-pin against your fork.
+  instance, drives fractures from impact-driven contact forces via
+  Rapier's `ChannelEventCollector`, and streams per-chunk transforms
+  to the client every frame through `getDestructibleChunkTransforms`.
 
 ## Crate wiring
 
-`shared/Cargo.toml` declares the dep as **optional** under the wasm32
-block so it's only compiled for the browser target *and* only when
-the `destructibles` Cargo feature is enabled:
+`shared/Cargo.toml` declares the dep under the wasm32 target block:
 
 ```toml
-[features]
-destructibles = ["dep:blast-stress-solver"]
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 blast-stress-solver = {
-  path = "../third_party/physx/blast/blast-stress-solver-rs",
+  version = "0.1.0",
   default-features = false,
   features = ["scenarios", "rapier"],
-  optional = true,
 }
 ```
 
-### Why optional + stub crate
+The implementation lives in two files under `shared/src/`:
 
-Cargo eagerly resolves every path dependency during metadata
-resolution — even when the target `cfg` or Cargo feature that gates
-it is off.  That means `cargo check`, `cargo metadata`, and
-`wasm-pack build` all need a valid `Cargo.toml` at
-`third_party/physx/blast/blast-stress-solver-rs/`, even on machines
-that have no intention of ever compiling the real Blast backend
-(e.g. Vercel preview builds, fresh dev boxes that haven't run
-`make setup`).
-
-To keep the build resolvable everywhere we ship a tiny placeholder
-crate at [`stubs/blast-stress-solver-rs/`](../stubs/blast-stress-solver-rs)
-and drop it into place via
-[`scripts/ensure-blast-stub.sh`](../scripts/ensure-blast-stub.sh)
-whenever `third_party/physx/` is missing.  The stub is idempotent
-and a no-op when the real clone is already present.
-
-`scripts/build-shared-wasm.sh` then decides whether to pass
-`--features destructibles` to `wasm-pack build`:
-
-- **Real PhysX clone present** (`third_party/physx/.git` exists):
-  builds with `--features destructibles`, compiling the real Blast
-  C++ backend into the wasm bundle.
-- **Stub only**: builds without the feature, so the optional dep is
-  never touched, and `destructibles.rs` re-exports a no-op backend
-  from `destructibles_stub.rs`.  The JS destructibles API on
-  `WasmSimWorld` stays intact (every method is still exported) —
-  calls simply don't do anything and the client sees an empty
-  registry.
-
-The split lives in three files under `shared/src/`:
-
-- `destructibles.rs` — thin wrapper that re-exports either the real
-  or stub backend based on `cfg(feature = "destructibles")`.
+- `destructibles.rs` — thin wrapper that re-exports from
+  `destructibles_real`.
 - `destructibles_real.rs` — the real implementation gated on
-  `cfg(all(target_arch = "wasm32", feature = "destructibles"))`.
-- `destructibles_stub.rs` — the no-op backend gated on
-  `cfg(all(target_arch = "wasm32", not(feature = "destructibles")))`.
+  `cfg(target_arch = "wasm32")`.
 
-`shared/src/wasm_api.rs` imports from `crate::destructibles::*`
-without caring which backend is active. `shared/src/wasm_api.rs` exposes
-`spawnDestructible`, `despawnDestructible`, `stepDestructibles`,
-`getDestructibleChunkCount`, `getDestructibleInstanceCount`,
-`getDestructibleChunkTransforms`, and
+`shared/src/wasm_api.rs` imports from `crate::destructibles::*` and
+exposes `spawnDestructible`, `despawnDestructible`,
+`getDestructibleChunkCount`, `getDestructibleChunkTransforms`, and
 `drainDestructibleFractureEvents` via `#[wasm_bindgen]`. The step
 routine is folded into the main `tick` path after
 `step_vehicle_pipeline` so fractures respond to the same tick of
 contacts vehicles collided with.
+
+## Impact-driven fracturing
+
+Contact forces from vehicles and dynamic bodies are routed into the
+Blast stress solver via Rapier's `ChannelEventCollector`:
+
+1. **Colliders opt in** to `CONTACT_FORCE_EVENTS` (vehicle chassis,
+   dynamic bodies, chunk colliders).
+2. **Persistent mpsc channels** on `WasmSimWorld` carry events from
+   `PhysicsPipeline::step` to the destructibles drain methods.
+3. **`drain_contact_forces`** turns each `ContactForceEvent` into a
+   splash-falloff `DestructibleSet::add_force` call (splash radius 2m,
+   quadratic falloff).
+4. **`drain_collision_events`** updates the support-contact tracker so
+   statically-supported chunks don't separate under their own weight.
+
+Force injection is gated by a minimum impact force (`500 N`) and
+partner velocity (`1.5 m/s`) to prevent resting bodies from slowly
+cracking structures.
+
+## Practice mode
 
 Trail data lives in `worlds/trail.world.json`. It does **not** contain
 destructibles — the shared physics test suite loads that file and
@@ -116,145 +77,38 @@ vehicles. Practice destructibles are instead injected at runtime
 inside `client/src/scene/GameWorld.tsx` via `PRACTICE_DESTRUCTIBLES`
 when `isPracticeMode(mode)` is true.
 
-## Why the wasm toolchain needs care
+## Build
 
-The Blast C++ backend is built with clang against `wasm32-wasi`
-headers, which means the resulting object files reference dozens of
-libc / libc++ symbols (`malloc`, `fwrite`, `abort`, `strcmp`,
-`newlocale`, …). `wasm32-unknown-unknown` has no libc, so those
-references would normally either:
-
-1. become unresolved `env.*` imports that the browser can't satisfy,
-   or
-2. force us to link wasi-libc — which drags in
-   `wasi_snapshot_preview1` imports.
-
-**Option 2 is a trap**: once wasm-bindgen sees any
-`wasi_snapshot_preview1` import it wraps every export in a
-`command_export` shim that calls
-`__wasm_call_ctors → real_export → __wasm_call_dtors`.
-`__wasm_call_dtors` walks wasi-libc's atexit / stdio tables, which
-were never initialised in library mode, and every
-`__wbindgen_malloc` call traps.
-
-### The fix: Rust stubs for every libc symbol
-
-The `blast-stress-solver` crate ships
-[`src/wasm_runtime_shims.rs`](../third_party/physx/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs),
-which provides `#[no_mangle] extern "C"` definitions for every libc
-symbol the Blast C++ backend references:
-
-- `malloc` / `free` / `realloc` forward to Rust's global allocator via
-  a 16-byte size header so `free` can reconstruct the original
-  `Layout`.
-- `abort` emits a wasm `unreachable` trap.
-- `strcmp`, `memchr`, `wcslen`, `wmemchr`, and the ASCII character
-  class helpers (`toupper`, `tolower`, `isdigit_l`, …) are
-  implemented in pure Rust.
-- Stdio (`fwrite`, `vfprintf`, `fprintf`, `snprintf`, `getc`, …),
-  locale (`newlocale`, `uselocale`, `freelocale`), numeric parsing
-  (`strtoll`, `strtod_l`, …), and multibyte / wide-char routines are
-  no-op stubs — the stress solver never actually invokes them, but
-  libc++'s STL error paths still emit references.
-- `__cxa_atexit` returns success without registering anything (in
-  library mode we never run exit handlers).
-
-[`src/wasm_cxa_stubs.rs`](../third_party/physx/blast/blast-stress-solver-rs/src/wasm_cxa_stubs.rs)
-provides trap-only stubs for `__cxa_allocate_exception` /
-`__cxa_throw`, which libc++ still references from STL
-`throw_bad_alloc`-style helpers even with `-fno-exceptions`. Hitting
-either stub indicates the Blast backend entered an unexpected error
-path and we'd rather crash loudly than silently corrupt state.
-
-The net result: the final cdylib has **zero** `env.*` imports and
-**zero** `wasi_snapshot_preview1.*` imports. wasm-bindgen emits a
-normal library module — no post-processing, no binary patching.
-
-You can verify this by running `wasm-objdump -j Import -x
-client/src/wasm/pkg/vibe_land_shared_bg.wasm` after a build; only
-wasm-bindgen glue imports should appear.
-
-## Upstream fixes (previously a local patch)
-
-The wasm32-unknown-unknown build fixes that vibe-land used to carry
-as `patches/blast-stress-solver.patch` have been upstreamed to the
-`claude/fix-wasm-build-UyQBU` branch of `Glavin001/PhysX`.  These
-are:
-
-1. `blast-stress-solver-rs/build.rs` — probe for `wasi-sysroot` /
-   `libc++-*-dev-wasm32` headers and pass the right
-   `--sysroot`/`-isystem` flags when building for
-   `wasm32-unknown-unknown`. Also link `c++abi` for the tiny exception
-   surface libc++ still references under `-fno-exceptions`.
-2. `blast-stress-solver-rs/src/wasm_runtime_shims.rs` — Rust
-   stubs for every libc symbol libc++ pulls in (see above), plus
-   `aligned_alloc` / `fputc`.
-3. `blast-stress-solver-rs/src/wasm_cxa_stubs.rs` — trap stubs for
-   `__cxa_allocate_exception` / `__cxa_throw`.
-4. `blast/include/shared/NvFoundation/NvPreprocessor.h` — wasm /
-   clang compatibility macros.
-5. `blast/source/sdk/globals/NvBlastGlobals.cpp` — tiny fix for
-   an `inline`-related clang error.
-6. `blast/source/shared/NsFoundation/include/NsArray.h` — wasm
-   compatibility tweak.
-7. `blast-stress-solver-rs/tests/wasm_smoke_test.rs` — regression
-   suite that keeps the above fixes honest upstream.
-
-## Build order
-
-`make setup-wasm` (and `npm run build:wasm`) drives two scripts:
+`make setup-wasm` (and `npm run build:wasm`) drives
+`scripts/build-shared-wasm.sh`:
 
 ```sh
-# 1. Place the stub crate if third_party/physx is missing.
-./scripts/ensure-blast-stub.sh
-
-# 2. Auto-detects whether the real PhysX clone is available and
-#    passes `--features destructibles` accordingly.
 ./scripts/build-shared-wasm.sh
 ```
 
-No post-processors, no wasm-binary patching.  Rerunning after an
-incremental Rust change is safe and fast.  Switching between
-stub and real backends is a full rebuild (Cargo feature change) but
-the stub build is effectively instantaneous.
+No post-processors, no wasm-binary patching. Rerunning after an
+incremental Rust change is safe and fast.
 
 ## Non-negotiable invariants
 
 - The Blast dep **must** stay under
-  `[target.'cfg(target_arch = "wasm32")'.dependencies]` *and*
-  `optional = true`.  Moving it to top-level or non-optional
-  dependencies will try to compile the Blast C++ backend on every
-  server / CI machine — none of them have the wasi C++ toolchain.
-- `destructibles.rs`, `destructibles_real.rs`, `destructibles_stub.rs`,
-  `wasm_api.rs`, and `wasm_cxa_stubs.rs` are all
-  `#![cfg(target_arch = "wasm32")]` only.  Don't drop the gate.
-- The `destructibles_real.rs` file is additionally gated on
-  `feature = "destructibles"`, and `destructibles_stub.rs` on
-  `not(feature = "destructibles")`.  Keep both gates in sync with
-  `shared/src/lib.rs`.
-- Fresh clones without `make setup` still build via the stub
-  placeholder — the real destructible structures just don't show up
-  until `scripts/setup-blast.sh` has run.
-- `stubs/blast-stress-solver-rs/` is a **checked-in** placeholder
-  crate.  Do **not** add any real symbols to it; its only job is to
-  satisfy cargo's path resolution when the real tree is missing.
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]`. Moving it to
+  top-level dependencies will try to compile the Blast C++ backend on
+  every server / CI machine.
+- `destructibles.rs`, `destructibles_real.rs`, and `wasm_api.rs` are
+  all `#![cfg(target_arch = "wasm32")]` only. Don't drop the gate.
 - The shared physics test suite (`worldDocumentPhysics.test.ts`)
-  loads the **default** `trail.world.json`. Do not add
-  destructibles to that file — use `PRACTICE_DESTRUCTIBLES` in
-  `GameWorld.tsx` instead.
-- `blast-stress-solver-rs` must **not** link wasi-libc. Doing so
-  re-introduces the `__wasm_call_dtors` trap we fixed by providing
-  pure-Rust shims. If upstream ever adds a new libc symbol reference
-  that we haven't stubbed, the right fix is to add another stub to
-  `wasm_runtime_shims.rs`, not to fall back to wasi-libc.
+  loads the **default** `trail.world.json`. Do not add destructibles
+  to that file — use `PRACTICE_DESTRUCTIBLES` in `GameWorld.tsx`
+  instead.
 
 ## Known impact
 
 - Wasm bundle size grows by the Blast C++ backend + libc++
   archive (~0.5 MB extra after `wasm-opt`).
-- First wasm build after a fresh clone takes ~60s (Blast C++ sources).
-- Incremental rebuilds of just `shared/src/*.rs` stay fast — cc-rs
-  caches the Blast object files under `target/wasm32-*/`.
+- First wasm build after a fresh clone downloads the crate from
+  crates.io and links the prebuilt static library (~2 MB download).
+  Incremental rebuilds of just `shared/src/*.rs` stay fast.
 
 ## Runtime knobs
 

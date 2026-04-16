@@ -7,12 +7,9 @@
 //! `RigidBodySet`/`ColliderSet` so they interact with vehicles, the player
 //! capsule, and the rest of the world automatically.
 //!
-//! This module is gated on
-//! `cfg(all(target_arch = "wasm32", feature = "destructibles"))`.
-//! The Blast C++ backend is only built for the wasm target, and only
-//! when the `destructibles` feature is enabled (which in turn
-//! requires the PhysX clone at `third_party/physx/`).  See
-//! `shared/Cargo.toml` and `docs/BLAST_INTEGRATION.md`.
+//! This module is gated on `cfg(target_arch = "wasm32")`.  The Blast C++
+//! backend is only built for the wasm target.  See `shared/Cargo.toml`
+//! and `docs/BLAST_INTEGRATION.md`.
 
 use std::collections::HashMap;
 
