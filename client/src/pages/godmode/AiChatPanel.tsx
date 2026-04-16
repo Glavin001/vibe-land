@@ -9,6 +9,7 @@ import {
   type ChangeEvent,
   type ForwardedRef,
   type FormEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { forwardRef } from 'react';
@@ -94,6 +95,24 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const onClearKeys = useCallback(() => {
     clearStoredApiKeys();
     setSettings((current) => ({ ...current, apiKeys: {} }));
+  }, []);
+
+  const onPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(event.clipboardData.items);
+    const imageItems = items.filter((item) => item.type.startsWith('image/'));
+    if (imageItems.length === 0) return;
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        setAttachments((prev) => [
+          ...prev,
+          { dataUrl: reader.result as string, mediaType: item.type },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
   }, []);
 
   const onFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
@@ -298,6 +317,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={placeholderHint}
           rows={3}
           style={textareaStyle}
