@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { getWorldStorage } from '../_lib/storage.js';
 import { sendJson, sendError } from '../_lib/http.js';
+import { verifyTurnstileToken, extractClientIp } from '../_lib/turnstile.js';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -8,6 +9,16 @@ const MAX_LIMIT = 100;
 export default async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== 'GET') {
     sendError(res, 405, 'Method not allowed.');
+    return;
+  }
+
+  const turnstileToken = req.headers['x-turnstile-token']?.toString() ?? null;
+  const turnstileResult = await verifyTurnstileToken(
+    turnstileToken,
+    extractClientIp(req.headers as Record<string, string | string[] | undefined>) ?? req.socket?.remoteAddress,
+  );
+  if (!turnstileResult.ok) {
+    sendError(res, 403, turnstileResult.reason);
     return;
   }
 

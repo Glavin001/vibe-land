@@ -50,7 +50,9 @@ import {
   fetchCloudConfig,
   fetchPublishedWorld,
   publishWorld,
+  type CloudConfig,
 } from '../world/worldsCloud';
+import { Turnstile } from '@marsidev/react-turnstile';
 import { captureCanvasScreenshot } from '../world/canvasScreenshot';
 import { recordPublishedWorld } from '../world/publishedHistory';
 import {
@@ -143,6 +145,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   // this id is sent as `parentId` so the ancestry chain is preserved.
   // Cleared when the user imports a local file or resets to default.
   const [sourcePublishedId, setSourcePublishedId] = useState<string | null>(publishedId ?? null);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
   const [cloudLoadStatus, setCloudLoadStatus] = useState<
     | { kind: 'idle' }
@@ -567,6 +571,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     if (!cloudEnabled || mode !== 'edit') {
       return;
     }
+    setTurnstileToken(null);
     setPublishStatus({ kind: 'capturing' });
     try {
       const shot = await captureCurrentScreenshot();
@@ -607,6 +612,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         world: worldRef.current,
         screenshot: blob,
         parentId: sourcePublishedId,
+        turnstileToken,
       });
       // After a successful publish, the new id becomes the ancestry source
       // if the user continues editing and publishes again.
@@ -651,6 +657,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         if (!cancelled) {
           setCloudEnabled(config.enabled);
           setCloudPublicUrl(config.publicUrl ?? null);
+          setTurnstileSiteKey(config.turnstileSiteKey ?? null);
         }
       })
       .catch(() => {
@@ -1533,6 +1540,9 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             onConfirm={() => void handleConfirmPublish()}
             onRetake={() => void handleRetakeScreenshot()}
             onCancel={handleCancelPublish}
+            turnstileSiteKey={turnstileSiteKey}
+            turnstileToken={turnstileToken}
+            onTurnstileToken={setTurnstileToken}
           />
         )}
       </main>
@@ -1552,11 +1562,17 @@ function PublishPreviewOverlay({
   onConfirm,
   onRetake,
   onCancel,
+  turnstileSiteKey,
+  turnstileToken,
+  onTurnstileToken,
 }: {
   status: PublishPreviewOverlayStatus;
   onConfirm: () => void;
   onRetake: () => void;
   onCancel: () => void;
+  turnstileSiteKey: string | null;
+  turnstileToken: string | null;
+  onTurnstileToken: (token: string | null) => void;
 }) {
   const busy = status.kind === 'capturing' || status.kind === 'publishing';
   const dataUrl = status.kind === 'preview' || status.kind === 'publishing' ? status.dataUrl : null;
@@ -1614,11 +1630,20 @@ function PublishPreviewOverlay({
           </div>
         )}
       </div>
+      {turnstileSiteKey && (
+        <Turnstile
+          siteKey={turnstileSiteKey}
+          onSuccess={(token) => onTurnstileToken(token)}
+          onExpire={() => onTurnstileToken(null)}
+          onError={() => onTurnstileToken(null)}
+          options={{ size: 'compact', theme: 'dark' }}
+        />
+      )}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button
           type="button"
           onClick={onConfirm}
-          disabled={busy || status.kind !== 'preview'}
+          disabled={busy || status.kind !== 'preview' || (turnstileSiteKey != null && !turnstileToken)}
           style={{
             flex: '1 1 120px',
             padding: '10px 14px',
@@ -1629,7 +1654,7 @@ function PublishPreviewOverlay({
             fontWeight: 600,
             fontSize: 14,
             cursor: busy ? 'wait' : 'pointer',
-            opacity: status.kind === 'preview' ? 1 : 0.7,
+            opacity: status.kind === 'preview' && (!turnstileSiteKey || turnstileToken) ? 1 : 0.7,
           }}
         >
           {status.kind === 'publishing' ? 'Publishing…' : 'Publish'}

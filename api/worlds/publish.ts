@@ -13,6 +13,7 @@ import {
   BadRequestError,
   PayloadTooLargeError,
 } from '../_lib/http.js';
+import { verifyTurnstileToken, extractClientIp } from '../_lib/turnstile.js';
 
 // POST /api/worlds/publish
 //
@@ -74,6 +75,16 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
   const body = rawBody as Record<string, unknown>;
+
+  const turnstileToken = typeof body.turnstileToken === 'string' ? body.turnstileToken : null;
+  const turnstileResult = await verifyTurnstileToken(
+    turnstileToken,
+    extractClientIp(req.headers as Record<string, string | string[] | undefined>) ?? req.socket?.remoteAddress,
+  );
+  if (!turnstileResult.ok) {
+    sendError(res, 403, turnstileResult.reason);
+    return;
+  }
 
   const name = typeof body.name === 'string' && body.name.trim().length > 0
     ? body.name.trim()

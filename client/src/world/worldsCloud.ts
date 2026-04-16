@@ -9,6 +9,10 @@ export type CloudConfig = {
   // 1:1 to the R2 bucket key space, e.g.:
   //   https://vibe-land-worlds.example.com/published/<id>.world.json
   publicUrl?: string | null;
+  // When set, the deployment requires Cloudflare Turnstile verification for
+  // publishing and gallery listing. The client renders a Turnstile widget
+  // with this key and sends the resulting token with requests.
+  turnstileSiteKey?: string | null;
 };
 
 export type GalleryWorldSummary = {
@@ -51,7 +55,10 @@ export async function fetchCloudConfig(): Promise<CloudConfig> {
   const publicUrl = typeof data.publicUrl === 'string' && data.publicUrl.length > 0
     ? data.publicUrl
     : null;
-  return { enabled: Boolean(data.enabled), storage: data.storage ?? null, publicUrl };
+  const turnstileSiteKey = typeof data.turnstileSiteKey === 'string' && data.turnstileSiteKey.length > 0
+    ? data.turnstileSiteKey
+    : null;
+  return { enabled: Boolean(data.enabled), storage: data.storage ?? null, publicUrl, turnstileSiteKey };
 }
 
 /**
@@ -77,10 +84,13 @@ export type PublishWorldOptions = {
   // the gallery), pass the source id so the new publication records its
   // parentage. Null for original creations.
   parentId?: string | null;
+  // Cloudflare Turnstile token. Required when the deployment has Turnstile
+  // configured; omit for local dev without Turnstile keys.
+  turnstileToken?: string | null;
 };
 
 export async function publishWorld(opts: PublishWorldOptions): Promise<PublishResult> {
-  const { world, screenshot, parentId } = opts;
+  const { world, screenshot, parentId, turnstileToken } = opts;
   const json = serializeWorldDocument(world);
   const gzippedWorld = await gzipString(json);
   const worldBlob = new Blob([toAsciiArrayBuffer(gzippedWorld)], {
@@ -94,6 +104,7 @@ export async function publishWorld(opts: PublishWorldOptions): Promise<PublishRe
     worldContentLength: worldBlob.size,
     screenshotContentLength: screenshot.size,
     parentId: parentId ?? null,
+    turnstileToken: turnstileToken ?? null,
   });
 
   // Fire the two uploads in parallel. Fail the whole publish if either PUT
@@ -118,6 +129,7 @@ async function reserveUpload(body: {
   worldContentLength: number;
   screenshotContentLength: number;
   parentId: string | null;
+  turnstileToken: string | null;
 }): Promise<ReservationResponse> {
   const response = await fetch('/api/worlds/publish', {
     method: 'POST',
@@ -172,9 +184,13 @@ async function putTo(target: UploadTarget, body: Blob, label: string): Promise<v
   }
 }
 
-export async function listPublishedWorlds(limit?: number): Promise<GalleryWorldSummary[]> {
+export async function listPublishedWorlds(limit?: number, turnstileToken?: string | null): Promise<GalleryWorldSummary[]> {
   const query = limit ? `?limit=${encodeURIComponent(limit)}` : '';
-  const response = await fetch(`/api/worlds${query}`);
+  const headers: Record<string, string> = {};
+  if (turnstileToken) {
+    headers['X-Turnstile-Token'] = turnstileToken;
+  }
+  const response = await fetch(`/api/worlds${query}`, { headers });
   if (!response.ok) {
     throw new Error(await describeError(response, 'list worlds'));
   }

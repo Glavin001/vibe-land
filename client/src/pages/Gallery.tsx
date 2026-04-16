@@ -6,6 +6,7 @@ import {
   type GalleryWorldSummary,
 } from '../world/worldsCloud';
 import { loadPublishedHistory, type PublishedHistoryEntry } from '../world/publishedHistory';
+import { Turnstile } from '@marsidev/react-turnstile';
 
 const shellStyle: CSSProperties = {
   minHeight: '100%',
@@ -121,6 +122,8 @@ type LoadState =
 export function GalleryPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
+  const [turnstileSiteKey, setTurnstileSiteKey] = useState<string | null>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [history, setHistory] = useState<PublishedHistoryEntry[]>(() => loadPublishedHistory());
 
   useEffect(() => {
@@ -131,6 +134,8 @@ export function GalleryPage() {
     return () => window.removeEventListener('focus', handleFocus);
   }, []);
 
+  // Phase 1: Fetch cloud config. If Turnstile is configured, wait for the
+  // token before loading worlds. Otherwise load immediately.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -144,9 +149,13 @@ export function GalleryPage() {
         if (config.publicUrl) {
           setPublicUrl(config.publicUrl);
         }
-        const worlds = await listPublishedWorlds();
-        if (cancelled) return;
-        setState({ kind: 'loaded', worlds });
+        if (config.turnstileSiteKey) {
+          setTurnstileSiteKey(config.turnstileSiteKey);
+          // Don't fetch worlds yet -- wait for the Turnstile token callback
+        } else {
+          const worlds = await listPublishedWorlds();
+          if (!cancelled) setState({ kind: 'loaded', worlds });
+        }
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Failed to load gallery.';
@@ -157,6 +166,26 @@ export function GalleryPage() {
       cancelled = true;
     };
   }, []);
+
+  // Phase 2: Once the Turnstile token arrives, fetch the listing.
+  useEffect(() => {
+    if (!turnstileSiteKey || !turnstileToken) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const worlds = await listPublishedWorlds(undefined, turnstileToken);
+        if (!cancelled) setState({ kind: 'loaded', worlds });
+      } catch (err) {
+        if (!cancelled) {
+          const message = err instanceof Error ? err.message : 'Failed to load gallery.';
+          setState({ kind: 'error', message });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [turnstileSiteKey, turnstileToken]);
 
   const ownedSummaries = useMemo<GalleryWorldSummary[] | null>(() => {
     if (state.kind !== 'loaded' || history.length === 0) return null;
@@ -209,6 +238,15 @@ export function GalleryPage() {
             <a href="/" style={{ color: '#9cd4ff' }}>Home</a>
           </div>
         </div>
+
+        {turnstileSiteKey && !turnstileToken && (
+          <Turnstile
+            siteKey={turnstileSiteKey}
+            onSuccess={(token) => setTurnstileToken(token)}
+            onError={() => setState({ kind: 'error', message: 'Bot verification failed. Please refresh the page.' })}
+            options={{ size: 'invisible', theme: 'dark' }}
+          />
+        )}
 
         {state.kind === 'loading' && <div style={mutedTextStyle}>Loading published worlds…</div>}
 

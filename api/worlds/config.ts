@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { isStorageEnabled, getWorldStorage, getPublicBaseUrl } from '../_lib/storage.js';
+import { isTurnstileEnabled } from '../_lib/turnstile.js';
 import { sendJson, sendError } from '../_lib/http.js';
 
 export default function handler(req: IncomingMessage, res: ServerResponse): void {
@@ -17,5 +18,8 @@ export default function handler(req: IncomingMessage, res: ServerResponse): void
     // from this CDN origin instead of going through /api/worlds/<id> and
     // /api/worlds/<id>/screenshot. Null means "use the function endpoints".
     publicUrl: getPublicBaseUrl(),
+    turnstileSiteKey: isTurnstileEnabled()
+      ? (process.env.VITE_TURNSTILE_SITE_KEY?.trim() ?? null)
+      : null,
   });
 }
