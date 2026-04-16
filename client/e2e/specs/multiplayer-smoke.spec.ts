@@ -92,12 +92,18 @@ test.describe('Multiplayer Smoke', () => {
         { timeout: 30_000, label: 'B sees remote player' },
       );
 
-      // 7. Verify prediction is live: press forward on A and confirm A's
+      // 7. Record B's initial view of A before any movement occurs.
+      const initialB = await snapshot(pageB);
+      const remoteAInitial = initialB.remotePlayers.find(
+        (rp) => rp.id === readyA.playerId,
+      );
+
+      // 8. Verify prediction is live: press forward on A and confirm A's
       // own position changes. This proves the physics loop is processing
       // keyboard input before we rely on B observing the movement.
       const preMove = await snapshot(pageA);
       await holdMove(pageA, 'forward', 1500);
-      const postMove = await waitForSnapshot(
+      await waitForSnapshot(
         pageA,
         (s) => {
           const d = Math.hypot(
@@ -109,14 +115,8 @@ test.describe('Multiplayer Smoke', () => {
         { timeout: 10_000, label: 'A actually moved locally' },
       );
 
-      // Record B's view of A's position before the observation window
-      const beforeMoveB = await snapshot(pageB);
-      const remoteABefore = beforeMoveB.remotePlayers.find(
-        (rp) => rp.id === readyA.playerId,
-      );
-
-      // Move A further while simultaneously polling B. Use multiple short
-      // movements so input events keep flowing during the wait loop.
+      // 9. Move A further while simultaneously polling B for position changes
+      // relative to the INITIAL position (before any movement at all).
       const moveAndWait = async () => {
         for (let i = 0; i < 4; i++) {
           await holdMove(pageA, 'forward', 1000);
@@ -127,12 +127,12 @@ test.describe('Multiplayer Smoke', () => {
         pageB,
         (s) => {
           const remoteA = s.remotePlayers.find((rp) => rp.id === readyA.playerId);
-          if (!remoteA || !remoteABefore) return false;
+          if (!remoteA || !remoteAInitial) return false;
           const delta = Math.hypot(
-            remoteA.position[0] - remoteABefore.position[0],
-            remoteA.position[2] - remoteABefore.position[2],
+            remoteA.position[0] - remoteAInitial.position[0],
+            remoteA.position[2] - remoteAInitial.position[2],
           );
-          return delta > 0.3;
+          return delta > 0.5;
         },
         { timeout: 30_000, label: 'B sees A moved' },
       );
