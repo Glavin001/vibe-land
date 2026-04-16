@@ -291,6 +291,11 @@ export function CustomStencilPanel({
 
       {hasSchema && (
         <div style={formWrapperStyle} className="custom-stencil-form">
+          <style>{`
+            .custom-stencil-form fieldset {
+              border-color: transparent;
+            }
+          `}</style>
           <Form
             schema={stencil.parameterSchema as RJSFSchema}
             uiSchema={{
