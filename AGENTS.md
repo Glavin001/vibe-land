@@ -125,6 +125,33 @@ Two backends are supported behind a single `WorldStorage` interface (`api/_lib/s
 
 Both backends implement write-once semantics (the filesystem uses POSIX `O_EXCL`; R2 uses `IfNoneMatch: '*'`), gzip-compressed world payloads, and share the same on-disk key layout (`published/<id>.world.json` + `published/<id>.screenshot.jpg`). The filesystem backend adds a sidecar `published/<id>.meta.json` because the filesystem doesn't have an equivalent of S3 user metadata.
 
+#### R2 bucket CORS setup (required for presigned uploads)
+
+The publish flow uses presigned PUT URLs so the browser uploads directly to R2 — the bytes never touch the Vercel function. For this to work the R2 bucket **must** have a CORS policy that permits cross-origin `PUT` requests from the web app's origin. Without it the browser's preflight `OPTIONS` request fails and the upload is blocked.
+
+In the Cloudflare dashboard: **R2 → your bucket → Settings → CORS Policy → Add CORS policy**:
+
+```json
+[
+  {
+    "AllowedOrigins": ["*"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+| Field | Why |
+| --- | --- |
+| `AllowedOrigins: ["*"]` | Vercel preview URLs change per branch. Wildcard is easiest; restrict to `https://*.vercel.app` or your production domain for tighter control. |
+| `AllowedMethods` | `PUT` for the presigned uploads, `GET` for reading worlds/screenshots, `HEAD` for existence probes. |
+| `AllowedHeaders: ["*"]` | The presigned PUTs send custom headers (`x-amz-meta-*`, `Content-Encoding`, `If-None-Match`, `Cache-Control`). A wildcard covers them all. |
+| `MaxAgeSeconds: 3600` | Caches the preflight for 1 hour so the browser doesn't re-send `OPTIONS` on every upload. |
+
+Note: MinIO in local dev doesn't enforce CORS because the e2e test uses Node's `fetch()` (no preflight). CORS is a browser-only concern and only matters on deployed R2 buckets.
+
 Endpoints (Vercel serverless functions in `/api`):
 
 - `GET  /api/worlds/config` → `{ enabled, storage }` — storage is `'r2'` or `'local'`
