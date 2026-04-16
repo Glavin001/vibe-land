@@ -129,6 +129,9 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           tools: { execute_js: createExecuteJsTool(accessorsRef.current) },
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
           abortSignal: controller.signal,
+          // Disable automatic retries — for BYOK in the browser, retrying
+          // on 429/5xx just wastes the user's quota and delays the error.
+          maxRetries: 0,
         });
 
         // Track in-flight text/reasoning blocks so streamed deltas append to
