@@ -1228,8 +1228,6 @@ function GodModeEditorScene({
   const terrainPointerRef = useRef<Vec3 | null>(null);
   const objectRefs = useRef(new Map<string, THREE.Object3D>());
   const resizeOriginRef = useRef<{ halfExtents?: Vec3; radius?: number } | null>(null);
-  // Populated by GodModeCameraControls; call to snap the orbit pivot to a world point
-  const setOrbitTargetRef = useRef<((point: THREE.Vector3) => void) | null>(null);
   const [hoveredTerrainTile, setHoveredTerrainTile] = useState<TerrainTileCoordinate | null>(null);
   const [terrainPointerPoint, setTerrainPointerPoint] = useState<Vec3 | null>(null);
   const [isRampApplying, setIsRampApplying] = useState(false);
@@ -1264,12 +1262,10 @@ function GodModeEditorScene({
 
   const handleTerrainPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
-    // Middle/right clicks are reserved for camera navigation — don't paint
-    if (event.button !== 0) return;
+    // Middle/right clicks are for camera navigation; Alt+click is for orbit retargeting
+    if (event.button !== 0 || event.altKey) return;
     const nextPoint: Vec3 = [event.point.x, event.point.y, event.point.z];
     terrainPointerRef.current = nextPoint;
-    // Snap orbit pivot to the clicked point so MMB orbiting stays near the work area
-    setOrbitTargetRef.current?.(event.point);
     const tileX = event.object.userData?.terrainTileX;
     const tileZ = event.object.userData?.terrainTileZ;
     if (tool === 'terrain' && terrainToolMode === 'sculpt') {
@@ -1532,7 +1528,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
-              if (event.button !== 0) return;
+              if (event.button !== 0 || event.altKey) return;
               onSelect({ kind: 'static', id: entity.id });
             }}
           >
@@ -1550,7 +1546,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
-              if (event.button !== 0) return;
+              if (event.button !== 0 || event.altKey) return;
               onSelect({ kind: 'dynamic', id: entity.id });
             }}
           >
@@ -1595,7 +1591,7 @@ function GodModeEditorScene({
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
         </mesh>
       )}
-      <GodModeCameraControls tool={tool} setOrbitTargetRef={setOrbitTargetRef} />
+      <GodModeCameraControls tool={tool} />
     </Canvas>
   );
 }
