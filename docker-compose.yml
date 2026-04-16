@@ -1,0 +1,54 @@
+# Local R2-compatible stack for end-to-end testing of the world publishing
+# flow. R2 speaks the S3 API, and we use @aws-sdk/client-s3 to talk to it, so
+# any S3-compatible emulator works. MinIO is the lightest and most common.
+#
+# Usage:
+#   docker compose up -d          # start MinIO + create the bucket
+#   docker compose down           # stop (keeps bucket data in a named volume)
+#   docker compose down -v        # stop + wipe all data
+#
+# Pair with a .env.local at the repo root setting the R2_* variables documented
+# in .env.example, then run `vercel dev` to serve the Vite client and /api
+# functions together.
+
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: vibe-land-minio
+    # Host networking so the daemon doesn't need iptables-managed bridge NAT.
+    # The container binds 9000 (S3 API) and 9001 (web console) directly on the
+    # host, so api/ functions reach R2 at http://localhost:9000.
+    network_mode: host
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: vibe-land-minio-init
+    network_mode: host
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      BUCKET_NAME: vibe-land-dev
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "waiting for minio server..."
+        until mc alias set local http://localhost:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+          sleep 1
+        done
+        mc mb --ignore-existing "local/$$BUCKET_NAME"
+        echo "bucket $$BUCKET_NAME ready at http://localhost:9000"
+    restart: "no"
+
+volumes:
+  minio-data:

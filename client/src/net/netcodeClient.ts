@@ -1,6 +1,5 @@
 import { GameSocket } from './gameSocket';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
-import { LocalPreviewTransport } from './localPreviewTransport';
 import { WebTransportGameClient } from './webTransportClient';
 import {
   DynamicBodyInterpolator,
@@ -32,6 +31,7 @@ import {
   type ServerPacket,
   type ServerWorldPacket,
   type VehicleStateMeters,
+  FLAG_IN_VEHICLE,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -90,6 +90,24 @@ export class NetcodeClient {
    * Unbounded. Updated whenever an authoritative snapshot arrives. */
   localPlayerEnergy = 0;
   localPlayerFlags = 0;
+
+  private pushVehicleSample(
+    vehicleId: number,
+    serverTimeUs: number,
+    meters: VehicleStateMeters,
+  ): void {
+    this.vehicleInterpolator.push(vehicleId, {
+      serverTimeUs,
+      position: meters.position,
+      quaternion: meters.quaternion,
+      linearVelocity: meters.linearVelocity,
+      angularVelocity: meters.angularVelocity,
+      wheelData: meters.wheelData,
+      driverPlayerId: meters.driverId,
+      flags: meters.flags ?? 0,
+    });
+  }
+
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
@@ -99,13 +117,14 @@ export class NetcodeClient {
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
+  private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly playerIdByHandle = new Map<number, number>();
+  private localDrivenVehicleId: number | null = null;
   private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
   private readonly debugTelemetry = new NetDebugTelemetry();
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
-  private localTransport: LocalPreviewTransport | null = null;
   private config: NetcodeClientConfig;
   private closedByClient = false;
 
@@ -117,7 +136,6 @@ export class NetcodeClient {
 
   /** Human-readable active transport. */
   get transport(): string {
-    if (this.localTransport) return 'local-preview';
     if (this.wtClient) return 'webtransport';
     if (this.socket) return 'websocket';
     return 'connecting';
@@ -146,18 +164,6 @@ export class NetcodeClient {
       },
     });
     this.socket.connect(wsUrl);
-  }
-
-  async connectLocalPreview(worldJson?: string): Promise<void> {
-    this.closedByClient = false;
-      this.localTransport = await LocalPreviewTransport.connect({
-      worldJson,
-      onPacket: (packet) => this.handlePacket(packet, 'local'),
-      onClose: () => {
-        this.localTransport = null;
-        this.notifyDisconnect('local preview closed');
-      },
-    });
   }
 
   /**
@@ -193,10 +199,6 @@ export class NetcodeClient {
   }
 
   ping(): void {
-    if (this.localTransport) {
-      this.localTransport.ping();
-      return;
-    }
     // WebTransport RTT is measured server-side via server-initiated pings
     if (!this.wtClient) {
       this.socket?.ping();
@@ -205,8 +207,6 @@ export class NetcodeClient {
 
   disconnect(): void {
     this.closedByClient = true;
-    this.localTransport?.close();
-    this.localTransport = null;
     this.wtClient?.close();
     this.wtClient = null;
     this.socket?.disconnect();
@@ -221,9 +221,7 @@ export class NetcodeClient {
   }
 
   sendInputs(cmds: InputCmd[]): void {
-    if (this.localTransport) {
-      this.localTransport.sendInputs(cmds);
-    } else if (this.wtClient) {
+    if (this.wtClient) {
       if (cmds.length > 0) this.wtClient.sendInputBundle(cmds);
     } else {
       this.socket?.sendInputs(cmds);
@@ -244,9 +242,7 @@ export class NetcodeClient {
       const avgCorrection = this._debugCorrectionSum / this._debugSampleCount;
       const avgPhysics = this._debugPhysicsSum / this._debugSampleCount;
       const pkt = encodeDebugStatsPacket(avgCorrection, avgPhysics);
-      if (this.localTransport) {
-        // Local preview has no server stats consumer.
-      } else if (this.wtClient) {
+      if (this.wtClient) {
         this.wtClient.sendRawDatagram(pkt);
       } else {
         this.socket?.sendRaw(pkt);
@@ -259,9 +255,7 @@ export class NetcodeClient {
   }
 
   sendFire(cmd: FireCmd): void {
-    if (this.localTransport) {
-      this.localTransport.sendFire(cmd);
-    } else if (this.wtClient) {
+    if (this.wtClient) {
       this.wtClient.sendFire(cmd);
     } else {
       this.socket?.sendFire(cmd);
@@ -269,9 +263,7 @@ export class NetcodeClient {
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {
-    if (this.localTransport) {
-      this.localTransport.sendBlockEdit(cmd);
-    } else if (this.wtClient) {
+    if (this.wtClient) {
       this.wtClient.sendBlockEdit(cmd);
     } else {
       this.socket?.sendBlockEdit(cmd);
@@ -279,9 +271,7 @@ export class NetcodeClient {
   }
 
   sendVehicleEnter(vehicleId: number, seat = 0): void {
-    if (this.localTransport) {
-      this.localTransport.sendVehicleEnter(vehicleId, seat);
-    } else if (this.wtClient) {
+    if (this.wtClient) {
       this.wtClient.sendVehicleEnter(vehicleId, seat);
     } else {
       this.socket?.sendVehicleEnter(vehicleId, seat);
@@ -289,9 +279,7 @@ export class NetcodeClient {
   }
 
   sendVehicleExit(vehicleId: number): void {
-    if (this.localTransport) {
-      this.localTransport.sendVehicleExit(vehicleId);
-    } else if (this.wtClient) {
+    if (this.wtClient) {
       this.wtClient.sendVehicleExit(vehicleId);
     } else {
       this.socket?.sendVehicleExit(vehicleId);
@@ -335,19 +323,14 @@ export class NetcodeClient {
   ): void {
     this.latestServerTick = packet.serverTick;
     this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
-    if (this.localTransport) {
-      this.interpolationDelayMs = 0;
-      this.dynamicBodyInterpolationDelayMs = 0;
-    } else {
-      const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
-      if (adaptiveDelayMs > 0) {
-        this.interpolationDelayMs = Math.round(
-          Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
-        ) / 100;
-        this.dynamicBodyInterpolationDelayMs = Math.round(
-          Math.min(adaptiveDelayMs, NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS) * 100,
-        ) / 100;
-      }
+    const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+    if (adaptiveDelayMs > 0) {
+      this.interpolationDelayMs = Math.round(
+        Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
+      ) / 100;
+      this.dynamicBodyInterpolationDelayMs = Math.round(
+        Math.min(adaptiveDelayMs, NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS) * 100,
+      ) / 100;
     }
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
@@ -378,7 +361,10 @@ export class NetcodeClient {
     this.localPlayerHp = localState.hp;
     this.localPlayerEnergy = localState.energyCenti / 100;
     this.localPlayerFlags = localState.flags;
-    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
+    const localPlayerInVehicle = (localState.flags & FLAG_IN_VEHICLE) !== 0;
+    if (!localPlayerInVehicle) {
+      this.localDrivenVehicleId = null;
+    }
 
     for (const player of packet.remotePlayers) {
       const remotePlayerId = this.playerIdByHandle.get(player.handle);
@@ -504,12 +490,31 @@ export class NetcodeClient {
       }
     }
     this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
+    // Fire the local snapshot callback only after authoritative dynamic-body
+    // state has been applied. Multiplayer vehicle reconcile depends on the
+    // callback syncing same-tick collider state before replaying pending inputs.
+    this.config.onLocalSnapshot?.(packet.ackInputSeq, localState);
 
+    let inferredLocalDrivenVehicle = false;
     for (const vehicle of packet.vehicleStates) {
       const vehicleId = vehicle.handle;
-      const driverPlayerId = vehicle.driverHandle === 0
+      const resolvedDriverPlayerId = vehicle.driverHandle === 0
         ? 0
         : (this.playerIdByHandle.get(vehicle.driverHandle) ?? 0);
+      const isRememberedLocalVehicle = vehicle.driverHandle !== 0 && this.localDrivenVehicleId === vehicleId;
+      const shouldInferLocalDrivenVehicle: boolean = vehicle.driverHandle !== 0
+        && resolvedDriverPlayerId === 0
+        && localPlayerInVehicle
+        && !inferredLocalDrivenVehicle
+        && (this.localDrivenVehicleId === null || this.localDrivenVehicleId === vehicleId);
+      const driverPlayerId = resolvedDriverPlayerId !== 0
+        ? resolvedDriverPlayerId
+        : (isRememberedLocalVehicle || shouldInferLocalDrivenVehicle)
+          ? this.playerId
+          : 0;
+      if (vehicle.driverHandle === 0 && this.localDrivenVehicleId === vehicleId) {
+        this.localDrivenVehicleId = null;
+      }
       const meters: VehicleStateMeters = {
         id: vehicleId,
         vehicleType: vehicle.vehicleType,
@@ -532,7 +537,10 @@ export class NetcodeClient {
       };
       this.vehicles.set(vehicleId, meters);
       this.vehicleLastSeenTick.set(vehicleId, packet.serverTick);
+      this.vehicleServerTimeUs.set(vehicleId, packet.serverTimeUs);
       if (driverPlayerId === this.playerId && driverPlayerId !== 0) {
+        this.localDrivenVehicleId = vehicleId;
+        inferredLocalDrivenVehicle = inferredLocalDrivenVehicle || shouldInferLocalDrivenVehicle;
         const localVehicleState: NetVehicleState = {
           id: vehicleId,
           vehicleType: vehicle.vehicleType,
@@ -554,23 +562,14 @@ export class NetcodeClient {
           wheelData: [0, 0, 0, 0],
         };
         this.config.onLocalVehicleSnapshot?.(localVehicleState, packet.ackInputSeq);
-      } else {
-        this.vehicleInterpolator.push(vehicleId, {
-          serverTimeUs: packet.serverTimeUs,
-          position: meters.position,
-          quaternion: meters.quaternion,
-          linearVelocity: meters.linearVelocity,
-          angularVelocity: meters.angularVelocity,
-          wheelData: [0, 0, 0, 0],
-          driverPlayerId,
-          flags: vehicle.flags,
-        });
       }
+      this.pushVehicleSample(vehicleId, packet.serverTimeUs, meters);
     }
     for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
       if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
         this.vehicleLastSeenTick.delete(id);
         this.vehicles.delete(id);
+        this.vehicleServerTimeUs.delete(id);
         this.vehicleInterpolator.remove(id);
       }
     }
@@ -661,17 +660,14 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
-        this.baselineInterpolationDelayMs = this.localTransport ? 0 : packet.interpolationDelayMs;
-        this.minRemoteInterpolationDelayMs = this.localTransport
-          ? 0
-          : (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
+        this.baselineInterpolationDelayMs = packet.interpolationDelayMs;
+        this.minRemoteInterpolationDelayMs =
+          (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
         this.interpolationDelayMs = this.baselineInterpolationDelayMs;
-        this.dynamicBodyInterpolationDelayMs = this.localTransport
-          ? 0
-          : Math.min(
-              packet.interpolationDelayMs,
-              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
-            );
+        this.dynamicBodyInterpolationDelayMs = Math.min(
+          packet.interpolationDelayMs,
+          NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+        );
         // Tell the clock the server's tick rate so hysteresis thresholds are correct.
         this.serverClock.setSimHz(packet.simHz);
         // Don't seed clock from welcome — it arrives with unpredictable
@@ -693,23 +689,18 @@ export class NetcodeClient {
         }
         this.latestServerTick = packet.serverTick;
         this.serverClock.observe(packet.serverTimeUs, performance.now() * 1000);
-        if (this.localTransport) {
-          this.interpolationDelayMs = 0;
-          this.dynamicBodyInterpolationDelayMs = 0;
-        } else {
-          // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
-          const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
-          if (adaptiveDelayMs > 0) {
-            this.interpolationDelayMs = Math.round(
-              Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
-            ) / 100;
-            this.dynamicBodyInterpolationDelayMs = Math.round(
-              Math.min(
-                adaptiveDelayMs,
-                NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
-              ) * 100,
-            ) / 100;
-          }
+        // Use adaptive interpolation delay from WASM when available (jitter*4 + 5ms).
+        const adaptiveDelayMs = this.serverClock.getInterpolationDelayMs();
+        if (adaptiveDelayMs > 0) {
+          this.interpolationDelayMs = Math.round(
+            Math.max(adaptiveDelayMs, this.minRemoteInterpolationDelayMs) * 100,
+          ) / 100;
+          this.dynamicBodyInterpolationDelayMs = Math.round(
+            Math.min(
+              adaptiveDelayMs,
+              NetcodeClient.MAX_DYNAMIC_BODY_INTERPOLATION_DELAY_MS,
+            ) * 100,
+          ) / 100;
         }
         this.debugTelemetry.observeAcceptedSnapshot(
           source,
@@ -746,13 +737,14 @@ export class NetcodeClient {
         this.debugTelemetry.observeAuthoritativeDynamicBodies(this.dynamicBodies);
 
         const knownIds = new Set<number>();
+        let localPlayerState: NetPlayerState | null = null;
         for (const ps of packet.playerStates) {
           knownIds.add(ps.id);
           if (ps.id === this.playerId) {
             this.localPlayerHp = ps.hp;
             this.localPlayerEnergy = ps.energyCenti / 100;
             this.localPlayerFlags = ps.flags;
-            this.config.onLocalSnapshot?.(packet.ackInputSeq, ps);
+            localPlayerState = ps;
           } else {
             const m = netStateToMeters(ps);
             this.interpolator.push(ps.id, {
@@ -781,6 +773,9 @@ export class NetcodeClient {
           }
         }
         this.interpolator.retainOnly(knownIds);
+        if (localPlayerState) {
+          this.config.onLocalSnapshot?.(packet.ackInputSeq, localPlayerState);
+        }
 
         // Handle vehicle states
         const knownVehicleIds = new Set<number>();
@@ -789,29 +784,23 @@ export class NetcodeClient {
           const m = netVehicleStateToMeters(vs);
           this.vehicles.set(vs.id, m);
           this.vehicleLastSeenTick.set(vs.id, packet.serverTick);
+          this.vehicleServerTimeUs.set(vs.id, packet.serverTimeUs);
 
           // Route local vehicle snapshot to driver-side prediction
           if (vs.driverId === this.playerId && vs.driverId !== 0) {
+            this.localDrivenVehicleId = vs.id;
             this.config.onLocalVehicleSnapshot?.(vs, packet.ackInputSeq);
-          } else {
-            // Push to interpolator for remote rendering
-            this.vehicleInterpolator.push(vs.id, {
-              serverTimeUs: packet.serverTimeUs,
-              position: m.position,
-              quaternion: m.quaternion,
-              linearVelocity: m.linearVelocity,
-              angularVelocity: m.angularVelocity,
-              wheelData: m.wheelData,
-              driverPlayerId: vs.driverId,
-              flags: vs.flags,
-            });
+          } else if (vs.driverId === 0 && this.localDrivenVehicleId === vs.id) {
+            this.localDrivenVehicleId = null;
           }
+          this.pushVehicleSample(vs.id, packet.serverTimeUs, m);
         }
         // Keep last-known vehicle state briefly when a strict-budget snapshot omits it.
         for (const [id, lastSeenTick] of this.vehicleLastSeenTick) {
           if (packet.serverTick - lastSeenTick > NetcodeClient.VEHICLE_STALE_TICKS) {
             this.vehicleLastSeenTick.delete(id);
             this.vehicles.delete(id);
+            this.vehicleServerTimeUs.delete(id);
             this.vehicleInterpolator.remove(id);
           }
         }
@@ -868,6 +857,12 @@ export class NetcodeClient {
   sampleRemoteVehicle(id: number, renderTimeUs?: number): VehicleSample | null {
     const t = renderTimeUs ?? this.getRenderTimeUs();
     return this.vehicleInterpolator.sample(id, t);
+  }
+
+  getVehicleObservedAgeMs(id: number, localTimeUs = performance.now() * 1000): number | null {
+    const sampleServerTimeUs = this.vehicleServerTimeUs.get(id);
+    if (sampleServerTimeUs == null) return null;
+    return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
   }
 
   sampleRemoteDynamicBody(id: number, renderTimeUs?: number): DynamicBodySample | null {

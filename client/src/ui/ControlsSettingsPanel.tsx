@@ -115,7 +115,7 @@ export function ControlsSettingsPanel({
             <div style={{ fontSize: 12, letterSpacing: '0.22em', textTransform: 'uppercase', color: '#86d6f5' }}>
               Controls
             </div>
-            <h2 style={{ margin: '10px 0 6px', fontSize: 30, lineHeight: 1 }}>Runtime Bindings</h2>
+            <h2 style={{ margin: '10px 0 6px', fontSize: 30, lineHeight: 1, fontWeight: 700 }}>Runtime Bindings</h2>
             <p style={{ margin: 0, color: 'rgba(238, 247, 255, 0.66)', lineHeight: 1.5 }}>
               These defaults apply immediately and persist in local storage for all game sessions in this browser.
             </p>

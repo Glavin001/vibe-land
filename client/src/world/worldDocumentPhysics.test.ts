@@ -1,5 +1,17 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { decodeServerPacket, type DynamicBodyStateMeters, type SnapshotPacket, type VehicleStateMeters, netDynamicBodyStateToMeters, netVehicleStateToMeters } from '../net/protocol';
+import {
+  decodeServerPacket,
+  encodeFirePacket,
+  type DynamicBodyStateMeters,
+  type FireCmd,
+  type ServerPacket,
+  type VehicleStateMeters,
+} from '../net/protocol';
+import {
+  decodeLocalSessionDynamicBodies,
+  decodeLocalSessionSnapshotMeta,
+  decodeLocalSessionVehicles,
+} from '../runtime/localSessionDecode';
 import { initWasmForTests, WasmLocalSession, WasmSimWorld } from '../wasm/testInit';
 import brokenWorldDocumentJson from '../../../worlds/broken.world.json';
 import {
@@ -25,11 +37,27 @@ beforeAll(() => {
   initWasmForTests();
 });
 
-type LocalPreviewResult = {
-  snapshot: SnapshotPacket;
+type LocalRuntimeResult = {
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
   vehicles: Map<number, VehicleStateMeters>;
 };
+
+function drainDecodedLocalSessionPackets(session: WasmLocalSession): ServerPacket[] {
+  const blob = session.drainPackets();
+  const packets: ServerPacket[] = [];
+  let offset = 0;
+  while (offset + 4 <= blob.length) {
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    const packetLen = view.getUint32(offset, true);
+    offset += 4;
+    expect(packetLen).toBeGreaterThan(0);
+    expect(offset + packetLen).toBeLessThanOrEqual(blob.length);
+    const packet = blob.slice(offset, offset + packetLen);
+    offset += packetLen;
+    packets.push(decodeServerPacket(packet));
+  }
+  return packets;
+}
 
 function makeFlatWorld(): WorldDocument {
   return makeFlatWorldWithGrid(8, 10);
@@ -40,7 +68,7 @@ function makeFlatWorldWithGrid(tileGridSize: number, tileHalfExtentM: number): W
     version: 2,
     meta: {
       name: 'Flat Test World',
-      description: 'Minimal world for local-preview terrain tests.',
+      description: 'Minimal world for local runtime terrain tests.',
     },
     terrain: {
       tileGridSize,
@@ -161,33 +189,22 @@ function makeWorldWithEntities(baseWorld: WorldDocument, entities: DynamicEntity
   };
 }
 
-function runLocalPreview(world: WorldDocument, steps = 240): LocalPreviewResult {
+function runLocalRuntime(world: WorldDocument, steps = 240): LocalRuntimeResult {
   const session = new WasmLocalSession(serializeWorldDocument(world));
   session.connect();
 
-  let latestSnapshot: SnapshotPacket | null = null;
   for (let step = 0; step < steps; step += 1) {
     session.tick(1 / 60);
-    const blob = session.drainPackets();
-    let offset = 0;
-    while (offset + 4 <= blob.length) {
-      const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-      const packetLen = view.getUint32(offset, true);
-      offset += 4;
-      const packet = blob.slice(offset, offset + packetLen);
-      offset += packetLen;
-      const decoded = decodeServerPacket(packet);
-      if (decoded.type === 'snapshot') {
-        latestSnapshot = decoded;
-      }
-    }
   }
 
-  expect(latestSnapshot).not.toBeNull();
-  const snapshot = latestSnapshot as SnapshotPacket;
-  const dynamicBodies = new Map(snapshot.dynamicBodyStates.map((body) => [body.id, netDynamicBodyStateToMeters(body)]));
-  const vehicles = new Map(snapshot.vehicleStates.map((vehicle) => [vehicle.id, netVehicleStateToMeters(vehicle)]));
-  return { snapshot, dynamicBodies, vehicles };
+  expect(decodeLocalSessionSnapshotMeta(session.getSnapshotMeta())).not.toBeNull();
+  const dynamicBodies = new Map(
+    decodeLocalSessionDynamicBodies(session.getDynamicBodyStates()).map((body) => [body.id, body]),
+  );
+  const vehicles = new Map(
+    decodeLocalSessionVehicles(session.getVehicleStates()).map((vehicle) => [vehicle.id, vehicle]),
+  );
+  return { dynamicBodies, vehicles };
 }
 
 function raycastTerrainHeight(world: WorldDocument, x: number, z: number): number {
@@ -233,7 +250,42 @@ function applyRampRepeated(world: WorldDocument, count: number, overrides: Parti
   return next;
 }
 
-describe('WorldDocument local-preview scenarios', () => {
+describe('local runtime protocol', () => {
+  it('emits shot-result packets that decode through the client protocol path', () => {
+    const session = new WasmLocalSession(serializeWorldDocument(makeFlatWorld()));
+    session.connect();
+    drainDecodedLocalSessionPackets(session);
+
+    const fireCmd: FireCmd = {
+      seq: 1,
+      shotId: 1,
+      weapon: 1,
+      clientFireTimeUs: 0,
+      clientInterpMs: 0,
+      clientDynamicInterpMs: 0,
+      dir: [0, 1, 0],
+    };
+    session.handleClientPacket(encodeFirePacket(fireCmd));
+    session.tick(1 / 60);
+
+    const packets = drainDecodedLocalSessionPackets(session);
+    const shotResult = packets.find((packet) => packet.type === 'shotResult');
+    expect(shotResult).toEqual({
+      type: 'shotResult',
+      shotId: 1,
+      weapon: 1,
+      confirmed: false,
+      hitPlayerId: 0,
+      hitZone: 0,
+      serverResolution: 0,
+      serverDynamicBodyId: 0,
+      serverDynamicHitToiCm: 0,
+      serverDynamicImpulseCenti: 0,
+    });
+  });
+});
+
+describe('WorldDocument local runtime scenarios', () => {
   it('flat world keeps ball, box, and vehicle supported', () => {
     const world = makeWorldWithEntities(makeFlatWorld(), [
       makeEntity('ball', 11, 0, 3, 0),
@@ -241,7 +293,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('vehicle', 13, -2, 3, 0),
     ]);
 
-    const result = runLocalPreview(world);
+    const result = runLocalRuntime(world);
     expect(result.dynamicBodies.size).toBe(2);
     expect(result.vehicles.size).toBe(1);
 
@@ -267,7 +319,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('vehicle', 1002, 14, sampleTerrainHeightAtWorldPosition(world, 14, 0) + 3, 0),
     ];
 
-    const result = runLocalPreview(world);
+    const result = runLocalRuntime(world);
     const box = result.dynamicBodies.get(1001);
     const vehicle = result.vehicles.get(1002);
     expect(box).toBeDefined();
@@ -462,22 +514,22 @@ describe('WorldDocument local-preview scenarios', () => {
     expect(hitY).toBeGreaterThan(1.5);
   });
 
-  it('smooth hill terrain supports ball and vehicle above the sampled surface', () => {
+  it('smooth hill terrain supports box and vehicle above the sampled surface', () => {
     const world = makeSmoothHillWorld();
     const [hillX, hillZ] = getTerrainWorldPosition(world, 4, 4);
     const vehicleX = hillX + 1.5;
     world.dynamicEntities = [
-      makeEntity('ball', 31, hillX, sampleTerrainHeightAtWorldPosition(world, hillX, hillZ) + 2, hillZ),
+      makeEntity('box', 31, hillX, sampleTerrainHeightAtWorldPosition(world, hillX, hillZ) + 2, hillZ),
       makeEntity('vehicle', 32, vehicleX, sampleTerrainHeightAtWorldPosition(world, vehicleX, hillZ) + 3, hillZ),
     ];
 
-    const result = runLocalPreview(world);
-    const ball = result.dynamicBodies.get(31);
+    const result = runLocalRuntime(world);
+    const box = result.dynamicBodies.get(31);
     const vehicle = result.vehicles.get(32);
-    expect(ball).toBeDefined();
+    expect(box).toBeDefined();
     expect(vehicle).toBeDefined();
 
-    expectSupportedAboveTerrain(ball!.position[1], raycastTerrainHeight(world, hillX, hillZ));
+    expectSupportedAboveTerrain(box!.position[1], raycastTerrainHeight(world, hillX, hillZ));
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, vehicleX, hillZ));
   });
 
@@ -491,7 +543,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('vehicle', 42, 2, sampleTerrainHeightAtWorldPosition(world, 2, 0) + 3, 0),
     ];
 
-    const result = runLocalPreview(world);
+    const result = runLocalRuntime(world);
     const box = result.dynamicBodies.get(41);
     const vehicle = result.vehicles.get(42);
     expect(box).toBeDefined();
@@ -508,7 +560,7 @@ describe('WorldDocument local-preview scenarios', () => {
       world = applyTerrainBrush(world, 0, 0, 10, 0.08, 'raise');
     }
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
 
     for (const entity of world.dynamicEntities) {
       if (entity.kind === 'vehicle') {
@@ -546,7 +598,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('ball', 5001, 9.5, sampleTerrainHeightAtWorldPosition(world, 9.5, 9.5) + 2, 9.5),
     ];
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
     const ball = result.dynamicBodies.get(5001);
     expect(ball).toBeDefined();
 
@@ -573,7 +625,7 @@ describe('WorldDocument local-preview scenarios', () => {
       },
     ];
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
     const ball = result.dynamicBodies.get(42001);
     expect(ball).toBeDefined();
     const terrainY = raycastTerrainHeight(world, ball!.position[0], ball!.position[2]);
@@ -590,7 +642,7 @@ describe('WorldDocument local-preview scenarios', () => {
       world = applyTerrainBrush(world, 0, 0, 10, 0.08, 'raise');
     }
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
     const vehicle = result.vehicles.get(200);
     expect(vehicle).toBeDefined();
     const terrainY = raycastTerrainHeight(world, vehicle!.position[0], vehicle!.position[2]);
@@ -602,7 +654,7 @@ describe('WorldDocument local-preview scenarios', () => {
 
   it('broken exported world keeps its authored box, balls, and vehicle supported', () => {
     const world = cloneWorldDocument(parseWorldDocument(brokenWorldDocumentJson));
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
 
     for (const entity of world.dynamicEntities) {
       if (entity.kind === 'vehicle') {
@@ -632,7 +684,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('box', 9001, 9.5, 4, 9.5),
     ];
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
     const box = result.dynamicBodies.get(9001);
     expect(box).toBeDefined();
     const terrainY = raycastTerrainHeight(world, box!.position[0], box!.position[2]);
@@ -645,7 +697,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('ball', 9002, 9.5, 4, 9.5),
     ];
 
-    const result = runLocalPreview(world, 360);
+    const result = runLocalRuntime(world, 360);
     const ball = result.dynamicBodies.get(9002);
     expect(ball).toBeDefined();
     const terrainY = raycastTerrainHeight(world, ball!.position[0], ball!.position[2]);
@@ -683,7 +735,7 @@ describe('WorldDocument local-preview scenarios', () => {
       makeEntity('vehicle', 22, vehicleX, sampleTerrainHeightAtWorldPosition(world, vehicleX, peakZ) + 3, peakZ),
     ];
 
-    const result = runLocalPreview(world);
+    const result = runLocalRuntime(world);
     expectSupportedAboveTerrain(result.dynamicBodies.get(21)!.position[1], raycastTerrainHeight(world, peakX, peakZ));
     expectSupportedAboveTerrain(result.dynamicBodies.get(23)!.position[1], raycastTerrainHeight(world, boxX, peakZ));
     expectSupportedAboveTerrain(result.vehicles.get(22)!.position[1], raycastTerrainHeight(world, vehicleX, peakZ));

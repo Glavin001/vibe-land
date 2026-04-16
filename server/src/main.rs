@@ -32,38 +32,36 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
+use vibe_land_shared::constants::{
+    DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M,
+    PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
+    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+};
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
-    demo_world::seed_default_world,
+    demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena, PlayerKccMode},
+    movement::{MoveConfig, PhysicsArena},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_battery_state,
         make_net_dynamic_body_state, make_net_player_state, mm_to_meters, ClientPacket, FireCmd,
         InputCmd, NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket,
-        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
-        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
-        SHOT_RESOLUTION_PLAYER,
+        BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT,
+        PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC,
+        SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
-const SIM_HZ: u16 = 60;
-const SNAPSHOT_HZ: u16 = 30;
+const SNAPSHOT_HZ: u16 = SNAPSHOT_HZ_MULTIPLAYER;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
-const MAX_PENDING_INPUTS: usize = 120;
 const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
-const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 const RIFLE_BODY_DAMAGE: u8 = 25;
 const RIFLE_HEAD_DAMAGE: u8 = 50;
-const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
-const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
-const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
-const OUT_OF_BOUNDS_Y_M: f32 = -12.0;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 const PLAYER_AOI_RADIUS_M: f32 = 80.0;
@@ -133,13 +131,6 @@ impl ClientTransport {
             Self::WebSocket => "websocket",
             Self::WebTransport => "webtransport",
         }
-    }
-}
-
-fn parse_player_kcc_mode(value: Option<&str>) -> PlayerKccMode {
-    match value.unwrap_or("one_pass_support_predicate") {
-        "two_pass" => PlayerKccMode::TwoPass,
-        _ => PlayerKccMode::OnePassSupportPredicate,
     }
 }
 
@@ -484,6 +475,8 @@ struct PlayerStatsSnapshot {
     transport: String,
     one_way_ms: u32,
     pending_inputs: usize,
+    last_received_input_seq: Option<u16>,
+    last_ack_input_seq: u16,
     hp: u8,
     pos_m: [f32; 3],
     vel_ms: [f32; 3],
@@ -536,7 +529,6 @@ struct AppState {
     cert_hash_hex: String,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -659,7 +651,6 @@ struct MatchState {
     snapshot_stats: MatchSnapshotStats,
     void_kills: u64,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
@@ -713,13 +704,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:4002".to_string())
         .parse()?;
     let wt_host = std::env::var("WT_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let wt_base_url = format!("https://{}:{}", wt_host, wt_addr.port());
+    let wt_base_url = std::env::var("WT_PUBLIC_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("https://{}:{}", wt_host, wt_addr.port()));
     let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
-    let player_kcc_mode =
-        parse_player_kcc_mode(std::env::var("VIBE_SERVER_PLAYER_KCC_MODE").ok().as_deref());
     let respawn_delay_ms = parse_respawn_delay_ms(
         std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
             .ok()
@@ -729,9 +721,7 @@ async fn main() -> Result<()> {
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
-        player_kcc_mode = ?player_kcc_mode,
-        respawn_delay_ms,
-        "WebTransport snapshot transport policy loaded"
+        respawn_delay_ms, "WebTransport snapshot transport policy loaded"
     );
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
@@ -749,7 +739,6 @@ async fn main() -> Result<()> {
             cert_hash_hex,
             wt_base_url,
             strict_snapshot_datagrams,
-            player_kcc_mode,
             respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
@@ -1132,15 +1121,14 @@ async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
-    let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
+    let mut arena = PhysicsArena::new(MoveConfig::default());
     let world = VoxelWorld::new();
-    seed_default_world(&mut arena).expect("default world document should instantiate");
+    seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
     let dynamic_body_handles = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -1178,7 +1166,6 @@ async fn run_match_loop(
         snapshot_stats: MatchSnapshotStats::default(),
         void_kills: 0,
         strict_snapshot_datagrams,
-        player_kcc_mode,
         respawn_delay_ms,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
@@ -1229,7 +1216,6 @@ fn spawn_match_loop(
             match_id.clone(),
             rx,
             app.strict_snapshot_datagrams,
-            app.player_kcc_mode,
             app.respawn_delay_ms,
             app.stats_tx.clone(),
             telemetry,
@@ -1451,6 +1437,8 @@ impl MatchState {
                         runtime
                             .last_bundle_recv
                             .map(|instant| instant.elapsed().as_secs_f32() * 1000.0),
+                        runtime.last_received_input_seq,
+                        runtime.last_ack_input_seq,
                     )
                 });
                 let latest_health = self
@@ -1462,13 +1450,22 @@ impl MatchState {
                 self.release_player_handle(player_id);
                 self.arena.remove_player(player_id);
                 self.history.remove_player(player_id);
-                if let Some((transport, pending_inputs, input_silence_ms)) = disconnect_runtime {
+                if let Some((
+                    transport,
+                    pending_inputs,
+                    input_silence_ms,
+                    last_received_input_seq,
+                    last_ack_input_seq,
+                )) = disconnect_runtime
+                {
                     info!(
                         match_id = %self.id,
                         player_id,
                         transport,
                         pending_inputs,
                         input_silence_ms,
+                        last_received_input_seq,
+                        last_ack_input_seq,
                         active_players = self.players.len(),
                         tick_ms_p95 = latest_health.as_ref().map(|stats| stats.timings.total_ms.p95),
                         max_pending_inputs = latest_health
@@ -1563,10 +1560,17 @@ impl MatchState {
                     }
                     ClientPacket::VehicleEnter(cmd) => {
                         if !is_dead {
+                            let _ = runtime;
                             if let Some(vehicle_id) =
                                 self.resolve_vehicle_runtime_id(cmd.vehicle_id)
                             {
                                 self.arena.enter_vehicle(player_id, vehicle_id);
+                                if self.arena.vehicle_of_player.get(&player_id) == Some(&vehicle_id)
+                                {
+                                    if let Some(runtime) = self.players.get_mut(&player_id) {
+                                        clear_runtime_inputs_for_vehicle_entry(runtime);
+                                    }
+                                }
                             }
                         }
                     }
@@ -1639,7 +1643,16 @@ impl MatchState {
             let input = self
                 .players
                 .get_mut(&player_id)
-                .map(take_input_for_tick)
+                .map(|runtime| {
+                    // Vehicle controls are continuous state, not precious per-frame
+                    // history. Once the backlog grows unhealthy, catch the server up
+                    // to the newest useful control state instead of replaying stale
+                    // steering/throttle for hundreds of milliseconds.
+                    take_input_for_tick_with_vehicle_catchup(
+                        runtime,
+                        self.arena.vehicle_of_player.contains_key(&player_id),
+                    )
+                })
                 .unwrap_or_default();
             if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
                 player_move_math_ms += result.timings.move_math_ms;
@@ -1771,14 +1784,7 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
-        let vehicle_started = Instant::now();
-        self.arena.step_vehicles(dt);
-        self.timings
-            .vehicle_ms
-            .record(vehicle_started.elapsed().as_secs_f32() * 1000.0);
-
-        let dynamics_started = Instant::now();
-        self.arena.step_dynamics(dt);
+        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
 
         // ── Energy system: drain drivers, collect pickups, kill on depletion ──
         // Runs after physics so we have up-to-date chassis velocities, and
@@ -1808,7 +1814,6 @@ impl MatchState {
         for player_id in depleted_ids {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
         }
-
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -1833,9 +1838,8 @@ impl MatchState {
                 },
             );
         }
-        self.timings
-            .dynamics_ms
-            .record(dynamics_started.elapsed().as_secs_f32() * 1000.0);
+        self.timings.dynamics_ms.record(dynamics_ms);
+        self.timings.vehicle_ms.record(vehicle_ms);
 
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
@@ -1911,6 +1915,8 @@ impl MatchState {
                     transport: runtime.transport.as_str().to_string(),
                     one_way_ms: runtime.estimated_one_way_ms,
                     pending_inputs: runtime.pending_inputs.len(),
+                    last_received_input_seq: runtime.last_received_input_seq,
+                    last_ack_input_seq: runtime.last_ack_input_seq,
                     hp,
                     pos_m: pos,
                     vel_ms: vel,
@@ -2164,7 +2170,6 @@ impl MatchState {
                 move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
                 player_query_ctx_ms_avg = match_stats.timings.player_query_ctx_ms.avg,
                 kcc_ms_avg = match_stats.timings.player_kcc_ms.avg,
-                player_kcc_mode = ?self.player_kcc_mode,
                 player_kcc_horizontal_ms_avg = match_stats.timings.player_kcc_horizontal_ms.avg,
                 player_kcc_support_ms_avg = match_stats.timings.player_kcc_support_ms.avg,
                 player_kcc_merged_ms_avg = match_stats.timings.player_kcc_merged_ms.avg,
@@ -2395,13 +2400,13 @@ impl MatchState {
             let world_toi = self.arena.cast_static_world_ray(
                 origin,
                 queued.cmd.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 queued.cmd.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
             let blocker_toi = match (world_toi, dynamic_hit.map(|(_, toi, _)| toi)) {
@@ -2703,6 +2708,14 @@ impl MatchState {
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
+            let reserved_vehicle_budget = vehicle_states
+                .iter()
+                .filter(|(_, _, state)| state.driver_id == recipient_id)
+                .take(STRICT_SNAPSHOT_RESERVED_VEHICLES)
+                .count()
+                .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
+            budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
+
             let mut remote_player_states = Vec::new();
             for (player_id, pos, state) in player_states.iter().filter(|(player_id, pos, _)| {
                 *player_id != recipient_id
@@ -2735,6 +2748,48 @@ impl MatchState {
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
             }
 
+            let mut selected_vehicle_states = Vec::new();
+            let mut reserved_vehicle_ids = HashSet::new();
+            for (vehicle_id, pos, state) in vehicle_states
+                .iter()
+                .filter(|(_, _, state)| state.driver_id == recipient_id)
+            {
+                let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
+                    continue;
+                };
+                let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
+                    continue;
+                };
+                let driver_handle = self
+                    .player_handles
+                    .get(&state.driver_id)
+                    .copied()
+                    .unwrap_or_default();
+                selected_vehicle_states.push(protocol::VehicleStateV2 {
+                    handle,
+                    vehicle_type: state.vehicle_type,
+                    driver_handle,
+                    flags: state.flags,
+                    dx_q2_5mm: dx,
+                    dy_q2_5mm: dy,
+                    dz_q2_5mm: dz,
+                    qx_snorm: state.qx_snorm,
+                    qy_snorm: state.qy_snorm,
+                    qz_snorm: state.qz_snorm,
+                    qw_snorm: state.qw_snorm,
+                    vx_cms: state.vx_cms,
+                    vy_cms: state.vy_cms,
+                    vz_cms: state.vz_cms,
+                    wx_mrads: state.wx_mrads,
+                    wy_mrads: state.wy_mrads,
+                    wz_mrads: state.wz_mrads,
+                });
+                reserved_vehicle_ids.insert(*vehicle_id);
+                runtime
+                    .last_sent_vehicle_tick
+                    .insert(*vehicle_id, self.server_tick);
+            }
+
             let mut vehicle_hot = Vec::new();
             let mut vehicle_cold = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
@@ -2742,6 +2797,9 @@ impl MatchState {
                     || distance_sq(*pos, *recipient_pos)
                         <= VEHICLE_AOI_RADIUS_M * VEHICLE_AOI_RADIUS_M
             }) {
+                if reserved_vehicle_ids.contains(vehicle_id) {
+                    continue;
+                }
                 let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
                     continue;
                 };
@@ -2800,7 +2858,6 @@ impl MatchState {
             vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             vehicle_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-            let mut selected_vehicle_states = Vec::new();
             for (vehicle_id, _, record) in vehicle_hot.into_iter().chain(vehicle_cold.into_iter()) {
                 if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
                     break;
@@ -3010,6 +3067,44 @@ fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
         return input;
     }
     runtime.last_applied_input.clone()
+}
+
+fn take_input_for_tick_with_vehicle_catchup(
+    runtime: &mut PlayerRuntime,
+    collapse_vehicle_backlog: bool,
+) -> InputCmd {
+    if collapse_vehicle_backlog && runtime.pending_inputs.len() >= VEHICLE_INPUT_CATCHUP_THRESHOLD {
+        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
+            let skipped_reset = runtime
+                .pending_inputs
+                .iter()
+                .any(|input| input.buttons & BTN_RELOAD != 0);
+            runtime.pending_inputs.clear();
+            if skipped_reset {
+                newest.buttons |= BTN_RELOAD;
+            }
+            runtime.last_ack_input_seq = newest.seq;
+            runtime.last_applied_input = newest.clone();
+            return newest;
+        }
+    }
+    take_input_for_tick(runtime)
+}
+
+fn clear_runtime_inputs_for_vehicle_entry(runtime: &mut PlayerRuntime) {
+    let ack_seq = runtime
+        .last_received_input_seq
+        .unwrap_or(runtime.last_ack_input_seq);
+    runtime.pending_inputs.clear();
+    runtime.last_ack_input_seq = ack_seq;
+    runtime.last_applied_input = InputCmd {
+        seq: ack_seq,
+        buttons: 0,
+        move_x: 0,
+        move_y: 0,
+        yaw: runtime.last_applied_input.yaw,
+        pitch: runtime.last_applied_input.pitch,
+    };
 }
 
 fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
@@ -3264,11 +3359,13 @@ impl SpacetimeVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_outbound_delivery, compute_density_metrics, dynamic_body_within_aoi,
-        enqueue_inputs, is_snapshot_packet_kind, parse_respawn_delay_ms, rifle_damage,
-        server_build_profile, strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
-        try_queue_packet, HitZone, InputCmd, MatchIoTelemetry, OutboundDelivery, PlayerRuntime,
-        StrictSnapshotDropCause, MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
+        compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
+        parse_respawn_delay_ms, rifle_damage, server_build_profile,
+        strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
+        take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
+        MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
+        MAX_PENDING_INPUTS, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         PLAYER_OUTBOUND_QUEUE_CAPACITY, RIFLE_BODY_DAMAGE, RIFLE_HEAD_DAMAGE,
     };
     use std::collections::{HashMap, HashSet, VecDeque};
@@ -3362,6 +3459,63 @@ mod tests {
         assert_eq!(second.seq, 22);
         assert_eq!(repeated.seq, 22);
         assert_eq!(runtime.last_ack_input_seq, 22);
+    }
+
+    #[test]
+    fn vehicle_catchup_skips_stale_inputs_and_acks_newest_control() {
+        let mut runtime = runtime();
+        enqueue_inputs(&mut runtime, (21..=24).map(input).collect());
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
+
+        assert_eq!(applied.seq, 24);
+        assert!(runtime.pending_inputs.is_empty());
+        assert_eq!(runtime.last_ack_input_seq, 24);
+        assert_eq!(runtime.last_applied_input.seq, 24);
+    }
+
+    #[test]
+    fn vehicle_entry_clears_stale_walk_inputs_and_bulk_acks_received_seq() {
+        let mut runtime = runtime();
+        runtime.last_applied_input.yaw = 1.25;
+        runtime.last_applied_input.pitch = -0.5;
+        enqueue_inputs(&mut runtime, (21..=25).map(input).collect());
+
+        clear_runtime_inputs_for_vehicle_entry(&mut runtime);
+
+        assert!(runtime.pending_inputs.is_empty());
+        assert_eq!(runtime.last_ack_input_seq, 25);
+        assert_eq!(runtime.last_applied_input.seq, 25);
+        assert_eq!(runtime.last_applied_input.buttons, 0);
+        assert_eq!(runtime.last_applied_input.move_x, 0);
+        assert_eq!(runtime.last_applied_input.move_y, 0);
+        assert_eq!(runtime.last_applied_input.yaw, 1.25);
+        assert_eq!(runtime.last_applied_input.pitch, -0.5);
+    }
+
+    #[test]
+    fn vehicle_catchup_preserves_reset_pressed_in_skipped_history() {
+        let mut runtime = runtime();
+        let mut frames: Vec<_> = (21..=24).map(input).collect();
+        frames[1].buttons |= BTN_RELOAD;
+        enqueue_inputs(&mut runtime, frames);
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, true);
+
+        assert_eq!(applied.seq, 24);
+        assert_ne!(applied.buttons & BTN_RELOAD, 0);
+    }
+
+    #[test]
+    fn on_foot_backlog_keeps_ordered_processing() {
+        let mut runtime = runtime();
+        enqueue_inputs(&mut runtime, (21..=30).map(input).collect());
+
+        let applied = take_input_for_tick_with_vehicle_catchup(&mut runtime, false);
+
+        assert_eq!(applied.seq, 21);
+        assert_eq!(runtime.pending_inputs.len(), 9);
+        assert_eq!(runtime.last_ack_input_seq, 21);
     }
 
     #[test]
@@ -3513,7 +3667,7 @@ mod tests {
     fn visible_dynamic_body_within_aoi_stays_replicated() {
         assert!(dynamic_body_within_aoi(
             true,
-            [super::DYNAMIC_BODY_AOI_RADIUS_M + 8.0, 0.0, 0.0],
+            [super::DYNAMIC_BODY_AOI_EXIT_RADIUS_M - 0.1, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ));
     }

@@ -11,11 +11,8 @@
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",
     "dev:practice": "vite --open /practice",
-    "predev:local-preview": "npm run ensure:wasm-pack && npm run build:wasm",
-    "dev:local-preview": "npm run dev:practice",
     "build": "npm run build:wasm && tsc -b && vite build",
-    "build:local-preview": "npm run build",
-    "build:vercel-local-preview": "rustup target add wasm32-unknown-unknown && npm run build",
+    "build:vercel": "rustup target add wasm32-unknown-unknown && npm run build",
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
@@ -28,11 +25,21 @@
     "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.74",
+    "@ai-sdk/google": "^2.0.68",
+    "@ai-sdk/openai": "^2.0.102",
     "@react-three/drei": "^9.117.0",
     "@react-three/fiber": "^8.17.0",
+    "@rjsf/core": "^6.4.2",
+    "@rjsf/utils": "^6.4.2",
+    "@rjsf/validator-ajv8": "^6.4.2",
+    "@tailwindcss/vite": "^4.2.2",
+    "ai": "^6.0.159",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "three": "^0.170.0"
+    "tailwindcss": "^4.2.2",
+    "three": "^0.170.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

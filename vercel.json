@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm --prefix client install",
-  "buildCommand": "npm --prefix client run build:vercel-local-preview",
+  "buildCommand": "npm --prefix client run build:vercel",
   "outputDirectory": "client/dist",
   "framework": null,
   "cleanUrls": true,
@@ -62,6 +62,33 @@
     },
     {
       "source": "/loadtest",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/builder/world",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/gallery",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/practice/shared/(.*)",
       "headers": [
         {
           "key": "Cache-Control",

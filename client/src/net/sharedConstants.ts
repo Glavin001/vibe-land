@@ -54,25 +54,37 @@ export const BLOCK_REMOVE = 2;
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
 
+// ── Shared gameplay/runtime constants ───────────
+export const SIM_HZ = 60;
+export const SNAPSHOT_HZ_MULTIPLAYER = 30;
+export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
+export const MAX_PENDING_INPUTS = 120;
+export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+export const RIFLE_FIRE_INTERVAL_MS = 100;
+export const PLAYER_EYE_HEIGHT_M = 0.8;
+export const HITSCAN_MAX_DISTANCE_M = 1000.0;
+export const DYNAMIC_BODY_IMPULSE = 6.0;
+export const OUT_OF_BOUNDS_Y_M = -12.0;
+
 // ── Energy / consumables ────────────────────────
-/// Energy each player starts with (and is reset to on respawn).
+// Energy each player starts with (and is reset to on respawn).
 export const STARTING_ENERGY = 1000.0;
-/// Energy consumed per second while sitting in a vehicle, even when idle.
+// Energy consumed per second while sitting in a vehicle, even when idle.
 export const VEHICLE_IDLE_DRAIN_PER_SEC = 1.0;
-/// Additional energy-per-second drain scaled by the vehicle's current speed
-/// (metres per second). So `drain = IDLE + COEF * speed_mps`.
+// Additional energy-per-second drain scaled by the vehicle's current speed
+// (metres per second). So `drain = IDLE + COEF * speed_mps`.
 export const VEHICLE_SPEED_DRAIN_COEF = 0.3;
-/// Energy consumed by a single rifle shot. Firing is expensive to keep
-/// ammo-as-fuel meaningful: at the default starting energy of 1000, a
-/// player gets ~100 shots before needing to refill.
+// Energy consumed by a single rifle shot. Firing is expensive to keep
+// ammo-as-fuel meaningful: at the default starting energy of 1000, a
+// player gets ~100 shots before needing to refill.
 export const RIFLE_SHOT_ENERGY_COST = 10.0;
-/// Extra slack (metres) added to battery pickup radius checks so pickups feel
-/// generous rather than pixel-perfect.
+// Extra slack (metres) added to battery pickup radius checks so pickups feel
+// generous rather than pixel-perfect.
 export const BATTERY_PICKUP_SLACK_M = 0.3;
-/// Default cylinder radius and height used for batteries dropped at runtime
-/// (e.g. from a killed player).
+// Default cylinder radius and height used for batteries dropped at runtime
+// (e.g. from a killed player).
 export const DEFAULT_BATTERY_RADIUS_M = 0.4;
 export const DEFAULT_BATTERY_HEIGHT_M = 0.8;
-/// Battery IDs start at this offset so they can't collide with dynamic-body /
-/// vehicle IDs in logs or debug overlays.
+// Battery IDs start at this offset so they can't collide with dynamic-body /
+// vehicle IDs in logs or debug overlays.
 export const BATTERY_ID_RANGE_START = 0x40000000;
