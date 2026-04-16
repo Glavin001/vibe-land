@@ -29,6 +29,22 @@ import {
 import { applyCustomStencilToWorld, type CustomStencilDefinition } from './customStencil';
 import { getStencil, registerStencil } from './customStencilStore';
 
+import type { SplineData, SplinePoint } from './splineData';
+import {
+  computeSplineLength,
+  sampleSplineAtDistance,
+  tangentAtDistance as splineTangentAtDistance,
+  normalAtDistance as splineNormalAtDistance,
+  resampleSplineBySpacing,
+  offsetSplineCurve,
+  computeSplineBounds,
+  findSplineSelfIntersections as findSelfIntersections,
+  projectPointOntoSpline,
+  buildArcLengthTable,
+} from './splineMath';
+import { deformTerrainAlongSpline as applyTerrainSplineDeform } from './terrainSplineDeform';
+import { generateCommitId } from '../pages/godModeHistory';
+
 export type WorldEditUpdater = (current: WorldDocument) => WorldDocument;
 
 export type WorldEditOptions = { isAiEdit?: boolean };
@@ -36,6 +52,16 @@ export type WorldEditOptions = { isAiEdit?: boolean };
 export type WorldAccessors = {
   getWorld: () => WorldDocument;
   commitEdit: (updater: WorldEditUpdater, options?: WorldEditOptions) => boolean;
+  // Internal methods for execute_js atomic execution:
+  applyWithoutCommit: (updater: WorldEditUpdater) => boolean;
+  restoreWorld: (snapshot: WorldDocument) => void;
+  commitAsAi: (snapshotBefore: WorldDocument, commitId: string, commitMessage: string) => void;
+  // For rollback tool:
+  rollbackToCommit: (commitId: string) => { ok: boolean; message: string; commitId?: string };
+  // For spline storage:
+  getSplines: () => Map<string, SplineData>;
+  setSpline: (id: string, spline: SplineData) => void;
+  deleteSpline: (id: string) => boolean;
 };
 
 type TerrainMutationStats = {
@@ -169,6 +195,16 @@ export type WorldCtx = {
   addTerrainTile(tileX: number, tileZ: number): { changed: boolean };
   removeTerrainTile(tileX: number, tileZ: number): { changed: boolean };
 
+  deformTerrainAlongSpline(spec: {
+    splineId: string;
+    profile: Array<{ u: number; y: number }>;
+    mode?: 'absolute' | 'relative';
+    applyMode?: 'blend' | 'raiseOnly' | 'lowerOnly';
+    strength?: number;
+    falloff?: number;
+    sampleSpacing?: number;
+  }): { changed: boolean } & Partial<TerrainMutationStats>;
+
   // ---- CUSTOM STENCILS ----
   registerCustomStencil(definition: CustomStencilDefinition): { registered: boolean; error?: string };
   applyCustomStencil(
@@ -177,6 +213,30 @@ export type WorldCtx = {
     centerZ: number,
     params?: Record<string, unknown>,
   ): { changed: boolean; error?: string } & Partial<TerrainMutationStats>;
+
+  // ---- SPLINE CRUD ----
+  createSpline(spec: {
+    points: SplinePoint[];
+    closed?: boolean;
+    interpolation?: 'polyline' | 'catmull-rom';
+    tension?: number;
+    name?: string;
+  }): { id: string };
+  getSpline(id: string): SplineData | null;
+  updateSpline(id: string, patch: Partial<Omit<SplineData, 'id'>>): { changed: boolean };
+  deleteSpline(id: string): { changed: boolean };
+  listSplines(): SplineData[];
+
+  // ---- SPLINE MATH ----
+  splineLength(id: string): number | null;
+  sampleSpline(id: string, opts: { count?: number; spacing?: number; distances?: number[] }): SplinePoint[] | null;
+  splineTangent(id: string, distance: number): SplinePoint | null;
+  splineNormal(id: string, distance: number): SplinePoint | null;
+  splineBounds(id: string): { minX: number; maxX: number; minZ: number; maxZ: number } | null;
+  resampleSpline(id: string, spacing: number): SplinePoint[] | null;
+  offsetSpline(id: string, offset: number, spacing?: number): SplinePoint[] | null;
+  findSplineSelfIntersections(id: string): SplinePoint[] | null;
+  projectOntoSpline(id: string, point: SplinePoint): { along: number; across: number } | null;
 
   // ---- MATH ----
   quaternionFromYaw(yawRad: number): Quaternion;
@@ -511,6 +571,26 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
       return { changed };
     },
 
+    deformTerrainAlongSpline(spec) {
+      const spline = accessors.getSplines().get(spec.splineId);
+      if (!spline) return { changed: false };
+      if (!Array.isArray(spec.profile) || spec.profile.length < 2) return { changed: false };
+      const before = accessors.getWorld();
+      const changed = aiEdit((current) =>
+        applyTerrainSplineDeform(current, {
+          spline,
+          profile: spec.profile,
+          mode: spec.mode ?? 'absolute',
+          applyMode: spec.applyMode ?? 'blend',
+          strength: spec.strength ?? 1,
+          falloff: spec.falloff ?? 2,
+          sampleSpacing: spec.sampleSpacing ?? 1,
+        }),
+      );
+      if (!changed) return { changed: false };
+      return { changed: true, ...computeTerrainMutationStats(before, accessors.getWorld()) };
+    },
+
     registerCustomStencil(definition) {
       return registerStencil(definition);
     },
@@ -525,6 +605,110 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
       );
       if (!changed) return { changed: false };
       return { changed: true, ...computeTerrainMutationStats(before, accessors.getWorld()) };
+    },
+
+    // ---- SPLINE CRUD ----
+    createSpline(spec) {
+      const id = generateCommitId();
+      const spline: SplineData = {
+        id,
+        name: spec.name,
+        points: spec.points.map((p) => ({ x: p.x, z: p.z })),
+        closed: spec.closed ?? false,
+        interpolation: spec.interpolation ?? 'polyline',
+        tension: spec.tension ?? 0.5,
+      };
+      accessors.setSpline(id, spline);
+      return { id };
+    },
+    getSpline(id) {
+      const spline = accessors.getSplines().get(id);
+      return spline ? cloneJson(spline) : null;
+    },
+    updateSpline(id, patch) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return { changed: false };
+      const updated: SplineData = {
+        ...spline,
+        ...(patch.points ? { points: patch.points.map((p) => ({ x: p.x, z: p.z })) } : {}),
+        ...(typeof patch.closed === 'boolean' ? { closed: patch.closed } : {}),
+        ...(patch.interpolation ? { interpolation: patch.interpolation } : {}),
+        ...(typeof patch.tension === 'number' ? { tension: patch.tension } : {}),
+        ...(typeof patch.name === 'string' ? { name: patch.name } : {}),
+      };
+      accessors.setSpline(id, updated);
+      return { changed: true };
+    },
+    deleteSpline(id) {
+      return { changed: accessors.deleteSpline(id) };
+    },
+    listSplines() {
+      return Array.from(accessors.getSplines().values()).map((s) => cloneJson(s));
+    },
+
+    // ---- SPLINE MATH ----
+    splineLength(id) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      return computeSplineLength(spline);
+    },
+    sampleSpline(id, opts) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      const table = buildArcLengthTable(spline);
+      const totalLen = table[table.length - 1]?.distance ?? 0;
+      if (totalLen <= 0) return [];
+
+      let distances: number[];
+      if (opts.distances) {
+        distances = opts.distances;
+      } else if (opts.spacing && opts.spacing > 0) {
+        distances = [];
+        for (let d = 0; d <= totalLen; d += opts.spacing) distances.push(d);
+      } else {
+        const count = opts.count ?? 20;
+        distances = [];
+        for (let i = 0; i < count; i++) distances.push((i / Math.max(1, count - 1)) * totalLen);
+      }
+      return distances.map((d) => sampleSplineAtDistance(spline, d, table));
+    },
+    splineTangent(id, distance) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      const table = buildArcLengthTable(spline);
+      return splineTangentAtDistance(spline, distance, table);
+    },
+    splineNormal(id, distance) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      const table = buildArcLengthTable(spline);
+      return splineNormalAtDistance(spline, distance, table);
+    },
+    splineBounds(id) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      return computeSplineBounds(spline);
+    },
+    resampleSpline(id, spacing) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      return resampleSplineBySpacing(spline, spacing);
+    },
+    offsetSpline(id, offset, spacing) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      return offsetSplineCurve(spline, offset, spacing);
+    },
+    findSplineSelfIntersections(id) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      return findSelfIntersections(spline);
+    },
+    projectOntoSpline(id, point) {
+      const spline = accessors.getSplines().get(id);
+      if (!spline) return null;
+      const table = buildArcLengthTable(spline);
+      return projectPointOntoSpline(spline, point, table);
     },
 
     quaternionFromYaw(yawRad) {

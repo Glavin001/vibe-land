@@ -9,7 +9,7 @@ import {
 } from './chatTypes';
 import { createLanguageModel, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
-import { createExecuteJsTool } from './worldTool';
+import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import type { WorldAccessors } from './worldToolHelpers';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
@@ -138,7 +138,10 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           model: languageModel,
           system: SYSTEM_PROMPT,
           messages: toModelMessages(baseMessages),
-          tools: { execute_js: createExecuteJsTool(accessorsRef.current) },
+          tools: {
+            execute_js: createExecuteJsTool(accessorsRef.current),
+            rollback_to_commit: createRollbackTool(accessorsRef.current),
+          },
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
           abortSignal: controller.signal,
           // Disable automatic retries — for BYOK in the browser, retrying

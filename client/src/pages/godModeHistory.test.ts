@@ -10,24 +10,28 @@ import {
   undoWorldEdit,
 } from './godModeHistory';
 
+const testCommit = { commitId: 'test0001', commitMessage: 'test edit', source: 'human' as const };
+
 describe('godModeHistory', () => {
   it('records a changed world on the undo stack and clears redo', () => {
     const current = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
     const next = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
     next.terrain.tiles[0].heights[0] += 1;
 
-    const transition = commitWorldEdit(createEmptyWorldEditHistory(), current, next);
+    const transition = commitWorldEdit(createEmptyWorldEditHistory(), current, next, testCommit);
 
     expect(transition.changed).toBe(true);
     expect(transition.history.undoStack).toHaveLength(1);
     expect(transition.history.redoStack).toHaveLength(0);
-    expect(transition.history.undoStack[0]).toEqual(current);
+    expect(transition.history.undoStack[0].world).toEqual(current);
+    expect(transition.history.undoStack[0].commitId).toBe('test0001');
+    expect(transition.history.undoStack[0].commitMessage).toBe('test edit');
   });
 
   it('ignores no-op edits', () => {
     const current = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
 
-    const transition = commitWorldEdit(createEmptyWorldEditHistory(), current, cloneWorldDocument(current));
+    const transition = commitWorldEdit(createEmptyWorldEditHistory(), current, cloneWorldDocument(current), testCommit);
 
     expect(transition.changed).toBe(false);
     expect(transition.history.undoStack).toHaveLength(0);
@@ -38,7 +42,7 @@ describe('godModeHistory', () => {
     const current = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
     const next = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
     next.terrain.tiles[0].heights[0] += 2;
-    const committed = commitWorldEdit(createEmptyWorldEditHistory(), current, next);
+    const committed = commitWorldEdit(createEmptyWorldEditHistory(), current, next, testCommit);
 
     const undone = undoWorldEdit(committed.history, next);
     expect(undone.changed).toBe(true);
