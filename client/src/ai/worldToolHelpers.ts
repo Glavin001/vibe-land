@@ -26,6 +26,8 @@ import {
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
+import { applyCustomStencilToWorld, type CustomStencilDefinition } from './customStencil';
+import { getStencil, registerStencil } from './customStencilStore';
 
 export type WorldEditUpdater = (current: WorldDocument) => WorldDocument;
 
@@ -166,6 +168,15 @@ export type WorldCtx = {
   }): { changed: boolean } & Partial<TerrainMutationStats>;
   addTerrainTile(tileX: number, tileZ: number): { changed: boolean };
   removeTerrainTile(tileX: number, tileZ: number): { changed: boolean };
+
+  // ---- CUSTOM STENCILS ----
+  registerCustomStencil(definition: CustomStencilDefinition): { registered: boolean; error?: string };
+  applyCustomStencil(
+    stencilId: string,
+    centerX: number,
+    centerZ: number,
+    params?: Record<string, unknown>,
+  ): { changed: boolean; error?: string } & Partial<TerrainMutationStats>;
 
   // ---- MATH ----
   quaternionFromYaw(yawRad: number): Quaternion;
@@ -498,6 +509,22 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
     removeTerrainTile(tileX, tileZ) {
       const changed = aiEdit((current) => removeTerrainTile(current, tileX, tileZ));
       return { changed };
+    },
+
+    registerCustomStencil(definition) {
+      return registerStencil(definition);
+    },
+
+    applyCustomStencil(stencilId, centerX, centerZ, params) {
+      const stencilDef = getStencil(stencilId);
+      if (!stencilDef) return { changed: false, error: `no custom stencil with id "${stencilId}"` };
+      const mergedParams = { ...stencilDef.defaultParams, ...params };
+      const before = accessors.getWorld();
+      const changed = aiEdit((current) =>
+        applyCustomStencilToWorld(current, stencilDef, mergedParams, centerX, centerZ),
+      );
+      if (!changed) return { changed: false };
+      return { changed: true, ...computeTerrainMutationStats(before, accessors.getWorld()) };
     },
 
     quaternionFromYaw(yawRad) {
