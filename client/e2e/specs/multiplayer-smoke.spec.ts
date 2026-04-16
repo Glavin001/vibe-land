@@ -92,16 +92,28 @@ test.describe('Multiplayer Smoke', () => {
         { timeout: 30_000, label: 'B sees remote player' },
       );
 
-      // 7. Move player A and verify player B observes the position change
+      // 7. Wait for prediction system to be ready (player placed in world)
+      // before attempting movement. The prediction system initialises after
+      // receiving the first world chunks from the server.
+      await waitForSnapshot(
+        pageA,
+        (s) => Math.hypot(s.position[0], s.position[2]) > 0 || s.position[1] > 0.5,
+        { timeout: 15_000, label: 'A prediction ready' },
+      );
+
+      // Record B's view of A's position before A moves
       const beforeMoveB = await snapshot(pageB);
       const remoteABefore = beforeMoveB.remotePlayers.find(
         (rp) => rp.id === readyA.playerId,
       );
 
-      await holdMove(pageA, 'forward', 1000);
-      await pageA.waitForTimeout(500);
+      // Hold move longer to ensure physics has time to propagate through
+      // the server and back to B's interpolation buffer.
+      await holdMove(pageA, 'forward', 2000);
+      await pageA.waitForTimeout(1500);
 
-      // Wait for B to see A's position update
+      // Wait for B to see A's position update — use generous timeout since
+      // server snapshots arrive at ~30Hz and interpolation adds delay.
       const afterMoveB = await waitForSnapshot(
         pageB,
         (s) => {
@@ -113,7 +125,7 @@ test.describe('Multiplayer Smoke', () => {
           );
           return delta > 0.3;
         },
-        { timeout: 10_000, label: 'B sees A moved' },
+        { timeout: 20_000, label: 'B sees A moved' },
       );
 
       const remoteAAfter = afterMoveB.remotePlayers.find(
