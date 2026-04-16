@@ -81,16 +81,16 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
           output = { type: 'error-text', value: stringifyForModel(part.output) };
         } else if (part.images && part.images.length > 0) {
           // Multi-modal tool result: text summary + captured image(s).
-          // The AI SDK v6 'content' output lets us embed images in tool results so
-          // the model can see them in the same streaming step.
+          // AI SDK v6 requires type:'image-data' (not 'image'), field 'mediaType' (not 'mimeType'),
+          // and raw base64 data WITHOUT the 'data:image/png;base64,' prefix.
           output = {
             type: 'content',
             value: [
               { type: 'text', text: stringifyForModel(part.output) },
               ...part.images.map((img) => ({
-                type: 'image' as const,
-                data: img.dataUrl,
-                mimeType: img.mediaType as 'image/png',
+                type: 'image-data' as const,
+                data: img.dataUrl.replace(/^data:[^;]+;base64,/, ''),
+                mediaType: img.mediaType,
               })),
             ],
           } as ToolResultPart['output'];
