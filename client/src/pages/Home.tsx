@@ -15,7 +15,7 @@ function NavCard({ href, tag, title, description, note, noteColor }: CardProps) 
     <a href={href} className={cardClass}>
       <div className="text-xs uppercase tracking-[0.18em] text-[#87d6ff] mb-2.5">{tag}</div>
       <h2 className="m-0 text-[30px] font-semibold">{title}</h2>
-      <p className="mt-3 mb-[18px] text-[rgba(237,246,255,0.74)] leading-relaxed">{description}</p>
+      <p className="my-3 text-[rgba(237,246,255,0.74)] leading-relaxed">{description}</p>
       <div className={`text-sm ${noteColor}`}>{note}</div>
     </a>
   );
@@ -31,10 +31,10 @@ export function HomePage() {
           <div className="tracking-[0.28em] text-xs uppercase text-[#79baf5]">
             vibe-land
           </div>
-          <h1 className="text-[clamp(44px,8vw,88px)] leading-[0.95] mt-3 mb-[14px] font-bold">
+          <h1 className="text-[clamp(44px,8vw,88px)] leading-[0.95] my-3 font-bold">
             One build. Two ways to play.
           </h1>
-          <p className="mt-4 max-w-[760px] text-lg leading-relaxed text-[rgba(237,246,255,0.74)]">
+          <p className="max-w-[760px] text-lg leading-relaxed text-[rgba(237,246,255,0.74)]">
             Multiplayer and the firing range now ship in the same web app. Use direct links for fast entry, or start here.
           </p>
         </div>
