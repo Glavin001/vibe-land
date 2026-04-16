@@ -4,7 +4,7 @@ use rapier3d::prelude::ColliderHandle;
 
 use crate::{
     constants::{BLOCK_ADD, BLOCK_REMOVE},
-    local_arena::{PhysicsArena, Vec3},
+    physics_arena::{PhysicsArena, Vec3},
     protocol::{BlockCell, BlockEditCmd, BlockEditNet, ChunkDiffPacket, ChunkFullPacket},
 };
 

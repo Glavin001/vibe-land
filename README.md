@@ -43,14 +43,14 @@ cd client
 npm run build
 ```
 
-`/practice` keeps the normal client prediction/render path, but swaps the remote server transport for an in-browser authoritative WASM session seeded with the demo world, vehicle, and dynamic bodies.
+`/practice` runs the shared Rust authority directly in-browser. It does not use multiplayer prediction/reconciliation; the browser hosts the authoritative session and renders it immediately.
 
 ## Vercel Deployment
 
 The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the unified static client bundle.
 
 - Vercel build target: `client/dist`
-- Vercel build command: `npm --prefix client run build:vercel-local-preview`
+- Vercel build command: `npm --prefix client run build:vercel`
 - Static assets under `/assets/*` are cached as immutable hashed files
 - SPA routes revalidate on each request so browsers can reuse cached assets quickly after checking freshness
 
@@ -66,6 +66,7 @@ Or run manually:
 cp .env.example .env   # edit WT_HOST, cert paths, etc.
                        # optionally set VITE_MULTIPLAYER_HTTP_ORIGIN when the SPA and game backend use different origins
                        # for local WT on macOS, prefer WT_HOST=127.0.0.1 to avoid localhost resolving to ::1 first
+                       # if WebTransport uses a different public hostname/port than WT_BIND_ADDR, set WT_PUBLIC_URL
 
 # Build shared WASM module (once, or after changes to shared/)
 cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg && cd ..
@@ -76,5 +77,13 @@ cd server && RUST_LOG=info cargo run
 # Terminal 2 — web client
 cd client && npm install && npm run dev
 ```
+
+Production notes:
+
+- The hostname returned by `/session-config` must be directly reachable over QUIC/UDP by the browser.
+- For this repo's current origin WebTransport setup, use a `DNS only` record in Cloudflare for that hostname. Normal orange-cloud proxying was observed to break the WebTransport opening handshake.
+- `WT_BIND_ADDR` controls the local UDP bind port. `WT_PUBLIC_URL` controls the public URL advertised to browsers.
+- An explicit WebTransport port such as `https://vibe-land.glavin.ca:4002` is the most predictable setup when your main HTTPS site is served separately on `TCP 443`.
+- If you use a custom hostname in `WT_PUBLIC_URL`, the certificate files in `.env` must cover that hostname.
 
 See `AGENTS.md` for full setup details, lint, and build instructions.

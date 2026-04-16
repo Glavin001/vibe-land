@@ -62,6 +62,22 @@ import {
   type CommitEntry,
   type WorldEditHistory,
 } from './godModeHistory';
+import {
+  addDynamicEntityToWorld,
+  addStaticCuboidToWorld,
+  clonePlayWorldSnapshot,
+  getSelectedDynamic,
+  getSelectedStatic,
+  removeSelectedTargetFromWorld,
+  resolveSelectedTransformEntity,
+  selectionExists,
+  updateSelectedTargetHalfExtents,
+  updateSelectedTargetPosition,
+  updateSelectedTargetRadius,
+  updateSelectedTargetRotation,
+  type SelectedTarget,
+  type SelectedTransformEntity,
+} from './godModeEditorDocument';
 import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
 import { CustomStencilPanel } from './godmode/CustomStencilPanel';
 import { CustomStencilPreview } from './godmode/CustomStencilPreview';
@@ -75,21 +91,6 @@ type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
 type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
-type SelectedTarget =
-  | { kind: 'static'; id: number }
-  | { kind: 'dynamic'; id: number }
-  | null;
-
-type SelectedTransformEntity = {
-  kind: 'static' | 'dynamic';
-  id: number;
-  position: Vec3;
-  rotation: Quaternion;
-  halfExtents?: Vec3;
-  radius?: number;
-  canRotate: boolean;
-  canResize: boolean;
-};
 
 type PublishStatus =
   | { kind: 'idle' }
@@ -404,47 +405,16 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     if (!selected) {
       return;
     }
-    if (selected.kind === 'static' && !world.staticProps.some((entity) => entity.id === selected.id)) {
-      setSelected(null);
-      return;
-    }
-    if (selected.kind === 'dynamic' && !world.dynamicEntities.some((entity) => entity.id === selected.id)) {
+    if (!selectionExists(world, selected)) {
       setSelected(null);
     }
-  }, [selected, world.dynamicEntities, world.staticProps]);
+  }, [selected, world]);
 
-  const selectedStatic = selected?.kind === 'static'
-    ? world.staticProps.find((entity) => entity.id === selected.id) ?? null
-    : null;
-  const selectedDynamic = selected?.kind === 'dynamic'
-    ? world.dynamicEntities.find((entity) => entity.id === selected.id) ?? null
-    : null;
+  const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
+  const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
-    if (selectedStatic) {
-      return {
-        kind: 'static',
-        id: selectedStatic.id,
-        position: selectedStatic.position,
-        rotation: selectedStatic.rotation,
-        halfExtents: selectedStatic.halfExtents,
-        canRotate: true,
-        canResize: true,
-      };
-    }
-    if (selectedDynamic) {
-      return {
-        kind: 'dynamic',
-        id: selectedDynamic.id,
-        position: selectedDynamic.position,
-        rotation: selectedDynamic.rotation,
-        halfExtents: selectedDynamic.halfExtents,
-        radius: selectedDynamic.radius,
-        canRotate: selectedDynamic.kind !== 'ball',
-        canResize: selectedDynamic.kind !== 'vehicle',
-      };
-    }
-    return null;
-  }, [selectedDynamic, selectedStatic]);
+    return resolveSelectedTransformEntity(world, selected);
+  }, [selected, world]);
 
   useEffect(() => {
     if (tool !== 'select') {
@@ -506,7 +476,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [handleRedo, handleUndo, mode, selectedTransformEntity, tool]);
 
   const handleStartPlay = useCallback(() => {
-    const snapshot = cloneWorldDocument(worldRef.current);
+    const snapshot = clonePlayWorldSnapshot(worldRef.current);
     setPlayWorldSnapshot(snapshot);
     setPlaySessionKey((current) => current + 1);
     setMode('play');
@@ -708,51 +678,26 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [applyCommittedWorldEdit]);
 
   const addStaticCuboid = useCallback(() => {
-    let nextId = 0;
+    let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
-      nextId = getNextWorldEntityId(current);
-      const baseY = sampleTerrainHeightAtWorldPosition(current, 0, 0) + 1;
-      const nextStatic: StaticProp = {
-        id: nextId,
-        kind: 'cuboid',
-        position: [0, baseY, 0],
-        rotation: identityQuaternion(),
-        halfExtents: [2, 1, 2],
-        material: 'editor-static',
-      };
-      return {
-        ...current,
-        staticProps: [...current.staticProps, nextStatic],
-      };
+      const result = addStaticCuboidToWorld(current);
+      nextSelected = result.selected;
+      return result.world;
     });
-    if (changed) {
-      setSelected({ kind: 'static', id: nextId });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
     }
   }, [applyCommittedWorldEdit]);
 
   const addDynamicEntity = useCallback((kind: DynamicEntity['kind']) => {
-    let nextId = 0;
+    let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
-      nextId = getNextWorldEntityId(current);
-      const common = {
-        id: nextId,
-        kind,
-        position: [0, 0, 0] as [number, number, number],
-        rotation: identityQuaternion() as Quaternion,
-      };
-      const entity: DynamicEntity = kind === 'box'
-        ? { ...common, halfExtents: [0.7, 0.7, 0.7] }
-        : kind === 'ball'
-          ? { ...common, radius: 0.6 }
-          : { ...common, vehicleType: 0 };
-      entity.position = [0, getMinimumDynamicEntityY(current, entity), 0];
-      return {
-        ...current,
-        dynamicEntities: [...current.dynamicEntities, entity],
-      };
+      const result = addDynamicEntityToWorld(current, kind);
+      nextSelected = result.selected;
+      return result.world;
     });
-    if (changed) {
-      setSelected({ kind: 'dynamic', id: nextId });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
     }
   }, [applyCommittedWorldEdit]);
 
@@ -760,123 +705,40 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     if (!selected) {
       return;
     }
-    const changed = applyCommittedWorldEdit((current) => {
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.filter((entity) => entity.id !== selected.id),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.filter((entity) => entity.id !== selected.id),
-      };
-    });
+    const changed = applyCommittedWorldEdit((current) => removeSelectedTargetFromWorld(current, selected));
     if (changed) {
       setSelected(null);
     }
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedPosition = useCallback((axis: 0 | 1 | 2, value: number) => {
-    applyCommittedWorldEdit((current) => {
-      if (!selected) return current;
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, position: withAxis(entity.position, axis, value) }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, position: withAxis(entity.position, axis, value) }
-            : entity
-        )),
-      };
-    });
-  }, [applyCommittedWorldEdit, selected]);
+    const basePosition = selectedTransformEntity?.position;
+    if (!basePosition) {
+      return;
+    }
+    applyCommittedWorldEdit((current) => updateSelectedTargetPosition(current, selected, withAxis(basePosition, axis, value)));
+  }, [applyCommittedWorldEdit, selected, selectedTransformEntity]);
 
   const updateSelectedPositionVector = useCallback((nextPosition: Vec3) => {
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, position: nextPosition }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, position: nextPosition }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetPosition(current, selected, nextPosition));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedHalfExtent = useCallback((axis: 0 | 1 | 2, value: number) => {
+    const baseHalfExtents = selectedTransformEntity?.halfExtents;
+    if (!baseHalfExtents) {
+      return;
+    }
     const nextValue = clampDimension(value * 2) / 2;
-    applyCommittedWorldEdit((current) => {
-      if (!selected) return current;
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id && entity.halfExtents
-            ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
-            : entity
-        )),
-      };
-    });
-  }, [applyCommittedWorldEdit, selected]);
+    applyCommittedWorldEdit((current) => updateSelectedTargetHalfExtents(
+      current,
+      selected,
+      withAxis(baseHalfExtents, axis, nextValue),
+    ));
+  }, [applyCommittedWorldEdit, selected, selectedTransformEntity]);
 
   const updateSelectedHalfExtentsVector = useCallback((nextHalfExtents: Vec3) => {
     const clampedHalfExtents = nextHalfExtents.map((value) => clampDimension(value * 2) / 2) as Vec3;
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, halfExtents: clampedHalfExtents }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id && entity.halfExtents
-            ? { ...entity, halfExtents: clampedHalfExtents }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetHalfExtents(current, selected, clampedHalfExtents));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedRadius = useCallback((value: number) => {
@@ -884,14 +746,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       return;
     }
     const nextRadius = clampDimension(value);
-    applyCommittedWorldEdit((current) => ({
-      ...current,
-      dynamicEntities: current.dynamicEntities.map((entity) => (
-        entity.id === selected.id
-          ? { ...entity, radius: nextRadius }
-          : entity
-      )),
-    }));
+    applyCommittedWorldEdit((current) => updateSelectedTargetRadius(current, selected, nextRadius));
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedRadiusPreview = useCallback((value: number) => {
@@ -899,68 +754,17 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       return;
     }
     const nextRadius = clampDimension(value);
-    applyPreviewWorldEdit((current) => ({
-      ...current,
-      dynamicEntities: current.dynamicEntities.map((entity) => (
-        entity.id === selected.id
-          ? { ...entity, radius: nextRadius }
-          : entity
-      )),
-    }));
+    applyPreviewWorldEdit((current) => updateSelectedTargetRadius(current, selected, nextRadius));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
     const yawRadians = (yawDegrees * Math.PI) / 180;
     const nextRotation = quaternionFromYaw(yawRadians);
-    applyCommittedWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, rotation: nextRotation }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, rotation: nextRotation }
-            : entity
-        )),
-      };
-    });
+    applyCommittedWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedRotationQuaternion = useCallback((nextRotation: Quaternion) => {
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, rotation: nextRotation }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, rotation: nextRotation }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyPreviewWorldEdit, selected]);
 
   const canUndo = editHistory.undoStack.length > 0;
