@@ -266,6 +266,14 @@ pub trait WorldDocumentArena {
         rotation: [f32; 4],
     );
 
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    );
+
     fn rebuild_broad_phase(&mut self);
 }
 
@@ -332,6 +340,16 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
             position,
             rotation,
         );
+    }
+
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) {
+        crate::local_arena::PhysicsArena::spawn_destructible(self, id, kind, position, rotation);
     }
 
     fn rebuild_broad_phase(&mut self) {
@@ -599,6 +617,15 @@ impl WorldDocument {
         // folding them into the static rebuild path.
         arena.rebuild_broad_phase();
 
+        for destructible in &self.destructibles {
+            arena.spawn_destructible(
+                destructible.id,
+                destructible.kind,
+                destructible.position,
+                destructible.rotation,
+            );
+        }
+
         for entity in &self.dynamic_entities {
             let terrain_y = self.sample_heightfield_surface_at_world_position(
                 entity.position[0],
@@ -750,6 +777,33 @@ mod tests {
         let decoded: WorldDocument = serde_json::from_str(&json).expect("deserialize world");
         assert_eq!(decoded.version, WORLD_DOCUMENT_VERSION);
         assert_eq!(decoded.dynamic_entities.len(), world.dynamic_entities.len());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn instantiate_spawns_destructibles_into_local_preview_arena() {
+        let mut world = WorldDocument::demo();
+        world.destructibles = vec![
+            DestructibleDoc {
+                id: 2000,
+                kind: DestructibleKind::Wall,
+                position: [0.0, 0.0, 8.0],
+                rotation: identity_rotation(),
+            },
+            DestructibleDoc {
+                id: 2001,
+                kind: DestructibleKind::Tower,
+                position: [10.0, 0.5, -5.0],
+                rotation: identity_rotation(),
+            },
+        ];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate world with destructibles");
+
+        assert_eq!(arena.destructible_count(), world.destructibles.len());
     }
 
     #[test]

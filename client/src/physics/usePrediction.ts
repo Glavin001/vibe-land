@@ -68,72 +68,13 @@ export function usePredictionWithWorld(
       if (disposed) return;
 
       const sim = new WasmSimWorld();
-      // Flip the destructibles logging toggle BEFORE `loadWorldDocument`
-      // so the per-spawn `[destructibles] spawn ...` lines actually
-      // land in the console.  Otherwise the spawn calls happen inside
-      // `loadWorldDocument` and we silently miss them.
-      if (practiceMode) {
-        sim.setDestructiblesLogging(true);
-      }
       if (worldJson) {
         sim.loadWorldDocument(worldJson);
       } else if (!practiceMode) {
         sim.seedDemoTerrain();
       }
-      // One-time diagnostic so you can verify from DevTools that the
-      // Blast-enabled wasm is loaded and destructibles were spawned by
-      // `loadWorldDocument`.  If instanceCount is 0 in practice the dev
-      // server may be serving a stale bundle — restart `npm run dev`.
       if (practiceMode) {
-        const instanceCount = sim.getDestructibleInstanceCount();
-        const chunkCount = sim.getDestructibleChunkCount();
-        // eslint-disable-next-line no-console
-        console.info(
-          `[destructibles] practice sim initialised: instances=${instanceCount} chunks=${chunkCount}`,
-        );
-        // Drive one solver step so the chunk transforms buffer is
-        // populated (the buffer is rebuilt each `step` and is empty
-        // before the first call).
         sim.stepDestructibles();
-        // Dump aggregate chunk AABB so we can verify the chunks
-        // actually end up at the world coordinates we think they do
-        // (rules out "they're there, you just can't reach them" bugs).
-        const transforms = sim.getDestructibleChunkTransforms();
-        if (transforms.length > 0) {
-          const STRIDE = 11;
-          let minX = Infinity;
-          let minY = Infinity;
-          let minZ = Infinity;
-          let maxX = -Infinity;
-          let maxY = -Infinity;
-          let maxZ = -Infinity;
-          for (let i = 0; i < transforms.length; i += STRIDE) {
-            const x = transforms[i + 2];
-            const y = transforms[i + 3];
-            const z = transforms[i + 4];
-            if (x < minX) minX = x;
-            if (y < minY) minY = y;
-            if (z < minZ) minZ = z;
-            if (x > maxX) maxX = x;
-            if (y > maxY) maxY = y;
-            if (z > maxZ) maxZ = z;
-          }
-          // eslint-disable-next-line no-console
-          console.info(
-            `[destructibles] chunk AABB: min=(${minX.toFixed(2)}, ${minY.toFixed(2)}, ${minZ.toFixed(2)}) max=(${maxX.toFixed(2)}, ${maxY.toFixed(2)}, ${maxZ.toFixed(2)})`,
-          );
-        }
-        // Full Rapier-side breakdown: body types, collider count,
-        // sample collision groups / active hooks, world-space AABB.
-        // This lets us see whether the chunks are Dynamic vs Fixed,
-        // whether the sanitize helper actually cleared the
-        // `FILTER_CONTACT_PAIRS` hook, and whether the collision groups
-        // line up with what the player capsule's KCC filter accepts.
-        const describe = sim.describeDestructibles();
-        if (describe.length > 0) {
-          // eslint-disable-next-line no-console
-          console.info(describe.trimEnd());
-        }
       }
       // Spawn player at origin — will be repositioned on first server snapshot
       sim.spawnPlayer(0, 2, 0);
@@ -142,7 +83,9 @@ export function usePredictionWithWorld(
       const manager = new PredictionManager(sim, practiceMode);
       manager.enableTerrainWorld();
       managerRef.current = manager;
-      vehicleManagerRef.current = new VehiclePredictionManager(sim, practiceMode);
+      // Keep vehicle prediction active even in local preview so the render-side
+      // WASM sim stays in lockstep with destructible contacts and fractures.
+      vehicleManagerRef.current = new VehiclePredictionManager(sim, false);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
       simRef.current = sim;
 
@@ -165,15 +108,19 @@ export function usePredictionWithWorld(
       setReady(false);
       setRenderBlocks([]);
       const m = managerRef.current;
-      if (m) {
-        m.dispose();
-        managerRef.current = null;
-      }
-      vehicleManagerRef.current?.dispose();
+      const vehicleManager = vehicleManagerRef.current;
+      const dynamicBodyManager = dynamicBodyManagerRef.current;
+      const hadSim = simRef.current != null;
+      // Clear refs before freeing the shared WASM sim so any late packet
+      // callbacks observe "not ready" instead of calling into a freed pointer.
+      managerRef.current = null;
       vehicleManagerRef.current = null;
-      dynamicBodyManagerRef.current?.clear();
       dynamicBodyManagerRef.current = null;
       simRef.current = null;
+      void hadSim;
+      vehicleManager?.dispose();
+      dynamicBodyManager?.clear();
+      m?.dispose();
     };
   }, [practiceMode, worldJson]);
 
@@ -372,6 +319,10 @@ export function usePredictionWithWorld(
     return simRef.current?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
   }, []);
 
+  const describeDestructibles = useCallback((): string => {
+    return simRef.current?.describeDestructibles() ?? '';
+  }, []);
+
   const enterVehicle = useCallback((vehicleId: number, initState: NetVehicleState): void => {
     const vm = vehicleManagerRef.current;
     if (!vm) return;
@@ -437,7 +388,11 @@ export function usePredictionWithWorld(
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const dynamicManager = dynamicBodyManagerRef.current;
     if (!dynamicManager) return;
-    dynamicManager.syncAuthoritativeBodies(bodies);
+    try {
+      dynamicManager.syncAuthoritativeBodies(bodies);
+    } catch (error) {
+      console.warn('Dynamic body sync failed', error);
+    }
   }, []);
 
   const advanceDynamicBodies = useCallback((frameDeltaSec: number, allowProxyStep: boolean): void => {
@@ -676,6 +631,7 @@ export function usePredictionWithWorld(
     getDestructibleChunkCount,
     getDestructibleInstanceCount,
     drainDestructibleFractureEvents,
+    describeDestructibles,
   };
 }
 

@@ -54,9 +54,10 @@ import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } fr
  * `x ∈ [-10, 12], z ∈ [-10, 6]`), with a ball pit at
  * `x ∈ [8, 15], z ∈ [8, 15]`.  Positions below are chosen to sit in
  * the flat area a short drive from each vehicle, in their own empty
- * space (no overlap with the origin car, the second car at
- * `(8, 2, 0)`, the ball pit, or the hilly terrain outside the
- * plaza).
+ * space (no overlap with the second car at `(8, 2, 0)`, the ball pit,
+ * or the hilly terrain outside the plaza). The wall is intentionally
+ * placed straight ahead of the origin car so `/practice` browser
+ * verification can drive into it with a single forward input.
  *
  * Y values account for the scenario local geometry:
  *   - `build_wall_scenario` (WallOptions::default) spans 6m along
@@ -73,8 +74,8 @@ const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
   position: [number, number, number];
   rotation: [number, number, number, number];
 }> = [
-  // Wall: 6m NW of the origin vehicle — drive forward-left to hit.
-  { id: 2000, kind: 'wall', position: [-6, 0, -6], rotation: [0, 0, 0, 1] },
+  // Wall: 8m straight ahead of the origin vehicle — enter and drive forward.
+  { id: 2000, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
   // Tower: 5m N of the second vehicle at (8, *, 0) — drive forward to hit.
   { id: 2001, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
 ];
@@ -790,7 +791,6 @@ export function GameWorld({
 
     if (prediction.ready) {
       if (prediction.isInVehicle()) {
-        // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
         // Shared input bundling lives here for both modes. In local practice mode

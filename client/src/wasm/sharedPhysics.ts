@@ -114,6 +114,8 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   getDestructibleChunkCount(): number;
   getDestructibleInstanceCount(): number;
   drainDestructibleFractureEvents(): Uint32Array;
+  getDestructibleDebugState(): number[];
+  getDestructibleDebugConfig(): number[];
   setDestructiblesLogging(enabled: boolean): void;
   describeDestructibles(): string;
 };

@@ -8,4 +8,5 @@ debug*.log
 inspiration/
 loadtest-results/
 client/benchmark-results/
+client/test-results/
 third_party/

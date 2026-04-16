@@ -20,6 +20,11 @@ how that dependency is wired in and how to maintain it.
   instance, drives fractures from impact-driven contact forces via
   Rapier's `ChannelEventCollector`, and streams per-chunk transforms
   to the client every frame through `getDestructibleChunkTransforms`.
+- **Collision compatibility**: the upstream Blast Rapier wrapper tags
+  chunk colliders with pair-filter hooks for custom `PhysicsHooks`
+  callers. Vibe-land sanitizes those hooks at the integration boundary
+  so `/practice` uses normal Rapier contacts for player, ball, and
+  vehicle collisions while still keeping collision/contact-force events.
 
 ## Crate wiring
 
@@ -71,6 +76,10 @@ Blast stress solver via Rapier's `ChannelEventCollector`:
    quadratic falloff).
 4. **`drain_collision_events`** updates the support-contact tracker so
    statically-supported chunks don't separate under their own weight.
+5. **Chunk collider sanitization** clears Blast's
+   `FILTER_CONTACT_PAIRS` / `FILTER_INTERSECTION_PAIR` hooks after
+   spawn and after split migration so the default Vibe-land Rapier
+   pipelines do not silently veto chunk contacts.
 
 Force injection is gated by a minimum impact force (`500 N`) and
 partner velocity (`1.5 m/s`) to prevent resting bodies from slowly
@@ -84,6 +93,12 @@ would otherwise spawn fixed Blast colliders underneath the test
 vehicles. Practice destructibles are instead injected at runtime
 inside `client/src/scene/GameWorld.tsx` via `PRACTICE_DESTRUCTIBLES`
 when `isPracticeMode(mode)` is true.
+
+Current practice placement intentionally makes browser verification
+easy:
+
+- Wall: straight ahead of the origin vehicle at `(0, 0, 8)`
+- Tower: near the second vehicle at `(10, 0.5, -5)`
 
 ## Local build
 
@@ -113,6 +128,28 @@ make setup-wasm
 it regenerates `client/src/net/sharedConstants.ts`, ensures
 `wasm-pack` exists, and writes the output to
 `client/src/wasm/pkg/`.
+
+## Browser proof capture
+
+For local acceptance-proof videos against `/practice`, start the normal
+dev stack and then run:
+
+```bash
+cd server && cargo run
+# in another terminal
+cd client && npm run dev
+# in another terminal
+node scripts/record-practice-proof.mjs
+```
+
+The recording script reuses the Playwright dependency already present in
+`infra/webtransport-tests`, opens `http://localhost:3003/practice`,
+enters the origin vehicle, drives forward into the straight-ahead wall,
+and writes proof artifacts to `client/test-results/practice-proof/`:
+
+- `collision-block.webm`
+- `fracture-drive.webm`
+- per-run screenshots and captured `[destructibles] ...` console logs
 
 No post-processors, no wasm-binary patching, and no local PhysX clone
 or C++ toolchain are required. `shared/Cargo.toml` disables `wasm-opt`

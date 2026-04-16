@@ -715,6 +715,16 @@ impl WorldDocumentArena for PhysicsArena {
         PhysicsArena::spawn_vehicle_with_id(self, id, vehicle_type, position, rotation);
     }
 
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: vibe_land_shared::world_document::DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) {
+        let _ = (id, kind, position, rotation);
+    }
+
     fn rebuild_broad_phase(&mut self) {
         PhysicsArena::rebuild_broad_phase(self);
     }

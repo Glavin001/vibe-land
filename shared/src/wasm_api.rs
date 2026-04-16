@@ -314,6 +314,16 @@ impl WasmSimWorld {
             .into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = getDestructibleDebugState)]
+    pub fn get_destructible_debug_state(&self) -> Box<[f64]> {
+        self.destructibles.debug_state_slice().into()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugConfig)]
+    pub fn get_destructible_debug_config(&self) -> Box<[f64]> {
+        self.destructibles.debug_config_slice().into()
+    }
+
     /// Toggle verbose destructibles logging.  When enabled, the wasm
     /// backend prints `[destructibles] ...` lines on spawn, on every
     /// awake-chunk-count change, and on every fracture event.
