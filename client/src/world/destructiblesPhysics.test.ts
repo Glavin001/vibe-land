@@ -605,8 +605,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
   // The `/practice` route places destructibles at the coordinates in
   // `PRACTICE_DESTRUCTIBLES` inside `client/src/scene/GameWorld.tsx`:
   //
-  //   Wall:  id=2000 kind=wall  position=(-6, 0, -6)
-  //   Tower: id=2001 kind=tower position=(10, 0.5, -5)
+  //   Wall:  id=2000 kind=wall  position=(0, 0, 8)
+  //   Tower: id=2001 kind=tower position=(8, 0.5, 10)
   //
   // The tests above use origin-adjacent placements, which means a
   // translate-then-propagate bug in `spawn_scenario` could silently pass
@@ -615,8 +615,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
   // user hit in their browser.
   // ─────────────────────────────────────────────────────────────────────
   describe('practice-mode placement', () => {
-    const PRACTICE_WALL_POSITION: [number, number, number] = [-6, 0, -6];
-    const PRACTICE_TOWER_POSITION: [number, number, number] = [10, 0.5, -5];
+    const PRACTICE_WALL_POSITION: [number, number, number] = [0, 0, 8];
+    const PRACTICE_TOWER_POSITION: [number, number, number] = [8, 0.5, 10];
 
     function buildPracticeBase(): WorldDocument {
       const gridSize = 9;
@@ -687,23 +687,23 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       expect(towerAabb).toBeDefined();
 
       // Wall: default WallOptions → span=6 along +X, thickness ≈ 0.32
-      // along ±Z, height=3 along +Y.  Centered at X=-6, Z=-6, Y=0.
+      // along ±Z, height=3 along +Y.  Centered at X=0, Z=8, Y=0.
       // Chunk centroids span roughly:
-      //   x ∈ [-6-3, -6+3] = [-9, -3]
-      //   z ≈ -6 ± 0.16
-      expect(wallAabb!.min[0]).toBeLessThan(-5);
-      expect(wallAabb!.max[0]).toBeGreaterThan(-7);
-      expect(wallAabb!.min[2]).toBeLessThan(-5);
-      expect(wallAabb!.max[2]).toBeGreaterThan(-7);
-      // Must NOT be at origin.
+      //   x ∈ [-3, 3]
+      //   z ≈ 8 ± 0.16
+      expect(wallAabb!.min[0]).toBeLessThan(0);
+      expect(wallAabb!.max[0]).toBeGreaterThan(0);
+      expect(wallAabb!.min[2]).toBeLessThan(9);
+      expect(wallAabb!.max[2]).toBeGreaterThan(7);
+      // Must NOT be collapsed at world origin.
       expect(Math.abs(wallAabb!.min[0])).toBeGreaterThan(1);
       expect(Math.abs(wallAabb!.min[2])).toBeGreaterThan(1);
 
-      // Tower: centered at X=10, Z=-5.
-      expect(towerAabb!.min[0]).toBeGreaterThan(8);
-      expect(towerAabb!.max[0]).toBeLessThan(12);
-      expect(towerAabb!.min[2]).toBeGreaterThan(-7);
-      expect(towerAabb!.max[2]).toBeLessThan(-3);
+      // Tower: centered near X=8, Z=10.
+      expect(towerAabb!.min[0]).toBeGreaterThan(6);
+      expect(towerAabb!.max[0]).toBeLessThan(11);
+      expect(towerAabb!.min[2]).toBeGreaterThan(8);
+      expect(towerAabb!.max[2]).toBeLessThan(12);
 
       sim.free();
     });
@@ -743,75 +743,44 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       expect(tower).toBeDefined();
 
       // Wall default span=6 in X, thickness≈0.32 in Z, centred at
-      // (-6, *, -6).  AABB should roughly wrap
-      //   x ∈ [-9 ± pad, -3 ± pad]
-      //   z ∈ [-6.16 ± pad, -5.84 ± pad]
-      // Assert the AABB is centred near (-6, *, -6) and cannot reach
-      // origin (+/- 1m).
+      // (0, *, 8).
       const wallCentreX = (wall!.min[0] + wall!.max[0]) / 2;
       const wallCentreZ = (wall!.min[2] + wall!.max[2]) / 2;
-      expect(Math.abs(wallCentreX - -6)).toBeLessThan(0.5);
-      expect(Math.abs(wallCentreZ - -6)).toBeLessThan(0.5);
-      expect(wall!.max[0]).toBeLessThan(-2); // never reaches origin
-      expect(wall!.max[2]).toBeLessThan(-5); // never reaches origin
+      expect(Math.abs(wallCentreX - 0)).toBeLessThan(0.5);
+      expect(Math.abs(wallCentreZ - 8)).toBeLessThan(0.5);
+      expect(wall!.min[0]).toBeLessThan(0);
+      expect(wall!.max[0]).toBeGreaterThan(0);
 
-      // Tower centred at (10, *, -5).  AABB should wrap that.
+      // Tower centred near (8, *, 10).
       const towerCentreX = (tower!.min[0] + tower!.max[0]) / 2;
       const towerCentreZ = (tower!.min[2] + tower!.max[2]) / 2;
-      expect(Math.abs(towerCentreX - 10)).toBeLessThan(1.5);
-      expect(Math.abs(towerCentreZ - -5)).toBeLessThan(1.5);
-      expect(tower!.min[0]).toBeGreaterThan(8);
-      expect(tower!.max[2]).toBeLessThan(-3);
+      expect(Math.abs(towerCentreX - 8)).toBeLessThan(1.5);
+      expect(Math.abs(towerCentreZ - 10)).toBeLessThan(1.5);
+      expect(tower!.min[0]).toBeGreaterThan(6);
+      expect(tower!.min[2]).toBeGreaterThan(8);
 
       sim.free();
     });
 
     it('a player walking toward the practice wall is stopped before passing through', () => {
-      // Mirrors the exact practice placement to rule out any
-      // position-dependent bug: the production wall is centred at
-      // (-6, 0, -6).  Spawn the player near the +X side of the wall
-      // and walk them in -X towards it.  At yaw=-π/2 the player's
-      // forward direction is -X.  Assert the capsule can't push
-      // through past the wall's east face.
-      const sim = new WasmSimWorld();
-      sim.loadWorldDocument(serializeWorldDocument(buildPracticeBase()));
-      // Spawn player east of the wall, level with its Z.
-      sim.spawnPlayer(0, 2, -6);
-      sim.rebuildBroadPhase();
-      // Settle.
-      for (let t = 0; t < 10; t += 1) {
-        sim.tick(t, 0, 0, 0, 0, 0, 1 / 60);
-      }
-      // yaw = -π/2 → wish_dir ≈ (-1, 0, 0) in world space.
-      // `sim.tick(frame, buttons, dyaw, dpitch, yaw, pitch, dt)` —
-      // see WasmSimWorld in netcode.  We use dyaw to set absolute
-      // yaw via the mouse delta integrator, which isn't appropriate
-      // here.  Instead spawn player with `spawnPlayer` then rely on
-      // `setYaw`/`setPitch` if exposed, otherwise accept that the
-      // default yaw walks in +Z.  Fall back to walking in +Z from a
-      // shifted spawn so the wall at (-6, 0, -6) is straight ahead.
-      sim.free();
-
-      // Do the actual collision check with a spawn directly south of
-      // the wall at (-6, 2, -10), walking +Z so we drive towards
-      // (-6, *, -6).  This is the production geometry the user hits.
+      // Production wall is centred at (0, 0, 8).  Default yaw walks in +Z.
+      // Spawn south of the wall and walk forward into it.
       const sim2 = new WasmSimWorld();
       sim2.loadWorldDocument(serializeWorldDocument(buildPracticeBase()));
-      sim2.spawnPlayer(-6, 2, -10);
+      sim2.spawnPlayer(0, 2, 2);
       sim2.rebuildBroadPhase();
       for (let t = 0; t < 10; t += 1) {
         sim2.tick(t, 0, 0, 0, 0, 0, 1 / 60);
       }
-      let maxZ = -10;
+      let maxZ = 2;
       for (let t = 0; t < 300; t += 1) {
         const state = sim2.tick(10 + t, BTN_FORWARD, 0, 0, 0, 0, 1 / 60);
         const z = state[2];
         if (z > maxZ) maxZ = z;
       }
-      // Wall centre Z=-6, half thickness ≈ 0.16 → front face at z ≈ -6.16.
-      // Minus capsule radius ≈ 0.4 → capsule must stop at z ≤ -6.5.
-      // Generous upper bound rules out phasing.
-      expect(maxZ).toBeLessThan(-6.0);
+      // Wall centre Z=8, half thickness ≈ 0.16 → near face from below at z ≈ 7.84.
+      // Minus capsule radius ≈ 0.4 → capsule must stop well short of 8.
+      expect(maxZ).toBeLessThan(7.5);
       sim2.free();
     });
 
@@ -829,11 +798,11 @@ describe('Destructible scenarios (Blast stress solver)', () => {
 
       const sim = new WasmSimWorld();
       sim.loadWorldDocument(serializeWorldDocument(buildPracticeBase()));
-      // Drop the ball directly above the wall centre at (-6, *, -6).
+      // Drop the ball directly above the wall centre at (0, *, 8).
       sim.syncDynamicBody(
         BALL_ID, SHAPE_BALL,
         BALL_RADIUS, 0, 0,
-        -6, DROP_HEIGHT, -6,
+        0, DROP_HEIGHT, 8,
         0, 0, 0, 1,
         0, 0, 0,
         0, 0, 0,
@@ -863,7 +832,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     it('a ball dropped on the practice tower rests above the tower base', () => {
       // Same non-penetration probe but for the tower.  Default
       // TowerOptions produce a block roughly 2m×4m×2m placed at
-      // (10, 0.5, -5).  Drop above the top face.
+      // (8, 0.5, 10).  Drop above the top face.
       const SHAPE_BALL = 1;
       const BALL_ID = 9501;
       const BALL_RADIUS = 0.3;
@@ -875,7 +844,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       sim.syncDynamicBody(
         BALL_ID, SHAPE_BALL,
         BALL_RADIUS, 0, 0,
-        10, DROP_HEIGHT, -5,
+        8, DROP_HEIGHT, 10,
         0, 0, 0, 1,
         0, 0, 0,
         0, 0, 0,

@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion, Vector3};
 use rapier3d::prelude::{
-    ActiveEvents, CollisionEvent, CollisionEventFlags, ColliderHandle, ContactForceEvent,
-    ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType,
+    ActiveEvents, CollisionEvent, CollisionEventFlags, ColliderHandle, ContactForceEvent, Group,
+    ImpulseJointSet, InteractionGroups, MultibodyJointSet, RigidBodyHandle, RigidBodyType,
 };
 use wasm_bindgen::prelude::*;
 
@@ -30,6 +30,47 @@ use blast_stress_solver::scenarios::{
 use blast_stress_solver::types::{SolverSettings, Vec3 as BlastVec3};
 
 use crate::simulation::SimWorld;
+
+/// Collision groups for Blast chunk colliders must match static terrain in
+/// [`vibe_netcode::sim_world::SimWorld`]: membership `GROUP_1`, filter
+/// [`Group::all()`].  The upstream stress-solver scenarios use a narrower
+/// filter (often `GROUP_1` only).  That blocks the player capsule
+/// (`GROUP_3`) on the KCC obstacle query and lets vehicles / balls phase
+/// through when paired filters disagree.  Re-apply after spawn and after
+/// any fracture that adds colliders.
+fn destructible_chunk_collision_groups() -> InteractionGroups {
+    InteractionGroups::new(Group::GROUP_1, Group::all())
+}
+
+fn apply_destructible_groups_to_body(
+    sim: &mut SimWorld,
+    body: RigidBodyHandle,
+) {
+    let Some(rb) = sim.rigid_bodies.get(body) else {
+        return;
+    };
+    let collider_handles: Vec<ColliderHandle> = rb.colliders().to_vec();
+    let groups = destructible_chunk_collision_groups();
+    for ch in collider_handles {
+        if let Some(col) = sim.colliders.get_mut(ch) {
+            col.set_collision_groups(groups);
+        }
+        sim.modified_colliders.push(ch);
+    }
+}
+
+fn apply_destructible_groups_to_instance_bodies(sim: &mut SimWorld, inst: &DestructibleInstance) {
+    let mut seen: std::collections::HashSet<RigidBodyHandle> =
+        std::collections::HashSet::new();
+    for node_index in 0..inst.node_count {
+        if let Some(h) = inst.set.node_body(node_index) {
+            seen.insert(h);
+        }
+    }
+    for body in seen {
+        apply_destructible_groups_to_body(sim, body);
+    }
+}
 
 // Minimal `console.log` binding — avoids pulling in `web_sys` just for
 // a handful of diagnostic lines.  Calls are gated through
@@ -270,6 +311,9 @@ impl DestructibleRegistry {
                     let events = col.active_events() | ActiveEvents::CONTACT_FORCE_EVENTS;
                     col.set_active_events(events);
                     col.set_contact_force_event_threshold(0.0);
+                    // Match `SimWorld` static geometry (`GROUP_1` + filter all) so
+                    // KCC, vehicles, and dynamic props all collide with chunks.
+                    col.set_collision_groups(destructible_chunk_collision_groups());
                 }
             }
         }
@@ -406,6 +450,9 @@ impl DestructibleRegistry {
             // colliders still need their AABBs pushed into the
             // broad-phase BVH so contacts with them land this tick.
             if step_result.split_events > 0 || step_result.new_bodies > 0 {
+                // New split bodies inherit Blast's default groups — re-apply
+                // vibe-land groups before broad-phase sync.
+                apply_destructible_groups_to_instance_bodies(sim, instance);
                 sim.rigid_bodies
                     .propagate_modified_body_positions_to_colliders(&mut sim.colliders);
                 let mut touched: std::collections::HashSet<RigidBodyHandle> =

@@ -52,11 +52,10 @@ import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } fr
  * The trail world's practice spawn / vehicles cluster around
  * `(0..8, *, 0)` on flat terrain (`terrain Y ≈ 0` for roughly
  * `x ∈ [-10, 12], z ∈ [-10, 6]`), with a ball pit at
- * `x ∈ [8, 15], z ∈ [8, 15]`.  Positions below are chosen to sit in
- * the flat area a short drive from each vehicle, in their own empty
- * space (no overlap with the origin car, the second car at
- * `(8, 2, 0)`, the ball pit, or the hilly terrain outside the
- * plaza).
+ * `x ∈ [8, 15], z ∈ [8, 15]`.  The wall is placed on +Z directly ahead
+ * of the origin vehicle `(0, *, 0)` so you can drive straight into it;
+ * the tower sits beside the second vehicle lane without blocking the
+ * wall test.
  *
  * Y values account for the scenario local geometry:
  *   - `build_wall_scenario` (WallOptions::default) spans 6m along
@@ -73,10 +72,10 @@ const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
   position: [number, number, number];
   rotation: [number, number, number, number];
 }> = [
-  // Wall: 6m NW of the origin vehicle — drive forward-left to hit.
-  { id: 2000, kind: 'wall', position: [-6, 0, -6], rotation: [0, 0, 0, 1] },
-  // Tower: 5m N of the second vehicle at (8, *, 0) — drive forward to hit.
-  { id: 2001, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
+  // Wall: centered on X, several metres along +Z from the origin car — drive forward (W) to hit.
+  { id: 2000, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
+  // Tower: offset to the side of the wall run-up so it does not overlap the driving line.
+  { id: 2001, kind: 'tower', position: [8, 0.5, 10], rotation: [0, 0, 0, 1] },
 ];
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
