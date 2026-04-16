@@ -684,7 +684,10 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "0.0.0.0:4002".to_string())
         .parse()?;
     let wt_host = std::env::var("WT_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let wt_base_url = format!("https://{}:{}", wt_host, wt_addr.port());
+    let wt_base_url = std::env::var("WT_PUBLIC_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("https://{}:{}", wt_host, wt_addr.port()));
     let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))

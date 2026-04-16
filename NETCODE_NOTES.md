@@ -27,8 +27,9 @@ The browser first fetches `/session-config`, then opens a WebTransport session t
 Server env vars:
 
 - `BIND_ADDR` default `0.0.0.0:4001`
-- `WT_PORT` defaults to the HTTP port
-- `PUBLIC_WT_HOST` optional override for the externally visible host used in `/session-config`
+- `WT_BIND_ADDR` default `0.0.0.0:4002`
+- `WT_HOST` default `localhost`
+- `WT_PUBLIC_URL` optional override for the full externally visible WebTransport base URL used in `/session-config`
 
 ## Client controls
 
