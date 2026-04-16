@@ -93,10 +93,10 @@ Take an offscreen screenshot of the 3D world from a configurable camera viewpoin
 { preset: "isometric", tileX: 0, tileZ: 0 }
 
 // Perspective shot from a custom angle
-{ target: [0, 5, 0], distance: 80, elevationDeg: 30, azimuthDeg: 135, type: "perspective" }
+{ target: { x: 0, y: 5, z: 0 }, distance: 80, elevationDeg: 30, azimuthDeg: 135, type: "perspective" }
 
 // Zoomed orthographic overhead of an area
-{ target: [0, 0, 0], elevationDeg: 90, orthoWidth: 60 }
+{ target: { x: 0, y: 0, z: 0 }, elevationDeg: 90, orthoWidth: 60 }
 \`\`\`
 
 **Workflow tips:**

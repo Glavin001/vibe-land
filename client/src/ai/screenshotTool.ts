@@ -22,14 +22,14 @@ const captureSchema = z.object({
     .optional()
     .describe('Terrain tile grid Z to center on. Used with tileX to auto-target the tile center.'),
   target: z
-    .tuple([z.number(), z.number(), z.number()])
+    .object({ x: z.number(), y: z.number(), z: z.number() })
     .optional()
-    .describe('World-space look-at point [x, y, z]. Overridden by tileX/tileZ when both are provided.'),
+    .describe('World-space look-at point. Overridden by tileX/tileZ when both are provided.'),
   position: z
-    .tuple([z.number(), z.number(), z.number()])
+    .object({ x: z.number(), y: z.number(), z: z.number() })
     .optional()
     .describe(
-      'Explicit camera world position [x, y, z]. When provided, distance/elevationDeg/azimuthDeg are ignored.',
+      'Explicit camera world position. When provided, distance/elevationDeg/azimuthDeg are ignored.',
     ),
   distance: z
     .number()
@@ -128,7 +128,7 @@ function resolveConfig(
 
   // Camera position
   const position: [number, number, number] = input.position
-    ? input.position
+    ? [input.position.x, input.position.y, input.position.z]
     : sphericalToPosition(target, distance, elevationDeg, azimuthDeg);
 
   return { position, target, type: cameraType, fov, orthoWidth, width: outputWidth, height: outputHeight };
@@ -167,7 +167,9 @@ export function createCaptureScreenshotTool(
       }
 
       // Validate tile exists before computing its center
-      let target: [number, number, number] = input.target ?? [0, 0, 0];
+      let target: [number, number, number] = input.target
+        ? [input.target.x, input.target.y, input.target.z]
+        : [0, 0, 0];
       let tileWidth: number | undefined;
 
       if (input.tileX !== undefined && input.tileZ !== undefined) {
