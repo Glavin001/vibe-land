@@ -19,6 +19,7 @@ Or step by step:
 
 ```bash
 cp .env.example .env   # edit WT_HOST, cert paths, ports as needed
+                       # set WT_PUBLIC_URL when the public WebTransport URL differs from WT_BIND_ADDR
                        # set VITE_MULTIPLAYER_HTTP_ORIGIN only when the SPA points at a different multiplayer origin
 
 # Build the shared WASM module (required before running the client;
@@ -43,6 +44,7 @@ make server
 
 - Config is loaded from `.env` in the repo root.
 - Listens on TCP `SERVER_PORT` (default 4001) for WebSocket and UDP `WT_BIND_ADDR` (default 4002) for WebTransport.
+- `WT_PUBLIC_URL` optionally overrides the WebTransport URL advertised by `/session-config`; use it when the public host/port differs from the local bind address.
 - Health check: `curl http://localhost:4001/healthz`
 - Session config (WT URL + cert hash): `curl http://localhost:4001/session-config?match_id=default`
 
@@ -226,6 +228,13 @@ docker info     # should show "Storage Driver: vfs"
 ```
 
 The `--iptables=false` flag is important because most sandboxes can't manage netfilter rules. The compose file is configured to use host networking precisely so the resulting daemon (which has no working bridge NAT or embedded DNS) still routes container-to-container traffic via `localhost`.
+
+DNS / reverse proxy requirements:
+- Normal Cloudflare orange-cloud proxying does not work for this origin WebTransport setup. Use a `DNS only` record for the hostname returned by `/session-config`.
+- Cloudflare's proxied HTTPS port list is not enough here; the browser still needs direct QUIC/UDP reachability to the origin.
+- The simplest production layout is: website on whatever host you want, WebTransport advertised explicitly via `WT_PUBLIC_URL=https://your-host:4002`.
+- Using UDP `443` is valid, but if `TCP 443` is served by a different process or reverse proxy, an explicit WebTransport port such as `4002` is easier to reason about and debug.
+- The certificate loaded by `WT_CERT_PEM` / `WT_KEY_PEM` must be valid for the hostname advertised in `WT_PUBLIC_URL`.
 
 ### Non-obvious notes
 
