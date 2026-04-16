@@ -1,53 +1,88 @@
-const cardClass =
-  'flex-[1_1_280px] min-w-0 block no-underline text-inherit rounded-[20px] border border-[rgba(145,198,255,0.18)] bg-[linear-gradient(180deg,rgba(18,29,45,0.95)_0%,rgba(8,14,23,0.95)_100%)] p-6 transition-colors hover:border-[rgba(145,198,255,0.38)] hover:bg-[linear-gradient(180deg,rgba(22,36,56,0.95)_0%,rgba(10,18,30,0.95)_100%)]';
-
 interface CardProps {
   href: string;
   tag: string;
   title: string;
   description: string;
   note: string;
-  noteColor: string;
+  accentClass: string;
+  tagClass: string;
+  noteClass: string;
 }
 
-function NavCard({ href, tag, title, description, note, noteColor }: CardProps) {
+function NavCard({ href, tag, title, description, note, accentClass, tagClass, noteClass }: CardProps) {
   return (
-    <a href={href} className={cardClass}>
-      <div className="text-xs uppercase tracking-[0.18em] text-[#87d6ff] mb-2.5">{tag}</div>
-      <h2 className="m-0 text-[30px] font-semibold">{title}</h2>
-      <p className="my-3 text-[rgba(237,246,255,0.74)] leading-relaxed">{description}</p>
-      <div className={`text-sm ${noteColor}`}>{note}</div>
+    <a
+      href={href}
+      className={[
+        'block no-underline text-inherit rounded-2xl p-6',
+        'border border-white/[0.08]',
+        'border-t-2',
+        accentClass,
+        'bg-gradient-to-b from-white/[0.04] to-transparent',
+        'transition-all duration-200',
+        'hover:border-white/[0.16] hover:from-white/[0.07]',
+      ].join(' ')}
+    >
+      <div className={`font-mono text-[10px] uppercase tracking-[0.25em] mb-3 ${tagClass}`}>
+        {tag}
+      </div>
+      <h2 className="m-0 text-[22px] font-semibold leading-tight text-white/90 mb-2">
+        {title}
+      </h2>
+      <p className="text-sm leading-relaxed text-white/50 mt-2 mb-3">
+        {description}
+      </p>
+      <div className={`text-xs font-medium ${noteClass}`}>{note}</div>
     </a>
   );
 }
 
 export function HomePage() {
   return (
-    <div className="font-sans min-h-full flex items-center justify-center p-8 text-[#edf6ff] bg-[radial-gradient(circle_at_top,rgba(93,215,255,0.14),transparent_32%),linear-gradient(180deg,#08111d_0%,#04070d_100%)]">
-      <div className="w-full max-w-[1040px] bg-[rgba(6,12,20,0.86)] border border-[rgba(110,190,255,0.2)] rounded-[28px] shadow-[0_30px_90px_rgba(0,0,0,0.45)] p-10">
+    <div className="relative min-h-screen font-sans bg-[#050c16] text-[#edf6ff] flex items-center justify-center p-8 overflow-hidden">
 
-        {/* Header */}
-        <div className="mb-7">
-          <div className="tracking-[0.28em] text-xs uppercase text-[#79baf5]">
-            vibe-land
-          </div>
-          <h1 className="text-[clamp(44px,8vw,88px)] leading-[0.95] my-3 font-bold">
-            One build. Two ways to play.
+      {/* Ambient background glows */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[900px] h-[600px] rounded-full bg-sky-500/[0.07] blur-[120px]" />
+        <div className="absolute top-1/3 -right-32 w-[500px] h-[500px] rounded-full bg-cyan-600/[0.04] blur-[100px]" />
+        <div className="absolute bottom-0 left-0 w-[400px] h-[400px] rounded-full bg-indigo-600/[0.03] blur-[80px]" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-[1040px]">
+
+        {/* Eyebrow */}
+        <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.35em] text-sky-500/50 mb-10">
+          <span className="w-8 h-px bg-sky-500/30" />
+          vibe-land
+          <span className="w-8 h-px bg-sky-500/30" />
+        </div>
+
+        {/* Hero */}
+        <div className="mb-10">
+          <h1 className="text-[clamp(44px,8vw,88px)] font-black leading-[0.9] tracking-tight mb-5">
+            One build.
+            <br />
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-cyan-300 to-teal-300">
+              Two ways to play.
+            </span>
           </h1>
-          <p className="max-w-[760px] text-lg leading-relaxed text-[rgba(237,246,255,0.74)]">
-            Multiplayer and the firing range now ship in the same web app. Use direct links for fast entry, or start here.
+          <p className="max-w-[600px] text-base leading-relaxed text-white/45">
+            Multiplayer and the firing range now ship in the same web app.
+            Use direct links for fast entry, or start here.
           </p>
         </div>
 
-        {/* Mode cards */}
-        <div className="flex flex-wrap gap-[18px] mb-[18px]">
+        {/* Mode cards — 3 columns */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mb-3.5">
           <NavCard
             href="/play"
             tag="/play"
             title="Multiplayer"
             description="Join the networked game. WebTransport is preferred, with WebSocket fallback when needed."
             note="Best when the game backend is reachable from this browser."
-            noteColor="text-[#fff5b1]"
+            accentClass="border-t-sky-400"
+            tagClass="text-sky-400/60"
+            noteClass="text-yellow-300/70"
           />
           <NavCard
             href="/practice"
@@ -55,7 +90,9 @@ export function HomePage() {
             title="Firing Range"
             description="Run the local WASM simulation in-browser with no Rust server required. This is the current single-player mode."
             note="Works offline after assets are cached."
-            noteColor="text-[#b9ffc3]"
+            accentClass="border-t-emerald-400"
+            tagClass="text-emerald-400/60"
+            noteClass="text-emerald-300/75"
           />
           <NavCard
             href="/builder/world"
@@ -63,23 +100,37 @@ export function HomePage() {
             title="World Builder"
             description="Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document."
             note="Browser-local authoring with JSON import and export."
-            noteColor="text-[#ffe0a2]"
+            accentClass="border-t-amber-400"
+            tagClass="text-amber-400/60"
+            noteClass="text-amber-300/70"
           />
+        </div>
+
+        {/* Gallery — full width */}
+        <div className="mb-10">
           <NavCard
             href="/gallery"
             tag="/gallery"
             title="Gallery"
             description="Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker."
             note="Available when the deployment has Cloudflare R2 configured."
-            noteColor="text-[#cdb1ff]"
+            accentClass="border-t-violet-400"
+            tagClass="text-violet-400/60"
+            noteClass="text-violet-300/70"
           />
         </div>
 
-        {/* Footer links */}
-        <div className="flex flex-wrap gap-3 text-sm text-[rgba(237,246,255,0.62)]">
-          <a href="/stats" className="text-[#9cd4ff] hover:text-[#c4e8ff] transition-colors">Server stats</a>
-          <a href="/loadtest" className="text-[#9cd4ff] hover:text-[#c4e8ff] transition-colors">Load test</a>
+        {/* Footer */}
+        <div className="flex items-center gap-4 font-mono text-xs text-white/25">
+          <a href="/stats" className="hover:text-sky-400/70 transition-colors duration-200">
+            server stats
+          </a>
+          <span>·</span>
+          <a href="/loadtest" className="hover:text-sky-400/70 transition-colors duration-200">
+            load test
+          </a>
         </div>
+
       </div>
     </div>
   );
