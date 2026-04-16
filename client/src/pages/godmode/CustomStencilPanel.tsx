@@ -46,8 +46,6 @@ const CustomSliderNumberWidget = (props: WidgetProps) => {
     }
   };
 
-  const displayValue = typeof value === 'number' ? value.toFixed(2) : '0.00';
-
   return (
     <div style={sliderContainerStyle}>
       <style>{`
@@ -172,13 +170,6 @@ const descriptionStyle: CSSProperties = {
   lineHeight: 1.5,
   padding: '10px 0',
   borderBottom: '1px solid rgba(167, 208, 237, 0.1)',
-};
-
-const formSectionStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 14,
-  padding: '12px 0',
 };
 
 const formFieldStyle: CSSProperties = {
