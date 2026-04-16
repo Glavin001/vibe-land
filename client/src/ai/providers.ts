@@ -6,15 +6,44 @@ import { createOpenAI } from '@ai-sdk/openai';
 export type ProviderId = 'openai' | 'anthropic' | 'google';
 
 // NOTE: model IDs drift over time. These are sensible defaults that the
-// user can override at runtime via the chat settings UI.
+// user can override at runtime via the chat settings UI (any string is
+// accepted — this list is just for convenience).
 export const MODELS: Record<ProviderId, string[]> = {
-  openai: ['gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-4.1', 'gpt-4.1-mini'],
+  openai: [
+    'gpt-5.4',
+    'gpt-5.4-pro',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+    'gpt-5.2',
+    'gpt-5.2-pro',
+    'gpt-5.1',
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4.1-nano',
+    'o3',
+    'o3-mini',
+  ],
   anthropic: [
     'claude-opus-4-6',
     'claude-sonnet-4-6',
-    'claude-haiku-4-5-20251001',
+    'claude-opus-4-5',
+    'claude-sonnet-4-5',
+    'claude-opus-4-1',
+    'claude-sonnet-4-0',
+    'claude-haiku-4-5',
   ],
-  google: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  google: [
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-flash-image-preview',
+    'gemini-3-pro-preview',
+    'gemini-3-flash-preview',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+  ],
 };
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
