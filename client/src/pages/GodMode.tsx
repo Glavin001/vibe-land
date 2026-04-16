@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
-import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
+import { Sky, TransformControls } from '@react-three/drei';
 import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
@@ -56,6 +56,7 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { GodModeCameraControls } from './godmode/GodModeCameraControls';
 import { CustomStencilPanel } from './godmode/CustomStencilPanel';
 import { CustomStencilPreview } from './godmode/CustomStencilPreview';
 import { useHumanEditTracker } from './godmode/useHumanEditTracker';
@@ -1420,6 +1421,8 @@ function GodModeEditorScene({
 
   const handleTerrainPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
+    // Middle/right clicks are for camera navigation; Alt+click is for orbit retargeting
+    if (event.button !== 0 || event.altKey) return;
     const nextPoint: Vec3 = [event.point.x, event.point.y, event.point.z];
     terrainPointerRef.current = nextPoint;
     const tileX = event.object.userData?.terrainTileX;
@@ -1633,6 +1636,7 @@ function GodModeEditorScene({
               rotation-x={-Math.PI / 2}
               onPointerDown={(event) => {
                 event.stopPropagation();
+                if (event.button !== 0 || event.altKey) return;
                 onAddTile(tile.tileX, tile.tileZ);
               }}
             >
@@ -1703,6 +1707,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.button !== 0 || event.altKey) return;
               onSelect({ kind: 'static', id: entity.id });
             }}
           >
@@ -1720,6 +1725,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.button !== 0 || event.altKey) return;
               onSelect({ kind: 'dynamic', id: entity.id });
             }}
           >
@@ -1764,7 +1770,7 @@ function GodModeEditorScene({
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
         </mesh>
       )}
-      <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
+      <GodModeCameraControls tool={tool} />
     </Canvas>
   );
 }
@@ -1786,6 +1792,7 @@ function FloatingTileActionButton({
       <mesh
         onPointerDown={(event) => {
           event.stopPropagation();
+          if (event.button !== 0 || event.altKey) return;
           if (!disabled) {
             onClick();
           }
