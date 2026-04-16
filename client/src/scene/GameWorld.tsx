@@ -65,7 +65,6 @@ const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
 const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
 const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
 const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
-
 type FrameDebugCallback = (
   frameTimeMs: number,
   rendererInfo: { render: { calls: number; triangles: number }; memory: { geometries: number; textures: number } },

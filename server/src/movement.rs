@@ -194,33 +194,35 @@ impl PhysicsArena {
             return None;
         }
 
-        let Some(state) = self.players.get_mut(&player_id) else {
-            return None;
+        let mut tick_result = {
+            let Some(state) = self.players.get_mut(&player_id) else {
+                return None;
+            };
+            if state.dead {
+                state.last_input = InputCmd::default();
+                state.velocity = Vec3d::zeros();
+                return None;
+            }
+            state.last_input = input.clone();
+            let mut tick_result = simulate_player_tick_with_mode(
+                &self.dynamic.sim,
+                state.collider,
+                &mut state.position,
+                &mut state.velocity,
+                &mut state.yaw,
+                &mut state.pitch,
+                &mut state.on_ground,
+                input,
+                dt,
+                self.player_kcc_mode,
+            );
+            let sync_started = Instant::now();
+            self.dynamic
+                .sim
+                .sync_player_collider(state.collider, &state.position);
+            tick_result.timings.collider_sync_ms = sync_started.elapsed().as_secs_f32() * 1000.0;
+            tick_result
         };
-        if state.dead {
-            state.last_input = InputCmd::default();
-            state.velocity = Vec3d::zeros();
-            return None;
-        }
-        state.last_input = input.clone();
-
-        let mut tick_result = simulate_player_tick_with_mode(
-            &self.dynamic.sim,
-            state.collider,
-            &mut state.position,
-            &mut state.velocity,
-            &mut state.yaw,
-            &mut state.pitch,
-            &mut state.on_ground,
-            input,
-            dt,
-            self.player_kcc_mode,
-        );
-        let sync_started = Instant::now();
-        self.dynamic
-            .sim
-            .sync_player_collider(state.collider, &state.position);
-        tick_result.timings.collider_sync_ms = sync_started.elapsed().as_secs_f32() * 1000.0;
 
         let impulse_started = Instant::now();
         let mut impulses_applied_count = 0usize;
