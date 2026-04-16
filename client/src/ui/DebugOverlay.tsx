@@ -400,6 +400,7 @@ export function DebugOverlay({
 
   return (
     <div
+      data-testid="debug-overlay"
       style={{
         position: 'absolute',
         top: 8,

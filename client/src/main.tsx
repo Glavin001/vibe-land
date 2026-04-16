@@ -6,6 +6,10 @@ import { HomePage } from './pages/Home';
 import { ServerStats } from './pages/ServerStats';
 import { GodModePage } from './pages/GodMode';
 
+// E2E bridge: always-on read-only introspection for Playwright tests.
+// Importing the module installs window.__VIBE_E2E__ immediately.
+import './e2eBridge';
+
 const root = createRoot(document.getElementById('root')!);
 const route = resolveAppRoute(window.location.pathname);
 

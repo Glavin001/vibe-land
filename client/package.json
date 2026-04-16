@@ -25,7 +25,10 @@
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
     "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local",
     "benchmark:strict": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite strict --environment local",
-    "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts"
+    "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts",
+    "e2e": "npx playwright test --config e2e/playwright.config.ts",
+    "e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed",
+    "e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui"
   },
   "dependencies": {
     "@react-three/drei": "^9.117.0",
@@ -35,6 +38,7 @@
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/three": "^0.170.0",

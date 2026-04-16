@@ -31,6 +31,7 @@ import {
   hasStoredInputSettings,
   updateInputSettings,
 } from './input/inputSettingsStore';
+import { updateE2EBridgeAppState } from './e2eBridge';
 
 type AppProps = {
   mode: GameMode;
@@ -180,6 +181,19 @@ export function App({
   // While the wizard is open, render a deliberately-empty flat world so
   // drill targets aren't fighting terrain or props for visibility.
   const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : worldDocument;
+
+  // E2E bridge: keep App-level state in sync for snapshot reads.
+  useEffect(() => {
+    updateE2EBridgeAppState({
+      route: window.location.pathname,
+      mode: practiceMode ? 'practice' : 'multiplayer',
+      matchId: multiplayerMatchId,
+      connected,
+      statusText: status,
+      playerId,
+      debugOverlayVisible: debugVisible,
+    });
+  }, [practiceMode, multiplayerMatchId, connected, status, playerId, debugVisible]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -505,6 +519,7 @@ export function App({
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
       {clickToJoinVisible && (
         <div
+          data-testid="join-overlay"
           style={{
             position: 'absolute',
             inset: 0,
@@ -529,6 +544,7 @@ export function App({
         </div>
       )}
       <div
+        data-testid="status-banner"
         style={{
           position: 'absolute',
           top: 8,
