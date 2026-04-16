@@ -67,10 +67,16 @@ export function usePredictionWithWorld(
     initSharedPhysics().then(() => {
       if (disposed) return;
 
+      if (practiceMode) {
+        setRenderBlocks([]);
+        setReady(true);
+        return;
+      }
+
       const sim = new WasmSimWorld();
       if (worldJson) {
         sim.loadWorldDocument(worldJson);
-      } else if (!practiceMode) {
+      } else {
         sim.seedDemoTerrain();
       }
       // Spawn player at origin — will be repositioned on first server snapshot

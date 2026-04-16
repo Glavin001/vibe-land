@@ -9,6 +9,7 @@ use crate::{
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
+    vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
@@ -359,6 +360,25 @@ impl LocalPreviewSession {
 
     pub fn vehicle_states(&self) -> Vec<NetVehicleState> {
         self.arena.snapshot_vehicles()
+    }
+
+    pub fn cast_scene_ray(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_toi: f32,
+    ) -> Option<f32> {
+        self.arena
+            .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
+    }
+
+    pub fn vehicle_debug(&self, vehicle_id: u32) -> Option<VehicleDebugSnapshot> {
+        let vehicle = self.arena.vehicles.get(&vehicle_id)?;
+        read_vehicle_debug_snapshot(
+            &self.arena.dynamic.sim,
+            vehicle.chassis_body,
+            &vehicle.controller,
+        )
     }
 }
 

@@ -1474,6 +1474,62 @@ impl WasmLocalSession {
         out.into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = castSceneRay)]
+    pub fn cast_scene_ray(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        max_toi: f32,
+    ) -> Box<[f32]> {
+        match self.inner.cast_scene_ray([ox, oy, oz], [dx, dy, dz], max_toi) {
+            Some(toi) => Box::new([toi]),
+            None => Box::new([]),
+        }
+    }
+
+    #[wasm_bindgen(js_name = getVehicleDebug)]
+    pub fn get_vehicle_debug(&self, vehicle_id: u32) -> Box<[f64]> {
+        let Some(debug) = self.inner.vehicle_debug(vehicle_id) else {
+            return Box::new([]);
+        };
+        let mut out = Vec::with_capacity(64);
+        out.push(debug.speed as f64);
+        out.push(debug.grounded_wheels as f64);
+        out.push(debug.steering as f64);
+        out.push(debug.engine_force as f64);
+        out.push(debug.brake as f64);
+        out.push(debug.linear_velocity[0] as f64);
+        out.push(debug.linear_velocity[1] as f64);
+        out.push(debug.linear_velocity[2] as f64);
+        out.push(debug.angular_velocity[0] as f64);
+        out.push(debug.angular_velocity[1] as f64);
+        out.push(debug.angular_velocity[2] as f64);
+        out.push(debug.wheel_contact_bits as f64);
+        out.extend(debug.suspension_lengths.into_iter().map(|v| v as f64));
+        out.extend(debug.suspension_forces.into_iter().map(|v| v as f64));
+        out.extend(
+            debug
+                .suspension_relative_velocities
+                .into_iter()
+                .map(|v| v as f64),
+        );
+        for point in debug.wheel_hard_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for point in debug.wheel_contact_points {
+            out.extend(point.into_iter().map(|v| v as f64));
+        }
+        for normal in debug.wheel_contact_normals {
+            out.extend(normal.into_iter().map(|v| v as f64));
+        }
+        out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
+        out.into_boxed_slice()
+    }
+
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()

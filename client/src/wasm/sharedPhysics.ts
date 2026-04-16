@@ -157,6 +157,16 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   getLocalPlayerState(): number[];
   getDynamicBodyStates(): number[];
   getVehicleStates(): number[];
+  castSceneRay(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxToi: number,
+  ): number[];
+  getVehicleDebug(vehicleId: number): number[];
 };
 
 type WasmLocalSessionCtor = {

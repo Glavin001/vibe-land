@@ -184,6 +184,10 @@ export function useDebugStats() {
   const deepCaptureEnabledRef = useRef(false);
   const deepCaptureSamplesRef = useRef<VehicleDeepCaptureSample[]>([]);
 
+  const isLocalTransport = useCallback((transport: string): boolean => (
+    transport === 'local' || transport === 'local-preview'
+  ), []);
+
   // F3 toggle
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -455,10 +459,14 @@ export function useDebugStats() {
     while (snaps.length > 0 && snaps[0] < now - 1000) snaps.shift();
     const snapshotsPerSec = snaps.length;
 
-    // Jitter: std dev of inter-arrival intervals (in ms)
+    const localTransport = isLocalTransport(network.transport);
+
+    // Jitter: std dev of inter-arrival intervals (in ms). For `/practice`,
+    // snapshot cadence comes from the local browser Rust authority, so any
+    // variance here is just timer scheduling noise rather than network jitter.
     const intervals = snapshotIntervals.current;
     let jitterMs = 0;
-    if (intervals.length >= 2) {
+    if (!localTransport && intervals.length >= 2) {
       const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
       const variance = intervals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / intervals.length;
       jitterMs = Math.sqrt(variance);
@@ -480,11 +488,11 @@ export function useDebugStats() {
     s.geometries = rendererInfo.memory.geometries;
     s.textures = rendererInfo.memory.textures;
     s.transport = network.transport;
-    s.pingMs = network.pingMs;
+    s.pingMs = localTransport ? 0 : network.pingMs;
     s.serverTick = network.serverTick;
-    s.interpolationDelayMs = network.interpolationDelayMs;
-    s.dynamicBodyInterpolationDelayMs = network.dynamicBodyInterpolationDelayMs;
-    s.clockOffsetUs = network.clockOffsetUs;
+    s.interpolationDelayMs = localTransport ? 0 : network.interpolationDelayMs;
+    s.dynamicBodyInterpolationDelayMs = localTransport ? 0 : network.dynamicBodyInterpolationDelayMs;
+    s.clockOffsetUs = localTransport ? 0 : network.clockOffsetUs;
     s.remotePlayers = network.remotePlayers;
     s.snapshotsPerSec = snapshotsPerSec;
     s.jitterMs = jitterMs;

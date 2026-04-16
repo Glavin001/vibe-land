@@ -8,7 +8,9 @@ import type { InputBindings } from '../input/bindings';
 import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
+import { LocalPracticeClient } from '../net/localPracticeClient';
 import { usePredictionWithWorld } from '../physics/usePrediction';
+import { buildInputFromState } from './inputBuilder';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -36,6 +38,7 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import { netPlayerStateToMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
@@ -69,6 +72,8 @@ const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
+const LOCAL_INPUT_FIXED_DT = 1 / 60;
+const LOCAL_INPUT_MAX_CATCHUP_STEPS = 4;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -981,7 +986,7 @@ export function GameWorld({
     onWelcome,
     onDisconnect,
     practiceMode ? worldJson : undefined,
-    prediction.ready
+    !practiceMode && prediction.ready
       ? (ackInputSeq, state) => {
           // Sync dynamic bodies BEFORE reconciliation so that input replay
           // collides with the correct (same-tick) collider positions.
@@ -1003,7 +1008,7 @@ export function GameWorld({
         onSnapshotRef.current?.();
       }
     },
-    prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
+    !practiceMode && prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
       prediction.reconcileVehicle(vs, ackInputSeq);
     } : undefined,
   );
@@ -1023,6 +1028,8 @@ export function GameWorld({
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  const localInputAccumulatorRef = useRef(0);
+  const localNextSeqRef = useRef(1);
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -1163,6 +1170,11 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
 
+  useEffect(() => {
+    localInputAccumulatorRef.current = 0;
+    localNextSeqRef.current = 1;
+  }, [practiceMode, worldJson, ready]);
+
   useFrame((_frameState, delta) => {
     if (!ready) return;
     const state = stateRef.current;
@@ -1171,10 +1183,16 @@ export function GameWorld({
     const frameDelta = Math.min((now - lastFrameTime.current) / 1000, 0.1);
     lastFrameTime.current = now;
     const client = clientRef.current;
-    const localPreviewTransport = client?.transport === 'local-preview';
+    const localPracticeClient = client instanceof LocalPracticeClient ? client : null;
+    const localAuthorityTransport = client?.transport === 'local' || client?.transport === 'local-preview';
     const localFlags = client?.localPlayerFlags ?? 0;
+    const localPlayerStateMeters = practiceMode && localPracticeClient?.currentLocalPlayerState
+      ? netPlayerStateToMeters(localPracticeClient.currentLocalPlayerState)
+      : null;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
-    const drivenVehicleId = prediction.getDrivenVehicleId();
+    const drivenVehicleId = practiceMode
+      ? (localPracticeClient?.currentLocalVehicleState?.id ?? null)
+      : prediction.getDrivenVehicleId();
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
     const localVehicleRenderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
     const localVehicleNowTimeUs = client?.serverClock.serverNowUs();
@@ -1184,9 +1202,13 @@ export function GameWorld({
     const localVehicleAuthoritativeNowSample = client && drivenVehicleId != null && localVehicleNowTimeUs != null
       ? client.sampleRemoteVehicle(drivenVehicleId, localVehicleNowTimeUs)
       : null;
-    const predictedVehiclePose = prediction.isInVehicle() ? prediction.getVehiclePose() : null;
-    const localVehicleDebug = drivenVehicleId != null ? prediction.getLocalVehicleDebug(drivenVehicleId) : null;
-    const localControlledVehiclePose = localPreviewTransport
+    const predictedVehiclePose = !practiceMode && prediction.isInVehicle() ? prediction.getVehiclePose() : null;
+    const localVehicleDebug = drivenVehicleId != null
+      ? (practiceMode
+        ? localPracticeClient?.getVehicleDebug(drivenVehicleId) ?? null
+        : prediction.getLocalVehicleDebug(drivenVehicleId))
+      : null;
+    const localControlledVehiclePose = localAuthorityTransport
       ? (localVehicleAuthoritativeSample
         ? {
             position: localVehicleAuthoritativeSample.position,
@@ -1243,7 +1265,7 @@ export function GameWorld({
         frameDelta,
         localVehicleDebug?.speedMs ?? 0,
         localVehicleDebug?.groundedWheels ?? 0,
-        localPreviewTransport ? 'practice' : 'multiplayer',
+        localAuthorityTransport ? 'practice' : 'multiplayer',
       );
       localVehicleVisualPose = result.pose;
       localVehicleMeshDeltaM = result.metrics.positionDeltaM;
@@ -1251,7 +1273,7 @@ export function GameWorld({
     } else {
       resetLocalVehicleMeshPose(localVehicleVisualPoseRef.current);
     }
-    const isMultiplayerLocalVehicle = !localPreviewTransport && predictedVehiclePose != null && drivenVehicleId != null;
+    const isMultiplayerLocalVehicle = !localAuthorityTransport && predictedVehiclePose != null && drivenVehicleId != null;
     const multiplayerVehiclePose = isMultiplayerLocalVehicle ? localControlledVehiclePose : null;
     if (multiplayerVehiclePose && drivenVehicleId != null) {
       const rawJitterState = localVehicleRawJitterStateRef.current;
@@ -1533,7 +1555,9 @@ export function GameWorld({
       localVehicleMeshMotionStateRef.current.vehicleId = null;
       localVehicleCameraMotionStateRef.current.vehicleId = null;
     }
-    const isDrivingNow = prediction.isInVehicle();
+    const isDrivingNow = practiceMode
+      ? (((localFlags & FLAG_IN_VEHICLE) !== 0) || drivenVehicleId != null)
+      : prediction.isInVehicle();
     const pointerLocked = document.pointerLockElement === gl.domElement;
     const inputSample = inputManagerRef.current?.sample(
       frameDelta,
@@ -1544,8 +1568,38 @@ export function GameWorld({
     )
       ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
     onInputFrameRef.current?.(inputSample);
-    prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
-    const physStats = prediction.getDebugStats();
+    if (!practiceMode) {
+      prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
+    }
+    const physStats = practiceMode
+      ? {
+          pendingInputs: 0,
+          predictionTicks: 0,
+          playerCorrectionMagnitude: 0,
+          vehicleCorrectionMagnitude: 0,
+          dynamicGlobalMaxCorrectionMagnitude: 0,
+          dynamicNearPlayerMaxCorrectionMagnitude: 0,
+          dynamicInteractiveMaxCorrectionMagnitude: 0,
+          dynamicOverThresholdCount: 0,
+          dynamicTrackedBodies: state.dynamicBodies.size,
+          dynamicInteractiveBodies: 0,
+          lastDynamicShotBodyId: 0,
+          lastDynamicShotAgeMs: -1,
+          vehiclePendingInputs: 0,
+          vehicleAckSeq: localPracticeClient?.currentAckInputSeq ?? 0,
+          vehicleLatestLocalSeq: localNextSeqRef.current & 0xffff,
+          vehiclePendingInputsAgeMs: 0,
+          vehicleAckBacklogMs: 0,
+          vehicleResendWindow: 0,
+          vehicleReplayErrorM: 0,
+          vehiclePosErrorM: 0,
+          vehicleVelErrorMs: 0,
+          vehicleRotErrorRad: 0,
+          vehicleCorrectionAgeMs: -1,
+          physicsStepMs: 0,
+          velocity: (localPlayerStateMeters?.velocity ?? [0, 0, 0]) as [number, number, number],
+        }
+      : prediction.getDebugStats();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -1590,7 +1644,7 @@ export function GameWorld({
         )
       : botAutopilotEnabled
         ? (() => {
-          const localPosition = prediction.getPosition() ?? state.localPosition;
+          const localPosition = (practiceMode ? null : prediction.getPosition()) ?? state.localPosition;
           const localState = {
             position: localPosition,
             velocity: physStats.velocity,
@@ -1626,7 +1680,7 @@ export function GameWorld({
       : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
 
     // --- Vehicle spawn/despawn sync ---
-    if (client && prediction.ready) {
+    if (client && prediction.ready && !practiceMode) {
       const serverVehicles = client.vehicles;
       // Spawn newly seen vehicles into WASM
       for (const [id, vs] of serverVehicles) {
@@ -1653,7 +1707,7 @@ export function GameWorld({
         if (prediction.isInVehicle() && prediction.getDrivenVehicleId() === id) {
           continue;
         }
-        const sample = localPreviewTransport
+        const sample = localAuthorityTransport
           ? null
           : client.sampleRemoteVehicle(id, remoteVehicleRenderTimeUs);
         const position = sample?.position ?? vs.position;
@@ -1677,7 +1731,9 @@ export function GameWorld({
       if (isDrivingNow) {
         // Exit current vehicle
         const vehiclePose = prediction.getVehiclePose();
-        prediction.exitVehicle();
+        if (!practiceMode) {
+          prediction.exitVehicle();
+        }
         void vehiclePose; // suppress unused warning
         // Notify server — find which vehicle we're in
         if (client) {
@@ -1713,7 +1769,9 @@ export function GameWorld({
             vehicleType: vs.vehicleType ?? 0,
             flags: vs.flags ?? 0,
           };
-          prediction.enterVehicle(vehicleId, initState);
+          if (!practiceMode) {
+            prediction.enterVehicle(vehicleId, initState);
+          }
           sendVehicleEnter(vehicleId, 0);
           // Snap smooth camera to initial vehicle position to avoid lerp-in from player pos
           smoothCamPos.current.set(vs.position[0], vs.position[1] + 2.5, vs.position[2] - 6);
@@ -1725,14 +1783,30 @@ export function GameWorld({
       }
     }
 
-    if (prediction.ready) {
+    if (practiceMode && client) {
+      localInputAccumulatorRef.current += frameDelta;
+      const bundledInputs: Array<ReturnType<typeof buildInputFromState>> = [];
+      let steps = 0;
+      while (localInputAccumulatorRef.current >= LOCAL_INPUT_FIXED_DT && steps < LOCAL_INPUT_MAX_CATCHUP_STEPS) {
+        const seq = localNextSeqRef.current++ & 0xffff;
+        bundledInputs.push(buildInputFromState(seq, 0, resolvedInput));
+        localInputAccumulatorRef.current -= LOCAL_INPUT_FIXED_DT;
+        steps += 1;
+      }
+      if (localInputAccumulatorRef.current > LOCAL_INPUT_FIXED_DT) {
+        localInputAccumulatorRef.current = LOCAL_INPUT_FIXED_DT;
+      }
+      if (bundledInputs.length > 0) {
+        sendInputs(bundledInputs);
+      }
+    } else if (prediction.ready) {
       if (prediction.isInVehicle()) {
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
       } else {
-        // Shared input bundling lives here for both modes. In local practice mode
-        // the loopback session remains authoritative, but the client predicts and
-        // reconciles the local player so high-refresh rendering stays smooth.
+        // Shared input bundling lives here for both modes. In practice mode the
+        // browser-side Rust session is authoritative; the client bundles inputs
+        // but does not advance a second local KCC simulation.
         prediction.update(frameDelta, resolvedInput, sendInputs);
       }
     }
@@ -1750,11 +1824,13 @@ export function GameWorld({
         nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
-        const sceneHit = prediction.raycastScene(
-          aimOrigin,
-          fireDir,
-          CROSSHAIR_MAX_DISTANCE,
-        );
+        const sceneHit = practiceMode
+          ? localPracticeClient?.castSceneRay(aimOrigin, fireDir, CROSSHAIR_MAX_DISTANCE) ?? null
+          : prediction.raycastScene(
+            aimOrigin,
+            fireDir,
+            CROSSHAIR_MAX_DISTANCE,
+          );
         const renderTimeUs = state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000);
         const remoteHits = collectRemoteShotHits(
           state.remotePlayers,
@@ -1766,15 +1842,26 @@ export function GameWorld({
           sceneHit?.toi ?? null,
         );
         const blockerDistance = minDistance(sceneHit?.toi ?? null, closestRemoteShotDistance(remoteHits));
-        const dynamicShot = prediction.predictDynamicBodyShot(
-          aimOrigin,
-          fireDir,
-          CROSSHAIR_MAX_DISTANCE,
-          blockerDistance,
-        );
+        const dynamicShot = practiceMode
+          ? {
+              bodyId: null,
+              diagnostic: {
+                proxyHitBodyId: null,
+                proxyHitToi: null,
+                blockerDistance,
+                blockedByBlocker: false,
+                localPredictedDeltaM: null,
+              },
+            }
+          : prediction.predictDynamicBodyShot(
+            aimOrigin,
+            fireDir,
+            CROSSHAIR_MAX_DISTANCE,
+            blockerDistance,
+          );
         const dynamicRenderTimeUs = client.getDynamicBodyRenderTimeUs();
         const renderedBodies = Array.from(state.dynamicBodies.keys()).map((id) => {
-          const proxyBody = prediction.getDynamicBodyRenderState(id);
+          const proxyBody = practiceMode ? null : prediction.getDynamicBodyRenderState(id);
           const remoteSample = client.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
           const renderBody = proxyBody ?? (remoteSample
             ? {
@@ -1793,21 +1880,23 @@ export function GameWorld({
             halfExtents: renderBody.halfExtents,
           };
         });
-        const proxyBodies = Array.from(state.dynamicBodies.keys())
-          .map((id) => {
-            const proxyBody = prediction.getDynamicBodyPhysicsState(id);
-            if (!proxyBody) return null;
-            return {
-              id,
-              position: proxyBody.position,
-              halfExtents: proxyBody.halfExtents,
-            };
-          })
-          .filter((body): body is {
-            id: number;
-            position: [number, number, number];
-            halfExtents: [number, number, number];
-          } => body != null);
+        const proxyBodies = practiceMode
+          ? []
+          : Array.from(state.dynamicBodies.keys())
+            .map((id) => {
+              const proxyBody = prediction.getDynamicBodyPhysicsState(id);
+              if (!proxyBody) return null;
+              return {
+                id,
+                position: proxyBody.position,
+                halfExtents: proxyBody.halfExtents,
+              };
+            })
+            .filter((body): body is {
+              id: number;
+              position: [number, number, number];
+              halfExtents: [number, number, number];
+            } => body != null);
         const renderedHit = approxRenderedDynamicBodyHit(
           aimOrigin,
           fireDir,
@@ -1826,7 +1915,7 @@ export function GameWorld({
           proxyBodies,
           CROSSHAIR_MAX_DISTANCE,
         );
-        const renderedHitProxyBody = renderedHit
+        const renderedHitProxyBody = !practiceMode && renderedHit
           ? prediction.getDynamicBodyPhysicsState(renderedHit.bodyId)
           : null;
         let renderProxyDeltaM: number | null = null;
@@ -1863,7 +1952,7 @@ export function GameWorld({
         const shotId = nextShotIdRef.current++ >>> 0;
         const targetedBodyId = dynamicShot.bodyId ?? renderedHit?.bodyId ?? null;
         const targetedBodyRecentInteraction = targetedBodyId != null
-          ? prediction.hasRecentDynamicBodyInteraction(targetedBodyId)
+          ? (practiceMode ? false : prediction.hasRecentDynamicBodyInteraction(targetedBodyId))
           : false;
         const dynamicSampleAgeMs = targetedBodyId != null
           ? client.getDynamicBodyObservedAgeMs(targetedBodyId)
@@ -1909,7 +1998,7 @@ export function GameWorld({
           sceneHit?.toi ?? null,
         );
         sendFire({
-          seq: prediction.getNextSeq(),
+          seq: practiceMode ? (localNextSeqRef.current & 0xffff) : prediction.getNextSeq(),
           shotId,
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),
@@ -1947,7 +2036,7 @@ export function GameWorld({
     // Camera follows interpolated predicted position (falls back to server-authoritative)
     const isDriving = isDrivingNow;
     const vehiclePoseForCamera = localVehicleVisualPose ?? localControlledVehiclePose;
-    const predictedPos = prediction.getPosition();
+    const predictedPos = practiceMode ? null : prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
@@ -2422,11 +2511,11 @@ export function GameWorld({
       const dynamicRenderTimeUs = client?.getDynamicBodyRenderTimeUs() ?? 0;
       for (const [id, body] of state.dynamicBodies) {
         activeBodies.add(id);
-        const proxyBody = prediction.getDynamicBodyRenderState(id);
-        const remoteSample = localPreviewTransport
+        const proxyBody = practiceMode ? null : prediction.getDynamicBodyRenderState(id);
+        const remoteSample = localAuthorityTransport
           ? null
           : client?.sampleRemoteDynamicBody(id, dynamicRenderTimeUs);
-        const useProxyBody = prediction.hasRecentDynamicBodyInteraction(id);
+        const useProxyBody = !practiceMode && prediction.hasRecentDynamicBodyInteraction(id);
         const renderBody = useProxyBody && proxyBody
           ? proxyBody
           : (remoteSample
@@ -2522,7 +2611,7 @@ export function GameWorld({
           vPos = localVehiclePos.position;
           vQuat = localVehiclePos.quaternion;
         } else {
-          const sample = localPreviewTransport
+          const sample = localAuthorityTransport
             ? null
             : client.sampleRemoteVehicle(id, renderTimeUs);
           vPos = sample?.position ?? vs.position;

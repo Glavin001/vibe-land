@@ -442,6 +442,7 @@ function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string 
 export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExtras = {}): string {
   const p = stats.position;
   const v = stats.velocity;
+  const localTransport = stats.transport === 'local' || stats.transport === 'local-preview';
   const lines = [
     '# vibe-land debug',
     '',
@@ -460,14 +461,21 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- geometries: ${stats.geometries}`,
     `- textures: ${stats.textures}`,
     '',
-    '## Network',
+    `## ${localTransport ? 'Local Runtime' : 'Network'}`,
     `- transport: ${stats.transport}`,
-    `- ping_ms: ${fmt(stats.pingMs, 2)}`,
-    `- jitter_ms: ${fmt(stats.jitterMs, 2)}`,
-    `- server_tick: ${stats.serverTick}`,
-    `- interp_delay_ms: ${fmt(stats.interpolationDelayMs, 2)}`,
-    `- dyn_interp_delay_ms: ${fmt(stats.dynamicBodyInterpolationDelayMs, 2)}`,
-    `- clock_offset_ms: ${fmt(stats.clockOffsetUs / 1000, 2)}`,
+    ...(localTransport
+      ? [
+          '- runtime: browser_local_rust',
+          `- local_tick: ${stats.serverTick}`,
+        ]
+      : [
+          `- ping_ms: ${fmt(stats.pingMs, 2)}`,
+          `- jitter_ms: ${fmt(stats.jitterMs, 2)}`,
+          `- server_tick: ${stats.serverTick}`,
+          `- interp_delay_ms: ${fmt(stats.interpolationDelayMs, 2)}`,
+          `- dyn_interp_delay_ms: ${fmt(stats.dynamicBodyInterpolationDelayMs, 2)}`,
+          `- clock_offset_ms: ${fmt(stats.clockOffsetUs / 1000, 2)}`,
+        ]),
     `- remote_players: ${stats.remotePlayers}`,
     `- snapshots_per_sec: ${fmt(stats.snapshotsPerSec, 0)}`,
     `- snapshot_gap_ms: ${fmt(stats.lastSnapshotGapMs, 2)}`,
@@ -845,13 +853,21 @@ export function DebugOverlay({
         {`Geom: ${stats.geometries}  Tex: ${stats.textures}`}
       </Section>
 
-      <Section title="Network">
+      <Section title={stats.transport === 'local' || stats.transport === 'local-preview' ? 'Local Runtime' : 'Network'}>
         {`Transport: ${stats.transport}`}
-        {`Ping: ${fmt(stats.pingMs)}ms  Jitter: ±${fmt(stats.jitterMs)}ms`}
-        {`Server tick: ${stats.serverTick}`}
-        {`Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
-        {`Dyn interp delay: ${stats.dynamicBodyInterpolationDelayMs.toFixed(2)}ms`}
-        {`Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
+        {stats.transport === 'local' || stats.transport === 'local-preview'
+          ? 'Runtime: browser-local Rust simulation'
+          : `Ping: ${fmt(stats.pingMs)}ms  Jitter: ±${fmt(stats.jitterMs)}ms`}
+        {`${stats.transport === 'local' || stats.transport === 'local-preview' ? 'Local tick' : 'Server tick'}: ${stats.serverTick}`}
+        {stats.transport === 'local' || stats.transport === 'local-preview'
+          ? 'Interpolation: bypassed for local runtime'
+          : `Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
+        {stats.transport === 'local' || stats.transport === 'local-preview'
+          ? 'Dyn interp: bypassed for local runtime'
+          : `Dyn interp delay: ${stats.dynamicBodyInterpolationDelayMs.toFixed(2)}ms`}
+        {stats.transport === 'local' || stats.transport === 'local-preview'
+          ? 'Clock offset: n/a (same process)'
+          : `Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
         {`Remote players: ${stats.remotePlayers}`}
         {`Snapshots/s: ${fmt(stats.snapshotsPerSec, 0)}`}
         {`Snapshot gap: ${fmt(stats.lastSnapshotGapMs)}ms  p95 ${fmt(stats.snapshotGapP95Ms)}ms  max ${fmt(stats.snapshotGapMaxMs)}ms`}
