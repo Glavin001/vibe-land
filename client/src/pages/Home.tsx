@@ -23,7 +23,7 @@ function NavCard({ href, tag, title, description, note, noteColor }: CardProps) 
 
 export function HomePage() {
   return (
-    <div className="min-h-full flex items-center justify-center p-8 text-[#edf6ff] bg-[radial-gradient(circle_at_top,rgba(93,215,255,0.14),transparent_32%),linear-gradient(180deg,#08111d_0%,#04070d_100%)]">
+    <div className="font-sans min-h-full flex items-center justify-center p-8 text-[#edf6ff] bg-[radial-gradient(circle_at_top,rgba(93,215,255,0.14),transparent_32%),linear-gradient(180deg,#08111d_0%,#04070d_100%)]">
       <div className="w-full max-w-[1040px] bg-[rgba(6,12,20,0.86)] border border-[rgba(110,190,255,0.2)] rounded-[28px] shadow-[0_30px_90px_rgba(0,0,0,0.45)] p-10">
 
         {/* Header */}

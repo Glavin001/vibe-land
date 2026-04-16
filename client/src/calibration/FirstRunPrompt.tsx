@@ -11,7 +11,7 @@ type FirstRunPromptProps = {
 export function FirstRunPrompt({ visible, onStart, onDismiss }: FirstRunPromptProps) {
   if (!visible) return null;
   return (
-    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/55 backdrop-blur-sm">
+    <div className="font-sans absolute inset-0 z-40 flex items-center justify-center bg-black/55 backdrop-blur-sm">
       <div className="max-w-[420px] px-[26px] py-[22px] rounded-[14px] text-[#edf6ff] bg-[rgba(7,11,16,0.72)] border border-white/[0.12] shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-[18px] text-center font-[system-ui,sans-serif]">
         <h2 className="text-[22px] mb-2 font-semibold">Want to calibrate your aim?</h2>
         <p className="text-sm mb-5 opacity-[0.82] leading-[1.5]">

@@ -457,6 +457,7 @@ const titleStyle: CSSProperties = {
   margin: '4px 0 2px',
   fontSize: 24,
   lineHeight: 1.1,
+  fontWeight: 700,
 };
 
 const mutedStyle: CSSProperties = {
