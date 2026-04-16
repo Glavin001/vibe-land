@@ -1,7 +1,7 @@
 import init, {
   WasmSimWorld as RawWasmSimWorld,
   WasmClockSync,
-  WasmLocalSession,
+  WasmLocalSession as RawWasmLocalSession,
   vehicle_chassis_half_extents as wasmVehicleChassisHalfExtents,
   vehicle_suspension_rest_length as wasmVehicleSuspensionRestLength,
   vehicle_wheel_offsets as wasmVehicleWheelOffsets,
@@ -131,8 +131,42 @@ type WasmSimWorldCtor = {
   prototype: WasmSimWorldInstance;
 };
 
+type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
+  enqueueInput(
+    seq: number,
+    buttons: number,
+    moveX: number,
+    moveY: number,
+    yaw: number,
+    pitch: number,
+  ): void;
+  queueFire(
+    seq: number,
+    shotId: number,
+    weapon: number,
+    clientFireTimeUs: number,
+    clientInterpMs: number,
+    clientDynamicInterpMs: number,
+    dirX: number,
+    dirY: number,
+    dirZ: number,
+  ): void;
+  enterVehicle(vehicleId: number): void;
+  exitVehicle(vehicleId: number): void;
+  getSnapshotMeta(): number[];
+  getLocalPlayerState(): number[];
+  getDynamicBodyStates(): number[];
+  getVehicleStates(): number[];
+};
+
+type WasmLocalSessionCtor = {
+  new (worldJson?: string): WasmLocalSessionInstance;
+  prototype: WasmLocalSessionInstance;
+};
+
 installWasmSimWorldCompat(RawWasmSimWorld);
 const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
+const WasmLocalSession = RawWasmLocalSession as unknown as WasmLocalSessionCtor;
 
 function readSharedVehicleGeometryFromWasm(): SharedVehicleGeometry {
   const halfExtents = Array.from(wasmVehicleChassisHalfExtents());
@@ -182,4 +216,4 @@ export function getSharedVehicleGeometry(): SharedVehicleGeometry {
 }
 
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };
-export type { WasmDebugRenderBuffers, WasmSimWorldInstance };
+export type { WasmDebugRenderBuffers, WasmSimWorldInstance, WasmLocalSessionInstance };

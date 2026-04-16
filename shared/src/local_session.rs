@@ -134,6 +134,38 @@ impl LocalPreviewSession {
         Ok(())
     }
 
+    pub fn enqueue_input(&mut self, input: InputCmd) {
+        if !self.connected {
+            return;
+        }
+        enqueue_inputs(&mut self.player, vec![input]);
+    }
+
+    pub fn queue_fire_cmd(&mut self, cmd: FireCmd) {
+        if !self.connected {
+            return;
+        }
+        self.queued_shots.push(cmd);
+    }
+
+    pub fn enter_vehicle(&mut self, vehicle_id: u32) {
+        if !self.connected {
+            return;
+        }
+        if self.arena.vehicles.contains_key(&vehicle_id) {
+            self.arena.enter_vehicle(LOCAL_PLAYER_ID, vehicle_id);
+        }
+    }
+
+    pub fn exit_vehicle(&mut self, vehicle_id: u32) {
+        if !self.connected {
+            return;
+        }
+        if self.arena.vehicle_of_player.get(&LOCAL_PLAYER_ID) == Some(&vehicle_id) {
+            self.arena.exit_vehicle(LOCAL_PLAYER_ID);
+        }
+    }
+
     pub fn tick(&mut self, dt: f32) {
         if !self.connected {
             return;
@@ -286,8 +318,47 @@ impl LocalPreviewSession {
         self.server_tick * (1000 / SIM_HZ as u32)
     }
 
-    fn server_time_us(&self) -> u64 {
+    pub fn server_time_us(&self) -> u64 {
         (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64)
+    }
+
+    pub fn server_tick(&self) -> u32 {
+        self.server_tick
+    }
+
+    pub fn player_id(&self) -> u32 {
+        LOCAL_PLAYER_ID
+    }
+
+    pub fn ack_input_seq(&self) -> u16 {
+        self.player.last_ack_input_seq
+    }
+
+    pub fn local_player_state(&self) -> Option<NetPlayerState> {
+        let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(LOCAL_PLAYER_ID)?;
+        Some(make_net_player_state(
+            LOCAL_PLAYER_ID,
+            pos,
+            vel,
+            yaw,
+            pitch,
+            hp,
+            flags,
+        ))
+    }
+
+    pub fn dynamic_body_states(&self) -> Vec<NetDynamicBodyState> {
+        self.arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
+                make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type)
+            })
+            .collect()
+    }
+
+    pub fn vehicle_states(&self) -> Vec<NetVehicleState> {
+        self.arena.snapshot_vehicles()
     }
 }
 

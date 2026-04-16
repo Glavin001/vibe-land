@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
-use crate::protocol::InputCmd;
+use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
@@ -1350,6 +1350,9 @@ pub struct WasmLocalSession {
     inner: LocalPreviewSession,
 }
 
+const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
+const LOCAL_VEHICLE_STATE_STRIDE: usize = 21;
+
 #[wasm_bindgen]
 impl WasmLocalSession {
     #[wasm_bindgen(constructor)]
@@ -1378,14 +1381,171 @@ impl WasmLocalSession {
             .map_err(|err| JsValue::from_str(&err))
     }
 
+    #[wasm_bindgen(js_name = enqueueInput)]
+    pub fn enqueue_input(
+        &mut self,
+        seq: u16,
+        buttons: u16,
+        move_x: i8,
+        move_y: i8,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        self.inner.enqueue_input(InputCmd {
+            seq,
+            buttons,
+            move_x,
+            move_y,
+            yaw,
+            pitch,
+        });
+    }
+
+    #[wasm_bindgen(js_name = queueFire)]
+    pub fn queue_fire(
+        &mut self,
+        seq: u16,
+        shot_id: u32,
+        weapon: u8,
+        client_fire_time_us: f64,
+        client_interp_ms: u16,
+        client_dynamic_interp_ms: u16,
+        dir_x: f32,
+        dir_y: f32,
+        dir_z: f32,
+    ) {
+        self.inner.queue_fire_cmd(FireCmd {
+            seq,
+            shot_id,
+            weapon,
+            client_fire_time_us: client_fire_time_us.max(0.0).round() as u64,
+            client_interp_ms,
+            client_dynamic_interp_ms,
+            dir: [dir_x, dir_y, dir_z],
+        });
+    }
+
+    #[wasm_bindgen(js_name = enterVehicle)]
+    pub fn enter_vehicle(&mut self, vehicle_id: u32) {
+        self.inner.enter_vehicle(vehicle_id);
+    }
+
+    #[wasm_bindgen(js_name = exitVehicle)]
+    pub fn exit_vehicle(&mut self, vehicle_id: u32) {
+        self.inner.exit_vehicle(vehicle_id);
+    }
+
     pub fn tick(&mut self, dt: f32) {
         self.inner.tick(dt);
+    }
+
+    #[wasm_bindgen(js_name = getSnapshotMeta)]
+    pub fn get_snapshot_meta(&self) -> Box<[f64]> {
+        Box::new([
+            self.inner.server_time_us() as f64,
+            self.inner.server_tick() as f64,
+            self.inner.ack_input_seq() as f64,
+            self.inner.player_id() as f64,
+        ])
+    }
+
+    #[wasm_bindgen(js_name = getLocalPlayerState)]
+    pub fn get_local_player_state(&self) -> Box<[f64]> {
+        flatten_player_state(self.inner.local_player_state())
+    }
+
+    #[wasm_bindgen(js_name = getDynamicBodyStates)]
+    pub fn get_dynamic_body_states(&self) -> Box<[f64]> {
+        let states = self.inner.dynamic_body_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_DYNAMIC_BODY_STATE_STRIDE);
+        for state in &states {
+            push_dynamic_body_state(&mut out, state);
+        }
+        out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getVehicleStates)]
+    pub fn get_vehicle_states(&self) -> Box<[f64]> {
+        let states = self.inner.vehicle_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_VEHICLE_STATE_STRIDE);
+        for state in &states {
+            push_vehicle_state(&mut out, state);
+        }
+        out.into_boxed_slice()
     }
 
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
     }
+}
+
+fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
+    let Some(state) = state else {
+        return Box::new([]);
+    };
+    Box::new([
+        state.id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.yaw_i16 as f64,
+        state.pitch_i16 as f64,
+        state.hp as f64,
+        state.flags as f64,
+    ])
+}
+
+fn push_dynamic_body_state(out: &mut Vec<f64>, state: &NetDynamicBodyState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.shape_type as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.qx_snorm as f64,
+        state.qy_snorm as f64,
+        state.qz_snorm as f64,
+        state.qw_snorm as f64,
+        state.hx_cm as f64,
+        state.hy_cm as f64,
+        state.hz_cm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.wx_mrads as f64,
+        state.wy_mrads as f64,
+        state.wz_mrads as f64,
+    ]);
+}
+
+fn push_vehicle_state(out: &mut Vec<f64>, state: &NetVehicleState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.vehicle_type as f64,
+        state.flags as f64,
+        state.driver_id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.qx_snorm as f64,
+        state.qy_snorm as f64,
+        state.qz_snorm as f64,
+        state.qw_snorm as f64,
+        state.vx_cms as f64,
+        state.vy_cms as f64,
+        state.vz_cms as f64,
+        state.wx_mrads as f64,
+        state.wy_mrads as f64,
+        state.wz_mrads as f64,
+        state.wheel_data[0] as f64,
+        state.wheel_data[1] as f64,
+        state.wheel_data[2] as f64,
+        state.wheel_data[3] as f64,
+    ]);
 }
 
 /// Clock-sync estimator exposed to JavaScript via WASM.

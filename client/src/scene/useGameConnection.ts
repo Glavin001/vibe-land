@@ -3,6 +3,7 @@ import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { LocalPracticeClient } from '../net/localPracticeClient';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import { PlayerInterpolator, ServerClockEstimator } from '../net/interpolation';
 import type {
@@ -48,7 +49,7 @@ export function useGameConnection(
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
   const multiplayerMatchId = useMemo(() => resolveRequestedMatchId(window.location.search), []);
-  const clientRef = useRef<NetcodeClient | null>(null);
+  const clientRef = useRef<NetcodeClient | LocalPracticeClient | null>(null);
 
   // Keep callbacks in refs so the NetcodeClient doesn't need to be recreated
   const onWelcomeRef = useRef(onWelcome);
@@ -80,54 +81,113 @@ export function useGameConnection(
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    let disposed = false;
     setReady(false);
-    const client = new NetcodeClient({
-      onWelcome: (id) => {
-        stateRef.current.playerId = id;
-        onWelcomeRef.current(id);
-        setReady(true);
-      },
-      onDisconnect: (reason) => onDisconnectRef.current(reason),
-      onLocalSnapshot: (ackInputSeq, state) => {
-        stateRef.current.localPosition = netPlayerStateToMeters(state).position;
-        onLocalSnapshotRef.current?.(ackInputSeq, state);
-      },
-      onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
-        onLocalVehicleSnapshotRef.current?.(vehicleState, ackInputSeq);
-      },
-      onWorldPacket: (packet) => {
-        onServerPacketRef.current?.(packet);
-      },
-      onPacket: (packet) => {
-        if (packet.type !== 'chunkFull' && packet.type !== 'chunkDiff') {
-          onServerPacketRef.current?.(packet);
-        }
-        // Sync ConnectionState ref for GameWorld backward compat
-        stateRef.current.latestServerTick = client.latestServerTick;
-        stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
-        stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
-      },
-    });
+    let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-    // Wire the ConnectionState ref to point at client internals
-    stateRef.current.remoteInterpolator = client.interpolator;
-    stateRef.current.serverClock = client.serverClock;
-    stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
-    stateRef.current.remotePlayers = client.remotePlayers;
-    stateRef.current.dynamicBodies = client.dynamicBodies;
+    const handleWelcome = (id: number) => {
+      stateRef.current.playerId = id;
+      onWelcomeRef.current(id);
+      setReady(true);
+    };
 
-    clientRef.current = client;
-
-    // Periodic ping for RTT measurement
-    const pingInterval = practiceMode
-      ? null
-      : setInterval(() => {
-          client.ping();
-        }, 2000);
+    const handleLocalSnapshot = (
+      client: NetcodeClient | LocalPracticeClient,
+      ackInputSeq: number,
+      state: NetPlayerState,
+    ) => {
+      stateRef.current.localPosition = netPlayerStateToMeters(state).position;
+      stateRef.current.latestServerTick = client.latestServerTick;
+      stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
+      stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
+      onLocalSnapshotRef.current?.(ackInputSeq, state);
+      if (practiceMode) {
+        onServerPacketRef.current?.({
+          type: 'snapshot',
+          serverTimeUs: Math.round(client.serverClock.serverNowUs()),
+          serverTick: client.latestServerTick,
+          ackInputSeq,
+          playerStates: [state],
+          projectileStates: [],
+          dynamicBodyStates: [],
+          vehicleStates: [],
+        });
+      }
+    };
 
     if (practiceMode) {
-      void client.connectLocalPreview(practiceWorldJson);
+      void LocalPracticeClient.connect({
+        worldJson: practiceWorldJson,
+        onDisconnect: (reason) => {
+          if (disposed) return;
+          onDisconnectRef.current(reason);
+        },
+        onLocalSnapshot: (ackInputSeq, state) => {
+          const client = clientRef.current;
+          if (!client || disposed) return;
+          handleLocalSnapshot(client, ackInputSeq, state);
+        },
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+          if (disposed) return;
+          onLocalVehicleSnapshotRef.current?.(vehicleState, ackInputSeq);
+        },
+      }).then((client) => {
+        if (disposed) {
+          client.disconnect();
+          return;
+        }
+        stateRef.current.remoteInterpolator = client.interpolator;
+        stateRef.current.serverClock = client.serverClock;
+        stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
+        stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
+        stateRef.current.remotePlayers = client.remotePlayers;
+        stateRef.current.dynamicBodies = client.dynamicBodies;
+        clientRef.current = client;
+        handleWelcome(client.playerId);
+        client.emitCurrentState();
+      }).catch((error) => {
+        if (disposed) return;
+        onDisconnectRef.current(error instanceof Error ? error.message : String(error));
+      });
     } else {
+      const client = new NetcodeClient({
+        onWelcome: (id) => {
+          if (disposed) return;
+          handleWelcome(id);
+        },
+        onDisconnect: (reason) => {
+          if (disposed) return;
+          onDisconnectRef.current(reason);
+        },
+        onLocalSnapshot: (ackInputSeq, state) => {
+          handleLocalSnapshot(client, ackInputSeq, state);
+        },
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+          onLocalVehicleSnapshotRef.current?.(vehicleState, ackInputSeq);
+        },
+        onWorldPacket: (packet) => {
+          onServerPacketRef.current?.(packet);
+        },
+        onPacket: (packet) => {
+          if (packet.type !== 'chunkFull' && packet.type !== 'chunkDiff') {
+            onServerPacketRef.current?.(packet);
+          }
+          stateRef.current.latestServerTick = client.latestServerTick;
+          stateRef.current.interpolationDelayMs = client.interpolationDelayMs;
+          stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
+        },
+      });
+
+      stateRef.current.remoteInterpolator = client.interpolator;
+      stateRef.current.serverClock = client.serverClock;
+      stateRef.current.dynamicBodyInterpolationDelayMs = client.dynamicBodyInterpolationDelayMs;
+      stateRef.current.remotePlayers = client.remotePlayers;
+      stateRef.current.dynamicBodies = client.dynamicBodies;
+      clientRef.current = client;
+      pingInterval = setInterval(() => {
+        client.ping();
+      }, 2000);
+
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
       const wsUrl = multiplayerBackend.createMatchWebSocketUrl(multiplayerMatchId, identity, token);
@@ -135,10 +195,11 @@ export function useGameConnection(
     }
 
     return () => {
+      disposed = true;
       if (pingInterval) {
         clearInterval(pingInterval);
       }
-      client.disconnect();
+      clientRef.current?.disconnect();
       clientRef.current = null;
       setReady(false);
     };

@@ -1,4 +1,4 @@
-import { initSharedPhysics, WasmLocalSession } from '../wasm/sharedPhysics';
+import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
 import {
   decodeServerPacket,
   encodeBlockEditPacket,
@@ -23,7 +23,7 @@ export type LocalPreviewTransportHandlers = {
 };
 
 export class LocalPreviewTransport {
-  private session: WasmLocalSession | null = null;
+  private session: WasmLocalSessionInstance | null = null;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private closed = false;
   private tickAccumulatorSec = 0;
@@ -36,7 +36,7 @@ export class LocalPreviewTransport {
   ): Promise<LocalPreviewTransport> {
     await initSharedPhysics();
     const transport = new LocalPreviewTransport(handlers);
-    const LocalSessionCtor = WasmLocalSession as unknown as new (worldJson?: string) => WasmLocalSession;
+    const LocalSessionCtor = WasmLocalSession as unknown as new (worldJson?: string) => WasmLocalSessionInstance;
     transport.session = new LocalSessionCtor(handlers.worldJson);
     transport.session.connect();
     transport.flushPackets();
