@@ -15,6 +15,15 @@ This is a multiplayer browser FPS game ("vibe-land") with two services:
 make setup   # copies .env.example → .env, builds WASM, installs client deps
 ```
 
+**Linux system packages (recommended on a clean machine).** Without these, `make check` or a real destructibles WASM build will fail in non-obvious ways:
+
+- **`libssl-dev`** and **`pkg-config`** — required so the Rust workspace can compile `openssl-sys` for the game server (`make check` / `cargo check` at the repo root). On Ubuntu/Debian: `sudo apt-get install -y libssl-dev pkg-config`.
+- **`wasm32-unknown-unknown` target** — `rustup target add wasm32-unknown-unknown`.
+- **`wasm-pack`** — the client’s `npm run build:wasm` / `predev` script installs it via Cargo if missing; you can also `cargo install wasm-pack --locked`.
+- **Real Blast / destructibles WASM build** (only if `third_party/physx/` is a full PhysX clone, not the stub — see below): the `blast-stress-solver` C++ backend compiles with **clang** against the **WASI sysroot** and links **wasm libc++**. On Ubuntu 24.04 (Noble) this is satisfied by:
+  - `sudo apt-get install -y wasi-libc libc++-18-dev-wasm32`
+  If those packages are missing, `wasm-pack build … --features destructibles` fails with errors such as missing `bits/libc-header-start.h` or “wasm libc++.a not found”. The crate’s `build.rs` also supports overriding paths via **`BLAST_WASM_SYSROOT`**, **`BLAST_WASM_CXX_INCLUDE`**, **`BLAST_WASM_CXX_LIB_DIR`**, etc., if you use a custom WASI SDK — see `third_party/physx/blast/blast-stress-solver-rs/build.rs` when the vendor tree is present.
+
 Or step by step:
 
 ```bash
@@ -72,7 +81,7 @@ make check-client  # tsc --noEmit
 ### Build
 
 - **Server:** `cd server && cargo build`
-- **Client (WASM):** `cd shared && wasm-pack build --target web --out-dir ../client/pkg`
+- **Client (WASM):** `cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg` (or `make setup-wasm` / `npm run build:wasm` from `client/`, which runs `scripts/build-shared-wasm.sh` and enables `--features destructibles` when the real PhysX clone exists)
 - **Client:** `cd client && npm run build`
 
 ### WebTransport infrastructure (infra/)
@@ -115,8 +124,9 @@ Firewall requirements for WebTransport:
 ### Non-obvious notes
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.
-- The shared WASM crate (`shared/`) is compiled separately with `wasm-pack` and output to `client/pkg/`. This must be rebuilt whenever `shared/` changes.
+- The shared WASM crate (`shared/`) is compiled separately with `wasm-pack` and output to `client/src/wasm/pkg/`. This must be rebuilt whenever `shared/` changes.
 - `make setup` now clones the pinned NVIDIA Blast stress solver into `third_party/physx/` (gitignored) via `scripts/setup-blast.sh`. The `blast-stress-solver` dep is wasm-only AND optional (behind the `destructibles` Cargo feature) — `cargo check` / `cargo build -p web-fps-server` on a server dev box never touches the Blast C++ sources. Cargo still resolves the optional path dep during metadata, so a tiny placeholder crate at `stubs/blast-stress-solver-rs/` is dropped into `third_party/physx/blast/blast-stress-solver-rs/` by `scripts/ensure-blast-stub.sh` whenever the real clone is missing (e.g. Vercel preview builds). `scripts/build-shared-wasm.sh` detects whether the real PhysX clone is present and passes `--features destructibles` accordingly; when only the stub is present the wasm module still exposes the full destructibles JS API on `WasmSimWorld`, but every call is a no-op. See `docs/BLAST_INTEGRATION.md` for the full toolchain. The real crate ships pure-Rust stubs for every libc symbol libc++ references, so the final wasm has zero `env.*` and zero `wasi_snapshot_preview1.*` imports and `make setup-wasm` does no post-processing.
+- **Destructibles + Rapier collision groups:** Blast scenario colliders may use `InteractionGroups` that only pair with `GROUP_1`. The player capsule uses `GROUP_3` and vehicles/dynamic props use `GROUP_2` (see `netcode/src/sim_world.rs` and `shared/src/wasm_api.rs`). If destructible chunk colliders keep a narrow filter, the **kinematic character controller** and **vehicle chassis** queries will not hit them and gameplay will **phase through** bricks. Integrations should assign destructible chunk colliders the **same membership/filter as static world geometry** (`GROUP_1` with filter `Group::all()`), and re-apply after fracture splits add new colliders. See `shared/src/destructibles_real.rs`.
 - The web client is a single SPA build. Runtime route selection decides between `/play` multiplayer and `/practice` firing range; build mode no longer selects that behavior.
 - `VITE_MULTIPLAYER_HTTP_ORIGIN` is optional. Leave it unset for same-origin deployments; set it when the SPA is hosted separately from the Rust/WebTransport backend.
 - The `rapier3d` 0.30 API is used. Key notes: `KinematicCharacterController` is in `rapier3d::control`.
