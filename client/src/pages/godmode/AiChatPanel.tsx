@@ -22,6 +22,11 @@ import {
   type ProviderId,
 } from '../../ai/providers';
 import {
+  clearPersistedComposerDraft,
+  loadPersistedComposerDraft,
+  savePersistedComposerDraft,
+} from '../../ai/chatStore';
+import {
   clearStoredApiKeys,
   loadSettings,
   saveSettings,
@@ -97,6 +102,13 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     setSettings((current) => ({ ...current, apiKeys: {} }));
   }, []);
 
+  const onClearChat = useCallback(() => {
+    setDraft('');
+    setAttachments([]);
+    clearPersistedComposerDraft();
+    chat.clear();
+  }, [chat]);
+
   const onPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(event.clipboardData.items);
     const imageItems = items.filter((item) => item.type.startsWith('image/'));
@@ -131,10 +143,14 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }
   }, []);
 
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => loadPersistedComposerDraft());
   const [settingsOpen, setSettingsOpen] = useState(!apiKey);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    savePersistedComposerDraft(draft);
+  }, [draft]);
 
   const messageListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -151,6 +167,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       const text = draft;
       const atts = attachments;
       setDraft('');
+      clearPersistedComposerDraft();
       setAttachments([]);
       void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
     },
@@ -165,6 +182,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
         const text = draft;
         const atts = attachments;
         setDraft('');
+        clearPersistedComposerDraft();
         setAttachments([]);
         void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
       }
@@ -176,6 +194,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const placeholderHint = apiKey
     ? `Ask ${PROVIDER_LABELS[settings.provider]} (${settings.model}) to edit the world…`
     : `Add an ${PROVIDER_LABELS[settings.provider]} API key to start chatting`;
+  const hasDraft = draft.length > 0;
 
   return (
     <aside style={panelStyle}>
@@ -246,7 +265,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
               <button type="button" onClick={onClearKeys} style={dangerButtonStyle}>
                 Clear all keys
               </button>
-              <button type="button" onClick={chat.clear} style={secondaryButtonStyle}>
+              <button type="button" onClick={onClearChat} style={secondaryButtonStyle}>
                 Clear chat
               </button>
             </div>
@@ -320,7 +339,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           onPaste={onPaste}
           placeholder={placeholderHint}
           rows={3}
-          style={textareaStyle}
+          style={hasDraft ? expandedTextareaStyle : textareaStyle}
           disabled={chat.status === 'streaming'}
         />
         <div style={composerActionsStyle}>
@@ -751,6 +770,13 @@ const textareaStyle: CSSProperties = {
   fontSize: 13,
   fontFamily: 'inherit',
   lineHeight: 1.4,
+  minHeight: 78,
+  transition: 'min-height 140ms ease',
+};
+
+const expandedTextareaStyle: CSSProperties = {
+  ...textareaStyle,
+  minHeight: 132,
 };
 
 const thumbnailStripStyle: CSSProperties = {

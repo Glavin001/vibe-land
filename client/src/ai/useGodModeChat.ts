@@ -7,6 +7,11 @@ import {
   type ChatImagePart,
   type ChatPart,
 } from './chatTypes';
+import {
+  clearPersistedChatState,
+  loadPersistedChatState,
+  savePersistedChatState,
+} from './chatStore';
 import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
@@ -39,11 +44,12 @@ const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   const { accessors, provider, model, apiKey } = options;
+  const initialPersistedState = useMemo(() => loadPersistedChatState(), []);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => initialPersistedState.messages);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
-  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
+  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>(() => initialPersistedState.pendingHumanEdits);
 
   const accessorsRef = useRef(accessors);
   useEffect(() => {
@@ -77,7 +83,12 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     setError(null);
     setPendingHumanEdits([]);
     setStatus('idle');
+    clearPersistedChatState();
   }, [stop]);
+
+  useEffect(() => {
+    savePersistedChatState({ messages, pendingHumanEdits });
+  }, [messages, pendingHumanEdits]);
 
   const canSend = Boolean(apiKey) && status === 'idle';
 
