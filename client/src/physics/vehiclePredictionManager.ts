@@ -126,13 +126,10 @@ export class VehiclePredictionManager {
 
   constructor(
     private readonly sim: WasmSimWorldInstance,
-    private readonly isLocalPreview = false,
   ) {}
 
   private getPendingInputCount(): number {
-    return this.isLocalPreview
-      ? this.pendingInputsForSend.length
-      : this.sim.getVehiclePendingCount();
+    return this.sim.getVehiclePendingCount();
   }
 
   isActive(): boolean {
@@ -186,17 +183,13 @@ export class VehiclePredictionManager {
     this.prevQuaternion = [qx, qy, qz, qw];
     this.currQuaternion = [qx, qy, qz, qw];
 
-    if (this.isLocalPreview) {
-      return;
-    }
-
     this.sim.syncRemoteVehicle(vehicleId, px, py, pz, qx, qy, qz, qw, vx, vy, vz);
     this.sim.setLocalVehicle(vehicleId);
   }
 
   /** Exit vehicle — deactivate prediction. */
   exitVehicle(): void {
-    if (!this.isLocalPreview && this.vehicleId !== null) {
+    if (this.vehicleId !== null) {
       this.sim.clearLocalVehicle();
     }
     this.vehicleId = null;
@@ -237,13 +230,6 @@ export class VehiclePredictionManager {
     while (this.accumulator >= FIXED_DT && steps < CLIENT_MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
-
-      if (this.isLocalPreview) {
-        generatedThisFrame.push(input);
-        this.accumulator -= FIXED_DT;
-        steps++;
-        continue;
-      }
 
       const result = this.sim.tickVehicle(
         input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT,
@@ -326,18 +312,6 @@ export class VehiclePredictionManager {
       vehicleState.wyMrads / 1000,
       vehicleState.wzMrads / 1000,
     ];
-
-    if (this.isLocalPreview) {
-      this.lastReplayErrorM = 0;
-      this.lastPosErrorM = 0;
-      this.lastVelErrorMs = 0;
-      this.lastAngVelErrorRadPs = 0;
-      this.lastRotErrorRad = 0;
-      this.correctionOffset = [0, 0, 0];
-      this.correctionQuatOffset = [...IDENTITY_QUAT] as [number, number, number, number];
-      this.lastCorrectionAtMs = -1;
-      return;
-    }
 
     const oldPosition: [number, number, number] = [...this.currPosition];
     const oldQuat = this.currQuaternion;
@@ -490,7 +464,7 @@ export class VehiclePredictionManager {
   }
 
   private collapseRealtimeVehicleBacklog(): void {
-    if (this.isLocalPreview || this.pendingInputsForSend.length <= VEHICLE_CLIENT_CATCHUP_THRESHOLD) {
+    if (this.pendingInputsForSend.length <= VEHICLE_CLIENT_CATCHUP_THRESHOLD) {
       return;
     }
 

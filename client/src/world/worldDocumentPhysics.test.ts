@@ -506,22 +506,22 @@ describe('WorldDocument local runtime scenarios', () => {
     expect(hitY).toBeGreaterThan(1.5);
   });
 
-  it('smooth hill terrain supports ball and vehicle above the sampled surface', () => {
+  it('smooth hill terrain supports box and vehicle above the sampled surface', () => {
     const world = makeSmoothHillWorld();
     const [hillX, hillZ] = getTerrainWorldPosition(world, 4, 4);
     const vehicleX = hillX + 1.5;
     world.dynamicEntities = [
-      makeEntity('ball', 31, hillX, sampleTerrainHeightAtWorldPosition(world, hillX, hillZ) + 2, hillZ),
+      makeEntity('box', 31, hillX, sampleTerrainHeightAtWorldPosition(world, hillX, hillZ) + 2, hillZ),
       makeEntity('vehicle', 32, vehicleX, sampleTerrainHeightAtWorldPosition(world, vehicleX, hillZ) + 3, hillZ),
     ];
 
     const result = runLocalRuntime(world);
-    const ball = result.dynamicBodies.get(31);
+    const box = result.dynamicBodies.get(31);
     const vehicle = result.vehicles.get(32);
-    expect(ball).toBeDefined();
+    expect(box).toBeDefined();
     expect(vehicle).toBeDefined();
 
-    expectSupportedAboveTerrain(ball!.position[1], raycastTerrainHeight(world, hillX, hillZ));
+    expectSupportedAboveTerrain(box!.position[1], raycastTerrainHeight(world, hillX, hillZ));
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, vehicleX, hillZ));
   });
 

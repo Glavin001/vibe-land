@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SemanticInputState } from '../input/types';
 import type { NetVehicleState } from '../net/protocol';
+import { VEHICLE_CLIENT_CATCHUP_KEEP } from '../runtime/clientSimConstants';
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import {
   FIXED_DT,
   VEHICLE_MAX_PENDING_INPUTS,
-  VEHICLE_CLIENT_CATCHUP_KEEP,
   VehiclePredictionManager,
 } from './vehiclePredictionManager';
 
@@ -72,9 +72,9 @@ class FakeVehicleSim {
   }
 }
 
-function createManager(isLocalPreview = false) {
+function createManager() {
   const sim = new FakeVehicleSim();
-  const manager = new VehiclePredictionManager(sim as unknown as WasmSimWorldInstance, isLocalPreview);
+  const manager = new VehiclePredictionManager(sim as unknown as WasmSimWorldInstance);
   const initState: NetVehicleState = {
     id: 1,
     vehicleType: 0,
@@ -141,59 +141,12 @@ describe('VehiclePredictionManager', () => {
     expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
   });
 
-  it('local runtime enter and exit do not activate a second local vehicle sim', () => {
-    const { sim, manager } = createManager(true);
-
-    expect(sim.syncRemoteVehicleCalls).toBe(0);
-    expect(sim.setLocalVehicleCalls).toBe(0);
-    expect(sim.stepDynamicsCalls).toBe(0);
-
-    manager.exitVehicle();
-
-    expect(sim.clearLocalVehicleCalls).toBe(0);
-  });
-
   it('multiplayer enter does not advance vehicle time during contact warm-up', () => {
     const { sim } = createManager();
 
     expect(sim.syncRemoteVehicleCalls).toBe(1);
     expect(sim.setLocalVehicleCalls).toBe(1);
     expect(sim.stepDynamicsCalls).toBe(0);
-  });
-
-  it('local runtime keeps generating fixed-step inputs without ticking local vehicle physics', () => {
-    const { sim, manager, input } = createManager(true);
-
-    expect(manager.update(FIXED_DT * 2, input).map((frame) => frame.seq)).toEqual([1, 2]);
-    expect(sim.tickedSeqs).toHaveLength(0);
-    expect(sim.getVehiclePendingCount()).toBe(0);
-  });
-
-  it('local runtime reconcile prunes acked inputs without syncing vehicle pose into the sim', () => {
-    const { sim, manager, input, initState } = createManager(true);
-
-    expect(manager.update(FIXED_DT * 2, input).map((frame) => frame.seq)).toEqual([1, 2]);
-
-    manager.reconcile({
-      ...initState,
-      pzMm: 2500,
-      vxCms: 250,
-    }, 1);
-
-    expect(sim.syncRemoteVehicleCalls).toBe(0);
-    expect(sim.reconcileVehicleCalls).toBe(0);
-    expect(manager.update(0, input).map((frame) => frame.seq)).toEqual([2]);
-  });
-
-  it('local runtime keeps issuing fresh inputs when backlog exceeds the old cap', () => {
-    const { manager, input } = createManager(true);
-
-    for (let seq = 1; seq <= VEHICLE_MAX_PENDING_INPUTS; seq += 1) {
-      expect(manager.update(FIXED_DT, input).at(-1)?.seq).toBe(seq);
-    }
-
-    const continued = manager.update(FIXED_DT, input);
-    expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
   });
 
   it('keeps vehicle resend bursts fixed-width even when unacked backlog becomes unhealthy', () => {

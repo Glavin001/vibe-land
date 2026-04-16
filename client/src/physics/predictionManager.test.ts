@@ -140,36 +140,6 @@ describe('PredictionManager', () => {
       expect(result[0]).toBeLessThan(5);
     });
 
-    it('local runtime queues inputs before first authoritative snapshot without advancing predicted movement', () => {
-      const sim = createSim();
-      const mgr = new PredictionManager(sim, true);
-      mgr.enableTerrainWorld();
-
-      const before = mgr.getPosition();
-      const cmds = mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
-
-      expect(cmds).toHaveLength(1);
-      expect(mgr.isInitialized()).toBe(false);
-      expect(mgr.getPosition()).toEqual(before);
-      expect(mgr.getInterpolatedPosition()).toBeNull();
-      mgr.dispose();
-    });
-
-    it('local runtime follows authoritative state after the first snapshot', () => {
-      const sim = createSim();
-      const mgr = new PredictionManager(sim, true);
-      mgr.enableTerrainWorld();
-
-      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
-      const before = mgr.getPosition();
-      const cmds = mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
-
-      expect(mgr.isInitialized()).toBe(true);
-      expect(cmds).toHaveLength(1);
-      expect(mgr.getPosition()).toEqual(before);
-      expect(mgr.getInterpolatedPosition()).not.toBeNull();
-      mgr.dispose();
-    });
   });
 
   // ──────────────────────────────────────────────
@@ -347,40 +317,6 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local runtime keeps render position fixed until the next authoritative snapshot', () => {
-      const sim = createSim();
-      const mgr = new PredictionManager(sim, true);
-      mgr.enableTerrainWorld();
-      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
-
-      mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
-      const renderAtStep = mgr.getInterpolatedPosition();
-
-      mgr.update(FIXED_DT * 0.5, BTN_FORWARD, 0, 0);
-      const renderBetweenSteps = mgr.getInterpolatedPosition();
-
-      expect(renderAtStep).not.toBeNull();
-      expect(renderBetweenSteps).not.toBeNull();
-      expect(renderBetweenSteps).toEqual(renderAtStep);
-      mgr.dispose();
-    });
-
-    it('local runtime applies authoritative snapshots without correction smoothing', () => {
-      const sim = createSim();
-      const mgr = new PredictionManager(sim, true);
-      mgr.enableTerrainWorld();
-      mgr.reconcile(0, makeNetState({ position: [0, 1, 0], flags: FLAG_ON_GROUND }));
-
-      for (let i = 0; i < 5; i += 1) {
-        mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
-      }
-
-      mgr.reconcile(2, makeNetState({ position: [0, 1, 0.1], flags: FLAG_ON_GROUND }));
-
-      expect(Math.hypot(...mgr.getCorrectionOffset())).toBe(0);
-      expect(mgr.getPosition()[2]).toBeCloseTo(0.1);
-      mgr.dispose();
-    });
   });
 
   // ──────────────────────────────────────────────

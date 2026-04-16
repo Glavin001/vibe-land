@@ -596,6 +596,9 @@ mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
     use crate::unit_conv::angle_to_i16;
+    use crate::world_document::{
+        DynamicEntity, DynamicEntityKind, WorldDocument, WorldMeta, WorldTerrain, WorldTerrainTile,
+    };
 
     fn decode_snapshot_ack(bytes: &[u8]) -> u16 {
         let mut buf = bytes;
@@ -663,6 +666,37 @@ mod tests {
             vehicles.push((id, driver_id, px, py, pz));
         }
         vehicles
+    }
+
+    fn make_smooth_hill_world() -> WorldDocument {
+        let grid_size = 9usize;
+        let mut heights = Vec::with_capacity(grid_size * grid_size);
+        for row in 0..grid_size {
+            for col in 0..grid_size {
+                let dx = col as f32 - 4.0;
+                let dz = row as f32 - 4.0;
+                let dist = (dx * dx + dz * dz).sqrt();
+                heights.push((5.0 - dist * 1.25).max(0.0));
+            }
+        }
+        WorldDocument {
+            version: 2,
+            meta: WorldMeta {
+                name: "Smooth Hill".to_string(),
+                description: "Brush-like hill for local session tests.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: grid_size as u16,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+        }
     }
 
     #[test]
@@ -740,6 +774,52 @@ mod tests {
         assert_eq!(
             latest_driver_id, LOCAL_PLAYER_ID,
             "local session vehicle should be driven by the local player after enter"
+        );
+    }
+
+    fn local_session_keeps_smooth_hill_vehicle_supported() {
+        let mut world = make_smooth_hill_world();
+        let hill_x = 0.0f32;
+        let hill_z = 0.0f32;
+        let vehicle_x = hill_x + 1.5;
+        let vehicle_y = world.sample_heightfield_surface_at_world_position(vehicle_x, hill_z) + 3.0;
+        world.dynamic_entities = vec![DynamicEntity {
+            id: 32,
+            kind: DynamicEntityKind::Vehicle,
+            position: [vehicle_x, vehicle_y, hill_z],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            half_extents: None,
+            radius: None,
+            vehicle_type: Some(0),
+        }];
+
+        let mut session = LocalSession::from_world_document(world.clone()).expect("valid world");
+        session.connect();
+        let _ = session.drain_packets();
+
+        let mut latest_snapshot = None;
+        for _ in 0..240 {
+            session.tick(1.0 / 60.0);
+            latest_snapshot = session
+                .drain_packets()
+                .into_iter()
+                .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+                .or(latest_snapshot);
+        }
+
+        let latest_snapshot = latest_snapshot.expect("latest snapshot");
+        let vehicles = decode_snapshot_vehicle_states(&latest_snapshot);
+        let (_, _, px_mm, py_mm, pz_mm) = vehicles
+            .into_iter()
+            .find(|(id, ..)| *id == 32)
+            .expect("vehicle present");
+        let px = px_mm as f32 / 1000.0;
+        let py = py_mm as f32 / 1000.0;
+        let pz = pz_mm as f32 / 1000.0;
+        let terrain_y = world.sample_heightfield_surface_at_world_position(px, pz);
+        assert!(
+            py > terrain_y - 0.25,
+            "local session hill vehicle fell through terrain: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
         );
     }
 }

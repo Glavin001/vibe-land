@@ -37,11 +37,9 @@ export class PredictionManager {
   private terrainLoaded = false;
   private initialized = false;
   private _lastPhysicsStepMs = 0;
-  readonly isLocalPreview: boolean;
 
-  constructor(private readonly sim: WasmSimWorldInstance, isLocalPreview = false) {
-    this.isLocalPreview = isLocalPreview;
-    this.voxelWorld = new ClientVoxelWorld(sim, !isLocalPreview);
+  constructor(private readonly sim: WasmSimWorldInstance) {
+    this.voxelWorld = new ClientVoxelWorld(sim);
   }
 
   /**
@@ -56,7 +54,7 @@ export class PredictionManager {
     yaw = 0,
     pitch = 0,
   ): InputCmd[] {
-    if (!this.worldLoaded || (!this.initialized && !this.isLocalPreview)) {
+    if (!this.worldLoaded || !this.initialized) {
       return [];
     }
     const semanticInput = normalizeSemanticInput(inputOrButtons, yaw, pitch);
@@ -76,15 +74,6 @@ export class PredictionManager {
     while (this.accumulator >= FIXED_DT && steps < CLIENT_MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
-
-      if (this.isLocalPreview) {
-        // Practice mode is driven by the browser-side authoritative Rust
-        // session. Keep input bundling, but do not advance a second local KCC.
-        pendingInputs.push(input);
-        this.accumulator -= FIXED_DT;
-        steps++;
-        continue;
-      }
 
       const t0 = performance.now();
       this.sim.tick(input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT);
@@ -127,21 +116,6 @@ export class PredictionManager {
   reconcile(ackInputSeq: number, playerState: NetPlayerState): void {
     const m = netPlayerStateToMeters(playerState);
     const onGround = (m.flags & 1) !== 0;
-
-    if (this.isLocalPreview) {
-      this.sim.setFullState(
-        m.position[0], m.position[1], m.position[2],
-        m.velocity[0], m.velocity[1], m.velocity[2],
-        m.yaw, m.pitch,
-        onGround,
-      );
-      this.prevPosition = [...m.position] as [number, number, number];
-      this.currPosition = [...m.position] as [number, number, number];
-      this.currVelocity = [...m.velocity] as [number, number, number];
-      this.correctionOffset = [0, 0, 0];
-      this.initialized = true;
-      return;
-    }
 
     if (!this.initialized) {
       this.sim.setFullState(

@@ -1,9 +1,12 @@
 use std::fmt;
 
-use nalgebra::{vector, DMatrix, Vector3};
+use nalgebra::{vector, DMatrix, Quaternion, UnitQuaternion, Vector3};
 use serde::{de::Deserializer, Deserialize, Serialize};
 
-use crate::movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
+use crate::{
+    movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS},
+    vehicle::{VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_WHEEL_OFFSETS},
+};
 
 pub const WORLD_DOCUMENT_VERSION: u32 = 2;
 pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
@@ -315,6 +318,112 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
 }
 
 impl WorldDocument {
+    fn sample_support_height_at_world_position(
+        &self,
+        x: f32,
+        z: f32,
+        horizontal_offsets: &[(f32, f32)],
+        rotation: Option<[f32; 4]>,
+    ) -> f32 {
+        let mut max_support_height = self.sample_heightfield_surface_at_world_position(x, z);
+        for &(offset_x, offset_z) in horizontal_offsets {
+            let (sample_x, sample_z) = if let Some(rotation) = rotation {
+                Self::rotate_support_offset(rotation, offset_x, offset_z)
+            } else {
+                (offset_x, offset_z)
+            };
+            max_support_height = max_support_height.max(
+                self.sample_heightfield_surface_at_world_position(x + sample_x, z + sample_z),
+            );
+        }
+        max_support_height
+    }
+
+    fn rotate_support_offset(rotation: [f32; 4], x: f32, z: f32) -> (f32, f32) {
+        let yaw_only = UnitQuaternion::from_quaternion(Quaternion::new(
+            rotation[3],
+            rotation[0],
+            rotation[1],
+            rotation[2],
+        ));
+        let rotated = yaw_only.transform_vector(&Vector3::new(x, 0.0, z));
+        (rotated.x, rotated.z)
+    }
+
+    fn sample_vehicle_support_height_at_world_position(
+        &self,
+        x: f32,
+        z: f32,
+        rotation: [f32; 4],
+    ) -> f32 {
+        let mut offsets = Vec::with_capacity(VEHICLE_WHEEL_OFFSETS.len() + 4);
+        for offset in VEHICLE_WHEEL_OFFSETS {
+            offsets.push((offset[0], offset[2]));
+        }
+        let half_x = VEHICLE_CHASSIS_HALF_EXTENTS[0];
+        let half_z = VEHICLE_CHASSIS_HALF_EXTENTS[2];
+        offsets.extend_from_slice(&[
+            (-half_x, -half_z),
+            (-half_x, half_z),
+            (half_x, -half_z),
+            (half_x, half_z),
+        ]);
+        self.sample_support_height_at_world_position(x, z, offsets.as_slice(), Some(rotation))
+    }
+
+    fn minimum_box_spawn_center_y(
+        &self,
+        x: f32,
+        z: f32,
+        rotation: [f32; 4],
+        half_extents: [f32; 3],
+    ) -> f32 {
+        let support_height = self.sample_support_height_at_world_position(
+            x,
+            z,
+            &[
+                (-half_extents[0], -half_extents[2]),
+                (-half_extents[0], half_extents[2]),
+                (half_extents[0], -half_extents[2]),
+                (half_extents[0], half_extents[2]),
+            ],
+            Some(rotation),
+        );
+        support_height + half_extents[1] + 0.05
+    }
+
+    fn minimum_ball_spawn_center_y(&self, x: f32, z: f32, radius: f32) -> f32 {
+        let diagonal = radius * std::f32::consts::FRAC_1_SQRT_2;
+        let support_height = self.sample_support_height_at_world_position(
+            x,
+            z,
+            &[
+                (radius, 0.0),
+                (-radius, 0.0),
+                (0.0, radius),
+                (0.0, -radius),
+                (diagonal, diagonal),
+                (diagonal, -diagonal),
+                (-diagonal, diagonal),
+                (-diagonal, -diagonal),
+            ],
+            None,
+        );
+        support_height + radius + 0.05
+    }
+
+    fn minimum_vehicle_spawn_center_y(
+        &self,
+        x: f32,
+        z: f32,
+        rotation: [f32; 4],
+    ) -> f32 {
+        let support_height = self.sample_vehicle_support_height_at_world_position(x, z, rotation);
+        let wheel_clearance = VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_SUSPENSION_TRAVEL + VEHICLE_WHEEL_RADIUS;
+        let chassis_clearance = VEHICLE_CHASSIS_HALF_EXTENTS[1] + 0.1;
+        support_height + wheel_clearance.max(chassis_clearance) + 0.1
+    }
+
     pub fn demo() -> Self {
         let mut world: Self = serde_json::from_str(DEFAULT_WORLD_DOCUMENT_JSON)
             .expect("default world document asset should deserialize");
@@ -575,10 +684,6 @@ impl WorldDocument {
         arena.rebuild_broad_phase();
 
         for entity in &self.dynamic_entities {
-            let terrain_y = self.sample_heightfield_surface_at_world_position(
-                entity.position[0],
-                entity.position[2],
-            );
             match entity.kind {
                 DynamicEntityKind::Box => {
                     let half_extents =
@@ -587,7 +692,13 @@ impl WorldDocument {
                             .ok_or(WorldDocumentError::MissingHalfExtents {
                                 entity_id: entity.id,
                             })?;
-                    let spawn_y = entity.position[1].max(terrain_y + half_extents[1] + 0.05);
+                    let min_box_y = self.minimum_box_spawn_center_y(
+                        entity.position[0],
+                        entity.position[2],
+                        entity.rotation,
+                        half_extents,
+                    );
+                    let spawn_y = entity.position[1].max(min_box_y);
                     arena.spawn_dynamic_box_with_id(
                         entity.id,
                         Vector3::new(entity.position[0], spawn_y, entity.position[2]),
@@ -599,7 +710,12 @@ impl WorldDocument {
                     let radius = entity.radius.ok_or(WorldDocumentError::MissingRadius {
                         entity_id: entity.id,
                     })?;
-                    let spawn_y = entity.position[1].max(terrain_y + radius + 0.05);
+                    let min_ball_y = self.minimum_ball_spawn_center_y(
+                        entity.position[0],
+                        entity.position[2],
+                        radius,
+                    );
+                    let spawn_y = entity.position[1].max(min_ball_y);
                     arena.spawn_dynamic_ball_with_id(
                         entity.id,
                         Vector3::new(entity.position[0], spawn_y, entity.position[2]),
@@ -607,8 +723,11 @@ impl WorldDocument {
                     );
                 }
                 DynamicEntityKind::Vehicle => {
-                    let min_vehicle_y =
-                        terrain_y + VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_WHEEL_RADIUS + 0.2;
+                    let min_vehicle_y = self.minimum_vehicle_spawn_center_y(
+                        entity.position[0],
+                        entity.position[2],
+                        entity.rotation,
+                    );
                     let spawn_y = entity.position[1].max(min_vehicle_y);
                     arena.spawn_vehicle_with_id(
                         entity.id,
@@ -648,6 +767,37 @@ mod tests {
     fn broken_world() -> WorldDocument {
         serde_json::from_str(BROKEN_WORLD_DOCUMENT_JSON)
             .expect("broken world document asset should deserialize")
+    }
+
+    fn smooth_hill_world() -> WorldDocument {
+        let grid_size = 9;
+        let mut heights = Vec::with_capacity(grid_size * grid_size);
+        for row in 0..grid_size {
+            for col in 0..grid_size {
+                let dx = col as f32 - 4.0;
+                let dz = row as f32 - 4.0;
+                let dist = (dx * dx + dz * dz).sqrt();
+                heights.push((5.0 - dist * 1.25).max(0.0));
+            }
+        }
+        WorldDocument {
+            version: WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Smooth Hill".to_string(),
+                description: "Brush-like hill for rigid body terrain tests.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: grid_size as u16,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+        }
     }
 
     fn cast_terrain_height(world: &WorldDocument, x: f32, z: f32) -> f32 {
@@ -1006,6 +1156,54 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    fn smooth_hill_world_keeps_authored_vehicle_supported() {
+        let mut world = smooth_hill_world();
+        let hill_x = 0.0;
+        let hill_z = 0.0;
+        let vehicle_x = hill_x + 1.5;
+        world.dynamic_entities = vec![DynamicEntity {
+            id: 32,
+            kind: DynamicEntityKind::Vehicle,
+            position: [
+                vehicle_x,
+                world.sample_heightfield_surface_at_world_position(vehicle_x, hill_z) + 3.0,
+                hill_z,
+            ],
+            rotation: identity_rotation(),
+            half_extents: None,
+            radius: None,
+            vehicle_type: Some(0),
+        }];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate smooth hill world");
+
+        for _ in 0..240 {
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+
+        let vehicle = arena
+            .snapshot_vehicles()
+            .into_iter()
+            .find(|vehicle| vehicle.id == 32)
+            .expect("authored vehicle should exist");
+        let terrain_y = cast_terrain_height(
+            &world,
+            vehicle.px_mm as f32 / 1000.0,
+            vehicle.pz_mm as f32 / 1000.0,
+        );
+        let final_y = vehicle.py_mm as f32 / 1000.0;
+        assert!(
+            final_y > terrain_y - 0.25,
+            "smooth hill vehicle fell through terrain: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+            vehicle.px_mm as f32 / 1000.0,
+            final_y,
+            vehicle.pz_mm as f32 / 1000.0,
+        );
     }
 
     #[test]
