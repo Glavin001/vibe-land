@@ -1502,6 +1502,14 @@ function GodModeEditorScene({
       shadows
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
       style={{ width: '100%', height: '100%' }}
+      onCreated={(state) => {
+        // R3F attaches pointer events to the outer wrapper by default (`events.connected`).
+        // Drei's OrbitControls uses that same element, but `offsetX`/`offsetY` are relative to
+        // the event target — not the WebGL canvas — so orbit/pan/zoom deltas are wrong when the
+        // canvas does not fill the wrapper pixel-for-pixel. Listen on the canvas instead.
+        state.events.disconnect?.();
+        state.events.connect?.(state.gl.domElement);
+      }}
       onPointerUp={handleTerrainPointerUp}
       onPointerMissed={() => {
         const wasEditing = paintingRef.current || isRampApplying;

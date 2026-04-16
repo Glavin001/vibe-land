@@ -198,6 +198,7 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
       <OrbitControls
         ref={setOrbitRef}
         makeDefault
+        domElement={gl.domElement}
         enableDamping={false}
         maxDistance={180}
         mouseButtons={{
