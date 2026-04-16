@@ -4,6 +4,7 @@ import {
   makeChatId,
   toModelMessages,
   type ChatMessage,
+  type ChatImagePart,
   type ChatPart,
 } from './chatTypes';
 import { createLanguageModel, type ProviderId } from './providers';
@@ -20,13 +21,15 @@ export type GodModeChatOptions = {
   apiKey: string | undefined;
 };
 
+export type ImageAttachment = { dataUrl: string; mediaType: string };
+
 export type GodModeChatHandle = {
   messages: ChatMessage[];
   status: ChatStatus;
   error: Error | null;
   pendingHumanEdits: number;
   canSend: boolean;
-  sendMessage(text: string): Promise<void>;
+  sendMessage(text: string, attachments?: ImageAttachment[]): Promise<void>;
   stop(): void;
   clear(): void;
   pushHumanEdit(summary: string): void;
@@ -79,9 +82,9 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   const canSend = Boolean(apiKey) && status === 'idle';
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: ImageAttachment[]) => {
       const trimmed = text.trim();
-      if (trimmed.length === 0) return;
+      if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
       if (!apiKey) {
         setError(new Error(`Add an API key for ${provider} first.`));
         setStatus('error');
@@ -97,10 +100,19 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       }
       setPendingHumanEdits([]);
 
+      const parts: ChatPart[] = [{ type: 'text', text: trimmed }];
+      if (attachments && attachments.length > 0) {
+        const imageParts: ChatImagePart[] = attachments.map((att) => ({
+          type: 'image',
+          dataUrl: att.dataUrl,
+          mediaType: att.mediaType,
+        }));
+        parts.push(...imageParts);
+      }
       const userMessage: ChatMessage = {
         id: makeChatId(),
         role: 'user',
-        parts: [{ type: 'text', text: trimmed }],
+        parts,
         createdAt: Date.now(),
         hiddenContext,
       };

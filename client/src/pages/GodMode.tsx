@@ -56,13 +56,17 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { CustomStencilPanel } from './godmode/CustomStencilPanel';
+import { CustomStencilPreview } from './godmode/CustomStencilPreview';
 import { useHumanEditTracker } from './godmode/useHumanEditTracker';
 import type { SplineData } from '../ai/splineData';
+import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
+import { useCustomStencils } from '../ai/customStencilStore';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
-type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile';
+type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 type SelectedTarget =
   | { kind: 'static'; id: number }
@@ -108,6 +112,8 @@ export function GodModePage() {
   const [rampStartFalloff, setRampStartFalloff] = useState(0);
   const [rampEndFalloff, setRampEndFalloff] = useState(0);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const customStencils = useCustomStencils();
+  const [customStencilParams, setCustomStencilParams] = useState<Record<string, Record<string, unknown>>>({});
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
@@ -119,6 +125,16 @@ export function GodModePage() {
   const isAiEditRef = useRef(false);
   const aiChatRef = useRef<AiChatPanelHandle>(null);
   const splinesRef = useRef<Map<string, SplineData>>(new Map());
+
+  const activeCustomStencilId = typeof terrainToolMode === 'string' && terrainToolMode.startsWith('custom:')
+    ? terrainToolMode.slice(7)
+    : null;
+  const activeCustomStencil = activeCustomStencilId
+    ? customStencils.find((s) => s.id === activeCustomStencilId) ?? null
+    : null;
+  const activeCustomParams = activeCustomStencilId
+    ? { ...activeCustomStencil?.defaultParams, ...customStencilParams[activeCustomStencilId] }
+    : {};
 
   useEffect(() => {
     worldRef.current = world;
@@ -842,6 +858,14 @@ export function GodModePage() {
           endFalloffM: rampEndFalloff,
         }));
       }}
+      activeCustomStencil={activeCustomStencil}
+      activeCustomParams={activeCustomParams}
+      onApplyCustomStencil={(x, z) => {
+        if (!activeCustomStencil) return;
+        applyPreviewWorldEdit((current) =>
+          applyCustomStencilToWorld(current, activeCustomStencil, activeCustomParams, x, z),
+        );
+      }}
     />
   ), [
     brushMaxHeight,
@@ -861,6 +885,8 @@ export function GodModePage() {
     rampTargetKind,
     rampWidth,
     rampYawDegrees,
+    activeCustomStencil,
+    activeCustomParams,
     terrainToolMode,
     beginTrackedWorldEdit,
     commitTrackedWorldEdit,
@@ -992,6 +1018,22 @@ export function GodModePage() {
                     <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
                     <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
                     <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
+                    {customStencils.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setTerrainToolMode(`custom:${s.id}`);
+                          if (!customStencilParams[s.id]) {
+                            setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
+                          }
+                        }}
+                        style={terrainToolMode === `custom:${s.id}` ? activeButtonStyle : secondaryButtonStyle}
+                        title={s.description}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
                   </div>
                   {terrainToolMode === 'sculpt' ? (
                     <>
@@ -1123,11 +1165,20 @@ export function GodModePage() {
                     <div style={mutedTextStyle}>
                       Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
                     </div>
-                  ) : (
+                  ) : terrainToolMode === 'delete-tile' ? (
                     <div style={mutedTextStyle}>
                       Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
                     </div>
-                  )}
+                  ) : activeCustomStencil ? (
+                    <CustomStencilPanel
+                      stencil={activeCustomStencil}
+                      params={activeCustomParams}
+                      onChange={(nextParams) => {
+                        if (!activeCustomStencilId) return;
+                        setCustomStencilParams((prev) => ({ ...prev, [activeCustomStencilId]: nextParams }));
+                      }}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>
@@ -1288,6 +1339,9 @@ function GodModeEditorScene({
   onAddTile,
   onDeleteTile,
   onApplyRamp,
+  activeCustomStencil,
+  activeCustomParams,
+  onApplyCustomStencil,
 }: {
   world: WorldDocument;
   tool: EditorTool;
@@ -1323,6 +1377,9 @@ function GodModeEditorScene({
   onAddTile: (tileX: number, tileZ: number) => void;
   onDeleteTile: (tileX: number, tileZ: number) => void;
   onApplyRamp: (x: number, z: number) => void;
+  activeCustomStencil: CustomStencilDefinition | null;
+  activeCustomParams: Record<string, unknown>;
+  onApplyCustomStencil: (x: number, z: number) => void;
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
@@ -1349,7 +1406,7 @@ function GodModeEditorScene({
     if (brushCursorRef.current) {
       brushCursorRef.current.position.set(event.point.x, event.point.y + 0.06, event.point.z);
     }
-    if (terrainToolMode === 'ramp') {
+    if (terrainToolMode === 'ramp' || terrainToolMode.startsWith('custom:')) {
       setTerrainPointerPoint(nextPoint);
     }
     if (terrainToolMode === 'delete-tile') {
@@ -1380,6 +1437,13 @@ function GodModeEditorScene({
       onApplyRamp(event.point.x, event.point.z);
       return;
     }
+    if (tool === 'terrain' && terrainToolMode.startsWith('custom:')) {
+      onTerrainEditStart();
+      setIsRampApplying(true);
+      setTerrainPointerPoint(nextPoint);
+      onApplyCustomStencil(event.point.x, event.point.z);
+      return;
+    }
     if (tool === 'terrain' && terrainToolMode === 'delete-tile' && typeof tileX === 'number' && typeof tileZ === 'number') {
       setHoveredTerrainTile({ tileX, tileZ });
       onDeleteTile(tileX, tileZ);
@@ -1387,7 +1451,7 @@ function GodModeEditorScene({
       return;
     }
     onSelect(null);
-  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
+  }, [onApplyCustomStencil, onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     const wasEditing = paintingRef.current || isRampApplying;
@@ -1507,10 +1571,14 @@ function GodModeEditorScene({
       }
       if (terrainToolMode === 'ramp' && isRampApplying) {
         onApplyRamp(point[0], point[2]);
+        return;
+      }
+      if (terrainToolMode.startsWith('custom:') && isRampApplying) {
+        onApplyCustomStencil(point[0], point[2]);
       }
     }, 80);
     return () => window.clearInterval(interval);
-  }, [isRampApplying, onApplyRamp, onPaint, terrainToolMode, tool]);
+  }, [isRampApplying, onApplyCustomStencil, onApplyRamp, onPaint, terrainToolMode, tool]);
 
   const hoveredTerrainTileCenter = useMemo(() => {
     if (!hoveredTerrainTile) {
@@ -1613,6 +1681,15 @@ function GodModeEditorScene({
           sideFalloffM={rampSideFalloff}
           startFalloffM={rampStartFalloff}
           endFalloffM={rampEndFalloff}
+        />
+      )}
+      {tool === 'terrain' && activeCustomStencil && terrainPointerPoint && (
+        <CustomStencilPreview
+          world={world}
+          stencilDef={activeCustomStencil}
+          params={activeCustomParams}
+          centerX={terrainPointerPoint[0]}
+          centerZ={terrainPointerPoint[2]}
         />
       )}
       <group>

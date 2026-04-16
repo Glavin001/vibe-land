@@ -156,6 +156,70 @@ This is a powerful general-purpose terrain shaping tool. It applies a cross-sect
 ## Math helpers
 \`ctx.quaternionFromYaw(yawRad)\`, \`ctx.identityQuaternion()\`
 
+## Custom stencils
+You can create **custom interactive terrain tools** that the human can use with their cursor — just like the built-in sculpt and ramp tools.
+
+- \`ctx.registerCustomStencil(definition)\` — registers a custom terrain stencil tool. Returns \`{ registered: boolean, error?: string }\`.
+- \`ctx.applyCustomStencil(stencilId, centerX, centerZ, params?)\` — programmatically apply a registered stencil. Returns \`{ changed, samplesAffected, deltaMin, deltaMax, heightMin, heightMax }\`.
+
+**Definition shape:**
+\`\`\`ts
+{
+  id: string,           // unique identifier
+  name: string,         // display name shown in the toolbar
+  description?: string, // tooltip text
+  parameterSchema?: object,  // JSON Schema (draft-07) for tweakable params
+  defaultParams?: object,    // default parameter values
+  uiSchema?: object,         // react-jsonschema-form UI hints
+  applyFn: string,      // JavaScript function body (see below)
+}
+\`\`\`
+
+**applyFn** receives a single \`ctx\` argument with:
+- \`ctx.params\` — the merged parameter values (defaults + user tweaks)
+- \`ctx.centerX\`, \`ctx.centerZ\` — cursor world position
+- \`ctx.forEachSample((x, z, currentHeight) => newHeight | undefined)\` — iterates every terrain grid point. Return a new height, or \`undefined\` to skip that sample. Heights are clamped to [-10, 50].
+- \`ctx.sampleHeight(x, z)\` — interpolated terrain Y at world XZ
+- \`ctx.clamp(value, min, max)\`, \`ctx.lerp(a, b, t)\` — math helpers
+- \`ctx.TERRAIN_MIN_HEIGHT\` (-10), \`ctx.TERRAIN_MAX_HEIGHT\` (50)
+- \`ctx.terrainInfo\` — \`{ tileGridSize, tileHalfExtentM, tileCount, bounds }\`
+
+Once registered, the stencil appears as a button in the terrain toolbar. The human can select it, adjust parameters via an auto-generated form, and click/drag on the terrain to apply it. A live preview overlay shows exactly what will change before they click.
+
+**Example — crater stencil:**
+\`\`\`js
+ctx.registerCustomStencil({
+  id: 'crater',
+  name: 'Crater',
+  description: 'Circular crater with smooth falloff',
+  parameterSchema: {
+    type: 'object',
+    properties: {
+      radius: { type: 'number', title: 'Radius', default: 8, minimum: 1, maximum: 40 },
+      depth: { type: 'number', title: 'Depth', default: 3, minimum: 0.5, maximum: 20 },
+      strength: { type: 'number', title: 'Strength', default: 0.3, minimum: 0.02, maximum: 1 },
+    },
+  },
+  defaultParams: { radius: 8, depth: 3, strength: 0.3 },
+  applyFn: \`
+    const radius = ctx.params.radius;
+    const depth = ctx.params.depth;
+    const strength = ctx.params.strength;
+    ctx.forEachSample((x, z, currentHeight) => {
+      const dist = Math.sqrt((x - ctx.centerX) ** 2 + (z - ctx.centerZ) ** 2);
+      if (dist > radius) return undefined;
+      const t = dist / radius;
+      const targetHeight = currentHeight - depth * (1 - t * t);
+      if (targetHeight >= currentHeight) return undefined;
+      return ctx.clamp(
+        currentHeight + strength * (targetHeight - currentHeight),
+        ctx.TERRAIN_MIN_HEIGHT, ctx.TERRAIN_MAX_HEIGHT
+      );
+    });
+  \`,
+});
+\`\`\`
+
 # Brush behavior
 
 All terrain brushes use **quadratic falloff**: \`influence = (1 − distance/radius)²\`. The center of the brush gets full strength; the edge gets zero. This produces smooth, natural sculpts without hard boundaries.

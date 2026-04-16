@@ -26,6 +26,8 @@ import {
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
+import { applyCustomStencilToWorld, type CustomStencilDefinition } from './customStencil';
+import { getStencil, registerStencil } from './customStencilStore';
 
 import type { SplineData, SplinePoint } from './splineData';
 import {
@@ -202,6 +204,15 @@ export type WorldCtx = {
     falloff?: number;
     sampleSpacing?: number;
   }): { changed: boolean } & Partial<TerrainMutationStats>;
+
+  // ---- CUSTOM STENCILS ----
+  registerCustomStencil(definition: CustomStencilDefinition): { registered: boolean; error?: string };
+  applyCustomStencil(
+    stencilId: string,
+    centerX: number,
+    centerZ: number,
+    params?: Record<string, unknown>,
+  ): { changed: boolean; error?: string } & Partial<TerrainMutationStats>;
 
   // ---- SPLINE CRUD ----
   createSpline(spec: {
@@ -575,6 +586,22 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
           falloff: spec.falloff ?? 2,
           sampleSpacing: spec.sampleSpacing ?? 1,
         }),
+      );
+      if (!changed) return { changed: false };
+      return { changed: true, ...computeTerrainMutationStats(before, accessors.getWorld()) };
+    },
+
+    registerCustomStencil(definition) {
+      return registerStencil(definition);
+    },
+
+    applyCustomStencil(stencilId, centerX, centerZ, params) {
+      const stencilDef = getStencil(stencilId);
+      if (!stencilDef) return { changed: false, error: `no custom stencil with id "${stencilId}"` };
+      const mergedParams = { ...stencilDef.defaultParams, ...params };
+      const before = accessors.getWorld();
+      const changed = aiEdit((current) =>
+        applyCustomStencilToWorld(current, stencilDef, mergedParams, centerX, centerZ),
       );
       if (!changed) return { changed: false };
       return { changed: true, ...computeTerrainMutationStats(before, accessors.getWorld()) };
