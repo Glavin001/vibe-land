@@ -92,29 +92,38 @@ test.describe('Multiplayer Smoke', () => {
         { timeout: 30_000, label: 'B sees remote player' },
       );
 
-      // 7. Wait for prediction system to be ready (player placed in world)
-      // before attempting movement. The prediction system initialises after
-      // receiving the first world chunks from the server.
-      await waitForSnapshot(
+      // 7. Verify prediction is live: press forward on A and confirm A's
+      // own position changes. This proves the physics loop is processing
+      // keyboard input before we rely on B observing the movement.
+      const preMove = await snapshot(pageA);
+      await holdMove(pageA, 'forward', 1500);
+      const postMove = await waitForSnapshot(
         pageA,
-        (s) => Math.hypot(s.position[0], s.position[2]) > 0 || s.position[1] > 0.5,
-        { timeout: 15_000, label: 'A prediction ready' },
+        (s) => {
+          const d = Math.hypot(
+            s.position[0] - preMove.position[0],
+            s.position[2] - preMove.position[2],
+          );
+          return d > 0.3;
+        },
+        { timeout: 10_000, label: 'A actually moved locally' },
       );
 
-      // Record B's view of A's position before A moves
+      // Record B's view of A's position before the observation window
       const beforeMoveB = await snapshot(pageB);
       const remoteABefore = beforeMoveB.remotePlayers.find(
         (rp) => rp.id === readyA.playerId,
       );
 
-      // Hold move longer to ensure physics has time to propagate through
-      // the server and back to B's interpolation buffer.
-      await holdMove(pageA, 'forward', 2000);
-      await pageA.waitForTimeout(1500);
-
-      // Wait for B to see A's position update — use generous timeout since
-      // server snapshots arrive at ~30Hz and interpolation adds delay.
-      const afterMoveB = await waitForSnapshot(
+      // Move A further while simultaneously polling B. Use multiple short
+      // movements so input events keep flowing during the wait loop.
+      const moveAndWait = async () => {
+        for (let i = 0; i < 4; i++) {
+          await holdMove(pageA, 'forward', 1000);
+          await pageA.waitForTimeout(300);
+        }
+      };
+      const observePromise = waitForSnapshot(
         pageB,
         (s) => {
           const remoteA = s.remotePlayers.find((rp) => rp.id === readyA.playerId);
@@ -125,8 +134,11 @@ test.describe('Multiplayer Smoke', () => {
           );
           return delta > 0.3;
         },
-        { timeout: 20_000, label: 'B sees A moved' },
+        { timeout: 30_000, label: 'B sees A moved' },
       );
+
+      // Run movement and observation concurrently
+      const [afterMoveB] = await Promise.all([observePromise, moveAndWait()]);
 
       const remoteAAfter = afterMoveB.remotePlayers.find(
         (rp) => rp.id === readyA.playerId,
