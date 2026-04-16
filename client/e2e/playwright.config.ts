@@ -34,7 +34,7 @@ export default defineConfig({
   outputDir: path.resolve(__dirname, 'test-results'),
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   workers: 1,
   reporter: process.env.CI
     ? [['github'], ['html', { outputFolder: path.resolve(__dirname, 'playwright-report') }]]

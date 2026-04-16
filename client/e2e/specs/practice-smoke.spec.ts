@@ -112,14 +112,15 @@ test.describe('Practice Mode Smoke', () => {
       const vehicleSnap = await enterNearestVehicle(page);
       expect(vehicleSnap.inVehicle).toBe(true);
 
-      // 12. Drive forward
+      // 12. Drive forward — use cameraPosition since the camera follows the
+      // vehicle while the player position may stay at the last on-foot spot.
       const beforeDrive = await snapshot(page);
-      await driveForward(page, 800);
-      await page.waitForTimeout(200);
+      await driveForward(page, 1500);
+      await page.waitForTimeout(500);
       const afterDrive = await snapshot(page);
       const driveDelta = Math.hypot(
-        afterDrive.position[0] - beforeDrive.position[0],
-        afterDrive.position[2] - beforeDrive.position[2],
+        afterDrive.cameraPosition[0] - beforeDrive.cameraPosition[0],
+        afterDrive.cameraPosition[2] - beforeDrive.cameraPosition[2],
       );
       expect(driveDelta).toBeGreaterThan(0);
 
