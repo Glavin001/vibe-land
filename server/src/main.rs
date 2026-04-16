@@ -32,6 +32,11 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
+use vibe_land_shared::constants::{
+    DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M,
+    PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
+    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+};
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
@@ -48,22 +53,14 @@ use crate::{
     },
     voxel_world::VoxelWorld,
 };
-const SIM_HZ: u16 = 60;
-const SNAPSHOT_HZ: u16 = 30;
+const SNAPSHOT_HZ: u16 = SNAPSHOT_HZ_MULTIPLAYER;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
-const MAX_PENDING_INPUTS: usize = 120;
-const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
-const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 const RIFLE_BODY_DAMAGE: u8 = 25;
 const RIFLE_HEAD_DAMAGE: u8 = 50;
-const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
-const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
-const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
-const OUT_OF_BOUNDS_Y_M: f32 = -12.0;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 const PLAYER_AOI_RADIUS_M: f32 = 80.0;
@@ -2276,13 +2273,13 @@ impl MatchState {
             let world_toi = self.arena.cast_static_world_ray(
                 origin,
                 queued.cmd.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 queued.cmd.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
             let blocker_toi = match (world_toi, dynamic_hit.map(|(_, toi, _)| toi)) {

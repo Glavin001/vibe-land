@@ -2,8 +2,10 @@ use std::collections::VecDeque;
 
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
+        PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT,
+        PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
+        RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -14,14 +16,7 @@ use crate::{
 };
 use bytes::{Buf, BufMut, BytesMut};
 
-const SIM_HZ: u16 = 60;
-const SNAPSHOT_HZ: u16 = SIM_HZ;
-const MAX_PENDING_INPUTS: usize = 120;
 const LOCAL_PLAYER_ID: u32 = 1;
-const LOCAL_RIFLE_INTERVAL_MS: u32 = 100;
-const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
-const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
-const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -82,7 +77,7 @@ impl LocalPreviewSession {
             .push(encode_welcome_packet(&WelcomePacket {
                 player_id: LOCAL_PLAYER_ID,
                 sim_hz: SIM_HZ,
-                snapshot_hz: SNAPSHOT_HZ,
+                snapshot_hz: SNAPSHOT_HZ_LOCAL,
                 server_time_us,
                 interpolation_delay_ms: 0,
             }));
@@ -180,7 +175,7 @@ impl LocalPreviewSession {
         self.arena.step_vehicles_and_dynamics(dt);
         self.process_hitscan(server_time_ms);
 
-        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
+        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
         }
     }
@@ -207,7 +202,7 @@ impl LocalPreviewSession {
                 continue;
             }
             self.player.next_allowed_fire_ms =
-                server_time_ms.saturating_add(LOCAL_RIFLE_INTERVAL_MS);
+                server_time_ms.saturating_add(RIFLE_FIRE_INTERVAL_MS);
 
             if self.arena.vehicle_of_player.contains_key(&LOCAL_PLAYER_ID) {
                 continue;
@@ -225,13 +220,13 @@ impl LocalPreviewSession {
             let world_toi = self.arena.cast_static_world_ray(
                 origin,
                 shot.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(LOCAL_PLAYER_ID),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(LOCAL_PLAYER_ID),
             );
 

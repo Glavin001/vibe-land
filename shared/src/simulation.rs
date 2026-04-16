@@ -17,13 +17,6 @@ const SUPPORT_CONTACT_MARGIN_M: f32 = 0.35;
 const SUPPORT_SNAP_EXTRA_M: f32 = 0.06;
 const SUPPORT_PLATFORM_VEL_EPSILON_MPS: f32 = 0.35;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PlayerKccMode {
-    #[default]
-    TwoPass,
-    OnePassSupportPredicate,
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 
@@ -422,32 +415,6 @@ pub fn simulate_player_tick(
     input: &InputCmd,
     dt: f32,
 ) -> PlayerTickResult {
-    simulate_player_tick_with_mode(
-        sim,
-        collider_handle,
-        position,
-        velocity,
-        yaw,
-        pitch,
-        on_ground,
-        input,
-        dt,
-        PlayerKccMode::OnePassSupportPredicate,
-    )
-}
-
-pub fn simulate_player_tick_with_mode(
-    sim: &SimWorld,
-    collider_handle: ColliderHandle,
-    position: &mut Vec3d,
-    velocity: &mut Vec3d,
-    yaw: &mut f64,
-    pitch: &mut f64,
-    on_ground: &mut bool,
-    input: &InputCmd,
-    dt: f32,
-    kcc_mode: PlayerKccMode,
-) -> PlayerTickResult {
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
@@ -459,101 +426,50 @@ pub fn simulate_player_tick_with_mode(
     let query_ctx = sim.player_query_context(collider_handle);
     result.timings.query_ctx_ms = elapsed_ms(query_ctx_started);
 
-    let (touched_dynamic_support, used_dynamic_support_filter) = match kcc_mode {
-        PlayerKccMode::TwoPass => {
-            let mut horizontal_position = *position;
-            let mut horizontal_velocity = Vec3d::new(velocity.x, 0.0, velocity.z);
-            let mut horizontal_ground = *on_ground;
-            let horizontal_started = now_marker();
-            query_ctx.move_character_horizontal(
-                &mut horizontal_position,
-                &mut horizontal_velocity,
-                &mut horizontal_ground,
+    let capture_support_collisions = velocity.y <= 0.0;
+    let vertical_velocity = velocity.y;
+    let should_use_dynamic_support_filter = capture_support_collisions
+        && merged_support_filter_needs_dynamic_support(
+            sim,
+            &query_ctx,
+            position,
+            vertical_velocity,
+            dt,
+        );
+    let mut merged_collisions = Vec::new();
+    let merged_started = now_marker();
+    if should_use_dynamic_support_filter {
+        let filter_position = *position;
+        let predicate = |handle: ColliderHandle, collider: &Collider| {
+            merged_support_filter_allows_dynamic_collider(
+                sim,
+                &filter_position,
+                vertical_velocity,
                 dt,
-            );
-            result.timings.kcc_horizontal_ms = elapsed_ms(horizontal_started);
-            position.x = horizontal_position.x;
-            position.z = horizontal_position.z;
-            velocity.x = horizontal_velocity.x;
-            velocity.z = horizontal_velocity.z;
-
-            let capture_support_collisions = velocity.y <= 0.0;
-            let mut support_velocity = Vec3d::new(0.0, velocity.y, 0.0);
-            let mut support_ground = *on_ground;
-            let mut support_collisions = Vec::new();
-            let support_started = now_marker();
-            query_ctx.move_character_support(
-                position,
-                &mut support_velocity,
-                &mut support_ground,
-                dt,
-                if capture_support_collisions {
-                    Some(&mut support_collisions)
-                } else {
-                    None
-                },
-            );
-            result.timings.kcc_support_ms = elapsed_ms(support_started);
-            velocity.y = support_velocity.y;
-            *on_ground = support_ground;
-            (
-                capture_support_collisions
-                    && support_ground
-                    && support_pass_hit_dynamic_body(sim, &support_collisions),
-                false,
+                handle,
+                collider,
             )
-        }
-        PlayerKccMode::OnePassSupportPredicate => {
-            let capture_support_collisions = velocity.y <= 0.0;
-            let vertical_velocity = velocity.y;
-            let should_use_dynamic_support_filter = capture_support_collisions
-                && merged_support_filter_needs_dynamic_support(
-                    sim,
-                    &query_ctx,
-                    position,
-                    vertical_velocity,
-                    dt,
-                );
-            let mut merged_collisions = Vec::new();
-            let merged_started = now_marker();
-            if should_use_dynamic_support_filter {
-                let filter_position = *position;
-                let predicate = |handle: ColliderHandle, collider: &Collider| {
-                    merged_support_filter_allows_dynamic_collider(
-                        sim,
-                        &filter_position,
-                        vertical_velocity,
-                        dt,
-                        handle,
-                        collider,
-                    )
-                };
-                query_ctx.move_character_with_support_predicate(
-                    position,
-                    velocity,
-                    on_ground,
-                    dt,
-                    &predicate,
-                    Some(&mut merged_collisions),
-                );
-            } else {
-                query_ctx.move_character_horizontal(position, velocity, on_ground, dt);
-            }
-            result.timings.kcc_merged_ms = elapsed_ms(merged_started);
-            (
-                should_use_dynamic_support_filter
-                    && *on_ground
-                    && support_pass_hit_dynamic_body(sim, &merged_collisions),
-                should_use_dynamic_support_filter,
-            )
-        }
-    };
+        };
+        query_ctx.move_character_with_support_predicate(
+            position,
+            velocity,
+            on_ground,
+            dt,
+            &predicate,
+            Some(&mut merged_collisions),
+        );
+    } else {
+        query_ctx.move_character_horizontal(position, velocity, on_ground, dt);
+    }
+    result.timings.kcc_merged_ms = elapsed_ms(merged_started);
+    let touched_dynamic_support = should_use_dynamic_support_filter
+        && *on_ground
+        && support_pass_hit_dynamic_body(sim, &merged_collisions);
+    let used_dynamic_support_filter = should_use_dynamic_support_filter;
 
     let support_probe_started = now_marker();
-    let should_probe_dynamic_support = touched_dynamic_support
-        || matches!(kcc_mode, PlayerKccMode::OnePassSupportPredicate)
-            && used_dynamic_support_filter
-            && velocity.y <= 0.0;
+    let should_probe_dynamic_support =
+        touched_dynamic_support || used_dynamic_support_filter && velocity.y <= 0.0;
     let support_probe_hit = stabilize_dynamic_support(
         sim,
         &query_ctx,
@@ -694,7 +610,7 @@ mod tests {
         sim.rebuild_broad_phase();
 
         for _ in 0..120 {
-            simulate_player_tick_with_mode(
+            simulate_player_tick(
                 &sim,
                 collider,
                 &mut pos,
@@ -704,12 +620,11 @@ mod tests {
                 &mut on_ground,
                 &input(),
                 1.0 / 60.0,
-                PlayerKccMode::OnePassSupportPredicate,
             );
             sim.sync_player_collider(collider, &pos);
         }
 
-        let result = simulate_player_tick_with_mode(
+        let result = simulate_player_tick(
             &sim,
             collider,
             &mut pos,
@@ -719,7 +634,6 @@ mod tests {
             &mut on_ground,
             &input(),
             1.0 / 60.0,
-            PlayerKccMode::OnePassSupportPredicate,
         );
 
         assert!(on_ground, "player should remain grounded on static floor");

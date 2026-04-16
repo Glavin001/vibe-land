@@ -10,7 +10,7 @@ import type { RemotePlayer } from './useGameConnection';
 import { useGameConnection } from './useGameConnection';
 import { LocalPracticeClient } from '../net/localPracticeClient';
 import { usePredictionWithWorld } from '../physics/usePrediction';
-import { buildInputFromState } from './inputBuilder';
+import { FixedInputBundler } from '../runtime/fixedInputBundler';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -35,6 +35,7 @@ import {
   FLAG_IN_VEHICLE,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
+  RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
@@ -62,7 +63,6 @@ import {
 } from './vehicleLocalMeshPose';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
-const LOCAL_RIFLE_INTERVAL_MS = 100;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
@@ -72,8 +72,6 @@ const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
-const LOCAL_INPUT_FIXED_DT = 1 / 60;
-const LOCAL_INPUT_MAX_CATCHUP_STEPS = 4;
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -1028,8 +1026,7 @@ export function GameWorld({
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
-  const localInputAccumulatorRef = useRef(0);
-  const localNextSeqRef = useRef(1);
+  const localInputBundlerRef = useRef(new FixedInputBundler(1 / 60, 4));
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -1171,8 +1168,7 @@ export function GameWorld({
   }, [benchmarkAutopilot]);
 
   useEffect(() => {
-    localInputAccumulatorRef.current = 0;
-    localNextSeqRef.current = 1;
+    localInputBundlerRef.current.reset(1);
   }, [practiceMode, worldJson, ready]);
 
   useFrame((_frameState, delta) => {
@@ -1587,7 +1583,7 @@ export function GameWorld({
           lastDynamicShotAgeMs: -1,
           vehiclePendingInputs: 0,
           vehicleAckSeq: localPracticeClient?.currentAckInputSeq ?? 0,
-          vehicleLatestLocalSeq: localNextSeqRef.current & 0xffff,
+          vehicleLatestLocalSeq: localInputBundlerRef.current.peekNextSeq(),
           vehiclePendingInputsAgeMs: 0,
           vehicleAckBacklogMs: 0,
           vehicleResendWindow: 0,
@@ -1784,18 +1780,7 @@ export function GameWorld({
     }
 
     if (practiceMode && client) {
-      localInputAccumulatorRef.current += frameDelta;
-      const bundledInputs: Array<ReturnType<typeof buildInputFromState>> = [];
-      let steps = 0;
-      while (localInputAccumulatorRef.current >= LOCAL_INPUT_FIXED_DT && steps < LOCAL_INPUT_MAX_CATCHUP_STEPS) {
-        const seq = localNextSeqRef.current++ & 0xffff;
-        bundledInputs.push(buildInputFromState(seq, 0, resolvedInput));
-        localInputAccumulatorRef.current -= LOCAL_INPUT_FIXED_DT;
-        steps += 1;
-      }
-      if (localInputAccumulatorRef.current > LOCAL_INPUT_FIXED_DT) {
-        localInputAccumulatorRef.current = LOCAL_INPUT_FIXED_DT;
-      }
+      const bundledInputs = localInputBundlerRef.current.produce(frameDelta, resolvedInput);
       if (bundledInputs.length > 0) {
         sendInputs(bundledInputs);
       }
@@ -1821,7 +1806,7 @@ export function GameWorld({
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
-        nextLocalFireMsRef.current = now + LOCAL_RIFLE_INTERVAL_MS;
+        nextLocalFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
         const sceneHit = practiceMode
@@ -1998,7 +1983,7 @@ export function GameWorld({
           sceneHit?.toi ?? null,
         );
         sendFire({
-          seq: practiceMode ? (localNextSeqRef.current & 0xffff) : prediction.getNextSeq(),
+          seq: practiceMode ? localInputBundlerRef.current.peekNextSeq() : prediction.getNextSeq(),
           shotId,
           weapon: WEAPON_HITSCAN,
           clientFireTimeUs: client.serverClock.serverNowUs(),

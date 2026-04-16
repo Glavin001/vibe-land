@@ -1,6 +1,7 @@
 import { PlayerInterpolator, ServerClockEstimator, type DynamicBodySample, type VehicleSample } from './interpolation';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
+  SIM_HZ,
   netDynamicBodyStateToMeters,
   netPlayerStateToMeters,
   netVehicleStateToMeters,
@@ -16,7 +17,6 @@ import {
 import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
 
-const SIM_HZ = 60;
 const FIXED_DT = 1 / SIM_HZ;
 const MAX_CATCHUP_TICKS = 4;
 const SNAPSHOT_META_STRIDE = 4;
