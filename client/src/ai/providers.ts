@@ -99,3 +99,47 @@ export function createLanguageModel(
     }
   }
 }
+
+/**
+ * Returns providerOptions for streamText that enable extended thinking with a
+ * medium budget for models/providers that support it. Returns {} for models
+ * that don't support thinking (e.g. GPT chat models, Haiku).
+ */
+export function getThinkingProviderOptions(
+  provider: ProviderId,
+  modelId: string,
+): Record<string, Record<string, unknown>> {
+  switch (provider) {
+    case 'anthropic': {
+      // Haiku models do not support thinking
+      if (modelId.includes('haiku')) return {};
+      // claude-*-4-6 and later support adaptive thinking
+      if (/4-6/.test(modelId)) {
+        return { anthropic: { thinking: { type: 'adaptive' } } };
+      }
+      // Earlier claude models use budget-based thinking
+      return { anthropic: { thinking: { type: 'enabled', budgetTokens: 10000 } } };
+    }
+    case 'openai': {
+      // Only o-series reasoning models support reasoningEffort;
+      // GPT-* chat models will error if this option is sent.
+      if (/^o\d/.test(modelId)) {
+        return { openai: { reasoningEffort: 'medium' } };
+      }
+      return {};
+    }
+    case 'google': {
+      // Gemini 3.x → thinkingLevel (categorical)
+      if (/^gemini-3/.test(modelId)) {
+        return { google: { thinkingConfig: { thinkingLevel: 'medium', includeThoughts: true } } };
+      }
+      // Gemini 2.5 → thinkingBudget (token count)
+      if (/^gemini-2\.5/.test(modelId)) {
+        return { google: { thinkingConfig: { thinkingBudget: 8000, includeThoughts: true } } };
+      }
+      return {};
+    }
+    default:
+      return {};
+  }
+}

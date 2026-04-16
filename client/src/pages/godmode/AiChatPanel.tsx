@@ -284,6 +284,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       {message.parts.map((part, idx) => (
         <PartView key={idx} part={part} />
       ))}
+      {!isUser && message.usage && (
+        <div style={usageStyle}>
+          {message.usage.inputTokens.toLocaleString()} in · {message.usage.outputTokens.toLocaleString()} out
+        </div>
+      )}
     </div>
   );
 }
@@ -604,6 +609,13 @@ const codeBlockStyle: CSSProperties = {
   wordBreak: 'break-word',
   color: 'rgba(238, 247, 255, 0.86)',
   maxHeight: 240,
+};
+
+const usageStyle: CSSProperties = {
+  fontSize: 10,
+  color: 'rgba(238, 247, 255, 0.35)',
+  letterSpacing: '0.06em',
+  marginTop: 2,
 };
 
 const streamingIndicatorStyle: CSSProperties = {
