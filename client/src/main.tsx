@@ -9,6 +9,10 @@ import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
 
+// E2E bridge: always-on read-only introspection for Playwright tests.
+// Importing the module installs window.__VIBE_E2E__ immediately.
+import './e2eBridge';
+
 const root = createRoot(document.getElementById('root')!);
 
 // Backwards-compat: silently rewrite /godmode to /builder/world so the URL

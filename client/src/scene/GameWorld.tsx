@@ -9,6 +9,8 @@ import type { CrosshairAimState } from './aimTargeting';
 import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
+import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
   advanceLookAngles,
@@ -2228,6 +2230,60 @@ export function GameWorld({
           localFlags: client?.localPlayerFlags ?? 0,
         },
       );
+    }
+
+    // E2E bridge: publish frame state for read-only snapshot
+    {
+      const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
+      for (const [id, rp] of state.remotePlayers) {
+        const sample = state.remoteInterpolator.sample(
+          id,
+          state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+        );
+        remoteSummaries.push({
+          id,
+          position: sample?.position ?? rp.position,
+        });
+      }
+      updateE2EBridgeFrameState({
+        cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+        cameraYaw: yawRef.current,
+        cameraPitch: pitchRef.current,
+        drivenVehicleId: drivenVehicleId ?? null,
+        nearestVehicleId: nearestVehicleIdRef.current,
+        remotePlayers: remoteSummaries,
+        stats: {
+          ...DEFAULT_STATS,
+          frameTimeMs: frameDelta * 1000,
+          drawCalls: gl.info.render.calls,
+          triangles: gl.info.render.triangles,
+          geometries: gl.info.memory.geometries,
+          textures: gl.info.memory.textures,
+          transport: client?.transport ?? 'connecting',
+          pingMs: client?.rttMs ?? 0,
+          serverTick: state.latestServerTick,
+          interpolationDelayMs: state.interpolationDelayMs,
+          dynamicBodyInterpolationDelayMs: client?.dynamicBodyInterpolationDelayMs ?? 0,
+          clockOffsetUs: state.serverClock.getOffsetUs(),
+          remotePlayers: state.remotePlayers.size,
+          pendingInputs: physStats.pendingInputs,
+          predictionTicks: physStats.predictionTicks,
+          playerCorrectionMagnitude: physStats.playerCorrectionMagnitude,
+          vehicleCorrectionMagnitude: physStats.vehicleCorrectionMagnitude,
+          physicsStepMs: physStats.physicsStepMs,
+          shotsFired: client?.getDebugTelemetrySnapshot().shotsFired ?? 0,
+          lastShotOutcome: client?.getDebugTelemetrySnapshot().lastShotOutcome ?? 'none',
+          vehicleDebugId: drivenVehicleId ?? 0,
+          playerId: state.playerId,
+          position: pos as [number, number, number],
+          velocity: physStats.velocity,
+          speedMs: Math.hypot(physStats.velocity[0], physStats.velocity[1], physStats.velocity[2]),
+          hp: client?.localPlayerHp ?? 100,
+          onGround: ((client?.localPlayerFlags ?? 0) & 0x1) !== 0,
+          inVehicle: ((client?.localPlayerFlags ?? 0) & 0x2) !== 0,
+          dead: ((client?.localPlayerFlags ?? 0) & 0x4) !== 0,
+        },
+      });
     }
 
     // Update remote player meshes
