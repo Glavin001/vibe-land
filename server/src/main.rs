@@ -3319,9 +3319,10 @@ mod tests {
 
     #[test]
     fn visible_dynamic_body_within_aoi_stays_replicated() {
+        // Body within exit radius stays replicated when already visible
         assert!(dynamic_body_within_aoi(
             true,
-            [super::DYNAMIC_BODY_AOI_RADIUS_M + 8.0, 0.0, 0.0],
+            [super::DYNAMIC_BODY_AOI_EXIT_RADIUS_M - 1.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ));
     }

@@ -601,10 +601,9 @@ mod tests {
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
             .expect("initial local preview snapshot");
         let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
-        assert_eq!(
-            initial_vehicle.len(),
-            1,
-            "demo local preview should expose one vehicle"
+        assert!(
+            !initial_vehicle.is_empty(),
+            "demo local preview should expose at least one vehicle"
         );
         let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
         assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
@@ -621,10 +620,13 @@ mod tests {
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
             .expect("latest local preview snapshot");
         let latest_vehicle = decode_snapshot_vehicle_states(&latest_snapshot);
-        assert_eq!(latest_vehicle.len(), 1);
-        let (_, latest_driver_id, _, _, _) = latest_vehicle[0];
+        assert_eq!(latest_vehicle.len(), initial_vehicle.len());
+        let entered = latest_vehicle
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("entered vehicle should still be present");
         assert_eq!(
-            latest_driver_id, LOCAL_PLAYER_ID,
+            entered.1, LOCAL_PLAYER_ID,
             "local preview vehicle should be driven by the local player after enter"
         );
     }

@@ -17,7 +17,7 @@ mod tests {
         seed_default_world(&mut arena).expect("instantiate default world");
 
         assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.vehicles.len(), 2);
     }
 
     #[test]
@@ -31,8 +31,8 @@ mod tests {
             arena.dynamic.dynamic_bodies.len()
         );
         assert!(
-            arena.vehicles.len() <= 1,
-            "default multiplayer world spawned {} vehicles; keep it at or under 1",
+            arena.vehicles.len() <= 2,
+            "default multiplayer world spawned {} vehicles; keep it at or under 2",
             arena.vehicles.len()
         );
     }

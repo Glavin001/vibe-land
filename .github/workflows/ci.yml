@@ -24,7 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
-      - run: cargo fmt --check
+      - run: cargo fmt --all --check
       - run: cargo test
 
   # ── Client lint & unit tests ───────────────────────────────────────────────
