@@ -127,8 +127,8 @@ export function GodModeCameraControls({ tool, setOrbitTargetRef }: Props) {
       enableDamping
       dampingFactor={0.08}
       mouseButtons={{
-        // Left click is free for terrain painting and object selection
-        LEFT: null,
+        // Left click is free for terrain painting and object selection (undefined = disabled)
+        LEFT: undefined,
         // Middle mouse = orbit (Blender-style)
         MIDDLE: THREE.MOUSE.ROTATE,
         // Right mouse = pan
