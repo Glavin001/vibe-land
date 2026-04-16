@@ -43,13 +43,9 @@ export default defineConfig(({ mode }) => {
       exclude: ['vibe-land-shared'],
     },
     test: {
-      // Exclude Playwright E2E specs from vitest — they use @playwright/test
-      // and are run separately via `npm run e2e`.
-      exclude: [
-        '**/node_modules/**',
-        '**/dist/**',
-        '**/e2e/**',
-      ],
+      // Only run unit tests inside src/ — keeps Playwright E2E specs (e2e/)
+      // out of vitest. E2E tests run separately via `npm run e2e`.
+      include: ['src/**/*.test.ts'],
     },
   };
 });

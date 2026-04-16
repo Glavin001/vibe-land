@@ -56,13 +56,16 @@ jobs:
       - name: Build WASM
         run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
 
+      - name: Verify WASM output
+        run: ls -la client/src/wasm/pkg/
+
       - name: TypeScript check
         working-directory: client
         run: npx tsc --noEmit
 
       - name: Unit tests
         working-directory: client
-        run: npm test
+        run: npx vitest run --reporter=verbose
 
   # ── E2E tests (only after both check jobs pass) ────────────────────────────
   e2e:
