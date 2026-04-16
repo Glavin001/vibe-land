@@ -48,13 +48,19 @@ Runs an async JavaScript snippet inside the user's browser with a pre-bound \`ct
 
 You must provide a \`commitMessage\` with every call — a short description of what the code does (e.g. "Flatten area for lake bed", "Add guard rails along road"). If the code makes any edits, the tool result will include a \`commitId\` identifying the commit. If the code errors, all edits are automatically rolled back — no partial state.
 
-Your code is wrapped roughly like this:
+Your \`code\` input must be only the function BODY. Do NOT send a full wrapper like \`async (ctx, console) => { ... }\`, because the runner already wraps your code. It is wrapped roughly like this:
 
 \`\`\`js
 async (ctx, console) => {
   // your code here
   // 'return' here is captured and sent back to you as the tool result
 }
+\`\`\`
+
+Valid example:
+\`\`\`js
+const info = ctx.getTerrainInfo();
+return info;
 \`\`\`
 
 The tool result will be JSON like:

@@ -10,7 +10,7 @@ const inputSchema = z.object({
     .string()
     .min(1)
     .describe(
-      'Async JavaScript snippet to run in the user\'s browser. The runner exposes a `ctx` object with helpers for reading and mutating the world (see system prompt) and a captured `console`. Use `return ...` to send a value back to yourself. Each call gets a fresh ctx but mutations persist across calls.',
+      'Async JavaScript snippet BODY to run in the user\'s browser. Do NOT provide `async (ctx, console) => { ... }` or any other wrapper function; the runner already wraps your code. Write only the statements that go inside that function body, for example: `const info = ctx.getTerrainInfo(); return info;`. The runner exposes a `ctx` object with helpers for reading and mutating the world (see system prompt) and a captured `console`. Use `return ...` to send a value back to yourself. Each call gets a fresh ctx but mutations persist across calls.',
     ),
   commitMessage: z
     .string()
@@ -28,7 +28,7 @@ export type ExecuteJsResult = SandboxResult & { commitId?: string };
 export function createExecuteJsTool(accessors: WorldAccessors) {
   return tool({
     description:
-      'Run JavaScript in the browser to inspect or edit the live World document. The wrapped function signature is `async (ctx, console) => { ... }`. Use `ctx.*` helpers (getWorld, listStaticProps, addStaticCuboid, applyTerrainBrush, etc.) to read state or push edits. The result echoes your `return` value, captured console logs, any thrown error, and a `commitId` if edits were made.',
+      'Run JavaScript in the browser to inspect or edit the live World document. IMPORTANT: the `code` input must be only the BODY of the wrapped async function, not a full function like `async (ctx, console) => { ... }`. The runner already provides the wrapper and passes in `ctx` and `console`. Example valid code: `const info = ctx.getTerrainInfo(); return info;`. Use `ctx.*` helpers (getWorld, listStaticProps, addStaticCuboid, applyTerrainBrush, etc.) to read state or push edits. The result echoes your `return` value, captured console logs, any thrown error, and a `commitId` if edits were made.',
     inputSchema,
     async execute(input): Promise<ExecuteJsResult> {
       // 1. Snapshot world before execution
