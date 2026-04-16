@@ -112,7 +112,7 @@ The strongest current conclusion is:
 - `/practice` feels good because it is effectively a single-authority/local path for the local vehicle.
 - `/play` is bad because the local driver uses prediction, server snapshots, ack/reconcile, and a smoothed render pose. Any disagreement or abrupt contact change is amplified into visible correction/jitter.
 - The remaining issue is not proven to be purely Rapier raycast instability. It is more likely the multiplayer prediction/reconciliation/render loop failing to stay coherent under vehicle contact churn.
-- The current WIP also contains one gameplay-feel regression: a new vehicle speed limiter. That likely explains the user report that the car is slower and no longer jumps ramps as before. This should probably be reverted or raised substantially.
+- The temporary vehicle speed limiter that had been added on this branch was reverted on `2026-04-16`. That restores prior top-speed behavior, but it also reveals that high-speed authored-terrain contact churn is still unresolved.
 
 This document is intended as a handoff for the next engineer. It includes exact data, targets, changed files, what worked, what failed, and recommended next steps.
 
@@ -842,7 +842,7 @@ Disposition: likely keep, but confirm with a targeted test. The rationale is tha
 
 ### Experimental or Likely Revert
 
-#### Vehicle speed limiter
+#### Vehicle speed limiter (already reverted on 2026-04-16)
 
 Files:
 
@@ -851,7 +851,7 @@ shared/src/movement.rs
 shared/src/vehicle.rs
 ```
 
-Change:
+What existed before the revert:
 
 ```text
 VEHICLE_MAX_FORWARD_SPEED_MS = 18.0
@@ -860,23 +860,46 @@ VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS = 4.0
 limit_vehicle_engine_force(...)
 ```
 
-Disposition: likely revert or raise substantially.
+Current state:
+
+```text
+Removed from shared/src/movement.rs and shared/src/vehicle.rs on 2026-04-16.
+```
+
+Disposition: reverted.
 
 Reason:
 
 - This directly changes vehicle gameplay feel.
 - User reported the car is now slower and no longer jumps ramps like before.
 - Earlier logs showed intended/observed speeds around `28-34m/s`.
-- Current limiter cuts sustained engine force near `18m/s`.
+- That limiter cut sustained engine force near `18m/s`.
 
-Concrete evidence:
+Concrete evidence from before the revert:
 
 ```text
 Earlier user log: vehicle_local_speed_ms: 34.089, vehicle_server_speed_ms: 34.116
-Current limiter: max forward speed constant: 18.0m/s
+Historical limiter: max forward speed constant: 18.0m/s
 ```
 
-This is masking the bug by reducing speed/energy instead of solving coherence. It should not remain unless product explicitly wants slower vehicles.
+Why the revert matters:
+
+```text
+After reverting the limiter, cargo test -p vibe-land-shared world_document::tests::demo_world_straight_vehicle_drive_has_stable_contacts -- --nocapture failed with:
+max_speed=27.718m/s
+min_grounded=0
+grounded_transitions=44
+contact_bit_changes=46
+residual_planar_rms=0.002m
+residual_heave_rms=0.001m
+suspension_force_delta_rms=3956.7N
+```
+
+Interpretation:
+
+- The limiter had been hiding part of the high-speed contact-churn problem by keeping the vehicle slower.
+- The revert was still the correct product decision because the limiter changed gameplay feel instead of fixing coherence.
+- The next engineer should assume full-speed authored-terrain driving is again part of the active failing case.
 
 #### Suspension constants 0.42/0.32
 
@@ -1076,9 +1099,9 @@ fail threshold: 4.0m/s
 
 Until fixed, they cannot prove terrain-only or no-dynamic-body behavior.
 
-### Slowing the vehicle is not an acceptable fix
+### Slowing the vehicle was not an acceptable fix
 
-The speed limiter likely reduced ramp/jump feel. It should be treated as a regression unless explicitly desired.
+The speed limiter reduced ramp/jump feel and has now been removed. It should still be treated as a regression pattern to avoid reintroducing unless product explicitly wants slower vehicles.
 
 ## Current Best Hypothesis
 
@@ -1110,22 +1133,22 @@ The fact that `/practice` feels good is important:
 
 ## Specific Gaps to Fix Next
 
-### 1. Revert or disable speed limiter before further vehicle-feel testing
+### 1. Keep the speed limiter reverted during further vehicle-feel testing
 
 Suggested action:
 
 ```text
-Remove limit_vehicle_engine_force(...)
-Remove VEHICLE_MAX_FORWARD_SPEED_MS / VEHICLE_MAX_REVERSE_SPEED_MS / VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS
-or raise forward cap well above previous observed gameplay speed, e.g. > 35m/s
+Do not reintroduce limit_vehicle_engine_force(...)
+Do not reintroduce VEHICLE_MAX_FORWARD_SPEED_MS / VEHICLE_MAX_REVERSE_SPEED_MS / VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS
+If a cap is ever reconsidered, it should only happen after the coherence bug is fixed and should be justified as product tuning, not as a netcode mitigation
 ```
 
 Reason:
 
 ```text
-User observed car is slower.
+User observed the car was slower.
 Earlier logs showed 34m/s.
-Current cap is 18m/s.
+The reverted cap was 18m/s.
 ```
 
 ### 2. Fix flat and bumps benchmark driving
@@ -1233,7 +1256,7 @@ If the default terrain benchmark is colliding with dynamic balls, client/server 
 
 ## Suggested Immediate Order for Next Engineer
 
-1. Revert or neutralize the speed limiter.
+1. Keep the speed limiter reverted.
 2. Decide whether to revert suspension 0.42/0.32 to 0.30/0.20 while investigating. Current 0.42 improved some metrics but failed native contact guardrail.
 3. Keep observability and benchmark infrastructure.
 4. Fix flat/bumps benchmark so they actually drive.
@@ -1285,7 +1308,6 @@ world stripping to avoid duplicate authored vehicles in multiplayer prediction
 The most likely reverts or rework are:
 
 ```text
-vehicle speed limiter at 18m/s
 suspension rest/travel 0.42/0.32 unless proven
 possibly solver iterations 6 if not useful after deterministic replay test
 visual smoothing caps if they hide rather than fix divergence

@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalPreviewSession;
-use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH};
+use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 use crate::protocol::InputCmd;
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
@@ -46,6 +46,12 @@ pub fn vehicle_wheel_offsets() -> Box<[f32]> {
 #[wasm_bindgen]
 pub fn vehicle_suspension_rest_length() -> f32 {
     VEHICLE_SUSPENSION_REST_LENGTH
+}
+
+/// Returns the wheel radius in metres.
+#[wasm_bindgen]
+pub fn vehicle_wheel_radius() -> f32 {
+    VEHICLE_WHEEL_RADIUS
 }
 
 struct WasmVehicle {

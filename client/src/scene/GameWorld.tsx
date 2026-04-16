@@ -47,9 +47,9 @@ import {
   type WorldDocument,
 } from '../world/worldDocument';
 import {
-  VEHICLE_CHASSIS_HALF_EXTENTS,
-  VEHICLE_WHEEL_CONNECTION_OFFSETS,
-  VEHICLE_WHEEL_RADIUS_M,
+  getVehicleChassisHalfExtents,
+  getVehicleWheelConnectionOffsets,
+  getVehicleWheelRadiusM,
   getVehicleWheelVisualAnchors,
 } from './vehicleVisualGeometry';
 import {
@@ -770,14 +770,16 @@ function updateVehicleSupportDebug(
   debugState.group.visible = enabled && localVehicleDebug != null;
   if (!debugState.group.visible || !localVehicleDebug) return;
 
+  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets();
+  const wheelRadiusM = getVehicleWheelRadiusM();
   const down = new THREE.Vector3(0, -1, 0);
   const up = new THREE.Vector3(0, 1, 0);
   const inverseWorldQuat = vehicleMeshGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
   for (let index = 0; index < 4; index += 1) {
-    const [ax, ay, az] = VEHICLE_WHEEL_CONNECTION_OFFSETS[index];
+    const [ax, ay, az] = wheelConnectionOffsets[index];
     const suspensionLength = localVehicleDebug.suspensionLengths[index] ?? 0;
     const contact = (localVehicleDebug.wheelContactBits & (1 << index)) !== 0;
-    const rayLength = suspensionLength + VEHICLE_WHEEL_RADIUS_M;
+    const rayLength = suspensionLength + wheelRadiusM;
     const hardPointWs = localVehicleDebug.wheelHardPoints?.[index];
     const contactPointWs = localVehicleDebug.wheelContactPoints?.[index];
     const contactNormalWs = localVehicleDebug.wheelContactNormals?.[index];
@@ -2804,6 +2806,7 @@ function updateLocalShotTraceVisuals(
 function createVehicleMesh(_id: number): THREE.Group {
   const group = new THREE.Group();
   const wheelVisualAnchors = getVehicleWheelVisualAnchors();
+  const chassisHalfExtents = getVehicleChassisHalfExtents();
   group.userData.renderState = {
     lastBodyPosition: null,
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
@@ -2811,9 +2814,9 @@ function createVehicleMesh(_id: number): THREE.Group {
 
   // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
   const chassisGeom = new THREE.BoxGeometry(
-    VEHICLE_CHASSIS_HALF_EXTENTS.x * 2,
-    VEHICLE_CHASSIS_HALF_EXTENTS.y * 2,
-    VEHICLE_CHASSIS_HALF_EXTENTS.z * 2,
+    chassisHalfExtents.x * 2,
+    chassisHalfExtents.y * 2,
+    chassisHalfExtents.z * 2,
   );
   const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
   const chassis = new THREE.Mesh(chassisGeom, chassisMat);
@@ -2832,12 +2835,13 @@ function createVehicleMesh(_id: number): THREE.Group {
   const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
   const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
   const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.position.set(0, 0.04, VEHICLE_CHASSIS_HALF_EXTENTS.z - 0.42);
+  nose.position.set(0, 0.04, chassisHalfExtents.z - 0.42);
   nose.castShadow = true;
   group.add(nose);
 
   // Wheels: FL, FR, RL, RR
-  const wheelGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 12);
+  const wheelRadiusM = getVehicleWheelRadiusM();
+  const wheelGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, 0.3, 12);
   const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
@@ -2875,6 +2879,7 @@ function updateVehicleWheelVisuals(
 ): void {
   const renderState = vehicleMeshGroup.userData.renderState as VehicleRenderState | undefined;
   if (!renderState) return;
+  const wheelRadiusM = getVehicleWheelRadiusM();
 
   const bodySpeed = estimateVehicleForwardSpeed(renderState.lastBodyPosition, position, quaternion, frameDeltaSec);
   renderState.lastBodyPosition = [...position];
@@ -2907,7 +2912,7 @@ function updateVehicleWheelVisuals(
 
     // Wheel spin is integrated locally from chassis motion instead of directly
     // snapping to low-rate replicated wheel angles, which causes visible wobble.
-    wheelState.spinAngle += (fallbackSignedSpeed / VEHICLE_WHEEL_RADIUS_M) * frameDeltaSec;
+    wheelState.spinAngle += (fallbackSignedSpeed / wheelRadiusM) * frameDeltaSec;
     pivot.rotation.y = wheelState.steerAngle;
     spinGroup.rotation.x = wheelState.spinAngle;
   }

@@ -13,21 +13,18 @@ use vibe_netcode::sim_world::SimWorld;
 use crate::constants::BTN_RELOAD;
 use crate::movement::{
     vehicle_wheel_params, VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP,
-    VEHICLE_MAX_FORWARD_SPEED_MS, VEHICLE_MAX_REVERSE_SPEED_MS, VEHICLE_MAX_STEER_RAD,
-    VEHICLE_MAX_SUSPENSION_FORCE, VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS,
-    VEHICLE_SUSPENSION_COMPRESSION_DAMPING, VEHICLE_SUSPENSION_DAMPING,
-    VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL,
-    VEHICLE_WHEEL_RADIUS,
+    VEHICLE_MAX_STEER_RAD, VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH,
+    VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
 };
 use crate::protocol::{make_net_vehicle_state, InputCmd, NetVehicleState};
 
 pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
 pub const VEHICLE_CONTROLLER_SUBSTEPS: usize = 4;
 pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
-    [-0.9, -0.3, 1.1],
-    [0.9, -0.3, 1.1],
-    [-0.9, -0.3, -1.1],
-    [0.9, -0.3, -1.1],
+    [-0.9, 0.0, 1.1],
+    [0.9, 0.0, 1.1],
+    [-0.9, 0.0, -1.1],
+    [0.9, 0.0, -1.1],
 ];
 const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 /// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
@@ -85,11 +82,9 @@ pub fn create_vehicle_physics(
     controller.index_forward_axis = 2;
     let tuning = WheelTuning {
         suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
-        suspension_compression: VEHICLE_SUSPENSION_COMPRESSION_DAMPING,
         suspension_damping: VEHICLE_SUSPENSION_DAMPING,
         friction_slip: VEHICLE_FRICTION_SLIP,
         max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
-        max_suspension_force: VEHICLE_MAX_SUSPENSION_FORCE,
         ..WheelTuning::default()
     };
     for offset in VEHICLE_WHEEL_OFFSETS {
@@ -215,8 +210,6 @@ pub fn apply_vehicle_input_step(
         }
     }
 
-    let engine_force = limit_vehicle_engine_force(sim, chassis_body, engine_force);
-
     for (index, wheel) in controller.wheels_mut().iter_mut().enumerate() {
         if index < 2 {
             wheel.steering = if reset_requested { 0.0 } else { steering };
@@ -237,33 +230,6 @@ pub fn apply_vehicle_input_step(
         filter,
     );
     controller.update_vehicle(dt, queries);
-}
-
-fn limit_vehicle_engine_force(
-    sim: &SimWorld,
-    chassis_body: RigidBodyHandle,
-    engine_force: f32,
-) -> f32 {
-    if engine_force.abs() <= f32::EPSILON {
-        return 0.0;
-    }
-
-    let Some(rb) = sim.rigid_bodies.get(chassis_body) else {
-        return engine_force;
-    };
-    let chassis_forward = rb.rotation() * Vector3::z();
-    let longitudinal_speed = rb.linvel().dot(&chassis_forward).abs();
-    let max_speed = if engine_force < 0.0 {
-        VEHICLE_MAX_FORWARD_SPEED_MS
-    } else {
-        VEHICLE_MAX_REVERSE_SPEED_MS
-    };
-    let speed = longitudinal_speed;
-    if speed >= max_speed {
-        return 0.0;
-    }
-    let scale = ((max_speed - speed) / VEHICLE_SPEED_LIMIT_SOFT_ZONE_MS).clamp(0.0, 1.0);
-    engine_force * scale
 }
 
 /// Read the current chassis pose/velocity from the shared simulation world.
