@@ -12,11 +12,8 @@ setup: .env setup-wasm setup-client
 	@echo "Created .env from .env.example — edit as needed."
 
 ## Build the shared WASM module (run after any change to shared/).
-##
-## The `blast-stress-solver` crate is published on crates.io with
-## prebuilt wasm32 static libraries, so no local PhysX clone or C++
-## toolchain is required.  Pass VIBE_NO_DESTRUCTIBLES=1 to build
-## without the destructibles feature for faster iteration.
+## `blast-stress-solver` is pulled from crates.io with prebuilt wasm32
+## static libraries — no local setup required.
 setup-wasm:
 	./scripts/build-shared-wasm.sh
 

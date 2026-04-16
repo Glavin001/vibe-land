@@ -2,10 +2,8 @@ pub mod constants;
 pub mod debug_render;
 #[cfg(target_arch = "wasm32")]
 pub mod destructibles;
-#[cfg(all(target_arch = "wasm32", feature = "destructibles"))]
+#[cfg(target_arch = "wasm32")]
 pub mod destructibles_real;
-#[cfg(all(target_arch = "wasm32", not(feature = "destructibles")))]
-pub mod destructibles_stub;
 pub mod local_arena;
 pub mod local_session;
 pub mod local_world;

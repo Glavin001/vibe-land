@@ -3,11 +3,8 @@
 # Build the `vibe-land-shared` wasm module for the browser.
 #
 # The `blast-stress-solver` crate is published on crates.io with
-# prebuilt wasm32 static libraries, so destructibles are always
-# available — no local PhysX clone or C++ toolchain required.
-#
-# Pass `VIBE_NO_DESTRUCTIBLES=1` to build without the destructibles
-# feature (e.g. for faster iteration when you don't need them).
+# prebuilt wasm32 static libraries, so no local PhysX clone or C++
+# toolchain is required.
 
 set -euo pipefail
 
@@ -19,10 +16,5 @@ OUT_DIR="${REPO_ROOT}/client/src/wasm/pkg"
 
 cd "${SHARED_DIR}"
 
-if [[ "${VIBE_NO_DESTRUCTIBLES:-}" == "1" ]]; then
-  echo "[build-shared-wasm] VIBE_NO_DESTRUCTIBLES=1 — building WITHOUT destructibles feature"
-  exec wasm-pack build --target web --out-dir "${OUT_DIR}"
-else
-  echo "[build-shared-wasm] building WITH destructibles feature (blast-stress-solver from crates.io)"
-  exec wasm-pack build --target web --out-dir "${OUT_DIR}" -- --features destructibles
-fi
+echo "[build-shared-wasm] building wasm (blast-stress-solver from crates.io)"
+exec wasm-pack build --target web --out-dir "${OUT_DIR}"

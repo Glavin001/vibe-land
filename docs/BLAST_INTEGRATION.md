@@ -23,42 +23,26 @@ how that dependency is wired in and how to maintain it.
 
 ## Crate wiring
 
-`shared/Cargo.toml` declares the dep as **optional** under the wasm32
-block so it's only compiled for the browser target *and* only when
-the `destructibles` Cargo feature is enabled:
+`shared/Cargo.toml` declares the dep under the wasm32 target block:
 
 ```toml
-[features]
-destructibles = ["dep:blast-stress-solver"]
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 blast-stress-solver = {
   version = "0.1.0",
   default-features = false,
   features = ["scenarios", "rapier"],
-  optional = true,
 }
 ```
 
-### Feature gating
+The implementation lives in two files under `shared/src/`:
 
-When the `destructibles` feature is OFF the wasm module still exposes
-the destructibles JS API via a no-op stub backend.  Pass
-`VIBE_NO_DESTRUCTIBLES=1` to `scripts/build-shared-wasm.sh` to build
-without the feature for faster iteration.
-
-The split lives in three files under `shared/src/`:
-
-- `destructibles.rs` — thin wrapper that re-exports either the real
-  or stub backend based on `cfg(feature = "destructibles")`.
+- `destructibles.rs` — thin wrapper that re-exports from
+  `destructibles_real`.
 - `destructibles_real.rs` — the real implementation gated on
-  `cfg(all(target_arch = "wasm32", feature = "destructibles"))`.
-- `destructibles_stub.rs` — the no-op backend gated on
-  `cfg(all(target_arch = "wasm32", not(feature = "destructibles")))`.
+  `cfg(target_arch = "wasm32")`.
 
-`shared/src/wasm_api.rs` imports from `crate::destructibles::*`
-without caring which backend is active. `shared/src/wasm_api.rs` exposes
-`spawnDestructible`, `despawnDestructible`, `stepDestructibles`,
+`shared/src/wasm_api.rs` imports from `crate::destructibles::*` and
+exposes `spawnDestructible`, `despawnDestructible`,
 `getDestructibleChunkCount`, `getDestructibleChunkTransforms`, and
 `drainDestructibleFractureEvents` via `#[wasm_bindgen]`. The step
 routine is folded into the main `tick` path after
@@ -93,38 +77,30 @@ vehicles. Practice destructibles are instead injected at runtime
 inside `client/src/scene/GameWorld.tsx` via `PRACTICE_DESTRUCTIBLES`
 when `isPracticeMode(mode)` is true.
 
-## Build order
+## Build
 
 `make setup-wasm` (and `npm run build:wasm`) drives
 `scripts/build-shared-wasm.sh`:
 
 ```sh
-# Builds with --features destructibles by default.
-# Set VIBE_NO_DESTRUCTIBLES=1 to skip.
 ./scripts/build-shared-wasm.sh
 ```
 
-No post-processors, no wasm-binary patching.  Rerunning after an
+No post-processors, no wasm-binary patching. Rerunning after an
 incremental Rust change is safe and fast.
 
 ## Non-negotiable invariants
 
 - The Blast dep **must** stay under
-  `[target.'cfg(target_arch = "wasm32")'.dependencies]` *and*
-  `optional = true`.  Moving it to top-level or non-optional
-  dependencies will try to compile the Blast C++ backend on every
-  server / CI machine.
-- `destructibles.rs`, `destructibles_real.rs`, `destructibles_stub.rs`,
-  `wasm_api.rs`, and `wasm_cxa_stubs.rs` are all
-  `#![cfg(target_arch = "wasm32")]` only.  Don't drop the gate.
-- The `destructibles_real.rs` file is additionally gated on
-  `feature = "destructibles"`, and `destructibles_stub.rs` on
-  `not(feature = "destructibles")`.  Keep both gates in sync with
-  `shared/src/lib.rs`.
+  `[target.'cfg(target_arch = "wasm32")'.dependencies]`. Moving it to
+  top-level dependencies will try to compile the Blast C++ backend on
+  every server / CI machine.
+- `destructibles.rs`, `destructibles_real.rs`, and `wasm_api.rs` are
+  all `#![cfg(target_arch = "wasm32")]` only. Don't drop the gate.
 - The shared physics test suite (`worldDocumentPhysics.test.ts`)
-  loads the **default** `trail.world.json`. Do not add
-  destructibles to that file — use `PRACTICE_DESTRUCTIBLES` in
-  `GameWorld.tsx` instead.
+  loads the **default** `trail.world.json`. Do not add destructibles
+  to that file — use `PRACTICE_DESTRUCTIBLES` in `GameWorld.tsx`
+  instead.
 
 ## Known impact
 
