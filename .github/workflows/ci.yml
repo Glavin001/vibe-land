@@ -61,11 +61,32 @@ jobs:
 
       - name: TypeScript check
         working-directory: client
-        run: npx tsc --noEmit
+        run: |
+          npx tsc --noEmit 2>&1 | tee /tmp/tsc-output.txt
+          exit ${PIPESTATUS[0]}
 
       - name: Unit tests
         working-directory: client
-        run: npx vitest run --reporter=verbose
+        run: |
+          npx vitest run --reporter=verbose 2>&1 | tee /tmp/vitest-output.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Dump test output on failure
+        if: failure()
+        run: |
+          echo "::group::TypeScript check output"
+          cat /tmp/tsc-output.txt 2>/dev/null || echo "(no tsc output)"
+          echo "::endgroup::"
+          echo "::group::Vitest output"
+          cat /tmp/vitest-output.txt 2>/dev/null || echo "(no vitest output)"
+          echo "::endgroup::"
+          # Also emit as error annotation for PR visibility
+          if [ -f /tmp/vitest-output.txt ]; then
+            FAILS=$(grep -E "FAIL|×|Error:|AssertionError" /tmp/vitest-output.txt | head -20)
+            if [ -n "$FAILS" ]; then
+              echo "::error::Vitest failures:%0A${FAILS//$'\n'/%0A}"
+            fi
+          fi
 
   # ── E2E tests (only after both check jobs pass) ────────────────────────────
   e2e:
