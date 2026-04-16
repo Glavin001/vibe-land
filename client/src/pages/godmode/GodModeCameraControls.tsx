@@ -1,43 +1,44 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
 type EditorTool = 'select' | 'terrain';
 
-// Shape of the Three.js OrbitControls instance we care about
-type OC = { target: THREE.Vector3; update(): void };
-
 /**
- * Blender-style camera controls for the Godmode editor:
+ * Blender-style camera controls for the Godmode editor.
  *
- *   MMB drag  → orbit  (works in ALL editor tools, no mode switching)
+ * Mouse (always active, all modes):
+ *   MMB drag  → orbit
  *   RMB drag  → pan
  *   Scroll    → zoom
- *   WASD      → pan camera on XZ plane   (terrain mode only)
- *   Q / E     → move camera down / up    (terrain mode only)
  *
- *   Alt + hover → yellow ring previews where orbit pivot will snap to
- *   Alt + LMB   → snap orbit pivot to the hovered world point
+ * Keyboard (terrain mode only — avoids W/E/R transform conflicts):
+ *   WASD      → pan camera on the XZ plane
+ *   Q / E     → move camera down / up
  *
- * Left-click is always free for terrain painting and object selection.
+ * Orbit retarget:
+ *   Alt+Click → snap orbit pivot to clicked point (cyan → yellow preview)
  */
 export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
-  const { camera, gl, scene, raycaster } = useThree();
+  const { camera, gl, scene } = useThree();
   const keysHeld = useRef(new Set<string>());
 
-  // Reference to the underlying Three.js OrbitControls instance.
-  // Synced from state.controls in useFrame so it's always up-to-date.
-  const controlsRef = useRef<OC | null>(null);
+  // Separate ref populated via callback ref — guaranteed to be set on mount.
+  const orbitControlsRef = useRef<any>(null);
+  const handleOrbitRef = useCallback((instance: any) => {
+    orbitControlsRef.current = instance;
+  }, []);
+
+  // Own raycaster (never touch R3F's internal one — corrupting it breaks all events)
+  const myRaycaster = useMemo(() => new THREE.Raycaster(), []);
 
   // Indicator mesh refs
-  const pivotIndicatorRef = useRef<THREE.Mesh>(null);
-  const hoverIndicatorRef = useRef<THREE.Mesh>(null);
-
-  // Alt-hover world position (set by mousemove, cleared when Alt released)
+  const pivotRef = useRef<THREE.Mesh>(null);
+  const hoverRef = useRef<THREE.Mesh>(null);
   const altHoverPoint = useRef<THREE.Vector3 | null>(null);
 
-  // ── Context menu suppression ────────────────────────────────────────────────
+  // ── Suppress browser context menu on the canvas ─────────────────────────────
   useEffect(() => {
     const canvas = gl.domElement;
     const prevent = (e: Event) => e.preventDefault();
@@ -45,35 +46,32 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
     return () => canvas.removeEventListener('contextmenu', prevent);
   }, [gl]);
 
-  // ── Alt+hover preview + Alt+Click to set orbit pivot ────────────────────────
+  // ── Alt+hover preview  +  Alt+Click to set orbit pivot ──────────────────────
   useEffect(() => {
     const canvas = gl.domElement;
 
-    const getRaycastHit = (e: MouseEvent): THREE.Vector3 | null => {
+    const raycastHit = (clientX: number, clientY: number): THREE.Vector3 | null => {
       const rect = canvas.getBoundingClientRect();
       const ndc = new THREE.Vector2(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1,
+        ((clientX - rect.left) / rect.width) * 2 - 1,
+        -((clientY - rect.top) / rect.height) * 2 + 1,
       );
-      raycaster.setFromCamera(ndc, camera);
-      // Exclude our own indicator meshes so Alt+Click can't target them
-      const hits = raycaster
+      myRaycaster.setFromCamera(ndc, camera);
+      const hits = myRaycaster
         .intersectObjects(scene.children, true)
         .filter(h => !h.object.userData.isOrbitIndicator);
       return hits.length > 0 ? hits[0].point.clone() : null;
     };
 
-    const onMouseMove = (e: MouseEvent) => {
-      altHoverPoint.current = e.altKey ? getRaycastHit(e) : null;
+    const onPointerMove = (e: PointerEvent) => {
+      altHoverPoint.current = e.altKey ? raycastHit(e.clientX, e.clientY) : null;
     };
 
-    const onMouseDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       if (!e.altKey || e.button !== 0) return;
-      // Prevent the browser from doing anything (e.g. text selection)
-      e.preventDefault();
-      const point = getRaycastHit(e);
-      const controls = controlsRef.current;
-      if (point && controls) {
+      const point = raycastHit(e.clientX, e.clientY);
+      const controls = orbitControlsRef.current;
+      if (point && controls?.target) {
         controls.target.copy(point);
         controls.update();
       }
@@ -84,19 +82,19 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
       if (e.key === 'Alt') altHoverPoint.current = null;
     };
 
-    canvas.addEventListener('mousemove', onMouseMove);
-    canvas.addEventListener('mousedown', onMouseDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
-      canvas.removeEventListener('mousemove', onMouseMove);
-      canvas.removeEventListener('mousedown', onMouseDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [gl, camera, scene, raycaster]);
+  }, [gl, camera, scene, myRaycaster]);
 
-  // ── WASD keyboard movement (terrain mode only) ──────────────────────────────
+  // ── WASD key tracking ──────────────────────────────────────────────────────
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
+    const down = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLElement &&
         (e.target.tagName === 'INPUT' ||
@@ -105,53 +103,48 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
       ) return;
       keysHeld.current.add(e.code);
     };
-    const onKeyUp = (e: KeyboardEvent) => keysHeld.current.delete(e.code);
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    const up = (e: KeyboardEvent) => keysHeld.current.delete(e.code);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
     };
   }, []);
 
-  // ── Frame loop: sync controls ref, update indicators, run WASD ──────────────
-  useFrame((state, delta) => {
-    // Keep controlsRef current via state.controls (registered by makeDefault)
-    const oc = state.controls as OC | null;
-    if (oc && oc !== controlsRef.current) controlsRef.current = oc;
+  // ── Per-frame: indicators + WASD movement ──────────────────────────────────
+  useFrame((_, delta) => {
+    const controls = orbitControlsRef.current;
+    if (!controls?.target) return;
 
-    // Scale indicators with camera distance so they read consistently at any zoom
-    const dist = oc ? camera.position.distanceTo(oc.target) : 0;
+    // Sync pivot indicator to current orbit center
+    const dist = camera.position.distanceTo(controls.target);
     const s = Math.max(dist * 0.035, 0.4);
-
-    // Orbit pivot indicator — always shows the current orbit center
-    if (pivotIndicatorRef.current && oc?.target) {
-      pivotIndicatorRef.current.position.copy(oc.target);
-      pivotIndicatorRef.current.scale.setScalar(s);
+    if (pivotRef.current) {
+      pivotRef.current.position.copy(controls.target);
+      pivotRef.current.scale.setScalar(s);
     }
 
-    // Alt-hover indicator — shows where the pivot will snap on Alt+Click
-    if (hoverIndicatorRef.current) {
+    // Sync hover indicator to Alt-hover hit
+    if (hoverRef.current) {
       const hp = altHoverPoint.current;
       if (hp) {
-        hoverIndicatorRef.current.position.copy(hp);
-        hoverIndicatorRef.current.scale.setScalar(s);
-        hoverIndicatorRef.current.visible = true;
+        hoverRef.current.position.copy(hp);
+        hoverRef.current.scale.setScalar(s);
+        hoverRef.current.visible = true;
       } else {
-        hoverIndicatorRef.current.visible = false;
+        hoverRef.current.visible = false;
       }
     }
 
-    // WASD only in terrain mode — W/E/R are transform shortcuts in select mode
-    if (tool !== 'terrain' || !oc) return;
+    // WASD camera movement — terrain mode only (W/E/R conflict in select mode)
+    if (tool !== 'terrain') return;
     const keys = keysHeld.current;
     if (keys.size === 0) return;
 
-    // Speed scales with camera height so far-out views pan faster
     const height = Math.max(camera.position.y, 5);
     const speed = height * 0.8 * Math.min(delta, 0.1);
 
-    // Camera-relative XZ directions (ignore vertical tilt)
     const forward = new THREE.Vector3();
     camera.getWorldDirection(forward);
     forward.y = 0;
@@ -170,29 +163,29 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
     if (keys.has('KeyE')) move.y += speed;
     if (move.lengthSq() === 0) return;
 
-    // Move camera and orbit target together to preserve the orbit relationship
+    // Move camera and orbit target together so OrbitControls doesn't fight back
     camera.position.add(move);
-    oc.target.add(move);
-    oc.update();
+    controls.target.add(move);
+    controls.update();
   });
 
   return (
     <>
       <OrbitControls
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ref={controlsRef as any}
+        ref={handleOrbitRef}
         makeDefault
+        enableDamping={false}
         maxDistance={180}
         mouseButtons={{
-          LEFT: undefined,           // free for terrain painting / object selection
-          MIDDLE: THREE.MOUSE.ROTATE, // MMB → orbit
-          RIGHT: THREE.MOUSE.PAN,    // RMB → pan
+          LEFT: undefined,
+          MIDDLE: THREE.MOUSE.ROTATE,
+          RIGHT: THREE.MOUSE.PAN,
         }}
       />
 
-      {/* Current orbit pivot — cyan ring, always visible */}
+      {/* Current orbit pivot — small cyan ring */}
       <mesh
-        ref={pivotIndicatorRef}
+        ref={pivotRef}
         rotation-x={-Math.PI / 2}
         renderOrder={999}
         userData={{ isOrbitIndicator: true }}
@@ -207,9 +200,9 @@ export function GodModeCameraControls({ tool }: { tool: EditorTool }) {
         />
       </mesh>
 
-      {/* Alt+hover preview — yellow ring, only visible while Alt is held over scene */}
+      {/* Alt+hover preview — yellow ring, only while Alt is held */}
       <mesh
-        ref={hoverIndicatorRef}
+        ref={hoverRef}
         rotation-x={-Math.PI / 2}
         visible={false}
         renderOrder={1000}
