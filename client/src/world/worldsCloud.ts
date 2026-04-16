@@ -17,7 +17,7 @@ export type GalleryWorldSummary = {
   description: string;
   createdAt: number;
   size: number;
-  hasScreenshot?: boolean;
+  parentId?: string | null;
 };
 
 type UploadTarget = {
@@ -70,10 +70,17 @@ export async function fetchCloudConfig(): Promise<CloudConfig> {
  * Throws if either upload fails. The caller is responsible for any retry
  * logic; a second publish simply allocates a new id.
  */
-export async function publishWorld(
-  world: WorldDocument,
-  screenshot: Blob,
-): Promise<PublishResult> {
+export type PublishWorldOptions = {
+  world: WorldDocument;
+  screenshot: Blob;
+  // If this world was loaded from a published world (e.g. opened from
+  // the gallery), pass the source id so the new publication records its
+  // parentage. Null for original creations.
+  parentId?: string | null;
+};
+
+export async function publishWorld(opts: PublishWorldOptions): Promise<PublishResult> {
+  const { world, screenshot, parentId } = opts;
   const json = serializeWorldDocument(world);
   const gzippedWorld = await gzipString(json);
   const worldBlob = new Blob([toAsciiArrayBuffer(gzippedWorld)], {
@@ -86,6 +93,7 @@ export async function publishWorld(
     version: world.version,
     worldContentLength: worldBlob.size,
     screenshotContentLength: screenshot.size,
+    parentId: parentId ?? null,
   });
 
   // Fire the two uploads in parallel. Fail the whole publish if either PUT
@@ -109,6 +117,7 @@ async function reserveUpload(body: {
   version: number;
   worldContentLength: number;
   screenshotContentLength: number;
+  parentId: string | null;
 }): Promise<ReservationResponse> {
   const response = await fetch('/api/worlds/publish', {
     method: 'POST',

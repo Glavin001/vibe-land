@@ -332,6 +332,17 @@ function GalleryCard({ world, owned = false, publicUrl = null }: { world: Galler
       <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
         id <code>{world.id}</code>
       </div>
+      {world.parentId && (
+        <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)', marginTop: 4 }}>
+          forked from{' '}
+          <a
+            href={`/builder/world?published=${encodeURIComponent(world.parentId)}`}
+            style={{ color: '#9cd4ff' }}
+          >
+            {world.parentId.slice(0, 8)}…
+          </a>
+        </div>
+      )}
     </div>
   );
 }

@@ -116,7 +116,7 @@ type Reservation = {
   screenshot: { url: string; method: 'PUT'; contentLength: number; headers: Record<string, string> };
 };
 
-async function runPublish(opts: { name: string; description: string; gzippedWorld: Buffer; jpeg: Buffer }): Promise<Reservation> {
+async function runPublish(opts: { name: string; description: string; gzippedWorld: Buffer; jpeg: Buffer; parentId?: string | null }): Promise<Reservation> {
   const reserveRes = await fetch(`${base}/api/worlds/publish`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -126,6 +126,7 @@ async function runPublish(opts: { name: string; description: string; gzippedWorl
       version: 2,
       worldContentLength: opts.gzippedWorld.length,
       screenshotContentLength: opts.jpeg.length,
+      parentId: opts.parentId ?? null,
     }),
   });
   if (reserveRes.status !== 201) {
@@ -181,13 +182,14 @@ try {
   check('screenshot contentLength echoes our upload size', first.screenshot.contentLength === fakeJpeg.length);
   console.log(`    -> id ${first.id}`);
 
-  // 3. publish a second world so list has two entries
-  console.log('POST /api/worlds/publish (second world)');
+  // 3. publish a second world as a fork of the first (ancestry tracking)
+  console.log('POST /api/worlds/publish (second world, forked from first)');
   const secondJson = JSON.stringify({ ...minimalWorld, meta: { name: 'Second world', description: '' } });
   const secondGzipped = gzipSync(Buffer.from(secondJson, 'utf-8'));
   const second = await runPublish({
     name: 'Second world',
     description: '',
+    parentId: first.id,
     gzippedWorld: secondGzipped,
     jpeg: fakeJpeg,
   });
@@ -234,7 +236,7 @@ try {
   console.log('GET /api/worlds');
   const listRes = await fetch(`${base}/api/worlds`);
   check('200 OK', listRes.status === 200);
-  const listJson = (await listRes.json()) as { worlds: Array<{ id: string; name: string }> };
+  const listJson = (await listRes.json()) as { worlds: Array<{ id: string; name: string; parentId?: string | null }> };
   check(
     'list contains both ids',
     listJson.worlds.some((w) => w.id === first.id) && listJson.worlds.some((w) => w.id === second.id),
@@ -242,6 +244,9 @@ try {
   );
   const target = listJson.worlds.find((w) => w.id === first.id);
   check('list metadata.name decoded', target?.name === 'E2E Smoke World', target?.name);
+  const secondInList = listJson.worlds.find((w) => w.id === second.id);
+  check('second world has parentId set', secondInList?.parentId === first.id, secondInList?.parentId ?? 'null');
+  check('first world has no parentId', target?.parentId == null, String(target?.parentId));
 
   // 7. get world back as plain JSON
   console.log(`GET /api/worlds/${first.id}`);

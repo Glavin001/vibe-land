@@ -102,6 +102,7 @@ export class FsWorldStorage implements WorldStorage {
       description: params.description,
       version: params.version,
       createdAt,
+      parentId: params.parentId,
     };
 
     // Write the meta sidecar first. listWorlds() doesn't surface entries
@@ -307,6 +308,9 @@ export class FsWorldStorage implements WorldStorage {
           const description = typeof meta.description === 'string' ? meta.description : '';
           const createdAt = typeof meta.createdAt === 'number' ? meta.createdAt : worldStat.mtimeMs;
           const version = typeof meta.version === 'number' ? meta.version : 0;
+          const parentId = typeof meta.parentId === 'string' && meta.parentId.length > 0
+            ? meta.parentId
+            : null;
           return {
             id,
             name,
@@ -314,6 +318,7 @@ export class FsWorldStorage implements WorldStorage {
             createdAt,
             version,
             size: worldStat.size,
+            parentId,
           };
         } catch (err) {
           // Meta file exists but world hasn't landed yet – typical of an

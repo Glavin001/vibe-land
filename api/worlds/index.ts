@@ -32,14 +32,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
-  // Drop the `version` field – the gallery UI doesn't use it and older
-  // client versions don't expect it.
-  const worlds = summaries.map(({ id, name, description, createdAt, size }) => ({
+  const worlds = summaries.map(({ id, name, description, createdAt, size, parentId }) => ({
     id,
     name,
     description,
     createdAt,
     size,
+    parentId: parentId ?? null,
   }));
 
   res.setHeader('Cache-Control', 'public, max-age=10');

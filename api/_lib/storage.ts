@@ -61,6 +61,10 @@ export type WorldMetadata = {
   description: string;
   version: number;
   createdAt: number;
+  // If this world was derived from (edited from) another published world,
+  // parentId points at the source. Null for original creations. This lets
+  // you trace the full ancestry / fork tree across all published worlds.
+  parentId: string | null;
 };
 
 export type WorldSummary = WorldMetadata & {
@@ -108,6 +112,7 @@ export type ReserveUploadParams = {
   version: number;
   worldContentLength: number;
   screenshotContentLength: number;
+  parentId: string | null;
 };
 
 export type Reservation = {

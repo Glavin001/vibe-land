@@ -171,12 +171,15 @@ export class R2WorldStorage implements WorldStorage {
     // header values when PUTting or the signature check fails.
     const name = encodeMetaValue(params.name);
     const description = encodeMetaValue(params.description);
-    const metadata = {
+    const metadata: Record<string, string> = {
       name,
       description,
       createdat: createdAt.toString(),
       version: params.version.toString(),
     };
+    if (params.parentId) {
+      metadata.parentid = params.parentId;
+    }
 
     const worldCommand = new PutObjectCommand({
       Bucket: this.bucket,
@@ -203,6 +206,7 @@ export class R2WorldStorage implements WorldStorage {
       'x-amz-meta-description',
       'x-amz-meta-createdat',
       'x-amz-meta-version',
+      ...(params.parentId ? ['x-amz-meta-parentid'] : []),
     ]);
     const worldUrl = await getSignedUrl(this.client, worldCommand, {
       expiresIn: UPLOAD_EXPIRY_SECONDS,
@@ -227,6 +231,19 @@ export class R2WorldStorage implements WorldStorage {
       unhoistableHeaders: screenshotUnhoistable,
     });
 
+    const worldHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Content-Encoding': 'gzip',
+      'If-None-Match': '*',
+      'x-amz-meta-name': metadata.name,
+      'x-amz-meta-description': metadata.description,
+      'x-amz-meta-createdat': metadata.createdat,
+      'x-amz-meta-version': metadata.version,
+    };
+    if (metadata.parentid) {
+      worldHeaders['x-amz-meta-parentid'] = metadata.parentid;
+    }
+
     return {
       id,
       createdAt,
@@ -237,15 +254,7 @@ export class R2WorldStorage implements WorldStorage {
           url: worldUrl,
           method: 'PUT',
           contentLength: params.worldContentLength,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Encoding': 'gzip',
-            'If-None-Match': '*',
-            'x-amz-meta-name': metadata.name,
-            'x-amz-meta-description': metadata.description,
-            'x-amz-meta-createdat': metadata.createdat,
-            'x-amz-meta-version': metadata.version,
-          },
+          headers: worldHeaders,
         },
         screenshot: {
           url: screenshotUrl,
@@ -331,6 +340,7 @@ export class R2WorldStorage implements WorldStorage {
         let description = '';
         let createdAt = item.lastModified;
         let version = 0;
+        let parentId: string | null = null;
         try {
           const head = await this.client.send(
             new HeadObjectCommand({ Bucket: this.bucket, Key: item.key }),
@@ -346,6 +356,9 @@ export class R2WorldStorage implements WorldStorage {
             const parsed = Number.parseInt(meta.version, 10);
             if (Number.isFinite(parsed)) version = parsed;
           }
+          if (meta.parentid) {
+            parentId = meta.parentid;
+          }
         } catch (err) {
           console.warn('[r2Storage] failed to HEAD object', item.key, err);
         }
@@ -356,6 +369,7 @@ export class R2WorldStorage implements WorldStorage {
           createdAt,
           version,
           size: item.size,
+          parentId,
         } satisfies WorldSummary;
       }),
     );

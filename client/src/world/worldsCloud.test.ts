@@ -67,6 +67,7 @@ describe('worldsCloud', () => {
       expect(body.name).toBe('Test World');
       expect(body.description).toBe('desc');
       expect(body.version).toBe(2);
+      expect(body.parentId).toBe('parent-123');
       expect(typeof body.worldContentLength).toBe('number');
       expect(body.worldContentLength).toBeGreaterThan(0);
       expect(body.screenshotContentLength).toBe(screenshot.size);
@@ -101,7 +102,7 @@ describe('worldsCloud', () => {
     fetchMock.mockImplementationOnce(async () => emptyResponse(200));
     fetchMock.mockImplementationOnce(async () => emptyResponse(200));
 
-    const result = await publishWorld(minimalWorld, screenshot);
+    const result = await publishWorld({ world: minimalWorld, screenshot, parentId: 'parent-123' });
     expect(result).toEqual({ id: 'abc', createdAt: 123, mode: 'presigned' });
     expect(fetchMock).toHaveBeenCalledTimes(3);
 
@@ -149,7 +150,7 @@ describe('worldsCloud', () => {
     // Even though we claimed the world would be 0 bytes in the response,
     // the client never trusts that – it refuses to upload when its own
     // computed size doesn't match. That guards against a server lying.
-    await expect(publishWorld(minimalWorld, screenshot)).rejects.toThrow(
+    await expect(publishWorld({ world: minimalWorld, screenshot })).rejects.toThrow(
       /Refusing to upload world/,
     );
   });
@@ -157,7 +158,7 @@ describe('worldsCloud', () => {
   it('publishWorld raises on publish reservation error', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(409, { error: 'Id collision detected' }));
     const screenshot = new Blob([new Uint8Array([1])], { type: 'image/jpeg' });
-    await expect(publishWorld(minimalWorld, screenshot)).rejects.toThrow(/Id collision/);
+    await expect(publishWorld({ world: minimalWorld, screenshot })).rejects.toThrow(/Id collision/);
   });
 
   it('listPublishedWorlds returns the worlds array', async () => {

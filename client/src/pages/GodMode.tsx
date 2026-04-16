@@ -125,6 +125,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
   const [cloudEnabled, setCloudEnabled] = useState(false);
   const [cloudPublicUrl, setCloudPublicUrl] = useState<string | null>(null);
+  // Tracks the published world this session is derived from. When the user
+  // opens a published world (via ?published=<id>) and then re-publishes,
+  // this id is sent as `parentId` so the ancestry chain is preserved.
+  // Cleared when the user imports a local file or resets to default.
+  const [sourcePublishedId, setSourcePublishedId] = useState<string | null>(publishedId ?? null);
   const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
   const [cloudLoadStatus, setCloudLoadStatus] = useState<
     | { kind: 'idle' }
@@ -424,6 +429,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     const nextWorld = parseWorldDocument(JSON.parse(text));
     applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
     setSelected(null);
+    setSourcePublishedId(null); // imported file breaks the ancestry chain
     setLastImportName(file.name);
     setLastImportNameState(file.name);
     setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
@@ -478,7 +484,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       // screenshot directly to the storage backend in parallel. For the R2
       // backend this means the bytes go straight to R2 via presigned URLs
       // and never touch our function.
-      const result = await publishWorld(worldRef.current, blob);
+      const result = await publishWorld({
+        world: worldRef.current,
+        screenshot: blob,
+        parentId: sourcePublishedId,
+      });
+      // After a successful publish, the new id becomes the ancestry source
+      // if the user continues editing and publishes again.
+      setSourcePublishedId(result.id);
       // Remember this publication on the local device so the user can see a
       // private gallery of their own worlds even without an account system.
       recordPublishedWorld({
@@ -570,6 +583,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     applyCommittedWorldEdit(() => cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
     setHistory([]);
     setSelected(null);
+    setSourcePublishedId(null); // reset breaks the ancestry chain
     setLastImportName('');
     setLastImportNameState('');
   }, [applyCommittedWorldEdit]);

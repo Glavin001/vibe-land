@@ -100,6 +100,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return;
   }
 
+  // Optional ancestry tracking. When a user opens a published world,
+  // edits it, and re-publishes, the client sends the source world's id
+  // as parentId so the provenance chain is preserved.
+  const parentId = typeof body.parentId === 'string' && body.parentId.length > 0
+    ? body.parentId
+    : null;
+
   try {
     const reservation = await storage.reserveUpload({
       name,
@@ -107,6 +114,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       version,
       worldContentLength,
       screenshotContentLength,
+      parentId,
     });
     sendJson(res, 201, {
       id: reservation.id,
