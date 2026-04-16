@@ -681,9 +681,7 @@ export function GameWorld({
     if (resolvedInput.interactPressed) {
       if (isDrivingNow) {
         // Exit current vehicle
-        const vehiclePose = prediction.getVehiclePose();
         prediction.exitVehicle();
-        void vehiclePose; // suppress unused warning
         // Notify server — find which vehicle we're in
         if (client) {
           for (const [id, vs] of client.vehicles) {

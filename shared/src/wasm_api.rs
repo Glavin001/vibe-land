@@ -984,6 +984,12 @@ impl WasmSimWorld {
         // `PhysicsArena::exit_vehicle` here so client prediction matches
         // authority and the on-foot KCC resumes from a safe pose.
         if self.local_vehicle_id.is_some() {
+            // Re-read the active chassis pose at the moment of exit instead of
+            // trusting any cached player position. If a vehicle snapshot was
+            // already visually current but the cached player pose lagged behind,
+            // exiting from the stale pose can strand the local KCC at an old
+            // location and create a phantom movement boundary.
+            self.sync_player_to_local_chassis();
             self.position.x += 2.5;
             self.position.y += 1.0;
             self.velocity = Vec3d::zeros();
