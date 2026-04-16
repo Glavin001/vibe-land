@@ -14,6 +14,8 @@ export type ChatToolResultPart = {
   toolName: string;
   output: unknown;
   isError?: boolean;
+  /** Captured screenshots attached to this result. Stored separately so the large dataUrls don't bloat the JSON output that gets replayed to the model. */
+  images?: Array<{ dataUrl: string; mediaType: string }>;
 };
 export type ChatImagePart = { type: 'image'; dataUrl: string; mediaType: string };
 
@@ -74,13 +76,32 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
           input: part.input ?? {},
         });
       } else if (part.type === 'tool-result') {
+        let output: ToolResultPart['output'];
+        if (part.isError) {
+          output = { type: 'error-text', value: stringifyForModel(part.output) };
+        } else if (part.images && part.images.length > 0) {
+          // Multi-modal tool result: text summary + captured image(s).
+          // The AI SDK v6 'content' output lets us embed images in tool results so
+          // the model can see them in the same streaming step.
+          output = {
+            type: 'content',
+            value: [
+              { type: 'text', text: stringifyForModel(part.output) },
+              ...part.images.map((img) => ({
+                type: 'image' as const,
+                data: img.dataUrl,
+                mimeType: img.mediaType as 'image/png',
+              })),
+            ],
+          } as ToolResultPart['output'];
+        } else {
+          output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
+        }
         const resultPart: ToolResultPart = {
           type: 'tool-result',
           toolCallId: part.toolCallId,
           toolName: part.toolName,
-          output: part.isError
-            ? { type: 'error-text', value: stringifyForModel(part.output) }
-            : ({ type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output']),
+          output,
         };
         toolResults.push(resultPart);
       }

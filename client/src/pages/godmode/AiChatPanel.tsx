@@ -13,7 +13,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { forwardRef } from 'react';
-import type { ChatImagePart, ChatMessage, ChatPart } from '../../ai/chatTypes';
+import type { ChatImagePart, ChatMessage, ChatPart, ChatToolResultPart } from '../../ai/chatTypes';
 import {
   MODELS,
   PROVIDER_LABELS,
@@ -28,6 +28,7 @@ import {
   type AiChatSettings,
 } from '../../ai/settingsStore';
 import { useGodModeChat, type ImageAttachment } from '../../ai/useGodModeChat';
+import type { CaptureFunction } from '../../scene/SceneCaptureController';
 import type { WorldAccessors } from '../../ai/worldToolHelpers';
 
 export type AiChatPanelHandle = {
@@ -36,10 +37,11 @@ export type AiChatPanelHandle = {
 
 type AiChatPanelProps = {
   accessors: WorldAccessors;
+  captureScreenshot?: CaptureFunction;
 };
 
 export const AiChatPanel = forwardRef(function AiChatPanel(
-  { accessors }: AiChatPanelProps,
+  { accessors, captureScreenshot }: AiChatPanelProps,
   ref: ForwardedRef<AiChatPanelHandle>,
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
@@ -50,6 +52,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     provider: settings.provider,
     model: settings.model,
     apiKey,
+    captureScreenshot,
   });
 
   // Expose pushHumanEdit so the parent page can forward human edit summaries.
@@ -392,6 +395,7 @@ function PartView({ part }: { part: ChatPart }) {
   }
   if (part.type === 'tool-result') {
     const isError = Boolean(part.isError);
+    const typedPart = part as ChatToolResultPart;
     return (
       <details
         open={isError}
@@ -404,6 +408,9 @@ function PartView({ part }: { part: ChatPart }) {
           {part.toolName}
         </summary>
         <pre style={codeBlockStyle}>{jsonStringify(part.output)}</pre>
+        {typedPart.images?.map((img, i) => (
+          <img key={i} src={img.dataUrl} style={screenshotImageStyle} alt="Captured screenshot" />
+        ))}
       </details>
     );
   }
@@ -789,4 +796,12 @@ const attachedImageStyle: CSSProperties = {
   borderRadius: 8,
   border: '1px solid rgba(116, 212, 255, 0.2)',
   display: 'block',
+};
+
+const screenshotImageStyle: CSSProperties = {
+  maxWidth: '100%',
+  borderRadius: 6,
+  border: '1px solid rgba(116, 212, 255, 0.25)',
+  display: 'block',
+  marginTop: 8,
 };

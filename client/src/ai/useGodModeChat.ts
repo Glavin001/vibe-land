@@ -10,6 +10,8 @@ import {
 import { createLanguageModel, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
+import { createCaptureScreenshotTool } from './screenshotTool';
+import type { CaptureFunction } from '../scene/SceneCaptureController';
 import type { WorldAccessors } from './worldToolHelpers';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
@@ -19,6 +21,7 @@ export type GodModeChatOptions = {
   provider: ProviderId;
   model: string;
   apiKey: string | undefined;
+  captureScreenshot?: CaptureFunction;
 };
 
 export type ImageAttachment = { dataUrl: string; mediaType: string };
@@ -38,7 +41,7 @@ export type GodModeChatHandle = {
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { accessors, provider, model, apiKey } = options;
+  const { accessors, provider, model, apiKey, captureScreenshot } = options;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
@@ -49,6 +52,11 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   useEffect(() => {
     accessorsRef.current = accessors;
   }, [accessors]);
+
+  const captureScreenshotRef = useRef(captureScreenshot);
+  useEffect(() => {
+    captureScreenshotRef.current = captureScreenshot;
+  }, [captureScreenshot]);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -141,6 +149,10 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           tools: {
             execute_js: createExecuteJsTool(accessorsRef.current),
             rollback_to_commit: createRollbackTool(accessorsRef.current),
+            capture_screenshot: createCaptureScreenshotTool(
+              () => captureScreenshotRef.current,
+              accessorsRef.current,
+            ),
           },
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
           abortSignal: controller.signal,
@@ -237,13 +249,30 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
               break;
             }
             case 'tool-result': {
+              // For capture_screenshot, strip the large dataUrl from the stored output
+              // and move it to images[] so it doesn't bloat the JSON history.
+              const rawOutput = part.output as Record<string, unknown> | null | undefined;
+              let storedOutput: unknown = rawOutput;
+              let images: Array<{ dataUrl: string; mediaType: string }> | undefined;
+              if (
+                part.toolName === 'capture_screenshot' &&
+                rawOutput &&
+                typeof rawOutput.capturedImageDataUrl === 'string'
+              ) {
+                const capturedImageDataUrl = rawOutput.capturedImageDataUrl; // narrowed to string
+                // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                const { capturedImageDataUrl: _stripped, ...rest } = rawOutput;
+                storedOutput = rest;
+                images = [{ dataUrl: capturedImageDataUrl, mediaType: 'image/png' }];
+              }
               updateAssistant((parts) => [
                 ...parts,
                 {
                   type: 'tool-result',
                   toolCallId: part.toolCallId,
                   toolName: part.toolName,
-                  output: part.output,
+                  output: storedOutput,
+                  ...(images ? { images } : {}),
                 },
               ]);
               break;

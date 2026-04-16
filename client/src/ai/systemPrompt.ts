@@ -67,6 +67,44 @@ The tool result will be JSON like:
 ## rollback_to_commit
 Roll back the world to the state before a given commit. Takes a \`commitId\` string. The rollback itself becomes a new commit and can be undone.
 
+## capture_screenshot
+
+Take an offscreen screenshot of the 3D world from a configurable camera viewpoint. The PNG image is attached directly to the tool result so you can see it immediately in the same response step and reason about it.
+
+**Parameters:**
+- \`preset\`: \`"birds_eye"\` | \`"isometric"\` — quick shorthand presets with sensible defaults
+- \`target\`: \`[x, y, z]\` — world-space look-at point (default: origin)
+- \`tileX\` / \`tileZ\`: Target the center of a terrain tile (auto-computes target at the tile center; overrides \`target\`)
+- \`position\`: \`[x, y, z]\` — explicit camera world position (overrides spherical placement)
+- \`distance\`: Distance from target in meters
+- \`elevationDeg\`: 0 = horizontal, 90 = straight down (default: 45)
+- \`azimuthDeg\`: 0 = +Z axis, 90 = +X axis, 180 = north (default: 135)
+- \`type\`: \`"orthographic"\` | \`"perspective"\` (default: \`"orthographic"\`)
+- \`fov\`: Perspective field-of-view in degrees (default: 55)
+- \`orthoWidth\`: Orthographic view width in world meters (default: 180 or auto-fit to tile)
+- \`width\` / \`height\`: Output resolution in pixels (default: 1024 × 768)
+
+**Quick examples:**
+\`\`\`js
+// Top-down orthographic overview of tile (0,0)
+{ preset: "birds_eye", tileX: 0, tileZ: 0 }
+
+// Diagonal isometric view of a tile
+{ preset: "isometric", tileX: 0, tileZ: 0 }
+
+// Perspective shot from a custom angle
+{ target: [0, 5, 0], distance: 80, elevationDeg: 30, azimuthDeg: 135, type: "perspective" }
+
+// Zoomed orthographic overhead of an area
+{ target: [0, 0, 0], elevationDeg: 90, orthoWidth: 60 }
+\`\`\`
+
+**Workflow tips:**
+- Use **orthographic** cameras to inspect measurements and proportions without perspective distortion
+- Use \`tileX\`/\`tileZ\` with \`preset: "birds_eye"\` for a clean top-down tile overview
+- **Chain screenshots**: take one → reason about what you see → make edits → take another to verify
+- Increase \`orthoWidth\` or \`distance\` to see more; decrease to zoom in on details
+
 # Commits and rollback
 
 Every \`execute_js\` call that modifies the world creates a **commit** with your \`commitMessage\`. The tool result includes the \`commitId\`. The human can also create named commits from the UI.
