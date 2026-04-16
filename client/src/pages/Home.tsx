@@ -58,12 +58,20 @@ export function HomePage() {
             noteColor="text-[#b9ffc3]"
           />
           <NavCard
-            href="/godmode"
-            tag="/godmode"
+            href="/builder/world"
+            tag="/builder/world"
             title="World Builder"
             description="Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document."
             note="Browser-local authoring with JSON import and export."
             noteColor="text-[#ffe0a2]"
+          />
+          <NavCard
+            href="/gallery"
+            tag="/gallery"
+            title="Gallery"
+            description="Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker."
+            note="Available when the deployment has Cloudflare R2 configured."
+            noteColor="text-[#cdb1ff]"
           />
         </div>
 
