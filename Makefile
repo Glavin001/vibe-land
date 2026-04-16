@@ -26,16 +26,16 @@ setup-client:
 ## Start server + client in parallel (requires 'make setup' first)
 dev:
 	@trap 'kill 0' INT; \
-	  (cd server && RUST_LOG=info cargo run) & \
+	  (cd server && cargo run) & \
 	  (cd client && npm run dev) & \
 	  wait
 
 ## Start only the game server
 server:
-	cd server && RUST_LOG=info cargo run
+	cd server && cargo run
 
 server-with-logs:
-	cd server && RUST_LOG=info RUST_BACKTRACE=1 cargo run 2>&1 | tee /tmp/vibe-server.log
+	cd server && RUST_BACKTRACE=1 cargo run 2>&1 | tee /tmp/vibe-server.log
 
 ## Start only the Vite client dev server
 client:

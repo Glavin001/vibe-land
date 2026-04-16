@@ -71,7 +71,7 @@ cp .env.example .env   # edit WT_HOST, cert paths, etc.
 cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg && cd ..
 
 # Terminal 1 — game server
-cd server && RUST_LOG=info cargo run
+cd server && cargo run
 
 # Terminal 2 — web client
 cd client && npm install && npm run dev

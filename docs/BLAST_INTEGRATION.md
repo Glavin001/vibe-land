@@ -49,6 +49,14 @@ routine is folded into the main `tick` path after
 `step_vehicle_pipeline` so fractures respond to the same tick of
 contacts vehicles collided with.
 
+For local wasm builds, that target-specific block is also the complete
+extra dependency surface pulled in by Cargo:
+
+- `wasm-bindgen`
+- `js-sys`
+- `console_error_panic_hook`
+- `blast-stress-solver` with `scenarios` + `rapier`
+
 ## Impact-driven fracturing
 
 Contact forces from vehicles and dynamic bodies are routed into the
@@ -77,17 +85,41 @@ vehicles. Practice destructibles are instead injected at runtime
 inside `client/src/scene/GameWorld.tsx` via `PRACTICE_DESTRUCTIBLES`
 when `isPracticeMode(mode)` is true.
 
-## Build
+## Local build
 
-`make setup-wasm` (and `npm run build:wasm`) drives
-`scripts/build-shared-wasm.sh`:
+The Blast integration does not add any native system prerequisites,
+but local browser builds now depend on the standard Rust wasm toolchain
+plus the wasm-only deps above.
 
-```sh
+Install the local prerequisites once:
+
+```bash
+rustup update stable && rustup default stable   # Rust >= 1.86
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack --locked                # needed for direct wasm-pack / make setup-wasm
+```
+
+Then rebuild the shared wasm bundle with one of:
+
+```bash
+cd client && npm run build:wasm
+# or
+make setup-wasm
+# or
 ./scripts/build-shared-wasm.sh
 ```
 
-No post-processors, no wasm-binary patching. Rerunning after an
-incremental Rust change is safe and fast.
+`cd client && npm run build:wasm` is the preferred local entrypoint:
+it regenerates `client/src/net/sharedConstants.ts`, ensures
+`wasm-pack` exists, and writes the output to
+`client/src/wasm/pkg/`.
+
+No post-processors, no wasm-binary patching, and no local PhysX clone
+or C++ toolchain are required. `shared/Cargo.toml` disables `wasm-opt`
+for both `wasm-pack` dev and release profiles, so local builds do not
+require Binaryen either. If you want to validate the real Blast
+integration path, run a wasm build; native `cargo check` /
+`cargo build -p web-fps-server` never link the Blast backend.
 
 ## Non-negotiable invariants
 
