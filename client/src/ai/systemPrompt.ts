@@ -58,7 +58,7 @@ The tool result will be JSON like:
 { ok: false, error: { name, message, stack }, logs: [...] }
 \`\`\`
 
-You can call the tool multiple times in a single turn to read, then act, then verify.
+Call \`execute_js\` one step at a time — wait for each result before issuing the next call. You may use as many sequential steps as needed to read, then act, then verify.
 
 # ctx helpers
 
