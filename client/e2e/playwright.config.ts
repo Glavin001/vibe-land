@@ -30,12 +30,15 @@ const BASE_URL = `http://localhost:${CLIENT_PORT}`;
 const SKIP_WEB_SERVER = process.env.E2E_SKIP_WEB_SERVER === '1';
 
 export default defineConfig({
-  testDir: './specs',
+  testDir: path.resolve(__dirname, 'specs'),
+  outputDir: path.resolve(__dirname, 'test-results'),
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: process.env.CI ? 'github' : 'list',
+  reporter: process.env.CI
+    ? [['github'], ['html', { outputFolder: path.resolve(__dirname, 'playwright-report') }]]
+    : 'list',
   timeout: 120_000,
   expect: {
     timeout: 30_000,
@@ -49,8 +52,10 @@ export default defineConfig({
     launchOptions: {
       args: [
         '--enable-quic',
-        '--disable-gpu',
         '--no-sandbox',
+        // Use GPU when available for full-speed WebGL rendering.
+        // CI environments without a GPU will fall back to swiftshader automatically.
+        '--use-gl=angle',
       ],
     },
   },
