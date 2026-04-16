@@ -2,27 +2,26 @@ import { PlayerInterpolator, ServerClockEstimator, type DynamicBodySample, type 
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   SIM_HZ,
-  netDynamicBodyStateToMeters,
-  netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
-  type NetDynamicBodyState,
   type NetPlayerState,
   type NetVehicleState,
   type VehicleStateMeters,
 } from './protocol';
 import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstants';
+import {
+  decodeLocalSessionDynamicBodies,
+  decodeLocalSessionPlayerState,
+  decodeLocalSessionSnapshotMeta,
+  decodeLocalSessionVehicleState,
+  VEHICLE_STATE_STRIDE,
+} from '../runtime/localSessionDecode';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from '../runtime/vehicleDebug';
 import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
-
-const SNAPSHOT_META_STRIDE = 4;
-const PLAYER_STATE_STRIDE = 11;
-const DYNAMIC_BODY_STATE_STRIDE = 18;
-const VEHICLE_STATE_STRIDE = 21;
 
 export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
@@ -267,19 +266,19 @@ export class LocalPracticeClient {
     const session = this.session;
     if (!session) return;
 
-    const meta = Array.from(session.getSnapshotMeta());
-    if (meta.length < SNAPSHOT_META_STRIDE) {
+    const meta = decodeLocalSessionSnapshotMeta(session.getSnapshotMeta());
+    if (!meta) {
       return;
     }
 
-    const serverTimeUs = meta[0] ?? 0;
-    this.latestServerTick = Math.trunc(meta[1] ?? 0);
-    const ackInputSeq = Math.trunc(meta[2] ?? 0);
-    this.playerId = Math.trunc(meta[3] ?? 0);
+    const serverTimeUs = meta.serverTimeUs;
+    this.latestServerTick = meta.serverTick;
+    const ackInputSeq = meta.ackInputSeq;
+    this.playerId = meta.playerId;
     this.currentAckInputSeq = ackInputSeq;
     this.serverClock.observe(serverTimeUs, performance.now() * 1000);
 
-    const playerState = decodePlayerState(session.getLocalPlayerState());
+    const playerState = decodeLocalSessionPlayerState(session.getLocalPlayerState());
     this.currentLocalPlayerState = playerState;
     if (playerState) {
       this.localPlayerHp = playerState.hp;
@@ -306,10 +305,9 @@ export class LocalPracticeClient {
 
   private syncDynamicBodies(serverTimeUs: number, raw: ArrayLike<number>): void {
     const activeIds = new Set<number>();
-    for (let offset = 0; offset + DYNAMIC_BODY_STATE_STRIDE <= raw.length; offset += DYNAMIC_BODY_STATE_STRIDE) {
-      const state = decodeDynamicBodyState(raw, offset);
+    for (const state of decodeLocalSessionDynamicBodies(raw)) {
       activeIds.add(state.id);
-      this.dynamicBodies.set(state.id, netDynamicBodyStateToMeters(state));
+      this.dynamicBodies.set(state.id, state);
       this.dynamicBodyServerTimeUs.set(state.id, serverTimeUs);
     }
 
@@ -326,7 +324,7 @@ export class LocalPracticeClient {
     let localVehicleState: NetVehicleState | null = null;
 
     for (let offset = 0; offset + VEHICLE_STATE_STRIDE <= raw.length; offset += VEHICLE_STATE_STRIDE) {
-      const state = decodeVehicleState(raw, offset);
+      const state = decodeLocalSessionVehicleState(raw, offset);
       activeIds.add(state.id);
       this.vehicles.set(state.id, netVehicleStateToMeters(state));
       this.vehicleServerTimeUs.set(state.id, serverTimeUs);
@@ -344,72 +342,4 @@ export class LocalPracticeClient {
 
     return localVehicleState;
   }
-}
-
-function decodePlayerState(raw: ArrayLike<number>): NetPlayerState | null {
-  if (raw.length < PLAYER_STATE_STRIDE) return null;
-  return {
-    id: Math.trunc(raw[0] ?? 0),
-    pxMm: Math.trunc(raw[1] ?? 0),
-    pyMm: Math.trunc(raw[2] ?? 0),
-    pzMm: Math.trunc(raw[3] ?? 0),
-    vxCms: Math.trunc(raw[4] ?? 0),
-    vyCms: Math.trunc(raw[5] ?? 0),
-    vzCms: Math.trunc(raw[6] ?? 0),
-    yawI16: Math.trunc(raw[7] ?? 0),
-    pitchI16: Math.trunc(raw[8] ?? 0),
-    hp: Math.trunc(raw[9] ?? 0),
-    flags: Math.trunc(raw[10] ?? 0),
-  };
-}
-
-function decodeDynamicBodyState(raw: ArrayLike<number>, offset: number): NetDynamicBodyState {
-  return {
-    id: Math.trunc(raw[offset] ?? 0),
-    shapeType: Math.trunc(raw[offset + 1] ?? 0),
-    pxMm: Math.trunc(raw[offset + 2] ?? 0),
-    pyMm: Math.trunc(raw[offset + 3] ?? 0),
-    pzMm: Math.trunc(raw[offset + 4] ?? 0),
-    qxSnorm: Math.trunc(raw[offset + 5] ?? 0),
-    qySnorm: Math.trunc(raw[offset + 6] ?? 0),
-    qzSnorm: Math.trunc(raw[offset + 7] ?? 0),
-    qwSnorm: Math.trunc(raw[offset + 8] ?? 0),
-    hxCm: Math.trunc(raw[offset + 9] ?? 0),
-    hyCm: Math.trunc(raw[offset + 10] ?? 0),
-    hzCm: Math.trunc(raw[offset + 11] ?? 0),
-    vxCms: Math.trunc(raw[offset + 12] ?? 0),
-    vyCms: Math.trunc(raw[offset + 13] ?? 0),
-    vzCms: Math.trunc(raw[offset + 14] ?? 0),
-    wxMrads: Math.trunc(raw[offset + 15] ?? 0),
-    wyMrads: Math.trunc(raw[offset + 16] ?? 0),
-    wzMrads: Math.trunc(raw[offset + 17] ?? 0),
-  };
-}
-
-function decodeVehicleState(raw: ArrayLike<number>, offset: number): NetVehicleState {
-  return {
-    id: Math.trunc(raw[offset] ?? 0),
-    vehicleType: Math.trunc(raw[offset + 1] ?? 0),
-    flags: Math.trunc(raw[offset + 2] ?? 0),
-    driverId: Math.trunc(raw[offset + 3] ?? 0),
-    pxMm: Math.trunc(raw[offset + 4] ?? 0),
-    pyMm: Math.trunc(raw[offset + 5] ?? 0),
-    pzMm: Math.trunc(raw[offset + 6] ?? 0),
-    qxSnorm: Math.trunc(raw[offset + 7] ?? 0),
-    qySnorm: Math.trunc(raw[offset + 8] ?? 0),
-    qzSnorm: Math.trunc(raw[offset + 9] ?? 0),
-    qwSnorm: Math.trunc(raw[offset + 10] ?? 0),
-    vxCms: Math.trunc(raw[offset + 11] ?? 0),
-    vyCms: Math.trunc(raw[offset + 12] ?? 0),
-    vzCms: Math.trunc(raw[offset + 13] ?? 0),
-    wxMrads: Math.trunc(raw[offset + 14] ?? 0),
-    wyMrads: Math.trunc(raw[offset + 15] ?? 0),
-    wzMrads: Math.trunc(raw[offset + 16] ?? 0),
-    wheelData: [
-      Math.trunc(raw[offset + 17] ?? 0),
-      Math.trunc(raw[offset + 18] ?? 0),
-      Math.trunc(raw[offset + 19] ?? 0),
-      Math.trunc(raw[offset + 20] ?? 0),
-    ],
-  };
 }

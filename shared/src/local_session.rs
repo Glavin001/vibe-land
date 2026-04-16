@@ -595,10 +595,12 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
+    use crate::local_arena::{MoveConfig, PhysicsArena};
     use crate::unit_conv::angle_to_i16;
     use crate::world_document::{
         DynamicEntity, DynamicEntityKind, WorldDocument, WorldMeta, WorldTerrain, WorldTerrainTile,
     };
+    const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/broken.world.json");
 
     fn decode_snapshot_ack(bytes: &[u8]) -> u16 {
         let mut buf = bytes;
@@ -697,6 +699,15 @@ mod tests {
             static_props: vec![],
             dynamic_entities: vec![],
         }
+    }
+
+    fn broken_world() -> WorldDocument {
+        serde_json::from_str(BROKEN_WORLD_DOCUMENT_JSON)
+            .expect("broken world document asset should deserialize")
+    }
+
+    fn terrain_height_for_world(world: &WorldDocument, x: f32, z: f32) -> f32 {
+        world.sample_heightfield_surface_at_world_position(x, z)
     }
 
     #[test]
@@ -821,5 +832,99 @@ mod tests {
             py > terrain_y - 0.25,
             "local session hill vehicle fell through terrain: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
         );
+    }
+
+    #[test]
+    fn physics_arena_with_spawned_player_keeps_broken_world_authored_dynamics_supported() {
+        let world = broken_world();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate broken world");
+        arena.spawn_player(1);
+
+        for _ in 0..360 {
+            let _ = arena.simulate_player_tick(1, &InputCmd::default(), 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+
+        for entity in &world.dynamic_entities {
+            match entity.kind {
+                DynamicEntityKind::Vehicle => {
+                    let vehicle = arena
+                        .snapshot_vehicles()
+                        .into_iter()
+                        .find(|vehicle| vehicle.id == entity.id)
+                        .expect("authored vehicle should exist");
+                    let px = vehicle.px_mm as f32 / 1000.0;
+                    let py = vehicle.py_mm as f32 / 1000.0;
+                    let pz = vehicle.pz_mm as f32 / 1000.0;
+                    let terrain_y = terrain_height_for_world(&world, px, pz);
+                    assert!(
+                        py > terrain_y - 0.25,
+                        "arena+player vehicle {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                        entity.id,
+                    );
+                }
+                _ => {
+                    let body = arena
+                        .snapshot_dynamic_bodies()
+                        .into_iter()
+                        .find(|(id, ..)| *id == entity.id)
+                        .expect("authored dynamic body should exist");
+                    let terrain_y = terrain_height_for_world(&world, body.1[0], body.1[2]);
+                    assert!(
+                        body.1[1] > terrain_y - 0.25,
+                        "arena+player {} {} fell through: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                        match entity.kind {
+                            DynamicEntityKind::Ball => "ball",
+                            DynamicEntityKind::Box => "box",
+                            DynamicEntityKind::Vehicle => "vehicle",
+                        },
+                        entity.id,
+                        body.1[0],
+                        body.1[1],
+                        body.1[2],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_session_keeps_broken_world_authored_dynamics_supported() {
+        let world = broken_world();
+        let mut session = LocalSession::from_world_document(world.clone()).expect("valid world");
+        session.connect();
+        let _ = session.drain_packets();
+
+        for _ in 0..360 {
+            session.tick(1.0 / 60.0);
+            let _ = session.drain_packets();
+        }
+
+        for state in session.dynamic_body_states() {
+            let px = state.px_mm as f32 / 1000.0;
+            let py = state.py_mm as f32 / 1000.0;
+            let pz = state.pz_mm as f32 / 1000.0;
+            let terrain_y = terrain_height_for_world(&world, px, pz);
+            assert!(
+                py > terrain_y - 0.25,
+                "local session dynamic {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                state.id,
+            );
+        }
+
+        for vehicle in session.vehicle_states() {
+            let px = vehicle.px_mm as f32 / 1000.0;
+            let py = vehicle.py_mm as f32 / 1000.0;
+            let pz = vehicle.pz_mm as f32 / 1000.0;
+            let terrain_y = terrain_height_for_world(&world, px, pz);
+            assert!(
+                py > terrain_y - 0.25,
+                "local session vehicle {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                vehicle.id,
+            );
+        }
     }
 }

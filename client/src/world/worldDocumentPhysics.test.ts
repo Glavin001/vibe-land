@@ -5,11 +5,13 @@ import {
   type DynamicBodyStateMeters,
   type FireCmd,
   type ServerPacket,
-  type SnapshotPacket,
   type VehicleStateMeters,
-  netDynamicBodyStateToMeters,
-  netVehicleStateToMeters,
 } from '../net/protocol';
+import {
+  decodeLocalSessionDynamicBodies,
+  decodeLocalSessionSnapshotMeta,
+  decodeLocalSessionVehicles,
+} from '../runtime/localSessionDecode';
 import { initWasmForTests, WasmLocalSession, WasmSimWorld } from '../wasm/testInit';
 import brokenWorldDocumentJson from '../../../worlds/broken.world.json';
 import {
@@ -35,8 +37,7 @@ beforeAll(() => {
   initWasmForTests();
 });
 
-type LocalPreviewResult = {
-  snapshot: SnapshotPacket;
+type LocalRuntimeResult = {
   dynamicBodies: Map<number, DynamicBodyStateMeters>;
   vehicles: Map<number, VehicleStateMeters>;
 };
@@ -177,26 +178,22 @@ function makeWorldWithEntities(baseWorld: WorldDocument, entities: DynamicEntity
   };
 }
 
-function runLocalRuntime(world: WorldDocument, steps = 240): LocalPreviewResult {
+function runLocalRuntime(world: WorldDocument, steps = 240): LocalRuntimeResult {
   const session = new WasmLocalSession(serializeWorldDocument(world));
   session.connect();
 
-  let latestSnapshot: SnapshotPacket | null = null;
   for (let step = 0; step < steps; step += 1) {
     session.tick(1 / 60);
-    const packets = drainDecodedLocalSessionPackets(session);
-    for (const decoded of packets) {
-      if (decoded.type === 'snapshot') {
-        latestSnapshot = decoded;
-      }
-    }
   }
 
-  expect(latestSnapshot).not.toBeNull();
-  const snapshot = latestSnapshot as SnapshotPacket;
-  const dynamicBodies = new Map(snapshot.dynamicBodyStates.map((body) => [body.id, netDynamicBodyStateToMeters(body)]));
-  const vehicles = new Map(snapshot.vehicleStates.map((vehicle) => [vehicle.id, netVehicleStateToMeters(vehicle)]));
-  return { snapshot, dynamicBodies, vehicles };
+  expect(decodeLocalSessionSnapshotMeta(session.getSnapshotMeta())).not.toBeNull();
+  const dynamicBodies = new Map(
+    decodeLocalSessionDynamicBodies(session.getDynamicBodyStates()).map((body) => [body.id, body]),
+  );
+  const vehicles = new Map(
+    decodeLocalSessionVehicles(session.getVehicleStates()).map((vehicle) => [vehicle.id, vehicle]),
+  );
+  return { dynamicBodies, vehicles };
 }
 
 function raycastTerrainHeight(world: WorldDocument, x: number, z: number): number {
