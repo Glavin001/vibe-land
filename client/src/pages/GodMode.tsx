@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
-import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
+import { Sky, TransformControls } from '@react-three/drei';
 import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
@@ -54,6 +54,7 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { GodModeCameraControls } from './godmode/GodModeCameraControls';
 import { useHumanEditTracker } from './godmode/useHumanEditTracker';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
 
@@ -1227,6 +1228,8 @@ function GodModeEditorScene({
   const terrainPointerRef = useRef<Vec3 | null>(null);
   const objectRefs = useRef(new Map<string, THREE.Object3D>());
   const resizeOriginRef = useRef<{ halfExtents?: Vec3; radius?: number } | null>(null);
+  // Populated by GodModeCameraControls; call to snap the orbit pivot to a world point
+  const setOrbitTargetRef = useRef<((point: THREE.Vector3) => void) | null>(null);
   const [hoveredTerrainTile, setHoveredTerrainTile] = useState<TerrainTileCoordinate | null>(null);
   const [terrainPointerPoint, setTerrainPointerPoint] = useState<Vec3 | null>(null);
   const [isRampApplying, setIsRampApplying] = useState(false);
@@ -1261,8 +1264,12 @@ function GodModeEditorScene({
 
   const handleTerrainPointerDown = useCallback((event: ThreeEvent<PointerEvent>) => {
     event.stopPropagation();
+    // Middle/right clicks are reserved for camera navigation — don't paint
+    if (event.button !== 0) return;
     const nextPoint: Vec3 = [event.point.x, event.point.y, event.point.z];
     terrainPointerRef.current = nextPoint;
+    // Snap orbit pivot to the clicked point so MMB orbiting stays near the work area
+    setOrbitTargetRef.current?.(event.point);
     const tileX = event.object.userData?.terrainTileX;
     const tileZ = event.object.userData?.terrainTileZ;
     if (tool === 'terrain' && terrainToolMode === 'sculpt') {
@@ -1463,6 +1470,7 @@ function GodModeEditorScene({
               rotation-x={-Math.PI / 2}
               onPointerDown={(event) => {
                 event.stopPropagation();
+                if (event.button !== 0) return;
                 onAddTile(tile.tileX, tile.tileZ);
               }}
             >
@@ -1524,6 +1532,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.button !== 0) return;
               onSelect({ kind: 'static', id: entity.id });
             }}
           >
@@ -1541,6 +1550,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.button !== 0) return;
               onSelect({ kind: 'dynamic', id: entity.id });
             }}
           >
@@ -1585,7 +1595,7 @@ function GodModeEditorScene({
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
         </mesh>
       )}
-      <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
+      <GodModeCameraControls tool={tool} setOrbitTargetRef={setOrbitTargetRef} />
     </Canvas>
   );
 }
@@ -1607,6 +1617,7 @@ function FloatingTileActionButton({
       <mesh
         onPointerDown={(event) => {
           event.stopPropagation();
+          if (event.button !== 0) return;
           if (!disabled) {
             onClick();
           }
