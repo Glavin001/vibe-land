@@ -71,15 +71,26 @@ export function HomePage() {
             <div style={{ color: '#b9ffc3', fontSize: 14 }}>Works offline after assets are cached.</div>
           </a>
 
-          <a href="/godmode" style={cardStyle}>
+          <a href="/builder/world" style={cardStyle}>
             <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
-              /godmode
+              /builder/world
             </div>
             <h2 style={{ margin: 0, fontSize: 30 }}>World Builder</h2>
             <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
               Sculpt terrain, place authored objects, autosave local drafts, and launch a fresh single-player run from the current world document.
             </p>
             <div style={{ color: '#ffe0a2', fontSize: 14 }}>Browser-local authoring with JSON import and export.</div>
+          </a>
+
+          <a href="/gallery" style={cardStyle}>
+            <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff', marginBottom: 10 }}>
+              /gallery
+            </div>
+            <h2 style={{ margin: 0, fontSize: 30 }}>Gallery</h2>
+            <p style={{ margin: '12px 0 18px', color: 'rgba(237, 246, 255, 0.74)', lineHeight: 1.6 }}>
+              Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker.
+            </p>
+            <div style={{ color: '#cdb1ff', fontSize: 14 }}>Available when the deployment has Cloudflare R2 configured.</div>
           </a>
         </div>
 
