@@ -91,6 +91,23 @@ export function createDefaultWorldDocument(): WorldDocument {
   return cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
 }
 
+export function createEmptyWorldDocument(): WorldDocument {
+  return {
+    version: WORLD_DOCUMENT_VERSION,
+    meta: {
+      name: 'Untitled World',
+      description: '',
+    },
+    terrain: {
+      tileGridSize: DEFAULT_WORLD_DOCUMENT.terrain.tileGridSize,
+      tileHalfExtentM: DEFAULT_WORLD_DOCUMENT.terrain.tileHalfExtentM,
+      tiles: [createEmptyTerrainTile(DEFAULT_WORLD_DOCUMENT.terrain.tileGridSize, 0, 0)],
+    },
+    staticProps: [],
+    dynamicEntities: [],
+  };
+}
+
 export function parseWorldDocument(raw: unknown): WorldDocument {
   if (!raw || typeof raw !== 'object') {
     throw new Error('World document must be an object.');

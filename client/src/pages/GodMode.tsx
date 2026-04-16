@@ -12,6 +12,7 @@ import {
   applyTerrainBrush,
   applyTerrainRampStencil,
   cloneWorldDocument,
+  createEmptyWorldDocument,
   getAddableTerrainTiles,
   getTerrainRampEndpointHeights,
   getTerrainTileCenter,
@@ -677,6 +678,16 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     setLastImportNameState('');
   }, [applyCommittedWorldEdit]);
 
+  const handleClearAll = useCallback(() => {
+    void clearDraftStorage();
+    applyCommittedWorldEdit(() => createEmptyWorldDocument());
+    setHistory([]);
+    setSelected(null);
+    setSourcePublishedId(null); // reset breaks the ancestry chain
+    setLastImportName('');
+    setLastImportNameState('');
+  }, [applyCommittedWorldEdit]);
+
   const addStaticCuboid = useCallback(() => {
     let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
@@ -914,7 +925,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       <aside style={sidebarStyle}>
         <div>
           <div style={eyebrowStyle}>vibe-land</div>
-          <h1 style={titleStyle}>God Mode</h1>
+          <h1 style={titleStyle}>World Builder</h1>
           <p style={bodyStyle}>
             Edit the authored world document locally, autosave drafts in your browser, and launch a fresh single-player simulation from the current authored state.
           </p>
@@ -937,6 +948,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             <button type="button" onClick={handleExport} style={primaryButtonStyle}>Export JSON</button>
             <button type="button" onClick={handleImportButton} style={secondaryButtonStyle}>Import JSON</button>
             <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
+            <button type="button" onClick={handleClearAll} style={dangerButtonStyle}>Clear All</button>
           </div>
           <div style={mutedTextStyle}>
             Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
