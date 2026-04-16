@@ -33,6 +33,7 @@ export type DebugStats = {
   pendingInputs: number;
   predictionTicks: number;
   playerCorrectionMagnitude: number;
+  playerAuthorityDeltaM: number;
   vehicleCorrectionMagnitude: number;
   dynamicGlobalMaxCorrectionMagnitude: number;
   dynamicNearPlayerMaxCorrectionMagnitude: number;
@@ -107,6 +108,7 @@ export type DebugStats = {
   hp: number;
   onGround: boolean;
   inVehicle: boolean;
+  inMachine: boolean;
   dead: boolean;
 
   // System
@@ -144,6 +146,7 @@ export const DEFAULT_STATS: DebugStats = {
   pendingInputs: 0,
   predictionTicks: 0,
   playerCorrectionMagnitude: 0,
+  playerAuthorityDeltaM: 0,
   vehicleCorrectionMagnitude: 0,
   dynamicGlobalMaxCorrectionMagnitude: 0,
   dynamicNearPlayerMaxCorrectionMagnitude: 0,
@@ -214,6 +217,7 @@ export const DEFAULT_STATS: DebugStats = {
   hp: 100,
   onGround: false,
   inVehicle: false,
+  inMachine: false,
   dead: false,
   heapUsedMb: -1,
   heapTotalMb: -1,
@@ -232,10 +236,11 @@ function fmt(n: number, decimals = 1): string {
   return n.toFixed(decimals);
 }
 
-function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string {
+function fmtFlags(onGround: boolean, inVehicle: boolean, inMachine: boolean, dead: boolean): string {
   const parts: string[] = [];
   if (onGround) parts.push('ground');
   if (inVehicle) parts.push('vehicle');
+  if (inMachine) parts.push('machine');
   if (dead) parts.push('DEAD');
   return parts.length > 0 ? parts.join(' | ') : 'airborne';
 }
@@ -283,6 +288,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- pending_inputs: ${stats.pendingInputs}`,
     `- prediction_ticks: ${stats.predictionTicks}`,
     `- player_corr_m: ${fmt(stats.playerCorrectionMagnitude, 3)}`,
+    `- player_auth_delta_m: ${fmt(stats.playerAuthorityDeltaM, 3)}`,
     `- vehicle_corr_m: ${fmt(stats.vehicleCorrectionMagnitude, 3)}`,
     `- dyn_global_max_corr_m: ${fmt(stats.dynamicGlobalMaxCorrectionMagnitude, 3)}`,
     `- dyn_near_max_corr_m: ${fmt(stats.dynamicNearPlayerMaxCorrectionMagnitude, 3)}`,
@@ -353,7 +359,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     '## Player',
     `- player_id: ${stats.playerId}`,
     `- hp: ${stats.hp}`,
-    `- status_flags: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`,
+    `- status_flags: ${fmtFlags(stats.onGround, stats.inVehicle, stats.inMachine, stats.dead)}`,
     `- pos_m: [${fmt(p[0], 3)}, ${fmt(p[1], 3)}, ${fmt(p[2], 3)}]`,
     `- vel_mps: [${fmt(v[0], 3)}, ${fmt(v[1], 3)}, ${fmt(v[2], 3)}]`,
     `- speed_mps: ${fmt(stats.speedMs, 3)}`,
@@ -599,7 +605,7 @@ export function DebugOverlay({
 
       <Section title="Player">
         {`ID: ${stats.playerId}  HP: ${stats.hp}`}
-        {`Status: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`}
+        {`Status: ${fmtFlags(stats.onGround, stats.inVehicle, stats.inMachine, stats.dead)}`}
         {`Pos: ${fmt(p[0], 2)}, ${fmt(p[1], 2)}, ${fmt(p[2], 2)}`}
         {`Vel: ${fmt(v[0], 2)}, ${fmt(v[1], 2)}, ${fmt(v[2], 2)}`}
         {`Speed: ${fmt(stats.speedMs, 2)} m/s`}

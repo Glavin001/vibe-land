@@ -153,6 +153,10 @@ export function usePredictionWithWorld(
     m.reconcile(ackInputSeq, playerState);
   }, []);
 
+  const hardSyncLocalPlayer = useCallback((playerState: NetPlayerState, clearPending = true) => {
+    managerRef.current?.forceStateFromSnapshot(playerState, clearPending);
+  }, []);
+
   const getPosition = useCallback((): [number, number, number] | null => {
     const m = managerRef.current;
     if (!m) return null;
@@ -678,6 +682,7 @@ export function usePredictionWithWorld(
     getNextSeq,
     getDebugRenderBuffers,
     getDebugStats,
+    hardSyncLocalPlayer,
     spawnVehicle,
     removeVehicle,
     syncRemoteVehicle,

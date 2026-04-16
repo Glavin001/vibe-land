@@ -23,6 +23,13 @@ pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
 
+fn player_collision_groups() -> InteractionGroups {
+    InteractionGroups::new(
+        Group::GROUP_3,
+        Group::GROUP_1 | Group::GROUP_2 | Group::GROUP_3,
+    )
+}
+
 pub struct Vehicle {
     pub chassis_body: RigidBodyHandle,
     pub chassis_collider: ColliderHandle,
@@ -610,7 +617,7 @@ impl PhysicsArena {
                         state.position =
                             Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
                         if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                            c.set_collision_groups(InteractionGroups::all());
+                            c.set_collision_groups(player_collision_groups());
                         }
                         self.dynamic
                             .sim
@@ -829,7 +836,7 @@ impl PhysicsArena {
                     state.position =
                         Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
                     if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                        c.set_collision_groups(InteractionGroups::all());
+                        c.set_collision_groups(player_collision_groups());
                     }
                     self.dynamic
                         .sim

@@ -12,7 +12,8 @@ pub const BTN_RELOAD: u16 = 1 << 8;
 // ── Player state flags ──────────────────────────
 pub const FLAG_ON_GROUND: u16 = 1 << 0;
 pub const FLAG_IN_VEHICLE: u16 = 1 << 1;
-pub const FLAG_DEAD: u16 = 1 << 2;
+pub const FLAG_IN_MACHINE: u16 = 1 << 2;
+pub const FLAG_DEAD: u16 = 1 << 3;
 
 // ── Packet type IDs ─────────────────────────────
 pub const PKT_CLIENT_HELLO: u8 = 1;

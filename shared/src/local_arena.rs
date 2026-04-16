@@ -5,7 +5,7 @@ use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
 use crate::constants::BTN_RELOAD;
-use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND};
+use crate::constants::{FLAG_DEAD, FLAG_IN_MACHINE, FLAG_IN_VEHICLE, FLAG_ON_GROUND};
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
@@ -15,6 +15,13 @@ use snap_machines_rapier::{MachineWorldMut, MachineWorldRemove};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 pub type Vec3 = Vector3<f32>;
+
+fn player_collision_groups() -> InteractionGroups {
+    InteractionGroups::new(
+        Group::GROUP_3,
+        Group::GROUP_1 | Group::GROUP_2 | Group::GROUP_3,
+    )
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -266,6 +273,30 @@ impl PhysicsArena {
             flags |= FLAG_IN_VEHICLE;
             if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
                 if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
+                    let p = rb.translation();
+                    let v = rb.linvel();
+                    return Some((
+                        [p.x, p.y, p.z],
+                        [v.x, v.y, v.z],
+                        state.yaw as f32,
+                        state.pitch as f32,
+                        state.hp,
+                        flags,
+                    ));
+                }
+            }
+        }
+
+        if let Some(&machine_id) = self.machine_of_player.get(&player_id) {
+            flags |= FLAG_IN_MACHINE;
+            if let Some(machine) = self.machines.get(&machine_id) {
+                if let Some(rb) = machine
+                    .machine
+                    .body_ids()
+                    .first()
+                    .and_then(|id| machine_runtime_body_handle(&machine.machine, id))
+                    .and_then(|handle| self.dynamic.sim.rigid_bodies.get(handle))
+                {
                     let p = rb.translation();
                     let v = rb.linvel();
                     return Some((
@@ -589,7 +620,7 @@ impl PhysicsArena {
                         state.position =
                             Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
                         if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                            c.set_collision_groups(InteractionGroups::all());
+                            c.set_collision_groups(player_collision_groups());
                         }
                         self.dynamic
                             .sim
@@ -831,7 +862,7 @@ impl PhysicsArena {
                     state.position =
                         Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
                     if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                        c.set_collision_groups(InteractionGroups::all());
+                        c.set_collision_groups(player_collision_groups());
                     }
                     self.dynamic
                         .sim

@@ -81,6 +81,7 @@ export function useDebugStats() {
       pendingInputs: number;
       predictionTicks: number;
       playerCorrectionMagnitude: number;
+      playerAuthorityDeltaM: number;
       vehicleCorrectionMagnitude: number;
       dynamicGlobalMaxCorrectionMagnitude: number;
       dynamicNearPlayerMaxCorrectionMagnitude: number;
@@ -222,6 +223,7 @@ export function useDebugStats() {
     s.pendingInputs = physics.pendingInputs;
     s.predictionTicks = physics.predictionTicks;
     s.playerCorrectionMagnitude = physics.playerCorrectionMagnitude;
+    s.playerAuthorityDeltaM = physics.playerAuthorityDeltaM;
     s.vehicleCorrectionMagnitude = physics.vehicleCorrectionMagnitude;
     s.dynamicGlobalMaxCorrectionMagnitude = physics.dynamicGlobalMaxCorrectionMagnitude;
     s.dynamicNearPlayerMaxCorrectionMagnitude = physics.dynamicNearPlayerMaxCorrectionMagnitude;
@@ -291,7 +293,8 @@ export function useDebugStats() {
     s.hp = player.hp;
     s.onGround = (player.localFlags & 0x1) !== 0;  // FLAG_ON_GROUND
     s.inVehicle = (player.localFlags & 0x2) !== 0; // FLAG_IN_VEHICLE
-    s.dead = (player.localFlags & 0x4) !== 0;      // FLAG_DEAD
+    s.inMachine = (player.localFlags & 0x4) !== 0; // FLAG_IN_MACHINE
+    s.dead = (player.localFlags & 0x8) !== 0;      // FLAG_DEAD
     s.heapUsedMb = heapUsedMb;
     s.heapTotalMb = heapTotalMb;
 

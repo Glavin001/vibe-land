@@ -31,6 +31,7 @@ import {
   BLOCK_ADD,
   BLOCK_REMOVE,
   FLAG_DEAD,
+  FLAG_IN_MACHINE,
   FLAG_IN_VEHICLE,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
@@ -103,6 +104,7 @@ type FrameDebugCallback = (
     pendingInputs: number;
     predictionTicks: number;
     playerCorrectionMagnitude: number;
+    playerAuthorityDeltaM: number;
     vehicleCorrectionMagnitude: number;
     dynamicGlobalMaxCorrectionMagnitude: number;
     dynamicNearPlayerMaxCorrectionMagnitude: number;
@@ -449,10 +451,16 @@ export function GameWorld({
           // collides with the correct (same-tick) collider positions.
           const bodies = Array.from(stateRef.current.dynamicBodies.values());
           prediction.updateDynamicBodies(bodies);
-          // Skip player KCC reconcile while driving — player position on server
-          // is the chassis position, which would cause a spurious large correction
-          // offset on the idle player collider.
-          if (!prediction.isInVehicle()) {
+          // Skip player KCC reconcile while mounted in another entity. While
+          // driving/operating, the authoritative snapshot position tracks the
+          // vehicle/machine root, not the hidden on-foot predictor collider.
+          const mounted = (state.flags & (FLAG_IN_VEHICLE | FLAG_IN_MACHINE)) !== 0;
+          const wasMounted = wasMountedInSnapshotRef.current;
+          wasMountedInSnapshotRef.current = mounted;
+          if (mounted !== wasMounted) {
+            prediction.hardSyncLocalPlayer(state, true);
+          }
+          if (!mounted && !prediction.isInVehicle() && !prediction.isOperatingSnapMachine()) {
             prediction.reconcile(ackInputSeq, state);
           }
         }
@@ -527,6 +535,7 @@ export function GameWorld({
   // Snap-machine refs
   const knownMachineIds = useRef<Set<number>>(new Set());
   const nearestMachineIdRef = useRef<number | null>(null);
+  const wasMountedInSnapshotRef = useRef(false);
 
   useEffect(() => {
     const manager = new GameInputManager();
@@ -1114,6 +1123,11 @@ export function GameWorld({
     const vehiclePoseForCamera = localVehicleVisualPose;
     const predictedPos = prediction.getPosition();
     const pos = predictedPos ?? state.localPosition;
+    const playerAuthorityDeltaM = Math.hypot(
+      pos[0] - state.localPosition[0],
+      pos[1] - state.localPosition[1],
+      pos[2] - state.localPosition[2],
+    );
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
 
@@ -1212,7 +1226,10 @@ export function GameWorld({
           rapierDebugLabel: rapierDebugModeLabel(rapierDebugModeBits),
           rapierDebugModeBits,
         },
-        physStats,
+        {
+          ...physStats,
+          playerAuthorityDeltaM,
+        },
         {
           id: drivenVehicleId ?? 0,
           driverConfirmed: Boolean(drivenVehicleState && client && drivenVehicleState.driverId === client.playerId),

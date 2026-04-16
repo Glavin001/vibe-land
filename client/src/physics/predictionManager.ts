@@ -166,6 +166,23 @@ export class PredictionManager {
     }
   }
 
+  forceStateFromSnapshot(playerState: NetPlayerState, clearPending = true): void {
+    const m = netPlayerStateToMeters(playerState);
+    if (clearPending) {
+      this.sim.clearPendingInputs();
+    }
+    this.sim.setFullState(
+      m.position[0], m.position[1], m.position[2],
+      m.velocity[0], m.velocity[1], m.velocity[2],
+      m.yaw, m.pitch,
+      (m.flags & 1) !== 0,
+    );
+    this.currPosition = [...m.position] as [number, number, number];
+    this.prevPosition = [...m.position] as [number, number, number];
+    this.correctionOffset = [0, 0, 0];
+    this.initialized = true;
+  }
+
   /**
    * Get the visually-smoothed interpolated position for rendering.
    */
