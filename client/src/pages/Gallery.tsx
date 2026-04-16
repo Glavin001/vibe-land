@@ -120,6 +120,7 @@ type LoadState =
 
 export function GalleryPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<PublishedHistoryEntry[]>(() => loadPublishedHistory());
 
   useEffect(() => {
@@ -139,6 +140,9 @@ export function GalleryPage() {
         if (!config.enabled) {
           setState({ kind: 'disabled' });
           return;
+        }
+        if (config.publicUrl) {
+          setPublicUrl(config.publicUrl);
         }
         const worlds = await listPublishedWorlds();
         if (cancelled) return;
@@ -243,7 +247,7 @@ export function GalleryPage() {
               }}
             >
               {ownedSummaries.map((world) => (
-                <GalleryCard key={`own-${world.id}`} world={world} owned />
+                <GalleryCard key={`own-${world.id}`} world={world} owned publicUrl={publicUrl} />
               ))}
             </div>
           </section>
@@ -265,7 +269,7 @@ export function GalleryPage() {
               }}
             >
               {communitySummaries.map((world) => (
-                <GalleryCard key={world.id} world={world} />
+                <GalleryCard key={world.id} world={world} publicUrl={publicUrl} />
               ))}
             </div>
           </section>
@@ -275,7 +279,7 @@ export function GalleryPage() {
   );
 }
 
-function GalleryCard({ world, owned = false }: { world: GalleryWorldSummary; owned?: boolean }) {
+function GalleryCard({ world, owned = false, publicUrl = null }: { world: GalleryWorldSummary; owned?: boolean; publicUrl?: string | null }) {
   const [screenshotFailed, setScreenshotFailed] = useState(false);
   const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
   const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
@@ -291,7 +295,7 @@ function GalleryCard({ world, owned = false }: { world: GalleryWorldSummary; own
           <span>No preview</span>
         ) : (
           <img
-            src={screenshotUrlForWorld(world.id)}
+            src={screenshotUrlForWorld(world.id, publicUrl)}
             alt={`Preview of ${world.name || 'Untitled World'}`}
             loading="lazy"
             style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}

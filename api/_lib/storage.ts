@@ -166,3 +166,19 @@ export function getWorldStorage(): WorldStorage | null {
 export function isStorageEnabled(): boolean {
   return getWorldStorage() !== null;
 }
+
+// Optional public CDN base URL for reading published assets. When set, the
+// client fetches world JSON and screenshots directly from the CDN instead of
+// going through the serverless function. The URL should map 1:1 to the R2
+// bucket key space — e.g. https://vibe-land-worlds.example.com corresponds
+// to the bucket root, so published/<id>.world.json is reachable at
+// https://vibe-land-worlds.example.com/published/<id>.world.json.
+//
+// Typical setup: Cloudflare R2 custom domain or a Cache Rule in front of the
+// R2 public bucket URL.
+export function getPublicBaseUrl(): string | null {
+  const raw = process.env.R2_PUBLIC_URL?.trim();
+  if (!raw) return null;
+  // Strip trailing slash for consistent URL building.
+  return raw.endsWith('/') ? raw.slice(0, -1) : raw;
+}

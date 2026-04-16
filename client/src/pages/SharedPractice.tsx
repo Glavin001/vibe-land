@@ -1,7 +1,7 @@
 import { useEffect, useState, type CSSProperties } from 'react';
 import { App } from '../App';
 import { parseWorldDocument, type WorldDocument } from '../world/worldDocument';
-import { fetchPublishedWorld } from '../world/worldsCloud';
+import { fetchCloudConfig, fetchPublishedWorld } from '../world/worldsCloud';
 
 const shellStyle: CSSProperties = {
   minHeight: '100%',
@@ -62,9 +62,16 @@ export function SharedPracticePage({ id }: SharedPracticePageProps) {
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    fetchPublishedWorld(id)
-      .then((raw) => {
+    // Probe the config to learn the public CDN URL (if any), then fetch the
+    // world directly from the CDN. Falls back to the /api function path if
+    // no CDN is configured.
+    fetchCloudConfig()
+      .then((config) => {
         if (cancelled) return;
+        return fetchPublishedWorld(id, config.publicUrl);
+      })
+      .then((raw) => {
+        if (cancelled || !raw) return;
         const world = parseWorldDocument(raw);
         setState({ kind: 'loaded', world });
       })

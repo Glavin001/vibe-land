@@ -4,6 +4,11 @@ import { serializeWorldDocument } from './worldDocument';
 export type CloudConfig = {
   enabled: boolean;
   storage?: 'r2' | 'local' | null;
+  // When set, read world JSON + screenshots directly from this CDN origin
+  // instead of going through the /api/worlds/<id> function. The URL maps
+  // 1:1 to the R2 bucket key space, e.g.:
+  //   https://vibe-land-worlds.example.com/published/<id>.world.json
+  publicUrl?: string | null;
 };
 
 export type GalleryWorldSummary = {
@@ -43,7 +48,10 @@ export async function fetchCloudConfig(): Promise<CloudConfig> {
     throw new Error(`Failed to load cloud config (HTTP ${response.status})`);
   }
   const data = (await response.json()) as Partial<CloudConfig>;
-  return { enabled: Boolean(data.enabled), storage: data.storage ?? null };
+  const publicUrl = typeof data.publicUrl === 'string' && data.publicUrl.length > 0
+    ? data.publicUrl
+    : null;
+  return { enabled: Boolean(data.enabled), storage: data.storage ?? null, publicUrl };
 }
 
 /**
@@ -165,15 +173,21 @@ export async function listPublishedWorlds(limit?: number): Promise<GalleryWorldS
   return Array.isArray(data.worlds) ? data.worlds : [];
 }
 
-export async function fetchPublishedWorld(id: string): Promise<unknown> {
-  const response = await fetch(`/api/worlds/${encodeURIComponent(id)}`);
+export async function fetchPublishedWorld(id: string, publicUrl?: string | null): Promise<unknown> {
+  const url = publicUrl
+    ? `${publicUrl}/published/${encodeURIComponent(id)}.world.json`
+    : `/api/worlds/${encodeURIComponent(id)}`;
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error(await describeError(response, 'fetch world'));
   }
   return response.json();
 }
 
-export function screenshotUrlForWorld(id: string): string {
+export function screenshotUrlForWorld(id: string, publicUrl?: string | null): string {
+  if (publicUrl) {
+    return `${publicUrl}/published/${encodeURIComponent(id)}.screenshot.jpg`;
+  }
   return `/api/worlds/${encodeURIComponent(id)}/screenshot`;
 }
 

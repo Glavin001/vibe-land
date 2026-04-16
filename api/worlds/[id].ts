@@ -44,14 +44,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   // with ContentEncoding: gzip, the filesystem backend never decompresses
   // on write). Decompress here so clients always see plain JSON, regardless
   // of transport layer behaviour.
+  //
+  // Edge case: some S3 proxies / CDN layers transparently decompress
+  // Content-Encoding: gzip responses even on the S3 API path. If that
+  // happens the bytes are already plain JSON despite the metadata saying
+  // gzip. We attempt gunzip first and fall back to using the raw bytes.
   let plain: Buffer;
   if (content.contentEncoding === 'gzip') {
     try {
       plain = gunzipSync(content.bytes);
-    } catch (err) {
-      console.error('[worlds/id] Failed to decompress stored world', err);
-      sendError(res, 502, 'Failed to decompress stored world.');
-      return;
+    } catch {
+      // Likely already decompressed by the transport layer — use as-is.
+      plain = content.bytes;
     }
   } else {
     plain = content.bytes;

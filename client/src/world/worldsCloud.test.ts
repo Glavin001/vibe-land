@@ -42,15 +42,15 @@ describe('worldsCloud', () => {
     vi.restoreAllMocks();
   });
 
-  it('fetchCloudConfig returns enabled flag + storage kind', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { enabled: true, storage: 'r2' }));
-    await expect(fetchCloudConfig()).resolves.toEqual({ enabled: true, storage: 'r2' });
+  it('fetchCloudConfig returns enabled flag + storage kind + publicUrl', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { enabled: true, storage: 'r2', publicUrl: 'https://cdn.example' }));
+    await expect(fetchCloudConfig()).resolves.toEqual({ enabled: true, storage: 'r2', publicUrl: 'https://cdn.example' });
     expect(fetchMock).toHaveBeenCalledWith('/api/worlds/config');
   });
 
   it('fetchCloudConfig coerces missing enabled to false', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
-    await expect(fetchCloudConfig()).resolves.toEqual({ enabled: false, storage: null });
+    await expect(fetchCloudConfig()).resolves.toEqual({ enabled: false, storage: null, publicUrl: null });
   });
 
   it('publishWorld reserves an upload then PUTs both blobs in parallel', async () => {

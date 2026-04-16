@@ -124,6 +124,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
   const [cloudEnabled, setCloudEnabled] = useState(false);
+  const [cloudPublicUrl, setCloudPublicUrl] = useState<string | null>(null);
   const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
   const [cloudLoadStatus, setCloudLoadStatus] = useState<
     | { kind: 'idle' }
@@ -517,6 +518,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       .then((config) => {
         if (!cancelled) {
           setCloudEnabled(config.enabled);
+          setCloudPublicUrl(config.publicUrl ?? null);
         }
       })
       .catch(() => {
@@ -536,7 +538,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     }
     let cancelled = false;
     setCloudLoadStatus({ kind: 'loading', id: publishedId });
-    fetchPublishedWorld(publishedId)
+    fetchPublishedWorld(publishedId, cloudPublicUrl)
       .then((raw) => {
         if (cancelled) {
           return;
@@ -556,7 +558,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     return () => {
       cancelled = true;
     };
-  }, [publishedId, storageReady, applyCommittedWorldEdit]);
+  }, [publishedId, storageReady, applyCommittedWorldEdit, cloudPublicUrl]);
 
   const handleRestoreRevision = useCallback((revision: WorldDraftRevision) => {
     applyCommittedWorldEdit(() => cloneWorldDocument(revision.world));

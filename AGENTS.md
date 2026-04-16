@@ -152,6 +152,18 @@ In the Cloudflare dashboard: **R2 → your bucket → Settings → CORS Policy �
 
 Note: MinIO in local dev doesn't enforce CORS because the e2e test uses Node's `fetch()` (no preflight). CORS is a browser-only concern and only matters on deployed R2 buckets.
 
+#### CDN reads via `R2_PUBLIC_URL`
+
+By default every read (world JSON, screenshot) goes through the Vercel function. Set `R2_PUBLIC_URL` to a public CDN domain that maps 1:1 to the R2 bucket key space and the client will bypass the function entirely for reads:
+
+```env
+R2_PUBLIC_URL=https://vibe-land-worlds.example.com
+```
+
+The client resolves world JSON at `${R2_PUBLIC_URL}/published/<id>.world.json` and screenshots at `${R2_PUBLIC_URL}/published/<id>.screenshot.jpg`. This removes all read traffic from the serverless functions, leverages Cloudflare edge caching, and works around potential Vercel routing conflicts between the SPA rewrite and the dynamic `[id]` function path.
+
+The `/api/worlds/config` endpoint exposes `publicUrl` so every client page (gallery, shared practice, builder) can discover it at runtime without hard-coding the domain. When `R2_PUBLIC_URL` is unset, `publicUrl` is null and the client falls back to the function endpoints as before.
+
 Endpoints (Vercel serverless functions in `/api`):
 
 - `GET  /api/worlds/config` → `{ enabled, storage }` — storage is `'r2'` or `'local'`
