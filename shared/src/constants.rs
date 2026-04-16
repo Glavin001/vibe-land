@@ -33,6 +33,7 @@ pub const PKT_PONG: u8 = 111;
 pub const PKT_SNAPSHOT_V2: u8 = 112;
 pub const PKT_PLAYER_ROSTER: u8 = 113;
 pub const PKT_DYNAMIC_BODY_META: u8 = 114;
+pub const PKT_SHOT_TRACE: u8 = 115;
 
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
@@ -42,6 +43,12 @@ pub const WEAPON_ROCKET: u8 = 2;
 pub const HIT_ZONE_NONE: u8 = 0;
 pub const HIT_ZONE_BODY: u8 = 1;
 pub const HIT_ZONE_HEAD: u8 = 2;
+
+// ── Shot trace kinds ───────────────────────────
+pub const SHOT_TRACE_MISS: u8 = 0;
+pub const SHOT_TRACE_WORLD: u8 = 1;
+pub const SHOT_TRACE_BODY: u8 = 2;
+pub const SHOT_TRACE_HEAD: u8 = 3;
 
 // ── Block operations ────────────────────────────
 pub const BLOCK_ADD: u8 = 1;

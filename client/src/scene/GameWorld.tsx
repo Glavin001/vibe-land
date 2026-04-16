@@ -356,6 +356,10 @@ type BenchmarkVehicleDriverState = {
   lastEnterPressedAtMs: number | null;
 };
 
+type ActiveShotTrace = LocalShotTrace & {
+  id: number;
+};
+
 function collectRemoteShotHits(
   remotePlayers: Map<number, RemotePlayer>,
   remoteInterpolator: GameRuntimeClient['interpolator'],
@@ -1063,6 +1067,10 @@ export function GameWorld({
   const localVehicleCameraFrameRotSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleGroundedTransitionSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleGroundedSamplesRef = useRef<TimedScalar[]>([]);
+  const replicatedShotTraceGroupRef = useRef<THREE.Group>(null);
+  const replicatedShotTraceMeshesRef = useRef<Map<number, { beam: THREE.Mesh; impact: THREE.Mesh }>>(new Map());
+  const replicatedShotTracesRef = useRef<ActiveShotTrace[]>([]);
+  const nextReplicatedShotTraceIdRef = useRef(1);
   const localVehicleRawJitterStateRef = useRef<LocalVehicleMotionState>({
     vehicleId: null,
     position: new THREE.Vector3(),
@@ -1967,11 +1975,40 @@ export function GameWorld({
       physStats.pendingInputs,
     );
 
+    if (client) {
+      for (const trace of client.consumeReplicatedShotTraces()) {
+        if (trace.shooterPlayerId === client.playerId) {
+          continue;
+        }
+        replicatedShotTracesRef.current.push({
+          id: nextReplicatedShotTraceIdRef.current++,
+          origin: [
+            trace.originPxMm / 1000,
+            trace.originPyMm / 1000,
+            trace.originPzMm / 1000,
+          ],
+          end: [
+            trace.endPxMm / 1000,
+            trace.endPyMm / 1000,
+            trace.endPzMm / 1000,
+          ],
+          kind: decodeShotTraceKind(trace.traceKind),
+          expiresAtMs: now + LOCAL_SHOT_TRACE_TTL_MS,
+        });
+      }
+    }
+
     updateLocalShotTraceVisuals(
       localShotTraceRef.current,
       now,
       shotTraceBeamRef.current,
       shotTraceImpactRef.current,
+    );
+    replicatedShotTracesRef.current = updateReplicatedShotTraceVisuals(
+      replicatedShotTracesRef.current,
+      now,
+      replicatedShotTraceGroupRef.current,
+      replicatedShotTraceMeshesRef.current,
     );
 
     // Debug overlay stats
@@ -2534,6 +2571,7 @@ export function GameWorld({
         <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
         <meshBasicMaterial transparent depthWrite={false} opacity={0} />
       </mesh>
+      <group ref={replicatedShotTraceGroupRef} />
 
       {/* Crosshair */}
       <CrosshairHUD />
@@ -2669,6 +2707,45 @@ function createLocalShotTrace(
   };
 }
 
+function decodeShotTraceKind(kind: number): LocalShotTrace['kind'] {
+  switch (kind) {
+    case 3:
+      return 'head';
+    case 2:
+      return 'body';
+    case 1:
+      return 'world';
+    case 0:
+    default:
+      return 'miss';
+  }
+}
+
+function createShotTraceMeshPair(): { beam: THREE.Mesh; impact: THREE.Mesh } {
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10),
+    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0 }),
+  );
+  const impact = new THREE.Mesh(
+    new THREE.SphereGeometry(LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10),
+    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0 }),
+  );
+  beam.visible = false;
+  impact.visible = false;
+  return { beam, impact };
+}
+
+function disposeShotTraceMeshPair(pair: { beam: THREE.Mesh; impact: THREE.Mesh }) {
+  pair.beam.geometry.dispose();
+  if (pair.beam.material instanceof THREE.Material) {
+    pair.beam.material.dispose();
+  }
+  pair.impact.geometry.dispose();
+  if (pair.impact.material instanceof THREE.Material) {
+    pair.impact.material.dispose();
+  }
+}
+
 function updateLocalShotTraceVisuals(
   trace: LocalShotTrace | null,
   nowMs: number,
@@ -2712,6 +2789,43 @@ function updateLocalShotTraceVisuals(
     impact.material.color.setHex(color);
     impact.material.opacity = alpha;
   }
+}
+
+function updateReplicatedShotTraceVisuals(
+  traces: ActiveShotTrace[],
+  nowMs: number,
+  group: THREE.Group | null,
+  meshMap: Map<number, { beam: THREE.Mesh; impact: THREE.Mesh }>,
+): ActiveShotTrace[] {
+  const active = traces.filter((trace) => isShotTraceActive(trace, nowMs));
+  if (!group) {
+    return active;
+  }
+
+  const activeIds = new Set<number>();
+  for (const trace of active) {
+    activeIds.add(trace.id);
+    let pair = meshMap.get(trace.id);
+    if (!pair) {
+      pair = createShotTraceMeshPair();
+      group.add(pair.beam);
+      group.add(pair.impact);
+      meshMap.set(trace.id, pair);
+    }
+    updateLocalShotTraceVisuals(trace, nowMs, pair.beam, pair.impact);
+  }
+
+  for (const [id, pair] of meshMap) {
+    if (activeIds.has(id)) {
+      continue;
+    }
+    group.remove(pair.beam);
+    group.remove(pair.impact);
+    disposeShotTraceMeshPair(pair);
+    meshMap.delete(id);
+  }
+
+  return active;
 }
 
 function createVehicleMesh(_id: number): THREE.Group {

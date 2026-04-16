@@ -27,6 +27,7 @@ import {
   PKT_SNAPSHOT_V2,
   PKT_WELCOME,
   PKT_SHOT_RESULT,
+  PKT_SHOT_TRACE,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
   PKT_PING,
@@ -545,6 +546,38 @@ function buildShotResultBinary(opts: {
   return buf;
 }
 
+function buildShotTraceBinary(opts: {
+  shooterPlayerId?: number;
+  shotId?: number;
+  weapon?: number;
+  traceKind?: number;
+  originPxMm?: number;
+  originPyMm?: number;
+  originPzMm?: number;
+  endPxMm?: number;
+  endPyMm?: number;
+  endPzMm?: number;
+}): Uint8Array {
+  const size = 1 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+
+  view.setUint8(o++, PKT_SHOT_TRACE);
+  view.setUint32(o, opts.shooterPlayerId ?? 3, true); o += 4;
+  view.setUint32(o, opts.shotId ?? 9, true); o += 4;
+  view.setUint8(o++, opts.weapon ?? 1);
+  view.setUint8(o++, opts.traceKind ?? 2);
+  view.setInt32(o, opts.originPxMm ?? 100, true); o += 4;
+  view.setInt32(o, opts.originPyMm ?? 200, true); o += 4;
+  view.setInt32(o, opts.originPzMm ?? 300, true); o += 4;
+  view.setInt32(o, opts.endPxMm ?? 400, true); o += 4;
+  view.setInt32(o, opts.endPyMm ?? 500, true); o += 4;
+  view.setInt32(o, opts.endPzMm ?? 600, true);
+
+  return buf;
+}
+
 describe('shotResult packet decode', () => {
   it('decodes confirmed hit', () => {
     const binary = buildShotResultBinary({
@@ -579,6 +612,28 @@ describe('shotResult packet decode', () => {
     const packet = decodeServerReliablePacket(binary);
     if (packet.type === 'shotResult') {
       expect(packet.hitZone).toBe(2);
+    }
+  });
+});
+
+describe('shotTrace packet decode', () => {
+  it('decodes replicated shot traces', () => {
+    const binary = buildShotTraceBinary({
+      shooterPlayerId: 12,
+      shotId: 34,
+      traceKind: 3,
+      originPxMm: -150,
+      endPzMm: 825,
+    });
+    const packet = decodeServerReliablePacket(binary);
+
+    expect(packet.type).toBe('shotTrace');
+    if (packet.type === 'shotTrace') {
+      expect(packet.shooterPlayerId).toBe(12);
+      expect(packet.shotId).toBe(34);
+      expect(packet.traceKind).toBe(3);
+      expect(packet.originPxMm).toBe(-150);
+      expect(packet.endPzMm).toBe(825);
     }
   });
 });

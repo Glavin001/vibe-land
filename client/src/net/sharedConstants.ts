@@ -36,6 +36,7 @@ export const PKT_PONG = 111;
 export const PKT_SNAPSHOT_V2 = 112;
 export const PKT_PLAYER_ROSTER = 113;
 export const PKT_DYNAMIC_BODY_META = 114;
+export const PKT_SHOT_TRACE = 115;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
@@ -45,6 +46,12 @@ export const WEAPON_ROCKET = 2;
 export const HIT_ZONE_NONE = 0;
 export const HIT_ZONE_BODY = 1;
 export const HIT_ZONE_HEAD = 2;
+
+// ── Shot trace kinds ───────────────────────────
+export const SHOT_TRACE_MISS = 0;
+export const SHOT_TRACE_WORLD = 1;
+export const SHOT_TRACE_BODY = 2;
+export const SHOT_TRACE_HEAD = 3;
 
 // ── Block operations ────────────────────────────
 export const BLOCK_ADD = 1;

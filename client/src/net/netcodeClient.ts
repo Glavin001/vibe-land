@@ -25,6 +25,7 @@ import {
   type NetVehicleState,
   type PlayerRosterPacket,
   type SnapshotV2Packet,
+  type ShotTracePacket,
   type ServerPacket,
   type ServerWorldPacket,
   type VehicleStateMeters,
@@ -113,6 +114,7 @@ export class NetcodeClient {
   private localDrivenVehicleId: number | null = null;
   private readonly dynamicBodyMetaByHandle = new Map<number, { bodyId: number; shapeType: number; halfExtents: [number, number, number] }>();
   private readonly debugTelemetry = new NetDebugTelemetry();
+  private pendingShotTraces: ShotTracePacket[] = [];
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
@@ -780,6 +782,9 @@ export class NetcodeClient {
         );
         this.config.onShotResult?.(packet);
         break;
+      case 'shotTrace':
+        this.pendingShotTraces.push(packet);
+        break;
       default:
         break;
     }
@@ -828,6 +833,15 @@ export class NetcodeClient {
     const sampleServerTimeUs = this.dynamicBodyServerTimeUs.get(id);
     if (sampleServerTimeUs == null) return null;
     return Math.max(0, (this.serverClock.serverNowUs(localTimeUs) - sampleServerTimeUs) / 1000);
+  }
+
+  consumeShotTraces(): ShotTracePacket[] {
+    if (this.pendingShotTraces.length === 0) {
+      return [];
+    }
+    const traces = this.pendingShotTraces;
+    this.pendingShotTraces = [];
+    return traces;
   }
 
   recordFrameDebugMetrics(

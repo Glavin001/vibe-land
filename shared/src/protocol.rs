@@ -149,6 +149,20 @@ pub struct ShotResultPacket {
     pub server_dynamic_impulse_centi: u16,
 }
 
+#[derive(Clone, Debug)]
+pub struct ShotTracePacket {
+    pub shooter_player_id: u32,
+    pub shot_id: u32,
+    pub weapon: u8,
+    pub trace_kind: u8,
+    pub origin_px_mm: i32,
+    pub origin_py_mm: i32,
+    pub origin_pz_mm: i32,
+    pub end_px_mm: i32,
+    pub end_py_mm: i32,
+    pub end_pz_mm: i32,
+}
+
 pub const SHOT_RESOLUTION_MISS: u8 = 0;
 pub const SHOT_RESOLUTION_PLAYER: u8 = 1;
 pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;

@@ -13,6 +13,7 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   PKT_SHOT_RESULT,
+  PKT_SHOT_TRACE,
   PKT_CHUNK_FULL,
   PKT_CHUNK_DIFF,
   PKT_PLAYER_ROSTER,
@@ -283,9 +284,24 @@ export type ShotResultPacket = {
   serverDynamicImpulseCenti: number;
 };
 
+export type ShotTracePacket = {
+  type: 'shotTrace';
+  shooterPlayerId: number;
+  shotId: number;
+  weapon: number;
+  traceKind: number;
+  originPxMm: number;
+  originPyMm: number;
+  originPzMm: number;
+  endPxMm: number;
+  endPyMm: number;
+  endPzMm: number;
+};
+
 export type ServerReliablePacket =
   | WelcomePacket
   | ShotResultPacket
+  | ShotTracePacket
   | ChunkFullPacket
   | ChunkDiffPacket
   | SnapshotPacket
@@ -303,6 +319,7 @@ export type ServerPacket =
   | SnapshotPacket
   | SnapshotV2Packet
   | ShotResultPacket
+  | ShotTracePacket
   | ChunkFullPacket
   | ChunkDiffPacket
   | PlayerRosterPacket
@@ -472,6 +489,31 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         serverDynamicBodyId,
         serverDynamicHitToiCm,
         serverDynamicImpulseCenti,
+      };
+    }
+    case PKT_SHOT_TRACE: {
+      const shooterPlayerId = view.getUint32(o, true); o += 4;
+      const shotId = view.getUint32(o, true); o += 4;
+      const weapon = view.getUint8(o++);
+      const traceKind = view.getUint8(o++);
+      const originPxMm = view.getInt32(o, true); o += 4;
+      const originPyMm = view.getInt32(o, true); o += 4;
+      const originPzMm = view.getInt32(o, true); o += 4;
+      const endPxMm = view.getInt32(o, true); o += 4;
+      const endPyMm = view.getInt32(o, true); o += 4;
+      const endPzMm = view.getInt32(o, true); o += 4;
+      return {
+        type: 'shotTrace',
+        shooterPlayerId,
+        shotId,
+        weapon,
+        traceKind,
+        originPxMm,
+        originPyMm,
+        originPzMm,
+        endPxMm,
+        endPyMm,
+        endPzMm,
       };
     }
     case PKT_CHUNK_FULL:

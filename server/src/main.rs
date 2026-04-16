@@ -46,10 +46,12 @@ use crate::{
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
-        make_net_player_state, mm_to_meters, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD,
-        HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        make_net_player_state, meters_to_mm, mm_to_meters, ClientPacket, FireCmd, InputCmd,
+        ServerPacket, ShotResultPacket, ShotTracePacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
+        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER, SHOT_TRACE_BODY, SHOT_TRACE_HEAD, SHOT_TRACE_MISS,
+        SHOT_TRACE_WORLD,
     },
     voxel_world::VoxelWorld,
 };
@@ -2219,6 +2221,29 @@ impl MatchState {
         })
     }
 
+    fn build_shot_trace(
+        &self,
+        shooter_player_id: u32,
+        shot_id: u32,
+        weapon: u8,
+        trace_kind: u8,
+        origin: [f32; 3],
+        end: [f32; 3],
+    ) -> ServerPacket {
+        ServerPacket::ShotTrace(ShotTracePacket {
+            shooter_player_id,
+            shot_id,
+            weapon,
+            trace_kind,
+            origin_px_mm: meters_to_mm(origin[0]),
+            origin_py_mm: meters_to_mm(origin[1]),
+            origin_pz_mm: meters_to_mm(origin[2]),
+            end_px_mm: meters_to_mm(end[0]),
+            end_py_mm: meters_to_mm(end[1]),
+            end_pz_mm: meters_to_mm(end[2]),
+        })
+    }
+
     fn process_hitscan(&mut self, server_time_ms: u32) {
         let shots = std::mem::take(&mut self.queued_shots);
         for queued in shots {
@@ -2300,7 +2325,12 @@ impl MatchState {
                 blocker_toi,
             );
 
-            let result = if let Some(hit) = player_hit {
+            let (result, trace) = if let Some(hit) = player_hit {
+                let trace_end = [
+                    origin[0] + queued.cmd.dir[0] * hit.distance,
+                    origin[1] + queued.cmd.dir[1] * hit.distance,
+                    origin[2] + queued.cmd.dir[2] * hit.distance,
+                ];
                 let mut victim_killed = false;
                 if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
                     state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
@@ -2309,30 +2339,58 @@ impl MatchState {
                 if victim_killed {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
-                self.build_shot_result(
-                    queued.cmd.shot_id,
-                    queued.cmd.weapon,
-                    Some(hit.victim_id),
-                    match hit.zone {
-                        HitZone::Body => HIT_ZONE_BODY,
-                        HitZone::Head => HIT_ZONE_HEAD,
-                    },
-                    SHOT_RESOLUTION_PLAYER,
-                    0,
-                    0.0,
-                    0.0,
-                )
-            } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
-                if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
+                (
                     self.build_shot_result(
                         queued.cmd.shot_id,
                         queued.cmd.weapon,
-                        None,
-                        HIT_ZONE_NONE,
-                        SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-                        dynamic_body_id,
-                        dynamic_toi,
+                        Some(hit.victim_id),
+                        match hit.zone {
+                            HitZone::Body => HIT_ZONE_BODY,
+                            HitZone::Head => HIT_ZONE_HEAD,
+                        },
+                        SHOT_RESOLUTION_PLAYER,
+                        0,
                         0.0,
+                        0.0,
+                    ),
+                    self.build_shot_trace(
+                        queued.player_id,
+                        queued.cmd.shot_id,
+                        queued.cmd.weapon,
+                        match hit.zone {
+                            HitZone::Body => SHOT_TRACE_BODY,
+                            HitZone::Head => SHOT_TRACE_HEAD,
+                        },
+                        origin,
+                        trace_end,
+                    ),
+                )
+            } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
+                if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
+                    let trace_end = [
+                        origin[0] + queued.cmd.dir[0] * world_toi.unwrap_or(dynamic_toi),
+                        origin[1] + queued.cmd.dir[1] * world_toi.unwrap_or(dynamic_toi),
+                        origin[2] + queued.cmd.dir[2] * world_toi.unwrap_or(dynamic_toi),
+                    ];
+                    (
+                        self.build_shot_result(
+                            queued.cmd.shot_id,
+                            queued.cmd.weapon,
+                            None,
+                            HIT_ZONE_NONE,
+                            SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+                            dynamic_body_id,
+                            dynamic_toi,
+                            0.0,
+                        ),
+                        self.build_shot_trace(
+                            queued.player_id,
+                            queued.cmd.shot_id,
+                            queued.cmd.weapon,
+                            SHOT_TRACE_WORLD,
+                            origin,
+                            trace_end,
+                        ),
                     )
                 } else {
                     let impact_point = [
@@ -2354,32 +2412,61 @@ impl MatchState {
                         impulse,
                         impact_point,
                     );
+                    (
+                        self.build_shot_result(
+                            queued.cmd.shot_id,
+                            queued.cmd.weapon,
+                            None,
+                            HIT_ZONE_NONE,
+                            SHOT_RESOLUTION_DYNAMIC,
+                            dynamic_body_id,
+                            dynamic_toi,
+                            impulse_mag,
+                        ),
+                        self.build_shot_trace(
+                            queued.player_id,
+                            queued.cmd.shot_id,
+                            queued.cmd.weapon,
+                            SHOT_TRACE_WORLD,
+                            origin,
+                            impact_point,
+                        ),
+                    )
+                }
+            } else {
+                let trace_end = [
+                    origin[0] + queued.cmd.dir[0] * HITSCAN_MAX_DISTANCE_M,
+                    origin[1] + queued.cmd.dir[1] * HITSCAN_MAX_DISTANCE_M,
+                    origin[2] + queued.cmd.dir[2] * HITSCAN_MAX_DISTANCE_M,
+                ];
+                (
                     self.build_shot_result(
                         queued.cmd.shot_id,
                         queued.cmd.weapon,
                         None,
                         HIT_ZONE_NONE,
-                        SHOT_RESOLUTION_DYNAMIC,
-                        dynamic_body_id,
-                        dynamic_toi,
-                        impulse_mag,
-                    )
-                }
-            } else {
-                self.build_shot_result(
-                    queued.cmd.shot_id,
-                    queued.cmd.weapon,
-                    None,
-                    HIT_ZONE_NONE,
-                    SHOT_RESOLUTION_MISS,
-                    0,
-                    0.0,
-                    0.0,
+                        SHOT_RESOLUTION_MISS,
+                        0,
+                        0.0,
+                        0.0,
+                    ),
+                    self.build_shot_trace(
+                        queued.player_id,
+                        queued.cmd.shot_id,
+                        queued.cmd.weapon,
+                        SHOT_TRACE_MISS,
+                        origin,
+                        trace_end,
+                    ),
                 )
             };
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
                 let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
+            }
+            let encoded_trace = encode_server_packet(&trace);
+            for runtime in self.players.values() {
+                let _ = try_queue_packet(&runtime.tx, encoded_trace.clone(), &self.io);
             }
         }
     }

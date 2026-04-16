@@ -16,6 +16,7 @@ import {
   type FireCmd,
   type InputCmd,
   type NetPlayerState,
+  type ShotTracePacket,
   type NetVehicleState,
   type ServerPacket,
   type ServerWorldPacket,
@@ -136,6 +137,7 @@ export interface GameRuntimeClient {
     shot: Parameters<NetcodeClient['recordLocalShotFired']>[1],
   ): void;
   getDebugTelemetrySnapshot(): ReturnType<NetcodeClient['getDebugTelemetrySnapshot']>;
+  consumeReplicatedShotTraces(): ShotTracePacket[];
 
   applyWorldPacket(packet: ServerWorldPacket): void;
   update(
@@ -356,6 +358,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     shot: Parameters<NetcodeClient['recordLocalShotFired']>[1],
   ): void;
   abstract getDebugTelemetrySnapshot(): ReturnType<NetcodeClient['getDebugTelemetrySnapshot']>;
+  abstract consumeReplicatedShotTraces(): ShotTracePacket[];
   abstract applyWorldPacket(packet: ServerWorldPacket): void;
   abstract update(
     frameDeltaSec: number,
@@ -641,6 +644,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   getDebugTelemetrySnapshot() {
     return this.client?.getDebugTelemetrySnapshot() ?? EMPTY_DEBUG_TELEMETRY_SNAPSHOT;
+  }
+
+  consumeReplicatedShotTraces(): ShotTracePacket[] {
+    return [];
   }
 
   applyWorldPacket(_packet: ServerWorldPacket): void {}
@@ -1105,6 +1112,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   getDebugTelemetrySnapshot() {
     return this.client?.getDebugTelemetrySnapshot() ?? EMPTY_DEBUG_TELEMETRY_SNAPSHOT;
+  }
+
+  consumeReplicatedShotTraces(): ShotTracePacket[] {
+    return this.client?.consumeShotTraces() ?? [];
   }
 
   applyWorldPacket(packet: ServerWorldPacket): void {

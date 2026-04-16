@@ -775,6 +775,43 @@ describe('NetcodeClient', () => {
     });
   });
 
+  describe('shot traces', () => {
+    it('queues replicated shot traces until consumed', () => {
+      const client = new NetcodeClient({});
+
+      client.handlePacket({
+        type: 'shotTrace',
+        shooterPlayerId: 4,
+        shotId: 11,
+        weapon: 1,
+        traceKind: 2,
+        originPxMm: 100,
+        originPyMm: 200,
+        originPzMm: 300,
+        endPxMm: 400,
+        endPyMm: 500,
+        endPzMm: 600,
+      });
+
+      expect(client.consumeShotTraces()).toEqual([
+        {
+          type: 'shotTrace',
+          shooterPlayerId: 4,
+          shotId: 11,
+          weapon: 1,
+          traceKind: 2,
+          originPxMm: 100,
+          originPyMm: 200,
+          originPzMm: 300,
+          endPxMm: 400,
+          endPyMm: 500,
+          endPzMm: 600,
+        },
+      ]);
+      expect(client.consumeShotTraces()).toEqual([]);
+    });
+  });
+
   // ──────────────────────────────────────────────
   // Reset
   // ──────────────────────────────────────────────

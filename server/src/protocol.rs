@@ -30,6 +30,7 @@ pub enum ServerPacket {
     Snapshot(SnapshotPacket),
     SnapshotV2(SnapshotV2Packet),
     ShotResult(ShotResultPacket),
+    ShotTrace(ShotTracePacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
@@ -53,6 +54,7 @@ pub enum ClientDatagram {
 pub enum ServerReliablePacket {
     Welcome(WelcomePacket),
     ShotResult(ShotResultPacket),
+    ShotTrace(ShotTracePacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
@@ -316,6 +318,19 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u32_le(pkt.server_dynamic_body_id);
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
+        }
+        ServerReliablePacket::ShotTrace(pkt) => {
+            out.put_u8(PKT_SHOT_TRACE);
+            out.put_u32_le(pkt.shooter_player_id);
+            out.put_u32_le(pkt.shot_id);
+            out.put_u8(pkt.weapon);
+            out.put_u8(pkt.trace_kind);
+            out.put_i32_le(pkt.origin_px_mm);
+            out.put_i32_le(pkt.origin_py_mm);
+            out.put_i32_le(pkt.origin_pz_mm);
+            out.put_i32_le(pkt.end_px_mm);
+            out.put_i32_le(pkt.end_py_mm);
+            out.put_i32_le(pkt.end_pz_mm);
         }
         ServerReliablePacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -715,6 +730,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
         }
+        ServerPacket::ShotTrace(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::ShotTrace(pkt.clone()))
+        }
         ServerPacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
             out.put_i16_le(pkt.chunk[0]);
@@ -896,6 +914,41 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes([encoded[13], encoded[14], encoded[15], encoded[16]]),
             9
+        );
+    }
+
+    #[test]
+    fn shot_trace_encode() {
+        let packet = ServerPacket::ShotTrace(ShotTracePacket {
+            shooter_player_id: 7,
+            shot_id: 123,
+            weapon: 1,
+            trace_kind: SHOT_TRACE_HEAD,
+            origin_px_mm: 100,
+            origin_py_mm: 200,
+            origin_pz_mm: 300,
+            end_px_mm: 400,
+            end_py_mm: 500,
+            end_pz_mm: 600,
+        });
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SHOT_TRACE);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            7
+        );
+        assert_eq!(
+            u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+            123
+        );
+        assert_eq!(encoded[10], SHOT_TRACE_HEAD);
+        assert_eq!(
+            i32::from_le_bytes([encoded[11], encoded[12], encoded[13], encoded[14]]),
+            100
+        );
+        assert_eq!(
+            i32::from_le_bytes([encoded[23], encoded[24], encoded[25], encoded[26]]),
+            400
         );
     }
 
