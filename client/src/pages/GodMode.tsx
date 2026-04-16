@@ -49,12 +49,15 @@ import {
 import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
+  generateCommitId,
   redoWorldEdit,
   undoWorldEdit,
+  type CommitEntry,
   type WorldEditHistory,
 } from './godModeHistory';
 import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
 import { useHumanEditTracker } from './godmode/useHumanEditTracker';
+import type { SplineData } from '../ai/splineData';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
 
 type EditorMode = 'edit' | 'play';
@@ -104,6 +107,7 @@ export function GodModePage() {
   const [rampSideFalloff, setRampSideFalloff] = useState(2);
   const [rampStartFalloff, setRampStartFalloff] = useState(0);
   const [rampEndFalloff, setRampEndFalloff] = useState(0);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
@@ -114,6 +118,7 @@ export function GodModePage() {
   const editTransactionRef = useRef<WorldDocument | null>(null);
   const isAiEditRef = useRef(false);
   const aiChatRef = useRef<AiChatPanelHandle>(null);
+  const splinesRef = useRef<Map<string, SplineData>>(new Map());
 
   useEffect(() => {
     worldRef.current = world;
@@ -143,13 +148,20 @@ export function GodModePage() {
     return true;
   }, [replaceWorldState]);
 
-  const applyCommittedWorldEdit = useCallback((updater: (current: WorldDocument) => WorldDocument) => {
+  const applyCommittedWorldEdit = useCallback((
+    updater: (current: WorldDocument) => WorldDocument,
+    commitInfo?: { commitId?: string; commitMessage?: string; source?: CommitEntry['source'] },
+  ) => {
     const current = worldRef.current;
     const next = updater(current);
     if (next === current) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, current, next);
+    const transition = commitWorldEdit(editHistoryRef.current, current, next, {
+      commitId: commitInfo?.commitId ?? generateCommitId(),
+      commitMessage: commitInfo?.commitMessage ?? 'Manual edit',
+      source: commitInfo?.source ?? 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -170,7 +182,11 @@ export function GodModePage() {
     if (!startWorld) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current);
+    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current, {
+      commitId: generateCommitId(),
+      commitMessage: 'Manual edit',
+      source: 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -195,7 +211,45 @@ export function GodModePage() {
         isAiEditRef.current = wasAiEdit;
       }
     },
-  }), [applyCommittedWorldEdit]);
+    applyWithoutCommit: (updater) => {
+      return applyPreviewWorldEdit(updater);
+    },
+    restoreWorld: (snapshot) => {
+      replaceWorldState(snapshot);
+    },
+    commitAsAi: (snapshotBefore, commitId, commitMessage) => {
+      const transition = commitWorldEdit(editHistoryRef.current, snapshotBefore, worldRef.current, {
+        commitId,
+        commitMessage,
+        source: 'ai',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+      }
+    },
+    rollbackToCommit: (targetCommitId) => {
+      const history = editHistoryRef.current;
+      const idx = history.undoStack.findIndex((entry) => entry.commitId === targetCommitId);
+      if (idx === -1) {
+        return { ok: false, message: `Commit ${targetCommitId} not found in history.` };
+      }
+      const targetWorld = cloneWorldDocument(history.undoStack[idx].world);
+      const rollbackCommitId = generateCommitId();
+      const transition = commitWorldEdit(editHistoryRef.current, worldRef.current, targetWorld, {
+        commitId: rollbackCommitId,
+        commitMessage: `Rollback to ${targetCommitId}`,
+        source: 'rollback',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+        replaceWorldState(targetWorld);
+      }
+      return { ok: true, message: `Rolled back to commit ${targetCommitId}`, commitId: rollbackCommitId };
+    },
+    getSplines: () => splinesRef.current,
+    setSpline: (id, spline) => { splinesRef.current.set(id, spline); },
+    deleteSpline: (id) => splinesRef.current.delete(id),
+  }), [applyCommittedWorldEdit, applyPreviewWorldEdit, replaceEditHistoryState, replaceWorldState]);
 
   const handleHumanEdit = useCallback((summary: string) => {
     aiChatRef.current?.pushHumanEdit(summary);
@@ -226,6 +280,25 @@ export function GodModePage() {
     replaceEditHistoryState(transition.history);
     replaceWorldState(transition.world);
   }, [cancelTrackedWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleHumanCommit = useCallback(() => {
+    const msg = commitMessageDraft.trim();
+    if (!msg) return;
+    // Push a named commit entry onto the undo stack labeling the current state.
+    // We use a self-referencing snapshot so the entry acts as a named bookmark.
+    const entry: CommitEntry = {
+      commitId: generateCommitId(),
+      commitMessage: msg,
+      world: cloneWorldDocument(worldRef.current),
+      timestamp: Date.now(),
+      source: 'human',
+    };
+    replaceEditHistoryState({
+      undoStack: [entry, ...editHistoryRef.current.undoStack].slice(0, 64),
+      redoStack: [],
+    });
+    setCommitMessageDraft('');
+  }, [commitMessageDraft, replaceEditHistoryState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -870,6 +943,35 @@ export function GodModePage() {
             <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
             <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
           </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={commitMessageDraft}
+              onChange={(e) => setCommitMessageDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
+              placeholder="Commit message..."
+              style={{ flex: 1, padding: '5px 8px', fontSize: 12, background: 'rgba(20, 34, 48, 0.96)', color: '#eef7ff', border: '1px solid rgba(167, 208, 237, 0.18)', borderRadius: 8, fontFamily: 'inherit' }}
+            />
+            <button type="button" onClick={handleHumanCommit} style={secondaryButtonStyle} disabled={!commitMessageDraft.trim()}>Commit</button>
+          </div>
+          {editHistory.undoStack.length > 0 && (
+            <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+              {editHistory.undoStack.map((entry) => (
+                <div key={entry.commitId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', borderRadius: 6, background: 'rgba(0,0,0,0.18)' }}>
+                  <code style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(134,214,245,0.7)', flexShrink: 0 }}>{entry.commitId}</code>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(238,247,255,0.82)' }}>{entry.commitMessage}</span>
+                  <span style={{
+                    fontSize: 9,
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                    flexShrink: 0,
+                    background: entry.source === 'ai' ? 'rgba(116,212,255,0.2)' : entry.source === 'rollback' ? 'rgba(255,200,100,0.2)' : 'rgba(255,255,255,0.08)',
+                    color: entry.source === 'ai' ? '#bae8ff' : entry.source === 'rollback' ? '#ffe0a0' : 'rgba(238,247,255,0.5)',
+                  }}>{entry.source}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={mutedTextStyle}>
             Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>

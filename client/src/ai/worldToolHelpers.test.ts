@@ -31,6 +31,7 @@ function makeAccessors(initial: WorldDocument): {
   let current = initial;
   let edits = 0;
   let aiEditCount = 0;
+  const splines = new Map<string, import('./splineData').SplineData>();
   const accessors: WorldAccessors = {
     getWorld: () => current,
     commitEdit: (updater, options) => {
@@ -41,6 +42,25 @@ function makeAccessors(initial: WorldDocument): {
       if (options?.isAiEdit) aiEditCount += 1;
       return true;
     },
+    applyWithoutCommit: (updater) => {
+      const next = updater(current);
+      if (next === current) return false;
+      current = next;
+      edits += 1;
+      return true;
+    },
+    restoreWorld: (snapshot) => {
+      current = snapshot;
+    },
+    commitAsAi: () => {
+      // no-op in tests
+    },
+    rollbackToCommit: () => {
+      return { ok: false, message: 'not implemented in tests' };
+    },
+    getSplines: () => splines,
+    setSpline: (id, spline) => { splines.set(id, spline); },
+    deleteSpline: (id) => splines.delete(id),
   };
   return {
     accessors,
