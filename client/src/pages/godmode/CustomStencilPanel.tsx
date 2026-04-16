@@ -1,7 +1,7 @@
 import { useCallback, useRef, type CSSProperties, type ComponentType } from 'react';
 import Form from '@rjsf/core';
-import type { IChangeEvent, WidgetProps } from '@rjsf/core';
-import type { RJSFSchema, UiSchema } from '@rjsf/utils';
+import type { IChangeEvent } from '@rjsf/core';
+import type { RJSFSchema, UiSchema, WidgetProps } from '@rjsf/utils';
 import validator from '@rjsf/validator-ajv8';
 import type { CustomStencilDefinition } from '../../ai/customStencil';
 import { unregisterStencil } from '../../ai/customStencilStore';
