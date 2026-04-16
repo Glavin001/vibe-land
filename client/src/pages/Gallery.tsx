@@ -101,7 +101,7 @@ export function GalleryPage() {
               Gallery
             </h1>
             <p className="max-w-[640px] text-base leading-relaxed text-white/45 m-0">
-              Published worlds from the community. Click any card to open it in the builder and keep editing.
+              Worlds shared by other builders. Click any card to play it or open it in the builder to keep editing.
             </p>
           </div>
           <div className="flex gap-4 text-sm font-mono">
@@ -120,9 +120,8 @@ export function GalleryPage() {
 
         {state.kind === 'disabled' && (
           <p className="text-white/45 text-sm leading-relaxed">
-            Cloudflare R2 is not configured on this deployment, so there is nothing to show yet. Set the
-            <code className="mx-1 px-1.5 py-0.5 rounded bg-white/[0.06] text-white/70 font-mono text-xs">R2_*</code>
-            environment variables and redeploy to enable publishing.
+            World publishing isn't enabled on this deployment, so there's nothing here yet.
+            Once publishing is set up, worlds from the community will appear here.
           </p>
         )}
 

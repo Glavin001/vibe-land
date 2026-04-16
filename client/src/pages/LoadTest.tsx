@@ -458,7 +458,7 @@ export function LoadTestPage() {
         <div>
           <h1 className="m-0 text-2xl font-bold text-white/90">vibe-land / loadtest</h1>
           <div className="mt-2 text-[#9ab0d1] max-w-[720px] text-sm leading-relaxed">
-            Browser WebTransport runner with the same scenario + bot brain model as the Node websocket runner.
+            Browser-based load tester — simulates concurrent players with configurable scenarios and network profiles.
           </div>
         </div>
         <div className="text-right text-[#b8ffda] text-sm leading-relaxed">
