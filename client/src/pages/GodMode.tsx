@@ -53,6 +53,9 @@ import {
   undoWorldEdit,
   type WorldEditHistory,
 } from './godModeHistory';
+import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { useHumanEditTracker } from './godmode/useHumanEditTracker';
+import type { WorldAccessors } from '../ai/worldToolHelpers';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
@@ -109,6 +112,8 @@ export function GodModePage() {
   const worldRef = useRef(world);
   const editHistoryRef = useRef(editHistory);
   const editTransactionRef = useRef<WorldDocument | null>(null);
+  const isAiEditRef = useRef(false);
+  const aiChatRef = useRef<AiChatPanelHandle>(null);
 
   useEffect(() => {
     worldRef.current = world;
@@ -176,6 +181,31 @@ export function GodModePage() {
   const cancelTrackedWorldEdit = useCallback(() => {
     editTransactionRef.current = null;
   }, []);
+
+  const aiAccessors = useMemo<WorldAccessors>(() => ({
+    getWorld: () => worldRef.current,
+    commitEdit: (updater, options) => {
+      const wasAiEdit = isAiEditRef.current;
+      if (options?.isAiEdit) {
+        isAiEditRef.current = true;
+      }
+      try {
+        return applyCommittedWorldEdit(updater);
+      } finally {
+        isAiEditRef.current = wasAiEdit;
+      }
+    },
+  }), [applyCommittedWorldEdit]);
+
+  const handleHumanEdit = useCallback((summary: string) => {
+    aiChatRef.current?.pushHumanEdit(summary);
+  }, []);
+
+  useHumanEditTracker({
+    world,
+    isAiEditRef,
+    onHumanEdit: handleHumanEdit,
+  });
 
   const handleUndo = useCallback(() => {
     cancelTrackedWorldEdit();
@@ -1115,6 +1145,8 @@ export function GodModePage() {
         )}
         {editScene}
       </main>
+
+      <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
     </div>
   );
 }
@@ -1925,7 +1957,7 @@ function slugify(value: string): string {
 
 const pageStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '340px minmax(0, 1fr)',
+  gridTemplateColumns: '340px minmax(0, 1fr) 380px',
   height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
