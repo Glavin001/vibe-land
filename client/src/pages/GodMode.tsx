@@ -2379,19 +2379,22 @@ function RampStencilPreview({
   return (
     <group position={[centerX, 0, centerZ]} rotation-y={yawRad}>
       <mesh
-        position={[0, Math.min(lowHeight, highHeight) + 0.02, outerCenterOffsetZ]}
+        position={[0, (mode === 'lower' ? Math.max(lowHeight, highHeight) : Math.min(lowHeight, highHeight)) + 0.02, outerCenterOffsetZ]}
         rotation-x={-Math.PI / 2}
         raycast={ignorePointerRaycast}
         renderOrder={1}
       >
         <planeGeometry args={[outerWidth, outerLength]} />
-        <meshBasicMaterial color={mode === 'raise' ? 0x4ca5ff : 0xffb25c} transparent opacity={0.08 + rampStrength * 0.1} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the footprint indicator shows through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x4ca5ff : 0xffb25c} transparent opacity={0.08 + rampStrength * 0.1} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <mesh geometry={volumeGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
-        <meshBasicMaterial color={mode === 'raise' ? 0x3f8ee8 : 0xe2a145} transparent opacity={0.16 + rampStrength * 0.12} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the volume walls are visible through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x3f8ee8 : 0xe2a145} transparent opacity={0.16 + rampStrength * 0.12} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <mesh geometry={coreGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
-        <meshBasicMaterial color={mode === 'raise' ? 0x75c8ff : 0xffc977} transparent opacity={0.25 + rampStrength * 0.2} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the ramp surface is visible through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x75c8ff : 0xffc977} transparent opacity={0.25 + rampStrength * 0.2} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <lineSegments geometry={guideGeometry} raycast={ignorePointerRaycast} renderOrder={4}>
         <lineBasicMaterial color={mode === 'raise' ? 0xe7f5ff : 0xfff0d2} transparent opacity={0.9} />
