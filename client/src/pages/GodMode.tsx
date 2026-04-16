@@ -991,7 +991,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             )}
             {publishStatus.kind === 'idle' && cloudEnabled && (
               <div style={mutedTextStyle}>
-                Publishing captures a screenshot and uploads the current world (gzipped) to Cloudflare R2. Published worlds appear in the gallery.
+                Publishing captures a screenshot and saves your world to the cloud. Published worlds appear in the gallery.
               </div>
             )}
             {publishStatus.kind === 'success' && (

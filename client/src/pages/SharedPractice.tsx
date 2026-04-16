@@ -1,35 +1,7 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useState } from 'react';
 import { App } from '../App';
 import { parseWorldDocument, type WorldDocument } from '../world/worldDocument';
 import { fetchCloudConfig, fetchPublishedWorld } from '../world/worldsCloud';
-
-const shellStyle: CSSProperties = {
-  minHeight: '100%',
-  background:
-    'radial-gradient(circle at top, rgba(93, 215, 255, 0.14), transparent 32%), linear-gradient(180deg, #08111d 0%, #04070d 100%)',
-  color: '#edf6ff',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: '32px',
-};
-
-const cardStyle: CSSProperties = {
-  width: 'min(520px, 100%)',
-  background: 'rgba(6, 12, 20, 0.86)',
-  border: '1px solid rgba(110, 190, 255, 0.2)',
-  borderRadius: 24,
-  padding: '32px',
-  textAlign: 'center',
-};
-
-const linkRowStyle: CSSProperties = {
-  display: 'flex',
-  justifyContent: 'center',
-  gap: 16,
-  marginTop: 18,
-  fontSize: 14,
-};
 
 type LoadState =
   | { kind: 'loading' }
@@ -40,31 +12,12 @@ type SharedPracticePageProps = {
   id: string;
 };
 
-const overlayStyle: CSSProperties = {
-  position: 'absolute',
-  top: 16,
-  right: 16,
-  display: 'flex',
-  gap: 12,
-  padding: '10px 14px',
-  borderRadius: 999,
-  background: 'rgba(6, 12, 20, 0.78)',
-  border: '1px solid rgba(110, 190, 255, 0.22)',
-  color: '#edf6ff',
-  fontSize: 13,
-  alignItems: 'center',
-  pointerEvents: 'auto',
-};
-
 export function SharedPracticePage({ id }: SharedPracticePageProps) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
 
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    // Probe the config to learn the public CDN URL (if any), then fetch the
-    // world directly from the CDN. Falls back to the /api function path if
-    // no CDN is configured.
     fetchCloudConfig()
       .then((config) => {
         if (cancelled) return;
@@ -87,14 +40,17 @@ export function SharedPracticePage({ id }: SharedPracticePageProps) {
 
   if (state.kind === 'loading') {
     return (
-      <div style={shellStyle}>
-        <div style={cardStyle}>
-          <div style={{ letterSpacing: '0.28em', fontSize: 12, textTransform: 'uppercase', color: '#79baf5' }}>
+      <div className="relative min-h-full bg-[#050c16] text-[#edf6ff] flex items-center justify-center p-8 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[500px] rounded-full bg-sky-500/[0.07] blur-[120px]" />
+        </div>
+        <div className="relative z-10 w-full max-w-[520px] bg-white/[0.03] border border-white/[0.08] rounded-3xl p-8 text-center">
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-sky-500/50 mb-4">
             vibe-land
           </div>
-          <h1 style={{ fontSize: 32, margin: '10px 0 8px' }}>Loading world…</h1>
-          <p style={{ color: 'rgba(237, 246, 255, 0.74)', margin: 0 }}>
-            Fetching <code>{id}</code> from the cloud.
+          <h1 className="text-3xl font-bold m-0 mb-2 text-white/90">Loading world…</h1>
+          <p className="text-white/45 m-0 text-sm leading-relaxed">
+            Fetching <code className="font-mono text-white/60">{id}</code> from the cloud.
           </p>
         </div>
       </div>
@@ -103,16 +59,23 @@ export function SharedPracticePage({ id }: SharedPracticePageProps) {
 
   if (state.kind === 'error') {
     return (
-      <div style={shellStyle}>
-        <div style={cardStyle}>
-          <div style={{ letterSpacing: '0.28em', fontSize: 12, textTransform: 'uppercase', color: '#ffb4a6' }}>
+      <div className="relative min-h-full bg-[#050c16] text-[#edf6ff] flex items-center justify-center p-8 overflow-hidden">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[700px] h-[500px] rounded-full bg-red-500/[0.05] blur-[120px]" />
+        </div>
+        <div className="relative z-10 w-full max-w-[520px] bg-white/[0.03] border border-white/[0.08] border-t-2 border-t-red-400 rounded-3xl p-8 text-center">
+          <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-red-400/60 mb-4">
             vibe-land
           </div>
-          <h1 style={{ fontSize: 28, margin: '10px 0 12px' }}>Could not load world</h1>
-          <p style={{ color: 'rgba(237, 246, 255, 0.78)', margin: 0, lineHeight: 1.5 }}>{state.message}</p>
-          <div style={linkRowStyle}>
-            <a href="/gallery" style={{ color: '#9cd4ff' }}>Back to gallery</a>
-            <a href="/" style={{ color: '#9cd4ff' }}>Home</a>
+          <h1 className="text-2xl font-bold m-0 mb-3 text-white/85">Could not load world</h1>
+          <p className="text-white/55 m-0 leading-relaxed text-sm">{state.message}</p>
+          <div className="flex justify-center gap-5 mt-5 text-sm font-mono">
+            <a href="/gallery" className="text-sky-400/60 hover:text-sky-400 transition-colors duration-200">
+              Back to gallery
+            </a>
+            <a href="/" className="text-sky-400/60 hover:text-sky-400 transition-colors duration-200">
+              Home
+            </a>
           </div>
         </div>
       </div>
@@ -126,13 +89,15 @@ export function SharedPracticePage({ id }: SharedPracticePageProps) {
       routeLabel={`/practice/shared/${id}`}
       autoConnect
       overlay={(
-        <div style={overlayStyle}>
-          <span style={{ opacity: 0.75 }}>Shared world</span>
-          <strong>{state.world.meta.name || 'Untitled'}</strong>
-          <a href="/gallery" style={{ color: '#9cd4ff', textDecoration: 'none' }}>Back to gallery</a>
+        <div className="absolute top-4 right-4 flex gap-3 px-3.5 py-2.5 rounded-full bg-[rgba(5,12,22,0.82)] border border-white/[0.14] text-[#edf6ff] text-[13px] items-center pointer-events-auto backdrop-blur-sm">
+          <span className="text-white/50">Shared world</span>
+          <strong className="font-semibold text-white/85">{state.world.meta.name || 'Untitled'}</strong>
+          <a href="/gallery" className="text-sky-400/70 no-underline hover:text-sky-400 transition-colors duration-200">
+            Back to gallery
+          </a>
           <a
             href={`/builder/world?published=${encodeURIComponent(id)}`}
-            style={{ color: '#ffd89b', textDecoration: 'none' }}
+            className="text-amber-300/70 no-underline hover:text-amber-300 transition-colors duration-200"
           >
             Open in builder
           </a>

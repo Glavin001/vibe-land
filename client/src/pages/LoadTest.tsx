@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { buildInputFromButtons } from '../scene/inputBuilder';
@@ -451,45 +451,67 @@ export function LoadTestPage() {
   }, [scenarioText]);
 
   return (
-    <div style={styles.page}>
-      <div style={styles.header}>
+    <div className="min-h-screen bg-[#0a0e18] text-[#eaf1ff] font-mono p-6 box-border">
+
+      {/* Header */}
+      <div className="flex justify-between gap-6 mb-4 flex-wrap">
         <div>
-          <h1 style={styles.title}>vibe-land / loadtest</h1>
-          <div style={styles.subtitle}>Browser WebTransport runner with the same scenario + bot brain model as the Node websocket runner.</div>
+          <h1 className="m-0 text-2xl font-bold text-white/90">vibe-land / loadtest</h1>
+          <div className="mt-2 text-[#9ab0d1] max-w-[720px] text-sm leading-relaxed">
+            Browser-based load tester — simulates concurrent players with configurable scenarios and network profiles.
+          </div>
         </div>
-        <div style={styles.summary}>
-          <div>{running ? 'RUNNING' : 'IDLE'}</div>
+        <div className="text-right text-[#b8ffda] text-sm leading-relaxed">
+          <div className="font-bold">{running ? 'RUNNING' : 'IDLE'}</div>
           <div>{`Connected: ${connectedBots}`}</div>
           <div>{`Snapshots: ${snapshotsReceived}`}</div>
         </div>
       </div>
 
-      <div style={styles.toolbar}>
-        <button style={styles.button} disabled={running} onClick={() => void start().catch((err: Error) => setError(err.message))}>
+      {/* Toolbar */}
+      <div className="flex gap-3 mb-3 flex-wrap">
+        <button
+          className="bg-[#162236] text-white border border-[#38537c] rounded-md px-3.5 py-2 cursor-pointer text-sm hover:bg-[#1c2e47] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          disabled={running}
+          onClick={() => void start().catch((err: Error) => setError(err.message))}
+        >
           Start
         </button>
-        <button style={styles.button} disabled={!running} onClick={() => void stop('manual')}>
+        <button
+          className="bg-[#162236] text-white border border-[#38537c] rounded-md px-3.5 py-2 cursor-pointer text-sm hover:bg-[#1c2e47] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          disabled={!running}
+          onClick={() => void stop('manual')}
+        >
           Stop
         </button>
-        <button style={styles.button} onClick={() => setScenarioText(launchConfigRef.current.defaultScenarioText)}>
+        <button
+          className="bg-[#162236] text-white border border-[#38537c] rounded-md px-3.5 py-2 cursor-pointer text-sm hover:bg-[#1c2e47] transition-colors"
+          onClick={() => setScenarioText(launchConfigRef.current.defaultScenarioText)}
+        >
           Reset Scenario
         </button>
       </div>
 
-      <div style={styles.presetPanel}>
-        <div style={styles.presetHeader}>
-          <div style={styles.presetTitle}>Presets</div>
-          <div style={styles.presetMeta}>
+      {/* Preset panel */}
+      <div className="mb-3.5 p-3 bg-[#0d1524] border border-[#263a59] rounded-lg">
+        <div className="flex justify-between gap-3 mb-2.5 items-baseline flex-wrap">
+          <div className="text-[#b8ffda] font-bold text-sm">Presets</div>
+          <div className="text-[#9ab0d1] text-xs">
             {activePreset ? `Active: ${activePreset.label}` : 'Active: Custom'}
           </div>
         </div>
-        <div style={styles.presetRow}>
+        <div className="flex flex-wrap gap-2 mb-2">
           {presets.map((preset) => {
             const isActive = preset.id === activePresetId;
             return (
               <button
                 key={preset.id}
-                style={styles.presetButton(isActive)}
+                className={[
+                  'rounded-full px-3 py-1.5 cursor-pointer text-xs border transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+                  isActive
+                    ? 'bg-[#21406a] text-white border-[#79b6ff] font-bold'
+                    : 'bg-[#162236] text-[#cfe4ff] border-[#38537c] font-medium hover:bg-[#1c2e47]',
+                ].join(' ')}
                 disabled={running}
                 onClick={() => setScenarioText(scenarioTextFromScenario(preset.scenario(launchConfigRef.current.requestedMatchId)))}
                 title={preset.description}
@@ -499,21 +521,24 @@ export function LoadTestPage() {
             );
           })}
         </div>
-        <div style={styles.presetDescription}>
+        <div className="text-[#9ab0d1] text-xs">
           {activePreset?.description ?? 'Custom scenario JSON. Edit freely or re-apply a preset.'}
         </div>
       </div>
 
-      <div style={styles.statusLine}>{status}</div>
-      <div style={styles.statusLine}>{`Bottleneck: ${bottleneck}`}</div>
-      {error && <div style={styles.error}>{error}</div>}
+      {/* Status lines */}
+      <div className="mb-2 text-[#d8e3f8] text-sm">{status}</div>
+      <div className="mb-2 text-[#d8e3f8] text-sm">{`Bottleneck: ${bottleneck}`}</div>
+      {error && <div className="mb-3 text-[#ff8f8f] text-sm">{error}</div>}
 
+      {/* Scenario editor */}
       <textarea
-        style={styles.textarea}
+        className="w-full min-h-[70vh] bg-[#0f1625] text-[#dff6ff] border border-[#263a59] rounded-lg p-4 box-border font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-[#3a5a8a]"
         value={scenarioText}
         onChange={(event) => setScenarioText(event.target.value)}
         spellCheck={false}
       />
+
     </div>
   );
 
@@ -654,108 +679,3 @@ function detectActivePreset(
 function publishBenchmarkState(state: BenchmarkPageState): void {
   window.__VIBE_BENCHMARK_STATE__ = state;
 }
-
-const styles = {
-  page: {
-    minHeight: '100vh',
-    background: '#0a0e18',
-    color: '#eaf1ff',
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    padding: 24,
-    boxSizing: 'border-box',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: 24,
-    marginBottom: 16,
-  },
-  title: {
-    margin: 0,
-    fontSize: 28,
-    fontWeight: 700,
-  },
-  subtitle: {
-    marginTop: 8,
-    color: '#9ab0d1',
-    maxWidth: 720,
-  },
-  summary: {
-    textAlign: 'right',
-    color: '#b8ffda',
-  },
-  toolbar: {
-    display: 'flex',
-    gap: 12,
-    marginBottom: 12,
-  },
-  presetPanel: {
-    marginBottom: 14,
-    padding: 12,
-    background: '#0d1524',
-    border: '1px solid #263a59',
-    borderRadius: 8,
-  },
-  presetHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: 12,
-    marginBottom: 10,
-    alignItems: 'baseline',
-    flexWrap: 'wrap',
-  },
-  presetTitle: {
-    color: '#b8ffda',
-    fontWeight: 700,
-  },
-  presetMeta: {
-    color: '#9ab0d1',
-    fontSize: 12,
-  },
-  presetRow: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 8,
-  },
-  presetButton: (active: boolean): CSSProperties => ({
-    background: active ? '#21406a' : '#162236',
-    color: active ? '#ffffff' : '#cfe4ff',
-    border: `1px solid ${active ? '#79b6ff' : '#38537c'}`,
-    borderRadius: 999,
-    padding: '8px 12px',
-    cursor: 'pointer',
-    fontSize: 12,
-    fontWeight: active ? 700 : 500,
-  }),
-  presetDescription: {
-    color: '#9ab0d1',
-    fontSize: 12,
-  },
-  button: {
-    background: '#162236',
-    color: '#ffffff',
-    border: '1px solid #38537c',
-    borderRadius: 6,
-    padding: '10px 14px',
-    cursor: 'pointer',
-  },
-  statusLine: {
-    marginBottom: 8,
-    color: '#d8e3f8',
-  },
-  error: {
-    marginBottom: 12,
-    color: '#ff8f8f',
-  },
-  textarea: {
-    width: '100%',
-    minHeight: '70vh',
-    background: '#0f1625',
-    color: '#dff6ff',
-    border: '1px solid #263a59',
-    borderRadius: 8,
-    padding: 16,
-    boxSizing: 'border-box',
-  },
-} satisfies Record<string, CSSProperties | ((active: boolean) => CSSProperties)>;
