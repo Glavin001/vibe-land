@@ -43,14 +43,14 @@ cd client
 npm run build
 ```
 
-`/practice` keeps the normal client prediction/render path, but swaps the remote server transport for an in-browser authoritative WASM session seeded with the demo world, vehicle, and dynamic bodies.
+`/practice` runs the shared Rust authority directly in-browser. It does not use multiplayer prediction/reconciliation; the browser hosts the authoritative session and renders it immediately.
 
 ## Vercel Deployment
 
 The repo includes a root [vercel.json](/Users/glavin/Development/vibe-land/vercel.json:1) that deploys the unified static client bundle.
 
 - Vercel build target: `client/dist`
-- Vercel build command: `npm --prefix client run build:vercel-local-preview`
+- Vercel build command: `npm --prefix client run build:vercel`
 - Static assets under `/assets/*` are cached as immutable hashed files
 - SPA routes revalidate on each request so browsers can reuse cached assets quickly after checking freshness
 

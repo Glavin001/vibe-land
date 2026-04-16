@@ -140,7 +140,7 @@ describe('PredictionManager', () => {
       expect(result[0]).toBeLessThan(5);
     });
 
-    it('local preview queues inputs before first authoritative snapshot without advancing predicted movement', () => {
+    it('local runtime queues inputs before first authoritative snapshot without advancing predicted movement', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -155,7 +155,7 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local preview follows authoritative state after the first snapshot', () => {
+    it('local runtime follows authoritative state after the first snapshot', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -347,7 +347,7 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local preview keeps render position fixed until the next authoritative snapshot', () => {
+    it('local runtime keeps render position fixed until the next authoritative snapshot', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -365,7 +365,7 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local preview applies authoritative snapshots without correction smoothing', () => {
+    it('local runtime applies authoritative snapshots without correction smoothing', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();

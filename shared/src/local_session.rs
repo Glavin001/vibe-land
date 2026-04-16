@@ -27,7 +27,7 @@ struct PlayerRuntime {
     next_allowed_fire_ms: u32,
 }
 
-pub struct LocalPreviewSession {
+pub struct LocalSession {
     arena: PhysicsArena,
     connected: bool,
     player: PlayerRuntime,
@@ -36,7 +36,7 @@ pub struct LocalPreviewSession {
     server_tick: u32,
 }
 
-impl LocalPreviewSession {
+impl LocalSession {
     pub fn new() -> Self {
         Self::from_world_document(WorldDocument::demo()).expect("default world document is valid")
     }
@@ -125,7 +125,7 @@ impl LocalPreviewSession {
                 }
             }
             PKT_PING | PKT_DEBUG_STATS => {}
-            other => return Err(format!("unsupported local preview packet kind {other}")),
+            other => return Err(format!("unsupported local session packet kind {other}")),
         }
         Ok(())
     }
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn connect_queues_welcome_packet() {
-        let mut session = LocalPreviewSession::new();
+        let mut session = LocalSession::new();
         session.connect();
 
         let packets = session.drain_packets();
@@ -677,7 +677,7 @@ mod tests {
 
     #[test]
     fn tick_acknowledges_latest_input_in_snapshot() {
-        let mut session = LocalPreviewSession::new();
+        let mut session = LocalSession::new();
         session.connect();
         let _ = session.drain_packets();
 
@@ -703,8 +703,8 @@ mod tests {
     }
 
     #[test]
-    fn local_preview_can_enter_authored_vehicle() {
-        let mut session = LocalPreviewSession::new();
+    fn local_session_can_enter_authored_vehicle() {
+        let mut session = LocalSession::new();
         session.connect();
         let _ = session.drain_packets();
 
@@ -713,12 +713,12 @@ mod tests {
             .drain_packets()
             .into_iter()
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
-            .expect("initial local preview snapshot");
+            .expect("initial local session snapshot");
         let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
         assert_eq!(
             initial_vehicle.len(),
             1,
-            "demo local preview should expose one vehicle"
+            "demo local session should expose one vehicle"
         );
         let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
         assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
@@ -733,13 +733,13 @@ mod tests {
             .drain_packets()
             .into_iter()
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
-            .expect("latest local preview snapshot");
+            .expect("latest local session snapshot");
         let latest_vehicle = decode_snapshot_vehicle_states(&latest_snapshot);
         assert_eq!(latest_vehicle.len(), 1);
         let (_, latest_driver_id, _, _, _) = latest_vehicle[0];
         assert_eq!(
             latest_driver_id, LOCAL_PLAYER_ID,
-            "local preview vehicle should be driven by the local player after enter"
+            "local session vehicle should be driven by the local player after enter"
         );
     }
 }

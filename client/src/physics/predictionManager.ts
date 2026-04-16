@@ -2,11 +2,11 @@ import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
+import { CLIENT_MAX_CATCHUP_STEPS, CLIENT_PREDICTION_MAX_PENDING_INPUTS, FIXED_DT } from '../runtime/clientSimConstants';
 import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
-export const FIXED_DT = 1 / 60;
-export const MAX_CATCHUP_STEPS = 4;
+export { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS as MAX_CATCHUP_STEPS };
 export const HARD_SNAP_DISTANCE = 3.0;
 export const VISUAL_SMOOTH_RATE = 8.0;
 export const CORRECTION_DISTANCE = 0.15;
@@ -15,7 +15,7 @@ export const CORRECTION_DISTANCE = 0.15;
  * When pending (unacked) inputs exceed this count, the client pauses tick
  * generation to let the server catch up.
  */
-export const MAX_PENDING_INPUTS = 30;
+export const MAX_PENDING_INPUTS = CLIENT_PREDICTION_MAX_PENDING_INPUTS;
 
 /**
  * Framework-agnostic prediction manager.
@@ -64,7 +64,7 @@ export class PredictionManager {
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
 
-    if (this.sim.getPendingCount() >= MAX_PENDING_INPUTS) {
+    if (this.sim.getPendingCount() >= CLIENT_PREDICTION_MAX_PENDING_INPUTS) {
       if (this.accumulator > FIXED_DT) {
         this.accumulator = FIXED_DT;
       }
@@ -73,7 +73,7 @@ export class PredictionManager {
 
     let steps = 0;
     let physicsTimeTotal = 0;
-    while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
+    while (this.accumulator >= FIXED_DT && steps < CLIENT_MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
 

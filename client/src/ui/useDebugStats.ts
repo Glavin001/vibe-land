@@ -184,9 +184,7 @@ export function useDebugStats() {
   const deepCaptureEnabledRef = useRef(false);
   const deepCaptureSamplesRef = useRef<VehicleDeepCaptureSample[]>([]);
 
-  const isLocalTransport = useCallback((transport: string): boolean => (
-    transport === 'local' || transport === 'local-preview'
-  ), []);
+  const isLocalTransport = useCallback((transport: string): boolean => transport === 'local', []);
 
   // F3 toggle
   useEffect(() => {

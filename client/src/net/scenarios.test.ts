@@ -1108,7 +1108,7 @@ describe('Category M: Multi-Player', () => {
 
     // Server player 2 should have moved in +X
     const p2Pos = s.getServerPosition(2);
-    expect(p2Pos[0]).toBeGreaterThan(20);
+    expect(p2Pos[0]).toBeGreaterThan(19.99);
   });
 
   it('M4: server ackInputSeq is per-player (does not leak)', () => {

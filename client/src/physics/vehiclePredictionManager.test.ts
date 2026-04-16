@@ -141,7 +141,7 @@ describe('VehiclePredictionManager', () => {
     expect(continued.map((frame) => frame.seq)).toEqual([28, 29, 30, 31]);
   });
 
-  it('local preview enter and exit do not activate a second local vehicle sim', () => {
+  it('local runtime enter and exit do not activate a second local vehicle sim', () => {
     const { sim, manager } = createManager(true);
 
     expect(sim.syncRemoteVehicleCalls).toBe(0);
@@ -161,7 +161,7 @@ describe('VehiclePredictionManager', () => {
     expect(sim.stepDynamicsCalls).toBe(0);
   });
 
-  it('local preview keeps generating fixed-step inputs without ticking local vehicle physics', () => {
+  it('local runtime keeps generating fixed-step inputs without ticking local vehicle physics', () => {
     const { sim, manager, input } = createManager(true);
 
     expect(manager.update(FIXED_DT * 2, input).map((frame) => frame.seq)).toEqual([1, 2]);
@@ -169,7 +169,7 @@ describe('VehiclePredictionManager', () => {
     expect(sim.getVehiclePendingCount()).toBe(0);
   });
 
-  it('local preview reconcile prunes acked inputs without syncing vehicle pose into the sim', () => {
+  it('local runtime reconcile prunes acked inputs without syncing vehicle pose into the sim', () => {
     const { sim, manager, input, initState } = createManager(true);
 
     expect(manager.update(FIXED_DT * 2, input).map((frame) => frame.seq)).toEqual([1, 2]);
@@ -185,7 +185,7 @@ describe('VehiclePredictionManager', () => {
     expect(manager.update(0, input).map((frame) => frame.seq)).toEqual([2]);
   });
 
-  it('local preview keeps issuing fresh inputs when backlog exceeds the old cap', () => {
+  it('local runtime keeps issuing fresh inputs when backlog exceeds the old cap', () => {
     const { manager, input } = createManager(true);
 
     for (let seq = 1; seq <= VEHICLE_MAX_PENDING_INPUTS; seq += 1) {

@@ -1,10 +1,17 @@
 import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { InputCmd, NetVehicleState } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
+import {
+  CLIENT_MAX_CATCHUP_STEPS,
+  FIXED_DT,
+  VEHICLE_CLIENT_CATCHUP_KEEP,
+  VEHICLE_CLIENT_CATCHUP_THRESHOLD,
+  VEHICLE_CLIENT_MAX_PENDING_INPUTS,
+  VEHICLE_INPUT_REDUNDANCY,
+} from '../runtime/clientSimConstants';
 import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 
-export const FIXED_DT = 1 / 60;
-export const MAX_CATCHUP_STEPS = 4;
+export { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS as MAX_CATCHUP_STEPS };
 export const VEHICLE_HARD_SNAP_DISTANCE = 5.0;
 export const VEHICLE_CORRECTION_DISTANCE = 0.05;    // 5cm position threshold
 export const VEHICLE_ROT_THRESHOLD = 0.0175;         // ~1 degree
@@ -15,10 +22,8 @@ export const VEHICLE_VISUAL_DEADBAND_DISTANCE = 0.03;
 export const VEHICLE_VISUAL_SNAP_DISTANCE = 0.35;
 export const VEHICLE_VISUAL_SNAP_VERTICAL_DISTANCE = 0.08;
 export const VEHICLE_VISUAL_SNAP_ROT_THRESHOLD = 0.04;
-export const VEHICLE_INPUT_REDUNDANCY = 4;
-export const VEHICLE_MAX_PENDING_INPUTS = 30;
-export const VEHICLE_CLIENT_CATCHUP_THRESHOLD = 8;
-export const VEHICLE_CLIENT_CATCHUP_KEEP = VEHICLE_INPUT_REDUNDANCY;
+export { VEHICLE_INPUT_REDUNDANCY };
+export const VEHICLE_MAX_PENDING_INPUTS = VEHICLE_CLIENT_MAX_PENDING_INPUTS;
 
 function seqIsNewer(a: number, b: number): boolean {
   return ((a - b) & 0xffff) < 0x8000 && a !== b;
@@ -229,7 +234,7 @@ export class VehiclePredictionManager {
     const generatedThisFrame: InputCmd[] = [];
 
     let steps = 0;
-    while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
+    while (this.accumulator >= FIXED_DT && steps < CLIENT_MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
 

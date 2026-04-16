@@ -9,7 +9,7 @@ use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
-use crate::local_session::LocalPreviewSession;
+use crate::local_session::LocalSession;
 use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
 use crate::seq::seq_is_newer;
@@ -1347,7 +1347,7 @@ impl WasmSimWorld {
 
 #[wasm_bindgen]
 pub struct WasmLocalSession {
-    inner: LocalPreviewSession,
+    inner: LocalSession,
 }
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
@@ -1359,9 +1359,9 @@ impl WasmLocalSession {
     pub fn new(world_json: Option<String>) -> Result<Self, JsValue> {
         install_panic_hook_once();
         let inner = match world_json {
-            Some(world_json) => LocalPreviewSession::from_world_json(&world_json)
+            Some(world_json) => LocalSession::from_world_json(&world_json)
                 .map_err(|err| JsValue::from_str(&err))?,
-            None => LocalPreviewSession::new(),
+            None => LocalSession::new(),
         };
         Ok(Self { inner })
     }

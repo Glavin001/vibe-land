@@ -442,7 +442,7 @@ function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string 
 export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExtras = {}): string {
   const p = stats.position;
   const v = stats.velocity;
-  const localTransport = stats.transport === 'local' || stats.transport === 'local-preview';
+  const localTransport = stats.transport === 'local';
   const lines = [
     '# vibe-land debug',
     '',
@@ -853,19 +853,19 @@ export function DebugOverlay({
         {`Geom: ${stats.geometries}  Tex: ${stats.textures}`}
       </Section>
 
-      <Section title={stats.transport === 'local' || stats.transport === 'local-preview' ? 'Local Runtime' : 'Network'}>
+      <Section title={stats.transport === 'local' ? 'Local Runtime' : 'Network'}>
         {`Transport: ${stats.transport}`}
-        {stats.transport === 'local' || stats.transport === 'local-preview'
+        {stats.transport === 'local'
           ? 'Runtime: browser-local Rust simulation'
           : `Ping: ${fmt(stats.pingMs)}ms  Jitter: ±${fmt(stats.jitterMs)}ms`}
-        {`${stats.transport === 'local' || stats.transport === 'local-preview' ? 'Local tick' : 'Server tick'}: ${stats.serverTick}`}
-        {stats.transport === 'local' || stats.transport === 'local-preview'
+        {`${stats.transport === 'local' ? 'Local tick' : 'Server tick'}: ${stats.serverTick}`}
+        {stats.transport === 'local'
           ? 'Interpolation: bypassed for local runtime'
           : `Interp delay: ${stats.interpolationDelayMs.toFixed(2)}ms`}
-        {stats.transport === 'local' || stats.transport === 'local-preview'
+        {stats.transport === 'local'
           ? 'Dyn interp: bypassed for local runtime'
           : `Dyn interp delay: ${stats.dynamicBodyInterpolationDelayMs.toFixed(2)}ms`}
-        {stats.transport === 'local' || stats.transport === 'local-preview'
+        {stats.transport === 'local'
           ? 'Clock offset: n/a (same process)'
           : `Clock offset: ${fmt(stats.clockOffsetUs / 1000)}ms`}
         {`Remote players: ${stats.remotePlayers}`}
