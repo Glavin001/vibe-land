@@ -410,6 +410,7 @@ type DebugMarkdownExtras = {
   userAgent?: string;
   renderStatsText?: string;
   localRenderSmoothingEnabled?: boolean;
+  vehicleSmoothingEnabled?: boolean;
   deepCaptureEnabled?: boolean;
   deepCaptureReport?: string | null;
 };
@@ -452,6 +453,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- status: ${extras.status ?? 'unknown'}`,
     `- user-agent: ${extras.userAgent ?? (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown')}`,
     `- local_render_smoothing: ${extras.localRenderSmoothingEnabled == null ? 'unknown' : extras.localRenderSmoothingEnabled ? 'on' : 'off'}`,
+    `- vehicle_smoothing: ${extras.vehicleSmoothingEnabled == null ? 'unknown' : extras.vehicleSmoothingEnabled ? 'on' : 'off'}`,
     '',
     '## Rendering',
     `- fps: ${fmt(stats.fps, 0)}`,
@@ -687,6 +689,8 @@ export function DebugOverlay({
   visible,
   localRenderSmoothingEnabled = true,
   onToggleLocalRenderSmoothing,
+  vehicleSmoothingEnabled = false,
+  onToggleVehicleSmoothing,
   deepCaptureEnabled = false,
   deepCaptureSampleCount = 0,
 }: {
@@ -694,6 +698,8 @@ export function DebugOverlay({
   visible: boolean;
   localRenderSmoothingEnabled?: boolean;
   onToggleLocalRenderSmoothing?: () => void;
+  vehicleSmoothingEnabled?: boolean;
+  onToggleVehicleSmoothing?: () => void;
   deepCaptureEnabled?: boolean;
   deepCaptureSampleCount?: number;
 }) {
@@ -706,6 +712,13 @@ export function DebugOverlay({
     ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
     : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
   const smoothingBorder = localRenderSmoothingEnabled
+    ? 'rgba(118, 255, 170, 0.28)'
+    : 'rgba(228, 234, 241, 0.18)';
+  const vehicleSmoothingAccent = vehicleSmoothingEnabled ? '#98ffbc' : '#d8dee6';
+  const vehicleSmoothingBackground = vehicleSmoothingEnabled
+    ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+    : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
+  const vehicleSmoothingBorder = vehicleSmoothingEnabled
     ? 'rgba(118, 255, 170, 0.28)'
     : 'rgba(228, 234, 241, 0.18)';
 
@@ -843,6 +856,66 @@ export function DebugOverlay({
             {localRenderSmoothingEnabled
               ? 'High-refresh monitors render the local pose between 60Hz simulation steps.'
               : 'Uses the raw 60Hz local pose so you can compare against the smoothed path.'}
+          </div>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: vehicleSmoothingBackground,
+            border: `1px solid ${vehicleSmoothingBorder}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Vehicle Smoothing
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Toggle local driven vehicle mesh and chase camera smoothing.
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={vehicleSmoothingEnabled}
+              onClick={onToggleVehicleSmoothing}
+              style={{
+                background: vehicleSmoothingEnabled ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${vehicleSmoothingEnabled ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: vehicleSmoothingAccent,
+                borderRadius: 999,
+                cursor: onToggleVehicleSmoothing ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: vehicleSmoothingEnabled ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Vehicle Smooth ${vehicleSmoothingEnabled ? 'ON' : 'OFF'}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {vehicleSmoothingEnabled
+              ? 'Renders the driven vehicle and chase camera from the filtered visual pose.'
+              : 'Uses the raw local vehicle pose so you can verify whether the filter is causing the wobble.'}
           </div>
         </div>
       </div>

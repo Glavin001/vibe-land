@@ -154,6 +154,7 @@ export function App({
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
+  const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -517,6 +518,7 @@ export function App({
         userAgent: navigator.userAgent,
         renderStatsText: renderStatsParentRef.current?.innerText ?? '',
         localRenderSmoothingEnabled,
+        vehicleSmoothingEnabled,
         deepCaptureEnabled,
         deepCaptureReport: getDeepCaptureMarkdown(),
       });
@@ -546,7 +548,7 @@ export function App({
         window.clearTimeout(copyNoticeTimerRef.current);
       }
     };
-  }, [connected, deepCaptureEnabled, getDeepCaptureMarkdown, getStatsSnapshot, localRenderSmoothingEnabled, status]);
+  }, [connected, deepCaptureEnabled, getDeepCaptureMarkdown, getStatsSnapshot, localRenderSmoothingEnabled, status, vehicleSmoothingEnabled]);
 
   const crosshairColor =
     crosshairState === 'head'
@@ -734,6 +736,8 @@ export function App({
           visible={debugVisible}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
+          vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
           deepCaptureEnabled={deepCaptureEnabled}
           deepCaptureSampleCount={deepCaptureSampleCount}
         />
@@ -767,6 +771,7 @@ export function App({
           showRenderStats={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+          vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
         />
       )}
