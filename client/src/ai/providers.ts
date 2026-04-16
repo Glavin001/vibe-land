@@ -78,7 +78,7 @@ export function createLanguageModel(
   switch (provider) {
     case 'openai': {
       const client = createOpenAI({ apiKey });
-      return client.chat(modelId, { parallelToolCalls: false });
+      return client.chat(modelId);
     }
     case 'anthropic': {
       const client = createAnthropic({

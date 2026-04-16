@@ -132,6 +132,9 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           // Disable automatic retries — for BYOK in the browser, retrying
           // on 429/5xx just wastes the user's quota and delays the error.
           maxRetries: 0,
+          // Prevent OpenAI from issuing multiple tool calls in a single step.
+          // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
+          providerOptions: { openai: { parallelToolCalls: false } },
         });
 
         // Track in-flight text/reasoning blocks so streamed deltas append to
