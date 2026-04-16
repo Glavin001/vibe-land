@@ -592,7 +592,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     setPublishStatus({ kind: 'idle' });
   }, []);
 
-  const handleConfirmPublish = useCallback(async () => {
+  const handleConfirmPublish = useCallback(async (name: string) => {
     if (publishStatus.kind !== 'preview') {
       return;
     }
@@ -607,6 +607,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         world: worldRef.current,
         screenshot: blob,
         parentId: sourcePublishedId,
+        nameOverride: name || undefined,
       });
       // After a successful publish, the new id becomes the ancestry source
       // if the user continues editing and publishes again.
@@ -615,7 +616,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       // private gallery of their own worlds even without an account system.
       recordPublishedWorld({
         id: result.id,
-        name: worldRef.current.meta.name || 'Untitled World',
+        name: name || worldRef.current.meta.name || 'Untitled World',
         publishedAt: result.createdAt,
       });
       const shareUrl = `${window.location.origin}/builder/world?published=${encodeURIComponent(result.id)}`;
@@ -1530,7 +1531,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         {(publishStatus.kind === 'preview' || publishStatus.kind === 'publishing' || publishStatus.kind === 'capturing') && (
           <PublishPreviewOverlay
             status={publishStatus}
-            onConfirm={() => void handleConfirmPublish()}
+            defaultName={worldRef.current.meta.name || 'Untitled World'}
+            onConfirm={(name) => void handleConfirmPublish(name)}
             onRetake={() => void handleRetakeScreenshot()}
             onCancel={handleCancelPublish}
           />
@@ -1549,15 +1551,18 @@ type PublishPreviewOverlayStatus =
 
 function PublishPreviewOverlay({
   status,
+  defaultName,
   onConfirm,
   onRetake,
   onCancel,
 }: {
   status: PublishPreviewOverlayStatus;
-  onConfirm: () => void;
+  defaultName: string;
+  onConfirm: (name: string) => void;
   onRetake: () => void;
   onCancel: () => void;
 }) {
+  const [name, setName] = React.useState(defaultName);
   const busy = status.kind === 'capturing' || status.kind === 'publishing';
   const dataUrl = status.kind === 'preview' || status.kind === 'publishing' ? status.dataUrl : null;
   const sizeBytes = status.kind === 'preview' ? status.blob.size : null;
@@ -1614,10 +1619,35 @@ function PublishPreviewOverlay({
           </div>
         )}
       </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <label style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(135, 214, 255, 0.8)' }}>
+          Name
+        </label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy}
+          maxLength={120}
+          placeholder="Untitled World"
+          style={{
+            width: '100%',
+            padding: '8px 12px',
+            borderRadius: 8,
+            border: '1px solid rgba(145, 198, 255, 0.3)',
+            background: 'rgba(4, 18, 31, 0.7)',
+            color: '#edf6ff',
+            fontSize: 14,
+            outline: 'none',
+            boxSizing: 'border-box',
+            opacity: busy ? 0.5 : 1,
+          }}
+        />
+      </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button
           type="button"
-          onClick={onConfirm}
+          onClick={() => onConfirm(name)}
           disabled={busy || status.kind !== 'preview'}
           style={{
             flex: '1 1 120px',

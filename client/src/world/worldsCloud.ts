@@ -77,10 +77,12 @@ export type PublishWorldOptions = {
   // the gallery), pass the source id so the new publication records its
   // parentage. Null for original creations.
   parentId?: string | null;
+  // Optional name override; if omitted, world.meta.name is used.
+  nameOverride?: string;
 };
 
 export async function publishWorld(opts: PublishWorldOptions): Promise<PublishResult> {
-  const { world, screenshot, parentId } = opts;
+  const { world, screenshot, parentId, nameOverride } = opts;
   const json = serializeWorldDocument(world);
   const gzippedWorld = await gzipString(json);
   const worldBlob = new Blob([toAsciiArrayBuffer(gzippedWorld)], {
@@ -88,7 +90,7 @@ export async function publishWorld(opts: PublishWorldOptions): Promise<PublishRe
   });
 
   const reservation = await reserveUpload({
-    name: world.meta.name,
+    name: nameOverride ?? world.meta.name,
     description: world.meta.description,
     version: world.version,
     worldContentLength: worldBlob.size,
