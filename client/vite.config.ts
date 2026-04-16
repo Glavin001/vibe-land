@@ -46,6 +46,9 @@ export default defineConfig(({ mode }) => {
       // Only run unit tests inside src/ — keeps Playwright E2E specs (e2e/)
       // out of vitest. E2E tests run separately via `npm run e2e`.
       include: ['src/**/*.test.ts'],
+      // WASM physics tests (e.g. sequence wrap-around) run 65k+ simulation
+      // steps and need extra headroom on CI runners.
+      testTimeout: 60_000,
     },
   };
 });
