@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
@@ -12,6 +12,7 @@ import {
   applyTerrainBrush,
   applyTerrainRampStencil,
   cloneWorldDocument,
+  createEmptyWorldDocument,
   getAddableTerrainTiles,
   getTerrainRampEndpointHeights,
   getTerrainTileCenter,
@@ -47,34 +48,64 @@ import {
   shouldCreateAutosaveBackup,
 } from '../world/worldDraftStore';
 import {
+  fetchCloudConfig,
+  fetchPublishedWorld,
+  publishWorld,
+} from '../world/worldsCloud';
+import { captureCanvasScreenshot } from '../world/canvasScreenshot';
+import { recordPublishedWorld } from '../world/publishedHistory';
+import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
+  generateCommitId,
   redoWorldEdit,
   undoWorldEdit,
+  type CommitEntry,
   type WorldEditHistory,
 } from './godModeHistory';
+import {
+  addDynamicEntityToWorld,
+  addStaticCuboidToWorld,
+  clonePlayWorldSnapshot,
+  getSelectedDynamic,
+  getSelectedStatic,
+  removeSelectedTargetFromWorld,
+  resolveSelectedTransformEntity,
+  selectionExists,
+  updateSelectedTargetHalfExtents,
+  updateSelectedTargetPosition,
+  updateSelectedTargetRadius,
+  updateSelectedTargetRotation,
+  type SelectedTarget,
+  type SelectedTransformEntity,
+} from './godModeEditorDocument';
+import { AiChatPanel, type AiChatPanelHandle } from './godmode/AiChatPanel';
+import { CustomStencilPanel } from './godmode/CustomStencilPanel';
+import { CustomStencilPreview } from './godmode/CustomStencilPreview';
+import { useHumanEditTracker } from './godmode/useHumanEditTracker';
+import type { SplineData } from '../ai/splineData';
+import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
+import { useCustomStencils } from '../ai/customStencilStore';
+import type { WorldAccessors } from '../ai/worldToolHelpers';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
-type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile';
+type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
-type SelectedTarget =
-  | { kind: 'static'; id: number }
-  | { kind: 'dynamic'; id: number }
-  | null;
 
-type SelectedTransformEntity = {
-  kind: 'static' | 'dynamic';
-  id: number;
-  position: Vec3;
-  rotation: Quaternion;
-  halfExtents?: Vec3;
-  radius?: number;
-  canRotate: boolean;
-  canResize: boolean;
+type PublishStatus =
+  | { kind: 'idle' }
+  | { kind: 'capturing' }
+  | { kind: 'preview'; dataUrl: string; blob: Blob }
+  | { kind: 'publishing'; dataUrl: string }
+  | { kind: 'success'; id: string; shareUrl: string; clipboardOk: boolean }
+  | { kind: 'error'; message: string };
+
+export type GodModePageProps = {
+  publishedId?: string;
 };
 
-export function GodModePage() {
+export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [mode, setMode] = useState<EditorMode>('edit');
   const [tool, setTool] = useState<EditorTool>('select');
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
@@ -101,14 +132,45 @@ export function GodModePage() {
   const [rampSideFalloff, setRampSideFalloff] = useState(2);
   const [rampStartFalloff, setRampStartFalloff] = useState(0);
   const [rampEndFalloff, setRampEndFalloff] = useState(0);
+  const [commitMessageDraft, setCommitMessageDraft] = useState('');
+  const customStencils = useCustomStencils();
+  const [customStencilParams, setCustomStencilParams] = useState<Record<string, Record<string, unknown>>>({});
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
+  const [cloudEnabled, setCloudEnabled] = useState(false);
+  const [cloudPublicUrl, setCloudPublicUrl] = useState<string | null>(null);
+  // Tracks the published world this session is derived from. When the user
+  // opens a published world (via ?published=<id>) and then re-publishes,
+  // this id is sent as `parentId` so the ancestry chain is preserved.
+  // Cleared when the user imports a local file or resets to default.
+  const [sourcePublishedId, setSourcePublishedId] = useState<string | null>(publishedId ?? null);
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
+  const [cloudLoadStatus, setCloudLoadStatus] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading'; id: string }
+    | { kind: 'loaded'; id: string; name: string }
+    | { kind: 'error'; id: string; message: string }
+  >(publishedId ? { kind: 'loading', id: publishedId } : { kind: 'idle' });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const worldRef = useRef(world);
   const editHistoryRef = useRef(editHistory);
   const editTransactionRef = useRef<WorldDocument | null>(null);
+  const isAiEditRef = useRef(false);
+  const aiChatRef = useRef<AiChatPanelHandle>(null);
+  const splinesRef = useRef<Map<string, SplineData>>(new Map());
+
+  const activeCustomStencilId = typeof terrainToolMode === 'string' && terrainToolMode.startsWith('custom:')
+    ? terrainToolMode.slice(7)
+    : null;
+  const activeCustomStencil = activeCustomStencilId
+    ? customStencils.find((s) => s.id === activeCustomStencilId) ?? null
+    : null;
+  const activeCustomParams = activeCustomStencilId
+    ? { ...activeCustomStencil?.defaultParams, ...customStencilParams[activeCustomStencilId] }
+    : {};
 
   useEffect(() => {
     worldRef.current = world;
@@ -138,13 +200,20 @@ export function GodModePage() {
     return true;
   }, [replaceWorldState]);
 
-  const applyCommittedWorldEdit = useCallback((updater: (current: WorldDocument) => WorldDocument) => {
+  const applyCommittedWorldEdit = useCallback((
+    updater: (current: WorldDocument) => WorldDocument,
+    commitInfo?: { commitId?: string; commitMessage?: string; source?: CommitEntry['source'] },
+  ) => {
     const current = worldRef.current;
     const next = updater(current);
     if (next === current) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, current, next);
+    const transition = commitWorldEdit(editHistoryRef.current, current, next, {
+      commitId: commitInfo?.commitId ?? generateCommitId(),
+      commitMessage: commitInfo?.commitMessage ?? 'Manual edit',
+      source: commitInfo?.source ?? 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -165,7 +234,11 @@ export function GodModePage() {
     if (!startWorld) {
       return false;
     }
-    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current);
+    const transition = commitWorldEdit(editHistoryRef.current, startWorld, worldRef.current, {
+      commitId: generateCommitId(),
+      commitMessage: 'Manual edit',
+      source: 'human',
+    });
     if (!transition.changed) {
       return false;
     }
@@ -176,6 +249,69 @@ export function GodModePage() {
   const cancelTrackedWorldEdit = useCallback(() => {
     editTransactionRef.current = null;
   }, []);
+
+  const aiAccessors = useMemo<WorldAccessors>(() => ({
+    getWorld: () => worldRef.current,
+    commitEdit: (updater, options) => {
+      const wasAiEdit = isAiEditRef.current;
+      if (options?.isAiEdit) {
+        isAiEditRef.current = true;
+      }
+      try {
+        return applyCommittedWorldEdit(updater);
+      } finally {
+        isAiEditRef.current = wasAiEdit;
+      }
+    },
+    applyWithoutCommit: (updater) => {
+      return applyPreviewWorldEdit(updater);
+    },
+    restoreWorld: (snapshot) => {
+      replaceWorldState(snapshot);
+    },
+    commitAsAi: (snapshotBefore, commitId, commitMessage) => {
+      const transition = commitWorldEdit(editHistoryRef.current, snapshotBefore, worldRef.current, {
+        commitId,
+        commitMessage,
+        source: 'ai',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+      }
+    },
+    rollbackToCommit: (targetCommitId) => {
+      const history = editHistoryRef.current;
+      const idx = history.undoStack.findIndex((entry) => entry.commitId === targetCommitId);
+      if (idx === -1) {
+        return { ok: false, message: `Commit ${targetCommitId} not found in history.` };
+      }
+      const targetWorld = cloneWorldDocument(history.undoStack[idx].world);
+      const rollbackCommitId = generateCommitId();
+      const transition = commitWorldEdit(editHistoryRef.current, worldRef.current, targetWorld, {
+        commitId: rollbackCommitId,
+        commitMessage: `Rollback to ${targetCommitId}`,
+        source: 'rollback',
+      });
+      if (transition.changed) {
+        replaceEditHistoryState(transition.history);
+        replaceWorldState(targetWorld);
+      }
+      return { ok: true, message: `Rolled back to commit ${targetCommitId}`, commitId: rollbackCommitId };
+    },
+    getSplines: () => splinesRef.current,
+    setSpline: (id, spline) => { splinesRef.current.set(id, spline); },
+    deleteSpline: (id) => splinesRef.current.delete(id),
+  }), [applyCommittedWorldEdit, applyPreviewWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleHumanEdit = useCallback((summary: string) => {
+    aiChatRef.current?.pushHumanEdit(summary);
+  }, []);
+
+  useHumanEditTracker({
+    world,
+    isAiEditRef,
+    onHumanEdit: handleHumanEdit,
+  });
 
   const handleUndo = useCallback(() => {
     cancelTrackedWorldEdit();
@@ -196,6 +332,25 @@ export function GodModePage() {
     replaceEditHistoryState(transition.history);
     replaceWorldState(transition.world);
   }, [cancelTrackedWorldEdit, replaceEditHistoryState, replaceWorldState]);
+
+  const handleHumanCommit = useCallback(() => {
+    const msg = commitMessageDraft.trim();
+    if (!msg) return;
+    // Push a named commit entry onto the undo stack labeling the current state.
+    // We use a self-referencing snapshot so the entry acts as a named bookmark.
+    const entry: CommitEntry = {
+      commitId: generateCommitId(),
+      commitMessage: msg,
+      world: cloneWorldDocument(worldRef.current),
+      timestamp: Date.now(),
+      source: 'human',
+    };
+    replaceEditHistoryState({
+      undoStack: [entry, ...editHistoryRef.current.undoStack].slice(0, 64),
+      redoStack: [],
+    });
+    setCommitMessageDraft('');
+  }, [commitMessageDraft, replaceEditHistoryState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -251,47 +406,16 @@ export function GodModePage() {
     if (!selected) {
       return;
     }
-    if (selected.kind === 'static' && !world.staticProps.some((entity) => entity.id === selected.id)) {
-      setSelected(null);
-      return;
-    }
-    if (selected.kind === 'dynamic' && !world.dynamicEntities.some((entity) => entity.id === selected.id)) {
+    if (!selectionExists(world, selected)) {
       setSelected(null);
     }
-  }, [selected, world.dynamicEntities, world.staticProps]);
+  }, [selected, world]);
 
-  const selectedStatic = selected?.kind === 'static'
-    ? world.staticProps.find((entity) => entity.id === selected.id) ?? null
-    : null;
-  const selectedDynamic = selected?.kind === 'dynamic'
-    ? world.dynamicEntities.find((entity) => entity.id === selected.id) ?? null
-    : null;
+  const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
+  const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
-    if (selectedStatic) {
-      return {
-        kind: 'static',
-        id: selectedStatic.id,
-        position: selectedStatic.position,
-        rotation: selectedStatic.rotation,
-        halfExtents: selectedStatic.halfExtents,
-        canRotate: true,
-        canResize: true,
-      };
-    }
-    if (selectedDynamic) {
-      return {
-        kind: 'dynamic',
-        id: selectedDynamic.id,
-        position: selectedDynamic.position,
-        rotation: selectedDynamic.rotation,
-        halfExtents: selectedDynamic.halfExtents,
-        radius: selectedDynamic.radius,
-        canRotate: selectedDynamic.kind !== 'ball',
-        canResize: selectedDynamic.kind !== 'vehicle',
-      };
-    }
-    return null;
-  }, [selectedDynamic, selectedStatic]);
+    return resolveSelectedTransformEntity(world, selected);
+  }, [selected, world]);
 
   useEffect(() => {
     if (tool !== 'select') {
@@ -353,7 +477,7 @@ export function GodModePage() {
   }, [handleRedo, handleUndo, mode, selectedTransformEntity, tool]);
 
   const handleStartPlay = useCallback(() => {
-    const snapshot = cloneWorldDocument(worldRef.current);
+    const snapshot = clonePlayWorldSnapshot(worldRef.current);
     setPlayWorldSnapshot(snapshot);
     setPlaySessionKey((current) => current + 1);
     setMode('play');
@@ -395,11 +519,149 @@ export function GodModePage() {
     const nextWorld = parseWorldDocument(JSON.parse(text));
     applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
     setSelected(null);
+    setSourcePublishedId(null); // imported file breaks the ancestry chain
     setLastImportName(file.name);
     setLastImportNameState(file.name);
     setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
     event.target.value = '';
   }, [applyCommittedWorldEdit]);
+
+  const captureCurrentScreenshot = useCallback(async () => {
+    const canvas = editorCanvasRef.current;
+    if (!canvas) {
+      throw new Error('Builder canvas is not ready. Switch to Edit mode and try again.');
+    }
+    return captureCanvasScreenshot(canvas);
+  }, []);
+
+  const handleStartPublish = useCallback(async () => {
+    if (!cloudEnabled || mode !== 'edit') {
+      return;
+    }
+    setPublishStatus({ kind: 'capturing' });
+    try {
+      const shot = await captureCurrentScreenshot();
+      setPublishStatus({ kind: 'preview', dataUrl: shot.dataUrl, blob: shot.blob });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to capture screenshot.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [cloudEnabled, mode, captureCurrentScreenshot]);
+
+  const handleRetakeScreenshot = useCallback(async () => {
+    setPublishStatus({ kind: 'capturing' });
+    try {
+      const shot = await captureCurrentScreenshot();
+      setPublishStatus({ kind: 'preview', dataUrl: shot.dataUrl, blob: shot.blob });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to capture screenshot.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [captureCurrentScreenshot]);
+
+  const handleCancelPublish = useCallback(() => {
+    setPublishStatus({ kind: 'idle' });
+  }, []);
+
+  const handleConfirmPublish = useCallback(async () => {
+    if (publishStatus.kind !== 'preview') {
+      return;
+    }
+    const { dataUrl, blob } = publishStatus;
+    setPublishStatus({ kind: 'publishing', dataUrl });
+    try {
+      // publishWorld reserves an id and streams the gzipped world + the
+      // screenshot directly to the storage backend in parallel. For the R2
+      // backend this means the bytes go straight to R2 via presigned URLs
+      // and never touch our function.
+      const result = await publishWorld({
+        world: worldRef.current,
+        screenshot: blob,
+        parentId: sourcePublishedId,
+      });
+      // After a successful publish, the new id becomes the ancestry source
+      // if the user continues editing and publishes again.
+      setSourcePublishedId(result.id);
+      // Remember this publication on the local device so the user can see a
+      // private gallery of their own worlds even without an account system.
+      recordPublishedWorld({
+        id: result.id,
+        name: worldRef.current.meta.name || 'Untitled World',
+        publishedAt: result.createdAt,
+      });
+      const shareUrl = `${window.location.origin}/builder/world?published=${encodeURIComponent(result.id)}`;
+      let clipboardOk = false;
+      try {
+        await navigator.clipboard?.writeText(shareUrl);
+        clipboardOk = true;
+      } catch {
+        clipboardOk = false;
+      }
+      setPublishStatus({
+        kind: 'success',
+        id: result.id,
+        shareUrl,
+        clipboardOk,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown publish error.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [publishStatus]);
+
+  const handleOpenGallery = useCallback(() => {
+    window.location.href = '/gallery';
+  }, []);
+
+  // Probe cloud config once on mount. We only care whether the deployment has
+  // R2 configured — the response contains no secrets.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCloudConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setCloudEnabled(config.enabled);
+          setCloudPublicUrl(config.publicUrl ?? null);
+        }
+      })
+      .catch(() => {
+        // Feature stays disabled on transient errors; the rest of the builder keeps working.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the builder was opened with `?published=<id>`, pull that world from R2
+  // and load it in place of the local draft. We wait for storage to be ready
+  // so we don't race with the initial IndexedDB restore.
+  useEffect(() => {
+    if (!publishedId || !storageReady) {
+      return;
+    }
+    let cancelled = false;
+    setCloudLoadStatus({ kind: 'loading', id: publishedId });
+    fetchPublishedWorld(publishedId, cloudPublicUrl)
+      .then((raw) => {
+        if (cancelled) {
+          return;
+        }
+        const nextWorld = parseWorldDocument(raw);
+        applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
+        setSelected(null);
+        setCloudLoadStatus({ kind: 'loaded', id: publishedId, name: nextWorld.meta.name });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Failed to load published world.';
+        setCloudLoadStatus({ kind: 'error', id: publishedId, message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publishedId, storageReady, applyCommittedWorldEdit, cloudPublicUrl]);
 
   const handleRestoreRevision = useCallback((revision: WorldDraftRevision) => {
     applyCommittedWorldEdit(() => cloneWorldDocument(revision.world));
@@ -411,56 +673,42 @@ export function GodModePage() {
     applyCommittedWorldEdit(() => cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
     setHistory([]);
     setSelected(null);
+    setSourcePublishedId(null); // reset breaks the ancestry chain
+    setLastImportName('');
+    setLastImportNameState('');
+  }, [applyCommittedWorldEdit]);
+
+  const handleClearAll = useCallback(() => {
+    void clearDraftStorage();
+    applyCommittedWorldEdit(() => createEmptyWorldDocument());
+    setHistory([]);
+    setSelected(null);
+    setSourcePublishedId(null); // reset breaks the ancestry chain
     setLastImportName('');
     setLastImportNameState('');
   }, [applyCommittedWorldEdit]);
 
   const addStaticCuboid = useCallback(() => {
-    let nextId = 0;
+    let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
-      nextId = getNextWorldEntityId(current);
-      const baseY = sampleTerrainHeightAtWorldPosition(current, 0, 0) + 1;
-      const nextStatic: StaticProp = {
-        id: nextId,
-        kind: 'cuboid',
-        position: [0, baseY, 0],
-        rotation: identityQuaternion(),
-        halfExtents: [2, 1, 2],
-        material: 'editor-static',
-      };
-      return {
-        ...current,
-        staticProps: [...current.staticProps, nextStatic],
-      };
+      const result = addStaticCuboidToWorld(current);
+      nextSelected = result.selected;
+      return result.world;
     });
-    if (changed) {
-      setSelected({ kind: 'static', id: nextId });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
     }
   }, [applyCommittedWorldEdit]);
 
   const addDynamicEntity = useCallback((kind: DynamicEntity['kind']) => {
-    let nextId = 0;
+    let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
-      nextId = getNextWorldEntityId(current);
-      const common = {
-        id: nextId,
-        kind,
-        position: [0, 0, 0] as [number, number, number],
-        rotation: identityQuaternion() as Quaternion,
-      };
-      const entity: DynamicEntity = kind === 'box'
-        ? { ...common, halfExtents: [0.7, 0.7, 0.7] }
-        : kind === 'ball'
-          ? { ...common, radius: 0.6 }
-          : { ...common, vehicleType: 0 };
-      entity.position = [0, getMinimumDynamicEntityY(current, entity), 0];
-      return {
-        ...current,
-        dynamicEntities: [...current.dynamicEntities, entity],
-      };
+      const result = addDynamicEntityToWorld(current, kind);
+      nextSelected = result.selected;
+      return result.world;
     });
-    if (changed) {
-      setSelected({ kind: 'dynamic', id: nextId });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
     }
   }, [applyCommittedWorldEdit]);
 
@@ -468,123 +716,40 @@ export function GodModePage() {
     if (!selected) {
       return;
     }
-    const changed = applyCommittedWorldEdit((current) => {
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.filter((entity) => entity.id !== selected.id),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.filter((entity) => entity.id !== selected.id),
-      };
-    });
+    const changed = applyCommittedWorldEdit((current) => removeSelectedTargetFromWorld(current, selected));
     if (changed) {
       setSelected(null);
     }
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedPosition = useCallback((axis: 0 | 1 | 2, value: number) => {
-    applyCommittedWorldEdit((current) => {
-      if (!selected) return current;
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, position: withAxis(entity.position, axis, value) }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, position: withAxis(entity.position, axis, value) }
-            : entity
-        )),
-      };
-    });
-  }, [applyCommittedWorldEdit, selected]);
+    const basePosition = selectedTransformEntity?.position;
+    if (!basePosition) {
+      return;
+    }
+    applyCommittedWorldEdit((current) => updateSelectedTargetPosition(current, selected, withAxis(basePosition, axis, value)));
+  }, [applyCommittedWorldEdit, selected, selectedTransformEntity]);
 
   const updateSelectedPositionVector = useCallback((nextPosition: Vec3) => {
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, position: nextPosition }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, position: nextPosition }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetPosition(current, selected, nextPosition));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedHalfExtent = useCallback((axis: 0 | 1 | 2, value: number) => {
+    const baseHalfExtents = selectedTransformEntity?.halfExtents;
+    if (!baseHalfExtents) {
+      return;
+    }
     const nextValue = clampDimension(value * 2) / 2;
-    applyCommittedWorldEdit((current) => {
-      if (!selected) return current;
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id && entity.halfExtents
-            ? { ...entity, halfExtents: withAxis(entity.halfExtents, axis, nextValue) }
-            : entity
-        )),
-      };
-    });
-  }, [applyCommittedWorldEdit, selected]);
+    applyCommittedWorldEdit((current) => updateSelectedTargetHalfExtents(
+      current,
+      selected,
+      withAxis(baseHalfExtents, axis, nextValue),
+    ));
+  }, [applyCommittedWorldEdit, selected, selectedTransformEntity]);
 
   const updateSelectedHalfExtentsVector = useCallback((nextHalfExtents: Vec3) => {
     const clampedHalfExtents = nextHalfExtents.map((value) => clampDimension(value * 2) / 2) as Vec3;
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, halfExtents: clampedHalfExtents }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id && entity.halfExtents
-            ? { ...entity, halfExtents: clampedHalfExtents }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetHalfExtents(current, selected, clampedHalfExtents));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedRadius = useCallback((value: number) => {
@@ -592,14 +757,7 @@ export function GodModePage() {
       return;
     }
     const nextRadius = clampDimension(value);
-    applyCommittedWorldEdit((current) => ({
-      ...current,
-      dynamicEntities: current.dynamicEntities.map((entity) => (
-        entity.id === selected.id
-          ? { ...entity, radius: nextRadius }
-          : entity
-      )),
-    }));
+    applyCommittedWorldEdit((current) => updateSelectedTargetRadius(current, selected, nextRadius));
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedRadiusPreview = useCallback((value: number) => {
@@ -607,68 +765,17 @@ export function GodModePage() {
       return;
     }
     const nextRadius = clampDimension(value);
-    applyPreviewWorldEdit((current) => ({
-      ...current,
-      dynamicEntities: current.dynamicEntities.map((entity) => (
-        entity.id === selected.id
-          ? { ...entity, radius: nextRadius }
-          : entity
-      )),
-    }));
+    applyPreviewWorldEdit((current) => updateSelectedTargetRadius(current, selected, nextRadius));
   }, [applyPreviewWorldEdit, selected]);
 
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
     const yawRadians = (yawDegrees * Math.PI) / 180;
     const nextRotation = quaternionFromYaw(yawRadians);
-    applyCommittedWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, rotation: nextRotation }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, rotation: nextRotation }
-            : entity
-        )),
-      };
-    });
+    applyCommittedWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyCommittedWorldEdit, selected]);
 
   const updateSelectedRotationQuaternion = useCallback((nextRotation: Quaternion) => {
-    applyPreviewWorldEdit((current) => {
-      if (!selected) {
-        return current;
-      }
-      if (selected.kind === 'static') {
-        return {
-          ...current,
-          staticProps: current.staticProps.map((entity) => (
-            entity.id === selected.id
-              ? { ...entity, rotation: nextRotation }
-              : entity
-          )),
-        };
-      }
-      return {
-        ...current,
-        dynamicEntities: current.dynamicEntities.map((entity) => (
-          entity.id === selected.id
-            ? { ...entity, rotation: nextRotation }
-            : entity
-        )),
-      };
-    });
+    applyPreviewWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyPreviewWorldEdit, selected]);
 
   const canUndo = editHistory.undoStack.length > 0;
@@ -739,6 +846,17 @@ export function GodModePage() {
           endFalloffM: rampEndFalloff,
         }));
       }}
+      activeCustomStencil={activeCustomStencil}
+      activeCustomParams={activeCustomParams}
+      onApplyCustomStencil={(x, z) => {
+        if (!activeCustomStencil) return;
+        applyPreviewWorldEdit((current) =>
+          applyCustomStencilToWorld(current, activeCustomStencil, activeCustomParams, x, z),
+        );
+      }}
+      onCanvasReady={(canvas) => {
+        editorCanvasRef.current = canvas;
+      }}
     />
   ), [
     brushMaxHeight,
@@ -758,6 +876,8 @@ export function GodModePage() {
     rampTargetKind,
     rampWidth,
     rampYawDegrees,
+    activeCustomStencil,
+    activeCustomParams,
     terrainToolMode,
     beginTrackedWorldEdit,
     commitTrackedWorldEdit,
@@ -805,7 +925,7 @@ export function GodModePage() {
       <aside style={sidebarStyle}>
         <div>
           <div style={eyebrowStyle}>vibe-land</div>
-          <h1 style={titleStyle}>God Mode</h1>
+          <h1 style={titleStyle}>World Builder</h1>
           <p style={bodyStyle}>
             Edit the authored world document locally, autosave drafts in your browser, and launch a fresh single-player simulation from the current authored state.
           </p>
@@ -828,11 +948,66 @@ export function GodModePage() {
             <button type="button" onClick={handleExport} style={primaryButtonStyle}>Export JSON</button>
             <button type="button" onClick={handleImportButton} style={secondaryButtonStyle}>Import JSON</button>
             <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
+            <button type="button" onClick={handleClearAll} style={dangerButtonStyle}>Clear All</button>
           </div>
           <div style={mutedTextStyle}>
             Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
           </div>
         </div>
+
+        {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
+          <div style={sectionStyle}>
+            <div style={sectionTitleStyle}>Cloud</div>
+            <div style={buttonRowStyle}>
+              {cloudEnabled && (
+                <button
+                  type="button"
+                  onClick={() => void handleStartPublish()}
+                  style={primaryButtonStyle}
+                  disabled={
+                    publishStatus.kind === 'capturing'
+                    || publishStatus.kind === 'preview'
+                    || publishStatus.kind === 'publishing'
+                    || mode !== 'edit'
+                  }
+                >
+                  {publishStatus.kind === 'capturing' ? 'Capturing…' : 'Publish to Cloud'}
+                </button>
+              )}
+              <button type="button" onClick={handleOpenGallery} style={secondaryButtonStyle}>
+                Browse Gallery
+              </button>
+            </div>
+            {cloudLoadStatus.kind === 'loading' && (
+              <div style={mutedTextStyle}>Loading published world {cloudLoadStatus.id}…</div>
+            )}
+            {cloudLoadStatus.kind === 'loaded' && (
+              <div style={mutedTextStyle}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
+            )}
+            {cloudLoadStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Failed to load published world: {cloudLoadStatus.message}
+              </div>
+            )}
+            {publishStatus.kind === 'idle' && cloudEnabled && (
+              <div style={mutedTextStyle}>
+                Publishing captures a screenshot and uploads the current world (gzipped) to Cloudflare R2. Published worlds appear in the gallery.
+              </div>
+            )}
+            {publishStatus.kind === 'success' && (
+              <div style={mutedTextStyle}>
+                Published as <code>{publishStatus.id}</code>.{' '}
+                {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
+                <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
+              </div>
+            )}
+            {publishStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Publish failed: {publishStatus.message}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>Undo / Redo</div>
@@ -840,6 +1015,35 @@ export function GodModePage() {
             <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
             <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
           </div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={commitMessageDraft}
+              onChange={(e) => setCommitMessageDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
+              placeholder="Commit message..."
+              style={{ flex: 1, padding: '5px 8px', fontSize: 12, background: 'rgba(20, 34, 48, 0.96)', color: '#eef7ff', border: '1px solid rgba(167, 208, 237, 0.18)', borderRadius: 8, fontFamily: 'inherit' }}
+            />
+            <button type="button" onClick={handleHumanCommit} style={secondaryButtonStyle} disabled={!commitMessageDraft.trim()}>Commit</button>
+          </div>
+          {editHistory.undoStack.length > 0 && (
+            <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+              {editHistory.undoStack.map((entry) => (
+                <div key={entry.commitId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', borderRadius: 6, background: 'rgba(0,0,0,0.18)' }}>
+                  <code style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(134,214,245,0.7)', flexShrink: 0 }}>{entry.commitId}</code>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(238,247,255,0.82)' }}>{entry.commitMessage}</span>
+                  <span style={{
+                    fontSize: 9,
+                    padding: '1px 5px',
+                    borderRadius: 4,
+                    flexShrink: 0,
+                    background: entry.source === 'ai' ? 'rgba(116,212,255,0.2)' : entry.source === 'rollback' ? 'rgba(255,200,100,0.2)' : 'rgba(255,255,255,0.08)',
+                    color: entry.source === 'ai' ? '#bae8ff' : entry.source === 'rollback' ? '#ffe0a0' : 'rgba(238,247,255,0.5)',
+                  }}>{entry.source}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div style={mutedTextStyle}>
             Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>
@@ -860,6 +1064,22 @@ export function GodModePage() {
                     <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
                     <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
                     <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
+                    {customStencils.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          setTerrainToolMode(`custom:${s.id}`);
+                          if (!customStencilParams[s.id]) {
+                            setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
+                          }
+                        }}
+                        style={terrainToolMode === `custom:${s.id}` ? activeButtonStyle : secondaryButtonStyle}
+                        title={s.description}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
                   </div>
                   {terrainToolMode === 'sculpt' ? (
                     <>
@@ -991,11 +1211,20 @@ export function GodModePage() {
                     <div style={mutedTextStyle}>
                       Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
                     </div>
-                  ) : (
+                  ) : terrainToolMode === 'delete-tile' ? (
                     <div style={mutedTextStyle}>
                       Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
                     </div>
-                  )}
+                  ) : activeCustomStencil ? (
+                    <CustomStencilPanel
+                      stencil={activeCustomStencil}
+                      params={activeCustomParams}
+                      onChange={(nextParams) => {
+                        if (!activeCustomStencilId) return;
+                        setCustomStencilParams((prev) => ({ ...prev, [activeCustomStencilId]: nextParams }));
+                      }}
+                    />
+                  ) : null}
                 </div>
               )}
             </div>
@@ -1114,7 +1343,148 @@ export function GodModePage() {
           </div>
         )}
         {editScene}
+        {(publishStatus.kind === 'preview' || publishStatus.kind === 'publishing' || publishStatus.kind === 'capturing') && (
+          <PublishPreviewOverlay
+            status={publishStatus}
+            onConfirm={() => void handleConfirmPublish()}
+            onRetake={() => void handleRetakeScreenshot()}
+            onCancel={handleCancelPublish}
+          />
+        )}
       </main>
+
+      <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+    </div>
+  );
+}
+
+type PublishPreviewOverlayStatus =
+  | { kind: 'capturing' }
+  | { kind: 'preview'; dataUrl: string; blob: Blob }
+  | { kind: 'publishing'; dataUrl: string };
+
+function PublishPreviewOverlay({
+  status,
+  onConfirm,
+  onRetake,
+  onCancel,
+}: {
+  status: PublishPreviewOverlayStatus;
+  onConfirm: () => void;
+  onRetake: () => void;
+  onCancel: () => void;
+}) {
+  const busy = status.kind === 'capturing' || status.kind === 'publishing';
+  const dataUrl = status.kind === 'preview' || status.kind === 'publishing' ? status.dataUrl : null;
+  const sizeBytes = status.kind === 'preview' ? status.blob.size : null;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 20,
+        right: 20,
+        width: 360,
+        padding: 18,
+        borderRadius: 18,
+        background: 'rgba(6, 12, 20, 0.94)',
+        border: '1px solid rgba(110, 190, 255, 0.3)',
+        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+        color: '#edf6ff',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        zIndex: 40,
+      }}
+    >
+      <div style={{ fontSize: 12, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#87d6ff' }}>
+        Publish preview
+      </div>
+      <div
+        style={{
+          width: '100%',
+          aspectRatio: '16 / 9',
+          borderRadius: 10,
+          overflow: 'hidden',
+          background: '#04070d',
+          border: '1px solid rgba(145, 198, 255, 0.18)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {dataUrl ? (
+          <img
+            src={dataUrl}
+            alt="Screenshot preview"
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <div style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.62)' }}>Capturing…</div>
+        )}
+      </div>
+      <div style={{ fontSize: 13, lineHeight: 1.5, color: 'rgba(237, 246, 255, 0.78)' }}>
+        Orient the view behind this panel and click Retake to capture a different angle. Hit Publish when you're happy with it.
+        {sizeBytes != null && (
+          <div style={{ marginTop: 4, fontSize: 12, color: 'rgba(237, 246, 255, 0.55)' }}>
+            Screenshot {(sizeBytes / 1024).toFixed(1)} KB
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy || status.kind !== 'preview'}
+          style={{
+            flex: '1 1 120px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: 'none',
+            background: 'linear-gradient(180deg, #4cd1ff 0%, #2f8bd6 100%)',
+            color: '#04121f',
+            fontWeight: 600,
+            fontSize: 14,
+            cursor: busy ? 'wait' : 'pointer',
+            opacity: status.kind === 'preview' ? 1 : 0.7,
+          }}
+        >
+          {status.kind === 'publishing' ? 'Publishing…' : 'Publish'}
+        </button>
+        <button
+          type="button"
+          onClick={onRetake}
+          disabled={busy}
+          style={{
+            flex: '1 1 100px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: '1px solid rgba(145, 198, 255, 0.3)',
+            background: 'transparent',
+            color: '#cfe7ff',
+            fontSize: 13,
+            cursor: busy ? 'wait' : 'pointer',
+          }}
+        >
+          Retake
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={status.kind === 'publishing'}
+          style={{
+            flex: '1 1 90px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: '1px solid rgba(255, 180, 166, 0.3)',
+            background: 'transparent',
+            color: '#ffb4a6',
+            fontSize: 13,
+            cursor: status.kind === 'publishing' ? 'not-allowed' : 'pointer',
+          }}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -1154,6 +1524,10 @@ function GodModeEditorScene({
   onAddTile,
   onDeleteTile,
   onApplyRamp,
+  activeCustomStencil,
+  activeCustomParams,
+  onApplyCustomStencil,
+  onCanvasReady,
 }: {
   world: WorldDocument;
   tool: EditorTool;
@@ -1189,6 +1563,10 @@ function GodModeEditorScene({
   onAddTile: (tileX: number, tileZ: number) => void;
   onDeleteTile: (tileX: number, tileZ: number) => void;
   onApplyRamp: (x: number, z: number) => void;
+  activeCustomStencil: CustomStencilDefinition | null;
+  activeCustomParams: Record<string, unknown>;
+  onApplyCustomStencil: (x: number, z: number) => void;
+  onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
@@ -1215,7 +1593,7 @@ function GodModeEditorScene({
     if (brushCursorRef.current) {
       brushCursorRef.current.position.set(event.point.x, event.point.y + 0.06, event.point.z);
     }
-    if (terrainToolMode === 'ramp') {
+    if (terrainToolMode === 'ramp' || terrainToolMode.startsWith('custom:')) {
       setTerrainPointerPoint(nextPoint);
     }
     if (terrainToolMode === 'delete-tile') {
@@ -1246,6 +1624,13 @@ function GodModeEditorScene({
       onApplyRamp(event.point.x, event.point.z);
       return;
     }
+    if (tool === 'terrain' && terrainToolMode.startsWith('custom:')) {
+      onTerrainEditStart();
+      setIsRampApplying(true);
+      setTerrainPointerPoint(nextPoint);
+      onApplyCustomStencil(event.point.x, event.point.z);
+      return;
+    }
     if (tool === 'terrain' && terrainToolMode === 'delete-tile' && typeof tileX === 'number' && typeof tileZ === 'number') {
       setHoveredTerrainTile({ tileX, tileZ });
       onDeleteTile(tileX, tileZ);
@@ -1253,7 +1638,7 @@ function GodModeEditorScene({
       return;
     }
     onSelect(null);
-  }, [onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
+  }, [onApplyCustomStencil, onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     const wasEditing = paintingRef.current || isRampApplying;
@@ -1373,10 +1758,14 @@ function GodModeEditorScene({
       }
       if (terrainToolMode === 'ramp' && isRampApplying) {
         onApplyRamp(point[0], point[2]);
+        return;
+      }
+      if (terrainToolMode.startsWith('custom:') && isRampApplying) {
+        onApplyCustomStencil(point[0], point[2]);
       }
     }, 80);
     return () => window.clearInterval(interval);
-  }, [isRampApplying, onApplyRamp, onPaint, terrainToolMode, tool]);
+  }, [isRampApplying, onApplyCustomStencil, onApplyRamp, onPaint, terrainToolMode, tool]);
 
   const hoveredTerrainTileCenter = useMemo(() => {
     if (!hoveredTerrainTile) {
@@ -1398,6 +1787,7 @@ function GodModeEditorScene({
     <Canvas
       shadows
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
+      gl={{ preserveDrawingBuffer: true, antialias: true }}
       style={{ width: '100%', height: '100%' }}
       onPointerUp={handleTerrainPointerUp}
       onPointerMissed={() => {
@@ -1412,6 +1802,7 @@ function GodModeEditorScene({
         }
       }}
     >
+      {onCanvasReady && <CanvasDomBinder onReady={onCanvasReady} />}
       <ambientLight intensity={0.55} />
       <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
       <Sky sunPosition={[24, 12, 8]} />
@@ -1479,6 +1870,15 @@ function GodModeEditorScene({
           sideFalloffM={rampSideFalloff}
           startFalloffM={rampStartFalloff}
           endFalloffM={rampEndFalloff}
+        />
+      )}
+      {tool === 'terrain' && activeCustomStencil && terrainPointerPoint && (
+        <CustomStencilPreview
+          world={world}
+          stencilDef={activeCustomStencil}
+          params={activeCustomParams}
+          centerX={terrainPointerPoint[0]}
+          centerZ={terrainPointerPoint[2]}
         />
       )}
       <group>
@@ -1556,6 +1956,20 @@ function GodModeEditorScene({
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
     </Canvas>
   );
+}
+
+// Exposes the underlying R3F canvas (via useThree) to the outer component so
+// we can grab pixel data for screenshots. Must live inside the <Canvas>.
+function CanvasDomBinder({ onReady }: { onReady: (canvas: HTMLCanvasElement | null) => void }) {
+  const gl = useThree((state) => state.gl);
+  useEffect(() => {
+    const canvas = gl?.domElement ?? null;
+    onReady(canvas);
+    return () => {
+      onReady(null);
+    };
+  }, [gl, onReady]);
+  return null;
 }
 
 function FloatingTileActionButton({
@@ -1781,19 +2195,22 @@ function RampStencilPreview({
   return (
     <group position={[centerX, 0, centerZ]} rotation-y={yawRad}>
       <mesh
-        position={[0, Math.min(lowHeight, highHeight) + 0.02, outerCenterOffsetZ]}
+        position={[0, (mode === 'lower' ? Math.max(lowHeight, highHeight) : Math.min(lowHeight, highHeight)) + 0.02, outerCenterOffsetZ]}
         rotation-x={-Math.PI / 2}
         raycast={ignorePointerRaycast}
         renderOrder={1}
       >
         <planeGeometry args={[outerWidth, outerLength]} />
-        <meshBasicMaterial color={mode === 'raise' ? 0x4ca5ff : 0xffb25c} transparent opacity={0.08 + rampStrength * 0.1} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the footprint indicator shows through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x4ca5ff : 0xffb25c} transparent opacity={0.08 + rampStrength * 0.1} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <mesh geometry={volumeGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
-        <meshBasicMaterial color={mode === 'raise' ? 0x3f8ee8 : 0xe2a145} transparent opacity={0.16 + rampStrength * 0.12} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the volume walls are visible through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x3f8ee8 : 0xe2a145} transparent opacity={0.16 + rampStrength * 0.12} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <mesh geometry={coreGeometry} raycast={ignorePointerRaycast} renderOrder={2}>
-        <meshBasicMaterial color={mode === 'raise' ? 0x75c8ff : 0xffc977} transparent opacity={0.25 + rampStrength * 0.2} side={THREE.DoubleSide} depthWrite={false} />
+        {/* depthTest={false} in lower mode so the ramp surface is visible through terrain */}
+        <meshBasicMaterial color={mode === 'raise' ? 0x75c8ff : 0xffc977} transparent opacity={0.25 + rampStrength * 0.2} side={THREE.DoubleSide} depthWrite={false} depthTest={mode === 'raise'} />
       </mesh>
       <lineSegments geometry={guideGeometry} raycast={ignorePointerRaycast} renderOrder={4}>
         <lineBasicMaterial color={mode === 'raise' ? 0xe7f5ff : 0xfff0d2} transparent opacity={0.9} />
@@ -1925,7 +2342,7 @@ function slugify(value: string): string {
 
 const pageStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '340px minmax(0, 1fr)',
+  gridTemplateColumns: '340px minmax(0, 1fr) 380px',
   height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
@@ -1975,6 +2392,7 @@ const titleStyle: CSSProperties = {
   margin: '10px 0 8px',
   fontSize: 42,
   lineHeight: 1,
+  fontWeight: 700,
 };
 
 const bodyStyle: CSSProperties = {

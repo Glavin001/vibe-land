@@ -29,6 +29,7 @@ Or step by step:
 
 ```bash
 cp .env.example .env   # edit WT_HOST, cert paths, ports as needed
+                       # set WT_PUBLIC_URL when the public WebTransport URL differs from WT_BIND_ADDR
                        # set VITE_MULTIPLAYER_HTTP_ORIGIN only when the SPA points at a different multiplayer origin
 
 # Preferred local shared-WASM rebuild. This also regenerates
@@ -54,6 +55,7 @@ make server
 
 - Config is loaded from `.env` in the repo root.
 - Listens on TCP `SERVER_PORT` (default 4001) for WebSocket and UDP `WT_BIND_ADDR` (default 4002) for WebTransport.
+- `WT_PUBLIC_URL` optionally overrides the WebTransport URL advertised by `/session-config`; use it when the public host/port differs from the local bind address.
 - Health check: `curl http://localhost:4001/healthz`
 - Session config (WT URL + cert hash): `curl http://localhost:4001/session-config?match_id=default`
 
@@ -122,6 +124,128 @@ The client prefers WebTransport (QUIC/UDP) and falls back to WebSocket (TCP) aut
 Firewall requirements for WebTransport:
 - Open UDP `WT_BIND_ADDR` port (default **4002**) inbound — both UFW and any cloud-level firewall (e.g. Hetzner).
 - `ufw allow 4002/udp`
+
+### World publishing backends (filesystem or R2)
+
+The world builder at `/builder/world` can publish worlds to durable storage; published worlds appear in `/gallery` and can be played from the gallery via `/practice/shared/<id>`. The feature is gated on server-side env vars and is hidden when nothing is configured.
+
+Two backends are supported behind a single `WorldStorage` interface (`api/_lib/storage.ts`):
+
+| Backend | Env var(s) | When to use |
+| --- | --- | --- |
+| **Filesystem** (`api/_lib/fsStorage.ts`) | `WORLDS_STORAGE_DIR=/path/to/dir` | Local dev without docker, self-hosted installs with a persistent disk, cheapest path for single-machine deployments. Takes precedence when set. |
+| **R2 / any S3-compatible** (`api/_lib/r2Storage.ts`) | `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY` + `R2_BUCKET` (or `R2_ENDPOINT` to target MinIO/LocalStack) | Vercel deployments, multi-instance setups, Cloudflare R2 in production. |
+
+Both backends implement write-once semantics (the filesystem uses POSIX `O_EXCL`; R2 uses `IfNoneMatch: '*'`), gzip-compressed world payloads, and share the same on-disk key layout (`published/<id>.world.json` + `published/<id>.screenshot.jpg`). The filesystem backend adds a sidecar `published/<id>.meta.json` because the filesystem doesn't have an equivalent of S3 user metadata.
+
+#### R2 bucket CORS setup (required for presigned uploads)
+
+The publish flow uses presigned PUT URLs so the browser uploads directly to R2 — the bytes never touch the Vercel function. For this to work the R2 bucket **must** have a CORS policy that permits cross-origin `PUT` requests from the web app's origin. Without it the browser's preflight `OPTIONS` request fails and the upload is blocked.
+
+In the Cloudflare dashboard: **R2 → your bucket → Settings → CORS Policy → Add CORS policy**:
+
+```json
+[
+  {
+    "AllowedOrigins": ["*"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+| Field | Why |
+| --- | --- |
+| `AllowedOrigins: ["*"]` | Vercel preview URLs change per branch. Wildcard is easiest; restrict to `https://*.vercel.app` or your production domain for tighter control. |
+| `AllowedMethods` | `PUT` for the presigned uploads, `GET` for reading worlds/screenshots, `HEAD` for existence probes. |
+| `AllowedHeaders: ["*"]` | The presigned PUTs send custom headers (`x-amz-meta-*`, `Content-Encoding`, `If-None-Match`, `Cache-Control`). A wildcard covers them all. |
+| `MaxAgeSeconds: 3600` | Caches the preflight for 1 hour so the browser doesn't re-send `OPTIONS` on every upload. |
+
+Note: MinIO in local dev doesn't enforce CORS because the e2e test uses Node's `fetch()` (no preflight). CORS is a browser-only concern and only matters on deployed R2 buckets.
+
+#### CDN reads via `R2_PUBLIC_URL`
+
+By default every read (world JSON, screenshot) goes through the Vercel function. Set `R2_PUBLIC_URL` to a public CDN domain that maps 1:1 to the R2 bucket key space and the client will bypass the function entirely for reads:
+
+```env
+R2_PUBLIC_URL=https://vibe-land-worlds.example.com
+```
+
+The client resolves world JSON at `${R2_PUBLIC_URL}/published/<id>.world.json` and screenshots at `${R2_PUBLIC_URL}/published/<id>.screenshot.jpg`. This removes all read traffic from the serverless functions, leverages Cloudflare edge caching, and works around potential Vercel routing conflicts between the SPA rewrite and the dynamic `[id]` function path.
+
+The `/api/worlds/config` endpoint exposes `publicUrl` so every client page (gallery, shared practice, builder) can discover it at runtime without hard-coding the domain. When `R2_PUBLIC_URL` is unset, `publicUrl` is null and the client falls back to the function endpoints as before.
+
+Endpoints (Vercel serverless functions in `/api`):
+
+- `GET  /api/worlds/config` → `{ enabled, storage }` — storage is `'r2'` or `'local'`
+- `POST /api/worlds/publish` → reserves a fresh UUID, HEAD-probes for collisions, returns two **upload URLs** (one for the gzipped world JSON, one for the screenshot JPEG) along with the exact headers the client must send. For R2 these are presigned PUT URLs that expire in 60 s and include signed `Content-Length` + `If-None-Match: *` + metadata headers. For the filesystem backend they point at `/api/worlds/<id>/upload?target=world|screenshot` on the same function.
+- `PUT  /api/worlds/<id>/upload?target=world|screenshot` → filesystem-only direct upload target; R2 never routes through this handler. Enforces the reservation and the exact reserved content length.
+- `GET  /api/worlds` → ListObjectsV2 + per-item HeadObject (decodes base64 metadata)
+- `GET  /api/worlds/<id>` → fetches and decompresses
+- `GET  /api/worlds/<id>/screenshot` → streams the JPEG. `POST` has been removed — screenshots are uploaded via the URL returned from `POST /api/worlds/publish`.
+
+#### Publish protocol
+
+Two phases so the world + screenshot bytes can bypass the serverless function when running against R2:
+
+1. Client computes both blob sizes, POSTs `{ name, description, version, worldContentLength, screenshotContentLength }` to `/api/worlds/publish`.
+2. Server verifies neither the world nor the screenshot key already exists, generates a UUID, presigns two PUT URLs (R2) or writes a reservation sidecar file (filesystem), and responds with both URLs + their required header maps.
+3. Client PUTs both blobs to the returned URLs in parallel. For R2 the bytes go directly from the browser to R2 — the function is entirely off the write path. The 60-second URL expiry limits leakage if a URL escapes the browser; `If-None-Match: '*'` + signed `Content-Length` prevent overwrites and size games.
+4. If either upload fails the whole publish fails; a retry just allocates a new id.
+
+The filesystem backend keeps the same client contract but streams the bodies through the function because there's no way to mint a presigned URL to a local directory. It reserves the id by writing a short-lived `.reservation.json` sidecar that the direct-upload endpoint checks before accepting bytes.
+
+The R2 client lives in `api/_lib/r2.ts` and supports any S3-compatible backend via `R2_ENDPOINT`. With a custom endpoint set, path-style addressing is enabled automatically so `localhost` works without wildcard DNS.
+
+#### End-to-end smoke test (`npm run r2:test`)
+
+One script at `scripts/test-r2-e2e.mts` exercises the full publishing pipeline against either backend. It boots an in-process `http.Server`, routes to the real `api/worlds/*.ts` handlers, and runs the 23-check suite (publish / list / get / screenshot upload / screenshot get / 404 on missing world / config backend-kind check). It picks the backend automatically:
+
+```bash
+# Filesystem backend — no external services, just a writable directory.
+WORLDS_STORAGE_DIR=/tmp/vibe-land-worlds npm run r2:test
+
+# R2 backend via MinIO — starts a local S3-compatible server first.
+npm run r2:up
+npm run r2:test
+```
+
+#### Local MinIO via docker-compose
+
+`docker-compose.yml` at the repo root brings up MinIO + a one-shot bucket-init container. The compose file uses **`network_mode: host`** for both services so it works on Docker daemons without iptables/bridge NAT (e.g. sandboxes).
+
+```bash
+npm run r2:up      # boot MinIO on :9000 (S3) and :9001 (web console)
+npm run r2:logs    # tail minio logs
+npm run r2:down    # stop, keep data
+npm run r2:reset   # stop and wipe the named volume
+```
+
+Then add the MinIO block from `.env.example` to a `.env.local` at the repo root and either run `vercel dev` or run the e2e test above.
+
+##### Booting Docker on a sandbox without root systemd
+
+Some environments (e.g. CI sandboxes) ship the Docker binaries but no daemon. To get a working `dockerd` for the compose stack:
+
+```bash
+# Terminal 1 (run in background)
+sudo dockerd --storage-driver=vfs --iptables=false > /tmp/dockerd.log 2>&1 &
+
+# Terminal 2 — open the socket for the unprivileged shell, then verify
+sudo chmod 666 /var/run/docker.sock
+docker info     # should show "Storage Driver: vfs"
+```
+
+The `--iptables=false` flag is important because most sandboxes can't manage netfilter rules. The compose file is configured to use host networking precisely so the resulting daemon (which has no working bridge NAT or embedded DNS) still routes container-to-container traffic via `localhost`.
+
+DNS / reverse proxy requirements:
+- Normal Cloudflare orange-cloud proxying does not work for this origin WebTransport setup. Use a `DNS only` record for the hostname returned by `/session-config`.
+- Cloudflare's proxied HTTPS port list is not enough here; the browser still needs direct QUIC/UDP reachability to the origin.
+- The simplest production layout is: website on whatever host you want, WebTransport advertised explicitly via `WT_PUBLIC_URL=https://your-host:4002`.
+- Using UDP `443` is valid, but if `TCP 443` is served by a different process or reverse proxy, an explicit WebTransport port such as `4002` is easier to reason about and debug.
+- The certificate loaded by `WT_CERT_PEM` / `WT_KEY_PEM` must be valid for the hostname advertised in `WT_PUBLIC_URL`.
 
 ### Non-obvious notes
 

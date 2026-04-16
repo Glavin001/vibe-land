@@ -25,6 +25,7 @@ type GameSceneProps = {
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   localRenderSmoothingEnabled?: boolean;
+  vehicleSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
 };
 
@@ -46,6 +47,7 @@ export function GameScene({
   worldDocument,
   benchmarkAutopilot,
   localRenderSmoothingEnabled = true,
+  vehicleSmoothingEnabled = false,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -54,6 +56,7 @@ export function GameScene({
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
+      data-testid="game-canvas"
       onPointerDown={(e) => {
         if (touchMode) return;
         (e.target as HTMLCanvasElement).requestPointerLock();
@@ -81,6 +84,7 @@ export function GameScene({
           rapierDebugModeBits={rapierDebugModeBits}
           benchmarkAutopilot={benchmarkAutopilot}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+          vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}
         />
       </Suspense>

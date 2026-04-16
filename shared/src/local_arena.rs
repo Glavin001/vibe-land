@@ -11,7 +11,10 @@ use crate::destructibles::{pose_from_world_doc, DestructibleRegistry};
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
-use crate::vehicle::{create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter};
+use crate::vehicle::{
+    create_vehicle_physics, reset_vehicle_body, vehicle_suspension_filter,
+    VEHICLE_CONTROLLER_SUBSTEPS,
+};
 use crate::world_document::DestructibleKind;
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -527,6 +530,16 @@ impl PhysicsArena {
         0
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        self.destructibles.chunk_transforms_slice()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        &[]
+    }
+
     pub fn step_vehicles(&mut self, dt: f32) {
         if self.vehicles.is_empty() {
             return;
@@ -597,6 +610,29 @@ impl PhysicsArena {
             );
             vehicle.controller.update_vehicle(dt, queries);
         }
+    }
+
+    pub fn step_vehicles_and_dynamics(&mut self, dt: f32) -> (f32, f32) {
+        if self.vehicles.is_empty() {
+            let dynamics_started = now_marker();
+            self.step_dynamics(dt);
+            return (0.0, elapsed_ms(dynamics_started));
+        }
+
+        let substep_dt = dt / VEHICLE_CONTROLLER_SUBSTEPS as f32;
+        let mut vehicle_ms = 0.0;
+        let mut dynamics_ms = 0.0;
+        for _ in 0..VEHICLE_CONTROLLER_SUBSTEPS {
+            let vehicle_started = now_marker();
+            self.step_vehicles(substep_dt);
+            vehicle_ms += elapsed_ms(vehicle_started);
+
+            let dynamics_started = now_marker();
+            self.step_dynamics(substep_dt);
+            dynamics_ms += elapsed_ms(dynamics_started);
+        }
+        self.dynamic.sim.integration_parameters.dt = dt;
+        (vehicle_ms, dynamics_ms)
     }
 
     pub fn enter_vehicle(&mut self, player_id: u32, vehicle_id: u32) {

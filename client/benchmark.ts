@@ -45,6 +45,35 @@ type PlayWorkerStatePayload = {
   result?: PlayWorkerResult | null;
 };
 
+type VehiclePlayThreshold = {
+  warn: number;
+  fail: number;
+};
+
+const VEHICLE_PLAY_THRESHOLDS = {
+  benchmarkSamples: { warn: 8, fail: 1 },
+  maxSpeedMs: { warn: 8, fail: 4 },
+  currentAuthDeltaM: { warn: 0.10, fail: 0.20 },
+  meshCurrentAuthDeltaM: { warn: 0.08, fail: 0.15 },
+  unexplainedAuthDeltaM: { warn: 0.20, fail: 0.35 },
+  restJitterRms5sM: { warn: 0.02, fail: 0.03 },
+  straightJitterRms5sM: { warn: 0.05, fail: 0.08 },
+  rawHeaveDeltaRms5sM: { warn: 0.02, fail: 0.03 },
+  rawPitchDeltaRms5sRad: { warn: 0.02, fail: 0.04 },
+  rawRollDeltaRms5sRad: { warn: 0.02, fail: 0.04 },
+  residualPlanarDeltaRms5sM: { warn: 0.08, fail: 0.14 },
+  residualHeaveDeltaRms5sM: { warn: 0.05, fail: 0.09 },
+  residualYawDeltaRms5sRad: { warn: 0.02, fail: 0.04 },
+  wheelContactBitChanges5s: { warn: 10, fail: 16 },
+  groundedTransitions5s: { warn: 8, fail: 12 },
+  suspensionLengthDeltaRms5sM: { warn: 0.02, fail: 0.04 },
+  suspensionForceDeltaRms5sN: { warn: 2500, fail: 5000 },
+  wheelContactNormalDeltaRms5sRad: { warn: 0.04, fail: 0.08 },
+  wheelGroundObjectSwitches5s: { warn: 1, fail: 3 },
+  ackBacklogMs: { warn: 100, fail: 150 },
+  vehiclePendingInputs: { warn: 6, fail: 8 },
+} as const satisfies Record<string, VehiclePlayThreshold>;
+
 function isPlayWorkerResult(value: unknown): value is PlayWorkerResult {
   if (!value || typeof value !== 'object') {
     return false;
@@ -439,6 +468,234 @@ function invalidBenchmark(message: string): string {
   return `Invalid benchmark: ${message}`;
 }
 
+function pushVehicleMetricAnomaly(
+  anomalies: string[],
+  clientLabel: string,
+  metric: string,
+  actual: number,
+  threshold: VehiclePlayThreshold,
+  unit: string,
+): void {
+  if (!Number.isFinite(actual)) {
+    anomalies.push(invalidBenchmark(`${clientLabel} missing ${metric}`));
+    return;
+  }
+  if (actual > threshold.fail) {
+    anomalies.push(invalidBenchmark(
+      `${clientLabel} ${metric}=${actual.toFixed(3)}${unit} exceeded fail threshold ${threshold.fail.toFixed(3)}${unit}`,
+    ));
+  } else if (actual > threshold.warn) {
+    anomalies.push(
+      `${clientLabel} ${metric}=${actual.toFixed(3)}${unit} exceeded warn threshold ${threshold.warn.toFixed(3)}${unit}`,
+    );
+  }
+}
+
+function pushVehicleLowerMetricAnomaly(
+  anomalies: string[],
+  clientLabel: string,
+  metric: string,
+  actual: number,
+  threshold: VehiclePlayThreshold,
+  unit: string,
+): void {
+  if (!Number.isFinite(actual)) {
+    anomalies.push(invalidBenchmark(`${clientLabel} ${metric} was not finite`));
+    return;
+  }
+  if (actual < threshold.fail) {
+    anomalies.push(invalidBenchmark(
+      `${clientLabel} ${metric}=${actual.toFixed(3)}${unit} was below fail threshold ${threshold.fail.toFixed(3)}${unit}`,
+    ));
+  } else if (actual < threshold.warn) {
+    anomalies.push(
+      `${clientLabel} ${metric}=${actual.toFixed(3)}${unit} was below warn threshold ${threshold.warn.toFixed(3)}${unit}`,
+    );
+  }
+}
+
+function collectVehiclePlayBenchmarkAnomalies(
+  scenario: BenchmarkScenarioSpec['scenario'],
+  playResults: PlayWorkerResult[],
+): string[] {
+  if (scenario.playBenchmark?.mode !== 'vehicle_driver') {
+    return [];
+  }
+
+  const anomalies: string[] = [];
+  for (const result of playResults) {
+    pushVehicleLowerMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_benchmark_samples',
+      result.vehicleBenchmarkSamples,
+      VEHICLE_PLAY_THRESHOLDS.benchmarkSamples,
+      '',
+    );
+    pushVehicleLowerMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_max_speed_ms',
+      result.vehicleMaxSpeedMs,
+      VEHICLE_PLAY_THRESHOLDS.maxSpeedMs,
+      'm/s',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_current_auth_delta_m',
+      result.vehicleCurrentAuthDeltaM,
+      VEHICLE_PLAY_THRESHOLDS.currentAuthDeltaM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_mesh_current_auth_delta_m',
+      result.vehicleMeshCurrentAuthDeltaM,
+      VEHICLE_PLAY_THRESHOLDS.meshCurrentAuthDeltaM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_current_auth_unexplained_delta_m',
+      result.vehicleCurrentAuthUnexplainedDeltaM,
+      VEHICLE_PLAY_THRESHOLDS.unexplainedAuthDeltaM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_rest_jitter_rms_5s_m',
+      result.vehicleRestJitterRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.restJitterRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_straight_jitter_rms_5s_m',
+      result.vehicleStraightJitterRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.straightJitterRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_raw_heave_delta_rms_5s_m',
+      result.vehicleRawHeaveDeltaRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.rawHeaveDeltaRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_raw_pitch_delta_rms_5s_rad',
+      result.vehicleRawPitchDeltaRms5sRad,
+      VEHICLE_PLAY_THRESHOLDS.rawPitchDeltaRms5sRad,
+      'rad',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_raw_roll_delta_rms_5s_rad',
+      result.vehicleRawRollDeltaRms5sRad,
+      VEHICLE_PLAY_THRESHOLDS.rawRollDeltaRms5sRad,
+      'rad',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_residual_planar_delta_rms_5s_m',
+      result.vehicleResidualPlanarDeltaRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.residualPlanarDeltaRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_residual_heave_delta_rms_5s_m',
+      result.vehicleResidualHeaveDeltaRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.residualHeaveDeltaRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_residual_yaw_delta_rms_5s_rad',
+      result.vehicleResidualYawDeltaRms5sRad,
+      VEHICLE_PLAY_THRESHOLDS.residualYawDeltaRms5sRad,
+      'rad',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_wheel_contact_bit_changes_5s',
+      result.vehicleWheelContactBitChanges5s,
+      VEHICLE_PLAY_THRESHOLDS.wheelContactBitChanges5s,
+      '',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_grounded_transitions_5s',
+      result.vehicleGroundedTransitions5s,
+      VEHICLE_PLAY_THRESHOLDS.groundedTransitions5s,
+      '',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_suspension_length_delta_rms_5s_m',
+      result.vehicleSuspensionLengthDeltaRms5sM,
+      VEHICLE_PLAY_THRESHOLDS.suspensionLengthDeltaRms5sM,
+      'm',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_suspension_force_delta_rms_5s_n',
+      result.vehicleSuspensionForceDeltaRms5sN,
+      VEHICLE_PLAY_THRESHOLDS.suspensionForceDeltaRms5sN,
+      'N',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_wheel_contact_normal_delta_rms_5s_rad',
+      result.vehicleWheelContactNormalDeltaRms5sRad,
+      VEHICLE_PLAY_THRESHOLDS.wheelContactNormalDeltaRms5sRad,
+      'rad',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_wheel_ground_object_switches_5s',
+      result.vehicleWheelGroundObjectSwitches5s,
+      VEHICLE_PLAY_THRESHOLDS.wheelGroundObjectSwitches5s,
+      '',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_ack_backlog_ms',
+      result.vehicleAckBacklogMs,
+      VEHICLE_PLAY_THRESHOLDS.ackBacklogMs,
+      'ms',
+    );
+    pushVehicleMetricAnomaly(
+      anomalies,
+      result.clientLabel,
+      'vehicle_pending_inputs',
+      result.vehiclePendingInputs,
+      VEHICLE_PLAY_THRESHOLDS.vehiclePendingInputs,
+      '',
+    );
+  }
+  return anomalies;
+}
+
 async function writeScenarioArtifact(outputDir: string, generatedAt: string, result: BenchmarkScenarioResult): Promise<void> {
   const filename = `${generatedAt.replace(/[:.]/g, '-')}-${result.scenarioName}.json`;
   await writeFile(path.join(outputDir, filename), `${JSON.stringify(result, null, 2)}\n`, 'utf8');
@@ -462,22 +719,30 @@ function pickMedianScenarioResult(results: BenchmarkScenarioResult[]): Benchmark
 }
 
 async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEnvironmentInfo, headless: boolean): Promise<BenchmarkScenarioResult> {
+  const isolatedMatchId = `${spec.scenario.matchId}__run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const runSpec: BenchmarkScenarioSpec = {
+    ...spec,
+    scenario: {
+      ...spec.scenario,
+      matchId: isolatedMatchId,
+    },
+  };
   console.log(`\n=== benchmark: ${spec.name} ===`);
   console.log(
-    `match=${spec.scenario.matchId} play=${spec.playClients} bots=${spec.scenario.botCount} ws=${spec.scenario.transportMix.websocket} wt=${spec.scenario.transportMix.webtransport}`,
+    `match=${isolatedMatchId} play=${spec.playClients} bots=${spec.scenario.botCount} ws=${spec.scenario.transportMix.websocket} wt=${spec.scenario.transportMix.webtransport}`,
   );
 
   const statsStream = new StatsStream(`ws://${environment.serverHost}/ws/stats`);
   await statsStream.connect();
 
   const wsPromise = runWebSocketWorker({
-    scenario: spec.scenario,
+    scenario: runSpec.scenario,
     serverHost: environment.serverHost,
     token: process.env.TOKEN ?? 'mvp-token',
     onStatus: (line) => console.log(`  ${line}`),
   });
-  const playPromise = runPlayWorkers(spec, environment.clientUrl, headless);
-  const wtPromise = runWebTransportWorker(spec, environment.clientUrl, headless);
+  const playPromise = runPlayWorkers(runSpec, environment.clientUrl, headless);
+  const wtPromise = runWebTransportWorker(runSpec, environment.clientUrl, headless);
 
   console.log(`  warmup ${spec.warmupS}s, measure ${spec.measureS}s, cooldown ${spec.cooldownS}s`);
   await sleep(spec.warmupS * 1000);
@@ -497,9 +762,9 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
     ? wtOutcome.value
     : { result: null, consoleErrors: [], pageErrors: [], error: wtOutcome.reason instanceof Error ? wtOutcome.reason.message : String(wtOutcome.reason) };
 
-  const measuredSamples = statsStream.windowSamples(spec.scenario.matchId, measureStartMs, measureEndMs);
-  const measuredWindow = buildMeasuredWindow(spec.scenario.matchId, measuredSamples, statsStream.simHz(spec.scenario.matchId));
-  const serverBuildProfile = statsStream.serverBuildProfile(spec.scenario.matchId);
+  const measuredSamples = statsStream.windowSamples(runSpec.scenario.matchId, measureStartMs, measureEndMs);
+  const measuredWindow = buildMeasuredWindow(runSpec.scenario.matchId, measuredSamples, statsStream.simHz(runSpec.scenario.matchId));
+  const serverBuildProfile = statsStream.serverBuildProfile(runSpec.scenario.matchId);
   const requestedPlayers = spec.scenario.botCount + spec.playClients;
   const observedConnected = observedConnectedPlayers(measuredSamples);
 
@@ -508,6 +773,7 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
     ...playRun.results
       .filter((result) => result.disconnected)
       .map((result) => `${result.clientLabel} disconnected${result.disconnectReason ? `: ${result.disconnectReason}` : ''}`),
+    ...collectVehiclePlayBenchmarkAnomalies(runSpec.scenario, playRun.results),
     ...(wtRun.result?.errors ?? []),
   ];
   if (wsOutcome.status === 'rejected') {
@@ -561,7 +827,7 @@ async function runScenario(spec: BenchmarkScenarioSpec, environment: BenchmarkEn
   const result: BenchmarkScenarioResult = {
     scenarioName: spec.name,
     environment,
-    scenario: spec.scenario,
+    scenario: runSpec.scenario,
     measuredWindow,
     workers: {
       websocket: wsResult,

@@ -56,4 +56,22 @@ describe('loadtest scenario', () => {
     expect(scenario.behavior.fireDistanceM).toBeGreaterThan(0);
     expect(scenario.behavior.fireCooldownTicks).toBeGreaterThan(0);
   });
+
+  it('fills in default play benchmark fields and merges overrides', () => {
+    const defaultScenario = normalizeScenario({});
+    expect(defaultScenario.playBenchmark?.mode).toBe('on_foot');
+    expect(defaultScenario.playBenchmark?.worldPreset).toBe('default');
+    expect(defaultScenario.playBenchmark?.driverProfile).toBe('mixed');
+
+    const vehicleScenario = normalizeScenario({
+      playBenchmark: {
+        mode: 'vehicle_driver',
+        worldPreset: 'flat_vehicle_test',
+        driverProfile: 'straight_fast',
+      },
+    });
+    expect(vehicleScenario.playBenchmark?.mode).toBe('vehicle_driver');
+    expect(vehicleScenario.playBenchmark?.worldPreset).toBe('flat_vehicle_test');
+    expect(vehicleScenario.playBenchmark?.driverProfile).toBe('straight_fast');
+  });
 });

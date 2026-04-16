@@ -53,3 +53,15 @@ export const BLOCK_REMOVE = 2;
 // ── Shape types ─────────────────────────────────
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
+
+// ── Shared gameplay/runtime constants ───────────
+export const SIM_HZ = 60;
+export const SNAPSHOT_HZ_MULTIPLAYER = 30;
+export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
+export const MAX_PENDING_INPUTS = 120;
+export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+export const RIFLE_FIRE_INTERVAL_MS = 100;
+export const PLAYER_EYE_HEIGHT_M = 0.8;
+export const HITSCAN_MAX_DISTANCE_M = 1000.0;
+export const DYNAMIC_BODY_IMPULSE = 6.0;
+export const OUT_OF_BOUNDS_Y_M = -12.0;

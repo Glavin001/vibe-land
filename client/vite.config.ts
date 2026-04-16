@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../', '');
@@ -16,7 +17,7 @@ export default defineConfig(({ mode }) => {
     : undefined;
 
   return {
-    plugins: [react()],
+    plugins: [tailwindcss(), react()],
     envDir: '../',
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
@@ -41,6 +42,14 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       exclude: ['vibe-land-shared'],
+    },
+    test: {
+      // Only run unit tests inside src/ — keeps Playwright E2E specs (e2e/)
+      // out of vitest. E2E tests run separately via `npm run e2e`.
+      include: ['src/**/*.test.ts'],
+      // WASM physics tests run thousands of simulation steps and need extra
+      // headroom, especially on slow CI runners or with debug WASM builds.
+      testTimeout: 120_000,
     },
   };
 });
