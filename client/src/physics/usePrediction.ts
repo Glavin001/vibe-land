@@ -83,8 +83,8 @@ export function usePredictionWithWorld(
       // One-time diagnostic so you can verify from DevTools that the
       // Blast-enabled wasm is actually loaded and destructibles were
       // spawned by `loadWorldDocument`.  If instanceCount is 0 in
-      // practice, either the wasm is a stub build (missing
-      // `third_party/physx/`) or the dev server is serving a stale
+      // practice, either the wasm was built with
+      // `VIBE_NO_DESTRUCTIBLES=1` or the dev server is serving a stale
       // bundle — stop + restart `npm run dev` to trigger `predev`
       // → `build:wasm`.
       if (practiceMode) {

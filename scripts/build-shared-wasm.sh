@@ -2,16 +2,12 @@
 #
 # Build the `vibe-land-shared` wasm module for the browser.
 #
-# Auto-detects whether the real NVIDIA Blast stress solver clone is
-# available at `third_party/physx/.git`:
+# The `blast-stress-solver` crate is published on crates.io with
+# prebuilt wasm32 static libraries, so destructibles are always
+# available — no local PhysX clone or C++ toolchain required.
 #
-#   - If present: passes `--features destructibles` so the wasm
-#     bundle gets the real destructible structures backend.
-#   - If absent: builds the lean wasm bundle with the stub
-#     destructibles backend — the JS destructibles API on
-#     `WasmSimWorld` still exists but all calls are no-ops.
-#
-# See `docs/BLAST_INTEGRATION.md` for the full story.
+# Pass `VIBE_NO_DESTRUCTIBLES=1` to build without the destructibles
+# feature (e.g. for faster iteration when you don't need them).
 
 set -euo pipefail
 
@@ -20,14 +16,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SHARED_DIR="${REPO_ROOT}/shared"
 OUT_DIR="${REPO_ROOT}/client/src/wasm/pkg"
-PHYSX_GIT="${REPO_ROOT}/third_party/physx/.git"
 
 cd "${SHARED_DIR}"
 
-if [[ -e "${PHYSX_GIT}" ]]; then
-  echo "[build-shared-wasm] real PhysX clone detected — building WITH destructibles feature"
-  exec wasm-pack build --target web --out-dir "${OUT_DIR}" -- --features destructibles
-else
-  echo "[build-shared-wasm] no PhysX clone — building WITHOUT destructibles feature (stub backend)"
+if [[ "${VIBE_NO_DESTRUCTIBLES:-}" == "1" ]]; then
+  echo "[build-shared-wasm] VIBE_NO_DESTRUCTIBLES=1 — building WITHOUT destructibles feature"
   exec wasm-pack build --target web --out-dir "${OUT_DIR}"
+else
+  echo "[build-shared-wasm] building WITH destructibles feature (blast-stress-solver from crates.io)"
+  exec wasm-pack build --target web --out-dir "${OUT_DIR}" -- --features destructibles
 fi

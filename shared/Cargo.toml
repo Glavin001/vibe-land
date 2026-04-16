@@ -29,26 +29,24 @@ default = []
 simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
 
 # Enables the real NVIDIA Blast stress solver backend for destructible
-# structures in the wasm build.  Requires a local clone of
-# `Glavin001/PhysX` at `third_party/physx/` (see
-# `scripts/setup-blast.sh`) AND a wasi C++ toolchain.  When this feature
+# structures in the wasm build.  The `blast-stress-solver` crate is
+# published on crates.io with prebuilt wasm32 static libraries, so no
+# local PhysX clone or C++ toolchain is required.  When this feature
 # is OFF the wasm module still exposes the destructibles JS API, but
-# every call is a no-op — useful for CI environments (e.g. Vercel
-# preview) that cannot build the C++ backend.
+# every call is a no-op.
 destructibles = ["dep:blast-stress-solver"]
 
 # ─── Destructibles (Blast stress solver) ──────────────────────────────
 #
-# `blast-stress-solver` is an optional wasm-only dep.  Cargo still
-# needs a valid Cargo.toml at the path below during metadata
-# resolution, even when the `destructibles` feature is off — so
-# `scripts/ensure-blast-stub.sh` drops a tiny placeholder crate there
-# whenever `third_party/physx/` is missing (e.g. fresh clones, Vercel
-# preview).  On dev boxes `scripts/setup-blast.sh` clones the real
-# PhysX over the stub.  See `docs/BLAST_INTEGRATION.md` for the full
-# story.
+# `blast-stress-solver` is an optional wasm-only dep published on
+# crates.io.  The published crate ships prebuilt static libraries for
+# wasm32-unknown-unknown so no wasi C++ toolchain is needed — just
+# `wasm-pack build --features destructibles`.
+#
+# When the `destructibles` feature is OFF the wasm module still exposes
+# the destructibles JS API via a no-op stub backend.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
-blast-stress-solver = { path = "../third_party/physx/blast/blast-stress-solver-rs", default-features = false, features = ["scenarios", "rapier"], optional = true }
+blast-stress-solver = { version = "0.1.0", default-features = false, features = ["scenarios", "rapier"], optional = true }
