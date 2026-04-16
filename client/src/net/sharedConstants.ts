@@ -36,6 +36,7 @@ export const PKT_PONG = 111;
 export const PKT_SNAPSHOT_V2 = 112;
 export const PKT_PLAYER_ROSTER = 113;
 export const PKT_DYNAMIC_BODY_META = 114;
+export const PKT_ERROR = 120;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;

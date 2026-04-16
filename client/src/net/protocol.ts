@@ -19,6 +19,7 @@ import {
   PKT_DYNAMIC_BODY_META,
   PKT_PING,
   PKT_PONG,
+  PKT_ERROR,
   BTN_FORWARD,
   BTN_BACK,
   BTN_LEFT,
@@ -292,11 +293,13 @@ export type ServerReliablePacket =
   | PlayerRosterPacket
   | DynamicBodyMetaPacket
   | ServerPingPacket
-  | PongPacket;
+  | PongPacket
+  | ServerErrorPacket;
 export type ServerDatagramPacket = SnapshotPacket | SnapshotV2Packet;
 
 export type ServerPingPacket = { type: 'serverPing'; value: number };
 export type PongPacket = { type: 'pong'; value: number };
+export type ServerErrorPacket = { type: 'error'; errorCode: number; message: string };
 export type ServerWorldPacket = ChunkFullPacket | ChunkDiffPacket;
 export type ServerPacket =
   | WelcomePacket
@@ -308,7 +311,8 @@ export type ServerPacket =
   | PlayerRosterPacket
   | DynamicBodyMetaPacket
   | ServerPingPacket
-  | PongPacket;
+  | PongPacket
+  | ServerErrorPacket;
 
 export type InputCmd = InputFrame;
 
@@ -489,6 +493,13 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return { type: 'serverPing', value: view.getUint32(o, true) };
     case PKT_PONG:
       return { type: 'pong', value: view.getUint32(o, true) };
+    case PKT_ERROR: {
+      const errorCode = view.getUint16(o, true); o += 2;
+      const msgLen = view.getUint16(o, true); o += 2;
+      const msgBytes = bytes.subarray(o, o + msgLen);
+      const message = new TextDecoder().decode(msgBytes);
+      return { type: 'error', errorCode, message };
+    }
     default:
       throw new Error(`unknown reliable packet kind: ${kind}`);
   }

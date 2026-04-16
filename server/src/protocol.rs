@@ -6,6 +6,10 @@ pub use vibe_land_shared::constants::*;
 pub use vibe_land_shared::protocol::*;
 pub use vibe_land_shared::unit_conv::*;
 
+// ── Server-only constants ────────────
+
+pub const PKT_ERROR: u8 = 120;
+
 // ── Server-only types ───────────────────────────
 
 #[derive(Clone, Debug)]
@@ -763,6 +767,18 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         }
     }
     out.to_vec()
+}
+
+/// Encode a world-host error packet: `[PKT_ERROR, error_code_le16, msg_len_le16, utf8_msg...]`
+pub fn encode_world_host_error(error_code: u16, message: &str) -> Vec<u8> {
+    let msg_bytes = message.as_bytes();
+    let msg_len = msg_bytes.len().min(u16::MAX as usize) as u16;
+    let mut buf = Vec::with_capacity(1 + 2 + 2 + msg_len as usize);
+    buf.push(PKT_ERROR);
+    buf.extend_from_slice(&error_code.to_le_bytes());
+    buf.extend_from_slice(&msg_len.to_le_bytes());
+    buf.extend_from_slice(&msg_bytes[..msg_len as usize]);
+    buf
 }
 
 #[cfg(test)]

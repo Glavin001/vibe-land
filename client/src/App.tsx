@@ -35,6 +35,8 @@ import {
 type AppProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
+  /** Override the match ID for hosted worlds (e.g. "worldId:arenaId"). */
+  matchId?: string;
   overlay?: ReactNode;
   routeLabel?: string;
   autoConnect?: boolean;
@@ -94,6 +96,7 @@ function parseBenchmarkScenario(raw: string | null, matchId: string): LoadTestSc
 export function App({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
+  matchId,
   overlay,
   routeLabel,
   autoConnect = false,
@@ -685,6 +688,7 @@ export function App({
         <GameScene
           key={sessionKey}
           mode={mode}
+          matchId={matchId}
           worldDocument={effectiveWorldDocument}
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}

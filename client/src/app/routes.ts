@@ -4,6 +4,7 @@ export type AppRoute =
   | { kind: 'launcher' }
   | { kind: 'game'; mode: GameMode }
   | { kind: 'sharedPractice'; id: string }
+  | { kind: 'hostedWorld'; worldId: string; arenaId?: string }
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'builder'; page: 'world'; publishedId?: string }
@@ -18,11 +19,22 @@ function normalizePathname(pathname: string): string {
 }
 
 const SHARED_PRACTICE_PREFIX = '/practice/shared/';
+const HOSTED_WORLD_PREFIX = '/play/world/';
 
 export function resolveAppRoute(pathname: string, search?: string): AppRoute {
   const params = new URLSearchParams(search ?? '');
   const publishedId = params.get('published') ?? undefined;
   const normalized = normalizePathname(pathname);
+
+  if (normalized.startsWith(HOSTED_WORLD_PREFIX)) {
+    const rest = normalized.slice(HOSTED_WORLD_PREFIX.length);
+    const parts = rest.split('/');
+    const worldId = decodeURIComponent(parts[0] ?? '');
+    const arenaId = parts[1] ? decodeURIComponent(parts[1]) : undefined;
+    if (worldId) {
+      return { kind: 'hostedWorld', worldId, arenaId };
+    }
+  }
 
   if (normalized.startsWith(SHARED_PRACTICE_PREFIX)) {
     const rest = normalized.slice(SHARED_PRACTICE_PREFIX.length);

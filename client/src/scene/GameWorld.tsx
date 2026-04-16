@@ -169,6 +169,7 @@ type FrameDebugCallback = (
 type GameWorldProps = {
   mode: GameMode;
   worldDocument?: WorldDocument;
+  matchId?: string;
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
@@ -375,6 +376,7 @@ function resolvedInputFromBotIntent(
 export function GameWorld({
   mode,
   worldDocument = DEFAULT_WORLD_DOCUMENT,
+  matchId: explicitMatchId,
   onWelcome,
   onDisconnect,
   onAimStateChange,
@@ -429,6 +431,7 @@ export function GameWorld({
     prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
       prediction.reconcileVehicle(vs, ackInputSeq);
     } : undefined,
+    explicitMatchId,
   );
   const { camera, gl } = useThree();
 

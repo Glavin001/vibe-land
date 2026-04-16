@@ -6,6 +6,25 @@ import {
   type GalleryWorldSummary,
 } from '../world/worldsCloud';
 import { loadPublishedHistory, type PublishedHistoryEntry } from '../world/publishedHistory';
+import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+
+type ActiveWorldArena = {
+  arenaId: string;
+  playerCount: number;
+};
+
+type ActiveWorld = {
+  worldId: string;
+  worldName: string;
+  arenas: ActiveWorldArena[];
+};
+
+type ActiveWorldsResponse = {
+  worlds: ActiveWorld[];
+  defaultArenas: ActiveWorldArena[];
+  maxHostedArenas: number;
+  activeArenaCount: number;
+};
 
 const shellStyle: CSSProperties = {
   minHeight: '100%',
@@ -112,6 +131,43 @@ const mutedTextStyle: CSSProperties = {
   lineHeight: 1.6,
 };
 
+const onlineBadgeStyle: CSSProperties = {
+  display: 'inline-block',
+  padding: '3px 10px',
+  borderRadius: 999,
+  background: 'rgba(100, 200, 255, 0.18)',
+  border: '1px solid rgba(100, 200, 255, 0.35)',
+  color: '#9cd4ff',
+  fontSize: 11,
+  letterSpacing: '0.12em',
+  textTransform: 'uppercase',
+};
+
+const arenaDropdownStyle: CSSProperties = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  marginTop: 4,
+  minWidth: 180,
+  background: 'rgba(8, 14, 24, 0.96)',
+  border: '1px solid rgba(145, 198, 255, 0.22)',
+  borderRadius: 12,
+  padding: '6px 0',
+  zIndex: 10,
+  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+};
+
+const arenaDropdownItemStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 12,
+  padding: '8px 14px',
+  color: '#edf6ff',
+  textDecoration: 'none',
+  fontSize: 13,
+};
+
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'disabled' }
@@ -122,6 +178,24 @@ export function GalleryPage() {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
   const [history, setHistory] = useState<PublishedHistoryEntry[]>(() => loadPublishedHistory());
+  const [activeWorlds, setActiveWorlds] = useState<ActiveWorldsResponse | null>(null);
+
+  // Fetch active worlds from the game server (optional — fails silently).
+  useEffect(() => {
+    let cancelled = false;
+    try {
+      const backend = resolveMultiplayerBackend();
+      fetch(`${backend.httpOrigin}/active-worlds`)
+        .then((r) => r.json())
+        .then((data: ActiveWorldsResponse) => {
+          if (!cancelled) setActiveWorlds(data);
+        })
+        .catch(() => {});
+    } catch {
+      // resolveMultiplayerBackend may throw in edge cases
+    }
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     // Refresh whenever the page regains focus so a publish in another tab
@@ -247,7 +321,7 @@ export function GalleryPage() {
               }}
             >
               {ownedSummaries.map((world) => (
-                <GalleryCard key={`own-${world.id}`} world={world} owned publicUrl={publicUrl} />
+                <GalleryCard key={`own-${world.id}`} world={world} owned publicUrl={publicUrl} activeWorlds={activeWorlds} />
               ))}
             </div>
           </section>
@@ -269,7 +343,7 @@ export function GalleryPage() {
               }}
             >
               {communitySummaries.map((world) => (
-                <GalleryCard key={world.id} world={world} publicUrl={publicUrl} />
+                <GalleryCard key={world.id} world={world} publicUrl={publicUrl} activeWorlds={activeWorlds} />
               ))}
             </div>
           </section>
@@ -279,11 +353,18 @@ export function GalleryPage() {
   );
 }
 
-function GalleryCard({ world, owned = false, publicUrl = null }: { world: GalleryWorldSummary; owned?: boolean; publicUrl?: string | null }) {
+function GalleryCard({ world, owned = false, publicUrl = null, activeWorlds = null }: { world: GalleryWorldSummary; owned?: boolean; publicUrl?: string | null; activeWorlds?: ActiveWorldsResponse | null }) {
   const [screenshotFailed, setScreenshotFailed] = useState(false);
-  const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
+  const [arenaDropdownOpen, setArenaDropdownOpen] = useState(false);
+  const soloHref = `/practice/shared/${encodeURIComponent(world.id)}`;
+  const onlineHref = `/play/world/${encodeURIComponent(world.id)}`;
   const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
-  const previewHref = playHref;
+  const previewHref = soloHref;
+
+  // Find active arena info for this world.
+  const activeWorld = activeWorlds?.worlds.find((w) => w.worldId === world.id) ?? null;
+  const totalPlayers = activeWorld ? activeWorld.arenas.reduce((sum, a) => sum + a.playerCount, 0) : 0;
+
   return (
     <div style={cardStyle}>
       <a
@@ -307,7 +388,14 @@ function GalleryCard({ world, owned = false, publicUrl = null }: { world: Galler
         <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff' }}>
           {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
         </div>
-        {owned && <span style={ownedBadgeStyle}>yours</span>}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {totalPlayers > 0 && (
+            <span style={onlineBadgeStyle}>
+              {totalPlayers} online
+            </span>
+          )}
+          {owned && <span style={ownedBadgeStyle}>yours</span>}
+        </div>
       </div>
       <h2 style={{ margin: '2px 0 4px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
       <p
@@ -326,8 +414,38 @@ function GalleryCard({ world, owned = false, publicUrl = null }: { world: Galler
         {world.description || 'No description provided.'}
       </p>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <a href={playHref} style={primaryActionStyle}>Play</a>
+        <a href={onlineHref} style={primaryActionStyle}>Play Online</a>
+        <a href={soloHref} style={secondaryActionStyle}>Play Solo</a>
         <a href={editHref} style={secondaryActionStyle}>Edit in builder</a>
+        {activeWorld && activeWorld.arenas.length > 1 && (
+          <div style={{ position: 'relative' }}>
+            <button
+              onClick={() => setArenaDropdownOpen((v) => !v)}
+              style={{
+                ...secondaryActionStyle,
+                background: 'transparent',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              {activeWorld.arenas.length} arenas ▾
+            </button>
+            {arenaDropdownOpen && (
+              <div style={arenaDropdownStyle}>
+                {activeWorld.arenas.map((arena) => (
+                  <a
+                    key={arena.arenaId}
+                    href={`/play/world/${encodeURIComponent(world.id)}/${encodeURIComponent(arena.arenaId)}`}
+                    style={arenaDropdownItemStyle}
+                  >
+                    <span>{arena.arenaId}</span>
+                    <span style={{ color: '#79baf5' }}>{arena.playerCount} player{arena.playerCount === 1 ? '' : 's'}</span>
+                  </a>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
         id <code>{world.id}</code>

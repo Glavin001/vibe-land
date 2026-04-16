@@ -7,6 +7,7 @@ import { ServerStats } from './pages/ServerStats';
 import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
+import { HostedWorldPage } from './pages/HostedWorld';
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -31,6 +32,9 @@ switch (route.kind) {
     break;
   case 'sharedPractice':
     root.render(<SharedPracticePage id={route.id} />);
+    break;
+  case 'hostedWorld':
+    root.render(<HostedWorldPage worldId={route.worldId} arenaId={route.arenaId} />);
     break;
   case 'builder':
     root.render(<GodModePage publishedId={route.publishedId} />);

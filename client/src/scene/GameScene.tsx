@@ -10,6 +10,7 @@ import type { WorldDocument } from '../world/worldDocument';
 
 type GameSceneProps = {
   mode: GameMode;
+  matchId?: string;
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
@@ -32,6 +33,7 @@ type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'
 
 export function GameScene({
   mode,
+  matchId,
   onWelcome,
   onDisconnect,
   onAimStateChange,
@@ -70,6 +72,7 @@ export function GameScene({
         <GameWorld
           mode={mode}
           worldDocument={worldDocument}
+          matchId={matchId}
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}

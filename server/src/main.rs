@@ -3,6 +3,7 @@ mod lag_comp;
 mod movement;
 mod protocol;
 mod voxel_world;
+mod world_cache;
 
 use std::{
     backtrace::Backtrace,
@@ -29,7 +30,7 @@ use axum::{
 use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
@@ -47,7 +48,12 @@ use crate::{
         SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
+    world_cache::{
+        fetch_world_document, parse_match_key, release_arena, run_cache_janitor, MatchKey,
+        WorldCache, WorldHostError,
+    },
 };
+use vibe_land_shared::world_document::WorldDocument;
 const SIM_HZ: u16 = 60;
 const SNAPSHOT_HZ: u16 = 30;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
@@ -520,12 +526,22 @@ struct AppState {
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    world_cache: Arc<AsyncRwLock<WorldCache>>,
+    max_hosted_arenas: usize,
 }
 
 #[derive(Clone)]
 struct MatchHandle {
     tx: mpsc::UnboundedSender<MatchEvent>,
     telemetry: Arc<MatchIoTelemetry>,
+    /// `None` for the built-in default world.
+    world_id: Option<String>,
+    /// Human-readable world name (from WorldDocument.meta.name).
+    world_name: String,
+    /// Arena ID portion of the compound key.
+    arena_id: String,
+    /// Live player count, updated atomically by the match loop.
+    player_count: Arc<AtomicU32>,
 }
 
 struct SpacetimeVerifier {
@@ -650,6 +666,10 @@ struct MatchState {
     player_handles: HashMap<u32, u8>,
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
+    /// Tracks when the arena became empty for idle cleanup.
+    empty_since: Option<Instant>,
+    /// Shared atomic counter read by the /active-worlds endpoint.
+    player_count: Arc<AtomicU32>,
 }
 
 #[tokio::main]
@@ -717,6 +737,21 @@ async fn main() -> Result<()> {
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
 
+    let max_hosted_arenas: usize = std::env::var("VIBE_MAX_HOSTED_ARENAS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let worlds_api_url = std::env::var("WORLDS_API_URL").unwrap_or_default();
+    info!(max_hosted_arenas, %worlds_api_url, "world hosting config loaded");
+
+    let world_cache = Arc::new(AsyncRwLock::new(WorldCache::new(worlds_api_url)));
+
+    // Start world cache janitor (evicts idle cached world documents every 15s).
+    {
+        let cache = world_cache.clone();
+        tokio::spawn(run_cache_janitor(cache, 60));
+    }
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: AsyncRwLock::new(HashMap::new()),
@@ -733,6 +768,8 @@ async fn main() -> Result<()> {
             respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            world_cache,
+            max_hosted_arenas,
         }),
     };
 
@@ -781,6 +818,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/session-config", get(session_config_handler))
+        .route("/active-worlds", get(active_worlds_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -816,6 +854,79 @@ async fn session_config_handler(
         interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
     };
     axum::Json(config)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Active-worlds endpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveWorldArena {
+    arena_id: String,
+    player_count: u32,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveWorld {
+    world_id: String,
+    world_name: String,
+    arenas: Vec<ActiveWorldArena>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveWorldsResponse {
+    worlds: Vec<ActiveWorld>,
+    default_arenas: Vec<ActiveWorldArena>,
+    max_hosted_arenas: usize,
+    active_arena_count: usize,
+}
+
+async fn active_worlds_handler(
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let matches = state.inner.matches.read().await;
+    let mut worlds_map: HashMap<String, (String, Vec<ActiveWorldArena>)> = HashMap::new();
+    let mut default_arenas = Vec::new();
+    let mut active_arena_count: usize = 0;
+
+    for handle in matches.values() {
+        let player_count = handle.player_count.load(Ordering::Relaxed);
+        let arena = ActiveWorldArena {
+            arena_id: handle.arena_id.clone(),
+            player_count,
+        };
+        match &handle.world_id {
+            Some(world_id) => {
+                active_arena_count += 1;
+                let entry = worlds_map
+                    .entry(world_id.clone())
+                    .or_insert_with(|| (handle.world_name.clone(), Vec::new()));
+                entry.1.push(arena);
+            }
+            None => {
+                default_arenas.push(arena);
+            }
+        }
+    }
+
+    let worlds: Vec<ActiveWorld> = worlds_map
+        .into_iter()
+        .map(|(world_id, (world_name, arenas))| ActiveWorld {
+            world_id,
+            world_name,
+            arenas,
+        })
+        .collect();
+
+    axum::Json(ActiveWorldsResponse {
+        worlds,
+        default_arenas,
+        max_hosted_arenas: state.inner.max_hosted_arenas,
+        active_arena_count,
+    })
 }
 
 async fn ws_stats_handler(
@@ -859,7 +970,18 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let hello = decode_client_hello(&raw[4..4 + payload_len])?;
 
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
-    let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
+    let handle = match get_or_create_match(app.clone(), hello.match_id.clone()).await {
+        Ok(h) => h,
+        Err(err) => {
+            warn!(player_id, match_id = %hello.match_id, error = %err, "world host error (WT)");
+            let error_pkt = protocol::encode_world_host_error(err.error_code(), &err.to_string());
+            let mut framed = Vec::with_capacity(4 + error_pkt.len());
+            framed.extend_from_slice(&(error_pkt.len() as u32).to_le_bytes());
+            framed.extend_from_slice(&error_pkt);
+            let _ = send_stream.write_all(&framed).await;
+            return Err(anyhow::anyhow!("world host error: {err}"));
+        }
+    };
 
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
@@ -1008,7 +1130,17 @@ async fn handle_socket(
     app.verifier.verify(&query.identity, &query.token).await?;
 
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
-    let handle = get_or_create_match(app.clone(), match_id.clone()).await;
+    let handle = match get_or_create_match(app.clone(), match_id.clone()).await {
+        Ok(h) => h,
+        Err(err) => {
+            warn!(player_id, %match_id, error = %err, "world host error (WS)");
+            let error_pkt = protocol::encode_world_host_error(err.error_code(), &err.to_string());
+            let (mut ws_tx, _) = socket.split();
+            let _ = ws_tx.send(Message::Binary(error_pkt.into())).await;
+            let _ = ws_tx.close().await;
+            return Err(anyhow::anyhow!("world host error: {err}"));
+        }
+    };
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
@@ -1079,33 +1211,89 @@ async fn handle_socket(
     Ok(())
 }
 
-async fn get_or_create_match(app: Arc<AppState>, match_id: String) -> MatchHandle {
-    if let Some(existing) = app.matches.read().await.get(&match_id).cloned() {
+async fn get_or_create_match(
+    app: Arc<AppState>,
+    match_id: String,
+) -> Result<MatchHandle, WorldHostError> {
+    let key = parse_match_key(&match_id);
+    let composite = key.composite_key();
+
+    if let Some(existing) = app.matches.read().await.get(&composite).cloned() {
         if !existing.tx.is_closed() {
-            return existing;
+            return Ok(existing);
         }
-        warn!(%match_id, "dropping stale closed match handle from read cache");
+        warn!(%composite, "dropping stale closed match handle from read cache");
     }
 
     let mut write = app.matches.write().await;
-    if let Some(existing) = write.get(&match_id).cloned() {
+    if let Some(existing) = write.get(&composite).cloned() {
         if !existing.tx.is_closed() {
-            return existing;
+            return Ok(existing);
         }
-        warn!(%match_id, "dropping stale closed match handle before recreating match");
-        write.remove(&match_id);
+        warn!(%composite, "dropping stale closed match handle before recreating match");
+        write.remove(&composite);
     }
+
+    // Resolve the world document for this arena.
+    let (world_document, world_name, world_id_opt, arena_id) = match &key {
+        MatchKey::Default { arena_id } => {
+            (None, "Default World".to_string(), None, arena_id.clone())
+        }
+        MatchKey::Hosted { world_id, arena_id } => {
+            if app.max_hosted_arenas == 0 {
+                return Err(WorldHostError::Disabled);
+            }
+            // Drop the write lock before the async fetch.
+            drop(write);
+            let (doc, name) = fetch_world_document(
+                &app.world_cache,
+                world_id,
+                app.max_hosted_arenas,
+            )
+            .await?;
+            // Re-acquire write lock after fetch.
+            write = app.matches.write().await;
+            // Double-check: another task may have created this match while we fetched.
+            if let Some(existing) = write.get(&composite).cloned() {
+                if !existing.tx.is_closed() {
+                    // Release the arena_count we just incremented since we won't use it.
+                    release_arena(&app.world_cache, world_id).await;
+                    return Ok(existing);
+                }
+                write.remove(&composite);
+            }
+            (
+                Some(doc),
+                name,
+                Some(world_id.clone()),
+                arena_id.clone(),
+            )
+        }
+    };
 
     let (tx, rx) = mpsc::unbounded_channel();
     let telemetry = Arc::new(MatchIoTelemetry::default());
+    let player_count = Arc::new(AtomicU32::new(0));
     let handle = MatchHandle {
         tx: tx.clone(),
         telemetry: telemetry.clone(),
+        world_id: world_id_opt,
+        world_name,
+        arena_id,
+        player_count: player_count.clone(),
     };
-    write.insert(match_id.clone(), handle.clone());
+    write.insert(composite.clone(), handle.clone());
     drop(write);
-    spawn_match_loop(app, match_id, handle.clone(), rx, telemetry);
-    handle
+    spawn_match_loop(
+        app,
+        composite,
+        handle.clone(),
+        rx,
+        telemetry,
+        world_document,
+        player_count,
+    );
+    Ok(handle)
 }
 
 async fn run_match_loop(
@@ -1117,10 +1305,17 @@ async fn run_match_loop(
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    world_document: Option<Arc<WorldDocument>>,
+    player_count: Arc<AtomicU32>,
 ) {
     let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
     let world = VoxelWorld::new();
-    seed_default_world(&mut arena).expect("default world document should instantiate");
+    match &world_document {
+        Some(doc) => doc
+            .instantiate(&mut arena)
+            .expect("hosted world document should instantiate"),
+        None => seed_default_world(&mut arena).expect("default world document should instantiate"),
+    };
     let dynamic_body_handles = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -1169,6 +1364,8 @@ async fn run_match_loop(
         player_handles: HashMap::new(),
         dynamic_body_handles,
         vehicle_handles,
+        empty_since: Some(Instant::now()),
+        player_count,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -1177,7 +1374,10 @@ async fn run_match_loop(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                state.tick();
+                if state.tick_and_check_idle() {
+                    info!(match_id = %state.id, "arena idle for 60s with 0 players, shutting down");
+                    break;
+                }
             }
             Some(event) = rx.recv() => {
                 state.handle_event(event);
@@ -1202,8 +1402,11 @@ fn spawn_match_loop(
     handle: MatchHandle,
     rx: mpsc::UnboundedReceiver<MatchEvent>,
     telemetry: Arc<MatchIoTelemetry>,
+    world_document: Option<Arc<WorldDocument>>,
+    player_count: Arc<AtomicU32>,
 ) {
-    info!(%match_id, "spawning match loop");
+    info!(%match_id, world_id = ?handle.world_id, "spawning match loop");
+    let world_id_for_cleanup = handle.world_id.clone();
     tokio::spawn(async move {
         let outcome = std::panic::AssertUnwindSafe(run_match_loop(
             match_id.clone(),
@@ -1214,6 +1417,8 @@ fn spawn_match_loop(
             app.stats_tx.clone(),
             telemetry,
             app.stats_registry.clone(),
+            world_document,
+            player_count,
         ))
         .catch_unwind()
         .await;
@@ -1243,6 +1448,12 @@ fn spawn_match_loop(
         };
         if removed {
             warn!(%match_id, "removed dead match handle after match loop termination");
+        }
+
+        // Release the world cache arena count so the janitor can eventually
+        // evict the cached world document.
+        if let Some(world_id) = &world_id_for_cleanup {
+            release_arena(&app.world_cache, world_id).await;
         }
 
         {
@@ -1398,6 +1609,8 @@ impl MatchState {
                     active_players = self.players.len(),
                     "player connected to match"
                 );
+                self.player_count.fetch_add(1, Ordering::Relaxed);
+                self.empty_since = None;
 
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
@@ -1465,6 +1678,10 @@ impl MatchState {
                         active_players = self.players.len(),
                         "player disconnected from match"
                     );
+                }
+                self.player_count.fetch_sub(1, Ordering::Relaxed);
+                if self.players.is_empty() {
+                    self.empty_since = Some(Instant::now());
                 }
                 self.queue_roster_sync();
             }
@@ -1566,6 +1783,18 @@ impl MatchState {
                 }
             }
         }
+    }
+
+    /// Run one simulation tick and return `true` if the arena should shut down
+    /// due to being idle (0 players for > 60 seconds).
+    fn tick_and_check_idle(&mut self) -> bool {
+        self.tick();
+        if let Some(since) = self.empty_since {
+            if since.elapsed() > Duration::from_secs(60) {
+                return true;
+            }
+        }
+        false
     }
 
     fn tick(&mut self) {

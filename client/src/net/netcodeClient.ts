@@ -791,6 +791,10 @@ export class NetcodeClient {
         );
         this.config.onShotResult?.(packet);
         break;
+      case 'error':
+        console.error('[netcode] server error:', packet.errorCode, packet.message);
+        this.notifyDisconnect(`Server error: ${packet.message}`);
+        break;
       default:
         break;
     }

@@ -44,10 +44,15 @@ export function useGameConnection(
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
   onServerPacket?: (packet: ServerPacket) => void,
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void,
+  /** Override the match ID (e.g. "worldId:arenaId" for hosted worlds). */
+  explicitMatchId?: string,
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
-  const multiplayerMatchId = useMemo(() => resolveRequestedMatchId(window.location.search), []);
+  const multiplayerMatchId = useMemo(
+    () => explicitMatchId ?? resolveRequestedMatchId(window.location.search),
+    [explicitMatchId],
+  );
   const clientRef = useRef<NetcodeClient | null>(null);
 
   // Keep callbacks in refs so the NetcodeClient doesn't need to be recreated
