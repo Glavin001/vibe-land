@@ -39,12 +39,57 @@ function formatKeyboardMoveBinding(bindings: InputBindings['keyboard']): string 
   return `${keyboardCodeLabel(bindings.moveForward)} ${keyboardCodeLabel(bindings.moveLeft)} ${keyboardCodeLabel(bindings.moveBackward)} ${keyboardCodeLabel(bindings.moveRight)}`;
 }
 
+/**
+ * Label a DOM `KeyboardEvent.code` string for the hints overlay.
+ * Snap-machine envelopes ship raw codes (like "KeyE" / "Space" / "KeyR")
+ * that aren't constrained to our fixed `KeyboardCodeBinding` union, so
+ * we format them inline instead of round-tripping through
+ * `keyboardCodeLabel`.
+ */
+function formatDomKey(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  return code;
+}
+
 function buildRows(
   family: DeviceFamily,
   context: InputContext,
   action: ActionSnapshot | null,
   bindings: InputBindings,
+  machineBindings: ReadonlyArray<{
+    action: string;
+    posKey: string;
+    negKey: string | null;
+    scale: number;
+  }>,
+  machineChannels: Int8Array,
 ): RowSpec[] {
+  if (context === 'snapMachine') {
+    // Snap-machine hints: one row per action channel + a trailing
+    // Exit row showing the dedicated `machineExit` key. Each action
+    // row lights up based on its live channel value so the player
+    // sees keys register in real time.
+    const rows: RowSpec[] = machineBindings.map((binding, idx) => {
+      const raw = machineChannels.length > idx ? machineChannels[idx] : 0;
+      const magnitude = clamp01(Math.abs(raw) / 127);
+      return {
+        command: binding.action,
+        binding: binding.negKey
+          ? `${formatDomKey(binding.negKey)} / ${formatDomKey(binding.posKey)}`
+          : formatDomKey(binding.posKey),
+        value: magnitude,
+        active: magnitude > 0.01,
+      };
+    });
+    rows.push({
+      command: 'Exit Machine',
+      binding: keyboardCodeLabel(bindings.keyboard.machineExit),
+      value: boolValue(action?.interactPressed ?? false),
+      active: action?.interactPressed ?? false,
+    });
+    return rows;
+  }
   if (context === 'vehicle') {
     if (family === 'gamepad') {
       const gamepad = bindings.gamepad;
@@ -118,8 +163,30 @@ export function ControlHintsOverlay({
 
   const family = state.activeFamily ?? 'keyboardMouse';
   const context = state.context;
-  const rows = buildRows(family, context, state.action, bindings);
-  const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${context === 'vehicle' ? 'Vehicle' : 'On Foot'}`;
+  const rows = buildRows(
+    family,
+    context,
+    state.action,
+    bindings,
+    state.machineBindings,
+    state.machineChannels,
+  );
+  const contextLabel =
+    context === 'snapMachine'
+      ? state.machineDisplayName ?? 'Machine'
+      : context === 'vehicle'
+        ? 'Vehicle'
+        : 'On Foot';
+  const title = `${family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'} · ${contextLabel}`;
+  // When operating a snap-machine, surface the raw live channel
+  // values alongside the title. This gives us an at-a-glance
+  // diagnostic — if the user presses E / W / etc. and the string
+  // reads `ch=[0,0,0,...]`, the key isn't reaching the resolver; if
+  // it reads `ch=[127,0,0,...]` but the machine still doesn't move,
+  // the physics pipeline is the problem.
+  const machineDebug = context === 'snapMachine'
+    ? `ch=[${Array.from(state.machineChannels).slice(0, state.machineBindings.length || 1).join(',')}]`
+    : '';
 
   return (
     <div
@@ -143,6 +210,11 @@ export function ControlHintsOverlay({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
+          {machineDebug && (
+            <div style={{ fontSize: 10, fontFamily: 'monospace', opacity: 0.7, color: 'rgba(129, 255, 191, 0.85)' }}>
+              {machineDebug}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
             {MODE_OPTIONS.map((option) => {
               const selected = option.mode === inputFamilyMode;

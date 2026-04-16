@@ -16,6 +16,7 @@ rcgen = { version = "0.14", features = ["pem"] }
 rapier3d = { version = "0.30", features = ["simd-stable"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+snap-machines-rapier = { git = "https://github.com/Glavin001/snap-machines", rev = "55ea2699bd0eaad8693e2d22987814e367df8511" }
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }

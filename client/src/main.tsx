@@ -17,7 +17,13 @@ switch (route.kind) {
     root.render(<LoadTestPage />);
     break;
   case 'game':
-    root.render(<App mode={route.mode} />);
+    root.render(
+      <App
+        mode={route.mode}
+        worldDocument={route.worldDocument}
+        routeLabel={route.routeLabel}
+      />,
+    );
     break;
   case 'godmode':
     root.render(<GodModePage />);

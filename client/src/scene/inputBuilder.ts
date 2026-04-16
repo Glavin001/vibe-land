@@ -4,6 +4,7 @@ import {
   BTN_LEFT,
   BTN_RIGHT,
   BTN_SECONDARY_FIRE,
+  MAX_MACHINE_CHANNELS,
   angleToI16,
   i16ToAngle,
   type InputCmd,
@@ -37,6 +38,9 @@ export function buildInputFromState(
   const quantizedYaw = i16ToAngle(angleToI16(state.yaw));
   const quantizedPitch = i16ToAngle(angleToI16(state.pitch));
 
+  const machineChannels = state.machineChannels
+    ? new Int8Array(state.machineChannels)
+    : new Int8Array(MAX_MACHINE_CHANNELS);
   return {
     seq,
     buttons: applyAxisButtons(moveX, moveY, state.buttons) & ~BTN_SECONDARY_FIRE,
@@ -44,6 +48,7 @@ export function buildInputFromState(
     moveY,
     yaw: quantizedYaw,
     pitch: quantizedPitch,
+    machineChannels,
   };
 }
 

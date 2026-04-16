@@ -10,6 +10,15 @@ export class KeyboardMouseInputSource {
   private pointerDeltaY = 0;
   private activityId = 0;
 
+  /**
+   * Raw key-down query used by the snap-machine resolver to read keys
+   * that aren't part of the on-foot / vehicle binding tables (Q, R, F,
+   * etc.). Accepts a DOM `KeyboardEvent.code`.
+   */
+  isCodeDown(code: string): boolean {
+    return this.keys.has(code);
+  }
+
   private readonly onKeyDown = (event: KeyboardEvent) => {
     if (!this.keys.has(event.code)) {
       this.activityId += 1;
@@ -118,7 +127,15 @@ export class KeyboardMouseInputSource {
       firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton),
       firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton) ? 1 : 0,
       handbrake: context === 'vehicle' && this.keys.has(keyboard.handbrake),
-      interactPressed: this.justPressedKeys.has(keyboard.interact),
+      // While operating a snap-machine, the "interact" action
+      // (enter/exit) moves to a dedicated exit key so it doesn't
+      // overlap with the machine's motor bindings. The default
+      // snap-machine `motorSpin` is E/Q, which was silently exiting
+      // the machine on every press until this fix.
+      interactPressed:
+        context === 'snapMachine'
+          ? this.justPressedKeys.has(keyboard.machineExit)
+          : this.justPressedKeys.has(keyboard.interact),
       resetVehiclePressed: context === 'vehicle' && this.justPressedKeys.has(keyboard.resetVehicle),
       blockRemovePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockRemove),
       blockPlacePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockPlace),

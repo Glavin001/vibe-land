@@ -11,6 +11,7 @@ import type {
   FireCmd,
   InputCmd,
   NetPlayerState,
+  NetSnapMachineState,
   NetVehicleState,
   ServerPacket,
 } from '../net/protocol';
@@ -44,6 +45,8 @@ export function useGameConnection(
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void,
   onServerPacket?: (packet: ServerPacket) => void,
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void,
+  onLocalSnapMachineSnapshot?: (machineState: NetSnapMachineState, ackInputSeq: number) => void,
+  onRemoteSnapMachineSnapshot?: (machineState: NetSnapMachineState) => void,
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
@@ -61,6 +64,10 @@ export function useGameConnection(
   onServerPacketRef.current = onServerPacket;
   const onLocalVehicleSnapshotRef = useRef(onLocalVehicleSnapshot);
   onLocalVehicleSnapshotRef.current = onLocalVehicleSnapshot;
+  const onLocalSnapMachineSnapshotRef = useRef(onLocalSnapMachineSnapshot);
+  onLocalSnapMachineSnapshotRef.current = onLocalSnapMachineSnapshot;
+  const onRemoteSnapMachineSnapshotRef = useRef(onRemoteSnapMachineSnapshot);
+  onRemoteSnapMachineSnapshotRef.current = onRemoteSnapMachineSnapshot;
 
 
   // Expose ConnectionState-shaped ref for backward compat with GameWorld
@@ -94,6 +101,12 @@ export function useGameConnection(
       },
       onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
         onLocalVehicleSnapshotRef.current?.(vehicleState, ackInputSeq);
+      },
+      onLocalSnapMachineSnapshot: (machineState, ackInputSeq) => {
+        onLocalSnapMachineSnapshotRef.current?.(machineState, ackInputSeq);
+      },
+      onRemoteSnapMachineSnapshot: (machineState) => {
+        onRemoteSnapMachineSnapshotRef.current?.(machineState);
       },
       onWorldPacket: (packet) => {
         onServerPacketRef.current?.(packet);
@@ -164,5 +177,24 @@ export function useGameConnection(
     clientRef.current?.sendVehicleExit(vehicleId);
   }, []);
 
-  return { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef };
+  const sendMachineEnter = useCallback((machineId: number) => {
+    clientRef.current?.sendMachineEnter(machineId);
+  }, []);
+
+  const sendMachineExit = useCallback((machineId: number) => {
+    clientRef.current?.sendMachineExit(machineId);
+  }, []);
+
+  return {
+    stateRef,
+    ready,
+    sendInputs,
+    sendFire,
+    sendBlockEdit,
+    sendVehicleEnter,
+    sendVehicleExit,
+    sendMachineEnter,
+    sendMachineExit,
+    clientRef,
+  };
 }

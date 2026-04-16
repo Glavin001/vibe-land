@@ -10,6 +10,8 @@ import {
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
+  encodeMachineEnterPacket,
+  encodeMachineExitPacket,
   frameReliablePacket,
   parseFramedReliablePackets,
   type BlockEditCmd,
@@ -180,6 +182,20 @@ export class WebTransportGameClient {
       return;
     }
     void this.datagramWriter.write(encodeVehicleExitPacket(vehicleId)).catch((error) => this.handleClosed(error));
+  }
+
+  sendMachineEnter(machineId: number): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeMachineEnterPacket(machineId)).catch((error) => this.handleClosed(error));
+  }
+
+  sendMachineExit(machineId: number): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeMachineExitPacket(machineId)).catch((error) => this.handleClosed(error));
   }
 
   sendRawDatagram(packet: Uint8Array): void {

@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ReactNode } from 'react';
+import { useRef, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -14,6 +14,7 @@ import {
   advanceLookAngles,
   advanceVehicleCamera,
   resolveOnFootInput,
+  resolveSnapMachineInput,
   resolveVehicleInput,
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
@@ -35,11 +36,12 @@ import {
   HIT_ZONE_HEAD,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import type { NetSnapMachineState, NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario } from '../loadtest/scenario';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { SnapMachines } from './SnapMachines';
 import { DEFAULT_WORLD_DOCUMENT, serializeWorldDocument, type WorldDocument } from '../world/worldDocument';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
@@ -65,6 +67,23 @@ const LOCAL_VEHICLE_RENDER_PLANAR_RATE = 40.0;
 const LOCAL_VEHICLE_RENDER_VERTICAL_RATE = 12.0;
 const LOCAL_VEHICLE_RENDER_YAW_RATE = 24.0;
 const LOCAL_VEHICLE_RENDER_TILT_RATE = 10.0;
+
+function netSnapMachineStateToBodyPoses(state: NetSnapMachineState | undefined): Float32Array {
+  if (!state || state.bodies.length === 0) return new Float32Array(0);
+  const poses = new Float32Array(state.bodies.length * 7);
+  for (const body of state.bodies) {
+    const o = body.index * 7;
+    if (o + 6 >= poses.length) continue;
+    poses[o + 0] = body.pxMm / 1000;
+    poses[o + 1] = body.pyMm / 1000;
+    poses[o + 2] = body.pzMm / 1000;
+    poses[o + 3] = body.qxSnorm / 32767;
+    poses[o + 4] = body.qySnorm / 32767;
+    poses[o + 5] = body.qzSnorm / 32767;
+    poses[o + 6] = body.qwSnorm / 32767;
+  }
+  return poses;
+}
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -391,6 +410,15 @@ export function GameWorld({
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
   const prediction = usePredictionWithWorld(mode, worldJson, localRenderSmoothingEnabled);
+  const getRenderedSnapMachineBodyPoses = useCallback((machineId: number): Float32Array => {
+    if (practiceMode) {
+      const machineState = clientRef.current?.machines.get(machineId);
+      if (machineState) {
+        return netSnapMachineStateToBodyPoses(machineState);
+      }
+    }
+    return prediction.getSnapMachineBodyPoses(machineId);
+  }, [practiceMode, prediction]);
   const onDebugFrameRef = useRef(onDebugFrame);
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
@@ -399,7 +427,18 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
-  const { stateRef, ready, sendInputs, sendFire, sendBlockEdit, sendVehicleEnter, sendVehicleExit, clientRef } = useGameConnection(
+  const {
+    stateRef,
+    ready,
+    sendInputs,
+    sendFire,
+    sendBlockEdit,
+    sendVehicleEnter,
+    sendVehicleExit,
+    sendMachineEnter,
+    sendMachineExit,
+    clientRef,
+  } = useGameConnection(
     mode,
     onWelcome,
     onDisconnect,
@@ -429,7 +468,19 @@ export function GameWorld({
     prediction.ready ? (vs: NetVehicleState, ackInputSeq: number) => {
       prediction.reconcileVehicle(vs, ackInputSeq);
     } : undefined,
+    prediction.ready ? (ms: NetSnapMachineState, ackInputSeq: number) => {
+      prediction.reconcileSnapMachine(ms, ackInputSeq);
+    } : undefined,
+    prediction.ready ? (ms: NetSnapMachineState) => {
+      prediction.syncRemoteSnapMachine(ms);
+    } : undefined,
   );
+  const getAuthoritativeDebugRenderBuffers = useCallback((modeBits: number) => {
+    if (!practiceMode) {
+      return null;
+    }
+    return clientRef.current?.getDebugRenderBuffers(modeBits) ?? null;
+  }, [practiceMode, clientRef]);
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
@@ -473,6 +524,10 @@ export function GameWorld({
   const shotTraceBeamRef = useRef<THREE.Mesh>(null);
   const shotTraceImpactRef = useRef<THREE.Mesh>(null);
 
+  // Snap-machine refs
+  const knownMachineIds = useRef<Set<number>>(new Set());
+  const nearestMachineIdRef = useRef<number | null>(null);
+
   useEffect(() => {
     const manager = new GameInputManager();
     manager.attach();
@@ -486,6 +541,33 @@ export function GameWorld({
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
   }, []);
+
+  // Spawn snap-machines from the world document into WASM as soon as
+  // prediction is ready. Envelopes are inlined on each entity.
+  useEffect(() => {
+    if (!prediction.ready) return;
+    for (const entity of worldDocument.dynamicEntities) {
+      if (entity.kind !== 'snapMachine' || !entity.envelope) continue;
+      if (knownMachineIds.current.has(entity.id)) continue;
+      try {
+        prediction.spawnSnapMachine(
+          entity.id,
+          JSON.stringify(entity.envelope),
+          entity.position[0], entity.position[1], entity.position[2],
+          entity.rotation[0], entity.rotation[1], entity.rotation[2], entity.rotation[3],
+        );
+        knownMachineIds.current.add(entity.id);
+      } catch (err) {
+        console.error(`Failed to spawn snap-machine ${entity.id}`, err);
+      }
+    }
+    return () => {
+      for (const id of knownMachineIds.current) {
+        prediction.removeSnapMachine(id);
+      }
+      knownMachineIds.current.clear();
+    };
+  }, [prediction.ready, prediction, worldDocument]);
 
   useEffect(() => {
     botBrainRef.current = benchmarkAutopilot?.enabled
@@ -557,15 +639,52 @@ export function GameWorld({
       localVehicleVisualPoseRef.current.vehicleId = null;
     }
     const isDrivingNow = localControlledVehiclePose !== null;
+    const isOperatingMachineNow = prediction.isOperatingSnapMachine();
+    const activeInputContext = isOperatingMachineNow
+      ? 'snapMachine'
+      : isDrivingNow
+        ? 'vehicle'
+        : 'onFoot';
     const pointerLocked = document.pointerLockElement === gl.domElement;
-    const inputSample = inputManagerRef.current?.sample(
+    const rawInputSample = inputManagerRef.current?.sample(
       frameDelta,
       pointerLocked,
-      isDrivingNow ? 'vehicle' : 'onFoot',
+      activeInputContext,
       inputBindings,
       inputFamilyMode,
     )
-      ?? { activeFamily: null, action: null, context: isDrivingNow ? 'vehicle' : 'onFoot' as const };
+      ?? { activeFamily: null, action: null, context: activeInputContext };
+    const machineDisplayName = isOperatingMachineNow
+      ? prediction.getSnapMachineDisplayName()
+      : null;
+    const machineBindings = isOperatingMachineNow
+      ? prediction.getSnapMachineBindings()
+      : [];
+    // Pre-compute live machine channel values so the HUD can flash
+    // hint rows as keys are held, and so the resolver below can
+    // reuse them without walking the binding table twice.
+    let liveMachineChannels: Int8Array | undefined;
+    if (isOperatingMachineNow) {
+      const actionChannels = prediction.getSnapMachineActionChannels();
+      liveMachineChannels = new Int8Array(8);
+      for (let idx = 0; idx < actionChannels.length && idx < 8; idx += 1) {
+        const action = actionChannels[idx];
+        const binding = machineBindings.find((b) => b.action === action);
+        if (!binding) continue;
+        let value = 0;
+        if (inputManagerRef.current?.isCodeDown(binding.posKey)) value += 1;
+        if (binding.negKey && inputManagerRef.current?.isCodeDown(binding.negKey)) value -= 1;
+        liveMachineChannels[idx] = Math.max(-127, Math.min(127, Math.round(value * 127)));
+      }
+    }
+    const inputSample = isOperatingMachineNow
+      ? {
+          ...rawInputSample,
+          machineDisplayName,
+          machineBindings,
+          machineChannels: liveMachineChannels,
+        }
+      : rawInputSample;
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
@@ -592,7 +711,7 @@ export function GameWorld({
       pitchRef.current = look.pitch;
     }
 
-    const autopilotEnabled = Boolean(benchmarkAutopilot?.enabled && botBrainRef.current && !isDrivingNow);
+    const autopilotEnabled = Boolean(benchmarkAutopilot?.enabled && botBrainRef.current && !isDrivingNow && !isOperatingMachineNow);
     const autopilotInput = autopilotEnabled
       ? (() => {
           const localPosition = prediction.getPosition() ?? state.localPosition;
@@ -626,9 +745,32 @@ export function GameWorld({
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
         })()
       : null;
-    const resolvedInput = autopilotInput ?? (isDrivingNow
-      ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
-      : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
+    let resolvedInput;
+    if (autopilotInput) {
+      resolvedInput = autopilotInput;
+    } else if (isOperatingMachineNow) {
+      resolvedInput = resolveSnapMachineInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+        liveMachineChannels ?? new Int8Array(8),
+      );
+    } else if (isDrivingNow) {
+      resolvedInput = resolveVehicleInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+      );
+    } else {
+      resolvedInput = resolveOnFootInput(
+        inputSample.action,
+        yawRef.current,
+        pitchRef.current,
+        inputSample.activeFamily,
+      );
+    }
 
     // --- Vehicle spawn/despawn sync ---
     if (client && prediction.ready) {
@@ -677,9 +819,15 @@ export function GameWorld({
       }
     }
 
-    // --- Enter/Exit vehicle on E press ---
+    // --- Enter/Exit vehicle or snap-machine on E press ---
     if (resolvedInput.interactPressed) {
-      if (isDrivingNow) {
+      if (isOperatingMachineNow) {
+        const operatedMachineId = prediction.getOperatedSnapMachineId();
+        prediction.exitSnapMachine();
+        if (operatedMachineId !== null) {
+          sendMachineExit(operatedMachineId);
+        }
+      } else if (isDrivingNow) {
         // Exit current vehicle
         const vehiclePose = prediction.getVehiclePose();
         prediction.exitVehicle();
@@ -693,6 +841,13 @@ export function GameWorld({
             }
           }
         }
+      } else if (
+        nearestMachineIdRef.current !== null &&
+        knownMachineIds.current.has(nearestMachineIdRef.current)
+      ) {
+        const machineId = nearestMachineIdRef.current;
+        prediction.enterSnapMachine(machineId);
+        sendMachineEnter(machineId);
       } else if (nearestVehicleIdRef.current !== null) {
         const vehicleId = nearestVehicleIdRef.current;
         const vs = client?.vehicles.get(vehicleId);
@@ -734,6 +889,11 @@ export function GameWorld({
       if (prediction.isInVehicle()) {
         // Vehicle prediction — skip player KCC tick
         prediction.updateVehicle(frameDelta, resolvedInput, sendInputs);
+      } else if (isOperatingMachineNow) {
+        // Snap-machine prediction — `resolvedInput.machineChannels`
+        // is already populated by `resolveSnapMachineInput` using
+        // the envelope-derived key bindings. No more hardcoded WASD.
+        prediction.updateSnapMachine(frameDelta, resolvedInput, sendInputs);
       } else {
         // Shared input bundling lives here for both modes. In local practice mode
         // the loopback session remains authoritative, but the client predicts and
@@ -1373,6 +1533,31 @@ export function GameWorld({
           vehicleMeshes.current.delete(id);
         }
       }
+
+      // Nearest snap-machine (proximity check for E to operate). Uses the
+      // first body's world pose as the machine origin.
+      let nearestMachine: number | null = null;
+      let nearestMachineDist = VEHICLE_INTERACT_RADIUS;
+      const isOperatingMachine = prediction.isOperatingSnapMachine();
+      if (!isDrivingNow && !isOperatingMachine) {
+        for (const entity of worldDocument.dynamicEntities) {
+          if (entity.kind !== 'snapMachine') continue;
+          const machineState = practiceMode
+            ? client?.machines.get(entity.id)
+            : null;
+          const originBody = machineState?.bodies[0];
+          const machineX = originBody ? originBody.pxMm / 1000 : entity.position[0];
+          const machineZ = originBody ? originBody.pzMm / 1000 : entity.position[2];
+          const dx = machineX - pos[0];
+          const dz = machineZ - pos[2];
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < nearestMachineDist) {
+            nearestMachineDist = dist;
+            nearestMachine = entity.id;
+          }
+        }
+      }
+      nearestMachineIdRef.current = nearestMachine;
     }
   });
 
@@ -1409,6 +1594,7 @@ export function GameWorld({
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
+      <SnapMachines world={worldDocument} getBodyPoses={getRenderedSnapMachineBodyPoses} />
 
       {prediction.renderBlocks.map((block) => (
         <WorldBlock
@@ -1418,7 +1604,11 @@ export function GameWorld({
         />
       ))}
 
-      <RapierDebugLines prediction={prediction} modeBits={rapierDebugModeBits} />
+      <RapierDebugLines
+        prediction={prediction}
+        getDebugRenderBuffers={getAuthoritativeDebugRenderBuffers}
+        modeBits={rapierDebugModeBits}
+      />
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
@@ -1479,9 +1669,11 @@ function rapierDebugModeLabel(modeBits: number): string {
 
 function RapierDebugLines({
   prediction,
+  getDebugRenderBuffers,
   modeBits,
 }: {
   prediction: ReturnType<typeof usePredictionWithWorld>;
+  getDebugRenderBuffers?: (modeBits: number) => { vertices: Float32Array; colors: Float32Array } | null;
   modeBits: number;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
@@ -1509,7 +1701,7 @@ function RapierDebugLines({
       return;
     }
 
-    const buffers = prediction.getDebugRenderBuffers(modeBits);
+    const buffers = getDebugRenderBuffers?.(modeBits) ?? prediction.getDebugRenderBuffers(modeBits);
     if (!buffers) {
       geometry.setDrawRange(0, 0);
       return;

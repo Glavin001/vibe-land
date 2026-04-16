@@ -7,7 +7,9 @@ export type KeyboardCodeBinding =
   | 'KeyE'
   | 'KeyR'
   | 'KeyF'
+  | 'KeyB'
   | 'KeyC'
+  | 'KeyG'
   | 'Space'
   | 'ShiftLeft'
   | 'ShiftRight'
@@ -39,6 +41,11 @@ export type KeyboardBindings = {
   sprint: KeyboardCodeBinding;
   crouch: KeyboardCodeBinding;
   interact: KeyboardCodeBinding;
+  /// Key that exits a snap-machine. Defaults to a key that does NOT
+  /// overlap with any default snap-machine action binding, so pressing
+  /// `E` / `Q` / `W` / `S` while operating a machine drives the
+  /// motors instead of immediately firing the enter/exit toggle.
+  machineExit: KeyboardCodeBinding;
   resetVehicle: KeyboardCodeBinding;
   blockRemove: KeyboardCodeBinding;
   blockPlace: KeyboardCodeBinding;
@@ -85,6 +92,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     sprint: 'ShiftLeft',
     crouch: 'KeyC',
     interact: 'KeyE',
+    machineExit: 'KeyB',
     resetVehicle: 'KeyR',
     blockRemove: 'KeyQ',
     blockPlace: 'KeyF',

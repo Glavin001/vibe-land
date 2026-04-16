@@ -1,4 +1,4 @@
-import { BTN_CROUCH, BTN_JUMP, BTN_RELOAD, BTN_SPRINT } from '../net/protocol';
+import { BTN_CROUCH, BTN_JUMP, BTN_RELOAD, BTN_SPRINT, MAX_MACHINE_CHANNELS } from '../net/protocol';
 import type { ActionSnapshot, ResolvedGameInput } from './types';
 
 export const LOOK_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -105,5 +105,49 @@ export function resolveVehicleInput(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+  };
+}
+
+/**
+ * Build a `ResolvedGameInput` for a player operating a snap-machine.
+ *
+ * - `buttons` is clean — we don't repurpose the on-foot BTN_FORWARD
+ *   bits, since they aren't meaningful while inside a machine.
+ * - `machineChannels` is taken verbatim from the caller, which is
+ *   expected to have already walked the envelope bindings and keyed
+ *   each action channel to live key-down state. GameWorld pre-
+ *   computes this so the HUD can share the same values.
+ * - `interactPressed` rides the ActionSnapshot's interact bit; the
+ *   KeyboardMouseInputSource routes this through the dedicated
+ *   `machineExit` binding when context is `'snapMachine'`, so the
+ *   machine's own motor keys (E / Q / W / S / ...) don't fire exits.
+ */
+export function resolveSnapMachineInput(
+  action: ActionSnapshot | null,
+  yaw: number,
+  pitch: number,
+  activeFamily: ResolvedGameInput['activeFamily'],
+  channels: Int8Array,
+): ResolvedGameInput {
+  // Copy so `ResolvedGameInput` owns its own buffer (the caller may
+  // mutate theirs as keys change).
+  const copy = new Int8Array(MAX_MACHINE_CHANNELS);
+  const len = Math.min(channels.length, MAX_MACHINE_CHANNELS);
+  for (let i = 0; i < len; i += 1) copy[i] = channels[i];
+
+  return {
+    activeFamily,
+    moveX: 0,
+    moveY: 0,
+    yaw,
+    pitch,
+    buttons: 0,
+    firePrimary: false,
+    interactPressed: action?.interactPressed ?? false,
+    blockRemovePressed: false,
+    blockPlacePressed: false,
+    materialSlot1Pressed: false,
+    materialSlot2Pressed: false,
+    machineChannels: copy,
   };
 }

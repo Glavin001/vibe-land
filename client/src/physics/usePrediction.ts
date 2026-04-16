@@ -6,7 +6,8 @@ import type { WasmDebugRenderBuffers, WasmSimWorldInstance } from '../wasm/share
 import { PredictionManager } from './predictionManager';
 import { VehiclePredictionManager } from './vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from './dynamicBodyPredictionManager';
-import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
+import { MachinePredictionManager } from './machinePredictionManager';
+import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, NetSnapMachineState, NetVehicleState, ServerWorldPacket } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
 import type { RenderBlock } from '../world/voxelWorld';
 
@@ -55,6 +56,7 @@ export function usePredictionWithWorld(
   const managerRef = useRef<PredictionManager | null>(null);
   const vehicleManagerRef = useRef<VehiclePredictionManager | null>(null);
   const dynamicBodyManagerRef = useRef<DynamicBodyPredictionManager | null>(null);
+  const machineManagerRef = useRef<MachinePredictionManager | null>(null);
   const simRef = useRef<WasmSimWorldInstance | null>(null);
   const lastPredictedDynamicShotRef = useRef<{ bodyId: number; atMs: number } | null>(null);
   const pendingWorldPacketsRef = useRef<ServerWorldPacket[]>([]);
@@ -82,6 +84,7 @@ export function usePredictionWithWorld(
       managerRef.current = manager;
       vehicleManagerRef.current = new VehiclePredictionManager(sim, practiceMode);
       dynamicBodyManagerRef.current = new DynamicBodyPredictionManager(sim);
+      machineManagerRef.current = new MachinePredictionManager(sim, practiceMode);
       simRef.current = sim;
 
       // Apply any world packets that arrived before WASM was ready.
@@ -352,6 +355,98 @@ export function usePredictionWithWorld(
     return vehicleManagerRef.current?.isActive() ?? false;
   }, []);
 
+  // ── Snap-machine wrappers ───────────────────────────────────────────
+
+  const spawnSnapMachine = useCallback((
+    id: number,
+    envelopeJson: string,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+  ): void => {
+    simRef.current?.spawnSnapMachine(id, envelopeJson, px, py, pz, qx, qy, qz, qw);
+  }, []);
+
+  const removeSnapMachine = useCallback((id: number): void => {
+    simRef.current?.removeSnapMachine(id);
+  }, []);
+
+  const enterSnapMachine = useCallback((machineId: number): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    mm.setNextSeq(managerRef.current?.getNextSeq() ?? mm.getNextSeq());
+    mm.enterMachine(machineId);
+  }, []);
+
+  const exitSnapMachine = useCallback((): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    managerRef.current?.setNextSeq(mm.getNextSeq());
+    mm.exitMachine();
+  }, []);
+
+  const updateSnapMachine = useCallback((
+    frameDeltaSec: number,
+    input: SemanticInputState,
+    sendInputs: (cmds: InputCmd[]) => void,
+  ): void => {
+    const mm = machineManagerRef.current;
+    if (!mm) return;
+    const cmds = mm.update(frameDeltaSec, input);
+    managerRef.current?.setNextSeq(mm.getNextSeq());
+    if (cmds.length > 0) sendInputs(cmds);
+  }, []);
+
+  const reconcileSnapMachine = useCallback(
+    (state: NetSnapMachineState, ackInputSeq: number): void => {
+      machineManagerRef.current?.reconcile(state, ackInputSeq);
+    },
+    [],
+  );
+
+  const syncRemoteSnapMachine = useCallback((state: NetSnapMachineState): void => {
+    // Unlike vehicles, which are rendered from `client.vehicles`
+    // snapshot state in `GameWorld.tsx`, snap-machines are rendered
+    // from the client wasm world via `getSnapMachineBodyPoses`. That
+    // means we MUST push server snapshots into wasm even in practice
+    // mode — otherwise a parked machine that's been shoved by a
+    // vehicle stays frozen at its spawn pose on screen while the
+    // server physics happily updates it.
+    machineManagerRef.current?.syncRemoteMachine(state);
+  }, []);
+
+  const isOperatingSnapMachine = useCallback((): boolean => {
+    return machineManagerRef.current?.isActive() ?? false;
+  }, []);
+
+  const getOperatedSnapMachineId = useCallback((): number | null => {
+    return machineManagerRef.current?.getMachineId() ?? null;
+  }, []);
+
+  const getSnapMachineActionChannels = useCallback((): string[] => {
+    return machineManagerRef.current?.getActionChannels() ?? [];
+  }, []);
+
+  /// Human-readable machine name (preset), or `null` if we're not
+  /// operating a machine.
+  const getSnapMachineDisplayName = useCallback((): string | null => {
+    return machineManagerRef.current?.getDisplayName() ?? null;
+  }, []);
+
+  /// Keyboard bindings for the operated machine's action channels.
+  /// Empty when not operating one.
+  const getSnapMachineBindings = useCallback(() => {
+    return machineManagerRef.current?.getBindings() ?? [];
+  }, []);
+
+  /// Flat `[px, py, pz, qx, qy, qz, qw]` per body for any machine id
+  /// currently spawned in the wasm world (local-preview, operated, or
+  /// remote). Returns an empty array if the id is unknown. Intended for
+  /// the renderer — works for every machine in the world, not just the
+  /// operated one.
+  const getSnapMachineBodyPoses = useCallback((machineId: number): Float32Array => {
+    return simRef.current?.getSnapMachineBodyPoses(machineId) ?? new Float32Array(0);
+  }, []);
+
   const updateDynamicBodies = useCallback((bodies: DynamicBodyStateMeters[]) => {
     const dynamicManager = dynamicBodyManagerRef.current;
     if (!dynamicManager) return;
@@ -590,6 +685,19 @@ export function usePredictionWithWorld(
     getDrivenVehicleId,
     getLocalVehicleDebug,
     isInVehicle,
+    spawnSnapMachine,
+    removeSnapMachine,
+    enterSnapMachine,
+    exitSnapMachine,
+    updateSnapMachine,
+    reconcileSnapMachine,
+    syncRemoteSnapMachine,
+    isOperatingSnapMachine,
+    getOperatedSnapMachineId,
+    getSnapMachineActionChannels,
+    getSnapMachineDisplayName,
+    getSnapMachineBindings,
+    getSnapMachineBodyPoses,
   };
 }
 

@@ -8,6 +8,17 @@ export type ControlHintsState = {
   activeFamily: InputSample['activeFamily'];
   context: InputSample['context'];
   action: InputSample['action'];
+  machineDisplayName: string | null;
+  machineBindings: ReadonlyArray<{
+    action: string;
+    posKey: string;
+    negKey: string | null;
+    scale: number;
+  }>;
+  /// Live scalar values per snap-machine action channel, in
+  /// `bindings` order. Each slot is `-127..127`. The overlay uses
+  /// these to light up hint rows as keys are held.
+  machineChannels: Int8Array;
 };
 
 function createDefaultState(): ControlHintsState {
@@ -15,6 +26,9 @@ function createDefaultState(): ControlHintsState {
     activeFamily: null,
     context: 'onFoot',
     action: null,
+    machineDisplayName: null,
+    machineBindings: [],
+    machineChannels: new Int8Array(0),
   };
 }
 
@@ -48,9 +62,22 @@ export function useControlHints() {
     if (action?.materialSlot1Pressed) flashUntilRef.current.materialSlot1Pressed = now + FLASH_MS;
     if (action?.materialSlot2Pressed) flashUntilRef.current.materialSlot2Pressed = now + FLASH_MS;
 
-    stateRef.current = sample;
+    stateRef.current = {
+      activeFamily: sample.activeFamily,
+      context: sample.context,
+      action: sample.action,
+      machineDisplayName: sample.machineDisplayName ?? null,
+      machineBindings: sample.machineBindings ?? [],
+      machineChannels: sample.machineChannels ?? new Int8Array(0),
+    };
 
-    if (now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
+    // Always bypass the UI throttle in snap-machine context: the
+    // overlay shows live per-frame channel values there, and the
+    // user needs immediate visual feedback to trust that the keys
+    // are reaching the resolver. Throttling here was causing
+    // "I pressed a key and nothing changed" reports even when the
+    // underlying resolve pipeline was working correctly.
+    if (sample.context !== 'snapMachine' && now - lastUiUpdate.current < UI_UPDATE_INTERVAL_MS) {
       return;
     }
     lastUiUpdate.current = now;
@@ -69,6 +96,9 @@ export function useControlHints() {
             materialSlot2Pressed: action.materialSlot2Pressed || flashUntilRef.current.materialSlot2Pressed > now,
           }
         : null,
+      machineDisplayName: sample.machineDisplayName ?? null,
+      machineBindings: sample.machineBindings ?? [],
+      machineChannels: sample.machineChannels ?? new Int8Array(0),
     });
   }, []);
 

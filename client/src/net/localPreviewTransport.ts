@@ -1,4 +1,8 @@
-import { initSharedPhysics, WasmLocalSession } from '../wasm/sharedPhysics';
+import {
+  initSharedPhysics,
+  WasmLocalSession,
+  type WasmDebugRenderBuffers,
+} from '../wasm/sharedPhysics';
 import {
   decodeServerPacket,
   encodeBlockEditPacket,
@@ -7,6 +11,8 @@ import {
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
+  encodeMachineEnterPacket,
+  encodeMachineExitPacket,
   type BlockEditCmd,
   type FireCmd,
   type InputCmd,
@@ -104,8 +110,26 @@ export class LocalPreviewTransport {
     this.sendRaw(encodeVehicleExitPacket(vehicleId));
   }
 
+  sendMachineEnter(machineId: number): void {
+    this.sendRaw(encodeMachineEnterPacket(machineId));
+  }
+
+  sendMachineExit(machineId: number): void {
+    this.sendRaw(encodeMachineExitPacket(machineId));
+  }
+
   ping(): void {
     this.sendRaw(encodePingPacket(0));
+  }
+
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    if (!this.session || this.closed || modeBits === 0) {
+      return null;
+    }
+    const session = this.session as WasmLocalSession & {
+      debugRender: (modeBits: number) => WasmDebugRenderBuffers;
+    };
+    return session.debugRender(modeBits);
   }
 
   private sendRaw(bytes: Uint8Array): void {

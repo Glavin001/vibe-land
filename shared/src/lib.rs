@@ -7,6 +7,8 @@ pub mod movement;
 pub mod protocol;
 pub mod seq;
 pub mod simulation;
+pub mod snap_machine;
+pub mod snap_machine_controls;
 pub mod terrain;
 pub mod unit_conv;
 pub mod vehicle;

@@ -8,6 +8,8 @@ import {
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
+  PKT_MACHINE_ENTER,
+  PKT_MACHINE_EXIT,
   PKT_DEBUG_STATS,
   PKT_WELCOME,
   PKT_SNAPSHOT,
@@ -29,6 +31,10 @@ export type ClientHello = {
   matchId: string;
 };
 
+/// Maximum number of named actuator channels carried per InputCmd. Must
+/// match `vibe_land_shared::snap_machine::MAX_MACHINE_CHANNELS`.
+export const MAX_MACHINE_CHANNELS = 8;
+
 export type InputFrame = {
   seq: number;
   buttons: number;
@@ -36,6 +42,11 @@ export type InputFrame = {
   moveY: number;
   yaw: number;
   pitch: number;
+  /// Per-tick scalar values (`-127..127` → `-1.0..1.0`) for snap-machine
+  /// actuator channels. Always 8 entries; zeros when not operating a
+  /// machine. Index → action-name resolution lives in the wasm module via
+  /// `getSnapMachineActionChannels`.
+  machineChannels: Int8Array;
 };
 
 export type FireCmd = {
@@ -148,6 +159,30 @@ export type VehicleStateMeters = {
   wheelData: [number, number, number, number];
 };
 
+export type NetSnapBodyState = {
+  index: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  qxSnorm: number;
+  qySnorm: number;
+  qzSnorm: number;
+  qwSnorm: number;
+  vxCms: number;
+  vyCms: number;
+  vzCms: number;
+  wxMrads: number;
+  wyMrads: number;
+  wzMrads: number;
+};
+
+export type NetSnapMachineState = {
+  id: number;
+  driverId: number;
+  flags: number;
+  bodies: NetSnapBodyState[];
+};
+
 export type SnapshotPacket = {
   type: 'snapshot';
   serverTimeUs: number;
@@ -157,6 +192,7 @@ export type SnapshotPacket = {
   projectileStates: NetProjectileState[];
   dynamicBodyStates: NetDynamicBodyState[];
   vehicleStates: NetVehicleState[];
+  machineStates: NetSnapMachineState[];
 };
 
 export type PlayerRosterEntry = {
@@ -388,7 +424,8 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
   if (frames.length > 255) {
     throw new Error('input bundle too large');
   }
-  const out = new Uint8Array(1 + 1 + frames.length * 10);
+  const frameSize = 10 + MAX_MACHINE_CHANNELS;
+  const out = new Uint8Array(1 + 1 + frames.length * frameSize);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_INPUT_BUNDLE);
@@ -400,6 +437,9 @@ export function encodeInputBundle(frames: InputFrame[]): Uint8Array {
     view.setInt8(o++, clampI8(frame.moveY));
     view.setInt16(o, angleToI16(frame.yaw), true); o += 2;
     view.setInt16(o, angleToI16(frame.pitch), true); o += 2;
+    for (let i = 0; i < MAX_MACHINE_CHANNELS; i++) {
+      view.setInt8(o++, clampI8(frame.machineChannels?.[i] ?? 0));
+    }
   }
   return out;
 }
@@ -503,6 +543,7 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
   const projectileCount = view.getUint16(o, true); o += 2;
   const dynamicBodyCount = view.getUint16(o, true); o += 2;
   const vehicleCount = view.getUint16(o, true); o += 2;
+  const machineCount = view.getUint16(o, true); o += 2;
 
   const playerStates: NetPlayerState[] = [];
   for (let i = 0; i < playerCount; i += 1) {
@@ -594,6 +635,35 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
     o += 50;
   }
 
+  const machineStates: NetSnapMachineState[] = [];
+  for (let i = 0; i < machineCount; i += 1) {
+    const id = view.getUint32(o, true); o += 4;
+    const driverId = view.getUint32(o, true); o += 4;
+    const flags = view.getUint8(o); o += 1;
+    const bodyCount = view.getUint8(o); o += 1;
+    const bodies: NetSnapBodyState[] = [];
+    for (let b = 0; b < bodyCount; b += 1) {
+      bodies.push({
+        index: view.getUint16(o, true),
+        pxMm: view.getInt32(o + 2, true),
+        pyMm: view.getInt32(o + 6, true),
+        pzMm: view.getInt32(o + 10, true),
+        qxSnorm: view.getInt16(o + 14, true),
+        qySnorm: view.getInt16(o + 16, true),
+        qzSnorm: view.getInt16(o + 18, true),
+        qwSnorm: view.getInt16(o + 20, true),
+        vxCms: view.getInt16(o + 22, true),
+        vyCms: view.getInt16(o + 24, true),
+        vzCms: view.getInt16(o + 26, true),
+        wxMrads: view.getInt16(o + 28, true),
+        wyMrads: view.getInt16(o + 30, true),
+        wzMrads: view.getInt16(o + 32, true),
+      });
+      o += 34;
+    }
+    machineStates.push({ id, driverId, flags, bodies });
+  }
+
   return {
     type: 'snapshot',
     serverTimeUs,
@@ -603,6 +673,7 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
     projectileStates,
     dynamicBodyStates,
     vehicleStates,
+    machineStates,
   };
 }
 
@@ -809,6 +880,7 @@ export function buildInputFrame(seq: number, buttons: number, yaw: number, pitch
     moveY,
     yaw,
     pitch,
+    machineChannels: new Int8Array(MAX_MACHINE_CHANNELS),
   };
 }
 
@@ -891,6 +963,22 @@ export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
   const view = new DataView(out.buffer);
   view.setUint8(0, PKT_VEHICLE_EXIT);
   view.setUint32(1, vehicleId >>> 0, true);
+  return out;
+}
+
+export function encodeMachineEnterPacket(machineId: number): Uint8Array {
+  const out = new Uint8Array(5);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_MACHINE_ENTER);
+  view.setUint32(1, machineId >>> 0, true);
+  return out;
+}
+
+export function encodeMachineExitPacket(machineId: number): Uint8Array {
+  const out = new Uint8Array(5);
+  const view = new DataView(out.buffer);
+  view.setUint8(0, PKT_MACHINE_EXIT);
+  view.setUint32(1, machineId >>> 0, true);
   return out;
 }
 

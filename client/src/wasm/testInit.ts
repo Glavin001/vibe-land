@@ -25,7 +25,7 @@ export function initWasmForTests(): void {
   const dir = dirname(fileURLToPath(import.meta.url));
   const wasmPath = join(dir, 'pkg', 'vibe_land_shared_bg.wasm');
   const wasmBytes = readFileSync(wasmPath);
-  initSync(wasmBytes);
+  initSync({ module: wasmBytes });
   initialized = true;
 }
 

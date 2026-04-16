@@ -12,14 +12,16 @@ use crate::constants::BTN_RELOAD;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalPreviewSession;
 use crate::movement::{vehicle_wheel_params, MoveConfig, Vec3d};
-use crate::protocol::InputCmd;
+use crate::protocol::{InputCmd, MachineChannels};
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
+use crate::snap_machine::{MachineBodySnapshot, SnapMachine};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
     create_vehicle_physics, reset_vehicle_body, step_vehicle_dynamics, vehicle_suspension_filter,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
+use snap_machines_rapier::{MachineWorldMut, MachineWorldRemove};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -97,6 +99,14 @@ pub struct WasmSimWorld {
     vehicles: HashMap<u32, WasmVehicle>,
     local_vehicle_id: Option<u32>,
     vehicle_pending_inputs: Vec<InputCmd>,
+
+    // Snap-machine simulation (driver-side prediction). Reuses the
+    // `vehicle_*` joint set and pipeline since they all live in the same
+    // shared rapier world.
+    machines: HashMap<u32, SnapMachine>,
+    local_machine_id: Option<u32>,
+    machine_pending_inputs: Vec<InputCmd>,
+
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
 }
@@ -125,6 +135,9 @@ impl WasmSimWorld {
             vehicles: HashMap::new(),
             local_vehicle_id: None,
             vehicle_pending_inputs: Vec::new(),
+            machines: HashMap::new(),
+            local_machine_id: None,
+            machine_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
         }
@@ -265,6 +278,7 @@ impl WasmSimWorld {
             move_y,
             yaw,
             pitch,
+            machine_channels: Default::default(),
         };
         self.pending_inputs.push(input.clone());
         // Cap rollback depth: replaying too many inputs causes CPU spikes on packet loss.
@@ -1041,6 +1055,7 @@ impl WasmSimWorld {
             move_y,
             yaw,
             pitch,
+            machine_channels: Default::default(),
         };
         self.vehicle_pending_inputs.push(input.clone());
         const MAX_ROLLBACK: usize = 100;
@@ -1226,6 +1241,321 @@ impl WasmSimWorld {
     pub fn get_vehicle_pending_count(&self) -> u32 {
         self.vehicle_pending_inputs.len() as u32
     }
+
+    // ── Snap-machine simulation (operator-side prediction) ────────────────
+
+    /// Spawn a snap-machine into the shared rapier world. `envelope_json` is
+    /// the serialized `SerializedMachineEnvelope`. `pose` places the whole
+    /// machine in world space.
+    #[wasm_bindgen(js_name = spawnSnapMachine)]
+    pub fn spawn_snap_machine(
+        &mut self,
+        id: u32,
+        envelope_json: &str,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+    ) -> Result<(), JsValue> {
+        // Drop a stale machine with the same id (idempotent for hot-reload).
+        self.remove_snap_machine(id);
+
+        let envelope: serde_json::Value = serde_json::from_str(envelope_json)
+            .map_err(|e| JsValue::from_str(&format!("invalid envelope JSON: {e}")))?;
+        let pose = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(px, py, pz),
+            UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz)),
+        );
+
+        let machine = {
+            let mut world = MachineWorldMut {
+                bodies: &mut self.sim.rigid_bodies,
+                colliders: &mut self.sim.colliders,
+                impulse_joints: &mut self.vehicle_joints,
+            };
+            SnapMachine::install_envelope_at_pose(&mut world, &envelope, pose)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?
+        };
+
+        // Client wasm bodies must be kinematic so the integrator
+        // doesn't tug-of-war with incoming server snapshots. See
+        // `SnapMachine::freeze_to_kinematic` for the full rationale.
+        machine.freeze_to_kinematic(&mut self.sim.rigid_bodies);
+
+        // Mark every body's colliders modified so the broad-phase BVH picks
+        // them up on the next sync.
+        let body_handles: Vec<RigidBodyHandle> = machine
+            .body_ids()
+            .iter()
+            .filter_map(|id| machine.body_handle(id))
+            .collect();
+        for handle in body_handles {
+            if let Some(rb) = self.sim.rigid_bodies.get(handle) {
+                for ch in rb.colliders() {
+                    self.sim.modified_colliders.push(*ch);
+                }
+            }
+        }
+
+        self.machines.insert(id, machine);
+        Ok(())
+    }
+
+    #[wasm_bindgen(js_name = removeSnapMachine)]
+    pub fn remove_snap_machine(&mut self, id: u32) {
+        if let Some(machine) = self.machines.remove(&id) {
+            let mut world = MachineWorldRemove {
+                islands: &mut self.sim.island_manager,
+                bodies: &mut self.sim.rigid_bodies,
+                colliders: &mut self.sim.colliders,
+                impulse_joints: &mut self.vehicle_joints,
+                multibody_joints: &mut self.vehicle_multibody_joints,
+            };
+            machine.remove(&mut world);
+            if self.local_machine_id == Some(id) {
+                self.local_machine_id = None;
+                self.machine_pending_inputs.clear();
+            }
+        }
+    }
+
+    #[wasm_bindgen(js_name = setLocalSnapMachine)]
+    pub fn set_local_snap_machine(&mut self, machine_id: u32) {
+        self.local_machine_id = Some(machine_id);
+        self.machine_pending_inputs.clear();
+    }
+
+    #[wasm_bindgen(js_name = clearLocalSnapMachine)]
+    pub fn clear_local_snap_machine(&mut self) {
+        self.local_machine_id = None;
+        self.machine_pending_inputs.clear();
+    }
+
+    /// Returns how many bodies the machine has — used by the renderer to
+    /// pre-size pose buffers.
+    #[wasm_bindgen(js_name = getSnapMachineBodyCount)]
+    pub fn get_snap_machine_body_count(&self, id: u32) -> u32 {
+        self.machines
+            .get(&id)
+            .map(|m| m.body_ids().len() as u32)
+            .unwrap_or(0)
+    }
+
+    /// Returns the deterministic action-channel names for a machine, packed
+    /// as a single `\n`-delimited string. The empty string means the machine
+    /// is unknown or has no actuator channels.
+    #[wasm_bindgen(js_name = getSnapMachineActionChannels)]
+    pub fn get_snap_machine_action_channels(&self, id: u32) -> String {
+        self.machines
+            .get(&id)
+            .map(|m| m.action_channels().join("\n"))
+            .unwrap_or_default()
+    }
+
+    /// Machine display name from `envelope.metadata.presetName`, or
+    /// empty string if unknown / missing.
+    #[wasm_bindgen(js_name = getSnapMachineDisplayName)]
+    pub fn get_snap_machine_display_name(&self, id: u32) -> String {
+        self.machines
+            .get(&id)
+            .and_then(|m| m.display_name())
+            .map(str::to_owned)
+            .unwrap_or_default()
+    }
+
+    /// Player-facing keyboard bindings for the machine's action
+    /// channels. Returns a `\n`-delimited list where each row is
+    /// `action\tposKey\tnegKey\tscale`. Empty if the machine is not
+    /// spawned. The TS side parses this into a `MachineBinding[]` on
+    /// enter.
+    #[wasm_bindgen(js_name = getSnapMachineBindings)]
+    pub fn get_snap_machine_bindings(&self, id: u32) -> String {
+        let Some(machine) = self.machines.get(&id) else {
+            return String::new();
+        };
+        if let Some(controls) = machine.controls() {
+            if let Some(bindings) =
+                crate::snap_machine_controls::derive_machine_bindings_from_plan_and_controls(
+                    machine.plan(),
+                    controls,
+                )
+            {
+                return bindings
+                    .into_iter()
+                    .map(|binding| {
+                        format!(
+                            "{}\t{}\t{}\t{}",
+                            binding.action,
+                            binding.pos_key,
+                            binding.neg_key.as_deref().unwrap_or(""),
+                            binding.scale
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+        }
+        let mut rows = Vec::with_capacity(machine.action_channels().len());
+        for action in machine.action_channels() {
+            let (pos, neg) = crate::snap_machine_controls::default_action_key(action);
+            let neg_str = neg.unwrap_or("");
+            rows.push(format!("{action}\t{pos}\t{neg_str}\t1"));
+        }
+        rows.join("\n")
+    }
+
+    /// Returns body world poses for the renderer, packed as a flat `f32`
+    /// array of length `body_count * 7`: `[px, py, pz, qx, qy, qz, qw]` per
+    /// body in `body_ids()` order.
+    #[wasm_bindgen(js_name = getSnapMachineBodyPoses)]
+    pub fn get_snap_machine_body_poses(&self, id: u32) -> Box<[f32]> {
+        let Some(machine) = self.machines.get(&id) else {
+            return Box::new([]);
+        };
+        let mut out = Vec::with_capacity(machine.body_ids().len() * 7);
+        for body_id in machine.body_ids() {
+            let Some(handle) = machine.body_handle(body_id) else {
+                out.extend_from_slice(&[0.0; 7]);
+                continue;
+            };
+            let Some(rb) = self.sim.rigid_bodies.get(handle) else {
+                out.extend_from_slice(&[0.0; 7]);
+                continue;
+            };
+            let p = rb.translation();
+            let r = rb.rotation();
+            out.extend_from_slice(&[p.x, p.y, p.z, r.i, r.j, r.k, r.w]);
+        }
+        out.into_boxed_slice()
+    }
+
+    /// Sync a remote snap-machine from an authoritative server snapshot.
+    /// `bodies_flat` is `body_count * 14` floats:
+    /// `[index, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]`.
+    #[wasm_bindgen(js_name = syncRemoteSnapMachine)]
+    pub fn sync_remote_snap_machine(&mut self, id: u32, bodies_flat: &[f32]) {
+        if Some(id) == self.local_machine_id {
+            return;
+        }
+        let snapshots = decode_machine_bodies_flat(bodies_flat);
+        let Some(machine) = self.machines.get_mut(&id) else {
+            return;
+        };
+        machine.apply_body_snapshot(
+            &mut self.sim.rigid_bodies,
+            &mut self.sim.modified_colliders,
+            &snapshots,
+        );
+    }
+
+    /// Step the locally-driven snap-machine one prediction tick.
+    /// `channels_in` is up to `MAX_MACHINE_CHANNELS` `i8` values.
+    #[wasm_bindgen(js_name = tickSnapMachine)]
+    pub fn tick_snap_machine(
+        &mut self,
+        seq: u16,
+        channels_in: &[i8],
+        yaw: f32,
+        pitch: f32,
+        dt: f32,
+    ) {
+        let Some(mid) = self.local_machine_id else {
+            return;
+        };
+
+        let mut machine_channels = MachineChannels::default();
+        for (i, slot) in machine_channels.iter_mut().enumerate() {
+            *slot = channels_in.get(i).copied().unwrap_or(0);
+        }
+
+        let input = InputCmd {
+            seq,
+            buttons: 0,
+            move_x: 0,
+            move_y: 0,
+            yaw,
+            pitch,
+            machine_channels,
+        };
+        self.machine_pending_inputs.push(input.clone());
+        const MAX_ROLLBACK: usize = 100;
+        if self.machine_pending_inputs.len() > MAX_ROLLBACK {
+            let excess = self.machine_pending_inputs.len() - MAX_ROLLBACK;
+            self.machine_pending_inputs.drain(0..excess);
+        }
+
+        if let Some(machine) = self.machines.get_mut(&mid) {
+            let mut world = MachineWorldMut {
+                bodies: &mut self.sim.rigid_bodies,
+                colliders: &mut self.sim.colliders,
+                impulse_joints: &mut self.vehicle_joints,
+            };
+            machine.apply_input(&mut world, &machine_channels, dt);
+        }
+        self.step_vehicle_pipeline(dt);
+    }
+
+    /// Reconcile the locally-driven snap-machine with an authoritative
+    /// server snapshot. `bodies_flat` is the same layout as
+    /// `syncRemoteSnapMachine`.
+    #[wasm_bindgen(js_name = reconcileSnapMachine)]
+    pub fn reconcile_snap_machine(&mut self, ack_seq: u16, bodies_flat: &[f32], dt: f32) -> bool {
+        let Some(mid) = self.local_machine_id else {
+            return false;
+        };
+        self.machine_pending_inputs
+            .retain(|i| seq_is_newer(i.seq, ack_seq));
+
+        let snapshots = decode_machine_bodies_flat(bodies_flat);
+        if let Some(machine) = self.machines.get_mut(&mid) {
+            machine.apply_body_snapshot(
+                &mut self.sim.rigid_bodies,
+                &mut self.sim.modified_colliders,
+                &snapshots,
+            );
+        }
+
+        // Replay pending inputs against the corrected state.
+        let inputs: Vec<InputCmd> = self.machine_pending_inputs.clone();
+        for input in &inputs {
+            if let Some(machine) = self.machines.get_mut(&mid) {
+                let mut world = MachineWorldMut {
+                    bodies: &mut self.sim.rigid_bodies,
+                    colliders: &mut self.sim.colliders,
+                    impulse_joints: &mut self.vehicle_joints,
+                };
+                machine.apply_input(&mut world, &input.machine_channels, dt);
+            }
+            self.step_vehicle_pipeline(dt);
+        }
+        true
+    }
+
+    #[wasm_bindgen(js_name = getSnapMachinePendingCount)]
+    pub fn get_snap_machine_pending_count(&self) -> u32 {
+        self.machine_pending_inputs.len() as u32
+    }
+}
+
+// Decode a flat `[index, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]`
+// per body into `MachineBodySnapshot` records. Used by both the remote-sync
+// and reconcile wasm methods.
+fn decode_machine_bodies_flat(flat: &[f32]) -> Vec<MachineBodySnapshot> {
+    let stride = 14;
+    let mut out = Vec::with_capacity(flat.len() / stride);
+    for chunk in flat.chunks_exact(stride) {
+        out.push(MachineBodySnapshot {
+            index: chunk[0] as u16,
+            position: [chunk[1], chunk[2], chunk[3]],
+            rotation: [chunk[4], chunk[5], chunk[6], chunk[7]],
+            linvel: [chunk[8], chunk[9], chunk[10]],
+            angvel: [chunk[11], chunk[12], chunk[13]],
+        });
+    }
+    out
 }
 
 // ── Vehicle helper methods (not exposed to WASM) ────────────────────────────
@@ -1343,6 +1673,11 @@ impl WasmLocalSession {
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = debugRender)]
+    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
+        DebugRenderBuffers::from_line_buffers(self.inner.debug_render(mode_bits))
     }
 }
 

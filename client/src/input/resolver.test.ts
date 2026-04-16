@@ -3,6 +3,7 @@ import {
   advanceLookAngles,
   advanceVehicleCamera,
   resolveOnFootInput,
+  resolveSnapMachineInput,
   resolveVehicleInput,
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from './resolver';
@@ -69,5 +70,43 @@ describe('resolveVehicleInput', () => {
     expect(resolved.moveX).toBeCloseTo(-0.75);
     expect(resolved.moveY).toBeCloseTo(0.75);
     expect(resolved.buttons & BTN_JUMP).toBeTruthy();
+  });
+});
+
+describe('resolveSnapMachineInput', () => {
+  it('forwards live channel values without touching moveX/moveY/buttons', () => {
+    const channels = new Int8Array(8);
+    channels[0] = 127;
+    channels[1] = -64;
+    const resolved = resolveSnapMachineInput(
+      snapshot({ moveX: 1, moveY: 1, jump: true }),
+      1.2,
+      -0.4,
+      'keyboardMouse',
+      channels,
+    );
+    expect(resolved.moveX).toBe(0);
+    expect(resolved.moveY).toBe(0);
+    expect(resolved.buttons).toBe(0);
+    expect(resolved.machineChannels).toBeDefined();
+    expect(Array.from(resolved.machineChannels!)).toEqual([127, -64, 0, 0, 0, 0, 0, 0]);
+    // The resolver must copy the buffer, so mutating the caller's
+    // array afterwards does NOT alter the resolved input.
+    channels[0] = 0;
+    expect(resolved.machineChannels![0]).toBe(127);
+  });
+
+  it('fires interactPressed when the ActionSnapshot says so', () => {
+    // `KeyboardMouseInputSource.sample` is responsible for routing
+    // `interactPressed` through the dedicated `machineExit` key while
+    // in snap-machine context — the resolver just trusts the bit.
+    const resolved = resolveSnapMachineInput(
+      snapshot({ interactPressed: true }),
+      0,
+      0,
+      'keyboardMouse',
+      new Int8Array(8),
+    );
+    expect(resolved.interactPressed).toBe(true);
   });
 });

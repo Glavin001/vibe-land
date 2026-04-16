@@ -6277,7 +6277,7 @@
           0,
           0,
           0,
-          -0.00007518093610723248,
+          -7.518093610723248e-05,
           -0.0001621428293580178,
           0.0029460815598159247,
           -0.0030674414953571092,
@@ -36273,71 +36273,71 @@
           0.008285250563765069,
           0.007471068526669065,
           0.005996901065127533,
-          0.000002959789912790286,
-          0.0000033824070020364925,
-          0.0000039875329741772365,
-          0.000004805585624875866,
-          0.0000056527346651666274,
-          0.000006525158376107351,
-          0.00000762857654792078,
-          0.000008864710368558505,
-          0.000010256521818954462,
-          0.000011946923658063058,
-          0.00001364003541828501,
-          0.00001480183380005073,
-          0.000015295313478467002,
-          0.000015105529770895098,
-          0.000014403660741509638,
-          0.000013718323887729411,
-          0.000013301045351310274,
-          0.000013508681514247632,
-          0.000014654220349218778,
-          0.00001673434169035726,
-          0.00001951071436363609,
-          0.000022518604924776632,
-          0.000025258709142374685,
-          0.000027393948828713586,
-          0.000028743408890141647,
-          0.000029266469713867252,
-          0.00002926831495166463,
-          0.000028994171825288637,
-          0.000028671205415918413,
-          0.00002828196883951491,
-          0.00002776559220150162,
-          0.000027102329468553875,
-          0.000026208133682964083,
-          0.000025075856141414462,
-          0.000023754912451226128,
-          0.000022376040265053113,
-          0.000021065496112768582,
-          0.000019942303555518066,
-          0.00001906935024714687,
-          0.00001835046881180714,
-          0.00001763227746302387,
-          0.000016948296387829696,
-          0.000016376618338743242,
-          0.000015964171017105576,
-          0.000015653665021500935,
-          0.000015416454135128367,
-          0.000015186206739334006,
-          0.000014908661794160598,
-          0.000014576621719200672,
-          0.000014199263597010077,
-          0.000013883367705272125,
-          0.000013823076161103613,
-          0.000014101870766103373,
-          0.000014672531526422154,
-          0.000015454765424868485,
-          0.000016285794157736128,
-          0.000017031002073652827,
-          0.000017587876881376693,
-          0.000017724453651797756,
-          0.00001720521839525558,
-          0.000015920706317900818,
-          0.00001408601222461916,
-          0.000012176665905614875,
-          0.000010515126293255396,
-          0.000009202980742311172,
+          2.959789912790286e-06,
+          3.3824070020364925e-06,
+          3.9875329741772365e-06,
+          4.805585624875866e-06,
+          5.6527346651666274e-06,
+          6.525158376107351e-06,
+          7.62857654792078e-06,
+          8.864710368558505e-06,
+          1.0256521818954462e-05,
+          1.1946923658063058e-05,
+          1.364003541828501e-05,
+          1.480183380005073e-05,
+          1.5295313478467002e-05,
+          1.5105529770895098e-05,
+          1.4403660741509638e-05,
+          1.3718323887729411e-05,
+          1.3301045351310274e-05,
+          1.3508681514247632e-05,
+          1.4654220349218778e-05,
+          1.673434169035726e-05,
+          1.951071436363609e-05,
+          2.2518604924776632e-05,
+          2.5258709142374685e-05,
+          2.7393948828713586e-05,
+          2.8743408890141647e-05,
+          2.9266469713867252e-05,
+          2.926831495166463e-05,
+          2.8994171825288637e-05,
+          2.8671205415918413e-05,
+          2.828196883951491e-05,
+          2.776559220150162e-05,
+          2.7102329468553875e-05,
+          2.6208133682964083e-05,
+          2.5075856141414462e-05,
+          2.3754912451226128e-05,
+          2.2376040265053113e-05,
+          2.1065496112768582e-05,
+          1.9942303555518066e-05,
+          1.906935024714687e-05,
+          1.835046881180714e-05,
+          1.763227746302387e-05,
+          1.6948296387829696e-05,
+          1.6376618338743242e-05,
+          1.5964171017105576e-05,
+          1.5653665021500935e-05,
+          1.5416454135128367e-05,
+          1.5186206739334006e-05,
+          1.4908661794160598e-05,
+          1.4576621719200672e-05,
+          1.4199263597010077e-05,
+          1.3883367705272125e-05,
+          1.3823076161103613e-05,
+          1.4101870766103373e-05,
+          1.4672531526422154e-05,
+          1.5454765424868485e-05,
+          1.6285794157736128e-05,
+          1.7031002073652827e-05,
+          1.7587876881376693e-05,
+          1.7724453651797756e-05,
+          1.720521839525558e-05,
+          1.5920706317900818e-05,
+          1.408601222461916e-05,
+          1.2176665905614875e-05,
+          1.0515126293255396e-05,
+          9.202980742311172e-06,
           -0.000381430363006989,
           -0.003157570792452624,
           -0.009830297022869822,
@@ -36374,34 +36374,34 @@
           -0.4626251035035814,
           -0.14368911014370253,
           -0.012427336981776201,
-          0.000011891406988783022,
-          0.000011168370710693642,
-          0.00001084028816204832,
-          0.00001079529777006286,
-          0.000010961599352827662,
-          0.000011124667683128667,
-          0.000011233125826065913,
-          0.000011061150478628843,
-          0.000010656847048733632,
-          0.000010103502436037616,
-          0.000009477935700194311,
-          0.00000896899153994646,
-          0.000008468347377384478,
-          0.000007976678563688033,
-          0.000007429111667702211,
-          0.000006957707438256209,
-          0.000006584760721725254,
-          0.000006375688431547828,
-          0.000006473619418966855,
-          0.000006959009087082633,
-          0.000007850082582089919,
-          0.000009036987433947852,
-          0.00001036285965237324,
-          0.000011586492148734201,
-          0.000012350660842871919,
-          0.000012256287816343396,
-          0.000011051876518852027,
-          0.000008871155421875235,
+          1.1891406988783022e-05,
+          1.1168370710693642e-05,
+          1.084028816204832e-05,
+          1.079529777006286e-05,
+          1.0961599352827662e-05,
+          1.1124667683128667e-05,
+          1.1233125826065913e-05,
+          1.1061150478628843e-05,
+          1.0656847048733632e-05,
+          1.0103502436037616e-05,
+          9.477935700194311e-06,
+          8.96899153994646e-06,
+          8.468347377384478e-06,
+          7.976678563688033e-06,
+          7.429111667702211e-06,
+          6.957707438256209e-06,
+          6.584760721725254e-06,
+          6.375688431547828e-06,
+          6.473619418966855e-06,
+          6.959009087082633e-06,
+          7.850082582089919e-06,
+          9.036987433947852e-06,
+          1.036285965237324e-05,
+          1.1586492148734201e-05,
+          1.2350660842871919e-05,
+          1.2256287816343396e-05,
+          1.1051876518852027e-05,
+          8.871155421875235e-06,
           0,
           0,
           0,
@@ -36469,7 +36469,7 @@
           0,
           0,
           0,
-          -0.00002697712782152449,
+          -2.697712782152449e-05,
           -0.0013650002166798664,
           -0.004471892931074599,
           -0.010519127164544508,
@@ -36891,7 +36891,7 @@
           -0.4776284117447895,
           -0.16799089705309594,
           -0.026403917732434227,
-          -0.00003580587847924985,
+          -3.580587847924985e-05,
           0,
           0,
           0,
@@ -37020,7 +37020,7 @@
           -0.5840257747519183,
           -0.22128785594173994,
           -0.04137328122052653,
-          -0.0000012726914234459586,
+          -1.2726914234459586e-06,
           0,
           0,
           0,
@@ -37503,7 +37503,7 @@
           0,
           0,
           0,
-          -2.756058451941226e-7,
+          -2.756058451941226e-07,
           -0.012669571533994464,
           -0.07280242881225546,
           -0.1839162662291666,
@@ -37920,7 +37920,7 @@
           -0.034136980990669905,
           -0.019699176239906042,
           -0.005868251994946771,
-          -0.000040911055384122576,
+          -4.0911055384122576e-05,
           0,
           0,
           0,
@@ -38033,20 +38033,20 @@
           0,
           0,
           0,
-          -0.000007735459583639049,
+          -7.735459583639049e-06,
           -0.000613593282745936,
           -0.0011601092382319477,
           -0.0013409600709192334,
           -0.0010063989803946673,
           -0.00039016916989701475,
-          -0.00007923359339542215,
-          -0.000051202495700689096,
-          -0.0000013360519543245085,
+          -7.923359339542215e-05,
+          -5.1202495700689096e-05,
+          -1.3360519543245085e-06,
           0,
-          -0.000007682225904323207,
-          -0.0000038492239125411675,
+          -7.682225904323207e-06,
+          -3.8492239125411675e-06,
           0,
-          -1.703624879268642e-7,
+          -1.703624879268642e-07,
           0,
           0,
           0,
@@ -50868,6 +50868,2103 @@
         1
       ],
       "vehicleType": 0
+    },
+    {
+      "id": 70001,
+      "kind": "snapMachine",
+      "position": [
+        -4.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "envelope": {
+        "schemaVersion": 1,
+        "catalogVersion": "smcat1-6c8337bf81d06ae1",
+        "plan": {
+          "behaviors": [],
+          "bodies": [
+            {
+              "colliders": [
+                {
+                  "blockId": "chassis",
+                  "halfExtents": {
+                    "x": 2.5,
+                    "y": 0.5,
+                    "z": 0.5
+                  },
+                  "id": "frame.beam.5x1:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  },
+                  "mass": 5,
+                  "partId": "main",
+                  "sensor": false
+                },
+                {
+                  "blockId": "fl-wheel",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.15,
+                    "z": 0.15
+                  },
+                  "id": "joint.motor.wheel:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": -2,
+                      "y": 0,
+                      "z": 0.65
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": -6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "axle",
+                  "sensor": false
+                },
+                {
+                  "blockId": "fr-wheel",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.15,
+                    "z": 0.15
+                  },
+                  "id": "joint.motor.wheel:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": -2,
+                      "y": 0,
+                      "z": -0.65
+                    },
+                    "rotation": {
+                      "w": 6.123233995736766e-17,
+                      "x": 0,
+                      "y": 1,
+                      "z": 0
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "axle",
+                  "sensor": false
+                },
+                {
+                  "blockId": "rl-wheel",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.15,
+                    "z": 0.15
+                  },
+                  "id": "joint.motor.wheel:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 2,
+                      "y": 0,
+                      "z": 0.65
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": -6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "axle",
+                  "sensor": false
+                },
+                {
+                  "blockId": "rr-wheel",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.15,
+                    "z": 0.15
+                  },
+                  "id": "joint.motor.wheel:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 2,
+                      "y": 0,
+                      "z": -0.65
+                    },
+                    "rotation": {
+                      "w": 6.123233995736766e-17,
+                      "x": 0,
+                      "y": 1,
+                      "z": 0
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "axle",
+                  "sensor": false
+                }
+              ],
+              "id": "body:0",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 0,
+                  "y": 2,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "chassis",
+                "fl-wheel",
+                "fr-wheel",
+                "rl-wheel",
+                "rr-wheel"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "chassis",
+                  "partId": "main"
+                },
+                {
+                  "blockId": "fl-wheel",
+                  "partId": "axle"
+                },
+                {
+                  "blockId": "fr-wheel",
+                  "partId": "axle"
+                },
+                {
+                  "blockId": "rl-wheel",
+                  "partId": "axle"
+                },
+                {
+                  "blockId": "rr-wheel",
+                  "partId": "axle"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "axis": "z",
+                  "blockId": "fl-wheel",
+                  "friction": 2,
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:collider:1",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.29999999999999993
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": -6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 1.5,
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "sensor": false
+                }
+              ],
+              "id": "body:1",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": -2,
+                  "y": 2,
+                  "z": 0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "fl-wheel"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "fl-wheel",
+                  "partId": "wheel"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "axis": "z",
+                  "blockId": "fr-wheel",
+                  "friction": 2,
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:collider:1",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": -0.29999999999999993
+                    },
+                    "rotation": {
+                      "w": 6.123233995736766e-17,
+                      "x": 0,
+                      "y": 1,
+                      "z": 0
+                    }
+                  },
+                  "mass": 1.5,
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "sensor": false
+                }
+              ],
+              "id": "body:2",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": -2,
+                  "y": 2,
+                  "z": -0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "fr-wheel"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "fr-wheel",
+                  "partId": "wheel"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "axis": "z",
+                  "blockId": "rl-wheel",
+                  "friction": 2,
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:collider:1",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.29999999999999993
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": -6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 1.5,
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "sensor": false
+                }
+              ],
+              "id": "body:3",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 2,
+                  "y": 2,
+                  "z": 0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "rl-wheel"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "rl-wheel",
+                  "partId": "wheel"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "axis": "z",
+                  "blockId": "rr-wheel",
+                  "friction": 2,
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:collider:1",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": -0.29999999999999993
+                    },
+                    "rotation": {
+                      "w": 6.123233995736766e-17,
+                      "x": 0,
+                      "y": 1,
+                      "z": 0
+                    }
+                  },
+                  "mass": 1.5,
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "sensor": false
+                }
+              ],
+              "id": "body:4",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 2,
+                  "y": 2,
+                  "z": -0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "rr-wheel"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "rr-wheel",
+                  "partId": "wheel"
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "joints": [
+            {
+              "blockId": "fl-wheel",
+              "bodyAId": "body:0",
+              "bodyBId": "body:1",
+              "collideConnected": false,
+              "id": "joint:fl-wheel",
+              "kind": "revolute",
+              "localAnchorA": {
+                "x": -2,
+                "y": 0,
+                "z": 0.8
+              },
+              "localAnchorB": {
+                "x": 0,
+                "y": 0,
+                "z": 0.15000000000000002
+              },
+              "localAxisA": {
+                "x": -1.2246467991473532e-16,
+                "y": 0,
+                "z": 1
+              },
+              "localAxisB": {
+                "x": -1.2246467991473532e-16,
+                "y": 0,
+                "z": 1
+              },
+              "localFrameA": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              },
+              "localFrameB": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              },
+              "motor": {
+                "damping": 10,
+                "input": {
+                  "action": "motorSpin",
+                  "scale": 5
+                },
+                "inputTarget": "velocity",
+                "maxForce": 100,
+                "mode": "velocity",
+                "stiffness": 0,
+                "targetPosition": 0,
+                "targetVelocity": 5
+              }
+            },
+            {
+              "blockId": "fr-wheel",
+              "bodyAId": "body:0",
+              "bodyBId": "body:2",
+              "collideConnected": false,
+              "id": "joint:fr-wheel",
+              "kind": "revolute",
+              "localAnchorA": {
+                "x": -2,
+                "y": 0,
+                "z": -0.8
+              },
+              "localAnchorB": {
+                "x": 0,
+                "y": 0,
+                "z": -0.15000000000000002
+              },
+              "localAxisA": {
+                "x": 1.2246467991473532e-16,
+                "y": 0,
+                "z": -1
+              },
+              "localAxisB": {
+                "x": 1.2246467991473532e-16,
+                "y": 0,
+                "z": -1
+              },
+              "localFrameA": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              },
+              "localFrameB": {
+                "w": -1,
+                "x": 0,
+                "y": 6.123233995736766e-17,
+                "z": 0
+              },
+              "motor": {
+                "damping": 10,
+                "input": {
+                  "action": "motorSpin",
+                  "scale": 5
+                },
+                "inputTarget": "velocity",
+                "maxForce": 100,
+                "mode": "velocity",
+                "stiffness": 0,
+                "targetPosition": 0,
+                "targetVelocity": 5
+              }
+            },
+            {
+              "blockId": "rl-wheel",
+              "bodyAId": "body:0",
+              "bodyBId": "body:3",
+              "collideConnected": false,
+              "id": "joint:rl-wheel",
+              "kind": "revolute",
+              "localAnchorA": {
+                "x": 2,
+                "y": 0,
+                "z": 0.8
+              },
+              "localAnchorB": {
+                "x": 0,
+                "y": 0,
+                "z": 0.15000000000000002
+              },
+              "localAxisA": {
+                "x": -1.2246467991473532e-16,
+                "y": 0,
+                "z": 1
+              },
+              "localAxisB": {
+                "x": -1.2246467991473532e-16,
+                "y": 0,
+                "z": 1
+              },
+              "localFrameA": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              },
+              "localFrameB": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              },
+              "motor": {
+                "damping": 10,
+                "input": {
+                  "action": "motorSpin",
+                  "scale": 5
+                },
+                "inputTarget": "velocity",
+                "maxForce": 100,
+                "mode": "velocity",
+                "stiffness": 0,
+                "targetPosition": 0,
+                "targetVelocity": 5
+              }
+            },
+            {
+              "blockId": "rr-wheel",
+              "bodyAId": "body:0",
+              "bodyBId": "body:4",
+              "collideConnected": false,
+              "id": "joint:rr-wheel",
+              "kind": "revolute",
+              "localAnchorA": {
+                "x": 2,
+                "y": 0,
+                "z": -0.8
+              },
+              "localAnchorB": {
+                "x": 0,
+                "y": 0,
+                "z": -0.15000000000000002
+              },
+              "localAxisA": {
+                "x": 1.2246467991473532e-16,
+                "y": 0,
+                "z": -1
+              },
+              "localAxisB": {
+                "x": 1.2246467991473532e-16,
+                "y": 0,
+                "z": -1
+              },
+              "localFrameA": {
+                "w": 6.123233995736766e-17,
+                "x": 0,
+                "y": 1,
+                "z": 0
+              },
+              "localFrameB": {
+                "w": -1,
+                "x": 0,
+                "y": 6.123233995736766e-17,
+                "z": 0
+              },
+              "motor": {
+                "damping": 10,
+                "input": {
+                  "action": "motorSpin",
+                  "scale": 5
+                },
+                "inputTarget": "velocity",
+                "maxForce": 100,
+                "mode": "velocity",
+                "stiffness": 0,
+                "targetPosition": 0,
+                "targetVelocity": 5
+              }
+            }
+          ],
+          "mounts": [
+            {
+              "blockId": "chassis",
+              "blockTypeId": "frame.beam.5x1",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "frame.beam.5x1:geometry:0",
+                  "kind": "box",
+                  "partId": "main",
+                  "size": {
+                    "x": 5,
+                    "y": 1,
+                    "z": 1
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:chassis::main",
+              "localTransform": {
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "partId": "main"
+            },
+            {
+              "blockId": "fl-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "joint.motor.wheel:geometry:0",
+                  "kind": "box",
+                  "partId": "axle",
+                  "size": {
+                    "x": 0.3,
+                    "y": 0.3,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:fl-wheel::axle",
+              "localTransform": {
+                "position": {
+                  "x": -2,
+                  "y": 0,
+                  "z": 0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": -6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "axle"
+            },
+            {
+              "blockId": "fl-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:1",
+              "geometry": [
+                {
+                  "axis": "z",
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:geometry:1",
+                  "kind": "cylinder",
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.3
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:fl-wheel::wheel",
+              "localTransform": {
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": -6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "wheel"
+            },
+            {
+              "blockId": "fr-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "joint.motor.wheel:geometry:0",
+                  "kind": "box",
+                  "partId": "axle",
+                  "size": {
+                    "x": 0.3,
+                    "y": 0.3,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:fr-wheel::axle",
+              "localTransform": {
+                "position": {
+                  "x": -2,
+                  "y": 0,
+                  "z": -0.65
+                },
+                "rotation": {
+                  "w": 6.123233995736766e-17,
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                }
+              },
+              "partId": "axle"
+            },
+            {
+              "blockId": "fr-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:2",
+              "geometry": [
+                {
+                  "axis": "z",
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:geometry:1",
+                  "kind": "cylinder",
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.3
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:fr-wheel::wheel",
+              "localTransform": {
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 6.123233995736766e-17,
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                }
+              },
+              "partId": "wheel"
+            },
+            {
+              "blockId": "rl-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "joint.motor.wheel:geometry:0",
+                  "kind": "box",
+                  "partId": "axle",
+                  "size": {
+                    "x": 0.3,
+                    "y": 0.3,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:rl-wheel::axle",
+              "localTransform": {
+                "position": {
+                  "x": 2,
+                  "y": 0,
+                  "z": 0.65
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": -6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "axle"
+            },
+            {
+              "blockId": "rl-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:3",
+              "geometry": [
+                {
+                  "axis": "z",
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:geometry:1",
+                  "kind": "cylinder",
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.3
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:rl-wheel::wheel",
+              "localTransform": {
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": -6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "wheel"
+            },
+            {
+              "blockId": "rr-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "joint.motor.wheel:geometry:0",
+                  "kind": "box",
+                  "partId": "axle",
+                  "size": {
+                    "x": 0.3,
+                    "y": 0.3,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:rr-wheel::axle",
+              "localTransform": {
+                "position": {
+                  "x": 2,
+                  "y": 0,
+                  "z": -0.65
+                },
+                "rotation": {
+                  "w": 6.123233995736766e-17,
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                }
+              },
+              "partId": "axle"
+            },
+            {
+              "blockId": "rr-wheel",
+              "blockTypeId": "joint.motor.wheel",
+              "bodyId": "body:4",
+              "geometry": [
+                {
+                  "axis": "z",
+                  "halfHeight": 0.15,
+                  "id": "joint.motor.wheel:geometry:1",
+                  "kind": "cylinder",
+                  "partId": "wheel",
+                  "radius": 0.8,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0.3
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:rr-wheel::wheel",
+              "localTransform": {
+                "position": {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                "rotation": {
+                  "w": 6.123233995736766e-17,
+                  "x": 0,
+                  "y": 1,
+                  "z": 0
+                }
+              },
+              "partId": "wheel"
+            }
+          ]
+        },
+        "metadata": {
+          "builder": "snap-machines-demo",
+          "mode": "build",
+          "presetName": "4-Wheel Car"
+        }
+      }
+    },
+    {
+      "id": 70002,
+      "kind": "snapMachine",
+      "position": [
+        -12.0,
+        0.0,
+        0.0
+      ],
+      "rotation": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ],
+      "envelope": {
+        "schemaVersion": 1,
+        "catalogVersion": "smcat1-dd4f5f1f954f25a0",
+        "plan": {
+          "behaviors": [],
+          "bodies": [
+            {
+              "colliders": [
+                {
+                  "blockId": "base",
+                  "halfExtents": {
+                    "x": 2.5,
+                    "y": 0.5,
+                    "z": 0.5
+                  },
+                  "id": "frame.beam.5x1:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": -5.925710318454935e-19,
+                      "y": -0.020967741935483897,
+                      "z": -1.7906822977825105e-18
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  },
+                  "mass": 5,
+                  "partId": "main",
+                  "sensor": false
+                },
+                {
+                  "blockId": "base-zp",
+                  "halfExtents": {
+                    "x": 2.5,
+                    "y": 0.5,
+                    "z": 0.5
+                  },
+                  "id": "frame.beam.5x1:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": -6.182491098921315e-17,
+                      "y": -0.020967741935483897,
+                      "z": 1
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": -6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 5,
+                  "partId": "main",
+                  "sensor": false
+                },
+                {
+                  "blockId": "base-zn",
+                  "halfExtents": {
+                    "x": 2.5,
+                    "y": 0.5,
+                    "z": 0.5
+                  },
+                  "id": "frame.beam.5x1:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 6.063976892552217e-17,
+                      "y": -0.020967741935483897,
+                      "z": -1
+                    },
+                    "rotation": {
+                      "w": -1,
+                      "x": 0,
+                      "y": 6.123233995736766e-17,
+                      "z": 0
+                    }
+                  },
+                  "mass": 5,
+                  "partId": "main",
+                  "sensor": false
+                },
+                {
+                  "axis": "y",
+                  "blockId": "yaw",
+                  "halfHeight": 0.15,
+                  "id": "compound.arm.yaw:collider:0",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": 1.7777130955364804e-17,
+                      "y": 0.629032258064516,
+                      "z": 5.372046893347532e-17
+                    },
+                    "rotation": {
+                      "w": -1,
+                      "x": -2.220446049250313e-16,
+                      "y": 0,
+                      "z": 6.123233995736766e-17
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "base",
+                  "radius": 0.4,
+                  "sensor": false
+                }
+              ],
+              "id": "body:0",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 5.925710318454935e-19,
+                  "y": 1.020967741935484,
+                  "z": 1.7906822977825105e-18
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "base",
+                "base-zp",
+                "base-zn",
+                "yaw"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "base",
+                  "partId": "main"
+                },
+                {
+                  "blockId": "base-zp",
+                  "partId": "main"
+                },
+                {
+                  "blockId": "base-zn",
+                  "partId": "main"
+                },
+                {
+                  "blockId": "yaw",
+                  "partId": "base"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "axis": "y",
+                  "blockId": "yaw",
+                  "halfHeight": 0.15,
+                  "id": "compound.arm.yaw:collider:1",
+                  "includeInMass": true,
+                  "kind": "cylinder",
+                  "localTransform": {
+                    "position": {
+                      "x": -2.296212748401279e-18,
+                      "y": 0.05624999999999991,
+                      "z": 1.6653345369377388e-17
+                    },
+                    "rotation": {
+                      "w": -1,
+                      "x": -2.220446049250313e-16,
+                      "y": 0,
+                      "z": 6.123233995736766e-17
+                    }
+                  },
+                  "mass": 0.5,
+                  "partId": "turret",
+                  "radius": 0.35,
+                  "sensor": false
+                },
+                {
+                  "blockId": "pitch",
+                  "halfExtents": {
+                    "x": 0.2,
+                    "y": 0.2,
+                    "z": 0.2
+                  },
+                  "id": "compound.arm:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 6.505936120470315e-17,
+                      "y": 0.4062500000000002,
+                      "z": 1.9428902930940242e-16
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 2.7755575615628914e-16,
+                      "y": -1.232595164407831e-32,
+                      "z": -1.224646799147353e-16
+                    }
+                  },
+                  "mass": 0.3,
+                  "partId": "mount",
+                  "sensor": false
+                }
+              ],
+              "id": "body:1",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 5.740531871003217e-17,
+                  "y": 1.89375,
+                  "z": 1.7208456881689922e-16
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "yaw",
+                "pitch"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "yaw",
+                  "partId": "turret"
+                },
+                {
+                  "blockId": "pitch",
+                  "partId": "mount"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "blockId": "pitch",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.75,
+                    "z": 0.15
+                  },
+                  "id": "compound.arm:collider:1",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 8.572527594031473e-17,
+                      "y": 0.3799999999999999,
+                      "z": 1.942890293094025e-16
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 2.7755575615628914e-16,
+                      "y": -1.232595164407831e-32,
+                      "z": -1.224646799147353e-16
+                    }
+                  },
+                  "mass": 0.7,
+                  "partId": "link",
+                  "sensor": false
+                },
+                {
+                  "blockId": "pitch2",
+                  "halfExtents": {
+                    "x": 0.2,
+                    "y": 0.2,
+                    "z": 0.2
+                  },
+                  "id": "compound.arm:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 3.429011037612589e-16,
+                      "y": 1.33,
+                      "z": 7.771561172376097e-16
+                    },
+                    "rotation": {
+                      "w": -1,
+                      "x": -4.440892098500626e-16,
+                      "y": 1.232595164407831e-32,
+                      "z": 1.8369701987210297e-16
+                    }
+                  },
+                  "mass": 0.3,
+                  "partId": "mount",
+                  "sensor": false
+                }
+              ],
+              "id": "body:2",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 2.6942229581241765e-16,
+                  "y": 2.87,
+                  "z": 6.994405055138486e-16
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "pitch",
+                "pitch2"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "pitch",
+                  "partId": "link"
+                },
+                {
+                  "blockId": "pitch2",
+                  "partId": "mount"
+                }
+              ]
+            },
+            {
+              "colliders": [
+                {
+                  "blockId": "pitch2",
+                  "halfExtents": {
+                    "x": 0.15,
+                    "y": 0.75,
+                    "z": 0.15
+                  },
+                  "id": "compound.arm:collider:1",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": -1.62445796004546e-16,
+                      "y": -0.3441176470588232,
+                      "z": -4.362523414409443e-16
+                    },
+                    "rotation": {
+                      "w": -1,
+                      "x": -4.440892098500626e-16,
+                      "y": 1.232595164407831e-32,
+                      "z": 1.8369701987210297e-16
+                    }
+                  },
+                  "mass": 0.7,
+                  "partId": "link",
+                  "sensor": false
+                },
+                {
+                  "blockId": "grip-block",
+                  "halfExtents": {
+                    "x": 0.5,
+                    "y": 0.5,
+                    "z": 0.5
+                  },
+                  "id": "primitive.block.1x1:collider:0",
+                  "includeInMass": true,
+                  "kind": "box",
+                  "localTransform": {
+                    "position": {
+                      "x": 3.5802909363307917e-16,
+                      "y": 0.9058823529411768,
+                      "z": 8.960152881092436e-16
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 6.661338147750939e-16,
+                      "y": -2.465190328815662e-32,
+                      "z": -2.449293598294706e-16
+                    }
+                  },
+                  "mass": 1,
+                  "partId": "main",
+                  "sensor": false
+                }
+              ],
+              "id": "body:3",
+              "kind": "dynamic",
+              "origin": {
+                "position": {
+                  "x": 1.1237935333352181e-15,
+                  "y": 5.4941176470588236,
+                  "z": 2.7566184629075213e-15
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "sourceBlocks": [
+                "pitch2",
+                "grip-block"
+              ],
+              "sourceParts": [
+                {
+                  "blockId": "pitch2",
+                  "partId": "link"
+                },
+                {
+                  "blockId": "grip-block",
+                  "partId": "main"
+                }
+              ]
+            }
+          ],
+          "diagnostics": [],
+          "joints": [
+            {
+              "blockId": "yaw",
+              "bodyAId": "body:0",
+              "bodyBId": "body:1",
+              "collideConnected": false,
+              "id": "joint:yaw",
+              "kind": "revolute",
+              "localAnchorA": {
+                "x": 3.61468329425751e-17,
+                "y": 0.7790322580645159,
+                "z": 1.2033385041098472e-16
+              },
+              "localAnchorB": {
+                "x": -2.066591473561158e-17,
+                "y": -0.09375000000000022,
+                "z": -4.996003610813199e-17
+              },
+              "localAxisA": {
+                "x": 1.2246467991473532e-16,
+                "y": 1,
+                "z": 4.440892098500626e-16
+              },
+              "localAxisB": {
+                "x": 1.2246467991473532e-16,
+                "y": 1,
+                "z": 4.440892098500626e-16
+              },
+              "localFrameA": {
+                "w": -4.329780281177467e-17,
+                "x": -4.329780281177466e-17,
+                "y": -0.7071067811865474,
+                "z": -0.7071067811865477
+              },
+              "localFrameB": {
+                "w": -0.7071067811865475,
+                "x": -0.7071067811865476,
+                "y": 4.329780281177466e-17,
+                "z": 4.329780281177467e-17
+              },
+              "motor": {
+                "damping": 200,
+                "input": {
+                  "action": "armYaw",
+                  "scale": 3.141592653589793
+                },
+                "inputTarget": "position",
+                "maxForce": 5000,
+                "mode": "position",
+                "stiffness": 5000,
+                "targetPosition": 0,
+                "targetVelocity": 0
+              }
+            },
+            {
+              "blockId": "pitch",
+              "bodyAId": "body:1",
+              "bodyBId": "body:2",
+              "collideConnected": false,
+              "id": "joint:pitch",
+              "kind": "revolute",
+              "limits": {
+                "max": 1.5707963267948966,
+                "min": -1.5707963267948966
+              },
+              "localAnchorA": {
+                "x": 1.1404523317059726e-16,
+                "y": 0.6062500000000004,
+                "z": 3.0531133177191805e-16
+              },
+              "localAnchorB": {
+                "x": -9.797174393178821e-17,
+                "y": -0.36999999999999966,
+                "z": -2.220446049250313e-16
+              },
+              "localAxisA": {
+                "x": -9.263345696050116e-32,
+                "y": -5.551115123125783e-16,
+                "z": 1
+              },
+              "localAxisB": {
+                "x": -9.263345696050116e-32,
+                "y": -5.551115123125783e-16,
+                "z": 1
+              },
+              "localFrameA": {
+                "w": 8.659560562354933e-17,
+                "x": 8.659560562354929e-17,
+                "y": 0.7071067811865472,
+                "z": 0.7071067811865478
+              },
+              "localFrameB": {
+                "w": 0.7071067811865474,
+                "x": 0.7071067811865477,
+                "y": -8.659560562354932e-17,
+                "z": -8.65956056235493e-17
+              },
+              "motor": {
+                "damping": 200,
+                "input": {
+                  "action": "armPitch",
+                  "scale": 1.5707963267948966
+                },
+                "inputTarget": "position",
+                "maxForce": 5000,
+                "mode": "position",
+                "stiffness": 5000,
+                "targetPosition": 0,
+                "targetVelocity": 0
+              }
+            },
+            {
+              "blockId": "pitch2",
+              "bodyAId": "body:2",
+              "bodyBId": "body:3",
+              "collideConnected": false,
+              "id": "joint:pitch2",
+              "kind": "revolute",
+              "limits": {
+                "max": 1.5707963267948966,
+                "min": -1.5707963267948966
+              },
+              "localAnchorA": {
+                "x": 4.163799117101001e-16,
+                "y": 1.5300000000000002,
+                "z": 9.547918011776348e-16
+              },
+              "localAnchorB": {
+                "x": -4.379913258127004e-16,
+                "y": -1.0941176470588232,
+                "z": -1.102386156216038e-15
+              },
+              "localAxisA": {
+                "x": -1.8780763210178353e-31,
+                "y": -8.881784197001252e-16,
+                "z": 1
+              },
+              "localAxisB": {
+                "x": -1.8780763210178353e-31,
+                "y": -8.881784197001252e-16,
+                "z": 1
+              },
+              "localFrameA": {
+                "w": -1.29893408435324e-16,
+                "x": -1.2989340843532398e-16,
+                "y": -0.7071067811865471,
+                "z": -0.7071067811865479
+              },
+              "localFrameB": {
+                "w": -0.7071067811865472,
+                "x": -0.7071067811865478,
+                "y": 1.2989340843532398e-16,
+                "z": 1.29893408435324e-16
+              },
+              "motor": {
+                "damping": 200,
+                "input": {
+                  "action": "armPitchElbow",
+                  "scale": 1.5707963267948966
+                },
+                "inputTarget": "position",
+                "maxForce": 5000,
+                "mode": "position",
+                "stiffness": 5000,
+                "targetPosition": 0,
+                "targetVelocity": 0
+              }
+            }
+          ],
+          "mounts": [
+            {
+              "blockId": "base",
+              "blockTypeId": "frame.beam.5x1",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "frame.beam.5x1:geometry:0",
+                  "kind": "box",
+                  "partId": "main",
+                  "size": {
+                    "x": 5,
+                    "y": 1,
+                    "z": 1
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:base::main",
+              "localTransform": {
+                "position": {
+                  "x": -5.925710318454935e-19,
+                  "y": -0.020967741935483897,
+                  "z": -1.7906822977825105e-18
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              },
+              "partId": "main"
+            },
+            {
+              "blockId": "base-zp",
+              "blockTypeId": "frame.beam.5x1",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "frame.beam.5x1:geometry:0",
+                  "kind": "box",
+                  "partId": "main",
+                  "size": {
+                    "x": 5,
+                    "y": 1,
+                    "z": 1
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:base-zp::main",
+              "localTransform": {
+                "position": {
+                  "x": -6.182491098921315e-17,
+                  "y": -0.020967741935483897,
+                  "z": 1
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 0,
+                  "y": -6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "main"
+            },
+            {
+              "blockId": "base-zn",
+              "blockTypeId": "frame.beam.5x1",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "id": "frame.beam.5x1:geometry:0",
+                  "kind": "box",
+                  "partId": "main",
+                  "size": {
+                    "x": 5,
+                    "y": 1,
+                    "z": 1
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:base-zn::main",
+              "localTransform": {
+                "position": {
+                  "x": 6.063976892552217e-17,
+                  "y": -0.020967741935483897,
+                  "z": -1
+                },
+                "rotation": {
+                  "w": -1,
+                  "x": 0,
+                  "y": 6.123233995736766e-17,
+                  "z": 0
+                }
+              },
+              "partId": "main"
+            },
+            {
+              "blockId": "yaw",
+              "blockTypeId": "compound.arm.yaw",
+              "bodyId": "body:0",
+              "geometry": [
+                {
+                  "axis": "y",
+                  "halfHeight": 0.15,
+                  "id": "compound.arm.yaw:geometry:0",
+                  "kind": "cylinder",
+                  "partId": "base",
+                  "radius": 0.4,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:yaw::base",
+              "localTransform": {
+                "position": {
+                  "x": 1.7777130955364804e-17,
+                  "y": 0.629032258064516,
+                  "z": 5.372046893347532e-17
+                },
+                "rotation": {
+                  "w": -1,
+                  "x": -2.220446049250313e-16,
+                  "y": 0,
+                  "z": 6.123233995736766e-17
+                }
+              },
+              "partId": "base"
+            },
+            {
+              "blockId": "yaw",
+              "blockTypeId": "compound.arm.yaw",
+              "bodyId": "body:1",
+              "geometry": [
+                {
+                  "axis": "y",
+                  "halfHeight": 0.15,
+                  "id": "compound.arm.yaw:geometry:1",
+                  "kind": "cylinder",
+                  "partId": "turret",
+                  "radius": 0.35,
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0.3,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:yaw::turret",
+              "localTransform": {
+                "position": {
+                  "x": -3.903561672282188e-17,
+                  "y": -0.24375000000000013,
+                  "z": -1.165734175856414e-16
+                },
+                "rotation": {
+                  "w": -1,
+                  "x": -2.220446049250313e-16,
+                  "y": 0,
+                  "z": 6.123233995736766e-17
+                }
+              },
+              "partId": "turret"
+            },
+            {
+              "blockId": "pitch",
+              "blockTypeId": "compound.arm",
+              "bodyId": "body:1",
+              "geometry": [
+                {
+                  "id": "compound.arm:geometry:0",
+                  "kind": "box",
+                  "partId": "mount",
+                  "size": {
+                    "x": 0.4,
+                    "y": 0.4,
+                    "z": 0.4
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:pitch::mount",
+              "localTransform": {
+                "position": {
+                  "x": 6.505936120470315e-17,
+                  "y": 0.4062500000000002,
+                  "z": 1.9428902930940242e-16
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 2.7755575615628914e-16,
+                  "y": -1.232595164407831e-32,
+                  "z": -1.224646799147353e-16
+                }
+              },
+              "partId": "mount"
+            },
+            {
+              "blockId": "pitch",
+              "blockTypeId": "compound.arm",
+              "bodyId": "body:2",
+              "geometry": [
+                {
+                  "id": "compound.arm:geometry:1",
+                  "kind": "box",
+                  "partId": "link",
+                  "size": {
+                    "x": 0.3,
+                    "y": 1.5,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0.95,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:pitch::link",
+              "localTransform": {
+                "position": {
+                  "x": -1.4695761589768233e-16,
+                  "y": -0.5699999999999998,
+                  "z": -3.3306690738754696e-16
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 2.7755575615628914e-16,
+                  "y": -1.232595164407831e-32,
+                  "z": -1.224646799147353e-16
+                }
+              },
+              "partId": "link"
+            },
+            {
+              "blockId": "pitch2",
+              "blockTypeId": "compound.arm",
+              "bodyId": "body:2",
+              "geometry": [
+                {
+                  "id": "compound.arm:geometry:0",
+                  "kind": "box",
+                  "partId": "mount",
+                  "size": {
+                    "x": 0.4,
+                    "y": 0.4,
+                    "z": 0.4
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:pitch2::mount",
+              "localTransform": {
+                "position": {
+                  "x": 3.429011037612589e-16,
+                  "y": 1.33,
+                  "z": 7.771561172376097e-16
+                },
+                "rotation": {
+                  "w": -1,
+                  "x": -4.440892098500626e-16,
+                  "y": 1.232595164407831e-32,
+                  "z": 1.8369701987210297e-16
+                }
+              },
+              "partId": "mount"
+            },
+            {
+              "blockId": "pitch2",
+              "blockTypeId": "compound.arm",
+              "bodyId": "body:3",
+              "geometry": [
+                {
+                  "id": "compound.arm:geometry:1",
+                  "kind": "box",
+                  "partId": "link",
+                  "size": {
+                    "x": 0.3,
+                    "y": 1.5,
+                    "z": 0.3
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0.95,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:pitch2::link",
+              "localTransform": {
+                "position": {
+                  "x": -5.114701337615416e-16,
+                  "y": -1.2941176470588234,
+                  "z": -1.280021840156063e-15
+                },
+                "rotation": {
+                  "w": -1,
+                  "x": -4.440892098500626e-16,
+                  "y": 1.232595164407831e-32,
+                  "z": 1.8369701987210297e-16
+                }
+              },
+              "partId": "link"
+            },
+            {
+              "blockId": "grip-block",
+              "blockTypeId": "primitive.block.1x1",
+              "bodyId": "body:3",
+              "geometry": [
+                {
+                  "id": "primitive.block.1x1:geometry:0",
+                  "kind": "box",
+                  "partId": "main",
+                  "size": {
+                    "x": 1,
+                    "y": 1,
+                    "z": 1
+                  },
+                  "transform": {
+                    "position": {
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    },
+                    "rotation": {
+                      "w": 1,
+                      "x": 0,
+                      "y": 0,
+                      "z": 0
+                    }
+                  }
+                }
+              ],
+              "id": "mount:grip-block::main",
+              "localTransform": {
+                "position": {
+                  "x": 3.5802909363307917e-16,
+                  "y": 0.9058823529411768,
+                  "z": 8.960152881092436e-16
+                },
+                "rotation": {
+                  "w": 1,
+                  "x": 6.661338147750939e-16,
+                  "y": -2.465190328815662e-32,
+                  "z": -2.449293598294706e-16
+                }
+              },
+              "partId": "main"
+            }
+          ]
+        },
+        "metadata": {
+          "builder": "snap-machines-demo",
+          "mode": "play",
+          "presetName": "Crane"
+        }
+      }
     }
   ]
 }

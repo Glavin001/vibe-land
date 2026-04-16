@@ -14,6 +14,7 @@ import {
   clampI8,
   buildInputFrame,
   encodeBlockEditPacket,
+  MAX_MACHINE_CHANNELS,
   type InputFrame,
   type NetPlayerState,
   type FireCmd,
@@ -187,6 +188,7 @@ describe('encodeInputBundle', () => {
   it('throws on bundle > 255 frames', () => {
     const frames: InputFrame[] = Array.from({ length: 256 }, (_, i) => ({
       seq: i, buttons: 0, moveX: 0, moveY: 0, yaw: 0, pitch: 0,
+      machineChannels: new Int8Array(MAX_MACHINE_CHANNELS),
     }));
     expect(() => encodeInputBundle(frames)).toThrow('input bundle too large');
   });
@@ -195,17 +197,19 @@ describe('encodeInputBundle', () => {
     const frame: InputFrame = {
       seq: 42, buttons: BTN_FORWARD | BTN_JUMP, moveX: 0, moveY: 127,
       yaw: 1.0, pitch: -0.5,
+      machineChannels: new Int8Array(MAX_MACHINE_CHANNELS),
     };
     const encoded = encodeInputBundle([frame]);
-    expect(encoded.length).toBe(1 + 1 + 10); // type + count + frame
+    expect(encoded.length).toBe(1 + 1 + 10 + MAX_MACHINE_CHANNELS); // type + count + frame
   });
 
   it('encodes max 255 frames', () => {
     const frames: InputFrame[] = Array.from({ length: 255 }, (_, i) => ({
       seq: i, buttons: 0, moveX: 0, moveY: 0, yaw: 0, pitch: 0,
+      machineChannels: new Int8Array(MAX_MACHINE_CHANNELS),
     }));
     const encoded = encodeInputBundle(frames);
-    expect(encoded.length).toBe(1 + 1 + 255 * 10);
+    expect(encoded.length).toBe(1 + 1 + 255 * (10 + MAX_MACHINE_CHANNELS));
   });
 });
 
@@ -242,7 +246,7 @@ function buildSnapshotBinary(opts: {
   players?: NetPlayerState[];
 }): Uint8Array {
   const players = opts.players ?? [];
-  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + 2 + players.length * 29;
+  const size = 1 + 8 + 4 + 2 + 2 + 2 + 2 + 2 + 2 + players.length * 29;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -261,6 +265,7 @@ function buildSnapshotBinary(opts: {
   view.setUint16(o, 0, true); o += 2; // projectile count
   view.setUint16(o, 0, true); o += 2; // dynamic body count
   view.setUint16(o, 0, true); o += 2; // vehicle count
+  view.setUint16(o, 0, true); o += 2; // machine count
 
   for (const p of players) {
     view.setUint32(o, p.id, true); o += 4;

@@ -1,6 +1,15 @@
+use crate::snap_machine::MAX_MACHINE_CHANNELS;
 use crate::unit_conv::*;
 
 // ── Core types ──────────────────────────────────
+
+/// Per-tick scalar actuator-channel values for whatever snap-machine the
+/// player is currently operating. Values are normalized to `i8` (`-127..127`
+/// → `-1.0..1.0`). Index → action-name resolution lives in
+/// `snap_machine::derive_action_channels`. When the player is not operating
+/// a machine, every entry is zero and these bytes get serialized but
+/// ignored on the receiving side.
+pub type MachineChannels = [i8; MAX_MACHINE_CHANNELS];
 
 #[derive(Clone, Debug, Default)]
 pub struct InputFrame {
@@ -10,6 +19,7 @@ pub struct InputFrame {
     pub move_y: i8,
     pub yaw: f32,
     pub pitch: f32,
+    pub machine_channels: MachineChannels,
 }
 
 pub type InputCmd = InputFrame;
@@ -134,6 +144,7 @@ pub struct SnapshotPacket {
     pub projectile_states: Vec<NetProjectileState>,
     pub dynamic_body_states: Vec<NetDynamicBodyState>,
     pub vehicle_states: Vec<NetVehicleState>,
+    pub machine_states: Vec<NetSnapMachineState>,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +196,69 @@ pub struct VehicleEnterCmd {
 #[derive(Clone, Debug)]
 pub struct VehicleExitCmd {
     pub vehicle_id: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MachineEnterCmd {
+    pub machine_id: u32,
+}
+
+#[derive(Clone, Debug)]
+pub struct MachineExitCmd {
+    pub machine_id: u32,
+}
+
+/// One body inside a snap-machine snapshot. Encoded little-endian on the
+/// wire; total of `2 + 12 + 8 + 6 + 6 = 34` bytes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NetSnapBodyState {
+    pub index: u16,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub qx_snorm: i16,
+    pub qy_snorm: i16,
+    pub qz_snorm: i16,
+    pub qw_snorm: i16,
+    pub vx_cms: i16,
+    pub vy_cms: i16,
+    pub vz_cms: i16,
+    pub wx_mrads: i16,
+    pub wy_mrads: i16,
+    pub wz_mrads: i16,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct NetSnapMachineState {
+    pub id: u32,
+    pub driver_id: u32, // 0 = unoccupied
+    pub flags: u8,
+    pub bodies: Vec<NetSnapBodyState>,
+}
+
+pub fn make_net_snap_body_state(
+    index: u16,
+    pos: [f32; 3],
+    quat: [f32; 4],
+    linvel: [f32; 3],
+    angvel: [f32; 3],
+) -> NetSnapBodyState {
+    NetSnapBodyState {
+        index,
+        px_mm: meters_to_mm(pos[0]),
+        py_mm: meters_to_mm(pos[1]),
+        pz_mm: meters_to_mm(pos[2]),
+        qx_snorm: f32_to_snorm16(quat[0]),
+        qy_snorm: f32_to_snorm16(quat[1]),
+        qz_snorm: f32_to_snorm16(quat[2]),
+        qw_snorm: f32_to_snorm16(quat[3]),
+        vx_cms: meters_to_cms_i16(linvel[0]),
+        vy_cms: meters_to_cms_i16(linvel[1]),
+        vz_cms: meters_to_cms_i16(linvel[2]),
+        wx_mrads: rads_to_mrads_i16(angvel[0]),
+        wy_mrads: rads_to_mrads_i16(angvel[1]),
+        wz_mrads: rads_to_mrads_i16(angvel[2]),
+    }
 }
 
 // ── High-level state conversion helpers ─────────

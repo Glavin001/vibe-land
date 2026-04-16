@@ -1555,6 +1555,16 @@ impl MatchState {
                             self.arena.exit_vehicle(player_id);
                         }
                     }
+                    ClientPacket::MachineEnter(cmd) => {
+                        if !is_dead && self.arena.machines.contains_key(&cmd.machine_id) {
+                            self.arena.enter_machine(player_id, cmd.machine_id);
+                        }
+                    }
+                    ClientPacket::MachineExit(_cmd) => {
+                        if !is_dead {
+                            self.arena.exit_machine(player_id);
+                        }
+                    }
                     ClientPacket::DebugStats {
                         correction_m,
                         physics_ms,
@@ -1749,6 +1759,7 @@ impl MatchState {
 
         let vehicle_started = Instant::now();
         self.arena.step_vehicles(dt);
+        self.arena.step_machines(dt);
         self.timings
             .vehicle_ms
             .record(vehicle_started.elapsed().as_secs_f32() * 1000.0);
@@ -2423,6 +2434,11 @@ impl MatchState {
             })
             .collect();
 
+        // Snap-machine states are broadcast to every recipient without AOI
+        // filtering for now — most worlds will only have a handful, and they
+        // tend to be much smaller than the dynamic-body fleet.
+        let machine_states_all = self.arena.snapshot_machines();
+
         let recipient_ids: Vec<u32> = self.players.keys().copied().collect();
 
         let mut snapshot_bytes_this_tick = 0usize;
@@ -2504,6 +2520,8 @@ impl MatchState {
                     .map(|(_, _, state)| *state)
                     .collect();
 
+                let filtered_machines: Vec<_> = machine_states_all.clone();
+
                 let packet = ServerPacket::Snapshot(SnapshotPacket {
                     server_time_us,
                     server_tick: self.server_tick,
@@ -2515,6 +2533,7 @@ impl MatchState {
                     projectile_states: Vec::new(),
                     dynamic_body_states: filtered_dynamic_bodies,
                     vehicle_states: filtered_vehicles,
+                    machine_states: filtered_machines,
                 });
                 let encoded = encode_server_packet(&packet);
                 snapshot_bytes_this_tick += encoded.len();
@@ -3120,6 +3139,7 @@ mod tests {
             move_y: 0,
             yaw: 0.0,
             pitch: 0.0,
+            machine_channels: Default::default(),
         }
     }
 

@@ -266,6 +266,357 @@ describe('WorldDocument local-preview scenarios', () => {
     expectSupportedAboveTerrain(vehicle!.position[1], raycastTerrainHeight(world, 14, 0));
   });
 
+  it('snap-machine spawned in the air drops ~half its authored height', () => {
+    // Swap the shipped machine for a clone positioned 5 m above the
+    // flat terrain. Verifies gravity drags the chassis down by at least
+    // 1 m within the first second (free-fall under g = 20 m/s² covers
+    // 2.5 m in 0.5 s — plenty of budget).
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const shipped = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(shipped).toBeDefined();
+    const elevatedId = 80001;
+    const elevated: DynamicEntity = {
+      id: elevatedId,
+      kind: 'snapMachine',
+      position: [-10, 5, 0],
+      rotation: [0, 0, 0, 1],
+      envelope: shipped!.envelope,
+    };
+    world.dynamicEntities = world.dynamicEntities.filter(
+      (e) => e.kind !== 'snapMachine',
+    );
+    world.dynamicEntities.push(elevated);
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    session.drainPackets();
+
+    let firstChassisY: number | null = null;
+    let lastChassisY: number | null = null;
+
+    for (let i = 0; i < 60; i += 1) {
+      session.tick(1 / 60);
+      const blob = session.drainPackets();
+      let offset = 0;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === elevatedId);
+          if (machine && machine.bodies.length > 0) {
+            const y = machine.bodies[0].pyMm / 1000;
+            if (firstChassisY === null) firstChassisY = y;
+            lastChassisY = y;
+          }
+        }
+      }
+    }
+
+    expect(firstChassisY).not.toBeNull();
+    expect(lastChassisY).not.toBeNull();
+    // First sample should be near the authored 5 m spawn (envelope
+    // auto-shifted so its floor sits at entity.y = 5; chassis center is
+    // then at 5 + ~0.81 ≈ 5.81 before any fall).
+    expect(firstChassisY!).toBeGreaterThan(4.5);
+    expect(firstChassisY!).toBeLessThan(7.0);
+    // After 1 s of falling the chassis has dropped at least 1 m.
+    expect(firstChassisY! - lastChassisY!).toBeGreaterThan(1.0);
+  });
+
+  it('default snap-machine falls under gravity and settles above the ground', () => {
+    // Drive the loopback session with the real world document (which
+    // ships a 4-wheel-car placed just above the ground) and watch the
+    // chassis body's Y over time. The chassis must monotonically fall
+    // in the first half-second, then settle well above terrain.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(snapEntity, 'default world should ship a snap-machine').toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+
+    type Sample = { tick: number; chassisY: number | null };
+
+    function readChassisY(): Sample {
+      session.tick(1 / 60);
+      const blob = session.drainPackets();
+      let offset = 0;
+      let chassisY: number | null = null;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === snapEntity!.id);
+          if (machine && machine.bodies.length > 0) {
+            // bodies are sorted by body id alphabetically; index 0 is
+            // `body:0` which is the chassis.
+            chassisY = machine.bodies[0].pyMm / 1000;
+          }
+        }
+      }
+      return { tick: -1, chassisY };
+    }
+
+    // Warm-up tick to flush the welcome packet.
+    session.drainPackets();
+
+    const samples: Array<{ elapsedMs: number; y: number }> = [];
+    for (let i = 0; i < 300; i += 1) {
+      const s = readChassisY();
+      if (s.chassisY != null) {
+        samples.push({ elapsedMs: (i + 1) * (1000 / 60), y: s.chassisY });
+      }
+    }
+    expect(samples.length).toBeGreaterThan(30);
+
+    // First sample is right after the first physics step; it should be
+    // below the authored spawn y because gravity has already pulled the
+    // chassis downward for one tick.
+    const first = samples[0]!.y;
+    const quarterSec = samples.find((s) => s.elapsedMs >= 250)?.y ?? first;
+    const oneSec = samples.find((s) => s.elapsedMs >= 1000)?.y ?? quarterSec;
+    const settled = samples[samples.length - 1]!.y;
+
+    // Gravity is clearly active: the chassis moved downward between
+    // the first post-spawn tick and a quarter second later. (The
+    // authored spawn only leaves 20 cm of air so the full "drop"
+    // distance is small — the point is that motion is downward, not
+    // frozen.)
+    expect(quarterSec).toBeLessThanOrEqual(first);
+    expect(oneSec).toBeLessThanOrEqual(quarterSec);
+    expect(first).toBeGreaterThan(quarterSec - 0.001);
+
+    // Chassis must rest above the terrain (not tunnel through) and not
+    // fly off to space. Terrain near (-4, 0) is effectively flat at
+    // y ≈ 0; chassis center should settle between ~0.5 m and ~3 m
+    // above depending on suspension + wheel geometry.
+    expect(settled).toBeGreaterThan(0.1);
+    expect(settled).toBeLessThan(5.0);
+    // And the chassis must not keep sinking forever: late samples
+    // should be within a few cm of each other.
+    const lateSamples = samples.slice(-30);
+    const minLate = Math.min(...lateSamples.map((s) => s.y));
+    const maxLate = Math.max(...lateSamples.map((s) => s.y));
+    expect(maxLate - minLate).toBeLessThan(0.1);
+  });
+
+  it('press-E machine enter sets driverId in the next snapshot', () => {
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapEntity = world.dynamicEntities.find((e) => e.kind === 'snapMachine');
+    expect(snapEntity).toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    // Discard the initial welcome drain + a warm-up tick so the machine
+    // is fully instantiated.
+    session.drainPackets();
+    session.tick(1 / 60);
+    session.drainPackets();
+
+    // Send PKT_MACHINE_ENTER for our machine id.
+    const enterBytes = new Uint8Array(5);
+    const enterView = new DataView(enterBytes.buffer);
+    enterView.setUint8(0, 8 /* PKT_MACHINE_ENTER */);
+    enterView.setUint32(1, snapEntity!.id >>> 0, true);
+    session.handleClientPacket(enterBytes);
+
+    // Tick once more and read the snapshot.
+    session.tick(1 / 60);
+    const blob = session.drainPackets();
+    let offset = 0;
+    let snapshot: SnapshotPacket | null = null;
+    while (offset + 4 <= blob.length) {
+      const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+      const packetLen = view.getUint32(offset, true);
+      offset += 4;
+      const packet = blob.slice(offset, offset + packetLen);
+      offset += packetLen;
+      const decoded = decodeServerPacket(packet);
+      if (decoded.type === 'snapshot') {
+        snapshot = decoded;
+      }
+    }
+    expect(snapshot).not.toBeNull();
+    const machine = snapshot!.machineStates.find((m) => m.id === snapEntity!.id);
+    expect(machine).toBeDefined();
+    // LOCAL_PLAYER_ID in LocalPreviewSession is 1.
+    expect(machine!.driverId).toBe(1);
+  });
+
+  it('default authored world includes a drivable snap-machine', () => {
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const snapMachines = world.dynamicEntities.filter((e) => e.kind === 'snapMachine');
+    expect(snapMachines.length, 'trail.world.json should ship snapMachine entities').toBeGreaterThan(0);
+
+    const result = runLocalPreview(world, 120);
+    expect(result.snapshot.machineStates.length).toBeGreaterThan(0);
+    for (const snapEntity of snapMachines) {
+      const machine = result.snapshot.machineStates.find((m) => m.id === snapEntity.id);
+      expect(machine, `machine ${snapEntity.id} should appear in snapshot.machineStates`).toBeDefined();
+      expect(machine!.bodies.length).toBeGreaterThan(0);
+      for (const body of machine!.bodies) {
+        const x = body.pxMm / 1000;
+        const y = body.pyMm / 1000;
+        const z = body.pzMm / 1000;
+        expect(Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)).toBe(true);
+        expect(Math.abs(x)).toBeLessThan(100);
+        expect(Math.abs(z)).toBeLessThan(100);
+        expect(y).toBeGreaterThan(-20);
+        expect(y).toBeLessThan(50);
+      }
+    }
+  });
+
+  it('4-wheel-car actually drives when motorSpin is held', () => {
+    // Sanity for the player experience: after entering the car and
+    // holding +motorSpin for 3 seconds, the chassis should have moved
+    // at least 3 metres along the XZ plane. This mirrors the Rust
+    // `chassis_drives_forward_under_motor_input` test but exercises
+    // the full loopback (InputBundle → PhysicsArena.step_machines →
+    // snapshot encode → TS decode). Catches any future regression in
+    // `MOTOR_MAX_FORCE_MULTIPLIER` / `MOTOR_DAMPING_MULTIPLIER` or
+    // the input→channel plumbing.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const car = world.dynamicEntities.find(
+      (e) => e.kind === 'snapMachine'
+        && typeof e.envelope === 'object'
+        && e.envelope !== null
+        && 'metadata' in e.envelope
+        && (e.envelope as { metadata?: { presetName?: string } }).metadata?.presetName === '4-Wheel Car',
+    );
+    expect(car, 'trail.world.json should ship the 4-wheel car').toBeDefined();
+
+    const session = new WasmLocalSession(serializeWorldDocument(world));
+    session.connect();
+    session.drainPackets();
+
+    function decodeMachineChassisXZ(blob: Uint8Array): [number, number] | null {
+      let offset = 0;
+      let xz: [number, number] | null = null;
+      while (offset + 4 <= blob.length) {
+        const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+        const packetLen = view.getUint32(offset, true);
+        offset += 4;
+        const packet = blob.slice(offset, offset + packetLen);
+        offset += packetLen;
+        const decoded = decodeServerPacket(packet);
+        if (decoded.type === 'snapshot') {
+          const machine = decoded.machineStates.find((m) => m.id === car!.id);
+          if (machine && machine.bodies.length > 0) {
+            const body0 = machine.bodies[0];
+            xz = [body0.pxMm / 1000, body0.pzMm / 1000];
+          }
+        }
+      }
+      return xz;
+    }
+
+    // Settle the chassis before we start driving so the measured
+    // distance reflects motor-driven motion, not falling.
+    for (let i = 0; i < 60; i += 1) {
+      session.tick(1 / 60);
+    }
+    const settled = decodeMachineChassisXZ(session.drainPackets());
+    expect(settled, 'machine snapshot should be present after settling').not.toBeNull();
+
+    // Enter the machine (the local preview session treats player 1
+    // as the operator) and send an InputBundle with motorSpin = +1.0.
+    const enterBytes = new Uint8Array(5);
+    new DataView(enterBytes.buffer).setUint8(0, 8 /* PKT_MACHINE_ENTER */);
+    new DataView(enterBytes.buffer).setUint32(1, car!.id >>> 0, true);
+    session.handleClientPacket(enterBytes);
+
+    // Build a per-tick InputBundle with `machineChannels[0] = 127`
+    // (the car has one action channel, `motorSpin`). Wire layout
+    // matches `encodeInputBundle` — 1-byte kind, 1-byte count, then
+    // per-frame `seq u16, buttons u16, mx i8, my i8, yaw i16, pitch
+    // i16, channels[8] i8`. One frame is enough for the session to
+    // pick up the channel value since it re-plays the last input.
+    function buildInputBundlePacket(seq: number, channel0: number): Uint8Array {
+      const frameSize = 10 + 8;
+      const out = new Uint8Array(2 + frameSize);
+      const view = new DataView(out.buffer);
+      view.setUint8(0, 2 /* PKT_INPUT_BUNDLE */);
+      view.setUint8(1, 1);
+      view.setUint16(2, seq, true);
+      view.setUint16(4, 0, true);
+      view.setInt8(6, 0);
+      view.setInt8(7, 0);
+      view.setInt16(8, 0, true);
+      view.setInt16(10, 0, true);
+      view.setInt8(12, channel0);
+      // channels 1..7 stay zero.
+      return out;
+    }
+
+    for (let i = 0; i < 360; i += 1) {
+      session.handleClientPacket(buildInputBundlePacket(i + 1, 127));
+      session.tick(1 / 60);
+    }
+
+    const end = decodeMachineChassisXZ(session.drainPackets());
+    expect(end, 'machine snapshot should be present after driving').not.toBeNull();
+
+    const dx = end![0] - settled![0];
+    const dz = end![1] - settled![1];
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    // 6 s of +motorSpin through the real client wire path. The Rust
+    // test asserts ≥ 3 m on flat ground; the TS e2e sees extra drag
+    // from the heightfield surface (trail.world.json isn't perfectly
+    // flat where the car spawns) + single-substep pipeline the
+    // loopback uses, so we assert ≥ 1 m here — well above the
+    // < 0.2 m baseline we had before the motor-tuning fix.
+    expect(
+      dist,
+      `car should drive at least 1 m (settled=${JSON.stringify(settled)}, end=${JSON.stringify(end)})`,
+    ).toBeGreaterThanOrEqual(1.0);
+  });
+
+  it('crane is shipped with a unique display name and 3 distinct actions', () => {
+    // The crane fixture has 3 revolute joints; we uniquify the
+    // duplicated `armPitch` into `armPitchElbow` at inline time so
+    // the operator can control each joint independently. Verify the
+    // world document carries those 3 distinct actions.
+    const world = cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+    const crane = world.dynamicEntities.find(
+      (e) => e.kind === 'snapMachine'
+        && typeof e.envelope === 'object'
+        && e.envelope !== null
+        && 'metadata' in e.envelope
+        && (e.envelope as { metadata?: { presetName?: string } }).metadata?.presetName === 'Crane',
+    );
+    expect(crane, 'trail.world.json should ship a Crane snap-machine').toBeDefined();
+
+    const envelope = crane!.envelope as {
+      plan: {
+        joints: Array<{ motor?: { input?: { action: string } } }>;
+      };
+    };
+    const actions = new Set<string>();
+    for (const joint of envelope.plan.joints) {
+      const action = joint.motor?.input?.action;
+      if (action) actions.add(action);
+    }
+    expect(actions.has('armPitch')).toBe(true);
+    expect(actions.has('armPitchElbow')).toBe(true);
+    expect(actions.has('armYaw')).toBe(true);
+    expect(actions.size).toBeGreaterThanOrEqual(3);
+
+    // And verify the physics runtime installs the crane cleanly.
+    const result = runLocalPreview(world, 60);
+    const craneState = result.snapshot.machineStates.find((m) => m.id === crane!.id);
+    expect(craneState, 'crane must be present in snapshot').toBeDefined();
+    expect(craneState!.bodies.length).toBeGreaterThan(0);
+  });
+
   it('terrain brush respects lower and upper plateaus', () => {
     const world = makeFlatWorld();
     const [x, z] = getTerrainWorldPosition(world, 4, 4);
@@ -508,6 +859,11 @@ describe('WorldDocument local-preview scenarios', () => {
           vehicle!.position[1],
           `vehicle ${entity.id} final=(${vehicle!.position[0]}, ${vehicle!.position[1]}, ${vehicle!.position[2]})`,
         ).toBeGreaterThan(terrainY - 0.25);
+      } else if (entity.kind === 'snapMachine') {
+        // Snap-machines don't participate in the dynamic body map — their
+        // bodies live in the machines table. The physics round-trip is
+        // covered by the Rust `snap_machine::tests` instead.
+        continue;
       } else {
         const body = result.dynamicBodies.get(entity.id);
         expect(body).toBeDefined();

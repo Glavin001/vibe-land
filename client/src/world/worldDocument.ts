@@ -70,12 +70,14 @@ export type StaticProp = {
 
 export type DynamicEntity = {
   id: number;
-  kind: 'box' | 'ball' | 'vehicle';
+  kind: 'box' | 'ball' | 'vehicle' | 'snapMachine';
   position: Vec3;
   rotation: Quaternion;
   halfExtents?: Vec3;
   radius?: number;
   vehicleType?: number;
+  /** Inline snap-machine envelope JSON (required when kind === 'snapMachine'). */
+  envelope?: unknown;
 };
 
 export type WorldDraftRevision = {

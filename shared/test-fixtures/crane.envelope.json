@@ -1,0 +1,1040 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "smcat1-dd4f5f1f954f25a0",
+  "plan": {
+    "behaviors": [],
+    "bodies": [
+      {
+        "colliders": [
+          {
+            "blockId": "base",
+            "halfExtents": {
+              "x": 2.5,
+              "y": 0.5,
+              "z": 0.5
+            },
+            "id": "frame.beam.5x1:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": -5.925710318454935e-19,
+                "y": -0.020967741935483897,
+                "z": -1.7906822977825105e-18
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            },
+            "mass": 5,
+            "partId": "main",
+            "sensor": false
+          },
+          {
+            "blockId": "base-zp",
+            "halfExtents": {
+              "x": 2.5,
+              "y": 0.5,
+              "z": 0.5
+            },
+            "id": "frame.beam.5x1:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": -6.182491098921315e-17,
+                "y": -0.020967741935483897,
+                "z": 1
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": -6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 5,
+            "partId": "main",
+            "sensor": false
+          },
+          {
+            "blockId": "base-zn",
+            "halfExtents": {
+              "x": 2.5,
+              "y": 0.5,
+              "z": 0.5
+            },
+            "id": "frame.beam.5x1:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 6.063976892552217e-17,
+                "y": -0.020967741935483897,
+                "z": -1
+              },
+              "rotation": {
+                "w": -1,
+                "x": 0,
+                "y": 6.123233995736766e-17,
+                "z": 0
+              }
+            },
+            "mass": 5,
+            "partId": "main",
+            "sensor": false
+          },
+          {
+            "axis": "y",
+            "blockId": "yaw",
+            "halfHeight": 0.15,
+            "id": "compound.arm.yaw:collider:0",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": 1.7777130955364804e-17,
+                "y": 0.629032258064516,
+                "z": 5.372046893347532e-17
+              },
+              "rotation": {
+                "w": -1,
+                "x": -2.220446049250313e-16,
+                "y": 0,
+                "z": 6.123233995736766e-17
+              }
+            },
+            "mass": 0.5,
+            "partId": "base",
+            "radius": 0.4,
+            "sensor": false
+          }
+        ],
+        "id": "body:0",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 5.925710318454935e-19,
+            "y": 1.020967741935484,
+            "z": 1.7906822977825105e-18
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "base",
+          "base-zp",
+          "base-zn",
+          "yaw"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "base",
+            "partId": "main"
+          },
+          {
+            "blockId": "base-zp",
+            "partId": "main"
+          },
+          {
+            "blockId": "base-zn",
+            "partId": "main"
+          },
+          {
+            "blockId": "yaw",
+            "partId": "base"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "axis": "y",
+            "blockId": "yaw",
+            "halfHeight": 0.15,
+            "id": "compound.arm.yaw:collider:1",
+            "includeInMass": true,
+            "kind": "cylinder",
+            "localTransform": {
+              "position": {
+                "x": -2.296212748401279e-18,
+                "y": 0.05624999999999991,
+                "z": 1.6653345369377388e-17
+              },
+              "rotation": {
+                "w": -1,
+                "x": -2.220446049250313e-16,
+                "y": 0,
+                "z": 6.123233995736766e-17
+              }
+            },
+            "mass": 0.5,
+            "partId": "turret",
+            "radius": 0.35,
+            "sensor": false
+          },
+          {
+            "blockId": "pitch",
+            "halfExtents": {
+              "x": 0.2,
+              "y": 0.2,
+              "z": 0.2
+            },
+            "id": "compound.arm:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 6.505936120470315e-17,
+                "y": 0.4062500000000002,
+                "z": 1.9428902930940242e-16
+              },
+              "rotation": {
+                "w": 1,
+                "x": 2.7755575615628914e-16,
+                "y": -1.232595164407831e-32,
+                "z": -1.224646799147353e-16
+              }
+            },
+            "mass": 0.3,
+            "partId": "mount",
+            "sensor": false
+          }
+        ],
+        "id": "body:1",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 5.740531871003217e-17,
+            "y": 1.89375,
+            "z": 1.7208456881689922e-16
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "yaw",
+          "pitch"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "yaw",
+            "partId": "turret"
+          },
+          {
+            "blockId": "pitch",
+            "partId": "mount"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "blockId": "pitch",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.75,
+              "z": 0.15
+            },
+            "id": "compound.arm:collider:1",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 8.572527594031473e-17,
+                "y": 0.3799999999999999,
+                "z": 1.942890293094025e-16
+              },
+              "rotation": {
+                "w": 1,
+                "x": 2.7755575615628914e-16,
+                "y": -1.232595164407831e-32,
+                "z": -1.224646799147353e-16
+              }
+            },
+            "mass": 0.7,
+            "partId": "link",
+            "sensor": false
+          },
+          {
+            "blockId": "pitch2",
+            "halfExtents": {
+              "x": 0.2,
+              "y": 0.2,
+              "z": 0.2
+            },
+            "id": "compound.arm:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 3.429011037612589e-16,
+                "y": 1.33,
+                "z": 7.771561172376097e-16
+              },
+              "rotation": {
+                "w": -1,
+                "x": -4.440892098500626e-16,
+                "y": 1.232595164407831e-32,
+                "z": 1.8369701987210297e-16
+              }
+            },
+            "mass": 0.3,
+            "partId": "mount",
+            "sensor": false
+          }
+        ],
+        "id": "body:2",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 2.6942229581241765e-16,
+            "y": 2.87,
+            "z": 6.994405055138486e-16
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "pitch",
+          "pitch2"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "pitch",
+            "partId": "link"
+          },
+          {
+            "blockId": "pitch2",
+            "partId": "mount"
+          }
+        ]
+      },
+      {
+        "colliders": [
+          {
+            "blockId": "pitch2",
+            "halfExtents": {
+              "x": 0.15,
+              "y": 0.75,
+              "z": 0.15
+            },
+            "id": "compound.arm:collider:1",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": -1.62445796004546e-16,
+                "y": -0.3441176470588232,
+                "z": -4.362523414409443e-16
+              },
+              "rotation": {
+                "w": -1,
+                "x": -4.440892098500626e-16,
+                "y": 1.232595164407831e-32,
+                "z": 1.8369701987210297e-16
+              }
+            },
+            "mass": 0.7,
+            "partId": "link",
+            "sensor": false
+          },
+          {
+            "blockId": "grip-block",
+            "halfExtents": {
+              "x": 0.5,
+              "y": 0.5,
+              "z": 0.5
+            },
+            "id": "primitive.block.1x1:collider:0",
+            "includeInMass": true,
+            "kind": "box",
+            "localTransform": {
+              "position": {
+                "x": 3.5802909363307917e-16,
+                "y": 0.9058823529411768,
+                "z": 8.960152881092436e-16
+              },
+              "rotation": {
+                "w": 1,
+                "x": 6.661338147750939e-16,
+                "y": -2.465190328815662e-32,
+                "z": -2.449293598294706e-16
+              }
+            },
+            "mass": 1,
+            "partId": "main",
+            "sensor": false
+          }
+        ],
+        "id": "body:3",
+        "kind": "dynamic",
+        "origin": {
+          "position": {
+            "x": 1.1237935333352181e-15,
+            "y": 5.4941176470588236,
+            "z": 2.7566184629075213e-15
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "sourceBlocks": [
+          "pitch2",
+          "grip-block"
+        ],
+        "sourceParts": [
+          {
+            "blockId": "pitch2",
+            "partId": "link"
+          },
+          {
+            "blockId": "grip-block",
+            "partId": "main"
+          }
+        ]
+      }
+    ],
+    "diagnostics": [],
+    "joints": [
+      {
+        "blockId": "yaw",
+        "bodyAId": "body:0",
+        "bodyBId": "body:1",
+        "collideConnected": false,
+        "id": "joint:yaw",
+        "kind": "revolute",
+        "localAnchorA": {
+          "x": 3.61468329425751e-17,
+          "y": 0.7790322580645159,
+          "z": 1.2033385041098472e-16
+        },
+        "localAnchorB": {
+          "x": -2.066591473561158e-17,
+          "y": -0.09375000000000022,
+          "z": -4.996003610813199e-17
+        },
+        "localAxisA": {
+          "x": 1.2246467991473532e-16,
+          "y": 1,
+          "z": 4.440892098500626e-16
+        },
+        "localAxisB": {
+          "x": 1.2246467991473532e-16,
+          "y": 1,
+          "z": 4.440892098500626e-16
+        },
+        "localFrameA": {
+          "w": -4.329780281177467e-17,
+          "x": -4.329780281177466e-17,
+          "y": -0.7071067811865474,
+          "z": -0.7071067811865477
+        },
+        "localFrameB": {
+          "w": -0.7071067811865475,
+          "x": -0.7071067811865476,
+          "y": 4.329780281177466e-17,
+          "z": 4.329780281177467e-17
+        },
+        "motor": {
+          "damping": 200,
+          "input": {
+            "action": "armYaw",
+            "scale": 3.141592653589793
+          },
+          "inputTarget": "position",
+          "maxForce": 5000,
+          "mode": "position",
+          "stiffness": 5000,
+          "targetPosition": 0,
+          "targetVelocity": 0
+        }
+      },
+      {
+        "blockId": "pitch",
+        "bodyAId": "body:1",
+        "bodyBId": "body:2",
+        "collideConnected": false,
+        "id": "joint:pitch",
+        "kind": "revolute",
+        "limits": {
+          "max": 1.5707963267948966,
+          "min": -1.5707963267948966
+        },
+        "localAnchorA": {
+          "x": 1.1404523317059726e-16,
+          "y": 0.6062500000000004,
+          "z": 3.0531133177191805e-16
+        },
+        "localAnchorB": {
+          "x": -9.797174393178821e-17,
+          "y": -0.36999999999999966,
+          "z": -2.220446049250313e-16
+        },
+        "localAxisA": {
+          "x": -9.263345696050116e-32,
+          "y": -5.551115123125783e-16,
+          "z": 1
+        },
+        "localAxisB": {
+          "x": -9.263345696050116e-32,
+          "y": -5.551115123125783e-16,
+          "z": 1
+        },
+        "localFrameA": {
+          "w": 8.659560562354933e-17,
+          "x": 8.659560562354929e-17,
+          "y": 0.7071067811865472,
+          "z": 0.7071067811865478
+        },
+        "localFrameB": {
+          "w": 0.7071067811865474,
+          "x": 0.7071067811865477,
+          "y": -8.659560562354932e-17,
+          "z": -8.65956056235493e-17
+        },
+        "motor": {
+          "damping": 200,
+          "input": {
+            "action": "armPitch",
+            "scale": 1.5707963267948966
+          },
+          "inputTarget": "position",
+          "maxForce": 5000,
+          "mode": "position",
+          "stiffness": 5000,
+          "targetPosition": 0,
+          "targetVelocity": 0
+        }
+      },
+      {
+        "blockId": "pitch2",
+        "bodyAId": "body:2",
+        "bodyBId": "body:3",
+        "collideConnected": false,
+        "id": "joint:pitch2",
+        "kind": "revolute",
+        "limits": {
+          "max": 1.5707963267948966,
+          "min": -1.5707963267948966
+        },
+        "localAnchorA": {
+          "x": 4.163799117101001e-16,
+          "y": 1.5300000000000002,
+          "z": 9.547918011776348e-16
+        },
+        "localAnchorB": {
+          "x": -4.379913258127004e-16,
+          "y": -1.0941176470588232,
+          "z": -1.102386156216038e-15
+        },
+        "localAxisA": {
+          "x": -1.8780763210178353e-31,
+          "y": -8.881784197001252e-16,
+          "z": 1
+        },
+        "localAxisB": {
+          "x": -1.8780763210178353e-31,
+          "y": -8.881784197001252e-16,
+          "z": 1
+        },
+        "localFrameA": {
+          "w": -1.29893408435324e-16,
+          "x": -1.2989340843532398e-16,
+          "y": -0.7071067811865471,
+          "z": -0.7071067811865479
+        },
+        "localFrameB": {
+          "w": -0.7071067811865472,
+          "x": -0.7071067811865478,
+          "y": 1.2989340843532398e-16,
+          "z": 1.29893408435324e-16
+        },
+        "motor": {
+          "damping": 200,
+          "input": {
+            "action": "armPitch",
+            "scale": 1.5707963267948966
+          },
+          "inputTarget": "position",
+          "maxForce": 5000,
+          "mode": "position",
+          "stiffness": 5000,
+          "targetPosition": 0,
+          "targetVelocity": 0
+        }
+      }
+    ],
+    "mounts": [
+      {
+        "blockId": "base",
+        "blockTypeId": "frame.beam.5x1",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "frame.beam.5x1:geometry:0",
+            "kind": "box",
+            "partId": "main",
+            "size": {
+              "x": 5,
+              "y": 1,
+              "z": 1
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:base::main",
+        "localTransform": {
+          "position": {
+            "x": -5.925710318454935e-19,
+            "y": -0.020967741935483897,
+            "z": -1.7906822977825105e-18
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        },
+        "partId": "main"
+      },
+      {
+        "blockId": "base-zp",
+        "blockTypeId": "frame.beam.5x1",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "frame.beam.5x1:geometry:0",
+            "kind": "box",
+            "partId": "main",
+            "size": {
+              "x": 5,
+              "y": 1,
+              "z": 1
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:base-zp::main",
+        "localTransform": {
+          "position": {
+            "x": -6.182491098921315e-17,
+            "y": -0.020967741935483897,
+            "z": 1
+          },
+          "rotation": {
+            "w": 1,
+            "x": 0,
+            "y": -6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "main"
+      },
+      {
+        "blockId": "base-zn",
+        "blockTypeId": "frame.beam.5x1",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "id": "frame.beam.5x1:geometry:0",
+            "kind": "box",
+            "partId": "main",
+            "size": {
+              "x": 5,
+              "y": 1,
+              "z": 1
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:base-zn::main",
+        "localTransform": {
+          "position": {
+            "x": 6.063976892552217e-17,
+            "y": -0.020967741935483897,
+            "z": -1
+          },
+          "rotation": {
+            "w": -1,
+            "x": 0,
+            "y": 6.123233995736766e-17,
+            "z": 0
+          }
+        },
+        "partId": "main"
+      },
+      {
+        "blockId": "yaw",
+        "blockTypeId": "compound.arm.yaw",
+        "bodyId": "body:0",
+        "geometry": [
+          {
+            "axis": "y",
+            "halfHeight": 0.15,
+            "id": "compound.arm.yaw:geometry:0",
+            "kind": "cylinder",
+            "partId": "base",
+            "radius": 0.4,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:yaw::base",
+        "localTransform": {
+          "position": {
+            "x": 1.7777130955364804e-17,
+            "y": 0.629032258064516,
+            "z": 5.372046893347532e-17
+          },
+          "rotation": {
+            "w": -1,
+            "x": -2.220446049250313e-16,
+            "y": 0,
+            "z": 6.123233995736766e-17
+          }
+        },
+        "partId": "base"
+      },
+      {
+        "blockId": "yaw",
+        "blockTypeId": "compound.arm.yaw",
+        "bodyId": "body:1",
+        "geometry": [
+          {
+            "axis": "y",
+            "halfHeight": 0.15,
+            "id": "compound.arm.yaw:geometry:1",
+            "kind": "cylinder",
+            "partId": "turret",
+            "radius": 0.35,
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0.3,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:yaw::turret",
+        "localTransform": {
+          "position": {
+            "x": -3.903561672282188e-17,
+            "y": -0.24375000000000013,
+            "z": -1.165734175856414e-16
+          },
+          "rotation": {
+            "w": -1,
+            "x": -2.220446049250313e-16,
+            "y": 0,
+            "z": 6.123233995736766e-17
+          }
+        },
+        "partId": "turret"
+      },
+      {
+        "blockId": "pitch",
+        "blockTypeId": "compound.arm",
+        "bodyId": "body:1",
+        "geometry": [
+          {
+            "id": "compound.arm:geometry:0",
+            "kind": "box",
+            "partId": "mount",
+            "size": {
+              "x": 0.4,
+              "y": 0.4,
+              "z": 0.4
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:pitch::mount",
+        "localTransform": {
+          "position": {
+            "x": 6.505936120470315e-17,
+            "y": 0.4062500000000002,
+            "z": 1.9428902930940242e-16
+          },
+          "rotation": {
+            "w": 1,
+            "x": 2.7755575615628914e-16,
+            "y": -1.232595164407831e-32,
+            "z": -1.224646799147353e-16
+          }
+        },
+        "partId": "mount"
+      },
+      {
+        "blockId": "pitch",
+        "blockTypeId": "compound.arm",
+        "bodyId": "body:2",
+        "geometry": [
+          {
+            "id": "compound.arm:geometry:1",
+            "kind": "box",
+            "partId": "link",
+            "size": {
+              "x": 0.3,
+              "y": 1.5,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0.95,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:pitch::link",
+        "localTransform": {
+          "position": {
+            "x": -1.4695761589768233e-16,
+            "y": -0.5699999999999998,
+            "z": -3.3306690738754696e-16
+          },
+          "rotation": {
+            "w": 1,
+            "x": 2.7755575615628914e-16,
+            "y": -1.232595164407831e-32,
+            "z": -1.224646799147353e-16
+          }
+        },
+        "partId": "link"
+      },
+      {
+        "blockId": "pitch2",
+        "blockTypeId": "compound.arm",
+        "bodyId": "body:2",
+        "geometry": [
+          {
+            "id": "compound.arm:geometry:0",
+            "kind": "box",
+            "partId": "mount",
+            "size": {
+              "x": 0.4,
+              "y": 0.4,
+              "z": 0.4
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:pitch2::mount",
+        "localTransform": {
+          "position": {
+            "x": 3.429011037612589e-16,
+            "y": 1.33,
+            "z": 7.771561172376097e-16
+          },
+          "rotation": {
+            "w": -1,
+            "x": -4.440892098500626e-16,
+            "y": 1.232595164407831e-32,
+            "z": 1.8369701987210297e-16
+          }
+        },
+        "partId": "mount"
+      },
+      {
+        "blockId": "pitch2",
+        "blockTypeId": "compound.arm",
+        "bodyId": "body:3",
+        "geometry": [
+          {
+            "id": "compound.arm:geometry:1",
+            "kind": "box",
+            "partId": "link",
+            "size": {
+              "x": 0.3,
+              "y": 1.5,
+              "z": 0.3
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0.95,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:pitch2::link",
+        "localTransform": {
+          "position": {
+            "x": -5.114701337615416e-16,
+            "y": -1.2941176470588234,
+            "z": -1.280021840156063e-15
+          },
+          "rotation": {
+            "w": -1,
+            "x": -4.440892098500626e-16,
+            "y": 1.232595164407831e-32,
+            "z": 1.8369701987210297e-16
+          }
+        },
+        "partId": "link"
+      },
+      {
+        "blockId": "grip-block",
+        "blockTypeId": "primitive.block.1x1",
+        "bodyId": "body:3",
+        "geometry": [
+          {
+            "id": "primitive.block.1x1:geometry:0",
+            "kind": "box",
+            "partId": "main",
+            "size": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            },
+            "transform": {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "rotation": {
+                "w": 1,
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          }
+        ],
+        "id": "mount:grip-block::main",
+        "localTransform": {
+          "position": {
+            "x": 3.5802909363307917e-16,
+            "y": 0.9058823529411768,
+            "z": 8.960152881092436e-16
+          },
+          "rotation": {
+            "w": 1,
+            "x": 6.661338147750939e-16,
+            "y": -2.465190328815662e-32,
+            "z": -2.449293598294706e-16
+          }
+        },
+        "partId": "main"
+      }
+    ]
+  },
+  "metadata": {
+    "builder": "snap-machines-demo",
+    "mode": "play",
+    "presetName": "Crane"
+  }
+}
