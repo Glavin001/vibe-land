@@ -5,7 +5,6 @@
  * The bridge (window.__VIBE_E2E__) is used only for reading state and assertions.
  */
 import type { Page } from '@playwright/test';
-import { expect } from '@playwright/test';
 import type { GameE2ESnapshot } from './types';
 import { Controls, codeToKey } from './controls';
 
@@ -60,6 +59,22 @@ export async function waitForSnapshot(
 
 /** Open /practice and wait for the page to load. */
 export async function openPractice(page: Page): Promise<void> {
+  // Pre-seed localStorage to dismiss the first-run calibration prompt so it
+  // doesn't appear over the canvas and block pointer-lock acquisition.
+  await page.addInitScript(() => {
+    try {
+      const key = 'vibe-land/input-settings';
+      const raw = localStorage.getItem(key);
+      const settings: Record<string, unknown> = raw ? JSON.parse(raw) : {};
+      if (!settings.meta || typeof settings.meta !== 'object') {
+        settings.meta = {};
+      }
+      (settings.meta as Record<string, unknown>).firstRunPromptDismissed = true;
+      localStorage.setItem(key, JSON.stringify(settings));
+    } catch {
+      // ignore — best-effort
+    }
+  });
   await page.goto('/practice', { waitUntil: 'domcontentloaded' });
   // Wait for the E2E bridge to become available
   await page.waitForFunction(() => !!(window as any).__VIBE_E2E__, { timeout: 30_000 });
@@ -103,16 +118,28 @@ export async function join(page: Page, options?: { timeout?: number }): Promise<
 
 /**
  * Acquire pointer lock by clicking the game canvas.
- * Grants the permission automatically via CDP.
+ * In headless Chromium, real pointer lock may not be granted; falls back to
+ * patching document.pointerLockElement so the input handler accepts events.
  */
 export async function acquirePointerLock(page: Page): Promise<void> {
   // Click the canvas to trigger requestPointerLock
   const canvas = page.locator('canvas').first();
   await canvas.click();
-
-  // Playwright in Chromium auto-grants pointer lock on click
-  // Wait briefly for it to take effect
   await page.waitForTimeout(300);
+
+  // Check if real pointer lock was granted
+  const locked = await page.evaluate(() => document.pointerLockElement != null);
+  if (locked) return;
+
+  // Headless fallback: patch document.pointerLockElement so the game's input
+  // handler (which guards on pointerLockElement != null) accepts mousemove events.
+  await page.evaluate(() => {
+    const canvas = document.querySelector('canvas');
+    Object.defineProperty(document, 'pointerLockElement', {
+      get: () => canvas,
+      configurable: true,
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

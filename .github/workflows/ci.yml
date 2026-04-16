@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # ── Unit tests & lint ──────────────────────────────────────────────────────
+  test:
+    name: Unit tests & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install client deps
+        run: cd client && npm ci
+
+      - name: Copy .env
+        run: cp .env.example .env
+
+      - name: Rust check
+        run: cargo check
+
+      - name: Rust tests
+        run: cargo test
+
+      - name: TypeScript lint
+        run: cd client && npx tsc --noEmit
+
+      - name: Client unit tests
+        run: cd client && npm test
+
+  # ── E2E tests (only after unit tests pass) ─────────────────────────────────
+  e2e:
+    name: E2E tests
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      # wasm-pack is needed by `npm run dev` (predev hook) which Playwright
+      # starts as the Vite webServer.
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install client deps
+        run: cd client && npm ci
+
+      - name: Install Playwright Chromium
+        run: cd client && npx playwright install --with-deps chromium
+
+      - name: Copy .env
+        run: cp .env.example .env
+
+      - name: Run E2E tests
+        run: cd client && npm run e2e
