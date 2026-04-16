@@ -15,12 +15,14 @@ export type ChatToolResultPart = {
   output: unknown;
   isError?: boolean;
 };
+export type ChatImagePart = { type: 'image'; dataUrl: string; mediaType: string };
 
 export type ChatPart =
   | ChatTextPart
   | ChatReasoningPart
   | ChatToolCallPart
-  | ChatToolResultPart;
+  | ChatToolResultPart
+  | ChatImagePart;
 
 export type ChatRole = 'user' | 'assistant';
 
@@ -47,8 +49,8 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   const out: ModelMessage[] = [];
   for (const msg of messages) {
     if (msg.role === 'user') {
-      const text = renderUserContent(msg);
-      out.push({ role: 'user', content: text });
+      const content = renderUserContent(msg);
+      out.push({ role: 'user', content });
       continue;
     }
     // assistant message — content can be a mix of text/reasoning/tool-call parts
@@ -94,15 +96,23 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
   return out;
 }
 
-function renderUserContent(msg: ChatMessage): string {
+function renderUserContent(
+  msg: ChatMessage,
+): string | Array<{ type: 'text'; text: string } | { type: 'image'; image: string; mimeType: string }> {
+  const imageParts = msg.parts.filter((p): p is ChatImagePart => p.type === 'image');
   const visible = msg.parts
     .filter((p): p is ChatTextPart => p.type === 'text')
     .map((p) => p.text)
     .join('');
-  if (msg.hiddenContext && msg.hiddenContext.length > 0) {
-    return `${msg.hiddenContext}\n\n${visible}`;
-  }
-  return visible;
+  const fullText =
+    msg.hiddenContext && msg.hiddenContext.length > 0
+      ? `${msg.hiddenContext}\n\n${visible}`
+      : visible;
+  if (imageParts.length === 0) return fullText;
+  return [
+    { type: 'text', text: fullText },
+    ...imageParts.map((img) => ({ type: 'image' as const, image: img.dataUrl, mimeType: img.mediaType })),
+  ];
 }
 
 function stringifyForModel(value: unknown): string {
