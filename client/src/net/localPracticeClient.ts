@@ -52,7 +52,7 @@ export class LocalPracticeClient {
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly debugTelemetry = new NetDebugTelemetry();
   private session: WasmLocalSessionInstance | null = null;
-  private tickHandle: ReturnType<typeof setInterval> | null = null;
+  private frameHandle: number | null = null;
   private tickAccumulatorSec = 0;
   private lastTickTimeMs = 0;
   private closedByClient = false;
@@ -79,9 +79,9 @@ export class LocalPracticeClient {
 
   disconnect(): void {
     this.closedByClient = true;
-    if (this.tickHandle) {
-      clearInterval(this.tickHandle);
-      this.tickHandle = null;
+    if (this.frameHandle != null) {
+      cancelAnimationFrame(this.frameHandle);
+      this.frameHandle = null;
     }
     this.tickAccumulatorSec = 0;
     this.lastTickTimeMs = 0;
@@ -239,11 +239,10 @@ export class LocalPracticeClient {
 
   private startTickLoop(): void {
     this.lastTickTimeMs = performance.now();
-    this.tickHandle = setInterval(() => {
+    const step = (nowMs: number) => {
       if (!this.session || this.closedByClient) {
         return;
       }
-      const nowMs = performance.now();
       const elapsedSec = Math.min(Math.max((nowMs - this.lastTickTimeMs) / 1000, 0), 0.1);
       this.lastTickTimeMs = nowMs;
       this.tickAccumulatorSec += elapsedSec;
@@ -259,7 +258,9 @@ export class LocalPracticeClient {
       if (ticks > 0) {
         this.syncFromSession(true);
       }
-    }, 1000 / SIM_HZ);
+      this.frameHandle = requestAnimationFrame(step);
+    };
+    this.frameHandle = requestAnimationFrame(step);
   }
 
   private syncFromSession(emitCallbacks: boolean): void {

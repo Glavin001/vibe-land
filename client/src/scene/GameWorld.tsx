@@ -300,6 +300,7 @@ type GameWorldProps = {
     scenario: LoadTestScenario;
   };
   localRenderSmoothingEnabled?: boolean;
+  vehicleSmoothingEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -958,6 +959,7 @@ export function GameWorld({
   rapierDebugModeBits = 0,
   benchmarkAutopilot,
   localRenderSmoothingEnabled = true,
+  vehicleSmoothingEnabled = false,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1222,18 +1224,23 @@ export function GameWorld({
     let localVehicleSuspensionLengthDeltaM = 0;
     let localVehicleSuspensionForceDeltaN = 0;
     if (localControlledVehiclePose && drivenVehicleId != null) {
-      const result = updateLocalVehicleMeshPose(
-        localVehicleVisualPoseRef.current,
-        drivenVehicleId,
-        localControlledVehiclePose,
-        frameDelta,
-        localVehicleDebug?.speedMs ?? 0,
-        localVehicleDebug?.groundedWheels ?? 0,
-        localAuthorityTransport ? 'practice' : 'multiplayer',
-      );
-      localVehicleVisualPose = result.pose;
-      localVehicleMeshDeltaM = result.metrics.positionDeltaM;
-      localVehicleMeshRotDeltaRad = result.metrics.rotationDeltaRad;
+      if (vehicleSmoothingEnabled) {
+        const result = updateLocalVehicleMeshPose(
+          localVehicleVisualPoseRef.current,
+          drivenVehicleId,
+          localControlledVehiclePose,
+          frameDelta,
+          localVehicleDebug?.speedMs ?? 0,
+          localVehicleDebug?.groundedWheels ?? 0,
+          localAuthorityTransport ? 'practice' : 'multiplayer',
+        );
+        localVehicleVisualPose = result.pose;
+        localVehicleMeshDeltaM = result.metrics.positionDeltaM;
+        localVehicleMeshRotDeltaRad = result.metrics.rotationDeltaRad;
+      } else {
+        resetLocalVehicleMeshPose(localVehicleVisualPoseRef.current);
+        localVehicleVisualPose = localControlledVehiclePose;
+      }
     } else {
       resetLocalVehicleMeshPose(localVehicleVisualPoseRef.current);
     }
@@ -1874,24 +1881,36 @@ export function GameWorld({
       const orbitPitch = vehicleCameraPitchRef.current;
       const focusY = chassisPos[1] + 1.0;
       const followDistance = 6.0;
-      const focusSmoothRate = Math.min(frameDelta * 12.0, 1.0);
-      smoothVehicleFocus.current.set(
-        smoothVehicleFocus.current.x + (chassisPos[0] - smoothVehicleFocus.current.x) * focusSmoothRate,
-        smoothVehicleFocus.current.y + (focusY - smoothVehicleFocus.current.y) * focusSmoothRate,
-        smoothVehicleFocus.current.z + (chassisPos[2] - smoothVehicleFocus.current.z) * focusSmoothRate,
-      );
-      const targetX = smoothVehicleFocus.current.x - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
-      const targetY = smoothVehicleFocus.current.y + Math.sin(orbitPitch) * followDistance + 1.0;
-      const targetZ = smoothVehicleFocus.current.z - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+      if (vehicleSmoothingEnabled) {
+        const focusSmoothRate = Math.min(frameDelta * 12.0, 1.0);
+        smoothVehicleFocus.current.set(
+          smoothVehicleFocus.current.x + (chassisPos[0] - smoothVehicleFocus.current.x) * focusSmoothRate,
+          smoothVehicleFocus.current.y + (focusY - smoothVehicleFocus.current.y) * focusSmoothRate,
+          smoothVehicleFocus.current.z + (chassisPos[2] - smoothVehicleFocus.current.z) * focusSmoothRate,
+        );
+        const targetX = smoothVehicleFocus.current.x - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+        const targetY = smoothVehicleFocus.current.y + Math.sin(orbitPitch) * followDistance + 1.0;
+        const targetZ = smoothVehicleFocus.current.z - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
 
-      const smoothRate = Math.min(frameDelta * 18.0, 1.0);
-      smoothCamPos.current.set(
-        smoothCamPos.current.x + (targetX - smoothCamPos.current.x) * smoothRate,
-        smoothCamPos.current.y + (targetY - smoothCamPos.current.y) * smoothRate,
-        smoothCamPos.current.z + (targetZ - smoothCamPos.current.z) * smoothRate,
-      );
-      camera.position.copy(smoothCamPos.current);
-      camera.lookAt(smoothVehicleFocus.current);
+        const smoothRate = Math.min(frameDelta * 18.0, 1.0);
+        smoothCamPos.current.set(
+          smoothCamPos.current.x + (targetX - smoothCamPos.current.x) * smoothRate,
+          smoothCamPos.current.y + (targetY - smoothCamPos.current.y) * smoothRate,
+          smoothCamPos.current.z + (targetZ - smoothCamPos.current.z) * smoothRate,
+        );
+        camera.position.copy(smoothCamPos.current);
+        camera.lookAt(smoothVehicleFocus.current);
+      } else {
+        const focusX = chassisPos[0];
+        const focusZ = chassisPos[2];
+        const targetX = focusX - Math.sin(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+        const targetY = focusY + Math.sin(orbitPitch) * followDistance + 1.0;
+        const targetZ = focusZ - Math.cos(orbitYaw) * Math.cos(orbitPitch) * followDistance;
+        smoothVehicleFocus.current.set(focusX, focusY, focusZ);
+        smoothCamPos.current.set(targetX, targetY, targetZ);
+        camera.position.copy(smoothCamPos.current);
+        camera.lookAt(focusX, focusY, focusZ);
+      }
     } else {
       const eyeHeight = PLAYER_EYE_HEIGHT;
       camera.position.set(pos[0], pos[1] + eyeHeight, pos[2]);
