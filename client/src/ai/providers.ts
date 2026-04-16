@@ -80,6 +80,11 @@ export function createLanguageModel(
   switch (provider) {
     case 'openai': {
       const client = createOpenAI({ apiKey });
+      // GPT-5 series and o-series need /v1/responses when combining
+      // reasoning_effort with function tools — chat completions rejects it.
+      if (/^gpt-5/.test(modelId) || /^o\d/.test(modelId)) {
+        return client.responses(modelId);
+      }
       return client.chat(modelId);
     }
     case 'anthropic': {
