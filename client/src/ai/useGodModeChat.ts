@@ -255,19 +255,13 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         // Capture cumulative token usage across all tool-use steps.
         if (!controller.signal.aborted) {
           try {
-            const totalUsage = await result.totalUsage;
-            if (totalUsage) {
+            const { inputTokens, outputTokens } = await result.totalUsage;
+            if (inputTokens !== undefined && outputTokens !== undefined) {
               setMessages((current) => {
                 const idx = current.findIndex((m) => m.id === assistantId);
                 if (idx === -1) return current;
                 const next = current.slice();
-                next[idx] = {
-                  ...current[idx],
-                  usage: {
-                    inputTokens: totalUsage.inputTokens,
-                    outputTokens: totalUsage.outputTokens,
-                  },
-                };
+                next[idx] = { ...current[idx], usage: { inputTokens, outputTokens } };
                 return next;
               });
             }

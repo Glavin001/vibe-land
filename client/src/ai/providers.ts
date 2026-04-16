@@ -1,4 +1,6 @@
-import type { LanguageModel } from 'ai';
+import type { JSONValue, LanguageModel } from 'ai';
+
+type ProviderOptionsBag = Record<string, Record<string, JSONValue>>;
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -108,7 +110,7 @@ export function createLanguageModel(
 export function getThinkingProviderOptions(
   provider: ProviderId,
   modelId: string,
-): Record<string, Record<string, unknown>> {
+): ProviderOptionsBag {
   switch (provider) {
     case 'anthropic': {
       // Haiku models do not support thinking
