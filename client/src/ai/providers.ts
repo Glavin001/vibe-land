@@ -80,12 +80,12 @@ export function createLanguageModel(
   switch (provider) {
     case 'openai': {
       const client = createOpenAI({ apiKey });
-      // GPT-5 series and o-series need /v1/responses when combining
-      // reasoning_effort with function tools — chat completions rejects it.
-      if (/^gpt-5/.test(modelId) || /^o\d/.test(modelId)) {
-        return client.responses(modelId);
-      }
-      return client.chat(modelId);
+      // All OpenAI models support the responses API (/v1/responses). The chat
+      // completions endpoint (/v1/chat/completions) rejects reasoning_effort
+      // when tools are present, so always use the responses model. This also
+      // aligns with the SDK's own default — createOpenAI()(modelId) now calls
+      // createResponsesModel internally.
+      return client.responses(modelId);
     }
     case 'anthropic': {
       const client = createAnthropic({
