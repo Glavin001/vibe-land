@@ -494,7 +494,7 @@ export class VehiclePredictionManager {
     for (const input of removed) {
       this.pendingInputCreatedAtMs.delete(input.seq);
     }
-    const newestRemoved = removed.at(-1);
+    const newestRemoved = removed.length > 0 ? removed[removed.length - 1] : undefined;
     if (newestRemoved) {
       this.sim.pruneVehiclePendingInputsThrough(newestRemoved.seq);
     }
