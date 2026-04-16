@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { computeCustomStencilDiff, type CustomStencilDefinition } from '../../ai/customStencil';
+import { computeCustomStencilDiff, type CustomStencilDefinition, type StencilDiffSample } from '../../ai/customStencil';
 import type { WorldDocument } from '../../world/worldDocument';
 
 const RAISE_COLOR = new THREE.Color(0x4ca5ff);
@@ -49,7 +49,7 @@ export function CustomStencilPreview({
     const raiseSamples = diff.samples.filter(s => s.deltaY > 0);
     const lowerSamples = diff.samples.filter(s => s.deltaY <= 0);
 
-    function buildGeo(samples: typeof diff.samples) {
+    function buildGeo(samples: StencilDiffSample[]) {
       if (samples.length === 0) return null;
       const positions = new Float32Array(samples.length * 4 * 3);
       const colors = new Float32Array(samples.length * 4 * 3);
