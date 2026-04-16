@@ -7,7 +7,7 @@ use crate::{
         PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
         RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
-    local_arena::{MoveConfig, PhysicsArena},
+    physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
@@ -357,12 +357,7 @@ impl LocalSession {
         self.arena.snapshot_vehicles()
     }
 
-    pub fn cast_scene_ray(
-        &self,
-        origin: [f32; 3],
-        dir: [f32; 3],
-        max_toi: f32,
-    ) -> Option<f32> {
+    pub fn cast_scene_ray(&self, origin: [f32; 3], dir: [f32; 3], max_toi: f32) -> Option<f32> {
         self.arena
             .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
     }
@@ -595,7 +590,7 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
-    use crate::local_arena::{MoveConfig, PhysicsArena};
+    use crate::physics_arena::{MoveConfig, PhysicsArena};
     use crate::unit_conv::angle_to_i16;
     use crate::world_document::{
         DynamicEntity, DynamicEntityKind, WorldDocument, WorldMeta, WorldTerrain, WorldTerrainTile,

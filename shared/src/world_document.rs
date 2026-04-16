@@ -247,7 +247,7 @@ pub trait WorldDocumentArena {
     fn rebuild_broad_phase(&mut self);
 }
 
-impl WorldDocumentArena for crate::local_arena::PhysicsArena {
+impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
     fn add_static_heightfield(
         &mut self,
         center: Vector3<f32>,
@@ -255,7 +255,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         scale: Vector3<f32>,
         user_data: u128,
     ) {
-        crate::local_arena::PhysicsArena::add_static_heightfield(
+        crate::physics_arena::PhysicsArena::add_static_heightfield(
             self, center, heights, scale, user_data,
         );
     }
@@ -267,7 +267,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         half_extents: Vector3<f32>,
         user_data: u128,
     ) {
-        crate::local_arena::PhysicsArena::add_static_cuboid_rotated(
+        crate::physics_arena::PhysicsArena::add_static_cuboid_rotated(
             self,
             center,
             rotation,
@@ -283,7 +283,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         rotation: [f32; 4],
         half_extents: Vector3<f32>,
     ) {
-        crate::local_arena::PhysicsArena::spawn_dynamic_box_with_id(
+        crate::physics_arena::PhysicsArena::spawn_dynamic_box_with_id(
             self,
             id,
             position,
@@ -293,7 +293,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
     }
 
     fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vector3<f32>, radius: f32) {
-        crate::local_arena::PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
+        crate::physics_arena::PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
     }
 
     fn spawn_vehicle_with_id(
@@ -303,7 +303,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         position: Vector3<f32>,
         rotation: [f32; 4],
     ) {
-        crate::local_arena::PhysicsArena::spawn_vehicle_with_id(
+        crate::physics_arena::PhysicsArena::spawn_vehicle_with_id(
             self,
             id,
             vehicle_type,
@@ -313,7 +313,7 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
     }
 
     fn rebuild_broad_phase(&mut self) {
-        crate::local_arena::PhysicsArena::rebuild_broad_phase(self);
+        crate::physics_arena::PhysicsArena::rebuild_broad_phase(self);
     }
 }
 
@@ -332,9 +332,8 @@ impl WorldDocument {
             } else {
                 (offset_x, offset_z)
             };
-            max_support_height = max_support_height.max(
-                self.sample_heightfield_surface_at_world_position(x + sample_x, z + sample_z),
-            );
+            max_support_height = max_support_height
+                .max(self.sample_heightfield_surface_at_world_position(x + sample_x, z + sample_z));
         }
         max_support_height
     }
@@ -412,14 +411,10 @@ impl WorldDocument {
         support_height + radius + 0.05
     }
 
-    fn minimum_vehicle_spawn_center_y(
-        &self,
-        x: f32,
-        z: f32,
-        rotation: [f32; 4],
-    ) -> f32 {
+    fn minimum_vehicle_spawn_center_y(&self, x: f32, z: f32, rotation: [f32; 4]) -> f32 {
         let support_height = self.sample_vehicle_support_height_at_world_position(x, z, rotation);
-        let wheel_clearance = VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_SUSPENSION_TRAVEL + VEHICLE_WHEEL_RADIUS;
+        let wheel_clearance =
+            VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_SUSPENSION_TRAVEL + VEHICLE_WHEEL_RADIUS;
         let chassis_clearance = VEHICLE_CHASSIS_HALF_EXTENTS[1] + 0.1;
         support_height + wheel_clearance.max(chassis_clearance) + 0.1
     }
@@ -750,7 +745,7 @@ pub fn identity_rotation() -> [f32; 4] {
 mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
-    use crate::local_arena::{MoveConfig, PhysicsArena};
+    use crate::physics_arena::{MoveConfig, PhysicsArena};
     use crate::protocol::InputCmd;
     use crate::vehicle::read_vehicle_debug_snapshot;
 

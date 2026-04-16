@@ -1359,8 +1359,9 @@ impl WasmLocalSession {
     pub fn new(world_json: Option<String>) -> Result<Self, JsValue> {
         install_panic_hook_once();
         let inner = match world_json {
-            Some(world_json) => LocalSession::from_world_json(&world_json)
-                .map_err(|err| JsValue::from_str(&err))?,
+            Some(world_json) => {
+                LocalSession::from_world_json(&world_json).map_err(|err| JsValue::from_str(&err))?
+            }
             None => LocalSession::new(),
         };
         Ok(Self { inner })
@@ -1485,7 +1486,10 @@ impl WasmLocalSession {
         dz: f32,
         max_toi: f32,
     ) -> Box<[f32]> {
-        match self.inner.cast_scene_ray([ox, oy, oz], [dx, dy, dz], max_toi) {
+        match self
+            .inner
+            .cast_scene_ray([ox, oy, oz], [dx, dy, dz], max_toi)
+        {
             Some(toi) => Box::new([toi]),
             None => Box::new([]),
         }
