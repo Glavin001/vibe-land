@@ -29,6 +29,7 @@ export class PredictionManager {
   private accumulator = 0;
   private prevPosition: [number, number, number] = [0, 0, 0];
   private currPosition: [number, number, number] = [0, 0, 0];
+  private currVelocity: [number, number, number] = [0, 0, 0];
   private correctionOffset: [number, number, number] = [0, 0, 0];
   private nextSeq = 1;
   private tickCount = 0;
@@ -76,9 +77,9 @@ export class PredictionManager {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
 
-      if (this.isLocalPreview && !this.initialized) {
-        // Let the loopback session consume startup inputs, but avoid predicting
-        // from the placeholder spawn state before the first authoritative snapshot.
+      if (this.isLocalPreview) {
+        // Practice mode is driven by the browser-side authoritative Rust
+        // session. Keep input bundling, but do not advance a second local KCC.
         pendingInputs.push(input);
         this.accumulator -= FIXED_DT;
         steps++;
@@ -93,6 +94,11 @@ export class PredictionManager {
       this.prevPosition = [...this.currPosition] as [number, number, number];
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
+      this.currVelocity = [
+        (this.currPosition[0] - this.prevPosition[0]) / FIXED_DT,
+        (this.currPosition[1] - this.prevPosition[1]) / FIXED_DT,
+        (this.currPosition[2] - this.prevPosition[2]) / FIXED_DT,
+      ];
 
       const decay = Math.exp(-VISUAL_SMOOTH_RATE * FIXED_DT);
       this.correctionOffset[0] *= decay;
@@ -120,16 +126,33 @@ export class PredictionManager {
    */
   reconcile(ackInputSeq: number, playerState: NetPlayerState): void {
     const m = netPlayerStateToMeters(playerState);
+    const onGround = (m.flags & 1) !== 0;
+
+    if (this.isLocalPreview) {
+      this.sim.setFullState(
+        m.position[0], m.position[1], m.position[2],
+        m.velocity[0], m.velocity[1], m.velocity[2],
+        m.yaw, m.pitch,
+        onGround,
+      );
+      this.prevPosition = [...m.position] as [number, number, number];
+      this.currPosition = [...m.position] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
+      this.correctionOffset = [0, 0, 0];
+      this.initialized = true;
+      return;
+    }
 
     if (!this.initialized) {
       this.sim.setFullState(
         m.position[0], m.position[1], m.position[2],
         m.velocity[0], m.velocity[1], m.velocity[2],
         m.yaw, m.pitch,
-        (m.flags & 1) !== 0,
+        onGround,
       );
       this.currPosition = [...m.position] as [number, number, number];
       this.prevPosition = [...m.position] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
       this.correctionOffset = [0, 0, 0];
       this.initialized = true;
       return;
@@ -141,7 +164,7 @@ export class PredictionManager {
       m.position[0], m.position[1], m.position[2],
       m.velocity[0], m.velocity[1], m.velocity[2],
       m.yaw, m.pitch,
-      (m.flags & 1) !== 0,
+      onGround,
       FIXED_DT,
     );
 
@@ -157,12 +180,14 @@ export class PredictionManager {
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
       this.prevPosition = [...this.currPosition] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
       this.correctionOffset = [0, 0, 0];
     } else {
       this.correctionOffset = [-dx, -dy, -dz];
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
       this.prevPosition = [...this.currPosition] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
     }
   }
 
@@ -237,12 +262,7 @@ export class PredictionManager {
 
   getVelocity(): [number, number, number] {
     if (!this.initialized) return [0, 0, 0];
-    // Derived from last physics step's position delta (FIXED_DT interval)
-    return [
-      (this.currPosition[0] - this.prevPosition[0]) / FIXED_DT,
-      (this.currPosition[1] - this.prevPosition[1]) / FIXED_DT,
-      (this.currPosition[2] - this.prevPosition[2]) / FIXED_DT,
-    ];
+    return [...this.currVelocity] as [number, number, number];
   }
 
   getNextSeq(): number {

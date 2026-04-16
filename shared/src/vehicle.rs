@@ -4,7 +4,7 @@
 /// Keeping spawn logic and filter construction here ensures the two physics
 /// worlds stay byte-for-byte identical — any tuning change made once is
 /// automatically reflected in both.
-use nalgebra::{point, Isometry3, UnitQuaternion, Vector3};
+use nalgebra::{point, Isometry3, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
 use vibe_netcode::physics_arena::DYNAMIC_SUBSTEPS;
@@ -12,7 +12,7 @@ use vibe_netcode::sim_world::SimWorld;
 
 use crate::constants::BTN_RELOAD;
 use crate::movement::{
-    vehicle_wheel_params, VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP,
+    vehicle_wheel_params, Vec3d, VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP,
     VEHICLE_MAX_STEER_RAD, VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH,
     VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
 };
@@ -29,6 +29,8 @@ pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
 const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 /// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
 const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
+const VEHICLE_EXIT_SIDE_OFFSET_M: f32 = 2.5;
+const VEHICLE_EXIT_UP_OFFSET_M: f32 = 1.0;
 
 /// Spawn a vehicle chassis rigid body + collider + configured wheel controller
 /// into `sim`.  Returns `(chassis_body, chassis_collider, controller)`.
@@ -375,6 +377,29 @@ pub fn make_vehicle_snapshot(
         state.angular_velocity,
         encode_vehicle_wheel_data(controller),
     ))
+}
+
+/// Compute the player exit position from the current chassis pose.
+pub fn vehicle_exit_position(state: &VehicleChassisState) -> Vec3d {
+    let rotation = UnitQuaternion::from_quaternion(Quaternion::new(
+        state.quaternion[3],
+        state.quaternion[0],
+        state.quaternion[1],
+        state.quaternion[2],
+    ));
+    let right = rotation * Vector3::x();
+    let planar_right = Vector3::new(right.x, 0.0, right.z);
+    let side_offset = if planar_right.norm_squared() > 0.0001 {
+        planar_right.normalize() * VEHICLE_EXIT_SIDE_OFFSET_M
+    } else {
+        Vector3::new(VEHICLE_EXIT_SIDE_OFFSET_M, 0.0, 0.0)
+    };
+
+    Vec3d::new(
+        (state.position[0] + side_offset.x) as f64,
+        (state.position[1] + VEHICLE_EXIT_UP_OFFSET_M) as f64,
+        (state.position[2] + side_offset.z) as f64,
+    )
 }
 
 /// Upright a vehicle in-place while preserving its planar heading.

@@ -155,7 +155,7 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local preview starts predicting after the first authoritative snapshot', () => {
+    it('local preview follows authoritative state after the first snapshot', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -166,7 +166,7 @@ describe('PredictionManager', () => {
 
       expect(mgr.isInitialized()).toBe(true);
       expect(cmds).toHaveLength(1);
-      expect(mgr.getPosition()[2]).toBeGreaterThan(before[2]);
+      expect(mgr.getPosition()).toEqual(before);
       expect(mgr.getInterpolatedPosition()).not.toBeNull();
       mgr.dispose();
     });
@@ -347,7 +347,7 @@ describe('PredictionManager', () => {
       mgr.dispose();
     });
 
-    it('local preview interpolates render position between 60 Hz prediction steps on 120 Hz frames', () => {
+    it('local preview keeps render position fixed until the next authoritative snapshot', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -355,19 +355,17 @@ describe('PredictionManager', () => {
 
       mgr.update(FIXED_DT, BTN_FORWARD, 0, 0);
       const renderAtStep = mgr.getInterpolatedPosition();
-      const rawCurrent = mgr.getPosition();
 
       mgr.update(FIXED_DT * 0.5, BTN_FORWARD, 0, 0);
       const renderBetweenSteps = mgr.getInterpolatedPosition();
 
       expect(renderAtStep).not.toBeNull();
       expect(renderBetweenSteps).not.toBeNull();
-      expect(renderBetweenSteps![2]).toBeGreaterThan(renderAtStep![2]);
-      expect(renderBetweenSteps![2]).toBeLessThan(rawCurrent[2]);
+      expect(renderBetweenSteps).toEqual(renderAtStep);
       mgr.dispose();
     });
 
-    it('local preview uses correction smoothing after initialization', () => {
+    it('local preview applies authoritative snapshots without correction smoothing', () => {
       const sim = createSim();
       const mgr = new PredictionManager(sim, true);
       mgr.enableTerrainWorld();
@@ -379,8 +377,8 @@ describe('PredictionManager', () => {
 
       mgr.reconcile(2, makeNetState({ position: [0, 1, 0.1], flags: FLAG_ON_GROUND }));
 
-      expect(Math.hypot(...mgr.getCorrectionOffset())).toBeGreaterThan(0);
-      expect(Math.hypot(...mgr.getCorrectionOffset())).toBeLessThan(HARD_SNAP_DISTANCE);
+      expect(Math.hypot(...mgr.getCorrectionOffset())).toBe(0);
+      expect(mgr.getPosition()[2]).toBeCloseTo(0.1);
       mgr.dispose();
     });
   });

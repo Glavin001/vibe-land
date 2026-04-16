@@ -37,7 +37,7 @@ use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, Serve
 use crate::{
     demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena, PlayerKccMode},
+    movement::{MoveConfig, PhysicsArena},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
@@ -114,13 +114,6 @@ impl ClientTransport {
             Self::WebSocket => "websocket",
             Self::WebTransport => "webtransport",
         }
-    }
-}
-
-fn parse_player_kcc_mode(value: Option<&str>) -> PlayerKccMode {
-    match value.unwrap_or("one_pass_support_predicate") {
-        "two_pass" => PlayerKccMode::TwoPass,
-        _ => PlayerKccMode::OnePassSupportPredicate,
     }
 }
 
@@ -519,7 +512,6 @@ struct AppState {
     cert_hash_hex: String,
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -642,7 +634,6 @@ struct MatchState {
     snapshot_stats: MatchSnapshotStats,
     void_kills: u64,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
@@ -701,8 +692,6 @@ async fn main() -> Result<()> {
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
-    let player_kcc_mode =
-        parse_player_kcc_mode(std::env::var("VIBE_SERVER_PLAYER_KCC_MODE").ok().as_deref());
     let respawn_delay_ms = parse_respawn_delay_ms(
         std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
             .ok()
@@ -712,9 +701,7 @@ async fn main() -> Result<()> {
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
-        player_kcc_mode = ?player_kcc_mode,
-        respawn_delay_ms,
-        "WebTransport snapshot transport policy loaded"
+        respawn_delay_ms, "WebTransport snapshot transport policy loaded"
     );
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
@@ -732,7 +719,6 @@ async fn main() -> Result<()> {
             cert_hash_hex,
             wt_base_url,
             strict_snapshot_datagrams,
-            player_kcc_mode,
             respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
@@ -1115,13 +1101,12 @@ async fn run_match_loop(
     match_id: String,
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
-    player_kcc_mode: PlayerKccMode,
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
-    let mut arena = PhysicsArena::with_player_kcc_mode(MoveConfig::default(), player_kcc_mode);
+    let mut arena = PhysicsArena::new(MoveConfig::default());
     let world = VoxelWorld::new();
     seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
     let dynamic_body_handles = arena
@@ -1161,7 +1146,6 @@ async fn run_match_loop(
         snapshot_stats: MatchSnapshotStats::default(),
         void_kills: 0,
         strict_snapshot_datagrams,
-        player_kcc_mode,
         respawn_delay_ms,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
@@ -1212,7 +1196,6 @@ fn spawn_match_loop(
             match_id.clone(),
             rx,
             app.strict_snapshot_datagrams,
-            app.player_kcc_mode,
             app.respawn_delay_ms,
             app.stats_tx.clone(),
             telemetry,
@@ -2134,7 +2117,6 @@ impl MatchState {
                 move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
                 player_query_ctx_ms_avg = match_stats.timings.player_query_ctx_ms.avg,
                 kcc_ms_avg = match_stats.timings.player_kcc_ms.avg,
-                player_kcc_mode = ?self.player_kcc_mode,
                 player_kcc_horizontal_ms_avg = match_stats.timings.player_kcc_horizontal_ms.avg,
                 player_kcc_support_ms_avg = match_stats.timings.player_kcc_support_ms.avg,
                 player_kcc_merged_ms_avg = match_stats.timings.player_kcc_merged_ms.avg,

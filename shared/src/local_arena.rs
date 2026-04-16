@@ -10,7 +10,7 @@ use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
 use crate::vehicle::{
     apply_vehicle_input_step, create_vehicle_physics, make_vehicle_snapshot,
-    VEHICLE_CONTROLLER_SUBSTEPS,
+    read_vehicle_chassis_state, vehicle_exit_position, VEHICLE_CONTROLLER_SUBSTEPS,
 };
 pub use vibe_netcode::physics_arena::DynamicArena;
 
@@ -567,11 +567,11 @@ impl PhysicsArena {
     pub fn exit_vehicle(&mut self, player_id: u32) {
         if let Some(vehicle_id) = self.detach_player_from_vehicles(player_id) {
             if let Some(vehicle) = self.vehicles.get_mut(&vehicle_id) {
-                if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
-                    let p = *rb.translation();
+                if let Some(chassis_state) =
+                    read_vehicle_chassis_state(&self.dynamic.sim, vehicle.chassis_body)
+                {
                     if let Some(state) = self.players.get_mut(&player_id) {
-                        state.position =
-                            Vec3d::new((p.x + 2.5) as f64, (p.y + 1.0) as f64, p.z as f64);
+                        state.position = vehicle_exit_position(&chassis_state);
                         if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
                             c.set_collision_groups(InteractionGroups::all());
                         }

@@ -432,7 +432,7 @@ pub fn simulate_player_tick(
         on_ground,
         input,
         dt,
-        PlayerKccMode::TwoPass,
+        PlayerKccMode::OnePassSupportPredicate,
     )
 }
 

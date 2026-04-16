@@ -18,7 +18,8 @@ use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
     apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
     read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
-    VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS, VEHICLE_WHEEL_OFFSETS,
+    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS,
+    VEHICLE_WHEEL_OFFSETS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -1001,6 +1002,18 @@ impl WasmSimWorld {
     /// Clear the local vehicle (called on exit).
     #[wasm_bindgen(js_name = clearLocalVehicle)]
     pub fn clear_local_vehicle(&mut self) {
+        if let Some(vehicle_id) = self.local_vehicle_id {
+            if let Some(vehicle) = self.vehicles.get(&vehicle_id) {
+                if let Some(chassis_state) =
+                    read_vehicle_chassis_state(&self.sim, vehicle.chassis_body)
+                {
+                    self.position = vehicle_exit_position(&chassis_state);
+                    if let Some(collider) = self.player_collider {
+                        self.sim.sync_player_collider(collider, &self.position);
+                    }
+                }
+            }
+        }
         self.local_vehicle_id = None;
         self.vehicle_pending_inputs.clear();
     }
