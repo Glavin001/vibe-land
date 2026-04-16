@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
-import { Canvas, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
@@ -47,6 +47,13 @@ import {
   shouldCreateAutosaveBackup,
 } from '../world/worldDraftStore';
 import {
+  fetchCloudConfig,
+  fetchPublishedWorld,
+  publishWorld,
+} from '../world/worldsCloud';
+import { captureCanvasScreenshot } from '../world/canvasScreenshot';
+import { recordPublishedWorld } from '../world/publishedHistory';
+import {
   createEmptyWorldEditHistory,
   commitWorldEdit,
   generateCommitId,
@@ -84,7 +91,19 @@ type SelectedTransformEntity = {
   canResize: boolean;
 };
 
-export function GodModePage() {
+type PublishStatus =
+  | { kind: 'idle' }
+  | { kind: 'capturing' }
+  | { kind: 'preview'; dataUrl: string; blob: Blob }
+  | { kind: 'publishing'; dataUrl: string }
+  | { kind: 'success'; id: string; shareUrl: string; clipboardOk: boolean }
+  | { kind: 'error'; message: string };
+
+export type GodModePageProps = {
+  publishedId?: string;
+};
+
+export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [mode, setMode] = useState<EditorMode>('edit');
   const [tool, setTool] = useState<EditorTool>('select');
   const [transformMode, setTransformMode] = useState<TransformMode>('translate');
@@ -117,7 +136,22 @@ export function GodModePage() {
   const [playWorldSnapshot, setPlayWorldSnapshot] = useState<WorldDocument | null>(null);
   const [playSessionKey, setPlaySessionKey] = useState(0);
   const [lastImportName, setLastImportNameState] = useState(() => getLastImportName());
+  const [cloudEnabled, setCloudEnabled] = useState(false);
+  const [cloudPublicUrl, setCloudPublicUrl] = useState<string | null>(null);
+  // Tracks the published world this session is derived from. When the user
+  // opens a published world (via ?published=<id>) and then re-publishes,
+  // this id is sent as `parentId` so the ancestry chain is preserved.
+  // Cleared when the user imports a local file or resets to default.
+  const [sourcePublishedId, setSourcePublishedId] = useState<string | null>(publishedId ?? null);
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>({ kind: 'idle' });
+  const [cloudLoadStatus, setCloudLoadStatus] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading'; id: string }
+    | { kind: 'loaded'; id: string; name: string }
+    | { kind: 'error'; id: string; message: string }
+  >(publishedId ? { kind: 'loading', id: publishedId } : { kind: 'idle' });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const worldRef = useRef(world);
   const editHistoryRef = useRef(editHistory);
@@ -514,11 +548,149 @@ export function GodModePage() {
     const nextWorld = parseWorldDocument(JSON.parse(text));
     applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
     setSelected(null);
+    setSourcePublishedId(null); // imported file breaks the ancestry chain
     setLastImportName(file.name);
     setLastImportNameState(file.name);
     setHistory(await pushRevisionHistory(nextWorld, `Imported ${file.name}`));
     event.target.value = '';
   }, [applyCommittedWorldEdit]);
+
+  const captureCurrentScreenshot = useCallback(async () => {
+    const canvas = editorCanvasRef.current;
+    if (!canvas) {
+      throw new Error('Builder canvas is not ready. Switch to Edit mode and try again.');
+    }
+    return captureCanvasScreenshot(canvas);
+  }, []);
+
+  const handleStartPublish = useCallback(async () => {
+    if (!cloudEnabled || mode !== 'edit') {
+      return;
+    }
+    setPublishStatus({ kind: 'capturing' });
+    try {
+      const shot = await captureCurrentScreenshot();
+      setPublishStatus({ kind: 'preview', dataUrl: shot.dataUrl, blob: shot.blob });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to capture screenshot.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [cloudEnabled, mode, captureCurrentScreenshot]);
+
+  const handleRetakeScreenshot = useCallback(async () => {
+    setPublishStatus({ kind: 'capturing' });
+    try {
+      const shot = await captureCurrentScreenshot();
+      setPublishStatus({ kind: 'preview', dataUrl: shot.dataUrl, blob: shot.blob });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to capture screenshot.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [captureCurrentScreenshot]);
+
+  const handleCancelPublish = useCallback(() => {
+    setPublishStatus({ kind: 'idle' });
+  }, []);
+
+  const handleConfirmPublish = useCallback(async () => {
+    if (publishStatus.kind !== 'preview') {
+      return;
+    }
+    const { dataUrl, blob } = publishStatus;
+    setPublishStatus({ kind: 'publishing', dataUrl });
+    try {
+      // publishWorld reserves an id and streams the gzipped world + the
+      // screenshot directly to the storage backend in parallel. For the R2
+      // backend this means the bytes go straight to R2 via presigned URLs
+      // and never touch our function.
+      const result = await publishWorld({
+        world: worldRef.current,
+        screenshot: blob,
+        parentId: sourcePublishedId,
+      });
+      // After a successful publish, the new id becomes the ancestry source
+      // if the user continues editing and publishes again.
+      setSourcePublishedId(result.id);
+      // Remember this publication on the local device so the user can see a
+      // private gallery of their own worlds even without an account system.
+      recordPublishedWorld({
+        id: result.id,
+        name: worldRef.current.meta.name || 'Untitled World',
+        publishedAt: result.createdAt,
+      });
+      const shareUrl = `${window.location.origin}/builder/world?published=${encodeURIComponent(result.id)}`;
+      let clipboardOk = false;
+      try {
+        await navigator.clipboard?.writeText(shareUrl);
+        clipboardOk = true;
+      } catch {
+        clipboardOk = false;
+      }
+      setPublishStatus({
+        kind: 'success',
+        id: result.id,
+        shareUrl,
+        clipboardOk,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown publish error.';
+      setPublishStatus({ kind: 'error', message });
+    }
+  }, [publishStatus]);
+
+  const handleOpenGallery = useCallback(() => {
+    window.location.href = '/gallery';
+  }, []);
+
+  // Probe cloud config once on mount. We only care whether the deployment has
+  // R2 configured — the response contains no secrets.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCloudConfig()
+      .then((config) => {
+        if (!cancelled) {
+          setCloudEnabled(config.enabled);
+          setCloudPublicUrl(config.publicUrl ?? null);
+        }
+      })
+      .catch(() => {
+        // Feature stays disabled on transient errors; the rest of the builder keeps working.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // If the builder was opened with `?published=<id>`, pull that world from R2
+  // and load it in place of the local draft. We wait for storage to be ready
+  // so we don't race with the initial IndexedDB restore.
+  useEffect(() => {
+    if (!publishedId || !storageReady) {
+      return;
+    }
+    let cancelled = false;
+    setCloudLoadStatus({ kind: 'loading', id: publishedId });
+    fetchPublishedWorld(publishedId, cloudPublicUrl)
+      .then((raw) => {
+        if (cancelled) {
+          return;
+        }
+        const nextWorld = parseWorldDocument(raw);
+        applyCommittedWorldEdit(() => cloneWorldDocument(nextWorld));
+        setSelected(null);
+        setCloudLoadStatus({ kind: 'loaded', id: publishedId, name: nextWorld.meta.name });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) {
+          return;
+        }
+        const message = err instanceof Error ? err.message : 'Failed to load published world.';
+        setCloudLoadStatus({ kind: 'error', id: publishedId, message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [publishedId, storageReady, applyCommittedWorldEdit, cloudPublicUrl]);
 
   const handleRestoreRevision = useCallback((revision: WorldDraftRevision) => {
     applyCommittedWorldEdit(() => cloneWorldDocument(revision.world));
@@ -530,6 +702,7 @@ export function GodModePage() {
     applyCommittedWorldEdit(() => cloneWorldDocument(DEFAULT_WORLD_DOCUMENT));
     setHistory([]);
     setSelected(null);
+    setSourcePublishedId(null); // reset breaks the ancestry chain
     setLastImportName('');
     setLastImportNameState('');
   }, [applyCommittedWorldEdit]);
@@ -866,6 +1039,9 @@ export function GodModePage() {
           applyCustomStencilToWorld(current, activeCustomStencil, activeCustomParams, x, z),
         );
       }}
+      onCanvasReady={(canvas) => {
+        editorCanvasRef.current = canvas;
+      }}
     />
   ), [
     brushMaxHeight,
@@ -962,6 +1138,60 @@ export function GodModePage() {
             Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
           </div>
         </div>
+
+        {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
+          <div style={sectionStyle}>
+            <div style={sectionTitleStyle}>Cloud</div>
+            <div style={buttonRowStyle}>
+              {cloudEnabled && (
+                <button
+                  type="button"
+                  onClick={() => void handleStartPublish()}
+                  style={primaryButtonStyle}
+                  disabled={
+                    publishStatus.kind === 'capturing'
+                    || publishStatus.kind === 'preview'
+                    || publishStatus.kind === 'publishing'
+                    || mode !== 'edit'
+                  }
+                >
+                  {publishStatus.kind === 'capturing' ? 'Capturing…' : 'Publish to Cloud'}
+                </button>
+              )}
+              <button type="button" onClick={handleOpenGallery} style={secondaryButtonStyle}>
+                Browse Gallery
+              </button>
+            </div>
+            {cloudLoadStatus.kind === 'loading' && (
+              <div style={mutedTextStyle}>Loading published world {cloudLoadStatus.id}…</div>
+            )}
+            {cloudLoadStatus.kind === 'loaded' && (
+              <div style={mutedTextStyle}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
+            )}
+            {cloudLoadStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Failed to load published world: {cloudLoadStatus.message}
+              </div>
+            )}
+            {publishStatus.kind === 'idle' && cloudEnabled && (
+              <div style={mutedTextStyle}>
+                Publishing captures a screenshot and uploads the current world (gzipped) to Cloudflare R2. Published worlds appear in the gallery.
+              </div>
+            )}
+            {publishStatus.kind === 'success' && (
+              <div style={mutedTextStyle}>
+                Published as <code>{publishStatus.id}</code>.{' '}
+                {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
+                <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
+              </div>
+            )}
+            {publishStatus.kind === 'error' && (
+              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+                Publish failed: {publishStatus.message}
+              </div>
+            )}
+          </div>
+        )}
 
         <div style={sectionStyle}>
           <div style={sectionTitleStyle}>Undo / Redo</div>
@@ -1297,9 +1527,148 @@ export function GodModePage() {
           </div>
         )}
         {editScene}
+        {(publishStatus.kind === 'preview' || publishStatus.kind === 'publishing' || publishStatus.kind === 'capturing') && (
+          <PublishPreviewOverlay
+            status={publishStatus}
+            onConfirm={() => void handleConfirmPublish()}
+            onRetake={() => void handleRetakeScreenshot()}
+            onCancel={handleCancelPublish}
+          />
+        )}
       </main>
 
       <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+    </div>
+  );
+}
+
+type PublishPreviewOverlayStatus =
+  | { kind: 'capturing' }
+  | { kind: 'preview'; dataUrl: string; blob: Blob }
+  | { kind: 'publishing'; dataUrl: string };
+
+function PublishPreviewOverlay({
+  status,
+  onConfirm,
+  onRetake,
+  onCancel,
+}: {
+  status: PublishPreviewOverlayStatus;
+  onConfirm: () => void;
+  onRetake: () => void;
+  onCancel: () => void;
+}) {
+  const busy = status.kind === 'capturing' || status.kind === 'publishing';
+  const dataUrl = status.kind === 'preview' || status.kind === 'publishing' ? status.dataUrl : null;
+  const sizeBytes = status.kind === 'preview' ? status.blob.size : null;
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 20,
+        right: 20,
+        width: 360,
+        padding: 18,
+        borderRadius: 18,
+        background: 'rgba(6, 12, 20, 0.94)',
+        border: '1px solid rgba(110, 190, 255, 0.3)',
+        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5)',
+        color: '#edf6ff',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        zIndex: 40,
+      }}
+    >
+      <div style={{ fontSize: 12, letterSpacing: '0.18em', textTransform: 'uppercase', color: '#87d6ff' }}>
+        Publish preview
+      </div>
+      <div
+        style={{
+          width: '100%',
+          aspectRatio: '16 / 9',
+          borderRadius: 10,
+          overflow: 'hidden',
+          background: '#04070d',
+          border: '1px solid rgba(145, 198, 255, 0.18)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {dataUrl ? (
+          <img
+            src={dataUrl}
+            alt="Screenshot preview"
+            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (
+          <div style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.62)' }}>Capturing…</div>
+        )}
+      </div>
+      <div style={{ fontSize: 13, lineHeight: 1.5, color: 'rgba(237, 246, 255, 0.78)' }}>
+        Orient the view behind this panel and click Retake to capture a different angle. Hit Publish when you're happy with it.
+        {sizeBytes != null && (
+          <div style={{ marginTop: 4, fontSize: 12, color: 'rgba(237, 246, 255, 0.55)' }}>
+            Screenshot {(sizeBytes / 1024).toFixed(1)} KB
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy || status.kind !== 'preview'}
+          style={{
+            flex: '1 1 120px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: 'none',
+            background: 'linear-gradient(180deg, #4cd1ff 0%, #2f8bd6 100%)',
+            color: '#04121f',
+            fontWeight: 600,
+            fontSize: 14,
+            cursor: busy ? 'wait' : 'pointer',
+            opacity: status.kind === 'preview' ? 1 : 0.7,
+          }}
+        >
+          {status.kind === 'publishing' ? 'Publishing…' : 'Publish'}
+        </button>
+        <button
+          type="button"
+          onClick={onRetake}
+          disabled={busy}
+          style={{
+            flex: '1 1 100px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: '1px solid rgba(145, 198, 255, 0.3)',
+            background: 'transparent',
+            color: '#cfe7ff',
+            fontSize: 13,
+            cursor: busy ? 'wait' : 'pointer',
+          }}
+        >
+          Retake
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={status.kind === 'publishing'}
+          style={{
+            flex: '1 1 90px',
+            padding: '10px 14px',
+            borderRadius: 999,
+            border: '1px solid rgba(255, 180, 166, 0.3)',
+            background: 'transparent',
+            color: '#ffb4a6',
+            fontSize: 13,
+            cursor: status.kind === 'publishing' ? 'not-allowed' : 'pointer',
+          }}
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -1342,6 +1711,7 @@ function GodModeEditorScene({
   activeCustomStencil,
   activeCustomParams,
   onApplyCustomStencil,
+  onCanvasReady,
 }: {
   world: WorldDocument;
   tool: EditorTool;
@@ -1380,6 +1750,7 @@ function GodModeEditorScene({
   activeCustomStencil: CustomStencilDefinition | null;
   activeCustomParams: Record<string, unknown>;
   onApplyCustomStencil: (x: number, z: number) => void;
+  onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
@@ -1600,6 +1971,7 @@ function GodModeEditorScene({
     <Canvas
       shadows
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
+      gl={{ preserveDrawingBuffer: true, antialias: true }}
       style={{ width: '100%', height: '100%' }}
       onPointerUp={handleTerrainPointerUp}
       onPointerMissed={() => {
@@ -1614,6 +1986,7 @@ function GodModeEditorScene({
         }
       }}
     >
+      {onCanvasReady && <CanvasDomBinder onReady={onCanvasReady} />}
       <ambientLight intensity={0.55} />
       <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
       <Sky sunPosition={[24, 12, 8]} />
@@ -1767,6 +2140,20 @@ function GodModeEditorScene({
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
     </Canvas>
   );
+}
+
+// Exposes the underlying R3F canvas (via useThree) to the outer component so
+// we can grab pixel data for screenshots. Must live inside the <Canvas>.
+function CanvasDomBinder({ onReady }: { onReady: (canvas: HTMLCanvasElement | null) => void }) {
+  const gl = useThree((state) => state.gl);
+  useEffect(() => {
+    const canvas = gl?.domElement ?? null;
+    onReady(canvas);
+    return () => {
+      onReady(null);
+    };
+  }, [gl, onReady]);
+  return null;
 }
 
 function FloatingTileActionButton({
