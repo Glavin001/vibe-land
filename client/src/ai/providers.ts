@@ -1,4 +1,6 @@
-import type { LanguageModel } from 'ai';
+import type { JSONValue, LanguageModel } from 'ai';
+
+type ProviderOptionsBag = Record<string, Record<string, JSONValue>>;
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -78,7 +80,12 @@ export function createLanguageModel(
   switch (provider) {
     case 'openai': {
       const client = createOpenAI({ apiKey });
-      return client.chat(modelId);
+      // All OpenAI models support the responses API (/v1/responses). The chat
+      // completions endpoint (/v1/chat/completions) rejects reasoning_effort
+      // when tools are present, so always use the responses model. This also
+      // aligns with the SDK's own default — createOpenAI()(modelId) now calls
+      // createResponsesModel internally.
+      return client.responses(modelId);
     }
     case 'anthropic': {
       const client = createAnthropic({
@@ -97,5 +104,50 @@ export function createLanguageModel(
       const exhaustive: never = provider;
       throw new Error(`Unknown provider: ${String(exhaustive)}`);
     }
+  }
+}
+
+/**
+ * Returns providerOptions for streamText that enable extended thinking with a
+ * medium budget for models/providers that support it. Returns {} for models
+ * that don't support thinking (e.g. GPT-4.x, Haiku).
+ */
+export function getThinkingProviderOptions(
+  provider: ProviderId,
+  modelId: string,
+): ProviderOptionsBag {
+  switch (provider) {
+    case 'anthropic': {
+      // Haiku models do not support thinking
+      if (modelId.includes('haiku')) return {};
+      // claude-*-4-6 and later support adaptive thinking
+      if (/4-6/.test(modelId)) {
+        return { anthropic: { thinking: { type: 'adaptive' } } };
+      }
+      // Earlier claude models use budget-based thinking
+      return { anthropic: { thinking: { type: 'enabled', budgetTokens: 10000 } } };
+    }
+    case 'openai': {
+      // GPT-5 series and o-series support reasoningEffort.
+      // reasoningSummary:'auto' makes reasoning stream as reasoning-delta events.
+      // GPT-4.x and older chat-only models don't support this option.
+      if (/^gpt-5/.test(modelId) || /^o\d/.test(modelId)) {
+        return { openai: { reasoningEffort: 'medium', reasoningSummary: 'auto' } };
+      }
+      return {};
+    }
+    case 'google': {
+      // Gemini 3.x → thinkingLevel (categorical)
+      if (/^gemini-3/.test(modelId)) {
+        return { google: { thinkingConfig: { thinkingLevel: 'medium', includeThoughts: true } } };
+      }
+      // Gemini 2.5 → thinkingBudget (token count)
+      if (/^gemini-2\.5/.test(modelId)) {
+        return { google: { thinkingConfig: { thinkingBudget: 8000, includeThoughts: true } } };
+      }
+      return {};
+    }
+    default:
+      return {};
   }
 }

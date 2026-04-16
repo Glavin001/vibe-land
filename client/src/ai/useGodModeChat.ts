@@ -7,7 +7,7 @@ import {
   type ChatImagePart,
   type ChatPart,
 } from './chatTypes';
-import { createLanguageModel, type ProviderId } from './providers';
+import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import type { WorldAccessors } from './worldToolHelpers';
@@ -134,6 +134,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
 
       try {
         const languageModel = createLanguageModel(provider, model, apiKey);
+        const thinkingOpts = getThinkingProviderOptions(provider, model);
         const result = streamText({
           model: languageModel,
           system: SYSTEM_PROMPT,
@@ -147,9 +148,13 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           // Disable automatic retries — for BYOK in the browser, retrying
           // on 429/5xx just wastes the user's quota and delays the error.
           maxRetries: 0,
-          // Prevent OpenAI from issuing multiple tool calls in a single step.
-          // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
-          providerOptions: { openai: { parallelToolCalls: false } },
+          providerOptions: {
+            ...thinkingOpts,
+            // Prevent OpenAI from issuing multiple tool calls in a single step.
+            // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
+            // Deep-merge with any thinking options already under the openai key.
+            openai: { parallelToolCalls: false, ...thinkingOpts.openai },
+          },
         });
 
         // Track in-flight text/reasoning blocks so streamed deltas append to
@@ -269,11 +274,25 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           }
         }
 
-        if (controller.signal.aborted) {
-          setStatus('idle');
-        } else {
-          setStatus('idle');
+        // Capture cumulative token usage across all tool-use steps.
+        if (!controller.signal.aborted) {
+          try {
+            const { inputTokens, outputTokens } = await result.totalUsage;
+            if (inputTokens !== undefined && outputTokens !== undefined) {
+              setMessages((current) => {
+                const idx = current.findIndex((m) => m.id === assistantId);
+                if (idx === -1) return current;
+                const next = current.slice();
+                next[idx] = { ...current[idx], usage: { inputTokens, outputTokens } };
+                return next;
+              });
+            }
+          } catch {
+            // Usage unavailable from this provider/model — skip silently.
+          }
         }
+
+        setStatus('idle');
       } catch (err) {
         const wrapped = toError(err);
         if (wrapped.name === 'AbortError') {
