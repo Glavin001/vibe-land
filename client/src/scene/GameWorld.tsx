@@ -10,6 +10,8 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { parseDestructibleDebugConfig, parseDestructibleDebugState } from '../physics/destructibleDebug';
+import { computeDestructibleSpatialMetrics } from '../physics/destructibleSpatialMetrics';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -1076,6 +1078,7 @@ export function GameWorld({
     lastEnterPressedAtMs: null,
   });
   const vehicleSupportDebugEnabledRef = useRef(false);
+  const destructibleFractureEventsTotalRef = useRef(0);
 
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
@@ -1202,6 +1205,10 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
+
+  useEffect(() => {
+    destructibleFractureEventsTotalRef.current = 0;
+  }, [mode, worldJson]);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -2292,6 +2299,18 @@ export function GameWorld({
 
     // E2E bridge: publish frame state for read-only snapshot
     {
+      const chunkTransforms = client.getDestructibleChunkTransforms();
+      const fractureEvents = Array.from(client.drainDestructibleFractureEvents());
+      for (let index = 1; index < fractureEvents.length; index += 2) {
+        destructibleFractureEventsTotalRef.current += Number(fractureEvents[index] ?? 0);
+      }
+      const destructibles = {
+        chunkCount: chunkTransforms.length / 11,
+        fractureEventsTotal: destructibleFractureEventsTotalRef.current,
+        debugState: parseDestructibleDebugState(client.getDestructibleDebugState()),
+        debugConfig: parseDestructibleDebugConfig(client.getDestructibleDebugConfig()),
+        spatialMetrics: computeDestructibleSpatialMetrics(effectiveWorldDocument.destructibles, chunkTransforms),
+      };
       const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
       for (const [id, rp] of state.remotePlayers) {
         const sample = state.remoteInterpolator.sample(
@@ -2310,6 +2329,7 @@ export function GameWorld({
         drivenVehicleId: drivenVehicleId ?? null,
         nearestVehicleId: nearestVehicleIdRef.current,
         remotePlayers: remoteSummaries,
+        destructibles,
         stats: {
           ...DEFAULT_STATS,
           frameTimeMs: frameDelta * 1000,

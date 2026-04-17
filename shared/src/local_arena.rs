@@ -540,6 +540,36 @@ impl PhysicsArena {
         &[]
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        self.destructibles.debug_state_slice().into()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        Box::new([])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        self.destructibles.debug_config_slice().into()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        Box::new([])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.destructibles.drain_fracture_events().into_boxed_slice()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        Box::new([])
+    }
+
     pub fn step_vehicles(&mut self, dt: f32) {
         if self.vehicles.is_empty() {
             return;

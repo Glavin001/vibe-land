@@ -1729,6 +1729,21 @@ impl WasmLocalSession {
             .into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = getDestructibleDebugState)]
+    pub fn get_destructible_debug_state(&self) -> Box<[f64]> {
+        self.inner.destructible_debug_state()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugConfig)]
+    pub fn get_destructible_debug_config(&self) -> Box<[f64]> {
+        self.inner.destructible_debug_config()
+    }
+
+    #[wasm_bindgen(js_name = drainDestructibleFractureEvents)]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.inner.drain_destructible_fracture_events()
+    }
+
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()

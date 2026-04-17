@@ -192,6 +192,9 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
   getDestructibleChunkTransforms(): Float32Array;
+  getDestructibleDebugState(): number[];
+  getDestructibleDebugConfig(): number[];
+  drainDestructibleFractureEvents(): Uint32Array;
 };
 
 type WasmLocalSessionCtor = {

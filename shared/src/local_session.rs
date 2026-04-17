@@ -374,6 +374,18 @@ impl LocalSession {
     pub fn destructible_chunk_transforms(&self) -> &[f32] {
         self.arena.destructible_chunk_transforms()
     }
+
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_state()
+    }
+
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_config()
+    }
+
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.arena.drain_destructible_fracture_events()
+    }
 }
 
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {

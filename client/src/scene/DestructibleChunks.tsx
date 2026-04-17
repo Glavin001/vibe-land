@@ -39,7 +39,7 @@ type DestructibleChunksProps = {
   /**
    * Per-frame getter for the raw WASM chunk transform buffer. The buffer
    * is a flat `Float32Array` with stride `CHUNK_TRANSFORM_STRIDE`:
-   *   [destructibleId, chunkIndex, px, py, pz, qx, qy, qz, qw, active, _pad]
+   *   [destructibleId, chunkIndex, px, py, pz, qx, qy, qz, qw, present, _pad]
    */
   getChunkTransforms: () => Float32Array;
 };
@@ -131,10 +131,8 @@ export function DestructibleChunks({ world, getChunkTransforms }: DestructibleCh
 
       tmpPosition.set(buffer[base + 2], buffer[base + 3], buffer[base + 4]);
       tmpQuaternion.set(buffer[base + 5], buffer[base + 6], buffer[base + 7], buffer[base + 8]);
-      // `activeFlag` isn't used to hide chunks — we want supports and
-      // sleeping dynamic chunks to still render. It's exposed in the
-      // buffer for debugging / gameplay hooks.
-      tmpMatrix.compose(tmpPosition, tmpQuaternion, unitScale);
+      const presentFlag = buffer[base + 9] ?? 0;
+      tmpMatrix.compose(tmpPosition, tmpQuaternion, presentFlag > 0 ? unitScale : zeroScale);
       entry.group.mesh.setMatrixAt(slotIndex, tmpMatrix);
       entry.count = slotIndex + 1;
     }
