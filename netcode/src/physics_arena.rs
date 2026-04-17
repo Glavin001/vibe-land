@@ -239,6 +239,10 @@ impl DynamicArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
+        self.step_dynamics_with_event_handler(dt, &());
+    }
+
+    pub fn step_dynamics_with_event_handler(&mut self, dt: f32, event_handler: &dyn EventHandler) {
         let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
         for _ in 0..DYNAMIC_SUBSTEPS {
             self.sim.integration_parameters.dt = substep_dt;
@@ -254,7 +258,7 @@ impl DynamicArena {
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
                 &(),
-                &(),
+                event_handler,
             );
         }
         self.sim.integration_parameters.dt = dt;

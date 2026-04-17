@@ -36,6 +36,7 @@ function benchmarkVehicleWorld(
       rotation: identityQuaternion(),
       vehicleType: 0,
     }],
+    destructibles: [],
   };
 }
 

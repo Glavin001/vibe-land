@@ -20,6 +20,10 @@ pub struct WorldDocument {
     pub terrain: WorldTerrain,
     pub static_props: Vec<StaticProp>,
     pub dynamic_entities: Vec<DynamicEntity>,
+    /// Blast-driven destructible structures (wall/tower).  Optional so
+    /// legacy world documents without the field still parse cleanly.
+    #[serde(default)]
+    pub destructibles: Vec<DestructibleDoc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,6 +90,27 @@ pub enum DynamicEntityKind {
     Box,
     Ball,
     Vehicle,
+}
+
+/// A destructible structure placed in the world, backed by the Blast
+/// stress-solver (see `destructibles` module).  The Blast scenario is
+/// chosen by `kind`; position/rotation place the resulting chunks in the
+/// world.  `id` must be unique within the document.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DestructibleDoc {
+    pub id: u32,
+    pub kind: DestructibleKind,
+    pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DestructibleKind {
+    Wall,
+    Tower,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +269,14 @@ pub trait WorldDocumentArena {
         rotation: [f32; 4],
     );
 
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    );
+
     fn rebuild_broad_phase(&mut self);
 }
 
@@ -312,8 +345,98 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
         );
     }
 
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) {
+        let _ = (id, kind, position, rotation);
+    }
+
     fn rebuild_broad_phase(&mut self) {
         crate::physics_arena::PhysicsArena::rebuild_broad_phase(self);
+    }
+}
+
+impl WorldDocumentArena for crate::local_arena::PhysicsArena {
+    fn add_static_heightfield(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+    ) {
+        crate::local_arena::PhysicsArena::add_static_heightfield(
+            self, center, heights, scale, user_data,
+        );
+    }
+
+    fn add_static_cuboid(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+    ) {
+        crate::local_arena::PhysicsArena::add_static_cuboid_rotated(
+            self,
+            center,
+            rotation,
+            half_extents,
+            user_data,
+        );
+    }
+
+    fn spawn_dynamic_box_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+    ) {
+        crate::local_arena::PhysicsArena::spawn_dynamic_box_with_id(
+            self,
+            id,
+            position,
+            rotation,
+            half_extents,
+        );
+    }
+
+    fn spawn_dynamic_ball_with_id(&mut self, id: u32, position: Vector3<f32>, radius: f32) {
+        crate::local_arena::PhysicsArena::spawn_dynamic_ball_with_id(self, id, position, radius);
+    }
+
+    fn spawn_vehicle_with_id(
+        &mut self,
+        id: u32,
+        vehicle_type: u8,
+        position: Vector3<f32>,
+        rotation: [f32; 4],
+    ) {
+        crate::local_arena::PhysicsArena::spawn_vehicle_with_id(
+            self,
+            id,
+            vehicle_type,
+            position,
+            rotation,
+        );
+    }
+
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) {
+        crate::local_arena::PhysicsArena::spawn_destructible(self, id, kind, position, rotation);
+    }
+
+    fn rebuild_broad_phase(&mut self) {
+        crate::local_arena::PhysicsArena::rebuild_broad_phase(self);
     }
 }
 
@@ -678,6 +801,15 @@ impl WorldDocument {
         // folding them into the static rebuild path.
         arena.rebuild_broad_phase();
 
+        for destructible in &self.destructibles {
+            arena.spawn_destructible(
+                destructible.id,
+                destructible.kind,
+                destructible.position,
+                destructible.rotation,
+            );
+        }
+
         for entity in &self.dynamic_entities {
             match entity.kind {
                 DynamicEntityKind::Box => {
@@ -792,6 +924,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 
@@ -938,6 +1071,33 @@ mod tests {
         let decoded: WorldDocument = serde_json::from_str(&json).expect("deserialize world");
         assert_eq!(decoded.version, WORLD_DOCUMENT_VERSION);
         assert_eq!(decoded.dynamic_entities.len(), world.dynamic_entities.len());
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn instantiate_spawns_destructibles_into_local_preview_arena() {
+        let mut world = WorldDocument::demo();
+        world.destructibles = vec![
+            DestructibleDoc {
+                id: 2000,
+                kind: DestructibleKind::Wall,
+                position: [0.0, 0.0, 8.0],
+                rotation: identity_rotation(),
+            },
+            DestructibleDoc {
+                id: 2001,
+                kind: DestructibleKind::Tower,
+                position: [10.0, 0.5, -5.0],
+                rotation: identity_rotation(),
+            },
+        ];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate world with destructibles");
+
+        assert_eq!(arena.destructible_count(), world.destructibles.len());
     }
 
     #[test]

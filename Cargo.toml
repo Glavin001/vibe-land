@@ -1,5 +1,8 @@
 [workspace]
 members = ["netcode", "shared", "server"]
+# Exclude third_party/ from the workspace — it may contain vendored
+# crates (e.g. from past PhysX clones) that are not workspace members.
+exclude = ["third_party"]
 resolver = "2"
 
 [profile.release]

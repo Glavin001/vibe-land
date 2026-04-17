@@ -51,6 +51,12 @@ export type WorldDocument = {
   };
   staticProps: StaticProp[];
   dynamicEntities: DynamicEntity[];
+  /**
+   * Blast-stress-solver backed destructible structures. Optional — older
+   * world documents without the field default to `[]` so existing saves
+   * keep loading.
+   */
+  destructibles: Destructible[];
 };
 
 type LegacyTerrain = {
@@ -76,6 +82,18 @@ export type DynamicEntity = {
   halfExtents?: Vec3;
   radius?: number;
   vehicleType?: number;
+};
+
+/**
+ * A destructible structure backed by NVIDIA Blast's stress solver. Kind
+ * selects the scenario builder (wall / tower); position + rotation place
+ * the resulting chunks in world space.
+ */
+export type Destructible = {
+  id: number;
+  kind: 'wall' | 'tower';
+  position: Vec3;
+  rotation: Quaternion;
 };
 
 export type WorldDraftRevision = {
@@ -105,6 +123,7 @@ export function createEmptyWorldDocument(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 
@@ -121,6 +140,7 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
     terrain?: Partial<WorldDocument['terrain']> & Partial<LegacyTerrain>;
     staticProps?: unknown[];
     dynamicEntities?: unknown[];
+    destructibles?: unknown[];
   };
   if (!candidate.terrain) {
     throw new Error('World document terrain is missing.');
@@ -128,6 +148,7 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
   if (!Array.isArray(candidate.staticProps) || !Array.isArray(candidate.dynamicEntities)) {
     throw new Error('World document entity arrays are missing.');
   }
+  const rawDestructibles = Array.isArray(candidate.destructibles) ? candidate.destructibles : [];
 
   const terrain = normalizeTerrain(candidate.terrain);
   return {
@@ -144,6 +165,10 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
     dynamicEntities: candidate.dynamicEntities.map((entity) => ({
       ...(entity as DynamicEntity),
       rotation: normalizeQuaternion((entity as Partial<DynamicEntity>).rotation),
+    })),
+    destructibles: rawDestructibles.map((entity) => ({
+      ...(entity as Destructible),
+      rotation: normalizeQuaternion((entity as Partial<Destructible>).rotation),
     })),
   };
 }
@@ -197,7 +222,8 @@ export function buildDraftRevision(world: WorldDocument, summary: string, now = 
 export function getNextWorldEntityId(world: WorldDocument): number {
   const highestStatic = world.staticProps.reduce((max, entity) => Math.max(max, entity.id), 0);
   const highestDynamic = world.dynamicEntities.reduce((max, entity) => Math.max(max, entity.id), 0);
-  return Math.max(highestStatic, highestDynamic) + 1;
+  const highestDestructible = (world.destructibles ?? []).reduce((max, entity) => Math.max(max, entity.id), 0);
+  return Math.max(highestStatic, highestDynamic, highestDestructible) + 1;
 }
 
 export function quaternionFromYaw(yawRad: number): Quaternion {

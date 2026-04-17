@@ -1,5 +1,10 @@
 pub mod constants;
 pub mod debug_render;
+#[cfg(target_arch = "wasm32")]
+pub mod destructibles;
+#[cfg(target_arch = "wasm32")]
+pub mod destructibles_real;
+pub mod local_arena;
 pub mod local_session;
 pub mod local_world;
 pub mod movement;

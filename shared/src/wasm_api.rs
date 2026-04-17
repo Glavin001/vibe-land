@@ -9,6 +9,9 @@ use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
+use crate::destructibles::{
+    pose_from_world_doc, set_destructibles_log_enabled, DestructibleRegistry,
+};
 use crate::local_session::LocalSession;
 use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
 use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
@@ -21,7 +24,9 @@ use crate::vehicle::{
     vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS,
     VEHICLE_WHEEL_OFFSETS,
 };
-use crate::world_document::{StaticPropKind, WorldDocument};
+use crate::world_document::{
+    DestructibleKind as DocDestructibleKind, StaticPropKind, WorldDocument,
+};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -125,6 +130,22 @@ pub struct WasmSimWorld {
     vehicle_pending_inputs: Vec<InputCmd>,
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
+
+    // Destructible structures (Blast stress solver).  Single-player only;
+    // see `destructibles.rs` and `docs/BLAST_INTEGRATION.md`.
+    destructibles: DestructibleRegistry,
+
+    // Rapier event channels.  The vehicle pipeline passes a
+    // `ChannelEventCollector` wrapping these senders as its event
+    // handler; `step_vehicle_pipeline` drains them into the destructible
+    // stress solver before stepping it.  Present even when
+    // destructibles are stubbed out so the pipeline can always use the
+    // same event handler path — the stub `drain_*` methods just
+    // discard the events.
+    collision_tx: std::sync::mpsc::Sender<CollisionEvent>,
+    collision_rx: std::sync::mpsc::Receiver<CollisionEvent>,
+    contact_force_tx: std::sync::mpsc::Sender<ContactForceEvent>,
+    contact_force_rx: std::sync::mpsc::Receiver<ContactForceEvent>,
 }
 
 #[wasm_bindgen]
@@ -132,6 +153,8 @@ impl WasmSimWorld {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         install_panic_hook_once();
+        let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
+        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         Self {
             sim: SimWorld::new(MoveConfig::default()),
             player_collider: None,
@@ -153,6 +176,11 @@ impl WasmSimWorld {
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
+            destructibles: DestructibleRegistry::new(),
+            collision_tx,
+            collision_rx,
+            contact_force_tx,
+            contact_force_rx,
         }
     }
 
@@ -225,7 +253,124 @@ impl WasmSimWorld {
             }
         }
 
+        for doc in &world.destructibles {
+            let pose = pose_from_world_doc(doc.position, doc.rotation);
+            match doc.kind {
+                DocDestructibleKind::Wall => {
+                    self.destructibles.spawn_wall(&mut self.sim, doc.id, pose);
+                }
+                DocDestructibleKind::Tower => {
+                    self.destructibles.spawn_tower(&mut self.sim, doc.id, pose);
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    // ── Destructibles (Blast stress solver) ──────────
+
+    /// Spawn a destructible structure at `pose`.  `kind` must be `"wall"`
+    /// or `"tower"`.  Returns `true` if the instance was created.
+    #[wasm_bindgen(js_name = spawnDestructible)]
+    pub fn spawn_destructible(
+        &mut self,
+        kind: &str,
+        id: u32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+    ) -> bool {
+        let pose = pose_from_world_doc([px, py, pz], [qx, qy, qz, qw]);
+        match kind {
+            "wall" => self.destructibles.spawn_wall(&mut self.sim, id, pose),
+            "tower" => self.destructibles.spawn_tower(&mut self.sim, id, pose),
+            _ => false,
+        }
+    }
+
+    #[wasm_bindgen(js_name = despawnDestructible)]
+    pub fn despawn_destructible(&mut self, id: u32) -> bool {
+        self.destructibles.despawn(
+            &mut self.sim,
+            &mut self.vehicle_joints,
+            &mut self.vehicle_multibody_joints,
+            id,
+        )
+    }
+
+    /// Advance the destructible stress solvers.  Normally folded into
+    /// `tick` / `step_vehicle_pipeline`; exposed so tests can drive the
+    /// solver directly without a player capsule.
+    #[wasm_bindgen(js_name = stepDestructibles)]
+    pub fn step_destructibles(&mut self) {
+        self.destructibles.step(
+            &mut self.sim,
+            &mut self.vehicle_joints,
+            &mut self.vehicle_multibody_joints,
+        );
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleChunkTransforms)]
+    pub fn get_destructible_chunk_transforms(&self) -> Box<[f32]> {
+        self.destructibles
+            .chunk_transforms_slice()
+            .to_vec()
+            .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleChunkCount)]
+    pub fn get_destructible_chunk_count(&self) -> u32 {
+        self.destructibles.total_chunk_count() as u32
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleInstanceCount)]
+    pub fn get_destructible_instance_count(&self) -> u32 {
+        self.destructibles.len() as u32
+    }
+
+    #[wasm_bindgen(js_name = drainDestructibleFractureEvents)]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.destructibles
+            .drain_fracture_events()
+            .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugState)]
+    pub fn get_destructible_debug_state(&self) -> Box<[f64]> {
+        self.destructibles.debug_state_slice().into()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugConfig)]
+    pub fn get_destructible_debug_config(&self) -> Box<[f64]> {
+        self.destructibles.debug_config_slice().into()
+    }
+
+    /// Toggle verbose destructibles logging.  When enabled, the wasm
+    /// backend prints `[destructibles] ...` lines on spawn, on every
+    /// awake-chunk-count change, and on every fracture event.
+    ///
+    /// Off by default; the client flips it on in dev builds so the
+    /// user can diagnose why a vehicle/ball/player passes through a
+    /// destructible (are contacts arriving at all?).
+    #[wasm_bindgen(js_name = setDestructiblesLogging)]
+    pub fn set_destructibles_logging(&mut self, enabled: bool) {
+        set_destructibles_log_enabled(enabled);
+    }
+
+    /// Returns a human-readable description of every currently-spawned
+    /// destructible instance — body-type breakdown, collider count,
+    /// sample collision groups / active hooks, and world-space AABB.
+    /// Used by `usePrediction` at load time to surface the actual
+    /// Rapier state for the chunks in the browser console so "drive
+    /// through the wall" bugs can be diagnosed without a debugger.
+    #[wasm_bindgen(js_name = describeDestructibles)]
+    pub fn describe_destructibles(&self) -> String {
+        self.destructibles.describe(&self.sim)
     }
 
     /// Remove a collider by its ID (returned from `addCuboid`).
@@ -333,7 +478,10 @@ impl WasmSimWorld {
         // Keep stepping when a local vehicle is active, or when this KCC tick
         // actually applied dynamic-body impulses so the contact response starts
         // immediately for the local player.
-        if self.local_vehicle_id.is_some() || !tick.dynamic_impulses.is_empty() {
+        if self.local_vehicle_id.is_some()
+            || !tick.dynamic_impulses.is_empty()
+            || !self.destructibles.is_empty()
+        {
             self.step_vehicle_pipeline(dt);
         }
 
@@ -632,12 +780,18 @@ impl WasmSimWorld {
             // feel immediate for both walking and driving.
             let dyn_groups =
                 InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+            // Enable contact-force events so dynamic balls hitting
+            // destructibles are routed through the Blast stress solver.
+            // Threshold 0.0 = fire for every contact; the solver
+            // weights forces with its own falloff kernel.
             let collider = if shape_type == 1 {
                 ColliderBuilder::ball(hx)
                     .density(1.0)
                     .restitution(0.6)
                     .friction(0.2)
                     .collision_groups(dyn_groups)
+                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             } else {
@@ -646,6 +800,8 @@ impl WasmSimWorld {
                     .restitution(0.3)
                     .friction(0.6)
                     .collision_groups(dyn_groups)
+                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             };
@@ -1312,6 +1468,12 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
+        // Rapier expects the event handler by shared reference.  A new
+        // `ChannelEventCollector` is cheap (two `Sender` clones) and
+        // avoids holding a mutable borrow of `self` while the body
+        // fields below are mutably borrowed.
+        let collector =
+            ChannelEventCollector::new(self.collision_tx.clone(), self.contact_force_tx.clone());
         step_vehicle_dynamics(
             &mut self.sim,
             &self.gravity,
@@ -1319,8 +1481,33 @@ impl WasmSimWorld {
             &mut self.vehicle_joints,
             &mut self.vehicle_multibody_joints,
             &mut self.vehicle_ccd,
+            &collector,
             dt,
         );
+        drop(collector);
+        // After the rigid-body pipeline has resolved contacts for this
+        // frame, route the contact-force / collision events into the
+        // destructible stress solvers *before* stepping them so
+        // fractures happen in the same frame as the collision.  Drain
+        // order matters: `drain_contact_forces` reads collider→node
+        // mappings that can be invalidated by splits inside
+        // `destructibles.step`.
+        if !self.destructibles.is_empty() {
+            self.destructibles
+                .drain_collision_events(&mut self.sim, &self.collision_rx);
+            self.destructibles
+                .drain_contact_forces(&self.sim, &self.contact_force_rx);
+            self.destructibles.step(
+                &mut self.sim,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+            );
+        } else {
+            // Drain-and-drop so the unbounded channels don't grow
+            // without bound in worlds without destructibles.
+            while self.contact_force_rx.try_recv().is_ok() {}
+            while self.collision_rx.try_recv().is_ok() {}
+        }
     }
 
     fn get_vehicle_state(&self, vid: u32) -> Box<[f64]> {
@@ -1532,6 +1719,29 @@ impl WasmLocalSession {
         }
         out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
         out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleChunkTransforms)]
+    pub fn get_destructible_chunk_transforms(&self) -> Box<[f32]> {
+        self.inner
+            .destructible_chunk_transforms()
+            .to_vec()
+            .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugState)]
+    pub fn get_destructible_debug_state(&self) -> Box<[f64]> {
+        self.inner.destructible_debug_state()
+    }
+
+    #[wasm_bindgen(js_name = getDestructibleDebugConfig)]
+    pub fn get_destructible_debug_config(&self) -> Box<[f64]> {
+        self.inner.destructible_debug_config()
+    }
+
+    #[wasm_bindgen(js_name = drainDestructibleFractureEvents)]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.inner.drain_destructible_fracture_events()
     }
 
     #[wasm_bindgen(js_name = drainPackets)]

@@ -7,7 +7,7 @@ use crate::{
         PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
         RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
-    physics_arena::{MoveConfig, PhysicsArena},
+    local_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
@@ -370,6 +370,22 @@ impl LocalSession {
             &vehicle.controller,
         )
     }
+
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        self.arena.destructible_chunk_transforms()
+    }
+
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_state()
+    }
+
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_config()
+    }
+
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.arena.drain_destructible_fracture_events()
+    }
 }
 
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
@@ -590,7 +606,7 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
-    use crate::physics_arena::{MoveConfig, PhysicsArena};
+    use crate::local_arena::{MoveConfig, PhysicsArena};
     use crate::unit_conv::angle_to_i16;
     use crate::world_document::{
         DynamicEntity, DynamicEntityKind, WorldDocument, WorldMeta, WorldTerrain, WorldTerrainTile,
@@ -693,6 +709,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 

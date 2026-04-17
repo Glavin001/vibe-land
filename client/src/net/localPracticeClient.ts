@@ -151,6 +151,22 @@ export class LocalPracticeClient {
     return decodeVehicleDebugSnapshot(this.session?.getVehicleDebug(vehicleId >>> 0));
   }
 
+  getDestructibleChunkTransforms(): Float32Array {
+    return this.session?.getDestructibleChunkTransforms() ?? new Float32Array(0);
+  }
+
+  getDestructibleDebugState(): number[] {
+    return this.session ? Array.from(this.session.getDestructibleDebugState()) : [];
+  }
+
+  getDestructibleDebugConfig(): number[] {
+    return this.session ? Array.from(this.session.getDestructibleDebugConfig()) : [];
+  }
+
+  drainDestructibleFractureEvents(): Uint32Array {
+    return this.session?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
+  }
+
   sampleRemoteVehicle(id: number, _renderTimeUs?: number): VehicleSample | null {
     const vehicle = this.vehicles.get(id);
     if (!vehicle) return null;

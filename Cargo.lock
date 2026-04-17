@@ -189,6 +189,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
+name = "blast-stress-solver"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30056354120564aacacfc6bf96c7d26268c2b8bb42b40917b033444d7b3e27b8"
+dependencies = [
+ "cc",
+ "rapier3d",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2610,6 +2620,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vibe-land-shared"
 version = "0.1.0"
 dependencies = [
+ "blast-stress-solver",
  "bytes",
  "console_error_panic_hook",
  "js-sys",

@@ -11,6 +11,16 @@ This is a multiplayer browser FPS game ("vibe-land") with two services:
 
 ### First-time setup
 
+Local Rust/WASM prerequisites for browser builds:
+
+```bash
+rustup update stable && rustup default stable   # Rust >= 1.86
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack --locked                # needed for make setup / make setup-wasm
+```
+
+Then run:
+
 ```bash
 make setup   # copies .env.example → .env, builds WASM, installs client deps
 ```
@@ -22,9 +32,10 @@ cp .env.example .env   # edit WT_HOST, cert paths, ports as needed
                        # set WT_PUBLIC_URL when the public WebTransport URL differs from WT_BIND_ADDR
                        # set VITE_MULTIPLAYER_HTTP_ORIGIN only when the SPA points at a different multiplayer origin
 
-# Build the shared WASM module (required before running the client;
-# re-run after any change to shared/)
-cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg && cd ..
+# Preferred local shared-WASM rebuild. This also regenerates
+# client/src/net/sharedConstants.ts and writes the bundle to
+# client/src/wasm/pkg/.
+cd client && npm run build:wasm
 
 cd client && npm install
 ```
@@ -39,7 +50,7 @@ make dev   # starts server + client in parallel; Ctrl-C stops both
 
 ```bash
 make server
-# or: cd server && RUST_LOG=info cargo run
+# or: cd server && cargo run
 ```
 
 - Config is loaded from `.env` in the repo root.
@@ -74,7 +85,7 @@ make check-client  # tsc --noEmit
 ### Build
 
 - **Server:** `cd server && cargo build`
-- **Client (WASM):** `cd shared && wasm-pack build --target web --out-dir ../client/pkg`
+- **Client (WASM):** `cd client && npm run build:wasm`
 - **Client:** `cd client && npm run build`
 
 ### WebTransport infrastructure (infra/)
@@ -239,7 +250,9 @@ DNS / reverse proxy requirements:
 ### Non-obvious notes
 
 - Rust toolchain must be >= 1.86. Run `rustup update stable && rustup default stable` if needed.
-- The shared WASM crate (`shared/`) is compiled separately with `wasm-pack` and output to `client/pkg/`. This must be rebuilt whenever `shared/` changes.
+- `server/.cargo/config.toml` makes `cd server && cargo run` use the same practical server defaults as `WT_STRICT_SNAPSHOT_DATAGRAMS=1 RUST_LOG=info cargo run --release -p web-fps-server`: info logging, strict snapshot datagrams, and an optimized dev profile.
+- Local wasm builds require the `wasm32-unknown-unknown` Rust target. The preferred entrypoint is `cd client && npm run build:wasm`; it ensures `wasm-pack` exists, regenerates `client/src/net/sharedConstants.ts`, and writes the output to `client/src/wasm/pkg/`.
+- `shared/Cargo.toml` pulls `wasm-bindgen`, `js-sys`, `console_error_panic_hook`, and `blast-stress-solver` only for `wasm32-unknown-unknown`. No local PhysX clone or C++ toolchain is required. `cargo check` / `cargo build -p web-fps-server` never touch the Blast backend; only the wasm build does. See `docs/BLAST_INTEGRATION.md` for details.
 - The web client is a single SPA build. Runtime route selection decides between `/play` multiplayer and `/practice` firing range; build mode no longer selects that behavior.
 - `VITE_MULTIPLAYER_HTTP_ORIGIN` is optional. Leave it unset for same-origin deployments; set it when the SPA is hosted separately from the Rust/WebTransport backend.
 - The `rapier3d` 0.30 API is used. Key notes: `KinematicCharacterController` is in `rapier3d::control`.

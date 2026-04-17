@@ -227,6 +227,10 @@ export interface GameRuntimeClient {
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
+  getDestructibleChunkTransforms(): Float32Array;
+  getDestructibleDebugState(): number[];
+  getDestructibleDebugConfig(): number[];
+  drainDestructibleFractureEvents(): Uint32Array;
 }
 
 function createDefaultConnectionState(): RuntimeConnectionState {
@@ -446,6 +450,10 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
+  abstract getDestructibleChunkTransforms(): Float32Array;
+  abstract getDestructibleDebugState(): number[];
+  abstract getDestructibleDebugConfig(): number[];
+  abstract drainDestructibleFractureEvents(): Uint32Array;
 }
 
 export class LocalGameRuntime extends BaseGameRuntime {
@@ -795,6 +803,22 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   isInVehicle(): boolean {
     return this.getDrivenVehicleId() != null;
+  }
+
+  getDestructibleChunkTransforms(): Float32Array {
+    return this.client?.getDestructibleChunkTransforms() ?? new Float32Array(0);
+  }
+
+  getDestructibleDebugState(): number[] {
+    return this.client?.getDestructibleDebugState() ?? [];
+  }
+
+  getDestructibleDebugConfig(): number[] {
+    return this.client?.getDestructibleDebugConfig() ?? [];
+  }
+
+  drainDestructibleFractureEvents(): Uint32Array {
+    return this.client?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
   }
 }
 
@@ -1554,5 +1578,21 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   isInVehicle(): boolean {
     return this.vehiclePrediction?.isActive() ?? false;
+  }
+
+  getDestructibleChunkTransforms(): Float32Array {
+    return this.sim?.getDestructibleChunkTransforms() ?? new Float32Array(0);
+  }
+
+  getDestructibleDebugState(): number[] {
+    return this.sim ? Array.from(this.sim.getDestructibleDebugState()) : [];
+  }
+
+  getDestructibleDebugConfig(): number[] {
+    return this.sim ? Array.from(this.sim.getDestructibleDebugConfig()) : [];
+  }
+
+  drainDestructibleFractureEvents(): Uint32Array {
+    return this.sim?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
   }
 }

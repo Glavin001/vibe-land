@@ -11,9 +11,11 @@ setup: .env setup-wasm setup-client
 	cp .env.example .env
 	@echo "Created .env from .env.example — edit as needed."
 
-## Build the shared WASM module (run after any change to shared/)
+## Build the shared WASM module (run after any change to shared/).
+## `blast-stress-solver` is pulled from crates.io with prebuilt wasm32
+## static libraries — no local setup required.
 setup-wasm:
-	cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+	./scripts/build-shared-wasm.sh
 
 ## Install client npm dependencies
 setup-client:
@@ -24,16 +26,16 @@ setup-client:
 ## Start server + client in parallel (requires 'make setup' first)
 dev:
 	@trap 'kill 0' INT; \
-	  (cd server && RUST_LOG=info cargo run) & \
+	  (cd server && cargo run) & \
 	  (cd client && npm run dev) & \
 	  wait
 
 ## Start only the game server
 server:
-	cd server && RUST_LOG=info cargo run
+	cd server && cargo run
 
 server-with-logs:
-	cd server && RUST_LOG=info RUST_BACKTRACE=1 cargo run 2>&1 | tee /tmp/vibe-server.log
+	cd server && RUST_BACKTRACE=1 cargo run 2>&1 | tee /tmp/vibe-server.log
 
 ## Start only the Vite client dev server
 client:

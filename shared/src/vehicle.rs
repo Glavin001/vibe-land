@@ -72,6 +72,12 @@ pub fn create_vehicle_physics(
     .restitution(0.1)
     .density(VEHICLE_CHASSIS_DENSITY)
     .collision_groups(chassis_groups)
+    // Enable contact-force events so the WASM client can route vehicle
+    // impacts into the Blast destructibles stress solver.  Threshold 0.0
+    // = fire for every contact.  On non-wasm builds (no destructibles
+    // feature) the event handler is `&()` so this is a zero-cost flag.
+    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
+    .contact_force_event_threshold(0.0)
     .build();
     let chassis_collider =
         sim.colliders
@@ -133,6 +139,11 @@ pub fn refresh_vehicle_contacts(
 }
 
 /// Step the vehicle rigid-body pipeline for one client prediction tick.
+///
+/// `event_handler` is the `EventHandler` passed to `pipeline.step`.  The WASM
+/// client passes a `ChannelEventCollector` so contact-force events can be
+/// routed into the Blast destructibles stress solver; server-side callers
+/// (and the `#[cfg(test)]` rig below) pass `&()` which is a zero-cost no-op.
 pub fn step_vehicle_dynamics(
     sim: &mut SimWorld,
     gravity: &Vector3<f32>,
@@ -140,6 +151,7 @@ pub fn step_vehicle_dynamics(
     impulse_joints: &mut ImpulseJointSet,
     multibody_joints: &mut MultibodyJointSet,
     ccd_solver: &mut CCDSolver,
+    event_handler: &dyn EventHandler,
     dt: f32,
 ) {
     let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
@@ -158,7 +170,7 @@ pub fn step_vehicle_dynamics(
             multibody_joints,
             ccd_solver,
             &(),
-            &(),
+            event_handler,
         );
     }
 }
@@ -557,6 +569,7 @@ mod tests {
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
+                &(),
                 DT,
             );
         }
@@ -583,6 +596,7 @@ mod tests {
                     &mut self.impulse_joints,
                     &mut self.multibody_joints,
                     &mut self.ccd_solver,
+                    &(),
                     substep_dt,
                 );
             }

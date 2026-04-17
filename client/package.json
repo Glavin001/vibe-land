@@ -7,7 +7,7 @@
     "gen:constants": "node ../scripts/gen-constants.mjs",
     "gen:demo-world": "node ../scripts/generate-demo-world.mjs",
     "ensure:wasm-pack": "command -v wasm-pack >/dev/null 2>&1 || cargo install wasm-pack --locked",
-    "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && wasm-pack build ../shared --target web --out-dir ../client/src/wasm/pkg",
+    "build:wasm": "npm run gen:constants && npm run ensure:wasm-pack && ../scripts/build-shared-wasm.sh",
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",
     "dev:practice": "vite --open /practice",

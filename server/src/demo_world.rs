@@ -67,6 +67,7 @@ fn benchmark_vehicle_world(
             radius: None,
             vehicle_type: Some(0),
         }],
+        destructibles: vec![],
     }
 }
 
