@@ -368,7 +368,9 @@ impl WorldDocumentArena for crate::local_arena::PhysicsArena {
         scale: Vector3<f32>,
         user_data: u128,
     ) {
-        crate::local_arena::PhysicsArena::add_static_heightfield(self, center, heights, scale, user_data);
+        crate::local_arena::PhysicsArena::add_static_heightfield(
+            self, center, heights, scale, user_data,
+        );
     }
 
     fn add_static_cuboid(

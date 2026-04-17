@@ -88,8 +88,7 @@ impl PhysicsArena {
         #[cfg(target_arch = "wasm32")]
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
         #[cfg(target_arch = "wasm32")]
-        let (contact_force_tx, contact_force_rx) =
-            std::sync::mpsc::channel::<ContactForceEvent>();
+        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         Self {
             dynamic: DynamicArena::new(config),
             players: HashMap::new(),
@@ -501,9 +500,13 @@ impl PhysicsArena {
     ) -> bool {
         let pose = pose_from_world_doc(position, rotation);
         match kind {
-            DestructibleKind::Wall => self.destructibles.spawn_wall(&mut self.dynamic.sim, id, pose),
+            DestructibleKind::Wall => {
+                self.destructibles
+                    .spawn_wall(&mut self.dynamic.sim, id, pose)
+            }
             DestructibleKind::Tower => {
-                self.destructibles.spawn_tower(&mut self.dynamic.sim, id, pose)
+                self.destructibles
+                    .spawn_tower(&mut self.dynamic.sim, id, pose)
             }
         }
     }
@@ -562,7 +565,9 @@ impl PhysicsArena {
 
     #[cfg(target_arch = "wasm32")]
     pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
-        self.destructibles.drain_fracture_events().into_boxed_slice()
+        self.destructibles
+            .drain_fracture_events()
+            .into_boxed_slice()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -774,8 +779,10 @@ impl PhysicsArena {
     pub fn step_dynamics(&mut self, dt: f32) {
         #[cfg(target_arch = "wasm32")]
         {
-            let collector =
-                ChannelEventCollector::new(self.collision_tx.clone(), self.contact_force_tx.clone());
+            let collector = ChannelEventCollector::new(
+                self.collision_tx.clone(),
+                self.contact_force_tx.clone(),
+            );
             self.dynamic
                 .step_dynamics_with_event_handler(dt, &collector);
             drop(collector);

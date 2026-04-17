@@ -856,8 +856,7 @@ impl DestructibleRegistry {
                         continue;
                     }
                     let speed = body.linvel().norm();
-                    post_fracture_max_body_speed_m_s =
-                        post_fracture_max_body_speed_m_s.max(speed);
+                    post_fracture_max_body_speed_m_s = post_fracture_max_body_speed_m_s.max(speed);
                     if speed >= DEBUG_FAST_CHUNK_SPEED_M_S {
                         post_fracture_fast_body_count += 1;
                     }
@@ -1044,7 +1043,8 @@ impl DestructibleRegistry {
                 .debug_contact_events_max_partner_speed_m_s
                 .max(partner_speed_m_s);
             let direction: Vector3<f32> = if partner_speed_sq > 1.0e-6 {
-                Vector3::new(partner_linvel.x, partner_linvel.y, partner_linvel.z) / partner_speed_m_s
+                Vector3::new(partner_linvel.x, partner_linvel.y, partner_linvel.z)
+                    / partner_speed_m_s
             } else {
                 let total_force = event.total_force;
                 let force_dir = Vector3::new(total_force.x, total_force.y, total_force.z);
@@ -1062,7 +1062,9 @@ impl DestructibleRegistry {
                 let collision_start_recent = self
                     .recent_external_collision_starts
                     .get(&pair_key)
-                    .map(|started_at| self.sim_time_secs - *started_at <= COLLISION_IMPACT_GRACE_SECS)
+                    .map(|started_at| {
+                        self.sim_time_secs - *started_at <= COLLISION_IMPACT_GRACE_SECS
+                    })
                     .unwrap_or(false);
                 if !collision_start_recent {
                     self.debug_contact_events_below_speed_skipped_total = self
@@ -1288,8 +1290,7 @@ impl DestructibleRegistry {
             self.register_support_contact(sim, c1, c2, now);
             self.register_support_contact(sim, c2, c1, now);
         }
-        self.debug_same_instance_dynamic_collision_starts =
-            same_instance_dynamic_collision_starts;
+        self.debug_same_instance_dynamic_collision_starts = same_instance_dynamic_collision_starts;
         self.debug_fixed_collision_starts = fixed_collision_starts;
         self.debug_parentless_static_collision_starts = parentless_static_collision_starts;
     }
