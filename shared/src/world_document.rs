@@ -924,6 +924,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 
