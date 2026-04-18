@@ -52,7 +52,7 @@ export class LocalPracticeClient {
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly debugTelemetry = new NetDebugTelemetry();
   private session: WasmLocalSessionInstance | null = null;
-  private tickChannel: MessageChannel | null = null;
+  private frameHandle: number | null = null;
   private tickAccumulatorSec = 0;
   private lastTickTimeMs = 0;
   private closedByClient = false;
@@ -79,9 +79,9 @@ export class LocalPracticeClient {
 
   disconnect(): void {
     this.closedByClient = true;
-    if (this.tickChannel != null) {
-      this.tickChannel.port1.onmessage = null;
-      this.tickChannel = null;
+    if (this.frameHandle != null) {
+      cancelAnimationFrame(this.frameHandle);
+      this.frameHandle = null;
     }
     this.tickAccumulatorSec = 0;
     this.lastTickTimeMs = 0;
@@ -255,14 +255,10 @@ export class LocalPracticeClient {
 
   private startTickLoop(): void {
     this.lastTickTimeMs = performance.now();
-    const channel = new MessageChannel();
-    this.tickChannel = channel;
-
-    const step = () => {
+    const step = (nowMs: number) => {
       if (!this.session || this.closedByClient) {
         return;
       }
-      const nowMs = performance.now();
       const elapsedSec = Math.min(Math.max((nowMs - this.lastTickTimeMs) / 1000, 0), 0.1);
       this.lastTickTimeMs = nowMs;
       this.tickAccumulatorSec += elapsedSec;
@@ -278,18 +274,9 @@ export class LocalPracticeClient {
       if (ticks > 0) {
         this.syncFromSession(true);
       }
-      // Schedule next tick independent of rendering frame rate.
-      // Always use setTimeout (minimum 1 ms) so the browser event loop
-      // can process other tasks — specifically rAF and React renders —
-      // between physics ticks.  Posting via MessageChannel with no sleep
-      // (sleepMs = 0) queues tasks faster than rAF can fire, starving
-      // useFrame and preventing input dispatch.
-      const sleepMs = Math.max(1, Math.floor(1000 * (FIXED_DT - this.tickAccumulatorSec)) - 1);
-      setTimeout(() => { channel.port2.postMessage(null); }, sleepMs);
+      this.frameHandle = requestAnimationFrame(step);
     };
-
-    channel.port1.onmessage = step;
-    channel.port2.postMessage(null);
+    this.frameHandle = requestAnimationFrame(step);
   }
 
   private syncFromSession(emitCallbacks: boolean): void {
