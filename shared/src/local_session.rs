@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use crate::{
     constants::{
         DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
-        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING,
-        PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
-        PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
+        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
+        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
+        RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -253,8 +253,7 @@ impl LocalSession {
         if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
             player.energy = 0.0;
         }
-        self.player.respawn_at_ms =
-            Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
+        self.player.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
         self.player.pending_inputs.clear();
         self.player.last_applied_input = InputCmd::default();
     }
@@ -922,7 +921,11 @@ mod tests {
         session.kill_local_player(session.server_time_ms(), LocalDeathCause::HpDamage);
 
         let batteries = session.battery_states();
-        assert_eq!(batteries.len(), 1, "hp death should spawn exactly one battery");
+        assert_eq!(
+            batteries.len(),
+            1,
+            "hp death should spawn exactly one battery"
+        );
         assert_eq!(batteries[0].energy_centi, energy_to_centi(remaining_energy));
         assert_eq!(
             session
@@ -968,7 +971,10 @@ mod tests {
             .get(&LOCAL_PLAYER_ID)
             .expect("local player exists");
         assert!(player.dead, "energy depletion should kill the player");
-        assert_eq!(player.energy, 0.0, "energy should clamp to zero on depletion");
+        assert_eq!(
+            player.energy, 0.0,
+            "energy should clamp to zero on depletion"
+        );
     }
 
     #[test]

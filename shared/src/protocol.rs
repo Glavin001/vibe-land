@@ -256,8 +256,12 @@ pub fn make_net_battery_state(
         py_mm: meters_to_mm(pos[1]),
         pz_mm: meters_to_mm(pos[2]),
         energy_centi: energy_to_centi(energy),
-        radius_cm: (radius.max(0.0) * 100.0).round().clamp(0.0, u16::MAX as f32) as u16,
-        height_cm: (height.max(0.0) * 100.0).round().clamp(0.0, u16::MAX as f32) as u16,
+        radius_cm: (radius.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
+        height_cm: (height.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
     }
 }
 

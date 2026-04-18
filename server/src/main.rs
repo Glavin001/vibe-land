@@ -47,13 +47,12 @@ use crate::{
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
-        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
-        mm_to_meters, BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket,
-        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket,
-        BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC,
-        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
-        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
-        SHOT_RESOLUTION_PLAYER,
+        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, mm_to_meters,
+        BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket,
+        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
+        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY,
+        PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -1721,11 +1720,7 @@ impl MatchState {
             {
                 player_centers.push(pos);
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
-                    self.kill_player_with_cause(
-                        player_id,
-                        server_time_ms,
-                        DeathCause::OutOfBounds,
-                    );
+                    self.kill_player_with_cause(player_id, server_time_ms, DeathCause::OutOfBounds);
                     self.void_kills += 1;
                 }
                 let alive = hp > 0 && (flags & 0x4) == 0;
@@ -2091,10 +2086,7 @@ impl MatchState {
                     .io
                     .battery_sync_packets_sent
                     .load(Ordering::Relaxed),
-                battery_sync_bytes_sent: self
-                    .io
-                    .battery_sync_bytes_sent
-                    .load(Ordering::Relaxed),
+                battery_sync_bytes_sent: self.io.battery_sync_bytes_sent.load(Ordering::Relaxed),
                 dynamic_bodies_considered_per_tick: self
                     .snapshot_stats
                     .dynamic_bodies_considered_per_tick
@@ -2289,12 +2281,7 @@ impl MatchState {
         self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
     }
 
-    fn kill_player_with_cause(
-        &mut self,
-        player_id: u32,
-        server_time_ms: u32,
-        cause: DeathCause,
-    ) {
+    fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
         let battery_drop = if matches!(cause, DeathCause::HpDamage) {
             self.arena.players.get(&player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
@@ -2340,9 +2327,10 @@ impl MatchState {
             return;
         }
 
-        let packet = encode_server_packet(&ServerPacket::LocalPlayerEnergy(
-            LocalPlayerEnergyPacket { energy_centi },
-        ));
+        let packet =
+            encode_server_packet(&ServerPacket::LocalPlayerEnergy(LocalPlayerEnergyPacket {
+                energy_centi,
+            }));
         if try_queue_packet(&runtime.tx, packet, &self.io) {
             runtime.last_sent_energy_centi = Some(energy_centi);
         }

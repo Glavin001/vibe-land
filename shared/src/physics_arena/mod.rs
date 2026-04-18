@@ -199,13 +199,7 @@ impl PhysicsArena {
         self.players.get(&player_id).map(|state| state.energy)
     }
 
-    pub fn spawn_battery(
-        &mut self,
-        position: Vec3d,
-        energy: f32,
-        radius: f32,
-        height: f32,
-    ) -> u32 {
+    pub fn spawn_battery(&mut self, position: Vec3d, energy: f32, radius: f32, height: f32) -> u32 {
         let id = self.next_battery_id;
         self.next_battery_id = self.next_battery_id.saturating_add(1);
         self.batteries.insert(
@@ -309,8 +303,9 @@ impl PhysicsArena {
                 let vehicle = self.vehicles.get(&vehicle_id)?;
                 let body = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
                 let velocity = body.linvel();
-                let speed = (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
-                    .sqrt();
+                let speed =
+                    (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
+                        .sqrt();
                 Some((player_id, speed))
             })
             .collect();

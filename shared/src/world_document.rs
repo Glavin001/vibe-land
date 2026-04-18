@@ -341,18 +341,10 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
         radius: f32,
         height: f32,
     ) {
-        let position = crate::movement::Vec3d::new(
-            position.x as f64,
-            position.y as f64,
-            position.z as f64,
-        );
+        let position =
+            crate::movement::Vec3d::new(position.x as f64, position.y as f64, position.z as f64);
         crate::physics_arena::PhysicsArena::spawn_battery_with_id(
-            self,
-            id,
-            position,
-            energy,
-            radius,
-            height,
+            self, id, position, energy, radius, height,
         );
     }
 
