@@ -160,6 +160,13 @@ function createDemoWorldDocument() {
         kind: 'vehicle',
         position: [8, 2, 0],
         rotation: identityQuaternion(),
+        vehicleType: 1,
+      },
+      {
+        id: 1003,
+        kind: 'vehicle',
+        position: [0, 0.8552152628004638, 0],
+        rotation: identityQuaternion(),
         vehicleType: 0,
       },
     ],

@@ -1,6 +1,6 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
-import { LocalPracticeClient } from '../net/localPracticeClient';
+import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import {
@@ -10,6 +10,7 @@ import {
   type VehicleSample,
 } from '../net/interpolation';
 import {
+  type BatteryStateMeters,
   DYNAMIC_BODY_IMPULSE,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
@@ -96,12 +97,14 @@ export interface GameRuntimeClient {
   readonly remotePlayers: Map<number, RemotePlayer>;
   readonly dynamicBodies: Map<number, DynamicBodyStateMeters>;
   readonly vehicles: Map<number, VehicleStateMeters>;
+  readonly batteries: Map<number, BatteryStateMeters>;
   readonly state: RuntimeConnectionState;
   readonly playerId: number;
   readonly latestServerTick: number;
   readonly interpolationDelayMs: number;
   readonly dynamicBodyInterpolationDelayMs: number;
   readonly localPlayerHp: number;
+  readonly localPlayerEnergy: number;
   readonly localPlayerFlags: number;
   readonly rttMs: number;
   readonly renderBlocks: RenderBlock[];
@@ -227,6 +230,7 @@ export interface GameRuntimeClient {
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
+  getPracticeBotHost(): PracticeBotHost | null;
 }
 
 function createDefaultConnectionState(): RuntimeConnectionState {
@@ -275,6 +279,7 @@ function defaultDebugStats(): RuntimeDebugStats {
 }
 
 const EMPTY_DEBUG_TELEMETRY_SNAPSHOT = new NetDebugTelemetry().snapshot();
+const EMPTY_BATTERIES = new Map<number, BatteryStateMeters>();
 
 function pointToCell(point: [number, number, number]): [number, number, number] {
   return [Math.floor(point[0]), Math.floor(point[1]), Math.floor(point[2])];
@@ -294,11 +299,13 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract get remotePlayers(): Map<number, RemotePlayer>;
   abstract get dynamicBodies(): Map<number, DynamicBodyStateMeters>;
   abstract get vehicles(): Map<number, VehicleStateMeters>;
+  abstract get batteries(): Map<number, BatteryStateMeters>;
   abstract get playerId(): number;
   abstract get latestServerTick(): number;
   abstract get interpolationDelayMs(): number;
   abstract get dynamicBodyInterpolationDelayMs(): number;
   abstract get localPlayerHp(): number;
+  abstract get localPlayerEnergy(): number;
   abstract get localPlayerFlags(): number;
   abstract get rttMs(): number;
 
@@ -446,6 +453,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
+  abstract getPracticeBotHost(): PracticeBotHost | null;
 }
 
 export class LocalGameRuntime extends BaseGameRuntime {
@@ -487,6 +495,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return this.client?.vehicles ?? new Map<number, VehicleStateMeters>();
   }
 
+  get batteries(): Map<number, BatteryStateMeters> {
+    return this.client?.batteries ?? EMPTY_BATTERIES;
+  }
+
   get playerId(): number {
     return this.client?.playerId ?? 0;
   }
@@ -505,6 +517,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   get localPlayerHp(): number {
     return this.client?.localPlayerHp ?? 100;
+  }
+
+  get localPlayerEnergy(): number {
+    return this.client?.localPlayerEnergy ?? 0;
   }
 
   get localPlayerFlags(): number {
@@ -796,6 +812,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
   isInVehicle(): boolean {
     return this.getDrivenVehicleId() != null;
   }
+
+  getPracticeBotHost(): PracticeBotHost | null {
+    return this.client;
+  }
 }
 
 export class MultiplayerGameRuntime extends BaseGameRuntime {
@@ -846,6 +866,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return this.client?.vehicles ?? new Map<number, VehicleStateMeters>();
   }
 
+  get batteries(): Map<number, BatteryStateMeters> {
+    return this.client?.batteries ?? EMPTY_BATTERIES;
+  }
+
   get playerId(): number {
     return this.client?.playerId ?? 0;
   }
@@ -864,6 +888,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   get localPlayerHp(): number {
     return this.client?.localPlayerHp ?? 100;
+  }
+
+  get localPlayerEnergy(): number {
+    return this.client?.localPlayerEnergy ?? 0;
   }
 
   get localPlayerFlags(): number {
@@ -1554,5 +1582,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   isInVehicle(): boolean {
     return this.vehiclePrediction?.isActive() ?? false;
+  }
+
+  getPracticeBotHost(): PracticeBotHost | null {
+    return null;
   }
 }

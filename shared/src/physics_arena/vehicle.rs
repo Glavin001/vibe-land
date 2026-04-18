@@ -3,8 +3,9 @@ use rapier3d::prelude::InteractionGroups;
 
 use super::{elapsed_ms, now_marker, PhysicsArena, Vec3, Vehicle};
 use crate::vehicle::{
-    apply_vehicle_input_step, create_vehicle_physics, make_vehicle_snapshot,
-    read_vehicle_chassis_state, vehicle_exit_position, VEHICLE_CONTROLLER_SUBSTEPS,
+    apply_vehicle_input_step, canonical_vehicle_type, create_vehicle_physics,
+    make_vehicle_snapshot, read_vehicle_chassis_state, vehicle_exit_position,
+    VEHICLE_CONTROLLER_SUBSTEPS,
 };
 
 impl PhysicsArena {
@@ -22,6 +23,7 @@ impl PhysicsArena {
         position: Vec3,
         rotation: [f32; 4],
     ) -> u32 {
+        let vehicle_type = canonical_vehicle_type(vehicle_type);
         let pose = nalgebra::Isometry3::from_parts(
             nalgebra::Translation3::new(position.x, position.y, position.z),
             UnitQuaternion::from_quaternion(Quaternion::new(
@@ -32,7 +34,7 @@ impl PhysicsArena {
             )),
         );
         let (chassis_body, chassis_collider, controller) =
-            create_vehicle_physics(&mut self.dynamic.sim, pose);
+            create_vehicle_physics(&mut self.dynamic.sim, vehicle_type, pose);
 
         self.vehicles.insert(
             id,

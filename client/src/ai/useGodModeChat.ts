@@ -7,11 +7,7 @@ import {
   type ChatImagePart,
   type ChatPart,
 } from './chatTypes';
-import {
-  clearPersistedChatState,
-  loadPersistedChatState,
-  savePersistedChatState,
-} from './chatStore';
+import { loadChat, saveChat } from './chatStore';
 import {
   createLanguageModel,
   getThinkingProviderOptions,
@@ -26,6 +22,7 @@ import { isLocalModelReady } from './localLlm';
 export type ChatStatus = 'idle' | 'streaming' | 'error';
 
 export type GodModeChatOptions = {
+  chatId: string;
   accessors: WorldAccessors;
   provider: ProviderId;
   model: string;
@@ -47,20 +44,22 @@ export type GodModeChatHandle = {
   canSend: boolean;
   sendMessage(text: string, attachments?: ImageAttachment[]): Promise<void>;
   stop(): void;
-  clear(): void;
   pushHumanEdit(summary: string): void;
 };
 
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { accessors, provider, model, apiKey, localReady = false } = options;
-  const initialPersistedState = useMemo(() => loadPersistedChatState(), []);
+  const { chatId, accessors, provider, model, apiKey, localReady = false } = options;
 
-  const [messages, setMessages] = useState<ChatMessage[]>(() => initialPersistedState.messages);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
-  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>(() => initialPersistedState.pendingHumanEdits);
+  // Chat is "loaded" when the persisted state for the active chatId has been
+  // hydrated into local state. We gate sends/saves on this so that switching
+  // chats doesn't briefly overwrite the destination chat with empty data.
+  const [loadedChatId, setLoadedChatId] = useState<string | null>(null);
 
   const accessorsRef = useRef(accessors);
   useEffect(() => {
@@ -88,21 +87,41 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     setPendingHumanEdits((prev) => [...prev, summary]);
   }, []);
 
-  const clear = useCallback(() => {
-    stop();
-    setMessages([]);
-    setError(null);
-    setPendingHumanEdits([]);
-    setStatus('idle');
-    clearPersistedChatState();
-  }, [stop]);
-
+  // When chatId changes, abort any in-flight stream and (re)hydrate state
+  // from storage. Race-protected via a cancellation flag.
   useEffect(() => {
-    savePersistedChatState({ messages, pendingHumanEdits });
-  }, [messages, pendingHumanEdits]);
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setStatus('idle');
+    setError(null);
+    setMessages([]);
+    setPendingHumanEdits([]);
+    setLoadedChatId(null);
+    let cancelled = false;
+    void loadChat(chatId).then((state) => {
+      if (cancelled) return;
+      setMessages(state.messages);
+      setPendingHumanEdits(state.pendingHumanEdits);
+      setLoadedChatId(chatId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
 
+  // Persist whenever local state changes — but only after the chat has been
+  // loaded for the current chatId, to avoid clobbering it during the swap.
+  useEffect(() => {
+    if (loadedChatId !== chatId) return;
+    void saveChat(chatId, { messages, pendingHumanEdits });
+  }, [chatId, loadedChatId, messages, pendingHumanEdits]);
+
+  const isLoaded = loadedChatId === chatId;
   const canSend =
     status === 'idle' &&
+    isLoaded &&
     (isLocalProvider(provider)
       ? localReady || isLocalModelReady()
       : Boolean(apiKey));
@@ -123,6 +142,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         return;
       }
       if (status === 'streaming') return;
+      if (!isLoaded) return;
 
       // Snapshot pending human edits and clear them up-front so concurrent
       // edits while we wait for the model start a fresh buffer.
@@ -339,7 +359,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }
       }
     },
-    [apiKey, localReady, messages, model, pendingHumanEdits, provider, status],
+    [apiKey, isLoaded, localReady, messages, model, pendingHumanEdits, provider, status],
   );
 
   return useMemo<GodModeChatHandle>(
@@ -351,10 +371,9 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       canSend,
       sendMessage,
       stop,
-      clear,
       pushHumanEdit,
     }),
-    [canSend, clear, error, messages, pendingHumanEdits.length, pushHumanEdit, sendMessage, status, stop],
+    [canSend, error, messages, pendingHumanEdits.length, pushHumanEdit, sendMessage, status, stop],
   );
 }
 

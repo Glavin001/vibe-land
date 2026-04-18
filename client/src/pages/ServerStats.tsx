@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import {
   avgPendingInputs,
+  batterySyncSummary,
   describeBottleneck,
   describeTransport,
   maxPendingInputs,
@@ -644,6 +645,12 @@ function buildMatchFocusAreas(match: MatchStatsSnapshot, simHz: number): string[
     );
   }
 
+  if (match.battery_count > 0 || match.network.battery_sync_packets_sent > 0) {
+    focus.push(
+      `Battery system load is on the reliable side channel, not the snapshot hot path: ${batterySyncSummary(match)}.`,
+    );
+  }
+
   if (match.network.strict_snapshot_drops > 0 || match.network.dropped_outbound_snapshots > 0 || match.network.malformed_packets > 0) {
     focus.push(
       `Zero-tolerance counters fired: strict drops ${match.network.strict_snapshot_drops}, dropped outbound snapshots ${match.network.dropped_outbound_snapshots}, malformed packets ${match.network.malformed_packets}.`,
@@ -687,6 +694,12 @@ function buildMatchOpportunities(match: MatchStatsSnapshot, simHz: number): stri
     opportunities.push(`Improve datagram fit. Reliable fallback is ${fmtPercent(webTransportSnapshotFallbackRatio(match))}; trim payload or split content earlier.`);
   }
 
+  if (match.battery_count > 0 && match.network.visible_batteries_per_client.p95 >= 4) {
+    opportunities.push(
+      `Battery sync is active: ${batterySyncSummary(match)}. If this keeps climbing, tighten battery lifetime/AOI before changing snapshot transport.`,
+    );
+  }
+
   if (backlogSeverity(match) === 'danger' || backlogSeverity(match) === 'watch') {
     opportunities.push(`Reduce queue spikes on the worst players: ${topPlayerPressureSummary(match)}.`);
   }
@@ -719,6 +732,9 @@ function buildMatchWins(match: MatchStatsSnapshot, simHz: number): string[] {
   }
   if (match.network.strict_snapshot_drops === 0 && match.network.dropped_outbound_snapshots === 0 && match.network.malformed_packets === 0) {
     wins.push('Zero-tolerance counters are clean: no strict drops, dropped outbound snapshots, or malformed packets.');
+  }
+  if (match.battery_count > 0 && severityRank(snapshotPayloadSeverity(match)) <= severityRank('good')) {
+    wins.push(`Battery gameplay is active without inflating snapshots: ${batterySyncSummary(match)}.`);
   }
 
   if (wins.length === 0) {
@@ -856,7 +872,7 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     `## Match: ${match.id}`,
     '',
     `overall: ${severityVisual(matchTone).label} | scenario: ${match.scenario_tag} | bottleneck: ${describeBottleneck(match, simHz)}`,
-    `tick: ${match.server_tick} | players: ${match.player_count} | bodies: ${match.dynamic_body_count} | vehicles: ${match.vehicle_count} | chunks: ${match.chunk_count}`,
+    `tick: ${match.server_tick} | players: ${match.player_count} | bodies: ${match.dynamic_body_count} | vehicles: ${match.vehicle_count} | batteries: ${match.battery_count} | chunks: ${match.chunk_count}`,
     '',
     '### Constraint Watch',
     '| Signal | Current | Limit / Target | Status | Diagnostic note |',
@@ -874,6 +890,7 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     `- ws ${match.load.websocket_players} | wt ${match.load.webtransport_players}`,
     `- nearby avg ${fmt(match.load.avg_nearby_players, 1)} | max ${match.load.max_nearby_players}`,
     `- void kills ${match.load.void_kills}`,
+    `- batteries ${match.battery_count} | visible/client p95 ${fmt(match.network.visible_batteries_per_client.p95, 1)}`,
     '',
     '### Network',
     `- in ${fmtRate(match.network.inbound_bps)} | out ${fmtRate(match.network.outbound_bps)}`,
@@ -881,11 +898,13 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     `- ${describeTransport(match)}`,
     `- ws reliable ${match.network.websocket_snapshot_reliable_sent} | wt datagram ${match.network.webtransport_snapshot_datagram_sent} | wt reliable ${match.network.webtransport_snapshot_reliable_sent}`,
     `- fallbacks ${match.network.datagram_fallbacks} | strict drops ${match.network.strict_snapshot_drops} | malformed ${match.network.malformed_packets}`,
+    `- battery sync ${match.network.battery_sync_packets_sent} packets / ${fmtBytes(match.network.battery_sync_bytes_sent)} | local energy ${match.network.local_player_energy_packets_sent} packets / ${fmtBytes(match.network.local_player_energy_bytes_sent)}`,
     '',
     '### Snapshot Shape',
     `- players/client p95 ${fmt(match.network.snapshot_players_per_client.p95, 1)}`,
     `- bodies/client p95 ${fmt(match.network.snapshot_dynamic_bodies_per_client.p95, 1)}`,
     `- vehicles/client p95 ${fmt(match.network.snapshot_vehicles_per_client.p95, 1)}`,
+    `- visible batteries/client p95 ${fmt(match.network.visible_batteries_per_client.p95, 1)}`,
     `- bodies considered/tick p95 ${fmt(match.network.dynamic_bodies_considered_per_tick.p95, 1)}`,
     `- contacts raw/kept p95 ${fmt(match.network.dynamic_contacts_raw_per_tick.p95, 1)} / ${fmt(match.network.dynamic_contacts_kept_per_tick.p95, 1)}`,
     `- bodies pushed/tick p95 ${fmt(match.network.dynamic_bodies_pushed_per_tick.p95, 1)}`,
@@ -1908,6 +1927,12 @@ function MatchPanel({
       p95: match.network.snapshot_vehicles_per_client.p95,
       max: match.network.snapshot_vehicles_per_client.max,
     },
+    {
+      label: 'Visible batteries / client',
+      avg: match.network.visible_batteries_per_client.avg,
+      p95: match.network.visible_batteries_per_client.p95,
+      max: match.network.visible_batteries_per_client.max,
+    },
   ];
 
   return (
@@ -1919,7 +1944,7 @@ function MatchPanel({
             <span style={styles.matchScenario}>{match.scenario_tag}</span>
           </div>
           <div style={styles.matchMeta}>
-            {`tick ${match.server_tick} · ${match.player_count} players · ${match.dynamic_body_count} bodies · ${match.vehicle_count} vehicles · ${match.chunk_count} chunks`}
+            {`tick ${match.server_tick} · ${match.player_count} players · ${match.dynamic_body_count} bodies · ${match.vehicle_count} vehicles · ${match.battery_count} batteries · ${match.chunk_count} chunks`}
           </div>
           <div style={styles.bottleneckLine}>{describeBottleneck(match, simHz)}</div>
         </div>
@@ -1967,6 +1992,11 @@ function MatchPanel({
           value={fmtPercent(webTransportSnapshotDatagramRatio(match))}
           severity={transportTone}
           subtitle={`reliable ${fmtPercent(webTransportSnapshotFallbackRatio(match))}`}
+        />
+        <OverviewStat
+          label="Batteries"
+          value={fmtInt(match.battery_count)}
+          subtitle={`visible ${fmt(match.network.visible_batteries_per_client.p95, 1)}/client p95`}
         />
       </div>
 
@@ -2063,7 +2093,7 @@ function MatchPanel({
           <DistributionChart rows={snapshotSizeRows} formatValue={fmtBytes} />
         </DashboardCard>
 
-        <DashboardCard title="Snapshot Content Distribution" subtitle="Replication fanout per client snapshot">
+        <DashboardCard title="Snapshot Content Distribution" subtitle="Per-client snapshot fanout plus battery visibility">
           <DistributionChart rows={snapshotContentRows} formatValue={(value) => fmt(value, value < 10 ? 1 : 0)} />
         </DashboardCard>
 

@@ -11,9 +11,11 @@ import {
   type FormEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { forwardRef } from 'react';
 import type { ChatImagePart, ChatMessage, ChatPart } from '../../ai/chatTypes';
+import { makeChatId } from '../../ai/chatTypes';
 import {
   MODELS,
   PROVIDER_LABELS,
@@ -24,9 +26,15 @@ import {
   type ProviderId,
 } from '../../ai/providers';
 import {
-  clearPersistedComposerDraft,
-  loadPersistedComposerDraft,
-  savePersistedComposerDraft,
+  clearComposerDraft,
+  deleteChat,
+  listChatMeta,
+  loadActiveChatId,
+  loadComposerDraft,
+  saveActiveChatId,
+  saveComposerDraft,
+  subscribeToChats,
+  type ChatMeta,
 } from '../../ai/chatStore';
 import {
   clearStoredApiKeys,
@@ -78,7 +86,14 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     isLocalModelReady() ? { status: 'ready' } : { status: 'idle' },
   );
 
+  // Active chat id. Seeded with a fresh id so the hook can mount synchronously
+  // while we asynchronously restore the previous active id from IndexedDB.
+  const [chatId, setChatId] = useState<string>(() => makeChatId());
+  const [chatList, setChatList] = useState<ChatMeta[]>([]);
+  const [restored, setRestored] = useState(false);
+
   const chat = useGodModeChat({
+    chatId,
     accessors,
     provider: settings.provider,
     model: settings.model,
@@ -94,6 +109,42 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }),
     [chat],
   );
+
+  // Restore the previous active chat id once on mount.
+  useEffect(() => {
+    let cancelled = false;
+    void loadActiveChatId().then((existing) => {
+      if (cancelled) return;
+      if (existing) setChatId(existing);
+      setRestored(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Persist active chat id whenever it changes (after initial restore).
+  useEffect(() => {
+    if (!restored) return;
+    void saveActiveChatId(chatId);
+  }, [chatId, restored]);
+
+  // Subscribe to the chat metadata list so the sidebar stays in sync.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      void listChatMeta().then((items) => {
+        if (cancelled) return;
+        setChatList(items);
+      });
+    };
+    refresh();
+    const unsub = subscribeToChats(refresh);
+    return () => {
+      cancelled = true;
+      unsub();
+    };
+  }, []);
 
   // Persist settings whenever they change.
   useEffect(() => {
@@ -131,12 +182,70 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     setSettings((current) => ({ ...current, apiKeys: {} }));
   }, []);
 
-  const onClearChat = useCallback(() => {
+  const [draft, setDraft] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(
+    providerIsLocal ? localLoadState.status !== 'ready' : !apiKey,
+  );
+  const [chatListOpen, setChatListOpen] = useState(true);
+  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Restore the composer draft for the active chat whenever it changes.
+  const draftChatIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    draftChatIdRef.current = null;
+    void loadComposerDraft(chatId).then((value) => {
+      if (cancelled) return;
+      setDraft(value);
+      draftChatIdRef.current = chatId;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
+
+  // Persist composer draft — gated on the draft belonging to the current chat
+  // to avoid overwriting it during a chat switch.
+  useEffect(() => {
+    if (draftChatIdRef.current !== chatId) return;
+    void saveComposerDraft(chatId, draft);
+  }, [chatId, draft]);
+
+  const onNewChat = useCallback(() => {
+    if (chat.status === 'streaming') chat.stop();
     setDraft('');
     setAttachments([]);
-    clearPersistedComposerDraft();
-    chat.clear();
+    const nextId = makeChatId();
+    setChatId(nextId);
   }, [chat]);
+
+  const onSelectChat = useCallback(
+    (id: string) => {
+      if (id === chatId) return;
+      if (chat.status === 'streaming') chat.stop();
+      setDraft('');
+      setAttachments([]);
+      setChatId(id);
+    },
+    [chat, chatId],
+  );
+
+  const onDeleteChat = useCallback(
+    (id: string, event: ReactMouseEvent) => {
+      event.stopPropagation();
+      void (async () => {
+        await deleteChat(id);
+        if (id === chatId) {
+          if (chat.status === 'streaming') chat.stop();
+          setDraft('');
+          setAttachments([]);
+          setChatId(makeChatId());
+        }
+      })();
+    },
+    [chat, chatId],
+  );
 
   const onPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
     const items = Array.from(event.clipboardData.items);
@@ -172,14 +281,6 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }
   }, []);
 
-  const [draft, setDraft] = useState(() => loadPersistedComposerDraft());
-  const needsSettings = providerIsLocal
-    ? localLoadState.status !== 'ready'
-    : !apiKey;
-  const [settingsOpen, setSettingsOpen] = useState(needsSettings);
-  const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
   const startLocalDownload = useCallback(async () => {
     setLocalLoadState({ status: 'downloading', progress: 0 });
     try {
@@ -213,9 +314,6 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }
   }, [speech]);
 
-  useEffect(() => {
-    savePersistedComposerDraft(draft);
-  }, [draft]);
 
   const messageListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -225,18 +323,22 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }
   }, [chat.messages]);
 
+  const sendWithReset = useCallback(() => {
+    const text = draft;
+    const atts = attachments;
+    setDraft('');
+    void clearComposerDraft(chatId);
+    setAttachments([]);
+    void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
+  }, [attachments, chat, chatId, draft]);
+
   const onSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!chat.canSend) return;
-      const text = draft;
-      const atts = attachments;
-      setDraft('');
-      clearPersistedComposerDraft();
-      setAttachments([]);
-      void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
+      sendWithReset();
     },
-    [attachments, chat, draft],
+    [chat.canSend, sendWithReset],
   );
 
   const onKeyDown = useCallback(
@@ -244,15 +346,10 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         if (!chat.canSend) return;
-        const text = draft;
-        const atts = attachments;
-        setDraft('');
-        clearPersistedComposerDraft();
-        setAttachments([]);
-        void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
+        sendWithReset();
       }
     },
-    [attachments, chat, draft],
+    [chat.canSend, sendWithReset],
   );
 
   const modelOptions = useMemo(() => MODELS[settings.provider], [settings.provider]);
@@ -268,11 +365,77 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   return (
     <aside style={panelStyle}>
       <div style={headerStyle}>
-        <span style={eyebrowStyle}>AI Co-Editor</span>
-        <h2 style={titleStyle}>Chat</h2>
+        <div style={headerRowStyle}>
+          <div style={headerTitleGroupStyle}>
+            <span style={eyebrowStyle}>AI Co-Editor</span>
+            <h2 style={titleStyle}>Chat</h2>
+          </div>
+          <button type="button" onClick={onNewChat} style={newChatButtonStyle} title="Start a new chat">
+            + New chat
+          </button>
+        </div>
         <p style={mutedStyle}>
           Bring-your-own-key. Calls go straight to the provider from your browser — no proxy.
         </p>
+      </div>
+
+      <div style={sectionStyle}>
+        <div style={settingsHeaderStyle}>
+          <button
+            type="button"
+            onClick={() => setChatListOpen((v) => !v)}
+            style={ghostButtonStyle}
+          >
+            {chatListOpen ? '▾ History' : '▸ History'}
+          </button>
+          <span style={mutedStyle}>
+            {chatList.length === 0
+              ? 'No saved chats yet'
+              : `${chatList.length} chat${chatList.length === 1 ? '' : 's'}`}
+          </span>
+        </div>
+        {chatListOpen && (
+          <div style={chatListStyle}>
+            {chatList.length === 0 && (
+              <p style={mutedStyle}>Send a message to save this chat.</p>
+            )}
+            {chatList.map((meta) => {
+              const isActive = meta.id === chatId;
+              return (
+                <button
+                  key={meta.id}
+                  type="button"
+                  onClick={() => onSelectChat(meta.id)}
+                  style={isActive ? activeChatItemStyle : chatItemStyle}
+                  title={meta.preview || 'Empty chat'}
+                >
+                  <div style={chatItemHeaderStyle}>
+                    <span style={chatItemTimestampStyle}>{formatRelativeTime(meta.updatedAt)}</span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label="Delete chat"
+                      onClick={(e) => onDeleteChat(meta.id, e)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          onDeleteChat(meta.id, e as unknown as ReactMouseEvent);
+                        }
+                      }}
+                      style={chatItemDeleteStyle}
+                      title="Delete chat"
+                    >
+                      ×
+                    </span>
+                  </div>
+                  <div style={chatItemPreviewStyle}>
+                    {meta.preview || <em style={chatItemEmptyStyle}>(no messages yet)</em>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div style={sectionStyle}>
@@ -354,9 +517,6 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
                   Clear all keys
                 </button>
               )}
-              <button type="button" onClick={onClearChat} style={secondaryButtonStyle}>
-                Clear chat
-              </button>
             </div>
             {providerIsLocal ? (
               <p style={mutedStyle}>
@@ -632,6 +792,21 @@ function jsonStringify(value: unknown): string {
   }
 }
 
+function formatRelativeTime(timestamp: number): string {
+  const diff = Date.now() - timestamp;
+  if (diff < 0) return 'just now';
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 45) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const date = new Date(timestamp);
+  return date.toLocaleDateString();
+}
+
 // ---------- styles (match GodMode.tsx palette) ----------
 
 const panelStyle: CSSProperties = {
@@ -650,6 +825,19 @@ const headerStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
   gap: 4,
+};
+
+const headerRowStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'flex-start',
+  justifyContent: 'space-between',
+  gap: 12,
+};
+
+const headerTitleGroupStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
 };
 
 const eyebrowStyle: CSSProperties = {
@@ -805,6 +993,81 @@ const disabledButtonStyle: CSSProperties = {
   background: 'rgba(20, 34, 48, 0.96)',
   color: 'rgba(238, 247, 255, 0.4)',
   cursor: 'not-allowed',
+};
+
+const newChatButtonStyle: CSSProperties = {
+  ...baseButtonStyle,
+  background: '#86d6f5',
+  color: '#052233',
+  whiteSpace: 'nowrap',
+};
+
+const chatListStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 6,
+  maxHeight: 220,
+  overflowY: 'auto',
+  paddingRight: 2,
+};
+
+const chatItemStyle: CSSProperties = {
+  textAlign: 'left',
+  background: 'rgba(8, 18, 28, 0.72)',
+  border: '1px solid rgba(141, 186, 221, 0.14)',
+  borderRadius: 10,
+  padding: '8px 10px',
+  color: '#eef7ff',
+  cursor: 'pointer',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 4,
+  font: 'inherit',
+};
+
+const activeChatItemStyle: CSSProperties = {
+  ...chatItemStyle,
+  borderColor: 'rgba(116, 212, 255, 0.55)',
+  background: 'rgba(116, 212, 255, 0.12)',
+};
+
+const chatItemHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+};
+
+const chatItemTimestampStyle: CSSProperties = {
+  fontSize: 11,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: '#86d6f5',
+};
+
+const chatItemDeleteStyle: CSSProperties = {
+  fontSize: 14,
+  lineHeight: 1,
+  color: 'rgba(238, 247, 255, 0.5)',
+  cursor: 'pointer',
+  padding: '0 4px',
+  borderRadius: 4,
+  userSelect: 'none',
+};
+
+const chatItemPreviewStyle: CSSProperties = {
+  fontSize: 12,
+  lineHeight: 1.4,
+  color: 'rgba(238, 247, 255, 0.85)',
+  display: '-webkit-box',
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: 'vertical',
+  overflow: 'hidden',
+  wordBreak: 'break-word',
+};
+
+const chatItemEmptyStyle: CSSProperties = {
+  color: 'rgba(238, 247, 255, 0.45)',
 };
 
 const messageListStyle: CSSProperties = {

@@ -4,6 +4,27 @@ pub use vibe_netcode::movement::{accelerate, apply_horizontal_friction, MoveConf
 use crate::constants::*;
 use crate::protocol::InputCmd;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerNavigationProfile {
+    pub walkable_radius: f32,
+    pub walkable_height: f32,
+    pub walkable_climb: f32,
+    pub walkable_slope_angle_degrees: f32,
+}
+
+pub fn player_navigation_profile(config: &MoveConfig) -> PlayerNavigationProfile {
+    PlayerNavigationProfile {
+        walkable_radius: config.capsule_radius,
+        walkable_height: 2.0 * (config.capsule_half_segment + config.capsule_radius),
+        walkable_climb: config.max_step_height,
+        walkable_slope_angle_degrees: config.max_slope_radians.to_degrees(),
+    }
+}
+
+pub fn default_player_navigation_profile() -> PlayerNavigationProfile {
+    player_navigation_profile(&MoveConfig::default())
+}
+
 // ── Vehicle tuning constants ─────────────────────
 pub const VEHICLE_MAX_STEER_RAD: f32 = 0.5;
 pub const VEHICLE_ENGINE_FORCE: f32 = 4000.0; // 2 rear wheels × 4000 N / ~600 kg ≈ 13 m/s² — sporty car
@@ -14,9 +35,12 @@ pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.3;
 pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.2;
 pub const VEHICLE_WHEEL_RADIUS: f32 = 0.35;
 pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
-// Chassis collider density — cuboid 0.9*0.3*1.8m * 8 corners * density ≈ mass in kg.
-// Volume = 0.9*0.6*3.6 ≈ 1.944 m³; density=155 → mass ≈ 300 kg (light car).
-pub const VEHICLE_CHASSIS_DENSITY: f32 = 155.0;
+// Chassis collider density. The chassis is now a Cybertruck-style wedge
+// (`VEHICLE_CHASSIS_HULL_VERTICES`), whose convex-hull volume is ≈ 2.85 m³ —
+// roughly 73% of the previous cuboid's 3.888 m³. Density was 155 kg/m³ for
+// the cuboid; scaled by 3.888 / 2.85 ≈ 1.36 to preserve mass and keep the
+// suspension near critically damped at the same ~300 kg chassis mass.
+pub const VEHICLE_CHASSIS_DENSITY: f32 = 211.0;
 
 /// Vehicle control inputs derived from a player `InputCmd`.
 pub struct VehicleInputCmd {
@@ -244,5 +268,21 @@ mod tests {
         assert_eq!(pick_move_speed(&cfg, 0), 6.0);
         assert_eq!(pick_move_speed(&cfg, BTN_SPRINT), 8.5);
         assert_eq!(pick_move_speed(&cfg, BTN_CROUCH), 3.5);
+    }
+
+    #[test]
+    fn default_player_navigation_profile_matches_move_config() {
+        let cfg = MoveConfig::default();
+        let profile = default_player_navigation_profile();
+        assert_eq!(profile.walkable_radius, cfg.capsule_radius);
+        assert_eq!(
+            profile.walkable_height,
+            2.0 * (cfg.capsule_half_segment + cfg.capsule_radius)
+        );
+        assert_eq!(profile.walkable_climb, cfg.max_step_height);
+        assert_eq!(
+            profile.walkable_slope_angle_degrees,
+            cfg.max_slope_radians.to_degrees()
+        );
     }
 }

@@ -55,6 +55,11 @@ export interface MatchNetworkSnapshot {
   snapshot_players_per_client: SummaryStatsSnapshot;
   snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot;
   snapshot_vehicles_per_client: SummaryStatsSnapshot;
+  visible_batteries_per_client: SummaryStatsSnapshot;
+  local_player_energy_packets_sent: number;
+  local_player_energy_bytes_sent: number;
+  battery_sync_packets_sent: number;
+  battery_sync_bytes_sent: number;
   dynamic_bodies_considered_per_tick: SummaryStatsSnapshot;
   dynamic_contacts_raw_per_tick: SummaryStatsSnapshot;
   dynamic_contacts_kept_per_tick: SummaryStatsSnapshot;
@@ -106,6 +111,7 @@ export interface MatchStatsSnapshot {
   player_count: number;
   dynamic_body_count: number;
   vehicle_count: number;
+  battery_count: number;
   chunk_count: number;
   load: MatchLoadSnapshot;
   timings: MatchTimingSnapshot;
@@ -167,6 +173,15 @@ export function describeTransport(match: MatchStatsSnapshot): string {
   if (datagramRatio >= 0.95) return `WT mostly datagrams (${(datagramRatio * 100).toFixed(1)}%)`;
   if (datagramRatio >= 0.8) return `WT mixed delivery (${(datagramRatio * 100).toFixed(1)}% datagram)`;
   return `WT fallback-heavy (${(datagramRatio * 100).toFixed(1)}% datagram)`;
+}
+
+export function batterySyncSummary(match: MatchStatsSnapshot): string {
+  return [
+    `${match.battery_count} live`,
+    `${match.network.visible_batteries_per_client.p95.toFixed(1)} visible/client p95`,
+    `${match.network.battery_sync_packets_sent} sync packets`,
+    `${(match.network.battery_sync_bytes_sent / 1024).toFixed(1)} KiB total`,
+  ].join(', ');
 }
 
 export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): string {
