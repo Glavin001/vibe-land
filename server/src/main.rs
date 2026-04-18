@@ -33,8 +33,9 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
-    DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M,
-    PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
+    DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_IMPULSE,
+    HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PLAYER_EYE_HEIGHT_M,
+    RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
     VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
@@ -45,10 +46,12 @@ use crate::{
     movement::{MoveConfig, PhysicsArena},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
-        decode_client_packet, encode_server_packet, f32_to_snorm16, make_net_dynamic_body_state,
-        make_net_player_state, mm_to_meters, ClientPacket, FireCmd, InputCmd, ServerPacket,
-        ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD,
-        HIT_ZONE_NONE, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+        decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
+        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, mm_to_meters,
+        BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket,
+        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
+        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY,
+        PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
         SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
@@ -94,6 +97,13 @@ fn rifle_damage(zone: HitZone) -> u8 {
         HitZone::Body => RIFLE_BODY_DAMAGE,
         HitZone::Head => RIFLE_HEAD_DAMAGE,
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeathCause {
+    HpDamage,
+    EnergyDepletion,
+    OutOfBounds,
 }
 
 // ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
@@ -244,6 +254,7 @@ struct MatchSnapshotStats {
     players_per_client: RollingSamples,
     dynamic_bodies_per_client: RollingSamples,
     vehicles_per_client: RollingSamples,
+    visible_batteries_per_client: RollingSamples,
     dynamic_bodies_considered_per_tick: RollingSamples,
     dynamic_contacts_raw_per_tick: RollingSamples,
     dynamic_contacts_kept_per_tick: RollingSamples,
@@ -291,6 +302,11 @@ struct MatchNetworkSnapshot {
     snapshot_players_per_client: SummaryStatsSnapshot,
     snapshot_dynamic_bodies_per_client: SummaryStatsSnapshot,
     snapshot_vehicles_per_client: SummaryStatsSnapshot,
+    visible_batteries_per_client: SummaryStatsSnapshot,
+    local_player_energy_packets_sent: u64,
+    local_player_energy_bytes_sent: u64,
+    battery_sync_packets_sent: u64,
+    battery_sync_bytes_sent: u64,
     dynamic_bodies_considered_per_tick: SummaryStatsSnapshot,
     dynamic_contacts_raw_per_tick: SummaryStatsSnapshot,
     dynamic_contacts_kept_per_tick: SummaryStatsSnapshot,
@@ -345,6 +361,10 @@ struct MatchIoTelemetry {
     websocket_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_reliable_sent: std::sync::atomic::AtomicU64,
     webtransport_snapshot_datagram_sent: std::sync::atomic::AtomicU64,
+    local_player_energy_packets_sent: std::sync::atomic::AtomicU64,
+    local_player_energy_bytes_sent: std::sync::atomic::AtomicU64,
+    battery_sync_packets_sent: std::sync::atomic::AtomicU64,
+    battery_sync_bytes_sent: std::sync::atomic::AtomicU64,
     dropped_outbound_packets: std::sync::atomic::AtomicU64,
     dropped_outbound_snapshots: std::sync::atomic::AtomicU64,
 }
@@ -438,6 +458,25 @@ impl MatchIoTelemetry {
             }
         }
     }
+
+    fn observe_packet_kind(&self, kind: u8, bytes: usize) {
+        let bytes = bytes as u64;
+        match kind {
+            PKT_LOCAL_PLAYER_ENERGY => {
+                self.local_player_energy_packets_sent
+                    .fetch_add(1, Ordering::Relaxed);
+                self.local_player_energy_bytes_sent
+                    .fetch_add(bytes, Ordering::Relaxed);
+            }
+            PKT_BATTERY_SYNC => {
+                self.battery_sync_packets_sent
+                    .fetch_add(1, Ordering::Relaxed);
+                self.battery_sync_bytes_sent
+                    .fetch_add(bytes, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -480,6 +519,7 @@ struct MatchStatsSnapshot {
     player_count: usize,
     dynamic_body_count: usize,
     vehicle_count: usize,
+    battery_count: usize,
     chunk_count: usize,
     load: MatchLoadSnapshot,
     timings: MatchTimingSnapshot,
@@ -586,6 +626,9 @@ struct PlayerRuntime {
     next_allowed_fire_ms: u32,
     respawn_at_ms: Option<u32>,
     visible_dynamic_bodies: HashSet<u32>,
+    visible_batteries: HashSet<u32>,
+    battery_full_resync_pending: bool,
+    last_sent_energy_centi: Option<u32>,
     last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
     last_sent_vehicle_tick: HashMap<u32, u32>,
     last_sent_dynamic_tick: HashMap<u32, u32>,
@@ -690,8 +733,8 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| format!("https://{}:{}", wt_host, wt_addr.port()));
     let strict_snapshot_datagrams = std::env::var("WT_STRICT_SNAPSHOT_DATAGRAMS")
         .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false);
+        .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
+        .unwrap_or(true);
     let respawn_delay_ms = parse_respawn_delay_ms(
         std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
             .ok()
@@ -915,6 +958,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                         ClientTransport::WebTransport,
                         is_snapshot_packet_kind(first),
                     );
+                    telemetry.observe_packet_kind(first, bytes.len());
                 }
                 OutboundDelivery::Reliable => {
                     buf.clear();
@@ -929,6 +973,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
                         ClientTransport::WebTransport,
                         is_snapshot_packet_kind(first),
                     );
+                    telemetry.observe_packet_kind(first, bytes.len());
                 }
             }
         }
@@ -1013,6 +1058,7 @@ async fn handle_socket(
     let writer = tokio::spawn(async move {
         while let Some(packet) = out_rx.recv().await {
             let packet_len = packet.len();
+            let packet_kind = packet.first().copied().unwrap_or_default();
             let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
             if let Err(err) = ws_tx.send(Message::Binary(packet.into())).await {
                 warn!(player_id, error = ?err, "websocket writer stopped");
@@ -1023,6 +1069,7 @@ async fn handle_socket(
                 ClientTransport::WebSocket,
                 is_snapshot,
             );
+            telemetry.observe_packet_kind(packet_kind, packet_len);
         }
         info!(player_id, "websocket writer task exited");
     });
@@ -1371,6 +1418,9 @@ impl MatchState {
                         next_allowed_fire_ms: 0,
                         respawn_at_ms: None,
                         visible_dynamic_bodies: HashSet::new(),
+                        visible_batteries: HashSet::new(),
+                        battery_full_resync_pending: true,
+                        last_sent_energy_centi: None,
                         last_sent_dynamic_body_pose: HashMap::new(),
                         last_sent_vehicle_tick: HashMap::new(),
                         last_sent_dynamic_tick: HashMap::new(),
@@ -1608,6 +1658,7 @@ impl MatchState {
         let mut players_in_vehicles = 0.0f32;
         let mut dead_players_skipped = 0.0f32;
         let mut player_centers = Vec::with_capacity(ids.len());
+        let mut on_foot_energy_drains = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
             if self.arena.vehicle_of_player.contains_key(&player_id) {
                 players_in_vehicles += 1.0;
@@ -1620,6 +1671,12 @@ impl MatchState {
             {
                 dead_players_skipped += 1.0;
             }
+            let (previous_input, was_on_ground) = self
+                .arena
+                .players
+                .get(&player_id)
+                .map(|state| (state.last_input.clone(), state.on_ground))
+                .unwrap_or_default();
             let input = self
                 .players
                 .get_mut(&player_id)
@@ -1634,6 +1691,7 @@ impl MatchState {
                     )
                 })
                 .unwrap_or_default();
+            on_foot_energy_drains.push((player_id, previous_input, input.clone(), was_on_ground));
             if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
                 player_move_math_ms += result.timings.move_math_ms;
                 player_query_ctx_ms += result.timings.query_ctx_ms;
@@ -1670,7 +1728,7 @@ impl MatchState {
             {
                 player_centers.push(pos);
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
-                    self.kill_player(player_id, server_time_ms);
+                    self.kill_player_with_cause(player_id, server_time_ms, DeathCause::OutOfBounds);
                     self.void_kills += 1;
                 }
                 let alive = hp > 0 && (flags & 0x4) == 0;
@@ -1788,11 +1846,47 @@ impl MatchState {
         self.timings.dynamics_ms.record(dynamics_ms);
         self.timings.vehicle_ms.record(vehicle_ms);
 
+        let alive_player_ids: Vec<u32> = self
+            .arena
+            .players
+            .iter()
+            .filter_map(|(&player_id, state)| (!state.dead).then_some(player_id))
+            .collect();
+        for &player_id in &alive_player_ids {
+            let gained_energy: f32 = self
+                .arena
+                .collect_batteries_for_player(player_id)
+                .into_iter()
+                .map(|(_, energy)| energy)
+                .sum();
+            if gained_energy > 0.0 {
+                if let Some(state) = self.arena.players.get_mut(&player_id) {
+                    state.energy += gained_energy;
+                }
+            }
+        }
+        for (player_id, previous_input, input, was_on_ground) in on_foot_energy_drains {
+            if self.arena.apply_on_foot_energy_drain(
+                player_id,
+                &previous_input,
+                &input,
+                was_on_ground,
+                dt,
+            ) {
+                self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
+            }
+        }
+        for player_id in self.arena.apply_vehicle_energy_drain(dt) {
+            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
+        }
+
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
         self.timings
             .hitscan_ms
             .record(hitscan_started.elapsed().as_secs_f32() * 1000.0);
+
+        self.sync_reliable_world_state();
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
             self.broadcast_snapshot();
@@ -1927,6 +2021,7 @@ impl MatchState {
             player_count: self.players.len(),
             dynamic_body_count: self.arena.dynamic.dynamic_bodies.len(),
             vehicle_count: self.arena.vehicles.len(),
+            battery_count: self.arena.batteries.len(),
             chunk_count: self.world.chunks.len(),
             load: MatchLoadSnapshot {
                 nearby_radius_m: NEARBY_PLAYER_RADIUS_M,
@@ -1994,6 +2089,23 @@ impl MatchState {
                     .dynamic_bodies_per_client
                     .snapshot(),
                 snapshot_vehicles_per_client: self.snapshot_stats.vehicles_per_client.snapshot(),
+                visible_batteries_per_client: self
+                    .snapshot_stats
+                    .visible_batteries_per_client
+                    .snapshot(),
+                local_player_energy_packets_sent: self
+                    .io
+                    .local_player_energy_packets_sent
+                    .load(Ordering::Relaxed),
+                local_player_energy_bytes_sent: self
+                    .io
+                    .local_player_energy_bytes_sent
+                    .load(Ordering::Relaxed),
+                battery_sync_packets_sent: self
+                    .io
+                    .battery_sync_packets_sent
+                    .load(Ordering::Relaxed),
+                battery_sync_bytes_sent: self.io.battery_sync_bytes_sent.load(Ordering::Relaxed),
                 dynamic_bodies_considered_per_tick: self
                     .snapshot_stats
                     .dynamic_bodies_considered_per_tick
@@ -2086,6 +2198,7 @@ impl MatchState {
                 match_id = %self.id,
                 server_tick = self.server_tick,
                 players = self.players.len(),
+                batteries = match_stats.battery_count,
                 websocket_players,
                 webtransport_players,
                 inbound_bytes_per_sec = inbound_bps,
@@ -2112,6 +2225,12 @@ impl MatchState {
                 snapshot_dynamic_bodies_per_client_avg = match_stats.network.snapshot_dynamic_bodies_per_client.avg,
                 snapshot_dynamic_bodies_per_client_p95 = match_stats.network.snapshot_dynamic_bodies_per_client.p95,
                 snapshot_vehicles_per_client_avg = match_stats.network.snapshot_vehicles_per_client.avg,
+                visible_batteries_per_client_avg = match_stats.network.visible_batteries_per_client.avg,
+                visible_batteries_per_client_p95 = match_stats.network.visible_batteries_per_client.p95,
+                local_player_energy_packets_sent = match_stats.network.local_player_energy_packets_sent,
+                local_player_energy_bytes_sent = match_stats.network.local_player_energy_bytes_sent,
+                battery_sync_packets_sent = match_stats.network.battery_sync_packets_sent,
+                battery_sync_bytes_sent = match_stats.network.battery_sync_bytes_sent,
                 player_sim_ms_avg = match_stats.timings.player_sim_ms.avg,
                 player_sim_ms_p95 = match_stats.timings.player_sim_ms.p95,
                 move_math_ms_avg = match_stats.timings.player_move_math_ms.avg,
@@ -2169,18 +2288,155 @@ impl MatchState {
                 runtime.pending_inputs.clear();
                 runtime.last_applied_input = InputCmd::default();
                 runtime.last_ack_input_seq = runtime.last_received_input_seq.unwrap_or(0);
+                runtime.visible_batteries.clear();
+                runtime.battery_full_resync_pending = true;
+                runtime.last_sent_energy_centi = None;
             }
             let _ = self.arena.respawn_player(player_id);
         }
     }
 
     fn kill_player(&mut self, player_id: u32, server_time_ms: u32) {
+        self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
+    }
+
+    fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
+        let battery_drop = if matches!(cause, DeathCause::HpDamage) {
+            self.arena.players.get(&player_id).and_then(|state| {
+                if !state.dead && state.energy > 0.0 {
+                    Some((state.position, state.energy))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         self.arena.exit_vehicle(player_id);
         self.arena.set_player_dead(player_id, true);
+
+        if let Some((position, energy)) = battery_drop {
+            let _ = self.arena.spawn_battery(
+                position,
+                energy,
+                DEFAULT_BATTERY_RADIUS_M,
+                DEFAULT_BATTERY_HEIGHT_M,
+            );
+        }
+        if let Some(state) = self.arena.players.get_mut(&player_id) {
+            state.energy = 0.0;
+        }
         if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
+            runtime.last_sent_energy_centi = None;
+        }
+    }
+
+    fn maybe_send_local_player_energy_update(&mut self, player_id: u32) {
+        let Some(energy_centi) = self.arena.player_energy(player_id).map(energy_to_centi) else {
+            return;
+        };
+        let Some(runtime) = self.players.get_mut(&player_id) else {
+            return;
+        };
+        if runtime.last_sent_energy_centi == Some(energy_centi) {
+            return;
+        }
+
+        let packet =
+            encode_server_packet(&ServerPacket::LocalPlayerEnergy(LocalPlayerEnergyPacket {
+                energy_centi,
+            }));
+        if try_queue_packet(&runtime.tx, packet, &self.io) {
+            runtime.last_sent_energy_centi = Some(energy_centi);
+        }
+    }
+
+    fn sync_batteries_for_player(
+        &mut self,
+        player_id: u32,
+        battery_snapshots: &[(u32, [f32; 3], NetBatteryState)],
+    ) {
+        let Some((recipient_pos, _, _, _, _, _)) = self.arena.snapshot_player(player_id) else {
+            return;
+        };
+
+        let mut current_visible_ids = HashSet::new();
+        let mut current_visible_states = Vec::new();
+        for (battery_id, position, state) in battery_snapshots.iter().copied() {
+            if distance_sq(position, recipient_pos) <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M {
+                current_visible_ids.insert(battery_id);
+                current_visible_states.push((battery_id, state));
+            }
+        }
+
+        self.snapshot_stats
+            .visible_batteries_per_client
+            .record(current_visible_ids.len() as f32);
+
+        let Some(runtime) = self.players.get_mut(&player_id) else {
+            return;
+        };
+
+        let full_resync = runtime.battery_full_resync_pending;
+        let mut battery_states = Vec::new();
+        let mut removed_ids = Vec::new();
+
+        if full_resync {
+            battery_states.extend(current_visible_states.iter().map(|(_, state)| *state));
+        } else {
+            for battery_id in runtime
+                .visible_batteries
+                .iter()
+                .filter(|battery_id| !current_visible_ids.contains(battery_id))
+            {
+                removed_ids.push(*battery_id);
+            }
+            for (battery_id, state) in &current_visible_states {
+                if !runtime.visible_batteries.contains(battery_id) {
+                    battery_states.push(*state);
+                }
+            }
+        }
+
+        if !full_resync && battery_states.is_empty() && removed_ids.is_empty() {
+            return;
+        }
+
+        let packet = encode_server_packet(&ServerPacket::BatterySync(BatterySyncPacket {
+            full_resync,
+            battery_states,
+            removed_ids,
+        }));
+        if try_queue_packet(&runtime.tx, packet, &self.io) {
+            runtime.visible_batteries = current_visible_ids;
+            runtime.battery_full_resync_pending = false;
+        }
+    }
+
+    fn sync_reliable_world_state(&mut self) {
+        let battery_snapshots: Vec<(u32, [f32; 3], NetBatteryState)> = self
+            .arena
+            .snapshot_batteries()
+            .into_iter()
+            .map(|(id, position, energy, radius, height)| {
+                (
+                    id,
+                    position,
+                    make_net_battery_state(id, position, energy, radius, height),
+                )
+            })
+            .collect();
+        let player_ids: Vec<u32> = self.players.keys().copied().collect();
+
+        for &player_id in &player_ids {
+            self.maybe_send_local_player_energy_update(player_id);
+        }
+        for player_id in player_ids {
+            self.sync_batteries_for_player(player_id, &battery_snapshots);
         }
     }
 
@@ -2248,6 +2504,22 @@ impl MatchState {
                 continue;
             };
             if shooter_state.dead || self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+                continue;
+            }
+
+            let mut shooter_depleted = false;
+            if let Some(shooter_state) = self.arena.players.get_mut(&queued.player_id) {
+                shooter_state.energy = (shooter_state.energy - RIFLE_SHOT_ENERGY_COST).max(0.0);
+                if shooter_state.energy <= 0.0 {
+                    shooter_depleted = true;
+                }
+            }
+            if shooter_depleted {
+                self.kill_player_with_cause(
+                    queued.player_id,
+                    server_time_ms,
+                    DeathCause::EnergyDepletion,
+                );
                 continue;
             }
 
@@ -2390,10 +2662,11 @@ impl MatchState {
         let mut player_states = Vec::with_capacity(self.players.len());
         for &player_id in self.players.keys() {
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
+                let energy = self.arena.player_energy(player_id).unwrap_or(0.0);
                 player_states.push((
                     player_id,
                     pos,
-                    make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags),
+                    make_net_player_state(player_id, pos, vel, yaw, pitch, hp, flags, energy),
                 ));
             }
         }
@@ -3204,6 +3477,9 @@ mod tests {
             next_allowed_fire_ms: 0,
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
+            visible_batteries: HashSet::new(),
+            battery_full_resync_pending: true,
+            last_sent_energy_centi: None,
             last_sent_dynamic_body_pose: HashMap::new(),
             last_sent_vehicle_tick: HashMap::new(),
             last_sent_dynamic_tick: HashMap::new(),

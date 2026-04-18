@@ -55,6 +55,8 @@ fn benchmark_vehicle_world(
                 tile_x: 0,
                 tile_z: 0,
                 heights,
+                materials: Vec::new(),
+                material_weights: None,
             }],
         },
         static_props: vec![],
@@ -66,6 +68,8 @@ fn benchmark_vehicle_world(
             half_extents: None,
             radius: None,
             vehicle_type: Some(0),
+            energy: None,
+            height: None,
         }],
         destructibles: vec![],
     }
@@ -123,6 +127,7 @@ mod tests {
 
         assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
         assert_eq!(arena.vehicles.len(), 2);
+        assert_eq!(arena.batteries.len(), 4);
     }
 
     #[test]

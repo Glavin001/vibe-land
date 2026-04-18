@@ -21,9 +21,12 @@ type GameSceneProps = {
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
+  showDebugHelpers?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
+  practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
+  practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
@@ -43,9 +46,12 @@ export function GameScene({
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
+  showDebugHelpers = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
+  practiceBots,
+  practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
@@ -82,7 +88,10 @@ export function GameScene({
           inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
+          showDebugHelpers={showDebugHelpers}
           benchmarkAutopilot={benchmarkAutopilot}
+          practiceBots={practiceBots}
+          practiceBotsDebugOverlay={practiceBotsDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}

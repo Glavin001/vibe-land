@@ -13,16 +13,18 @@ use crate::destructibles::{
     pose_from_world_doc, set_destructibles_log_enabled, DestructibleRegistry,
 };
 use crate::local_session::LocalSession;
-use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
-use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
+use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
+use crate::protocol::{
+    FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+};
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
-    read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
-    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS,
-    VEHICLE_WHEEL_OFFSETS,
+    apply_vehicle_input_step, canonical_vehicle_type, create_vehicle_physics,
+    read_vehicle_chassis_state, read_vehicle_debug_snapshot, refresh_vehicle_contacts,
+    step_vehicle_dynamics, vehicle_definition, vehicle_definitions, vehicle_exit_position,
+    DEFAULT_VEHICLE_TYPE, VEHICLE_CONTROLLER_SUBSTEPS,
 };
 use crate::world_document::{
     DestructibleKind as DocDestructibleKind, StaticPropKind, WorldDocument,
@@ -39,25 +41,56 @@ fn install_panic_hook_once() {
 /// Returns chassis half-extents as [x, y, z].
 #[wasm_bindgen]
 pub fn vehicle_chassis_half_extents() -> Box<[f32]> {
-    Box::new(VEHICLE_CHASSIS_HALF_EXTENTS)
+    Box::new(vehicle_definition(DEFAULT_VEHICLE_TYPE).chassis_half_extents)
 }
 
 /// Returns wheel offsets as a flat array [x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3] (FL, FR, RL, RR).
 #[wasm_bindgen]
 pub fn vehicle_wheel_offsets() -> Box<[f32]> {
-    VEHICLE_WHEEL_OFFSETS.concat().into_boxed_slice()
+    vehicle_definition(DEFAULT_VEHICLE_TYPE)
+        .wheel_offsets
+        .concat()
+        .into_boxed_slice()
+}
+
+/// Returns the chassis convex-hull vertices as a flat array of (x, y, z) triples.
+#[wasm_bindgen]
+pub fn vehicle_chassis_hull_vertices() -> Box<[f32]> {
+    vehicle_definition(DEFAULT_VEHICLE_TYPE)
+        .chassis_hull_vertices
+        .concat()
+        .into_boxed_slice()
 }
 
 /// Returns the suspension rest length in metres.
 #[wasm_bindgen]
 pub fn vehicle_suspension_rest_length() -> f32 {
-    VEHICLE_SUSPENSION_REST_LENGTH
+    vehicle_definition(DEFAULT_VEHICLE_TYPE).suspension_rest_length_m
 }
 
 /// Returns the wheel radius in metres.
 #[wasm_bindgen]
 pub fn vehicle_wheel_radius() -> f32 {
-    VEHICLE_WHEEL_RADIUS
+    vehicle_definition(DEFAULT_VEHICLE_TYPE).wheel_radius_m
+}
+
+/// Returns the supported vehicle definitions as JSON.
+#[wasm_bindgen]
+pub fn vehicle_definitions_json() -> String {
+    serde_json::to_string(vehicle_definitions()).expect("vehicle definitions should serialize")
+}
+
+/// Returns player navigation limits as
+/// [walkableRadius, walkableHeight, walkableClimb, walkableSlopeAngleDegrees].
+#[wasm_bindgen]
+pub fn player_navigation_profile() -> Box<[f32]> {
+    let profile = default_player_navigation_profile();
+    Box::new([
+        profile.walkable_radius,
+        profile.walkable_height,
+        profile.walkable_climb,
+        profile.walkable_slope_angle_degrees,
+    ])
 }
 
 struct WasmVehicle {
@@ -490,6 +523,7 @@ impl WasmSimWorld {
             &mut self.on_ground,
             &input,
             dt,
+            None,
         );
         for impulse in &tick.dynamic_impulses {
             let _ = self.apply_dynamic_body_impulse(
@@ -633,6 +667,7 @@ impl WasmSimWorld {
                 &mut self.on_ground,
                 input,
                 dt,
+                None,
             );
             for impulse in &tick.dynamic_impulses {
                 let _ = self.apply_dynamic_body_impulse(
@@ -1128,7 +1163,7 @@ impl WasmSimWorld {
     pub fn spawn_vehicle(
         &mut self,
         id: u32,
-        _vehicle_type: u8,
+        vehicle_type: u8,
         px: f32,
         py: f32,
         pz: f32,
@@ -1140,10 +1175,11 @@ impl WasmSimWorld {
         // Remove existing vehicle with same ID if present.
         self.remove_vehicle(id);
 
+        let vehicle_type = canonical_vehicle_type(vehicle_type);
         let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
         let pose = nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(px, py, pz), iso);
         let (chassis_body, chassis_collider, controller) =
-            create_vehicle_physics(&mut self.sim, pose);
+            create_vehicle_physics(&mut self.sim, vehicle_type, pose);
 
         self.vehicles.insert(
             id,
@@ -1572,6 +1608,8 @@ pub struct WasmLocalSession {
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
 const LOCAL_VEHICLE_STATE_STRIDE: usize = 21;
+const LOCAL_PLAYER_STATE_STRIDE: usize = 12;
+const LOCAL_BATTERY_STATE_STRIDE: usize = 7;
 
 #[wasm_bindgen]
 impl WasmLocalSession {
@@ -1600,6 +1638,33 @@ impl WasmLocalSession {
         self.inner
             .handle_client_packet(bytes)
             .map_err(|err| JsValue::from_str(&err))
+    }
+
+    #[wasm_bindgen(js_name = connectBot)]
+    pub fn connect_bot(&mut self, bot_id: u32) -> bool {
+        self.inner.connect_bot(bot_id)
+    }
+
+    #[wasm_bindgen(js_name = disconnectBot)]
+    pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
+        self.inner.disconnect_bot(bot_id)
+    }
+
+    #[wasm_bindgen(js_name = handleBotPacket)]
+    pub fn handle_bot_packet(&mut self, bot_id: u32, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .handle_bot_packet(bot_id, bytes)
+            .map_err(|err| JsValue::from_str(&err))
+    }
+
+    #[wasm_bindgen(js_name = setBotMaxSpeed)]
+    pub fn set_bot_max_speed(&mut self, bot_id: u32, max_speed: f64) -> bool {
+        let override_value = if max_speed.is_finite() && max_speed >= 0.0 {
+            Some(max_speed)
+        } else {
+            None
+        };
+        self.inner.set_bot_max_speed(bot_id, override_value)
     }
 
     #[wasm_bindgen(js_name = enqueueInput)]
@@ -1675,6 +1740,11 @@ impl WasmLocalSession {
         flatten_player_state(self.inner.local_player_state())
     }
 
+    #[wasm_bindgen(js_name = getRemotePlayerStates)]
+    pub fn get_remote_player_states(&self) -> Box<[f64]> {
+        flatten_player_states(self.inner.remote_player_states())
+    }
+
     #[wasm_bindgen(js_name = getDynamicBodyStates)]
     pub fn get_dynamic_body_states(&self) -> Box<[f64]> {
         let states = self.inner.dynamic_body_states();
@@ -1691,6 +1761,16 @@ impl WasmLocalSession {
         let mut out = Vec::with_capacity(states.len() * LOCAL_VEHICLE_STATE_STRIDE);
         for state in &states {
             push_vehicle_state(&mut out, state);
+        }
+        out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = getBatteryStates)]
+    pub fn get_battery_states(&self) -> Box<[f64]> {
+        let states = self.inner.battery_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_BATTERY_STATE_STRIDE);
+        for state in &states {
+            push_battery_state(&mut out, state);
         }
         out.into_boxed_slice()
     }
@@ -1799,7 +1879,29 @@ fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
         state.pitch_i16 as f64,
         state.hp as f64,
         state.flags as f64,
+        state.energy_centi as f64,
     ])
+}
+
+fn flatten_player_states(states: Vec<NetPlayerState>) -> Box<[f64]> {
+    let mut out = Vec::with_capacity(states.len() * LOCAL_PLAYER_STATE_STRIDE);
+    for state in &states {
+        out.extend_from_slice(&[
+            state.id as f64,
+            state.px_mm as f64,
+            state.py_mm as f64,
+            state.pz_mm as f64,
+            state.vx_cms as f64,
+            state.vy_cms as f64,
+            state.vz_cms as f64,
+            state.yaw_i16 as f64,
+            state.pitch_i16 as f64,
+            state.hp as f64,
+            state.flags as f64,
+            0.0,
+        ]);
+    }
+    out.into_boxed_slice()
 }
 
 fn push_dynamic_body_state(out: &mut Vec<f64>, state: &NetDynamicBodyState) {
@@ -1848,6 +1950,18 @@ fn push_vehicle_state(out: &mut Vec<f64>, state: &NetVehicleState) {
         state.wheel_data[1] as f64,
         state.wheel_data[2] as f64,
         state.wheel_data[3] as f64,
+    ]);
+}
+
+fn push_battery_state(out: &mut Vec<f64>, state: &NetBatteryState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.energy_centi as f64,
+        state.radius_cm as f64,
+        state.height_cm as f64,
     ]);
 }
 

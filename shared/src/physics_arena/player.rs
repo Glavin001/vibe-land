@@ -28,6 +28,7 @@ impl PhysicsArena {
         }
         state.last_input = input.clone();
 
+        let max_speed_override = state.max_speed_override;
         let mut tick_result = super::simulate_player_tick(
             &self.dynamic.sim,
             state.collider,
@@ -38,6 +39,7 @@ impl PhysicsArena {
             &mut state.on_ground,
             input,
             dt,
+            max_speed_override,
         );
         let sync_started = now_marker();
         self.dynamic
@@ -203,5 +205,34 @@ impl PhysicsArena {
                 state.on_ground = false;
             }
         }
+    }
+
+    pub fn set_player_max_speed_override(
+        &mut self,
+        player_id: u32,
+        max_speed: Option<f64>,
+    ) -> bool {
+        if let Some(state) = self.players.get_mut(&player_id) {
+            state.max_speed_override = max_speed;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> bool {
+        let Some(state) = self.players.get_mut(&player_id) else {
+            return false;
+        };
+        if state.dead || state.hp == 0 {
+            return false;
+        }
+        state.hp = state.hp.saturating_sub(damage);
+        if state.hp == 0 {
+            state.dead = true;
+            state.velocity = super::Vec3d::zeros();
+            return true;
+        }
+        false
     }
 }

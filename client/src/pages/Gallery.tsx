@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   fetchCloudConfig,
   listPublishedWorlds,
@@ -6,111 +6,6 @@ import {
   type GalleryWorldSummary,
 } from '../world/worldsCloud';
 import { loadPublishedHistory, type PublishedHistoryEntry } from '../world/publishedHistory';
-
-const shellStyle: CSSProperties = {
-  minHeight: '100%',
-  background:
-    'radial-gradient(circle at top, rgba(93, 215, 255, 0.14), transparent 32%), linear-gradient(180deg, #08111d 0%, #04070d 100%)',
-  color: '#edf6ff',
-  display: 'flex',
-  alignItems: 'flex-start',
-  justifyContent: 'center',
-  padding: '32px',
-};
-
-const panelStyle: CSSProperties = {
-  width: 'min(1280px, 100%)',
-  background: 'rgba(6, 12, 20, 0.86)',
-  border: '1px solid rgba(110, 190, 255, 0.2)',
-  borderRadius: 28,
-  boxShadow: '0 30px 90px rgba(0, 0, 0, 0.45)',
-  padding: '40px',
-};
-
-const headerRowStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'baseline',
-  justifyContent: 'space-between',
-  flexWrap: 'wrap',
-  gap: 16,
-  marginBottom: 24,
-};
-
-const cardStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  textDecoration: 'none',
-  color: 'inherit',
-  borderRadius: 20,
-  border: '1px solid rgba(145, 198, 255, 0.18)',
-  background: 'linear-gradient(180deg, rgba(18, 29, 45, 0.95) 0%, rgba(8, 14, 23, 0.95) 100%)',
-  padding: '18px',
-  gap: 14,
-};
-
-const sectionHeaderStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'baseline',
-  justifyContent: 'space-between',
-  gap: 12,
-  marginBottom: 14,
-  flexWrap: 'wrap',
-};
-
-const ownedBadgeStyle: CSSProperties = {
-  display: 'inline-block',
-  padding: '3px 10px',
-  borderRadius: 999,
-  background: 'rgba(140, 255, 174, 0.18)',
-  border: '1px solid rgba(140, 255, 174, 0.35)',
-  color: '#b9ffc3',
-  fontSize: 11,
-  letterSpacing: '0.12em',
-  textTransform: 'uppercase',
-};
-
-const previewStyle: CSSProperties = {
-  width: '100%',
-  aspectRatio: '16 / 9',
-  borderRadius: 12,
-  overflow: 'hidden',
-  background: 'linear-gradient(135deg, #0f1c2f 0%, #04070d 100%)',
-  border: '1px solid rgba(145, 198, 255, 0.12)',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  color: 'rgba(237, 246, 255, 0.4)',
-  fontSize: 12,
-  letterSpacing: '0.18em',
-  textTransform: 'uppercase',
-};
-
-const primaryActionStyle: CSSProperties = {
-  display: 'inline-block',
-  padding: '9px 16px',
-  borderRadius: 999,
-  background: 'linear-gradient(180deg, #4cd1ff 0%, #2f8bd6 100%)',
-  color: '#04121f',
-  fontWeight: 600,
-  fontSize: 14,
-  textDecoration: 'none',
-};
-
-const secondaryActionStyle: CSSProperties = {
-  display: 'inline-block',
-  padding: '9px 14px',
-  borderRadius: 999,
-  border: '1px solid rgba(145, 198, 255, 0.3)',
-  color: '#cfe7ff',
-  fontSize: 13,
-  textDecoration: 'none',
-};
-
-const mutedTextStyle: CSSProperties = {
-  color: 'rgba(237, 246, 255, 0.62)',
-  fontSize: 14,
-  lineHeight: 1.6,
-};
 
 type LoadState =
   | { kind: 'loading' }
@@ -124,8 +19,6 @@ export function GalleryPage() {
   const [history, setHistory] = useState<PublishedHistoryEntry[]>(() => loadPublishedHistory());
 
   useEffect(() => {
-    // Refresh whenever the page regains focus so a publish in another tab
-    // shows up here immediately.
     const handleFocus = () => setHistory(loadPublishedHistory());
     window.addEventListener('focus', handleFocus);
     return () => window.removeEventListener('focus', handleFocus);
@@ -167,9 +60,6 @@ export function GalleryPage() {
       if (server) {
         result.push(server);
       } else {
-        // The server listing didn't include this entry (pagination, deleted,
-        // etc.) – fall back to the local record so the user can still see and
-        // link to it.
         result.push({
           id: entry.id,
           name: entry.name,
@@ -190,62 +80,74 @@ export function GalleryPage() {
   }, [state, ownedSummaries]);
 
   return (
-    <div style={shellStyle}>
-      <div style={panelStyle}>
-        <div style={headerRowStyle}>
+    <div className="relative min-h-full bg-[#050c16] text-[#edf6ff] flex items-start justify-center p-8 overflow-hidden">
+
+      {/* Ambient glows */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[800px] h-[500px] rounded-full bg-sky-500/[0.06] blur-[120px]" />
+        <div className="absolute top-1/2 -right-32 w-[400px] h-[400px] rounded-full bg-violet-600/[0.04] blur-[100px]" />
+      </div>
+
+      <div className="relative z-10 w-full max-w-[1280px]">
+
+        {/* Header */}
+        <div className="flex items-baseline justify-between flex-wrap gap-4 mb-8">
           <div>
-            <div style={{ letterSpacing: '0.28em', fontSize: 12, textTransform: 'uppercase', color: '#79baf5' }}>
+            <div className="font-mono text-[10px] uppercase tracking-[0.35em] text-sky-500/50 mb-3 flex items-center gap-3">
+              <span className="w-6 h-px bg-sky-500/30" />
               vibe-land
             </div>
-            <h1 style={{ fontSize: 'clamp(32px, 6vw, 60px)', lineHeight: 1, margin: '10px 0 6px', fontWeight: 700 }}>
+            <h1 className="text-[clamp(32px,6vw,60px)] font-black leading-none tracking-tight mb-2">
               Gallery
             </h1>
-            <p style={{ maxWidth: 640, fontSize: 16, lineHeight: 1.6, color: 'rgba(237, 246, 255, 0.74)', margin: 0 }}>
-              Published worlds from the community. Click any card to open it in the builder and keep editing.
+            <p className="max-w-[640px] text-base leading-relaxed text-white/45 m-0">
+              Worlds shared by other builders. Click any card to play it or open it in the builder to keep editing.
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 12, fontSize: 14 }}>
-            <a href="/builder/world" style={{ color: '#9cd4ff' }}>Back to builder</a>
-            <a href="/" style={{ color: '#9cd4ff' }}>Home</a>
+          <div className="flex gap-4 text-sm font-mono">
+            <a href="/builder/world" className="text-sky-400/60 hover:text-sky-400 transition-colors duration-200">
+              Back to builder
+            </a>
+            <a href="/" className="text-sky-400/60 hover:text-sky-400 transition-colors duration-200">
+              Home
+            </a>
           </div>
         </div>
 
-        {state.kind === 'loading' && <div style={mutedTextStyle}>Loading published worlds…</div>}
+        {state.kind === 'loading' && (
+          <p className="text-white/45 text-sm leading-relaxed">Loading published worlds…</p>
+        )}
 
         {state.kind === 'disabled' && (
-          <div style={mutedTextStyle}>
-            Cloudflare R2 is not configured on this deployment, so there is nothing to show yet. Set the
-            <code style={{ margin: '0 4px' }}>R2_*</code>
-            environment variables and redeploy to enable publishing.
-          </div>
+          <p className="text-white/45 text-sm leading-relaxed">
+            World publishing isn't enabled on this deployment, so there's nothing here yet.
+            Once publishing is set up, worlds from the community will appear here.
+          </p>
         )}
 
         {state.kind === 'error' && (
-          <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>{state.message}</div>
+          <p className="text-red-300/80 text-sm leading-relaxed">{state.message}</p>
         )}
 
         {state.kind === 'loaded' && state.worlds.length === 0 && history.length === 0 && (
-          <div style={mutedTextStyle}>
-            No worlds published yet. Open the <a href="/builder/world" style={{ color: '#9cd4ff' }}>builder</a> and hit
-            Publish to be the first.
-          </div>
+          <p className="text-white/45 text-sm leading-relaxed">
+            No worlds published yet. Open the{' '}
+            <a href="/builder/world" className="text-sky-400/70 hover:text-sky-400 transition-colors">
+              builder
+            </a>{' '}
+            and hit Publish to be the first.
+          </p>
         )}
 
         {ownedSummaries && ownedSummaries.length > 0 && (
-          <section style={{ marginBottom: 30 }}>
-            <div style={sectionHeaderStyle}>
-              <h2 style={{ margin: 0, fontSize: 22 }}>Your publications</h2>
-              <span style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.55)' }}>
+          <section className="mb-8">
+            <div className="flex items-baseline justify-between gap-3 mb-4 flex-wrap">
+              <h2 className="m-0 text-xl font-semibold text-white/85">Your publications</h2>
+              <span className="text-xs font-mono text-white/35">
                 Tracked locally on this device ({ownedSummaries.length})
               </span>
             </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-                gap: 18,
-              }}
-            >
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
               {ownedSummaries.map((world) => (
                 <GalleryCard key={`own-${world.id}`} world={world} owned publicUrl={publicUrl} />
               ))}
@@ -255,94 +157,116 @@ export function GalleryPage() {
 
         {communitySummaries && communitySummaries.length > 0 && (
           <section>
-            <div style={sectionHeaderStyle}>
-              <h2 style={{ margin: 0, fontSize: 22 }}>Community gallery</h2>
-              <span style={{ fontSize: 13, color: 'rgba(237, 246, 255, 0.55)' }}>
+            <div className="flex items-baseline justify-between gap-3 mb-4 flex-wrap">
+              <h2 className="m-0 text-xl font-semibold text-white/85">Community gallery</h2>
+              <span className="text-xs font-mono text-white/35">
                 {communitySummaries.length} world{communitySummaries.length === 1 ? '' : 's'}
               </span>
             </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-                gap: 18,
-              }}
-            >
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
               {communitySummaries.map((world) => (
                 <GalleryCard key={world.id} world={world} publicUrl={publicUrl} />
               ))}
             </div>
           </section>
         )}
+
       </div>
     </div>
   );
 }
 
-function GalleryCard({ world, owned = false, publicUrl = null }: { world: GalleryWorldSummary; owned?: boolean; publicUrl?: string | null }) {
+function GalleryCard({
+  world,
+  owned = false,
+  publicUrl = null,
+}: {
+  world: GalleryWorldSummary;
+  owned?: boolean;
+  publicUrl?: string | null;
+}) {
   const [screenshotFailed, setScreenshotFailed] = useState(false);
   const playHref = `/practice/shared/${encodeURIComponent(world.id)}`;
   const editHref = `/builder/world?published=${encodeURIComponent(world.id)}`;
-  const previewHref = playHref;
+
   return (
-    <div style={cardStyle}>
+    <div className="flex flex-col rounded-2xl border border-white/[0.08] bg-gradient-to-b from-white/[0.04] to-transparent p-4 gap-3">
+
+      {/* Preview image */}
       <a
-        href={previewHref}
-        style={{ ...previewStyle, textDecoration: 'none' }}
+        href={playHref}
+        className="block w-full aspect-video rounded-xl overflow-hidden bg-gradient-to-br from-[#0f1c2f] to-[#04070d] border border-white/[0.08] no-underline"
         aria-label={`Play ${world.name || 'Untitled World'}`}
       >
         {screenshotFailed ? (
-          <span>No preview</span>
+          <div className="w-full h-full flex items-center justify-center text-white/30 text-xs uppercase tracking-[0.18em] font-mono">
+            No preview
+          </div>
         ) : (
           <img
             src={screenshotUrlForWorld(world.id, publicUrl)}
             alt={`Preview of ${world.name || 'Untitled World'}`}
             loading="lazy"
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            className="w-full h-full object-cover block"
             onError={() => setScreenshotFailed(true)}
           />
         )}
       </a>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <div style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#87d6ff' }}>
+
+      {/* Meta row */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-sky-400/60">
           {formatRelativeTime(world.createdAt)} · {formatSize(world.size)}
         </div>
-        {owned && <span style={ownedBadgeStyle}>yours</span>}
+        {owned && (
+          <span className="inline-block px-2.5 py-0.5 rounded-full bg-emerald-400/[0.15] border border-emerald-400/30 text-emerald-300 text-[11px] tracking-[0.12em] uppercase font-mono">
+            yours
+          </span>
+        )}
       </div>
-      <h2 style={{ margin: '2px 0 4px', fontSize: 22 }}>{world.name || 'Untitled World'}</h2>
-      <p
-        style={{
-          margin: 0,
-          color: 'rgba(237, 246, 255, 0.72)',
-          fontSize: 14,
-          lineHeight: 1.5,
-          display: '-webkit-box',
-          WebkitLineClamp: 3,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-          flex: 1,
-        }}
-      >
+
+      {/* Title */}
+      <h2 className="m-0 text-xl font-semibold leading-tight text-white/90">
+        {world.name || 'Untitled World'}
+      </h2>
+
+      {/* Description */}
+      <p className="m-0 text-sm leading-relaxed text-white/50 flex-1 line-clamp-3">
         {world.description || 'No description provided.'}
       </p>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <a href={playHref} style={primaryActionStyle}>Play</a>
-        <a href={editHref} style={secondaryActionStyle}>Edit in builder</a>
+
+      {/* Actions */}
+      <div className="flex gap-2.5 items-center flex-wrap">
+        <a
+          href={playHref}
+          className="inline-block px-4 py-2 rounded-full bg-gradient-to-b from-sky-400 to-sky-600 text-[#04121f] font-semibold text-sm no-underline hover:from-sky-300 hover:to-sky-500 transition-all duration-200"
+        >
+          Play
+        </a>
+        <a
+          href={editHref}
+          className="inline-block px-3.5 py-2 rounded-full border border-white/[0.15] text-white/65 text-[13px] no-underline hover:border-white/25 hover:text-white/85 transition-all duration-200"
+        >
+          Edit in builder
+        </a>
       </div>
-      <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)' }}>
-        id <code>{world.id}</code>
+
+      {/* Footer meta */}
+      <div className="font-mono text-xs text-white/30">
+        id <code className="text-white/40">{world.id}</code>
       </div>
       {world.parentId && (
-        <div style={{ fontSize: 12, color: 'rgba(237, 246, 255, 0.5)', marginTop: 4 }}>
+        <div className="font-mono text-xs text-white/30">
           forked from{' '}
           <a
             href={`/builder/world?published=${encodeURIComponent(world.parentId)}`}
-            style={{ color: '#9cd4ff' }}
+            className="text-sky-400/60 hover:text-sky-400 transition-colors"
           >
             {world.parentId.slice(0, 8)}…
           </a>
         </div>
       )}
+
     </div>
   );
 }
