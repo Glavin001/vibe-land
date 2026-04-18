@@ -2,11 +2,19 @@
 #
 # Vercel build entrypoint for vibe-land.
 #
-# The `blast-stress-solver` crate requires a local source override
-# (patches/blast-stress-solver.patch applied to the upstream PhysX repo)
-# because the published crates.io version has a wasm32 symbol conflict
-# that prevents linking.  This script clones the upstream repo, applies
-# the patch, and then runs the normal wasm + client build.
+# Vercel's default Amazon Linux 2023 build image doesn't ship:
+#   (a) the `wasm32-unknown-unknown` rustc target,
+#   (b) `wasm-pack`,
+#   (c) a wasi C++ toolchain for compiling the Blast stress solver's
+#       C++ sources for `wasm32-unknown-unknown`.
+#
+# This script installs everything needed:
+#   1. Rust + wasm32 target
+#   2. wasm-pack
+#   3. wasi-sdk (clang + wasi-sysroot + libc++ for wasm32)
+#   4. PhysX/Blast source clone (required by [patch.crates-io] override)
+#
+# See `docs/BLAST_INTEGRATION.md` for the full toolchain story.
 
 set -euo pipefail
 
@@ -37,51 +45,107 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
 fi
 echo "[vercel-build] wasm-pack: $(wasm-pack --version)"
 
-# ── 3. Upstream PhysX clone (required by [patch.crates-io] in Cargo.toml) ───
-#
-# Cargo.toml overrides `blast-stress-solver` with a local path so that
-# our wasm shim patch (patches/blast-stress-solver.patch) is included.
-# The path must exist before `cargo metadata` / `wasm-pack build` runs.
-#
-# Upstream: https://github.com/Glavin001/PhysX  branch: feat/rapier-destruction
-# Pinned to: 21145beafb125507fdaace89aef1b295a7bc6624
-PHYSX_DIR="${REPO_ROOT}/third_party/PhysX"
-PHYSX_UPSTREAM="https://github.com/Glavin001/PhysX"
-PHYSX_BRANCH="feat/rapier-destruction"
-PHYSX_COMMIT="21145beafb125507fdaace89aef1b295a7bc6624"
-PATCH_FILE="${REPO_ROOT}/patches/blast-stress-solver.patch"
+# ── 3. wasi-sdk (clang + wasi-sysroot + libc++ for wasm32-wasi) ──────────────
+WASI_SDK_ROOT="$(./scripts/install-wasi-sdk.sh)"
+echo "[vercel-build] wasi-sdk at: ${WASI_SDK_ROOT}"
 
-if [[ ! -d "${PHYSX_DIR}/.git" ]]; then
-  echo "[vercel-build] cloning PhysX upstream (shallow, ${PHYSX_BRANCH})"
-  git clone --depth=1 --branch "${PHYSX_BRANCH}" \
-    "${PHYSX_UPSTREAM}" "${PHYSX_DIR}"
-else
-  echo "[vercel-build] PhysX clone already present, skipping clone"
+export BLAST_WASM_SYSROOT="${WASI_SDK_ROOT}/share/wasi-sysroot"
+
+# wasi-sdk layout shifted around v23: older releases shipped libc++
+# at `.../include/c++/v1/` + `.../lib/wasm32-wasi/`, newer releases
+# split by triple.  Probe in priority order.
+find_libcxx_include() {
+  local sysroot="$1"
+  local candidates=(
+    "${sysroot}/include/c++/v1"
+    "${sysroot}/include/wasm32-wasi/c++/v1"
+    "${sysroot}/include/wasm32-wasip1/c++/v1"
+    "${sysroot}/include/wasm32-wasi-threads/c++/v1"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "${c}/new" ]]; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_libcxx_lib() {
+  local sysroot="$1"
+  local candidates=(
+    "${sysroot}/lib/wasm32-wasi"
+    "${sysroot}/lib/wasm32-wasip1"
+    "${sysroot}/lib/wasm32-wasi-threads"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -f "${c}/libc++.a" ]]; then
+      echo "${c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! BLAST_WASM_CXX_INCLUDE="$(find_libcxx_include "${BLAST_WASM_SYSROOT}")"; then
+  echo "[vercel-build] FATAL: libc++ headers not found under ${BLAST_WASM_SYSROOT}" >&2
+  find "${BLAST_WASM_SYSROOT}/include" -maxdepth 4 -name "new" 2>/dev/null | head -20 >&2 || true
+  exit 1
 fi
+if ! BLAST_WASM_CXX_LIB_DIR="$(find_libcxx_lib "${BLAST_WASM_SYSROOT}")"; then
+  echo "[vercel-build] FATAL: libc++.a not found under ${BLAST_WASM_SYSROOT}/lib" >&2
+  find "${BLAST_WASM_SYSROOT}/lib" -maxdepth 3 -name "libc++.a" 2>/dev/null | head -20 >&2 || true
+  exit 1
+fi
+export BLAST_WASM_CXX_INCLUDE
+export BLAST_WASM_CXX_LIB_DIR
+echo "[vercel-build] BLAST_WASM_CXX_INCLUDE=${BLAST_WASM_CXX_INCLUDE}"
+echo "[vercel-build] BLAST_WASM_CXX_LIB_DIR=${BLAST_WASM_CXX_LIB_DIR}"
 
-echo "[vercel-build] PhysX HEAD: $(git -C "${PHYSX_DIR}" rev-parse HEAD)"
+# Force the `cc` crate to use wasi-sdk's clang for the wasm32 target.
+export CC_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang"
+export CXX_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang++"
+export AR_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/llvm-ar"
+export CC_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang"
+export CXX_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang++"
+export AR_wasm32_wasi="${WASI_SDK_ROOT}/bin/llvm-ar"
+export TARGET_CC="${WASI_SDK_ROOT}/bin/clang"
+export TARGET_CXX="${WASI_SDK_ROOT}/bin/clang++"
+export TARGET_AR="${WASI_SDK_ROOT}/bin/llvm-ar"
+export CC="${WASI_SDK_ROOT}/bin/clang"
+export CXX="${WASI_SDK_ROOT}/bin/clang++"
+export AR="${WASI_SDK_ROOT}/bin/llvm-ar"
+export PATH="${WASI_SDK_ROOT}/bin:${PATH}"
 
-if [[ -f "${PATCH_FILE}" ]]; then
-  echo "[vercel-build] applying patches/blast-stress-solver.patch"
-  # Apply idempotently: reverse-check first, skip if already applied.
-  if git -C "${PHYSX_DIR}" apply --reverse --check "${PATCH_FILE}" 2>/dev/null; then
-    echo "[vercel-build] patch already applied, skipping"
-  else
-    git -C "${PHYSX_DIR}" apply "${PATCH_FILE}"
-    echo "[vercel-build] patch applied"
+# Validate env vars point at real paths.
+for var in BLAST_WASM_SYSROOT BLAST_WASM_CXX_INCLUDE BLAST_WASM_CXX_LIB_DIR \
+           CC_wasm32_unknown_unknown CXX_wasm32_unknown_unknown \
+           CC CXX AR; do
+  eval "val=\${$var}"
+  if [[ ! -e "${val}" ]]; then
+    echo "[vercel-build] WARNING: ${var}=${val} does not exist" >&2
   fi
-else
-  echo "[vercel-build] WARNING: ${PATCH_FILE} not found, building unpatched" >&2
-fi
+done
 
-# ── 4. Client install + build ───────────────────────────────────────────────
+# ── 4. Clone PhysX / Blast stress solver at the pinned SHA ──────────────────
+./scripts/setup-blast.sh
+
+if [[ ! -f "${REPO_ROOT}/third_party/PhysX/blast/blast-stress-solver-rs/build.rs" ]]; then
+  echo "[vercel-build] FATAL: blast-stress-solver crate missing after setup-blast.sh" >&2
+  exit 1
+fi
+echo "[vercel-build] blast-stress-solver ready at third_party/PhysX/blast/blast-stress-solver-rs"
+
+# ── 5. Client install + build ───────────────────────────────────────────────
 echo "[vercel-build] running client install"
 npm --prefix client install
 
-echo "[vercel-build] running client build (blast-stress-solver from local PhysX clone)"
+echo "[vercel-build] running client build (compiles Blast C++ for wasm32)"
 npm --prefix client run build
 
-# ── 5. Verify the built wasm actually has the Blast symbols ─────────────────
+# ── 6. Verify the built wasm actually has the Blast symbols ─────────────────
 WASM_FILE="${REPO_ROOT}/client/src/wasm/pkg/vibe_land_shared_bg.wasm"
 if [[ ! -f "${WASM_FILE}" ]]; then
   echo "[vercel-build] FATAL: ${WASM_FILE} not produced" >&2
@@ -90,14 +154,6 @@ fi
 WASM_SIZE=$(stat -c %s "${WASM_FILE}" 2>/dev/null || stat -f %z "${WASM_FILE}")
 echo "[vercel-build] wasm size: ${WASM_SIZE} bytes"
 
-# wasm-opt strips most C++ mangled symbol names, but the panic/
-# assertion strings that the Blast C++ backend embeds survive because
-# they're data.  We probe for `ExtStressSolver` plus the rust-side
-# crate name as a belt-and-braces check.
-#
-# NOTE: `grep -q` exits on first match, which closes the pipe; under
-# `set -euo pipefail` that makes `strings` trip SIGPIPE and fails the
-# whole pipeline.  Materialise the strings dump once to avoid it.
 WASM_STRINGS_DUMP="$(mktemp)"
 strings "${WASM_FILE}" > "${WASM_STRINGS_DUMP}"
 BLAST_SYMS_OK=1
