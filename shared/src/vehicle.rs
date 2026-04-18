@@ -18,6 +18,7 @@ use crate::movement::{
     VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
 };
 use crate::protocol::{make_net_vehicle_state, InputCmd, NetVehicleState};
+use crate::world_document::TerrainMaterialField;
 
 pub const VEHICLE_TYPE_DELOREAN: u8 = 0;
 pub const VEHICLE_TYPE_CYBERTRUCK: u8 = 1;
@@ -284,6 +285,7 @@ pub fn step_vehicle_dynamics(
     multibody_joints: &mut MultibodyJointSet,
     ccd_solver: &mut CCDSolver,
     dt: f32,
+    hooks: &dyn PhysicsHooks,
 ) {
     let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
     for _ in 0..DYNAMIC_SUBSTEPS {
@@ -300,7 +302,7 @@ pub fn step_vehicle_dynamics(
             impulse_joints,
             multibody_joints,
             ccd_solver,
-            &(),
+            hooks,
             &(),
         );
     }
@@ -345,6 +347,7 @@ pub fn apply_vehicle_input_step(
     controller: &mut DynamicRayCastVehicleController,
     input: &InputCmd,
     dt: f32,
+    terrain_material_field: Option<&TerrainMaterialField>,
 ) {
     let reset_requested = input.buttons & BTN_RELOAD != 0;
     let (steering, engine_force, brake) = vehicle_wheel_params(input);
@@ -354,6 +357,10 @@ pub fn apply_vehicle_input_step(
             reset_vehicle_body(rb);
         }
     }
+
+    // Compute the chassis world-space pose once so we can project each wheel's
+    // chassis-space mount into world coordinates for per-wheel material sampling.
+    let chassis_pose = sim.rigid_bodies.get(chassis_body).map(|rb| *rb.position());
 
     for (index, wheel) in controller.wheels_mut().iter_mut().enumerate() {
         if index < 2 {
@@ -365,6 +372,19 @@ pub fn apply_vehicle_input_step(
             0.0
         };
         wheel.brake = if reset_requested { 0.0 } else { brake };
+
+        // Scale `friction_slip` by the material under this wheel so ice
+        // produces lateral drift and pavement grips firmly.
+        let friction_multiplier = match (chassis_pose.as_ref(), terrain_material_field) {
+            (Some(pose), Some(field)) => {
+                let hard_point_ws = pose * wheel.chassis_connection_point_cs;
+                field
+                    .sample(hard_point_ws.x, hard_point_ws.z)
+                    .friction_multiplier()
+            }
+            _ => 1.0,
+        };
+        wheel.friction_slip = VEHICLE_FRICTION_SLIP * friction_multiplier;
     }
 
     let filter = vehicle_suspension_filter(chassis_collider);
@@ -699,6 +719,7 @@ mod tests {
                 &mut self.controller,
                 input,
                 DT,
+                None,
             );
         }
 
@@ -711,6 +732,7 @@ mod tests {
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
                 DT,
+                &(),
             );
         }
 
@@ -728,6 +750,7 @@ mod tests {
                     &mut self.controller,
                     input,
                     substep_dt,
+                    None,
                 );
                 step_vehicle_dynamics(
                     &mut self.sim,
@@ -737,6 +760,7 @@ mod tests {
                     &mut self.multibody_joints,
                     &mut self.ccd_solver,
                     substep_dt,
+                    &(),
                 );
             }
         }

@@ -18,17 +18,31 @@ impl PhysicsArena {
             return None;
         }
 
-        let Some(state) = self.players.get_mut(&player_id) else {
-            return None;
+        let (player_x, player_z, max_speed_override) = {
+            let Some(state) = self.players.get_mut(&player_id) else {
+                return None;
+            };
+            if state.dead {
+                state.last_input = InputCmd::default();
+                state.velocity = super::Vec3d::zeros();
+                return None;
+            }
+            state.last_input = input.clone();
+            (
+                state.position.x as f32,
+                state.position.z as f32,
+                state.max_speed_override,
+            )
         };
-        if state.dead {
-            state.last_input = InputCmd::default();
-            state.velocity = super::Vec3d::zeros();
-            return None;
-        }
-        state.last_input = input.clone();
 
-        let max_speed_override = state.max_speed_override;
+        let ground_material_multiplier = self
+            .sample_terrain_material(player_x, player_z)
+            .friction_multiplier();
+
+        let state = self
+            .players
+            .get_mut(&player_id)
+            .expect("player existed a moment ago");
         let mut tick_result = super::simulate_player_tick(
             &self.dynamic.sim,
             state.collider,
@@ -39,6 +53,7 @@ impl PhysicsArena {
             &mut state.on_ground,
             input,
             dt,
+            ground_material_multiplier,
             max_speed_override,
         );
         let sync_started = now_marker();

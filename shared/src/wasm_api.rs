@@ -23,7 +23,7 @@ use crate::vehicle::{
     step_vehicle_dynamics, vehicle_definition, vehicle_definitions, vehicle_exit_position,
     DEFAULT_VEHICLE_TYPE, VEHICLE_CONTROLLER_SUBSTEPS,
 };
-use crate::world_document::{StaticPropKind, WorldDocument};
+use crate::world_document::{StaticPropKind, TerrainMaterialField, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -162,6 +162,7 @@ pub struct WasmSimWorld {
     vehicle_pending_inputs: Vec<InputCmd>,
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
+    material_field: Option<TerrainMaterialField>,
 }
 
 #[wasm_bindgen]
@@ -192,6 +193,7 @@ impl WasmSimWorld {
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
+            material_field: None,
         }
     }
 
@@ -233,18 +235,22 @@ impl WasmSimWorld {
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         for tile in &world.terrain.tiles {
             let (center_x, center_z) = world.terrain_tile_center(tile.tile_x, tile.tile_z);
-            let handle = self.sim.add_static_heightfield(
+            let material = world.tile_average_material(tile);
+            let handle = self.sim.add_static_heightfield_with_material(
                 vector![center_x, 0.0, center_z],
                 world
                     .terrain_tile_matrix(tile)
                     .map_err(|error| JsValue::from_str(&error.to_string()))?,
                 world.terrain_tile_scale(),
                 0,
+                material.friction,
+                material.restitution,
             );
             let id = self.next_collider_id;
             self.next_collider_id += 1;
             self.collider_ids.insert(id, handle);
         }
+        self.material_field = world.build_material_field();
 
         for prop in &world.static_props {
             if matches!(prop.kind, StaticPropKind::Cuboid) {
@@ -341,6 +347,12 @@ impl WasmSimWorld {
         }
 
         let collider = self.player_collider.expect("spawn_player not called");
+        let ground_material_multiplier = match &self.material_field {
+            Some(field) => field
+                .sample(self.position.x as f32, self.position.z as f32)
+                .friction_multiplier(),
+            None => 1.0,
+        };
         let tick = simulate_player_tick(
             &self.sim,
             collider,
@@ -351,6 +363,7 @@ impl WasmSimWorld {
             &mut self.on_ground,
             &input,
             dt,
+            ground_material_multiplier,
             None,
         );
         for impulse in &tick.dynamic_impulses {
@@ -482,6 +495,12 @@ impl WasmSimWorld {
         let collider = self.player_collider.expect("spawn_player not called");
         let inputs: Vec<InputCmd> = self.pending_inputs.clone();
         for input in &inputs {
+            let ground_material_multiplier = match &self.material_field {
+                Some(field) => field
+                    .sample(self.position.x as f32, self.position.z as f32)
+                    .friction_multiplier(),
+                None => 1.0,
+            };
             let tick = simulate_player_tick(
                 &self.sim,
                 collider,
@@ -492,6 +511,7 @@ impl WasmSimWorld {
                 &mut self.on_ground,
                 input,
                 dt,
+                ground_material_multiplier,
                 None,
             );
             for impulse in &tick.dynamic_impulses {
@@ -1521,6 +1541,7 @@ impl WasmSimWorld {
             &mut vehicle.controller,
             input,
             dt,
+            self.material_field.as_ref(),
         );
     }
 
@@ -1536,15 +1557,33 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
-        step_vehicle_dynamics(
-            &mut self.sim,
-            &self.gravity,
-            pipeline,
-            &mut self.vehicle_joints,
-            &mut self.vehicle_multibody_joints,
-            &mut self.vehicle_ccd,
-            dt,
-        );
+        match self.material_field.as_ref() {
+            Some(field) => {
+                let hook = crate::physics_arena::TerrainMaterialHook::new(field);
+                step_vehicle_dynamics(
+                    &mut self.sim,
+                    &self.gravity,
+                    pipeline,
+                    &mut self.vehicle_joints,
+                    &mut self.vehicle_multibody_joints,
+                    &mut self.vehicle_ccd,
+                    dt,
+                    &hook,
+                );
+            }
+            None => {
+                step_vehicle_dynamics(
+                    &mut self.sim,
+                    &self.gravity,
+                    pipeline,
+                    &mut self.vehicle_joints,
+                    &mut self.vehicle_multibody_joints,
+                    &mut self.vehicle_ccd,
+                    dt,
+                    &(),
+                );
+            }
+        }
     }
 
     fn get_vehicle_state(&self, vid: u32) -> Box<[f64]> {
