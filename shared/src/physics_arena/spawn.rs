@@ -132,6 +132,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                max_speed_override: None,
                 energy: crate::constants::STARTING_ENERGY,
             },
         );
