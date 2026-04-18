@@ -285,6 +285,7 @@ pub fn step_vehicle_dynamics(
     multibody_joints: &mut MultibodyJointSet,
     ccd_solver: &mut CCDSolver,
     dt: f32,
+    hooks: &dyn PhysicsHooks,
 ) {
     let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
     for _ in 0..DYNAMIC_SUBSTEPS {
@@ -301,7 +302,7 @@ pub fn step_vehicle_dynamics(
             impulse_joints,
             multibody_joints,
             ccd_solver,
-            &(),
+            hooks,
             &(),
         );
     }
@@ -731,6 +732,7 @@ mod tests {
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
                 DT,
+                &(),
             );
         }
 
@@ -758,6 +760,7 @@ mod tests {
                     &mut self.multibody_joints,
                     &mut self.ccd_solver,
                     substep_dt,
+                    &(),
                 );
             }
         }

@@ -258,6 +258,10 @@ impl DynamicArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
+        self.step_dynamics_with_hooks(dt, &());
+    }
+
+    pub fn step_dynamics_with_hooks(&mut self, dt: f32, hooks: &dyn PhysicsHooks) {
         let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
         for _ in 0..DYNAMIC_SUBSTEPS {
             self.sim.integration_parameters.dt = substep_dt;
@@ -272,7 +276,7 @@ impl DynamicArena {
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
-                &(),
+                hooks,
                 &(),
             );
         }

@@ -1354,15 +1354,33 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
-        step_vehicle_dynamics(
-            &mut self.sim,
-            &self.gravity,
-            pipeline,
-            &mut self.vehicle_joints,
-            &mut self.vehicle_multibody_joints,
-            &mut self.vehicle_ccd,
-            dt,
-        );
+        match self.material_field.as_ref() {
+            Some(field) => {
+                let hook = crate::physics_arena::TerrainMaterialHook::new(field);
+                step_vehicle_dynamics(
+                    &mut self.sim,
+                    &self.gravity,
+                    pipeline,
+                    &mut self.vehicle_joints,
+                    &mut self.vehicle_multibody_joints,
+                    &mut self.vehicle_ccd,
+                    dt,
+                    &hook,
+                );
+            }
+            None => {
+                step_vehicle_dynamics(
+                    &mut self.sim,
+                    &self.gravity,
+                    pipeline,
+                    &mut self.vehicle_joints,
+                    &mut self.vehicle_multibody_joints,
+                    &mut self.vehicle_ccd,
+                    dt,
+                    &(),
+                );
+            }
+        }
     }
 
     fn get_vehicle_state(&self, vid: u32) -> Box<[f64]> {

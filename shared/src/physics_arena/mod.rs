@@ -18,7 +18,13 @@ pub use vibe_netcode::physics_arena::DynamicArena;
 
 mod player;
 mod spawn;
+mod terrain_material_hook;
 mod vehicle;
+
+pub use terrain_material_hook::{
+    is_terrain_material_collider, tag_terrain_user_data, TerrainMaterialHook,
+    TERRAIN_MATERIAL_USER_DATA_FLAG,
+};
 
 pub type Vec3 = Vector3<f32>;
 
@@ -236,7 +242,13 @@ impl PhysicsArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
-        self.dynamic.step_dynamics(dt);
+        match self.material_field.as_ref() {
+            Some(field) => {
+                let hook = TerrainMaterialHook::new(field);
+                self.dynamic.step_dynamics_with_hooks(dt, &hook);
+            }
+            None => self.dynamic.step_dynamics(dt),
+        }
     }
 
     pub fn snapshot_dynamic_bodies(

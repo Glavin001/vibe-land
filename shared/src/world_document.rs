@@ -2248,4 +2248,176 @@ mod tests {
         }
         assert!(found > 0, "expected at least one heightfield collider");
     }
+
+    /// `PhysicsArena::sample_terrain_material` (used by the KCC) and the raw
+    /// `TerrainMaterialField::sample` (used by vehicle wheels and by the
+    /// solver-contact hook) must be the single source of truth — byte-identical
+    /// at any world position. A drift here would desync player, vehicle, and
+    /// dynamic-body friction responses.
+    #[test]
+    fn kcc_wheel_and_hook_all_read_from_the_same_material_sample() {
+        let world = split_material_world(ice_material(), pavement_material());
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate material world");
+        let field = arena
+            .material_field
+            .as_ref()
+            .expect("material field present")
+            .clone();
+
+        for (x, z) in [(-8.0, 0.0), (0.0, 0.0), (8.0, 0.0), (-3.0, 2.0)] {
+            let kcc = arena.sample_terrain_material(x, z);
+            let wheel_or_hook = field.sample(x, z);
+            assert_eq!(
+                kcc, wheel_or_hook,
+                "KCC and field.sample must agree at ({x}, {z})"
+            );
+            // Multiplier path used by player accel + wheel friction_slip must
+            // also derive from the same sample.
+            assert_eq!(
+                arena.sample_terrain_material(x, z).friction_multiplier(),
+                field.sample(x, z).friction_multiplier(),
+            );
+        }
+    }
+
+    /// `TerrainMaterialHook` rewrites each `SolverContact::friction` to
+    /// `sqrt(terrain_friction * other_friction)` at the contact's (x, z). Wrap
+    /// the hook in a capturing proxy, step a resting ball on ice vs. pavement,
+    /// and verify the values the hook wrote match the closed-form prediction.
+    #[test]
+    fn terrain_material_hook_rewrites_contact_friction_per_sample_position() {
+        use std::sync::Mutex;
+
+        use rapier3d::prelude::{ContactModificationContext, PhysicsHooks};
+
+        use crate::physics_arena::TerrainMaterialHook;
+
+        struct CapturingHook<'a> {
+            inner: TerrainMaterialHook<'a>,
+            captured: Mutex<Vec<(f32, f32, f32)>>,
+        }
+
+        impl PhysicsHooks for CapturingHook<'_> {
+            fn modify_solver_contacts(&self, ctx: &mut ContactModificationContext) {
+                self.inner.modify_solver_contacts(ctx);
+                let mut captured = self.captured.lock().expect("mutex unpoisoned");
+                for contact in ctx.solver_contacts.iter() {
+                    captured.push((contact.point.x, contact.point.z, contact.friction));
+                }
+            }
+        }
+
+        let world = split_material_world(ice_material(), pavement_material());
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate material world");
+        let field = arena
+            .material_field
+            .as_ref()
+            .expect("material field present")
+            .clone();
+
+        // Ball collider friction is 0.2 (see `DynamicArena::spawn_dynamic_ball_with_id`).
+        let ball_friction: f32 = 0.2;
+        arena.spawn_dynamic_ball(vector![-8.0, 0.6, 0.0], 0.5);
+        arena.spawn_dynamic_ball(vector![8.0, 0.6, 0.0], 0.5);
+
+        let hook = CapturingHook {
+            inner: TerrainMaterialHook::new(&field),
+            captured: Mutex::new(Vec::new()),
+        };
+        // A handful of substeps: the first few let the balls settle into
+        // persistent contact; the later ones produce stable contact friction.
+        for _ in 0..15 {
+            arena.dynamic.step_dynamics_with_hooks(DT, &hook);
+        }
+        let captured = hook.captured.into_inner().expect("mutex unpoisoned");
+        assert!(
+            !captured.is_empty(),
+            "expected the hook to see solver contacts"
+        );
+
+        let mut saw_ice = false;
+        let mut saw_pavement = false;
+        for (x, z, friction) in captured {
+            // Closed-form: contact friction = sqrt(bilinear(x,z).friction *
+            // other_collider_friction). Use the field's actual bilinear sample
+            // at the *captured* contact point, not the raw material friction —
+            // contacts land in the interpolated interior, not the ideal corner.
+            let sampled = field.sample(x, z).friction;
+            let expected = (sampled * ball_friction).sqrt();
+            assert!(
+                (friction - expected).abs() < 1e-4,
+                "contact friction at ({x:.3}, {z:.3}) should be sqrt({sampled:.4}·{ball_friction}) = {expected:.4}, got {friction:.4}"
+            );
+            if x < -4.0 {
+                saw_ice = true;
+            } else if x > 4.0 {
+                saw_pavement = true;
+            }
+        }
+        assert!(saw_ice, "expected contacts on the ice side of the split tile");
+        assert!(
+            saw_pavement,
+            "expected contacts on the pavement side of the split tile"
+        );
+    }
+
+    /// End-to-end regression using `PhysicsArena::step_dynamics` (which builds
+    /// the production `TerrainMaterialHook` internally when a material field is
+    /// present). A sliding box on ice must retain dramatically more speed than
+    /// a twin on pavement. Use a cuboid (not a ball) so kinetic friction acts
+    /// directly on the translating body without being absorbed by rolling.
+    #[test]
+    fn box_slides_farther_on_ice_than_pavement_via_contact_hook() {
+        fn residual_speed(spawn_x: f32) -> f32 {
+            let world = split_material_world(ice_material(), pavement_material());
+            let mut arena = PhysicsArena::new(MoveConfig::default());
+            world
+                .instantiate(&mut arena)
+                .expect("instantiate material world");
+            let box_id = arena.spawn_dynamic_box(
+                vector![spawn_x, 0.6, 0.0],
+                vector![0.5, 0.5, 0.5],
+            );
+            // Let it settle onto the heightfield so contacts are persistent.
+            for _ in 0..30 {
+                arena.step_dynamics(DT);
+            }
+            // Kick the box perpendicular to the ice/pavement split so it
+            // stays on the intended material the whole test.
+            let db = arena
+                .dynamic
+                .dynamic_bodies
+                .get(&box_id)
+                .expect("box body exists");
+            let body_handle = db.body_handle;
+            if let Some(rb) = arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+                rb.set_linvel(vector![0.0, 0.0, 6.0], true);
+                rb.set_angvel(vector![0.0, 0.0, 0.0], true);
+            }
+            for _ in 0..30 {
+                arena.step_dynamics(DT);
+            }
+            let rb = arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .expect("box body still alive");
+            let v = rb.linvel();
+            (v.x * v.x + v.z * v.z).sqrt()
+        }
+
+        let ice_speed = residual_speed(-8.0);
+        let pavement_speed = residual_speed(8.0);
+        assert!(
+            ice_speed > pavement_speed * 1.5,
+            "ice residual speed ({ice_speed:.3}) should substantially exceed pavement ({pavement_speed:.3})"
+        );
+    }
 }
