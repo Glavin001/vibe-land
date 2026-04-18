@@ -420,7 +420,16 @@ pub fn simulate_player_tick(
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
-    update_player_motion(sim, velocity, yaw, pitch, on_ground, input, dt, max_speed_override);
+    update_player_motion(
+        sim,
+        velocity,
+        yaw,
+        pitch,
+        on_ground,
+        input,
+        dt,
+        max_speed_override,
+    );
     result.timings.move_math_ms = elapsed_ms(move_math_started);
 
     let start_position = *position;
@@ -551,7 +560,9 @@ mod tests {
         input: &InputCmd,
         dt: f32,
     ) {
-        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt, None);
+        simulate_player_tick(
+            sim, collider, pos, vel, yaw, pitch, on_ground, input, dt, None,
+        );
         sim.sync_player_collider(collider, pos);
     }
 

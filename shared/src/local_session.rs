@@ -2,11 +2,11 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     constants::{
-        DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
-        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
-        RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
-        FLAG_DEAD, HIT_ZONE_BODY, HIT_ZONE_HEAD,
+        DYNAMIC_BODY_IMPULSE, FLAG_DEAD, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD,
+        HIT_ZONE_NONE, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
+        SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -86,7 +86,8 @@ impl LocalSession {
         }
 
         self.connected = true;
-        self.players.insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
+        self.players
+            .insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
         self.arena.spawn_player(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
@@ -511,10 +512,12 @@ impl LocalSession {
                     result.server_dynamic_body_id = dynamic_body_id;
                     result.server_dynamic_hit_toi_cm = (dynamic_toi.max(0.0) * 100.0)
                         .round()
-                        .clamp(0.0, u16::MAX as f32) as u16;
+                        .clamp(0.0, u16::MAX as f32)
+                        as u16;
                     result.server_dynamic_impulse_centi = (DYNAMIC_BODY_IMPULSE.max(0.0) * 100.0)
                         .round()
-                        .clamp(0.0, u16::MAX as f32) as u16;
+                        .clamp(0.0, u16::MAX as f32)
+                        as u16;
                 }
             } else if world_toi.is_some() {
                 result.server_resolution = SHOT_RESOLUTION_BLOCKED_BY_WORLD;
@@ -538,8 +541,7 @@ impl LocalSession {
             if victim_id == shooter_id {
                 continue;
             }
-            let Some((pos, _vel, _yaw, _pitch, hp, flags)) =
-                self.arena.snapshot_player(victim_id)
+            let Some((pos, _vel, _yaw, _pitch, hp, flags)) = self.arena.snapshot_player(victim_id)
             else {
                 continue;
             };
@@ -559,10 +561,7 @@ impl LocalSession {
             if hit.distance > HITSCAN_MAX_DISTANCE_M {
                 continue;
             }
-            if best
-                .map(|(_, toi, _)| hit.distance < toi)
-                .unwrap_or(true)
-            {
+            if best.map(|(_, toi, _)| hit.distance < toi).unwrap_or(true) {
                 best = Some((victim_id, hit.distance, hit.zone));
             }
         }
@@ -611,7 +610,9 @@ impl LocalSession {
                 continue;
             }
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(id) {
-                player_states.push(make_net_player_state(id, pos, vel, yaw, pitch, hp, flags, 0.0));
+                player_states.push(make_net_player_state(
+                    id, pos, vel, yaw, pitch, hp, flags, 0.0,
+                ));
             }
         }
 
@@ -691,7 +692,9 @@ impl LocalSession {
         ids.into_iter()
             .filter_map(|id| {
                 let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(id)?;
-                Some(make_net_player_state(id, pos, vel, yaw, pitch, hp, flags, 0.0))
+                Some(make_net_player_state(
+                    id, pos, vel, yaw, pitch, hp, flags, 0.0,
+                ))
             })
             .collect()
     }
@@ -1290,7 +1293,10 @@ mod tests {
         }
         let after = session.arena.snapshot_player(202).unwrap().0;
         let dz = (after[2] - start[2]).abs();
-        assert!(dz > 0.0, "bot should have moved after 10 ticks of forward input");
+        assert!(
+            dz > 0.0,
+            "bot should have moved after 10 ticks of forward input"
+        );
     }
 
     #[test]
