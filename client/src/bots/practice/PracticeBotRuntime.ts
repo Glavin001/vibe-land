@@ -44,6 +44,10 @@ export interface PracticeBotRuntimeOptions {
   initialBehavior?: PracticeBotBehaviorKind;
   maxSpeed?: number;
   tickHz?: number;
+  navigationProfile?: SharedPlayerNavigationProfile;
+  cellSize?: number;
+  cellHeight?: number;
+  tileSizeVoxels?: number;
 }
 
 export interface PracticeBotRuntimeSyncOptions extends PracticeBotRuntimeOptions {
@@ -56,6 +60,24 @@ export interface PracticeBotStats {
   maxSpeed: number;
   navTriangles: number;
   running: boolean;
+}
+
+export interface PracticeBotNavDebugConfig {
+  walkableRadius: number;
+  walkableHeight: number;
+  walkableClimb: number;
+  walkableSlopeAngleDegrees: number;
+  cellSize: number;
+  cellHeight: number;
+  tileSizeVoxels: number;
+  snapHalfExtents: Vec3Tuple;
+  mode: 'solo' | 'tiled';
+}
+
+export interface PracticeBotNavTuning {
+  walkableClimb: number;
+  walkableSlopeAngleDegrees: number;
+  cellHeight: number;
 }
 
 export interface BotObstacleDebugInfo {
@@ -82,6 +104,16 @@ export interface BotDebugInfo {
   targetPlayerId: number | null;
   maxSpeed: number;
   firePrimary: boolean;
+}
+
+export interface PracticeBotDetachOptions {
+  preserveHostBots?: boolean;
+}
+
+export interface PracticeBotSnapshot {
+  id: number;
+  position: Vec3Tuple;
+  anchor: Vec3Tuple;
 }
 
 interface PracticeBot {
@@ -118,6 +150,9 @@ export class PracticeBotRuntime {
       navigationProfile: options.navigationProfile,
       maxAgentRadius: options.maxAgentRadius ?? 0.6,
       snapHalfExtents: options.snapHalfExtents,
+      cellSize: options.cellSize,
+      cellHeight: options.cellHeight,
+      tileSizeVoxels: options.tileSizeVoxels,
     });
     return new PracticeBotRuntime(crowd, options);
   }
@@ -126,10 +161,22 @@ export class PracticeBotRuntime {
     world: WorldDocument,
     options: PracticeBotRuntimeOptions = {},
   ): Promise<PracticeBotRuntime> {
-    const crowd = await createBotCrowdFromSharedProfile(world, {
-      maxAgentRadius: options.maxAgentRadius ?? 0.6,
-      snapHalfExtents: options.snapHalfExtents,
-    });
+    const crowd = options.navigationProfile
+      ? createBotCrowd(world, {
+          navigationProfile: options.navigationProfile,
+          maxAgentRadius: options.maxAgentRadius ?? 0.6,
+          snapHalfExtents: options.snapHalfExtents,
+          cellSize: options.cellSize,
+          cellHeight: options.cellHeight,
+          tileSizeVoxels: options.tileSizeVoxels,
+        })
+      : await createBotCrowdFromSharedProfile(world, {
+          maxAgentRadius: options.maxAgentRadius ?? 0.6,
+          snapHalfExtents: options.snapHalfExtents,
+          cellSize: options.cellSize,
+          cellHeight: options.cellHeight,
+          tileSizeVoxels: options.tileSizeVoxels,
+        });
     return new PracticeBotRuntime(crowd, options);
   }
 
@@ -142,12 +189,17 @@ export class PracticeBotRuntime {
 
   attach(host: PracticeBotHost, getSelf: LocalSelfAccessor): void {
     if (this.host === host && this.getSelf === getSelf) return;
-    this.detach();
+    this.detach({ preserveHostBots: true });
     this.host = host;
     this.getSelf = getSelf;
     for (const bot of this.bots.values()) {
-      this.host.connectBot(bot.id);
-      this.syncBotToAuthoritativeSpawn(bot, this.host);
+      const alreadyConnected = this.host.remotePlayers.has(bot.id);
+      if (!alreadyConnected) {
+        this.host.connectBot(bot.id);
+      }
+      this.syncBotToAuthoritativeSpawn(bot, this.host, {
+        preserveAnchor: alreadyConnected,
+      });
       this.host.setBotMaxSpeed(bot.id, this.maxSpeed);
     }
     this.running = true;
@@ -155,13 +207,13 @@ export class PracticeBotRuntime {
     this.tickHandle = setInterval(() => this.tick(), 1000 / this.tickHz);
   }
 
-  detach(): void {
+  detach(options: PracticeBotDetachOptions = {}): void {
     this.running = false;
     if (this.tickHandle !== null) {
       clearInterval(this.tickHandle);
       this.tickHandle = null;
     }
-    if (this.host) {
+    if (this.host && !options.preserveHostBots) {
       for (const bot of this.bots.values()) {
         this.host.disconnectBot(bot.id);
       }
@@ -185,6 +237,21 @@ export class PracticeBotRuntime {
       maxSpeed: this.maxSpeed,
       navTriangles: this.crowd.nav.geometry.triangleCount,
       running: this.running,
+    };
+  }
+
+  getNavDebugConfig(): PracticeBotNavDebugConfig {
+    const { navigationProfile, buildConfig } = this.crowd.nav;
+    return {
+      walkableRadius: navigationProfile.walkableRadius,
+      walkableHeight: navigationProfile.walkableHeight,
+      walkableClimb: navigationProfile.walkableClimb,
+      walkableSlopeAngleDegrees: navigationProfile.walkableSlopeAngleDegrees,
+      cellSize: buildConfig.cellSize,
+      cellHeight: buildConfig.cellHeight,
+      tileSizeVoxels: buildConfig.tileSizeVoxels,
+      snapHalfExtents: this.crowd.debugSnapHalfExtents,
+      mode: buildConfig.mode,
     };
   }
 
@@ -220,15 +287,15 @@ export class PracticeBotRuntime {
     }
   }
 
-  spawnBot(): number {
-    const spawn = this.crowd.findRandomWalkable() ?? [0, 2, 0];
+  spawnBot(snapshot?: Partial<PracticeBotSnapshot>): number {
+    const spawn = snapshot?.position ?? this.crowd.findRandomWalkable() ?? [0, 2, 0];
     const handle = this.crowd.addBot(spawn);
     const agent = this.crowd.getAgent(handle.id);
     if (agent) agent.maxSpeed = this.maxSpeed;
-    const id = this.nextId;
-    this.nextId += 1;
+    const id = snapshot?.id ?? this.nextId;
+    this.nextId = Math.max(this.nextId, id + 1);
     const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
-      anchor: spawn,
+      anchor: snapshot?.anchor ?? spawn,
     });
     this.bots.set(id, {
       id,
@@ -239,8 +306,13 @@ export class PracticeBotRuntime {
       lastIntent: makeIdleIntent(),
     });
     if (this.host) {
-      this.host.connectBot(id);
-      this.syncBotToAuthoritativeSpawn(this.bots.get(id) ?? null, this.host);
+      const alreadyConnected = this.host.remotePlayers.has(id);
+      if (!alreadyConnected) {
+        this.host.connectBot(id);
+      }
+      this.syncBotToAuthoritativeSpawn(this.bots.get(id) ?? null, this.host, {
+        preserveAnchor: alreadyConnected,
+      });
       this.host.setBotMaxSpeed(id, this.maxSpeed);
     }
     return id;
@@ -267,12 +339,43 @@ export class PracticeBotRuntime {
     this.vehicleObstacleAgents.clear();
   }
 
-  private syncBotToAuthoritativeSpawn(bot: PracticeBot | null, host: PracticeBotHost): void {
+  captureBotSnapshots(): PracticeBotSnapshot[] {
+    const snapshots: PracticeBotSnapshot[] = [];
+    for (const bot of this.bots.values()) {
+      const remote = this.host?.remotePlayers.get(bot.id);
+      const agent = this.crowd.getAgent(bot.handle.id);
+      if (!remote && !agent) continue;
+      const position: Vec3Tuple = remote
+        ? [remote.position[0], remote.position[1], remote.position[2]]
+        : [agent!.position[0], agent!.position[1], agent!.position[2]];
+      snapshots.push({
+        id: bot.id,
+        position,
+        anchor: bot.brain.getAnchor(),
+      });
+    }
+    snapshots.sort((a, b) => a.id - b.id);
+    return snapshots;
+  }
+
+  restoreBotSnapshots(snapshots: readonly PracticeBotSnapshot[]): void {
+    for (const snapshot of snapshots) {
+      this.spawnBot(snapshot);
+    }
+  }
+
+  private syncBotToAuthoritativeSpawn(
+    bot: PracticeBot | null,
+    host: PracticeBotHost,
+    options: { preserveAnchor?: boolean } = {},
+  ): void {
     if (!bot) return;
     const remote = host.remotePlayers.get(bot.id);
     if (!remote) return;
     this.crowd.syncBotPosition(bot.handle, remote.position);
-    bot.brain.setAnchor([remote.position[0], remote.position[1], remote.position[2]]);
+    if (!options.preserveAnchor) {
+      bot.brain.setAnchor([remote.position[0], remote.position[1], remote.position[2]]);
+    }
   }
 
   getObstacleDebugInfos(): BotObstacleDebugInfo[] {
@@ -496,7 +599,7 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
     default:
       return harassNearest({
         acquireDistanceM: 80,
-        recoveryDistanceM: 120,
+        releaseDistanceM: 120,
         fireDistanceM: 0,
       });
   }

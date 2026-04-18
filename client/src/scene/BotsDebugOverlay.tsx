@@ -20,12 +20,18 @@ const PATH_COLOR_WANDER = new THREE.Color(0x6bd8ff);
 const PATH_COLOR_HOLD = new THREE.Color(0xc586ff);
 const TARGET_COLOR = new THREE.Color(0xff5fb1);
 const RAW_TARGET_COLOR = new THREE.Color(0x66d9ff);
-const SNAP_LINE_GOOD_COLOR = new THREE.Color(0xffd166);
-const SNAP_LINE_BAD_COLOR = new THREE.Color(0xff4d6d);
+const SNAP_TRACE_GOOD_COLOR = new THREE.Color(0x12e6ff);
+const SNAP_TRACE_BAD_COLOR = new THREE.Color(0xff2d7a);
+const SNAP_TRACE_HALO_COLOR = new THREE.Color(0xffffff);
 const VEL_COLOR = new THREE.Color(0x6bff7c);
 const OBSTACLE_COLOR = new THREE.Color(0xff5050);
 const NAVMESH_COLOR = new THREE.Color(0x7cf7ff);
 const SNAP_BOX_COLOR = new THREE.Color(0x66d9ff);
+const TRACE_UP = new THREE.Vector3(0, 1, 0);
+const TRACE_START = new THREE.Vector3();
+const TRACE_END = new THREE.Vector3();
+const TRACE_DELTA = new THREE.Vector3();
+const TRACE_MID = new THREE.Vector3();
 
 function pathColor(behavior: BotDebugInfo['behaviorKind']): THREE.Color {
   switch (behavior) {
@@ -44,7 +50,9 @@ interface BotSlot {
   targetGroup: THREE.Group;
   targetMesh: THREE.Mesh;
   rawTargetMesh: THREE.Mesh;
-  snapLine: THREE.Line;
+  snapTraceGroup: THREE.Group;
+  snapTraceHalo: THREE.Mesh;
+  snapTraceCore: THREE.Mesh;
   snapBox: THREE.LineSegments;
   velArrow: THREE.ArrowHelper;
   ringMesh: THREE.Mesh;
@@ -174,15 +182,18 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
       }
 
       if (info.rawTarget && info.target) {
-        slot.snapLine.visible = true;
-        updateLinePoints(slot.snapLine.geometry as THREE.BufferGeometry, info.rawTarget, info.target);
-        const snapLineMaterial = slot.snapLine.material as THREE.LineBasicMaterial;
         const colorForSnap = (info.targetSnapDistanceM ?? 0) >= 0.75
-          ? SNAP_LINE_BAD_COLOR
-          : SNAP_LINE_GOOD_COLOR;
-        snapLineMaterial.color.copy(colorForSnap);
+          ? SNAP_TRACE_BAD_COLOR
+          : SNAP_TRACE_GOOD_COLOR;
+        updateTraceSegment(
+          slot.snapTraceGroup,
+          slot.snapTraceCore,
+          info.rawTarget,
+          info.target,
+          colorForSnap,
+        );
       } else {
-        slot.snapLine.visible = false;
+        slot.snapTraceGroup.visible = false;
       }
 
       const dv = info.desiredVelocity;
@@ -375,17 +386,31 @@ function makeSlot(): BotSlot {
   rawTargetMesh.visible = false;
   targetGroup.add(rawTargetMesh);
 
-  const snapLineGeometry = new THREE.BufferGeometry();
-  snapLineGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-  const snapLineMaterial = new THREE.LineBasicMaterial({
-    color: SNAP_LINE_GOOD_COLOR,
+  const snapTraceGroup = new THREE.Group();
+  snapTraceGroup.visible = false;
+  const snapTraceGeometry = new THREE.CylinderGeometry(1, 1, 1, 12, 1, true);
+  const snapTraceHaloMaterial = new THREE.MeshBasicMaterial({
+    color: SNAP_TRACE_HALO_COLOR,
     transparent: true,
-    opacity: 0.85,
+    opacity: 0.42,
     depthWrite: false,
+    depthTest: false,
   });
-  const snapLine = new THREE.Line(snapLineGeometry, snapLineMaterial);
-  snapLine.visible = false;
-  targetGroup.add(snapLine);
+  const snapTraceHalo = new THREE.Mesh(snapTraceGeometry, snapTraceHaloMaterial);
+  snapTraceHalo.scale.set(0.12, 1, 0.12);
+  snapTraceGroup.add(snapTraceHalo);
+
+  const snapTraceCoreMaterial = new THREE.MeshBasicMaterial({
+    color: SNAP_TRACE_GOOD_COLOR,
+    transparent: true,
+    opacity: 0.95,
+    depthWrite: false,
+    depthTest: false,
+  });
+  const snapTraceCore = new THREE.Mesh(snapTraceGeometry, snapTraceCoreMaterial);
+  snapTraceCore.scale.set(0.065, 1, 0.065);
+  snapTraceGroup.add(snapTraceCore);
+  targetGroup.add(snapTraceGroup);
 
   const snapBoxGeometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1));
   const snapBoxMaterial = new THREE.LineBasicMaterial({
@@ -403,7 +428,9 @@ function makeSlot(): BotSlot {
     targetGroup,
     targetMesh,
     rawTargetMesh,
-    snapLine,
+    snapTraceGroup,
+    snapTraceHalo,
+    snapTraceCore,
     snapBox,
     velArrow,
     ringMesh,
@@ -418,8 +445,9 @@ function disposeBotSlot(slot: BotSlot): void {
   (slot.targetMesh.material as THREE.Material).dispose();
   slot.rawTargetMesh.geometry.dispose();
   (slot.rawTargetMesh.material as THREE.Material).dispose();
-  (slot.snapLine.geometry as THREE.BufferGeometry).dispose();
-  (slot.snapLine.material as THREE.Material).dispose();
+  slot.snapTraceCore.geometry.dispose();
+  (slot.snapTraceCore.material as THREE.Material).dispose();
+  (slot.snapTraceHalo.material as THREE.Material).dispose();
   (slot.snapBox.geometry as THREE.BufferGeometry).dispose();
   (slot.snapBox.material as THREE.Material).dispose();
   slot.ringMesh.geometry.dispose();
@@ -464,20 +492,28 @@ function disposeObstacleSlot(slot: ObstacleSlot): void {
   (slot.pillar.material as THREE.Material).dispose();
 }
 
-function updateLinePoints(
-  geometry: THREE.BufferGeometry,
+function updateTraceSegment(
+  group: THREE.Group,
+  core: THREE.Mesh,
   start: [number, number, number],
   end: [number, number, number],
+  color: THREE.Color,
 ): void {
-  const positions = geometry.attributes.position.array as Float32Array;
-  positions[0] = start[0];
-  positions[1] = start[1] + 0.08;
-  positions[2] = start[2];
-  positions[3] = end[0];
-  positions[4] = end[1] + 0.08;
-  positions[5] = end[2];
-  geometry.attributes.position.needsUpdate = true;
-  geometry.computeBoundingSphere();
+  TRACE_START.set(start[0], start[1] + 0.08, start[2]);
+  TRACE_END.set(end[0], end[1] + 0.08, end[2]);
+  TRACE_DELTA.subVectors(TRACE_END, TRACE_START);
+  const length = TRACE_DELTA.length();
+  if (length <= 0.001) {
+    group.visible = false;
+    return;
+  }
+  group.visible = true;
+  TRACE_MID.copy(TRACE_START).add(TRACE_END).multiplyScalar(0.5);
+  group.position.copy(TRACE_MID);
+  group.quaternion.setFromUnitVectors(TRACE_UP, TRACE_DELTA.normalize());
+  group.scale.set(1, length, 1);
+  const coreMaterial = core.material as THREE.MeshBasicMaterial;
+  coreMaterial.color.copy(color);
 }
 
 function buildNavMeshWireframeGeometry(navMesh: NavMesh): THREE.BufferGeometry {

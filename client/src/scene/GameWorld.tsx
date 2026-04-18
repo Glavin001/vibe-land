@@ -1170,7 +1170,7 @@ export function GameWorld({
     };
     practiceBots.attach(host, getSelf);
     return () => {
-      practiceBots.detach();
+      practiceBots.detach({ preserveHostBots: true });
     };
   }, [practiceBots, practiceMode, ready]);
 

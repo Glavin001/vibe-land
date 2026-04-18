@@ -53,6 +53,10 @@ export class BotBrain {
     this.lastTarget = null;
   }
 
+  getAnchor(): Vec3Tuple {
+    return [this.anchor[0], this.anchor[1], this.anchor[2]];
+  }
+
   think(self: BotSelfState, remotePlayers: readonly ObservedPlayer[]): BotIntent {
     this.tick += 1;
     this.crowd.syncBotPosition(this.handle, self.position);

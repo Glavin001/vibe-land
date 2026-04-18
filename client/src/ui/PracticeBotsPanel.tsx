@@ -1,15 +1,33 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
-import type { PracticeBotBehaviorKind, PracticeBotStats } from '../bots';
+import type {
+  BotDebugInfo,
+  PracticeBotBehaviorKind,
+  PracticeBotNavDebugConfig,
+  PracticeBotNavTuning,
+  PracticeBotRuntime,
+  PracticeBotStats,
+} from '../bots';
 
 interface PracticeBotsPanelProps {
   visible: boolean;
   stats: PracticeBotStats | null;
+  runtime: PracticeBotRuntime | null;
+  navConfig: PracticeBotNavDebugConfig | null;
+  navTuning: PracticeBotNavTuning | null;
   debugOverlay: boolean;
   onSetBotCount: (count: number) => void;
   onClear: () => void;
   onSetBehavior: (kind: PracticeBotBehaviorKind) => void;
   onSetMaxSpeed: (speed: number) => void;
+  onUpdateNavTuning: (patch: Partial<PracticeBotNavTuning>) => void;
+  onResetNavTuning: () => void;
   onToggleDebugOverlay: (value: boolean) => void;
+}
+
+interface NavTuningDraft {
+  walkableClimb: string;
+  walkableSlopeAngleDegrees: string;
+  cellHeight: string;
 }
 
 const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: string }> = [
@@ -54,23 +72,70 @@ function panelLabel(text: string) {
 export function PracticeBotsPanel({
   visible,
   stats,
+  runtime,
+  navConfig,
+  navTuning,
   debugOverlay,
   onSetBotCount,
   onClear,
   onSetBehavior,
   onSetMaxSpeed,
+  onUpdateNavTuning,
+  onResetNavTuning,
   onToggleDebugOverlay,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
+  const [botInfos, setBotInfos] = useState<BotDebugInfo[]>([]);
+  const [navDraft, setNavDraft] = useState<NavTuningDraft | null>(null);
+  const [navDraftDirty, setNavDraftDirty] = useState(false);
 
   const count = stats?.bots ?? 0;
   const behavior = stats?.behavior ?? 'harass';
   const maxSpeed = stats?.maxSpeed ?? 3.0;
+  const activeNav = navConfig;
 
   const [countSliderRef, countDragStart, countDragEnd] = useDraggableInputSync(count);
   const [countNumberRef] = useDraggableInputSync(count);
   const [speedSliderRef, speedDragStart, speedDragEnd] = useDraggableInputSync(maxSpeed);
   const [speedNumberRef] = useDraggableInputSync(maxSpeed);
+
+  useEffect(() => {
+    if (!visible || !open || !runtime) {
+      setBotInfos([]);
+      return;
+    }
+    const sync = () => {
+      const next = runtime
+        .getBotDebugInfos()
+        .slice()
+        .sort((a, b) => a.id - b.id);
+      setBotInfos(next);
+    };
+    sync();
+    const interval = setInterval(sync, 100);
+    return () => clearInterval(interval);
+  }, [open, runtime, visible]);
+
+  useEffect(() => {
+    if (!navConfig) {
+      setNavDraft(null);
+      setNavDraftDirty(false);
+      return;
+    }
+    if (navDraftDirty) {
+      return;
+    }
+    setNavDraft({
+      walkableClimb: navConfig.walkableClimb.toFixed(3),
+      walkableSlopeAngleDegrees: navConfig.walkableSlopeAngleDegrees.toFixed(0),
+      cellHeight: navConfig.cellHeight.toFixed(4),
+    });
+  }, [
+    navConfig?.walkableClimb,
+    navConfig?.walkableSlopeAngleDegrees,
+    navConfig?.cellHeight,
+    navDraftDirty,
+  ]);
 
   if (!visible) return null;
 
@@ -84,7 +149,7 @@ export function PracticeBotsPanel({
         {open ? '▼ Bots' : '▶ Bots'} · {count}
       </button>
       {open && (
-        <div className="flex min-w-[22.5rem] flex-col gap-3 rounded-xl border border-white/[0.12] bg-black/70 px-3 py-3 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
+        <div className="flex min-w-[22.5rem] max-w-[34rem] flex-col gap-3 rounded-xl border border-white/[0.12] bg-black/70 px-3 py-3 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Count')}
             <input
@@ -212,6 +277,143 @@ export function PracticeBotsPanel({
             <span>·</span>
             <span>{behavior}</span>
           </div>
+          <div className="border-t border-white/[0.08] pt-2">
+            <div className="mb-2 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.12em] text-white/[0.58]">
+              <span>Nav Tuning</span>
+              <div className="flex items-center gap-2">
+                {navTuning && (
+                  <span className="rounded bg-cyan-300/12 px-1.5 py-0.5 text-[10px] text-cyan-200">
+                    override
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="rounded border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-white/72 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={() => {
+                    if (!navConfig) return;
+                    setNavDraftDirty(false);
+                    setNavDraft({
+                      walkableClimb: navConfig.walkableClimb.toFixed(3),
+                      walkableSlopeAngleDegrees: navConfig.walkableSlopeAngleDegrees.toFixed(0),
+                      cellHeight: navConfig.cellHeight.toFixed(4),
+                    });
+                  }}
+                  disabled={!navConfig}
+                >
+                  revert draft
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] text-white/72 transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                  onClick={onResetNavTuning}
+                  disabled={!navTuning}
+                >
+                  shared defaults
+                </button>
+              </div>
+            </div>
+            {activeNav && navDraft ? (
+              <div className="space-y-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 font-mono text-[11px] text-white/[0.82]">
+                <div className="grid grid-cols-[5.6rem_1fr] gap-x-2 gap-y-1">
+                  <DebugKeyValue label="mode" value={activeNav.mode} />
+                  <DebugKeyValue label="radius" value={`${activeNav.walkableRadius.toFixed(2)} m`} />
+                  <DebugKeyValue label="height" value={`${activeNav.walkableHeight.toFixed(2)} m`} />
+                  <DebugKeyValue label="cell size" value={`${activeNav.cellSize.toFixed(4)} m`} />
+                  <DebugKeyValue label="tile" value={`${activeNav.tileSizeVoxels} vox`} />
+                  <DebugKeyValue
+                    label="snap box"
+                    value={`[${activeNav.snapHalfExtents.map((v) => v.toFixed(2)).join(', ')}]`}
+                  />
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <NavInput
+                    label="climb"
+                    value={navDraft.walkableClimb}
+                    unit="m"
+                    onChange={(value) => setNavDraft((current) => current ? {
+                      ...current,
+                      walkableClimb: value,
+                    } : current)}
+                    onDirtyChange={setNavDraftDirty}
+                  />
+                  <NavInput
+                    label="slope"
+                    value={navDraft.walkableSlopeAngleDegrees}
+                    unit="deg"
+                    onChange={(value) => setNavDraft((current) => current ? {
+                      ...current,
+                      walkableSlopeAngleDegrees: value,
+                    } : current)}
+                    onDirtyChange={setNavDraftDirty}
+                  />
+                  <NavInput
+                    label="cell h"
+                    value={navDraft.cellHeight}
+                    unit="m"
+                    onChange={(value) => setNavDraft((current) => current ? {
+                      ...current,
+                      cellHeight: value,
+                    } : current)}
+                    onDirtyChange={setNavDraftDirty}
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2 border-t border-white/[0.08] pt-2">
+                  <div className="text-[10px] text-white/[0.48]">
+                    Active: climb {activeNav.walkableClimb.toFixed(3)} m · slope {activeNav.walkableSlopeAngleDegrees.toFixed(0)} deg · cell h {activeNav.cellHeight.toFixed(4)} m
+                    {' '}· keeps current bots
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded border border-cyan-300/[0.38] bg-cyan-300/[0.14] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-cyan-100 transition hover:bg-cyan-300/[0.22] disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => {
+                      const climb = Number(navDraft.walkableClimb);
+                      const slope = Number(navDraft.walkableSlopeAngleDegrees);
+                      const cellHeight = Number(navDraft.cellHeight);
+                      if (!Number.isFinite(climb) || !Number.isFinite(slope) || !Number.isFinite(cellHeight)) {
+                        return;
+                      }
+                      onUpdateNavTuning({
+                        walkableClimb: climb,
+                        walkableSlopeAngleDegrees: slope,
+                        cellHeight,
+                      });
+                      setNavDraftDirty(false);
+                    }}
+                    disabled={!isValidNavDraft(navDraft)}
+                  >
+                    Apply nav rebuild
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-white/[0.5]">
+                Building navmesh config…
+              </div>
+            )}
+          </div>
+          <div className="border-t border-white/[0.08] pt-2">
+            <div className="mb-2 flex items-center justify-between font-mono text-[11px] uppercase tracking-[0.12em] text-white/[0.58]">
+              <span>Bot Debug Feed</span>
+              <span>{botInfos.length} live</span>
+            </div>
+            {runtime ? (
+              botInfos.length > 0 ? (
+                <div className="max-h-[26rem] space-y-2 overflow-y-auto pr-1">
+                  {botInfos.map((info) => (
+                    <BotDebugCard key={info.id} info={info} />
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-white/[0.5]">
+                  No bot debug samples yet.
+                </div>
+              )
+            ) : (
+              <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] text-white/[0.5]">
+                Practice bot runtime unavailable.
+              </div>
+            )}
+          </div>
           <div className="border-t border-white/[0.08] pt-2 text-[11px] text-white/[0.48]">
             {stats
               ? `navmesh: ${stats.navTriangles.toLocaleString()} tris · bots run as real local-session players`
@@ -221,4 +423,143 @@ export function PracticeBotsPanel({
       )}
     </div>
   );
+}
+
+function NavInput({
+  label,
+  value,
+  unit,
+  onChange,
+  onDirtyChange,
+}: {
+  label: string;
+  value: string;
+  unit: string;
+  onChange: (value: string) => void;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
+  return (
+    <label className="rounded border border-white/[0.08] bg-black/20 px-2 py-2">
+      <div className="mb-1 text-[10px] uppercase tracking-[0.12em] text-white/48">{label}</div>
+      <div className="flex items-center gap-1">
+        <input
+          type="text"
+          inputMode="decimal"
+          spellCheck={false}
+          value={value}
+          className="w-full rounded border border-white/14 bg-white/[0.06] px-2 py-1 text-right text-[11px] text-white outline-none transition focus:border-cyan-300/60 focus:bg-white/[0.09]"
+          onChange={(event) => {
+            onDirtyChange(true);
+            onChange(event.target.value);
+          }}
+        />
+        <span className="text-[10px] uppercase tracking-[0.08em] text-white/45">{unit}</span>
+      </div>
+    </label>
+  );
+}
+
+function isValidNavDraft(draft: NavTuningDraft | null): boolean {
+  if (!draft) return false;
+  const climb = Number(draft.walkableClimb);
+  const slope = Number(draft.walkableSlopeAngleDegrees);
+  const cellHeight = Number(draft.cellHeight);
+  return Number.isFinite(climb)
+    && Number.isFinite(slope)
+    && Number.isFinite(cellHeight)
+    && climb >= 0
+    && slope > 0
+    && slope < 90
+    && cellHeight > 0;
+}
+
+function BotDebugCard({ info }: { info: BotDebugInfo }) {
+  const speed = Math.hypot(info.velocity[0], info.velocity[2]);
+  const desiredSpeed = Math.hypot(info.desiredVelocity[0], info.desiredVelocity[2]);
+  const botNumber = info.id - 1_000_000 + 1;
+  const targetTone = info.lastMoveAccepted === false
+    ? 'text-rose-300'
+    : info.targetPlayerId !== null
+      ? 'text-cyan-200'
+      : 'text-white/80';
+
+  return (
+    <article className="rounded-lg border border-white/[0.08] bg-white/[0.035] px-3 py-2 font-mono text-[11px] text-white/[0.82]">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-white/75">
+            bot {botNumber}
+          </span>
+          <span className="text-[10px] uppercase tracking-[0.12em] text-white/55">
+            {info.behaviorKind}
+          </span>
+        </div>
+        <span className="text-[10px] uppercase tracking-[0.12em] text-white/55">
+          {info.mode}
+        </span>
+      </div>
+      <div className="grid grid-cols-[4.8rem_1fr] gap-x-2 gap-y-1">
+        <DebugKeyValue label="Target" value={describePanelTarget(info)} valueClassName={targetTone} />
+        <DebugKeyValue label="Move" value={describePanelMove(info)} />
+        <DebugKeyValue label="Snap" value={describePanelSnap(info)} />
+        <DebugKeyValue
+          label="Speed"
+          value={`${speed.toFixed(2)} / ${desiredSpeed.toFixed(2)} / ${info.maxSpeed.toFixed(2)} m/s`}
+        />
+        <DebugKeyValue label="Pos" value={formatVec3(info.position)} />
+        <DebugKeyValue label="Raw" value={formatVec3(info.rawTarget)} />
+        <DebugKeyValue label="Snapped" value={formatVec3(info.target)} />
+        <DebugKeyValue label="Desired" value={formatVec3(info.desiredVelocity)} />
+        <DebugKeyValue
+          label="Path"
+          value={`${Math.max(0, info.pathPoints.length - 1)} segments`}
+        />
+      </div>
+    </article>
+  );
+}
+
+function DebugKeyValue({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
+  return (
+    <>
+      <span className="text-[10px] uppercase tracking-[0.12em] text-white/42">{label}</span>
+      <span className={valueClassName ?? 'text-white/82'}>{value}</span>
+    </>
+  );
+}
+
+function formatVec3(value: [number, number, number] | null): string {
+  if (!value) return '—';
+  return `[${value[0].toFixed(1)}, ${value[1].toFixed(1)}, ${value[2].toFixed(1)}]`;
+}
+
+function describePanelTarget(info: BotDebugInfo): string {
+  if (info.targetPlayerId !== null) {
+    return `player #${info.targetPlayerId}`;
+  }
+  if (info.rawTarget) {
+    const dx = info.rawTarget[0] - info.position[0];
+    const dz = info.rawTarget[2] - info.position[2];
+    return `${Math.hypot(dx, dz).toFixed(1)}m from bot`;
+  }
+  return '—';
+}
+
+function describePanelMove(info: BotDebugInfo): string {
+  const move = info.lastMoveAccepted == null ? '—' : (info.lastMoveAccepted ? 'accepted' : 'rejected');
+  return `${move} · ${info.ticksSinceReplan}t`;
+}
+
+function describePanelSnap(info: BotDebugInfo): string {
+  if (!info.rawTarget) return 'no raw target';
+  if (!info.target) return 'no snapped target';
+  return `${(info.targetSnapDistanceM ?? 0).toFixed(2)}m`;
 }

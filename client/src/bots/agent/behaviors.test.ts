@@ -70,4 +70,73 @@ describe('harassNearest', () => {
     expect(decision.mode).toBe('follow_target');
     expect(decision.target).toEqual([50, 0, -9]);
   });
+
+  it('keeps following a locked target slightly beyond acquire distance', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, releaseDistanceM: 65 });
+
+    let decision = behavior(makeContext({
+      tick: 1,
+      remotePlayers: [{
+        id: 7,
+        position: [52, 1, -10],
+        isDead: false,
+      }],
+    }));
+    expect(decision.mode).toBe('follow_target');
+
+    decision = behavior(makeContext({
+      tick: 2,
+      remotePlayers: [{
+        id: 7,
+        position: [98, 1, -10],
+        isDead: false,
+      }],
+    }));
+    expect(decision.mode).toBe('follow_target');
+    expect(decision.targetPlayerId).toBe(7);
+    expect(decision.target).toEqual([98, 1, -10]);
+  });
+
+  it('keeps following the last known target through brief observation gaps', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 5 });
+
+    let decision = behavior(makeContext({
+      tick: 1,
+      remotePlayers: [{
+        id: 7,
+        position: [52, 1, -10],
+        isDead: false,
+      }],
+    }));
+    expect(decision.mode).toBe('follow_target');
+
+    decision = behavior(makeContext({
+      tick: 2,
+      remotePlayers: [],
+    }));
+    expect(decision.mode).toBe('follow_target');
+    expect(decision.targetPlayerId).toBe(7);
+    expect(decision.target).toEqual([52, 1, -10]);
+  });
+
+  it('returns to hold anchor after target memory expires', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 2 });
+
+    let decision = behavior(makeContext({
+      tick: 1,
+      remotePlayers: [{
+        id: 7,
+        position: [52, 1, -10],
+        isDead: false,
+      }],
+    }));
+    expect(decision.mode).toBe('follow_target');
+
+    decision = behavior(makeContext({
+      tick: 5,
+      remotePlayers: [],
+    }));
+    expect(decision.mode).toBe('hold_anchor');
+    expect(decision.target).toEqual([50, 1, -10]);
+  });
 });

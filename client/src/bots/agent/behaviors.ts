@@ -54,21 +54,48 @@ export function holdAnchor(anchor?: Vec3Tuple): Behavior {
 
 export interface HarassNearestOptions {
   acquireDistanceM?: number;
-  recoveryDistanceM?: number;
+  releaseDistanceM?: number;
   fireDistanceM?: number;
+  targetMemoryTicks?: number;
 }
 
 export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const acquire = options.acquireDistanceM ?? 40;
+  const release = options.releaseDistanceM ?? acquire * 1.5;
   const fireRange = options.fireDistanceM ?? 18;
+  const targetMemoryTicks = options.targetMemoryTicks ?? 45;
+  const state = {
+    lockedPlayerId: null as number | null,
+    lastKnownTarget: null as Vec3Tuple | null,
+    lastSeenTick: -Infinity,
+  };
 
   return (ctx) => {
     const { self, remotePlayers, anchor } = ctx;
     if (self.dead) return DEAD_DECISION;
 
-    const nearest = findNearest(self.position, remotePlayers);
-    if (nearest && nearest.distance <= acquire) {
+    const locked = state.lockedPlayerId != null
+      ? findById(self.position, remotePlayers, state.lockedPlayerId)
+      : null;
+    const nearest = locked ?? findNearest(self.position, remotePlayers);
+    const shouldFollowObserved = nearest
+      && (
+        nearest.distance <= acquire
+        || (
+          state.lockedPlayerId === nearest.player.id
+          && nearest.distance <= release
+        )
+      );
+
+    if (shouldFollowObserved) {
       const fireAim = nearest.distance <= fireRange ? nearest.player.position : null;
+      state.lockedPlayerId = nearest.player.id;
+      state.lastKnownTarget = [
+        nearest.player.position[0],
+        nearest.player.position[1],
+        nearest.player.position[2],
+      ];
+      state.lastSeenTick = ctx.tick;
       return {
         target: [
           nearest.player.position[0],
@@ -80,6 +107,26 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
         mode: 'follow_target',
       };
     }
+
+    if (
+      state.lockedPlayerId !== null
+      && state.lastKnownTarget
+      && ctx.tick - state.lastSeenTick <= targetMemoryTicks
+    ) {
+      return {
+        target: [
+          state.lastKnownTarget[0],
+          state.lastKnownTarget[1],
+          state.lastKnownTarget[2],
+        ],
+        fireAim: null,
+        targetPlayerId: state.lockedPlayerId,
+        mode: 'follow_target',
+      };
+    }
+
+    state.lockedPlayerId = null;
+    state.lastKnownTarget = null;
 
     return {
       target: [anchor[0], self.position[1], anchor[2]],
@@ -136,4 +183,22 @@ function findNearest(
     }
   }
   return best;
+}
+
+function findById(
+  self: Vec3Tuple,
+  players: readonly ObservedPlayer[],
+  playerId: number,
+): { player: ObservedPlayer; distance: number } | null {
+  for (const player of players) {
+    if (player.id !== playerId || player.isDead) continue;
+    return {
+      player,
+      distance: Math.hypot(
+        player.position[0] - self[0],
+        player.position[2] - self[2],
+      ),
+    };
+  }
+  return null;
 }

@@ -42,6 +42,15 @@ export interface BotNavMesh {
   navigationProfile: SharedPlayerNavigationProfile;
   mode: NavMeshMode;
   result: SoloNavMeshResult | TiledNavMeshResult;
+  buildConfig: ResolvedBotNavMeshConfig;
+}
+
+export interface ResolvedBotNavMeshConfig {
+  navigationProfile: SharedPlayerNavigationProfile;
+  mode: NavMeshMode;
+  cellSize: number;
+  cellHeight: number;
+  tileSizeVoxels: number;
 }
 
 const DEFAULTS = Object.freeze({
@@ -60,15 +69,18 @@ function defaultCellHeightForNavigationProfile(navigationProfile: SharedPlayerNa
 }
 
 export function buildBotNavMesh(world: WorldDocument, options: BuildBotNavMeshOptions): BotNavMesh {
-  const mode: NavMeshMode = options.mode ?? DEFAULTS.mode;
-  const cellSize = options.cellSize ?? DEFAULTS.cellSize;
-  const navigationProfile = options.navigationProfile;
-  const cellHeight = options.cellHeight ?? defaultCellHeightForNavigationProfile(navigationProfile);
+  const buildConfig = resolveBotNavMeshConfig(options);
+  const {
+    mode,
+    cellSize,
+    cellHeight,
+    navigationProfile,
+    tileSizeVoxels,
+  } = buildConfig;
   const walkableRadiusWorld = navigationProfile.walkableRadius;
   const walkableHeightWorld = navigationProfile.walkableHeight;
   const walkableClimbWorld = navigationProfile.walkableClimb;
   const walkableSlopeAngleDegrees = navigationProfile.walkableSlopeAngleDegrees;
-  const tileSizeVoxels = options.tileSizeVoxels ?? DEFAULTS.tileSizeVoxels;
 
   const geometry = buildWorldGeometry(world);
   const navMeshInput = {
@@ -110,7 +122,7 @@ export function buildBotNavMesh(world: WorldDocument, options: BuildBotNavMeshOp
       detailSampleMaxError,
     };
     const result = generateSoloNavMesh(navMeshInput, opts);
-    return { navMesh: result.navMesh, geometry, navigationProfile, mode, result };
+    return { navMesh: result.navMesh, geometry, navigationProfile, mode, result, buildConfig };
   }
 
   const tileSizeWorld = tileSizeVoxels * cellSize;
@@ -136,7 +148,21 @@ export function buildBotNavMesh(world: WorldDocument, options: BuildBotNavMeshOp
     detailSampleMaxError,
   };
   const result = generateTiledNavMesh(navMeshInput, opts);
-  return { navMesh: result.navMesh, geometry, navigationProfile, mode, result };
+  return { navMesh: result.navMesh, geometry, navigationProfile, mode, result, buildConfig };
+}
+
+export function resolveBotNavMeshConfig(
+  options: BuildBotNavMeshOptions,
+): ResolvedBotNavMeshConfig {
+  const navigationProfile = options.navigationProfile;
+  const resolved = {
+    navigationProfile,
+    mode: options.mode ?? DEFAULTS.mode,
+    cellSize: options.cellSize ?? DEFAULTS.cellSize,
+    cellHeight: options.cellHeight ?? defaultCellHeightForNavigationProfile(navigationProfile),
+    tileSizeVoxels: options.tileSizeVoxels ?? DEFAULTS.tileSizeVoxels,
+  };
+  return resolved;
 }
 
 export async function buildBotNavMeshFromSharedProfile(

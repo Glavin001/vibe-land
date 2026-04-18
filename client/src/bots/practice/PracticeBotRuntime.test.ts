@@ -44,11 +44,14 @@ class FakePracticeBotHost implements PracticeBotHost {
   readonly vehicles = new Map<number, VehicleStateMeters>();
   readonly spawnPositions = new Map<number, [number, number, number]>();
   readonly sentInputCounts = new Map<number, number>();
+  connectCalls = 0;
+  disconnectCalls = 0;
   playerId = 1;
   localPlayerHp = 100;
   localPlayerFlags = 0;
 
   connectBot(botId: number): boolean {
+    this.connectCalls += 1;
     const spawn = this.spawnPositions.get(botId) ?? [0, 0, 0];
     this.remotePlayers.set(botId, {
       id: botId,
@@ -61,6 +64,7 @@ class FakePracticeBotHost implements PracticeBotHost {
   }
 
   disconnectBot(botId: number): boolean {
+    this.disconnectCalls += 1;
     return this.remotePlayers.delete(botId);
   }
 
@@ -243,5 +247,65 @@ describe('PracticeBotRuntime.create', () => {
 
     runtime.clear();
     runtime.detach();
+  });
+
+  it('preserves host bots across same-world runtime rebuilds', () => {
+    vi.useFakeTimers();
+
+    const world = makeFlatPlatformWorld();
+    const runtime = PracticeBotRuntime.createSync(world, {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+    expect(initialInfo?.id).toBe(botId);
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [2, playerCenterY(initialInfo?.position[1] ?? 0), 2] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(100);
+
+    expect(host.connectCalls).toBe(1);
+    expect(host.disconnectCalls).toBe(0);
+    expect(host.remotePlayers.has(botId)).toBe(true);
+
+    const snapshots = runtime.captureBotSnapshots();
+    runtime.detach({ preserveHostBots: true });
+
+    expect(host.connectCalls).toBe(1);
+    expect(host.disconnectCalls).toBe(0);
+    expect(host.remotePlayers.has(botId)).toBe(true);
+
+    const rebuilt = PracticeBotRuntime.createSync(world, {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+      cellHeight: 0.02,
+    });
+    rebuilt.restoreBotSnapshots(snapshots);
+    rebuilt.attach(host, getSelf);
+    vi.advanceTimersByTime(100);
+
+    const rebuiltInfo = rebuilt.getBotDebugInfos()[0];
+    expect(rebuiltInfo?.id).toBe(botId);
+    expect(host.connectCalls).toBe(1);
+    expect(host.disconnectCalls).toBe(0);
+    expect(host.remotePlayers.has(botId)).toBe(true);
+
+    rebuilt.clear();
+    rebuilt.detach();
+    expect(host.disconnectCalls).toBe(1);
   });
 });

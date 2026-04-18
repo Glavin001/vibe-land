@@ -51,6 +51,8 @@ export {
   type LocalSelfAccessor,
   type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,
+  type PracticeBotNavDebugConfig,
+  type PracticeBotNavTuning,
   type PracticeBotRuntimeOptions,
   type PracticeBotRuntimeSyncOptions,
   type PracticeBotStats,
