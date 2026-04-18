@@ -130,6 +130,9 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   disconnectBot(botId: number): boolean;
   handleBotPacket(botId: number, bytes: Uint8Array): void;
   setBotMaxSpeed(botId: number, maxSpeed: number): boolean;
+  connectHuman(humanId: number): boolean;
+  disconnectHuman(humanId: number): boolean;
+  handleHumanPacket(humanId: number, bytes: Uint8Array): void;
   enqueueInput(
     seq: number,
     buttons: number,

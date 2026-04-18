@@ -47,6 +47,15 @@ import {
 } from './bots';
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
+import { LocalPlayersPanel } from './ui/LocalPlayersPanel';
+import {
+  LOCAL_HUMAN_ID_BASE,
+  defaultSlotZero,
+  nextAvailableSlotId,
+  pickDefaultDeviceForNewSlot,
+  type LocalPlayerSlot,
+} from './app/localPlayers';
+import type { LocalDeviceAssignment } from './input/types';
 import { updateE2EBridgeAppState } from './e2eBridge';
 
 type AppProps = {
@@ -169,6 +178,35 @@ export function App({
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [localPlayers, setLocalPlayers] = useState<LocalPlayerSlot[]>(() => [defaultSlotZero()]);
+  const splitScreen = practiceMode && localPlayers.length > 1;
+  const practiceGuests = useMemo(
+    () => (practiceMode
+      ? localPlayers
+          .filter((slot) => slot.slotId !== 0)
+          .map((slot) => ({
+            slotId: slot.slotId,
+            humanId: LOCAL_HUMAN_ID_BASE + slot.slotId,
+            device: slot.device,
+          }))
+      : []),
+    [practiceMode, localPlayers],
+  );
+  const handleAddLocalPlayer = useCallback(() => {
+    setLocalPlayers((slots) => {
+      if (slots.length >= 4) return slots;
+      const nextId = nextAvailableSlotId(slots);
+      if (nextId == null) return slots;
+      const device = pickDefaultDeviceForNewSlot(slots);
+      return [...slots, { slotId: nextId, simPlayerId: null, device }];
+    });
+  }, []);
+  const handleRemoveLocalPlayer = useCallback((slotId: number) => {
+    setLocalPlayers((slots) => slots.filter((slot) => slot.slotId !== slotId));
+  }, []);
+  const handleChangeLocalDevice = useCallback((slotId: number, device: LocalDeviceAssignment) => {
+    setLocalPlayers((slots) => slots.map((slot) => (slot.slotId === slotId ? { ...slot, device } : slot)));
+  }, []);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
@@ -837,7 +875,7 @@ export function App({
         <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
           Controls
         </button>
-        {practiceMode && connected && (
+        {practiceMode && connected && !splitScreen && (
           <button
             type="button"
             onClick={openCalibration}
@@ -907,7 +945,7 @@ export function App({
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}
-        visible={connected && isDesktop && !touchMode}
+        visible={connected && isDesktop && !touchMode && !splitScreen}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
@@ -916,6 +954,7 @@ export function App({
         open={controlsOpen}
         bindings={inputBindings}
         inputFamilyMode={inputFamilyMode}
+        hideFamilyToggle={splitScreen}
         onClose={() => setControlsOpen(false)}
         onInputFamilyModeChange={setInputFamilyMode}
         onKeyboardBindingChange={updateKeyboardBinding}
@@ -939,6 +978,13 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
+      <LocalPlayersPanel
+        visible={practiceMode && connected && !calibrationOpen}
+        slots={localPlayers}
+        onAddSlot={handleAddLocalPlayer}
+        onRemoveSlot={handleRemoveLocalPlayer}
+        onChangeDevice={handleChangeLocalDevice}
+      />
       <PracticeBotsPanel
         visible={practiceMode && connected && !calibrationOpen}
         stats={practiceBotStats}
@@ -1007,6 +1053,7 @@ export function App({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
+          practiceGuests={practiceGuests}
         />
       )}
     </div>

@@ -5,8 +5,14 @@ import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
-import type { InputFamilyMode, InputSample } from '../input/types';
+import type { InputFamilyMode, InputSample, LocalDeviceAssignment } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+
+export interface PracticeGuestSpec {
+  slotId: number;
+  humanId: number;
+  device: LocalDeviceAssignment;
+}
 
 type GameSceneProps = {
   mode: GameMode;
@@ -30,6 +36,7 @@ type GameSceneProps = {
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
+  practiceGuests?: PracticeGuestSpec[];
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -55,6 +62,7 @@ export function GameScene({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
+  practiceGuests,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -95,6 +103,7 @@ export function GameScene({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}
+          practiceGuests={practiceGuests}
         />
       </Suspense>
     </Canvas>

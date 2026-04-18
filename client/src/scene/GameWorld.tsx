@@ -45,6 +45,7 @@ import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPla
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
+import { PracticeGuestPlayer } from './PracticeGuestPlayer';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -327,6 +328,10 @@ type GameWorldProps = {
   // firing-range scene, so the player's feel during drills is identical to
   // normal play.
   sceneExtras?: ReactNode;
+  /** Additional local-human split-screen slots (slotId >= 1). Each entry
+   * spawns a `PracticeGuestPlayer` that owns its own input device and
+   * drives a dedicated sim-side player id via `LocalPracticeClient.connectHuman`. */
+  practiceGuests?: Array<{ slotId: number; humanId: number; device: import('../input/types').LocalDeviceAssignment }>;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -1036,6 +1041,7 @@ export function GameWorld({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
+  practiceGuests,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -2758,6 +2764,16 @@ export function GameWorld({
       )}
 
       {sceneExtras}
+
+      {practiceMode && practiceGuests?.map((guest) => (
+        <PracticeGuestPlayer
+          key={guest.slotId}
+          humanId={guest.humanId}
+          device={guest.device}
+          inputBindings={inputBindings}
+          runtimeRef={runtimeRef}
+        />
+      ))}
     </>
   );
 }

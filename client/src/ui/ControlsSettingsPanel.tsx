@@ -18,6 +18,10 @@ type ControlsSettingsPanelProps = {
   open: boolean;
   bindings: InputBindings;
   inputFamilyMode: InputFamilyMode;
+  /** When true (local split-screen is active), the Auto/Keyboard/Gamepad
+   * family toggle is hidden — per-player device pickers in the Local
+   * Players panel take over instead. */
+  hideFamilyToggle?: boolean;
   onClose: () => void;
   onInputFamilyModeChange: (mode: InputFamilyMode) => void;
   onKeyboardBindingChange: <K extends keyof KeyboardBindings>(key: K, value: KeyboardBindings[K]) => void;
@@ -97,6 +101,7 @@ export function ControlsSettingsPanel({
   open,
   bindings,
   inputFamilyMode,
+  hideFamilyToggle = false,
   onClose,
   onInputFamilyModeChange,
   onKeyboardBindingChange,
@@ -121,21 +126,23 @@ export function ControlsSettingsPanel({
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {inputModeOptions.map((option) => {
-                const selected = option.value === inputFamilyMode;
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    onClick={() => onInputFamilyModeChange(option.value)}
-                    style={selected ? selectedPillStyle : pillStyle}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
+            {!hideFamilyToggle && (
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {inputModeOptions.map((option) => {
+                  const selected = option.value === inputFamilyMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => onInputFamilyModeChange(option.value)}
+                      style={selected ? selectedPillStyle : pillStyle}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <button type="button" onClick={onResetAll} style={dangerButtonStyle}>Reset All</button>
             <button type="button" onClick={onClose} style={secondaryButtonStyle}>Close</button>
           </div>

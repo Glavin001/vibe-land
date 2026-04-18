@@ -1486,6 +1486,23 @@ impl WasmLocalSession {
         self.inner.set_bot_max_speed(bot_id, override_value)
     }
 
+    #[wasm_bindgen(js_name = connectHuman)]
+    pub fn connect_human(&mut self, human_id: u32) -> bool {
+        self.inner.connect_human(human_id)
+    }
+
+    #[wasm_bindgen(js_name = disconnectHuman)]
+    pub fn disconnect_human(&mut self, human_id: u32) -> bool {
+        self.inner.disconnect_human(human_id)
+    }
+
+    #[wasm_bindgen(js_name = handleHumanPacket)]
+    pub fn handle_human_packet(&mut self, human_id: u32, bytes: &[u8]) -> Result<(), JsValue> {
+        self.inner
+            .handle_human_packet(human_id, bytes)
+            .map_err(|err| JsValue::from_str(&err))
+    }
+
     #[wasm_bindgen(js_name = enqueueInput)]
     pub fn enqueue_input(
         &mut self,
