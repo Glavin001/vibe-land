@@ -191,6 +191,7 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     maxToi: number,
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
+  debugRender(modeBits: number): WasmDebugRenderBuffers;
   getDestructibleChunkTransforms(): Float32Array;
   getDestructibleDebugState(): number[];
   getDestructibleDebugConfig(): number[];

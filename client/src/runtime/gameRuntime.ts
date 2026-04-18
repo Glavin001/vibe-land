@@ -69,6 +69,20 @@ export type DynamicBodyShotDiagnostic = {
   localPredictedDeltaM: number | null;
 };
 
+type RuntimeWorldAccess = {
+  raycastScene(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance?: number,
+  ): { toi: number } | null;
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null;
+  getVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
+  getDestructibleChunkTransforms(): Float32Array;
+  getDestructibleDebugState(): number[];
+  getDestructibleDebugConfig(): number[];
+  drainDestructibleFractureEvents(): Uint32Array;
+};
+
 export type RuntimeConnectionState = {
   socket: unknown;
   playerId: number;
@@ -296,6 +310,14 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
 
   constructor(protected readonly callbacks: GameRuntimeCallbacks) {}
 
+  protected get worldAccess(): RuntimeWorldAccess | null {
+    return null;
+  }
+
+  protected get practiceBotHost(): PracticeBotHost | null {
+    return null;
+  }
+
   abstract get usesLocalAuthority(): boolean;
   abstract get transport(): string;
   abstract get interpolator(): PlayerInterpolator;
@@ -385,11 +407,13 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     removeCell: [number, number, number];
     placeCell: [number, number, number];
   } | null;
-  abstract raycastScene(
+  raycastScene(
     origin: [number, number, number],
     direction: [number, number, number],
     maxDistance?: number,
-  ): { toi: number } | null;
+  ): { toi: number } | null {
+    return this.worldAccess?.raycastScene(origin, direction, maxDistance) ?? null;
+  }
   abstract classifyHitscanPlayer(
     origin: [number, number, number],
     direction: [number, number, number],
@@ -415,9 +439,11 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     id: number;
     position: [number, number, number];
     halfExtents: [number, number, number];
-  }>;
+      }>;
   abstract getNextSeq(): number;
-  abstract getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null;
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    return this.worldAccess?.getDebugRenderBuffers(modeBits) ?? null;
+  }
   abstract getDebugStats(): RuntimeDebugStats;
   abstract spawnVehicle(
     id: number,
@@ -455,18 +481,43 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract reconcileVehicle(vehicleState: NetVehicleState, ackInputSeq: number): void;
   abstract getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null;
   abstract getDrivenVehicleId(): number | null;
-  abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
+  getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
+    return this.worldAccess?.getVehicleDebug(vehicleId) ?? null;
+  }
   abstract isInVehicle(): boolean;
-  abstract getDestructibleChunkTransforms(): Float32Array;
-  abstract getDestructibleDebugState(): number[];
-  abstract getDestructibleDebugConfig(): number[];
-  abstract drainDestructibleFractureEvents(): Uint32Array;
-  abstract getPracticeBotHost(): PracticeBotHost | null;
+  getDestructibleChunkTransforms(): Float32Array {
+    return this.worldAccess?.getDestructibleChunkTransforms() ?? new Float32Array(0);
+  }
+  getDestructibleDebugState(): number[] {
+    return this.worldAccess?.getDestructibleDebugState() ?? [];
+  }
+  getDestructibleDebugConfig(): number[] {
+    return this.worldAccess?.getDestructibleDebugConfig() ?? [];
+  }
+  drainDestructibleFractureEvents(): Uint32Array {
+    return this.worldAccess?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
+  }
+  getPracticeBotHost(): PracticeBotHost | null {
+    return this.practiceBotHost;
+  }
 }
 
 export class LocalGameRuntime extends BaseGameRuntime {
   private client: LocalPracticeClient | null = null;
   private readonly inputBundler = new FixedInputBundler(1 / 60, 4);
+  private readonly localWorldAccess: RuntimeWorldAccess = {
+    raycastScene: (
+      origin: [number, number, number],
+      direction: [number, number, number],
+      maxDistance = 1000,
+    ) => this.client?.castSceneRay(origin, direction, maxDistance) ?? null,
+    getDebugRenderBuffers: (modeBits: number) => this.client?.getDebugRenderBuffers(modeBits) ?? null,
+    getVehicleDebug: (vehicleId: number) => this.client?.getVehicleDebug(vehicleId) ?? null,
+    getDestructibleChunkTransforms: () => this.client?.getDestructibleChunkTransforms() ?? new Float32Array(0),
+    getDestructibleDebugState: () => this.client?.getDestructibleDebugState() ?? [],
+    getDestructibleDebugConfig: () => this.client?.getDestructibleDebugConfig() ?? [],
+    drainDestructibleFractureEvents: () => this.client?.drainDestructibleFractureEvents() ?? new Uint32Array(0),
+  };
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -537,6 +588,14 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   get rttMs(): number {
     return this.client?.rttMs ?? 0;
+  }
+
+  protected override get worldAccess(): RuntimeWorldAccess | null {
+    return this.client ? this.localWorldAccess : null;
+  }
+
+  protected override get practiceBotHost(): PracticeBotHost | null {
+    return this.client;
   }
 
   async connect(): Promise<void> {
@@ -687,14 +746,6 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return null;
   }
 
-  raycastScene(
-    origin: [number, number, number],
-    direction: [number, number, number],
-    maxDistance = 1000,
-  ): { toi: number } | null {
-    return this.client?.castSceneRay(origin, direction, maxDistance) ?? null;
-  }
-
   classifyHitscanPlayer(): { distance: number; kind: number } | null {
     return null;
   }
@@ -759,10 +810,6 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return 0;
   }
 
-  getDebugRenderBuffers(_modeBits: number): WasmDebugRenderBuffers | null {
-    return null;
-  }
-
   getDebugStats(): RuntimeDebugStats {
     return {
       ...defaultDebugStats(),
@@ -813,32 +860,8 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return this.client?.currentLocalVehicleState?.id ?? null;
   }
 
-  getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
-    return this.client?.getVehicleDebug(vehicleId) ?? null;
-  }
-
   isInVehicle(): boolean {
     return this.getDrivenVehicleId() != null;
-  }
-
-  getDestructibleChunkTransforms(): Float32Array {
-    return this.client?.getDestructibleChunkTransforms() ?? new Float32Array(0);
-  }
-
-  getDestructibleDebugState(): number[] {
-    return this.client?.getDestructibleDebugState() ?? [];
-  }
-
-  getDestructibleDebugConfig(): number[] {
-    return this.client?.getDestructibleDebugConfig() ?? [];
-  }
-
-  drainDestructibleFractureEvents(): Uint32Array {
-    return this.client?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
-  }
-
-  getPracticeBotHost(): PracticeBotHost | null {
-    return this.client;
   }
 }
 
@@ -851,6 +874,39 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   private pendingWorldPackets: ServerWorldPacket[] = [];
   private lastPredictedDynamicShot: { bodyId: number; atMs: number } | null = null;
   private readonly knownVehicleIds = new Set<number>();
+  private readonly multiplayerWorldAccess: RuntimeWorldAccess = {
+    raycastScene: (
+      origin: [number, number, number],
+      direction: [number, number, number],
+      maxDistance = 1000,
+    ) => {
+      const sim = this.sim;
+      const prediction = this.prediction;
+      if (!sim || !prediction || !prediction.isWorldLoaded()) {
+        return null;
+      }
+      const result = sim.castRayAndGetNormal(
+        origin[0], origin[1], origin[2],
+        direction[0], direction[1], direction[2],
+        maxDistance,
+      );
+      if (result.length === 0) {
+        return null;
+      }
+      return { toi: result[0] };
+    },
+    getDebugRenderBuffers: (modeBits: number) => {
+      if (!this.sim || modeBits === 0) {
+        return null;
+      }
+      return this.sim.debugRender(modeBits);
+    },
+    getVehicleDebug: (vehicleId: number) => decodeVehicleDebugSnapshot(this.sim?.getVehicleDebug(vehicleId)),
+    getDestructibleChunkTransforms: () => this.sim?.getDestructibleChunkTransforms() ?? new Float32Array(0),
+    getDestructibleDebugState: () => this.sim ? Array.from(this.sim.getDestructibleDebugState()) : [],
+    getDestructibleDebugConfig: () => this.sim ? Array.from(this.sim.getDestructibleDebugConfig()) : [],
+    drainDestructibleFractureEvents: () => this.sim?.drainDestructibleFractureEvents() ?? new Uint32Array(0),
+  };
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -924,6 +980,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   get rttMs(): number {
     return this.client?.rttMs ?? 0;
+  }
+
+  protected override get worldAccess(): RuntimeWorldAccess | null {
+    return this.sim ? this.multiplayerWorldAccess : null;
   }
 
   async connect(): Promise<void> {
@@ -1238,27 +1298,6 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     };
   }
 
-  raycastScene(
-    origin: [number, number, number],
-    direction: [number, number, number],
-    maxDistance = 1000,
-  ): { toi: number } | null {
-    const sim = this.sim;
-    const prediction = this.prediction;
-    if (!sim || !prediction || !prediction.isWorldLoaded()) {
-      return null;
-    }
-    const result = sim.castRayAndGetNormal(
-      origin[0], origin[1], origin[2],
-      direction[0], direction[1], direction[2],
-      maxDistance,
-    );
-    if (result.length === 0) {
-      return null;
-    }
-    return { toi: result[0] };
-  }
-
   classifyHitscanPlayer(
     origin: [number, number, number],
     direction: [number, number, number],
@@ -1464,13 +1503,6 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return this.prediction?.getNextSeq() ?? 0;
   }
 
-  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
-    if (!this.sim || modeBits === 0) {
-      return null;
-    }
-    return this.sim.debugRender(modeBits);
-  }
-
   getDebugStats(): RuntimeDebugStats {
     const prediction = this.prediction;
     if (!prediction) {
@@ -1600,31 +1632,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     return this.vehiclePrediction?.getVehicleId() ?? null;
   }
 
-  getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
-    return decodeVehicleDebugSnapshot(this.sim?.getVehicleDebug(vehicleId));
-  }
-
   isInVehicle(): boolean {
     return this.vehiclePrediction?.isActive() ?? false;
-  }
-
-  getDestructibleChunkTransforms(): Float32Array {
-    return this.sim?.getDestructibleChunkTransforms() ?? new Float32Array(0);
-  }
-
-  getDestructibleDebugState(): number[] {
-    return this.sim ? Array.from(this.sim.getDestructibleDebugState()) : [];
-  }
-
-  getDestructibleDebugConfig(): number[] {
-    return this.sim ? Array.from(this.sim.getDestructibleDebugConfig()) : [];
-  }
-
-  drainDestructibleFractureEvents(): Uint32Array {
-    return this.sim?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
-  }
-
-  getPracticeBotHost(): PracticeBotHost | null {
-    return null;
   }
 }

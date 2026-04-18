@@ -1604,6 +1604,7 @@ impl WasmSimWorld {
 #[wasm_bindgen]
 pub struct WasmLocalSession {
     inner: LocalSession,
+    debug_pipeline: DebugRenderPipeline,
 }
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
@@ -1622,7 +1623,10 @@ impl WasmLocalSession {
             }
             None => LocalSession::new(),
         };
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            debug_pipeline: default_debug_pipeline(),
+        })
     }
 
     pub fn connect(&mut self) {
@@ -1832,6 +1836,13 @@ impl WasmLocalSession {
         }
         out.extend(debug.wheel_ground_object_ids.into_iter().map(|v| v as f64));
         out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = debugRender)]
+    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
+        DebugRenderBuffers::from_line_buffers(
+            self.inner.debug_render(&mut self.debug_pipeline, mode_bits),
+        )
     }
 
     #[wasm_bindgen(js_name = getDestructibleChunkTransforms)]

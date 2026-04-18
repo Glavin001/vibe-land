@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
+    debug_render::{render_debug_buffers, DebugLineBuffers},
     constants::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD,
         HIT_ZONE_NONE, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE,
@@ -721,6 +722,22 @@ impl LocalSession {
                 make_net_battery_state(id, pos, energy, radius, height)
             })
             .collect()
+    }
+
+    pub fn debug_render(
+        &self,
+        debug_pipeline: &mut rapier3d::pipeline::DebugRenderPipeline,
+        mode_bits: u32,
+    ) -> DebugLineBuffers {
+        render_debug_buffers(
+            debug_pipeline,
+            mode_bits,
+            &self.arena.dynamic.sim.rigid_bodies,
+            &self.arena.dynamic.sim.colliders,
+            &self.arena.dynamic.impulse_joints,
+            &self.arena.dynamic.multibody_joints,
+            &self.arena.dynamic.sim.narrow_phase,
+        )
     }
 
     pub fn cast_scene_ray(&self, origin: [f32; 3], dir: [f32; 3], max_toi: f32) -> Option<f32> {
@@ -1627,5 +1644,21 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    #[test]
+    fn local_session_debug_render_produces_rapier_shape_lines() {
+        let mut session = LocalSession::new();
+        session.connect();
+
+        let mut pipeline = crate::debug_render::default_debug_pipeline();
+        let buffers = session.debug_render(
+            &mut pipeline,
+            rapier3d::pipeline::DebugRenderMode::COLLIDER_SHAPES.bits(),
+        );
+
+        assert!(!buffers.vertices.is_empty(), "expected debug-render vertices");
+        assert_eq!(buffers.vertices.len() % 3, 0);
+        assert_eq!(buffers.colors.len(), (buffers.vertices.len() / 3) * 4);
     }
 }

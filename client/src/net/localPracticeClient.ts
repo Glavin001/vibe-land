@@ -25,7 +25,12 @@ import {
   VEHICLE_STATE_STRIDE,
 } from '../runtime/localSessionDecode';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from '../runtime/vehicleDebug';
-import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
+import {
+  initSharedPhysics,
+  WasmLocalSession,
+  type WasmDebugRenderBuffers,
+  type WasmLocalSessionInstance,
+} from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
 
 export type LocalPracticeClientConfig = {
@@ -202,6 +207,12 @@ export class LocalPracticeClient implements PracticeBotHost {
 
   getVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
     return decodeVehicleDebugSnapshot(this.session?.getVehicleDebug(vehicleId >>> 0));
+  }
+
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    const session = this.session;
+    if (!session || modeBits === 0) return null;
+    return session.debugRender(modeBits);
   }
 
   getDestructibleChunkTransforms(): Float32Array {
