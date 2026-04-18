@@ -33,6 +33,7 @@
     "@ai-sdk/openai": "^2.0.102",
     "@react-three/drei": "^9.117.0",
     "@react-three/fiber": "^8.17.0",
+    "navcat": "^0.2.0",
     "@rjsf/core": "^6.4.2",
     "@rjsf/utils": "^6.4.2",
     "@rjsf/validator-ajv8": "^6.4.2",

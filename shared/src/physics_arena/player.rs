@@ -18,7 +18,7 @@ impl PhysicsArena {
             return None;
         }
 
-        let (player_x, player_z) = {
+        let (player_x, player_z, max_speed_override) = {
             let Some(state) = self.players.get_mut(&player_id) else {
                 return None;
             };
@@ -28,7 +28,11 @@ impl PhysicsArena {
                 return None;
             }
             state.last_input = input.clone();
-            (state.position.x as f32, state.position.z as f32)
+            (
+                state.position.x as f32,
+                state.position.z as f32,
+                state.max_speed_override,
+            )
         };
 
         let ground_material_multiplier = self
@@ -50,6 +54,7 @@ impl PhysicsArena {
             input,
             dt,
             ground_material_multiplier,
+            max_speed_override,
         );
         let sync_started = now_marker();
         self.dynamic
@@ -215,5 +220,34 @@ impl PhysicsArena {
                 state.on_ground = false;
             }
         }
+    }
+
+    pub fn set_player_max_speed_override(
+        &mut self,
+        player_id: u32,
+        max_speed: Option<f64>,
+    ) -> bool {
+        if let Some(state) = self.players.get_mut(&player_id) {
+            state.max_speed_override = max_speed;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> bool {
+        let Some(state) = self.players.get_mut(&player_id) else {
+            return false;
+        };
+        if state.dead || state.hp == 0 {
+            return false;
+        }
+        state.hp = state.hp.saturating_sub(damage);
+        if state.hp == 0 {
+            state.dead = true;
+            state.velocity = super::Vec3d::zeros();
+            return true;
+        }
+        false
     }
 }

@@ -38,6 +38,15 @@ import {
   hasStoredInputSettings,
   updateInputSettings,
 } from './input/inputSettingsStore';
+import {
+  PracticeBotRuntime,
+  type PracticeBotBehaviorKind,
+  type PracticeBotNavDebugConfig,
+  type PracticeBotNavTuning,
+  type PracticeBotStats,
+} from './bots';
+import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
+import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
 
 type AppProps = {
@@ -56,6 +65,12 @@ type BenchmarkConfig = {
   clientLabel: string;
   scenario: LoadTestScenario;
   durationMs: number;
+};
+
+const DEFAULT_PRACTICE_BOT_NAV_TUNING: PracticeBotNavTuning = {
+  walkableClimb: 0.35,
+  walkableSlopeAngleDegrees: 45,
+  cellHeight: 0.0275,
 };
 
 declare global {
@@ -214,6 +229,174 @@ export function App({
       debugOverlayVisible: debugVisible,
     });
   }, [practiceMode, multiplayerMatchId, connected, status, playerId, debugVisible]);
+
+  const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
+  const practiceBotWorldDocumentRef = useRef<WorldDocument | null>(null);
+  const [practiceBotRuntime, setPracticeBotRuntime] = useState<PracticeBotRuntime | null>(null);
+  const [practiceBotStats, setPracticeBotStats] = useState<PracticeBotStats | null>(null);
+  const [practiceBotNavConfig, setPracticeBotNavConfig] = useState<PracticeBotNavDebugConfig | null>(null);
+  const [practiceBotNavTuning, setPracticeBotNavTuning] = useState<PracticeBotNavTuning | null>(DEFAULT_PRACTICE_BOT_NAV_TUNING);
+  const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
+  const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
+  const [practiceBotDesiredMaxSpeed, setPracticeBotDesiredMaxSpeed] = useState(3.0);
+  const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
+  const refreshPracticeBotStats = useCallback(() => {
+    const runtime = practiceBotRuntimeRef.current;
+    setPracticeBotStats(runtime ? runtime.stats() : null);
+  }, []);
+  const handleSetBotCount = useCallback((count: number) => {
+    setPracticeBotDesiredCount(Math.max(0, Math.min(32, Math.floor(count))));
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setBotCount(count);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleClearBots = useCallback(() => {
+    setPracticeBotDesiredCount(0);
+    practiceBotRuntimeRef.current?.clear();
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleSetBotBehavior = useCallback((kind: PracticeBotBehaviorKind) => {
+    setPracticeBotDesiredBehavior(kind);
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setBehavior(kind);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleSetBotMaxSpeed = useCallback((speed: number) => {
+    setPracticeBotDesiredMaxSpeed(Math.max(0.5, Math.min(12, speed)));
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setMaxSpeed(speed);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleUpdateBotNavTuning = useCallback((patch: Partial<PracticeBotNavTuning>) => {
+    setPracticeBotNavTuning((current) => {
+      const base = current ?? (practiceBotNavConfig
+        ? {
+            walkableClimb: practiceBotNavConfig.walkableClimb,
+            walkableSlopeAngleDegrees: practiceBotNavConfig.walkableSlopeAngleDegrees,
+            cellHeight: practiceBotNavConfig.cellHeight,
+          }
+        : DEFAULT_PRACTICE_BOT_NAV_TUNING);
+      return {
+        ...base,
+        ...patch,
+      };
+    });
+  }, [practiceBotNavConfig]);
+  const handleResetBotNavTuning = useCallback(() => {
+    setPracticeBotNavTuning(null);
+  }, []);
+  const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
+    setPracticeBotDebugOverlay(value);
+  }, []);
+
+  useEffect(() => {
+    if (!practiceMode) {
+      const existing = practiceBotRuntimeRef.current;
+      if (existing) {
+        existing.clear();
+        existing.detach();
+      }
+      practiceBotRuntimeRef.current = null;
+      practiceBotWorldDocumentRef.current = null;
+      setPracticeBotRuntime(null);
+      setPracticeBotStats(null);
+      setPracticeBotNavConfig(null);
+      setPracticeBotDebugOverlay(false);
+    }
+  }, [practiceMode]);
+
+  useEffect(() => () => {
+    const existing = practiceBotRuntimeRef.current;
+    if (existing) {
+      existing.clear();
+      existing.detach();
+      practiceBotRuntimeRef.current = null;
+    }
+    practiceBotWorldDocumentRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!practiceMode) return;
+    let cancelled = false;
+    const previousRuntime = practiceBotRuntimeRef.current;
+    const preserveExistingBots =
+      previousRuntime != null && practiceBotWorldDocumentRef.current === effectiveWorldDocument;
+    const preservedBots = preserveExistingBots
+      ? previousRuntime.captureBotSnapshots()
+      : [];
+    if (previousRuntime && !preserveExistingBots) {
+      previousRuntime.clear();
+      previousRuntime.detach();
+      practiceBotRuntimeRef.current = null;
+      practiceBotWorldDocumentRef.current = null;
+      setPracticeBotRuntime(null);
+      setPracticeBotStats(null);
+      setPracticeBotNavConfig(null);
+    }
+    const desiredCount = practiceBotDesiredCount;
+    const desiredBehavior = practiceBotDesiredBehavior;
+    const desiredMaxSpeed = practiceBotDesiredMaxSpeed;
+    const navTuning = practiceBotNavTuning;
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const sharedProfile = await getSharedPlayerNavigationProfileAsync();
+          const runtimeOptions = {
+            maxAgentRadius: 0.6,
+            navigationProfile: {
+              ...sharedProfile,
+              walkableClimb: navTuning?.walkableClimb ?? sharedProfile.walkableClimb,
+              walkableSlopeAngleDegrees: navTuning?.walkableSlopeAngleDegrees ?? sharedProfile.walkableSlopeAngleDegrees,
+            },
+            cellHeight: navTuning?.cellHeight,
+          };
+          const runtime = await PracticeBotRuntime.create(effectiveWorldDocument, runtimeOptions);
+          if (cancelled) {
+            runtime.clear();
+            runtime.detach();
+            return;
+          }
+          runtime.setBehavior(desiredBehavior);
+          runtime.setMaxSpeed(desiredMaxSpeed);
+          if (preservedBots.length > 0) {
+            runtime.restoreBotSnapshots(preservedBots);
+          } else {
+            runtime.setBotCount(desiredCount);
+          }
+          const staleRuntime = practiceBotRuntimeRef.current;
+          if (staleRuntime && staleRuntime !== runtime) {
+            if (preserveExistingBots && staleRuntime === previousRuntime) {
+              staleRuntime.detach({ preserveHostBots: true });
+            } else {
+              staleRuntime.clear();
+              staleRuntime.detach();
+            }
+          }
+          practiceBotRuntimeRef.current = runtime;
+          practiceBotWorldDocumentRef.current = effectiveWorldDocument;
+          setPracticeBotRuntime(runtime);
+          setPracticeBotStats(runtime.stats());
+          const runtimeNavConfig = runtime.getNavDebugConfig();
+          setPracticeBotNavConfig(runtimeNavConfig);
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to initialize practice bots', error);
+          }
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [
+    practiceMode,
+    effectiveWorldDocument,
+    practiceBotNavTuning,
+  ]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -750,23 +933,38 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
+      <PracticeBotsPanel
+        visible={practiceMode && connected && !calibrationOpen}
+        stats={practiceBotStats}
+        runtime={practiceBotRuntime}
+        navConfig={practiceBotNavConfig}
+        navTuning={practiceBotNavTuning}
+        debugOverlay={practiceBotDebugOverlay}
+        onSetBotCount={handleSetBotCount}
+        onClear={handleClearBots}
+        onSetBehavior={handleSetBotBehavior}
+        onSetMaxSpeed={handleSetBotMaxSpeed}
+        onUpdateNavTuning={handleUpdateBotNavTuning}
+        onResetNavTuning={handleResetBotNavTuning}
+        onToggleDebugOverlay={handleToggleBotDebugOverlay}
+      />
       <EnergyBar
         hp={displayStats.hp}
         energy={displayStats.energy}
         visible={connected}
       />
-        <DebugOverlay
-          stats={displayStats}
-          visible={debugVisible}
-          localRenderSmoothingEnabled={localRenderSmoothingEnabled}
-          onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
-          vehicleSmoothingEnabled={vehicleSmoothingEnabled}
-          onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
-          rapierDebugLabel={rapierDebugLabel}
-          onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
-          deepCaptureEnabled={deepCaptureEnabled}
-          deepCaptureSampleCount={deepCaptureSampleCount}
-        />
+      <DebugOverlay
+        stats={displayStats}
+        visible={debugVisible}
+        localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+        onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
+        vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+        onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        rapierDebugLabel={rapierDebugLabel}
+        onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
+        deepCaptureEnabled={deepCaptureEnabled}
+        deepCaptureSampleCount={deepCaptureSampleCount}
+      />
       {debugVisible && (
         <div
           ref={renderStatsParentRef}
@@ -797,6 +995,8 @@ export function App({
           showRenderStats={debugVisible}
           showDebugHelpers={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
+          practiceBots={practiceMode ? practiceBotRuntime : null}
+          practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
