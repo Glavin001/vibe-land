@@ -801,6 +801,35 @@ mod tests {
         }
     }
 
+    fn make_flat_test_world() -> WorldDocument {
+        WorldDocument {
+            version: 2,
+            meta: WorldMeta {
+                name: "Flat Test".to_string(),
+                description: "Minimal local session test fixture.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+        }
+    }
+
+    fn isolated_energy_session() -> LocalSession {
+        let mut session =
+            LocalSession::from_world_document(make_flat_test_world()).expect("valid flat world");
+        session.connect();
+        let _ = session.drain_packets();
+        session
+    }
+
     fn broken_world() -> WorldDocument {
         serde_json::from_str(BROKEN_WORLD_DOCUMENT_JSON)
             .expect("broken world document asset should deserialize")
@@ -906,9 +935,7 @@ mod tests {
 
     #[test]
     fn hp_death_drops_battery_with_remaining_energy() {
-        let mut session = LocalSession::new();
-        session.connect();
-        let _ = session.drain_packets();
+        let mut session = isolated_energy_session();
 
         let remaining_energy = 321.5;
         session
@@ -939,9 +966,7 @@ mod tests {
 
     #[test]
     fn rifle_energy_depletion_death_does_not_drop_battery() {
-        let mut session = LocalSession::new();
-        session.connect();
-        let _ = session.drain_packets();
+        let mut session = isolated_energy_session();
 
         session
             .arena
@@ -979,9 +1004,7 @@ mod tests {
 
     #[test]
     fn overlapping_battery_pickup_restores_energy_and_removes_battery() {
-        let mut session = LocalSession::new();
-        session.connect();
-        let _ = session.drain_packets();
+        let mut session = isolated_energy_session();
 
         let player_position = session
             .arena
