@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalSession;
-use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
+use crate::movement::{MoveConfig, Vec3d};
 use crate::protocol::{
     FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
 };
@@ -18,10 +18,10 @@ use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
-    read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
-    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CHASSIS_HULL_VERTICES,
-    VEHICLE_CONTROLLER_SUBSTEPS, VEHICLE_WHEEL_OFFSETS,
+    apply_vehicle_input_step, canonical_vehicle_type, create_vehicle_physics,
+    read_vehicle_chassis_state, read_vehicle_debug_snapshot, refresh_vehicle_contacts,
+    step_vehicle_dynamics, vehicle_definition, vehicle_definitions, vehicle_exit_position,
+    DEFAULT_VEHICLE_TYPE, VEHICLE_CONTROLLER_SUBSTEPS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -36,31 +36,43 @@ fn install_panic_hook_once() {
 /// Returns chassis half-extents as [x, y, z].
 #[wasm_bindgen]
 pub fn vehicle_chassis_half_extents() -> Box<[f32]> {
-    Box::new(VEHICLE_CHASSIS_HALF_EXTENTS)
+    Box::new(vehicle_definition(DEFAULT_VEHICLE_TYPE).chassis_half_extents)
 }
 
 /// Returns wheel offsets as a flat array [x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3] (FL, FR, RL, RR).
 #[wasm_bindgen]
 pub fn vehicle_wheel_offsets() -> Box<[f32]> {
-    VEHICLE_WHEEL_OFFSETS.concat().into_boxed_slice()
+    vehicle_definition(DEFAULT_VEHICLE_TYPE)
+        .wheel_offsets
+        .concat()
+        .into_boxed_slice()
 }
 
 /// Returns the chassis convex-hull vertices as a flat array of (x, y, z) triples.
 #[wasm_bindgen]
 pub fn vehicle_chassis_hull_vertices() -> Box<[f32]> {
-    VEHICLE_CHASSIS_HULL_VERTICES.concat().into_boxed_slice()
+    vehicle_definition(DEFAULT_VEHICLE_TYPE)
+        .chassis_hull_vertices
+        .concat()
+        .into_boxed_slice()
 }
 
 /// Returns the suspension rest length in metres.
 #[wasm_bindgen]
 pub fn vehicle_suspension_rest_length() -> f32 {
-    VEHICLE_SUSPENSION_REST_LENGTH
+    vehicle_definition(DEFAULT_VEHICLE_TYPE).suspension_rest_length_m
 }
 
 /// Returns the wheel radius in metres.
 #[wasm_bindgen]
 pub fn vehicle_wheel_radius() -> f32 {
-    VEHICLE_WHEEL_RADIUS
+    vehicle_definition(DEFAULT_VEHICLE_TYPE).wheel_radius_m
+}
+
+/// Returns the supported vehicle definitions as JSON.
+#[wasm_bindgen]
+pub fn vehicle_definitions_json() -> String {
+    serde_json::to_string(vehicle_definitions()).expect("vehicle definitions should serialize")
 }
 
 struct WasmVehicle {
@@ -947,7 +959,7 @@ impl WasmSimWorld {
     pub fn spawn_vehicle(
         &mut self,
         id: u32,
-        _vehicle_type: u8,
+        vehicle_type: u8,
         px: f32,
         py: f32,
         pz: f32,
@@ -959,10 +971,11 @@ impl WasmSimWorld {
         // Remove existing vehicle with same ID if present.
         self.remove_vehicle(id);
 
+        let vehicle_type = canonical_vehicle_type(vehicle_type);
         let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
         let pose = nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(px, py, pz), iso);
         let (chassis_body, chassis_collider, controller) =
-            create_vehicle_physics(&mut self.sim, pose);
+            create_vehicle_physics(&mut self.sim, vehicle_type, pose);
 
         self.vehicles.insert(
             id,

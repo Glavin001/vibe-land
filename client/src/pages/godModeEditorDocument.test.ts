@@ -13,6 +13,7 @@ import {
   updateSelectedTargetPosition,
   updateSelectedTargetRadius,
   updateSelectedTargetRotation,
+  updateSelectedTargetVehicleType,
   type SelectedTarget,
 } from './godModeEditorDocument';
 import {
@@ -93,6 +94,15 @@ describe('godModeEditorDocument', () => {
 
     expect(getSelectedDynamic(world, selected)?.radius).toBe(1.25);
     expect(getSelectedDynamic(world, selected)?.rotation).toEqual(rotation);
+  });
+
+  it('updates vehicle type through shared helpers', () => {
+    let world = addDynamicEntityToWorld(emptyWorld(), 'vehicle').world;
+    const selected: SelectedTarget = { kind: 'dynamic', id: world.dynamicEntities[0]!.id };
+
+    world = updateSelectedTargetVehicleType(world, selected, 0);
+
+    expect(getSelectedDynamic(world, selected)?.vehicleType).toBe(0);
   });
 
   it('removes selected entities and clears play snapshots by cloning', () => {

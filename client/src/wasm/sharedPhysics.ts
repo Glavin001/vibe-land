@@ -2,11 +2,7 @@ import init, {
   WasmSimWorld as RawWasmSimWorld,
   WasmClockSync,
   WasmLocalSession as RawWasmLocalSession,
-  vehicle_chassis_half_extents as wasmVehicleChassisHalfExtents,
-  vehicle_chassis_hull_vertices as wasmVehicleChassisHullVertices,
-  vehicle_suspension_rest_length as wasmVehicleSuspensionRestLength,
-  vehicle_wheel_offsets as wasmVehicleWheelOffsets,
-  vehicle_wheel_radius as wasmVehicleWheelRadius,
+  vehicle_definitions_json as wasmVehicleDefinitionsJson,
 } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
 import { installWasmSimWorldCompat } from './compat';
@@ -14,48 +10,105 @@ import { installWasmSimWorldCompat } from './compat';
 let initialized = false;
 let initPromise: Promise<void> | null = null;
 
-export type SharedVehicleGeometry = {
+export type SharedVehicleDefinition = {
+  vehicleType: number;
+  key: string;
+  name: string;
   chassisHalfExtents: { x: number; y: number; z: number };
   chassisHullVertices: [number, number, number][];
   wheelOffsets: [number, number, number][];
   suspensionRestLengthM: number;
+  suspensionTravelM: number;
   wheelRadiusM: number;
 };
 
-const FALLBACK_VEHICLE_GEOMETRY: SharedVehicleGeometry = Object.freeze({
-  chassisHalfExtents: Object.freeze({ x: 0.9, y: 0.3, z: 1.8 }),
-  // Cybertruck-style wedge inscribed in the chassis AABB. Must stay in sync
-  // with VEHICLE_CHASSIS_HULL_VERTICES in shared/src/vehicle.rs. The wasm
-  // hydrate path overwrites this once the shared crate is loaded.
-  chassisHullVertices: Object.freeze([
-    Object.freeze([-0.9, -0.30, -1.80] as [number, number, number]),
-    Object.freeze([-0.9, -0.30, 1.80] as [number, number, number]),
-    Object.freeze([-0.9, -0.05, 1.80] as [number, number, number]),
-    Object.freeze([-0.9, 0.10, 0.55] as [number, number, number]),
-    Object.freeze([-0.9, 0.30, 0.05] as [number, number, number]),
-    Object.freeze([-0.9, 0.30, -0.90] as [number, number, number]),
-    Object.freeze([-0.9, 0.05, -1.25] as [number, number, number]),
-    Object.freeze([-0.9, 0.05, -1.80] as [number, number, number]),
-    Object.freeze([0.9, -0.30, -1.80] as [number, number, number]),
-    Object.freeze([0.9, -0.30, 1.80] as [number, number, number]),
-    Object.freeze([0.9, -0.05, 1.80] as [number, number, number]),
-    Object.freeze([0.9, 0.10, 0.55] as [number, number, number]),
-    Object.freeze([0.9, 0.30, 0.05] as [number, number, number]),
-    Object.freeze([0.9, 0.30, -0.90] as [number, number, number]),
-    Object.freeze([0.9, 0.05, -1.25] as [number, number, number]),
-    Object.freeze([0.9, 0.05, -1.80] as [number, number, number]),
-  ]) as [number, number, number][],
-  wheelOffsets: Object.freeze([
-    Object.freeze([-0.9, 0.0, 1.1] as [number, number, number]),
-    Object.freeze([0.9, 0.0, 1.1] as [number, number, number]),
-    Object.freeze([-0.9, 0.0, -1.1] as [number, number, number]),
-    Object.freeze([0.9, 0.0, -1.1] as [number, number, number]),
-  ]) as [number, number, number][],
-  suspensionRestLengthM: 0.3,
-  wheelRadiusM: 0.35,
-});
+type RawSharedVehicleDefinition = {
+  vehicleType?: number;
+  key?: string;
+  name?: string;
+  chassisHalfExtents?: number[];
+  chassisHullVertices?: number[][];
+  wheelOffsets?: number[][];
+  suspensionRestLengthM?: number;
+  suspensionTravelM?: number;
+  wheelRadiusM?: number;
+};
 
-let sharedVehicleGeometry: SharedVehicleGeometry = FALLBACK_VEHICLE_GEOMETRY;
+const FALLBACK_SHARED_VEHICLE_DEFINITIONS: SharedVehicleDefinition[] = [
+  {
+    vehicleType: 0,
+    key: 'delorean',
+    name: 'DeLorean',
+    chassisHalfExtents: { x: 0.9, y: 0.3, z: 1.8 },
+    chassisHullVertices: [
+      [-0.9, -0.30, -1.80],
+      [-0.9, -0.30, 1.80],
+      [-0.9, -0.05, 1.80],
+      [-0.9, 0.10, 0.55],
+      [-0.9, 0.30, 0.05],
+      [-0.9, 0.30, -0.90],
+      [-0.9, 0.05, -1.25],
+      [-0.9, 0.05, -1.80],
+      [0.9, -0.30, -1.80],
+      [0.9, -0.30, 1.80],
+      [0.9, -0.05, 1.80],
+      [0.9, 0.10, 0.55],
+      [0.9, 0.30, 0.05],
+      [0.9, 0.30, -0.90],
+      [0.9, 0.05, -1.25],
+      [0.9, 0.05, -1.80],
+    ],
+    wheelOffsets: [
+      [-0.9, 0.0, 1.1],
+      [0.9, 0.0, 1.1],
+      [-0.9, 0.0, -1.1],
+      [0.9, 0.0, -1.1],
+    ],
+    suspensionRestLengthM: 0.3,
+    suspensionTravelM: 0.2,
+    wheelRadiusM: 0.35,
+  },
+  {
+    vehicleType: 1,
+    key: 'cybertruck',
+    name: 'Cybertruck',
+    chassisHalfExtents: { x: 0.9, y: 0.3, z: 1.8 },
+    chassisHullVertices: [
+      [-0.9, -0.30, -1.80],
+      [-0.9, -0.30, 1.80],
+      [-0.9, 0.02, 1.80],
+      [-0.9, 0.18, 1.35],
+      [-0.9, 0.36, 0.95],
+      [-0.9, 0.31, 0.10],
+      [-0.9, 0.21, -0.95],
+      [-0.9, 0.10, -1.80],
+      [0.9, -0.30, -1.80],
+      [0.9, -0.30, 1.80],
+      [0.9, 0.02, 1.80],
+      [0.9, 0.18, 1.35],
+      [0.9, 0.36, 0.95],
+      [0.9, 0.31, 0.10],
+      [0.9, 0.21, -0.95],
+      [0.9, 0.10, -1.80],
+    ],
+    wheelOffsets: [
+      [-0.9, 0.0, 1.1],
+      [0.9, 0.0, 1.1],
+      [-0.9, 0.0, -1.1],
+      [0.9, 0.0, -1.1],
+    ],
+    suspensionRestLengthM: 0.3,
+    suspensionTravelM: 0.2,
+    wheelRadiusM: 0.35,
+  },
+];
+
+export const DEFAULT_SHARED_VEHICLE_TYPE = FALLBACK_SHARED_VEHICLE_DEFINITIONS[0]?.vehicleType ?? 0;
+
+let sharedVehicleDefinitions: SharedVehicleDefinition[] = FALLBACK_SHARED_VEHICLE_DEFINITIONS;
+let sharedVehicleDefinitionByType = new Map<number, SharedVehicleDefinition>(
+  sharedVehicleDefinitions.map((definition) => [definition.vehicleType, definition]),
+);
 
 type WasmDebugRenderBuffers = {
   vertices: Float32Array;
@@ -202,39 +255,62 @@ installWasmSimWorldCompat(RawWasmSimWorld);
 const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
 const WasmLocalSession = RawWasmLocalSession as unknown as WasmLocalSessionCtor;
 
-function readSharedVehicleGeometryFromWasm(): SharedVehicleGeometry {
-  const halfExtents = Array.from(wasmVehicleChassisHalfExtents());
-  const wheelOffsetsFlat = Array.from(wasmVehicleWheelOffsets());
-  const wheelOffsets: [number, number, number][] = [];
-  for (let i = 0; i < wheelOffsetsFlat.length; i += 3) {
-    wheelOffsets.push([
-      wheelOffsetsFlat[i] ?? 0,
-      wheelOffsetsFlat[i + 1] ?? 0,
-      wheelOffsetsFlat[i + 2] ?? 0,
-    ]);
+function normalizeTriples(
+  source: number[][] | undefined,
+  fallback: [number, number, number][],
+): [number, number, number][] {
+  if (!Array.isArray(source) || source.length === 0) {
+    return fallback;
   }
-  const hullFlat = Array.from(wasmVehicleChassisHullVertices());
-  const chassisHullVertices: [number, number, number][] = [];
-  for (let i = 0; i < hullFlat.length; i += 3) {
-    chassisHullVertices.push([
-      hullFlat[i] ?? 0,
-      hullFlat[i + 1] ?? 0,
-      hullFlat[i + 2] ?? 0,
-    ]);
-  }
+  return source.map((triple, index) => [
+    triple?.[0] ?? fallback[index]?.[0] ?? 0,
+    triple?.[1] ?? fallback[index]?.[1] ?? 0,
+    triple?.[2] ?? fallback[index]?.[2] ?? 0,
+  ]);
+}
+
+function normalizeSharedVehicleDefinition(
+  raw: RawSharedVehicleDefinition,
+  fallback: SharedVehicleDefinition,
+): SharedVehicleDefinition {
+  const halfExtents = raw.chassisHalfExtents;
   return {
+    vehicleType: Math.trunc(raw.vehicleType ?? fallback.vehicleType),
+    key: raw.key ?? fallback.key,
+    name: raw.name ?? fallback.name,
     chassisHalfExtents: {
-      x: halfExtents[0] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.x,
-      y: halfExtents[1] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.y,
-      z: halfExtents[2] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.z,
+      x: halfExtents?.[0] ?? fallback.chassisHalfExtents.x,
+      y: halfExtents?.[1] ?? fallback.chassisHalfExtents.y,
+      z: halfExtents?.[2] ?? fallback.chassisHalfExtents.z,
     },
-    chassisHullVertices: chassisHullVertices.length > 0
-      ? chassisHullVertices
-      : (FALLBACK_VEHICLE_GEOMETRY.chassisHullVertices as [number, number, number][]),
-    wheelOffsets,
-    suspensionRestLengthM: wasmVehicleSuspensionRestLength(),
-    wheelRadiusM: wasmVehicleWheelRadius(),
+    chassisHullVertices: normalizeTriples(raw.chassisHullVertices, fallback.chassisHullVertices),
+    wheelOffsets: normalizeTriples(raw.wheelOffsets, fallback.wheelOffsets),
+    suspensionRestLengthM: raw.suspensionRestLengthM ?? fallback.suspensionRestLengthM,
+    suspensionTravelM: raw.suspensionTravelM ?? fallback.suspensionTravelM,
+    wheelRadiusM: raw.wheelRadiusM ?? fallback.wheelRadiusM,
   };
+}
+
+function setSharedVehicleDefinitions(definitions: SharedVehicleDefinition[]): void {
+  sharedVehicleDefinitions = definitions.length > 0 ? definitions : FALLBACK_SHARED_VEHICLE_DEFINITIONS;
+  sharedVehicleDefinitionByType = new Map(
+    sharedVehicleDefinitions.map((definition) => [definition.vehicleType, definition]),
+  );
+}
+
+function readSharedVehicleDefinitionsFromWasm(): SharedVehicleDefinition[] {
+  try {
+    const rawDefinitions = JSON.parse(wasmVehicleDefinitionsJson()) as RawSharedVehicleDefinition[];
+    if (!Array.isArray(rawDefinitions) || rawDefinitions.length === 0) {
+      return FALLBACK_SHARED_VEHICLE_DEFINITIONS;
+    }
+    return rawDefinitions.map((raw, index) => normalizeSharedVehicleDefinition(
+      raw,
+      FALLBACK_SHARED_VEHICLE_DEFINITIONS[index] ?? FALLBACK_SHARED_VEHICLE_DEFINITIONS[0],
+    ));
+  } catch {
+    return FALLBACK_SHARED_VEHICLE_DEFINITIONS;
+  }
 }
 
 export async function initSharedPhysics(): Promise<void> {
@@ -243,7 +319,7 @@ export async function initSharedPhysics(): Promise<void> {
     initPromise = (async () => {
       await init();
       provideWasmClockSync(WasmClockSync);
-      sharedVehicleGeometry = readSharedVehicleGeometryFromWasm();
+      setSharedVehicleDefinitions(readSharedVehicleDefinitionsFromWasm());
       initialized = true;
     })().catch((error) => {
       initPromise = null;
@@ -254,11 +330,31 @@ export async function initSharedPhysics(): Promise<void> {
 }
 
 export function hydrateSharedVehicleGeometryFromLoadedWasm(): void {
-  sharedVehicleGeometry = readSharedVehicleGeometryFromWasm();
+  setSharedVehicleDefinitions(readSharedVehicleDefinitionsFromWasm());
 }
 
-export function getSharedVehicleGeometry(): SharedVehicleGeometry {
-  return sharedVehicleGeometry;
+export function getSharedVehicleDefinitions(): SharedVehicleDefinition[] {
+  return sharedVehicleDefinitions;
+}
+
+export function getSharedVehicleDefinition(vehicleType?: number | null): SharedVehicleDefinition {
+  const resolvedType = Math.trunc(vehicleType ?? DEFAULT_SHARED_VEHICLE_TYPE);
+  return sharedVehicleDefinitionByType.get(resolvedType)
+    ?? sharedVehicleDefinitionByType.get(DEFAULT_SHARED_VEHICLE_TYPE)
+    ?? FALLBACK_SHARED_VEHICLE_DEFINITIONS[0];
+}
+
+export function getSharedVehicleTypeByKey(key: string): number | null {
+  const match = sharedVehicleDefinitions.find((definition) => definition.key === key);
+  return match?.vehicleType ?? null;
+}
+
+export function getSharedVehicleDefaultType(): number {
+  return DEFAULT_SHARED_VEHICLE_TYPE;
+}
+
+export function getSharedVehicleGeometry(): SharedVehicleDefinition {
+  return getSharedVehicleDefinition(DEFAULT_SHARED_VEHICLE_TYPE);
 }
 
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };

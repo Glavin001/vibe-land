@@ -10,6 +10,9 @@ import {
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
+import { getSharedVehicleTypeByKey } from '../wasm/sharedPhysics';
+
+const DEFAULT_EDITOR_VEHICLE_TYPE = getSharedVehicleTypeByKey('cybertruck') ?? 0;
 
 export type SelectedTarget =
   | { kind: 'static'; id: number }
@@ -121,7 +124,7 @@ export function addDynamicEntityToWorld(
     ? { ...common, halfExtents: [0.7, 0.7, 0.7] }
     : kind === 'ball'
       ? { ...common, radius: 0.6 }
-      : { ...common, vehicleType: 0 };
+      : { ...common, vehicleType: DEFAULT_EDITOR_VEHICLE_TYPE };
   entity.position = [0, getMinimumDynamicEntityY(current, entity), 0];
 
   return {
@@ -223,6 +226,37 @@ export function updateSelectedTargetRadius(
         ? { ...entity, radius: nextRadius }
         : entity
     )),
+  };
+}
+
+export function updateSelectedTargetVehicleType(
+  current: WorldDocument,
+  selected: SelectedTarget,
+  nextVehicleType: number,
+): WorldDocument {
+  if (selected?.kind !== 'dynamic') {
+    return current;
+  }
+  return {
+    ...current,
+    dynamicEntities: current.dynamicEntities.map((entity) => {
+      if (entity.id !== selected.id || entity.kind !== 'vehicle') {
+        return entity;
+      }
+      const nextEntity: DynamicEntity = {
+        ...entity,
+        vehicleType: Math.trunc(nextVehicleType),
+      };
+      const minY = getMinimumDynamicEntityY(current, nextEntity);
+      return {
+        ...nextEntity,
+        position: [
+          nextEntity.position[0],
+          Math.max(nextEntity.position[1], minY),
+          nextEntity.position[2],
+        ],
+      };
+    }),
   };
 }
 
