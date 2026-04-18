@@ -16,8 +16,11 @@ use crate::{
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
-use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, UnitQuaternion};
-use rapier3d::prelude::*;
+use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
+use rapier3d::prelude::{
+    ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
+    RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
+};
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
@@ -923,7 +926,7 @@ impl LocalSession {
         let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
             return;
         };
-        let axis = nalgebra::Unit::new_normalize(vector![ax, ay, az]);
+        let axis = Unit::new_normalize(vector![ax, ay, az]);
         let joint = RevoluteJointBuilder::new(axis)
             .local_anchor1(Point3::new(a1x, a1y, a1z))
             .local_anchor2(Point3::new(a2x, a2y, a2z))
