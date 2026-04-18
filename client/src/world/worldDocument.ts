@@ -38,6 +38,12 @@ export type TerrainRampStencil = {
   endFalloffM: number;
 };
 
+export type SpawnArea = {
+  id: number;
+  position: Vec3;
+  radius: number;
+};
+
 export type WorldDocument = {
   version: number;
   meta: {
@@ -51,6 +57,7 @@ export type WorldDocument = {
   };
   staticProps: StaticProp[];
   dynamicEntities: DynamicEntity[];
+  spawnAreas: SpawnArea[];
 };
 
 type LegacyTerrain = {
@@ -105,6 +112,7 @@ export function createEmptyWorldDocument(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    spawnAreas: [],
   };
 }
 
@@ -121,6 +129,7 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
     terrain?: Partial<WorldDocument['terrain']> & Partial<LegacyTerrain>;
     staticProps?: unknown[];
     dynamicEntities?: unknown[];
+    spawnAreas?: unknown[];
   };
   if (!candidate.terrain) {
     throw new Error('World document terrain is missing.');
@@ -145,6 +154,20 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
       ...(entity as DynamicEntity),
       rotation: normalizeQuaternion((entity as Partial<DynamicEntity>).rotation),
     })),
+    spawnAreas: Array.isArray(candidate.spawnAreas)
+      ? candidate.spawnAreas.map((area) => parseSpawnArea(area))
+      : [],
+  };
+}
+
+function parseSpawnArea(raw: unknown): SpawnArea {
+  const a = raw as Partial<SpawnArea>;
+  return {
+    id: typeof a.id === 'number' ? a.id : 0,
+    position: Array.isArray(a.position) && a.position.length === 3
+      ? [a.position[0] as number, a.position[1] as number, a.position[2] as number]
+      : [0, 0, 0],
+    radius: typeof a.radius === 'number' && a.radius > 0 ? a.radius : 10,
   };
 }
 
@@ -198,6 +221,10 @@ export function getNextWorldEntityId(world: WorldDocument): number {
   const highestStatic = world.staticProps.reduce((max, entity) => Math.max(max, entity.id), 0);
   const highestDynamic = world.dynamicEntities.reduce((max, entity) => Math.max(max, entity.id), 0);
   return Math.max(highestStatic, highestDynamic) + 1;
+}
+
+export function getNextSpawnAreaId(world: WorldDocument): number {
+  return world.spawnAreas.reduce((max, area) => Math.max(max, area.id), 0) + 1;
 }
 
 export function quaternionFromYaw(yawRad: number): Quaternion {

@@ -13,16 +13,20 @@ const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
 
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
-    WorldDocument::demo().instantiate(arena)
+    let world = WorldDocument::demo();
+    world.instantiate(arena)?;
+    arena.set_spawn_areas(world.spawn_areas.clone());
+    Ok(())
 }
 
 pub fn seed_world_for_match(
     arena: &mut PhysicsArena,
     match_id: &str,
 ) -> Result<(), WorldDocumentError> {
-    benchmark_world_document(match_id)
-        .unwrap_or_else(WorldDocument::demo)
-        .instantiate(arena)
+    let world = benchmark_world_document(match_id).unwrap_or_else(WorldDocument::demo);
+    world.instantiate(arena)?;
+    arena.set_spawn_areas(world.spawn_areas.clone());
+    Ok(())
 }
 
 fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {
@@ -67,6 +71,7 @@ fn benchmark_vehicle_world(
             radius: None,
             vehicle_type: Some(0),
         }],
+        spawn_areas: vec![],
     }
 }
 

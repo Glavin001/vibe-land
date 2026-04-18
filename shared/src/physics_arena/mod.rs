@@ -9,6 +9,7 @@ pub use crate::movement::{vehicle_wheel_params, MoveConfig, VEHICLE_MAX_STEER_RA
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
 pub use vibe_netcode::physics_arena::DynamicArena;
+use crate::world_document::SpawnArea;
 
 mod player;
 mod spawn;
@@ -67,6 +68,7 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+    pub spawn_areas: Vec<SpawnArea>,
 }
 
 impl PhysicsArena {
@@ -78,7 +80,12 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            spawn_areas: Vec::new(),
         }
+    }
+
+    pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {
+        self.spawn_areas = areas;
     }
 
     pub fn config(&self) -> &MoveConfig {

@@ -2,10 +2,12 @@ import {
   cloneWorldDocument,
   getMinimumDynamicEntityY,
   getNextWorldEntityId,
+  getNextSpawnAreaId,
   identityQuaternion,
   sampleTerrainHeightAtWorldPosition,
   type DynamicEntity,
   type Quaternion,
+  type SpawnArea,
   type StaticProp,
   type Vec3,
   type WorldDocument,
@@ -14,10 +16,11 @@ import {
 export type SelectedTarget =
   | { kind: 'static'; id: number }
   | { kind: 'dynamic'; id: number }
+  | { kind: 'spawnArea'; id: number }
   | null;
 
 export type SelectedTransformEntity = {
-  kind: 'static' | 'dynamic';
+  kind: 'static' | 'dynamic' | 'spawnArea';
   id: number;
   position: Vec3;
   rotation: Quaternion;
@@ -31,9 +34,13 @@ export function selectionExists(world: WorldDocument, selected: SelectedTarget):
   if (!selected) {
     return false;
   }
-  return selected.kind === 'static'
-    ? world.staticProps.some((entity) => entity.id === selected.id)
-    : world.dynamicEntities.some((entity) => entity.id === selected.id);
+  if (selected.kind === 'static') {
+    return world.staticProps.some((entity) => entity.id === selected.id);
+  }
+  if (selected.kind === 'dynamic') {
+    return world.dynamicEntities.some((entity) => entity.id === selected.id);
+  }
+  return world.spawnAreas.some((area) => area.id === selected.id);
 }
 
 export function getSelectedStatic(world: WorldDocument, selected: SelectedTarget): StaticProp | null {
@@ -48,6 +55,13 @@ export function getSelectedDynamic(world: WorldDocument, selected: SelectedTarge
     return null;
   }
   return world.dynamicEntities.find((entity) => entity.id === selected.id) ?? null;
+}
+
+export function getSelectedSpawnArea(world: WorldDocument, selected: SelectedTarget): SpawnArea | null {
+  if (selected?.kind !== 'spawnArea') {
+    return null;
+  }
+  return world.spawnAreas.find((area) => area.id === selected.id) ?? null;
 }
 
 export function resolveSelectedTransformEntity(
@@ -78,6 +92,19 @@ export function resolveSelectedTransformEntity(
       radius: selectedDynamic.radius,
       canRotate: selectedDynamic.kind !== 'ball',
       canResize: selectedDynamic.kind !== 'vehicle',
+    };
+  }
+
+  const selectedSpawnArea = getSelectedSpawnArea(world, selected);
+  if (selectedSpawnArea) {
+    return {
+      kind: 'spawnArea',
+      id: selectedSpawnArea.id,
+      position: selectedSpawnArea.position,
+      rotation: identityQuaternion(),
+      radius: selectedSpawnArea.radius,
+      canRotate: false,
+      canResize: true,
     };
   }
 
@@ -133,6 +160,25 @@ export function addDynamicEntityToWorld(
   };
 }
 
+export function addSpawnAreaToWorld(
+  current: WorldDocument,
+): { world: WorldDocument; selected: SelectedTarget } {
+  const nextId = getNextSpawnAreaId(current);
+  const baseY = sampleTerrainHeightAtWorldPosition(current, 0, 0);
+  const area: SpawnArea = {
+    id: nextId,
+    position: [0, baseY, 0],
+    radius: 10,
+  };
+  return {
+    world: {
+      ...current,
+      spawnAreas: [...current.spawnAreas, area],
+    },
+    selected: { kind: 'spawnArea', id: nextId },
+  };
+}
+
 export function removeSelectedTargetFromWorld(
   current: WorldDocument,
   selected: SelectedTarget,
@@ -144,6 +190,12 @@ export function removeSelectedTargetFromWorld(
     return {
       ...current,
       staticProps: current.staticProps.filter((entity) => entity.id !== selected.id),
+    };
+  }
+  if (selected.kind === 'spawnArea') {
+    return {
+      ...current,
+      spawnAreas: current.spawnAreas.filter((area) => area.id !== selected.id),
     };
   }
   return {
@@ -167,6 +219,16 @@ export function updateSelectedTargetPosition(
         entity.id === selected.id
           ? { ...entity, position: nextPosition }
           : entity
+      )),
+    };
+  }
+  if (selected.kind === 'spawnArea') {
+    return {
+      ...current,
+      spawnAreas: current.spawnAreas.map((area) => (
+        area.id === selected.id
+          ? { ...area, position: nextPosition }
+          : area
       )),
     };
   }
@@ -213,17 +275,27 @@ export function updateSelectedTargetRadius(
   selected: SelectedTarget,
   nextRadius: number,
 ): WorldDocument {
-  if (selected?.kind !== 'dynamic') {
-    return current;
+  if (selected?.kind === 'dynamic') {
+    return {
+      ...current,
+      dynamicEntities: current.dynamicEntities.map((entity) => (
+        entity.id === selected.id
+          ? { ...entity, radius: nextRadius }
+          : entity
+      )),
+    };
   }
-  return {
-    ...current,
-    dynamicEntities: current.dynamicEntities.map((entity) => (
-      entity.id === selected.id
-        ? { ...entity, radius: nextRadius }
-        : entity
-    )),
-  };
+  if (selected?.kind === 'spawnArea') {
+    return {
+      ...current,
+      spawnAreas: current.spawnAreas.map((area) => (
+        area.id === selected.id
+          ? { ...area, radius: Math.max(1, nextRadius) }
+          : area
+      )),
+    };
+  }
+  return current;
 }
 
 export function updateSelectedTargetRotation(
