@@ -198,6 +198,37 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     maxToi: number,
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  removeRagdollBody(id: number): void;
+  /** Returns [px, py, pz, qx, qy, qz, qw] or empty array. */
+  getRagdollBodyState(id: number): Float64Array;
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void;
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void;
+  removeRagdollJoint(jointId: number): void;
 };
 
 type WasmLocalSessionCtor = {

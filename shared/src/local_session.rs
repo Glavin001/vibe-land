@@ -16,6 +16,8 @@ use crate::{
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
+use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, UnitQuaternion};
+use rapier3d::prelude::*;
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
@@ -51,6 +53,10 @@ pub struct LocalSession {
     queued_shots: Vec<(u32, FireCmd)>,
     outbound_packets: Vec<Vec<u8>>,
     server_tick: u32,
+    // Client-local ragdoll bodies (not server-reconciled). These live in the
+    // same physics world as terrain/vehicles so they collide naturally.
+    ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
+    ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
 }
 
 impl LocalSession {
@@ -77,6 +83,8 @@ impl LocalSession {
             queued_shots: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
+            ragdoll_bodies: HashMap::new(),
+            ragdoll_joint_handles: HashMap::new(),
         })
     }
 
@@ -765,6 +773,174 @@ impl LocalSession {
             vehicle.chassis_body,
             &vehicle.controller,
         )
+    }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let body = RigidBodyBuilder::dynamic()
+            .position(Isometry3::from_parts(Translation3::new(px, py, pz), iso))
+            .linvel(vector![vx, vy, vz])
+            .angvel(vector![wx, wy, wz])
+            .linear_damping(0.02)
+            .angular_damping(0.02)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.arena.dynamic.sim.rigid_bodies.insert(body);
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(hx, hy, hz)
+            .density(2.0)
+            .restitution(0.3)
+            .friction(0.6)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let _ = self.arena.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.arena.dynamic.sim.rigid_bodies,
+        );
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        if let Some(body_handle) = self.ragdoll_bodies.remove(&id) {
+            self.arena.dynamic.sim.rigid_bodies.remove(
+                body_handle,
+                &mut self.arena.dynamic.sim.island_manager,
+                &mut self.arena.dynamic.sim.colliders,
+                &mut self.arena.dynamic.impulse_joints,
+                &mut self.arena.dynamic.multibody_joints,
+                true,
+            );
+        }
+    }
+
+    /// Returns `[px, py, pz, qx, qy, qz, qw]` or empty on miss.
+    pub fn ragdoll_body_state(&self, id: u32) -> Option<[f32; 7]> {
+        let body_handle = *self.ragdoll_bodies.get(&id)?;
+        let rb = self.arena.dynamic.sim.rigid_bodies.get(body_handle)?;
+        let p = rb.translation();
+        let r = rb.rotation();
+        Some([p.x, p.y, p.z, r.i, r.j, r.k, r.w])
+    }
+
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
+            return;
+        };
+        if let Some(rb) = self.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![wx, wy, wz], true);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let joint = SphericalJointBuilder::new()
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let axis = nalgebra::Unit::new_normalize(vector![ax, ay, az]);
+        let joint = RevoluteJointBuilder::new(axis)
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .limits([limit_min, limit_max])
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        if let Some(handle) = self.ragdoll_joint_handles.remove(&joint_id) {
+            self.arena.dynamic.impulse_joints.remove(handle, false);
+        }
     }
 }
 

@@ -837,13 +837,55 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   syncBroadPhase(): void {}
 
-  spawnRagdollBody(): void {}
-  removeRagdollBody(): void {}
-  getRagdollBodyState(): null { return null; }
-  setRagdollBodyVelocity(): void {}
-  createRagdollSphericalJoint(): void {}
-  createRagdollRevoluteJoint(): void {}
-  removeRagdollJoint(): void {}
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.client?.spawnRagdollBody(
+      id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+    );
+  }
+  removeRagdollBody(id: number): void {
+    this.client?.removeRagdollBody(id);
+  }
+  getRagdollBodyState(id: number): Float64Array | null {
+    return this.client?.getRagdollBodyState(id) ?? null;
+  }
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.client?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.client?.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+    );
+  }
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.client?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+  removeRagdollJoint(jointId: number): void {
+    this.client?.removeRagdollJoint(jointId);
+  }
 
   enterVehicle(_vehicleId: number, _initState: NetVehicleState): void {}
 

@@ -1806,6 +1806,118 @@ impl WasmLocalSession {
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
     }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    #[wasm_bindgen(js_name = spawnRagdollBody)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        self.inner.spawn_ragdoll_body(
+            id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+        );
+    }
+
+    #[wasm_bindgen(js_name = removeRagdollBody)]
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        self.inner.remove_ragdoll_body(id);
+    }
+
+    #[wasm_bindgen(js_name = getRagdollBodyState)]
+    pub fn get_ragdoll_body_state(&self, id: u32) -> Box<[f64]> {
+        match self.inner.ragdoll_body_state(id) {
+            Some(s) => Box::new([
+                s[0] as f64,
+                s[1] as f64,
+                s[2] as f64,
+                s[3] as f64,
+                s[4] as f64,
+                s[5] as f64,
+                s[6] as f64,
+            ]),
+            None => Box::new([]),
+        }
+    }
+
+    #[wasm_bindgen(js_name = setRagdollBodyVelocity)]
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        self.inner
+            .set_ragdoll_body_velocity(id, vx, vy, vz, wx, wy, wz);
+    }
+
+    #[wasm_bindgen(js_name = createRagdollSphericalJoint)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        self.inner
+            .create_ragdoll_spherical_joint(joint_id, b1_id, b2_id, a1x, a1y, a1z, a2x, a2y, a2z);
+    }
+
+    #[wasm_bindgen(js_name = createRagdollRevoluteJoint)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        self.inner.create_ragdoll_revolute_joint(
+            joint_id, b1_id, b2_id, a1x, a1y, a1z, a2x, a2y, a2z, ax, ay, az, limit_min, limit_max,
+        );
+    }
+
+    #[wasm_bindgen(js_name = removeRagdollJoint)]
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        self.inner.remove_ragdoll_joint(joint_id);
+    }
 }
 
 fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
