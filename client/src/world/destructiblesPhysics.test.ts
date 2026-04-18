@@ -1183,4 +1183,391 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     expect(metrics.nearCoincidentPairCount).toBe(0);
     expect(metrics.maxOverlapPenetrationM).toBeLessThan(0.05);
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Tower-specific scenarios
+  //
+  // The practice tower uses a 3-D grid of chunks (taller than a wall).
+  // These tests mirror the wall scenarios to confirm the tower geometry
+  // goes through the same collision and fracture pipeline without
+  // position-collapse regressions.
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('driving a vehicle into a tower causes detectable collision or fracture', () => {
+    const VEHICLE_ID = 120;
+    const TOWER_ID = 9610;
+    const TOWER_POS: [number, number, number] = [0, 0.5, 8];
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 240;
+
+    function makeFlatBase(): WorldDocument {
+      return {
+        version: 2,
+        meta: { name: 'Tower collision', description: '' },
+        terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+        staticProps: [],
+        dynamicEntities: [],
+        destructibles: [],
+      };
+    }
+
+    function runDrive(world: WorldDocument): { finalZ: number; fractures: number; chunkDisp: number } {
+      const sim = new WasmSimWorld();
+      sim.loadWorldDocument(serializeWorldDocument(world));
+      sim.rebuildBroadPhase();
+      sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+      sim.setLocalVehicle(VEHICLE_ID);
+      for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+      const startT = Float32Array.from(sim.getDestructibleChunkTransforms());
+      let finalZ = 0;
+      let fractures = 0;
+      for (let t = 0; t < DRIVE_TICKS; t += 1) {
+        const st = sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+        finalZ = st[2];
+        const evts = sim.drainDestructibleFractureEvents();
+        for (let i = 1; i < evts.length; i += 2) fractures += evts[i] ?? 0;
+      }
+      const endT = sim.getDestructibleChunkTransforms();
+      let chunkDisp = 0;
+      const n = Math.min(startT.length, endT.length);
+      for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= n; b += CHUNK_TRANSFORM_STRIDE) {
+        const d = Math.hypot(
+          (endT[b + 2] ?? 0) - (startT[b + 2] ?? 0),
+          (endT[b + 3] ?? 0) - (startT[b + 3] ?? 0),
+          (endT[b + 4] ?? 0) - (startT[b + 4] ?? 0),
+        );
+        if (d > chunkDisp) chunkDisp = d;
+      }
+      sim.free();
+      return { finalZ, fractures, chunkDisp };
+    }
+
+    const control = runDrive(makeFlatBase());
+    expect(control.finalZ).toBeGreaterThan(2); // vehicle moved in control run
+
+    const towerWorld = makeFlatBase();
+    towerWorld.destructibles = [{ id: TOWER_ID, kind: 'tower', position: TOWER_POS, rotation: [0, 0, 0, 1] }];
+    const impact = runDrive(towerWorld);
+
+    // Tower must either slow the vehicle, produce fracture events, or displace chunks
+    expect(
+      impact.finalZ < control.finalZ - 1 || impact.fractures > 0 || impact.chunkDisp > 0.5,
+      `Tower not detected as obstacle: finalZ=${impact.finalZ} control=${control.finalZ} fractures=${impact.fractures} chunkDisp=${impact.chunkDisp}`,
+    ).toBe(true);
+  });
+
+  it('driving a vehicle into a tower injects stress and fractures or displaces it', () => {
+    const VEHICLE_ID = 121;
+    const TOWER_ID = 9611;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Tower fracture', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [{ id: TOWER_ID, kind: 'tower', position: [0, 0.5, 8], rotation: [0, 0, 0, 1] }],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    const startT = Float32Array.from(sim.getDestructibleChunkTransforms());
+    let totalFractures = 0;
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const evts = sim.drainDestructibleFractureEvents();
+      for (let i = 1; i < evts.length; i += 2) totalFractures += evts[i] ?? 0;
+    }
+    const endT = sim.getDestructibleChunkTransforms();
+    let maxDisp = 0;
+    const n = Math.min(startT.length, endT.length);
+    for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= n; b += CHUNK_TRANSFORM_STRIDE) {
+      const d = Math.hypot(
+        (endT[b + 2] ?? 0) - (startT[b + 2] ?? 0),
+        (endT[b + 3] ?? 0) - (startT[b + 3] ?? 0),
+        (endT[b + 4] ?? 0) - (startT[b + 4] ?? 0),
+      );
+      if (d > maxDisp) maxDisp = d;
+    }
+    sim.free();
+
+    expect(
+      totalFractures > 0 || maxDisp > 0.5,
+      `Tower should fracture or displace under 8s vehicle impact: fractures=${totalFractures} maxDisp=${maxDisp}`,
+    ).toBe(true);
+  });
+
+  it('fractured tower chunks do not overlap after debris settles (tower overlap regression)', () => {
+    const VEHICLE_ID = 122;
+    const TOWER_ID = 9612;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Tower chunk overlap regression', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [{ id: TOWER_ID, kind: 'tower', position: [0, 0.5, 8], rotation: [0, 0, 0, 1] }],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    let totalFractures = 0;
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const evts = sim.drainDestructibleFractureEvents();
+      for (let i = 1; i < evts.length; i += 2) totalFractures += evts[i] ?? 0;
+    }
+
+    expect(totalFractures, 'Tower must fracture for overlap regression to be meaningful').toBeGreaterThan(0);
+
+    const transforms = sim.getDestructibleChunkTransforms();
+    const metrics = computeDestructibleSpatialMetrics([{ id: TOWER_ID, kind: 'tower' }], transforms);
+    sim.free();
+
+    expect(
+      metrics.significantOverlapPairCount,
+      `Tower chunks overlapping after fracture. Sample: ${JSON.stringify(metrics.sampleOverlapPairs, null, 2)}`,
+    ).toBe(0);
+    expect(metrics.nearCoincidentPairCount).toBe(0);
+    expect(metrics.maxOverlapPenetrationM).toBeLessThan(0.05);
+    expect(metrics.lowestChunkBottomY).toBeGreaterThan(-0.05);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Rotated destructible
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('a ball dropped on a 90-degree Y-rotated wall rests at wall height', () => {
+    // If per-chunk set_rotation is skipped or applied in the wrong
+    // reference frame, the rotated wall's collision geometry stays
+    // axis-aligned at origin and the ball falls straight through it.
+    const SHAPE_BALL = 1;
+    const BALL_ID = 9720;
+    const BALL_RADIUS = 0.3;
+    const DROP_HEIGHT = 8.0;
+    const DT = 1 / 60;
+    const STEPS = 240;
+
+    // 90° rotation around Y: [0, sin(π/4), 0, cos(π/4)]
+    const S45 = Math.sin(Math.PI / 4);
+    const C45 = Math.cos(Math.PI / 4);
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Rotated wall ball drop', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [{ id: 9721, kind: 'wall', position: [0, 0.5, 0], rotation: [0, S45, 0, C45] }],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    // Ball dropped directly above the wall centre
+    sim.syncDynamicBody(BALL_ID, SHAPE_BALL, BALL_RADIUS, 0, 0, 0, DROP_HEIGHT, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    sim.rebuildBroadPhase();
+    for (let t = 0; t < STEPS; t += 1) {
+      sim.stepDynamics(DT);
+    }
+    const state = sim.getDynamicBodyState(BALL_ID);
+    sim.free();
+
+    // Wall base at y=0.5, height=3 → top face at y≈3.5.
+    // Ball (radius 0.3) lands on top → centre at y≈3.8.
+    // If chunks are at origin (rotation bug), ball falls to terrain (y≈0.3).
+    expect(state[1]).toBeGreaterThan(2.5);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Despawn edge case
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('despawning a destructible while a vehicle is actively in contact does not crash or leak', () => {
+    const VEHICLE_ID = 130;
+    const WALL_ID = 9810;
+    const DT = 1 / 60;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Despawn during contact', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [{ id: WALL_ID, kind: 'wall', position: [0, 0.5, 8], rotation: [0, 0, 0, 1] }],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+
+    // Drive until contact events are observed (up to 5 s)
+    let contactSeen = false;
+    for (let t = 0; t < 300; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const ds = parseDestructibleDebugState(sim.getDestructibleDebugState());
+      if (ds.contactEventsMatchingTotal > 0) {
+        contactSeen = true;
+        break;
+      }
+    }
+    expect(contactSeen).toBe(true);
+
+    // Despawn while the vehicle is in or near contact — must not throw
+    expect(() => sim.despawnDestructible(WALL_ID)).not.toThrow();
+    expect(sim.getDestructibleInstanceCount()).toBe(0);
+
+    // Continuing to step after despawn must not crash
+    expect(() => {
+      for (let t = 320; t < 330; t += 1) sim.tickVehicle(t, BTN_FORWARD, 0, 0, 0, 0, DT);
+    }).not.toThrow();
+    expect(sim.getDestructibleChunkCount()).toBe(0);
+
+    sim.free();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Static stability: no impact
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('bonded chunks remain above ground for an extended simulation without any impact', () => {
+    // Regression: faulty joint anchors or zero-stiffness spring setups
+    // let chunks slowly sink through the terrain even with no applied
+    // stress.  This test runs 5 s of physics time with both practice
+    // destructibles present and no vehicle impact, then asserts every
+    // chunk is still above y=0.
+    const DT = 1 / 60;
+    const STEPS = 300; // 5 s
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Static stability — no impact', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        { id: 9901, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
+        { id: 9902, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    // Spawn an idle vehicle far from the destructibles to tick the full
+    // physics pipeline (Rapier + Blast stress solver) each frame.
+    sim.spawnVehicle(999, 0, 0, 1.2, -20, 0, 0, 0, 1);
+    sim.setLocalVehicle(999);
+    for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    for (let t = 0; t < STEPS; t += 1) sim.tickVehicle(10 + t, 0, 0, 0, 0, 0, DT);
+
+    const transforms = sim.getDestructibleChunkTransforms();
+    const metrics = computeDestructibleSpatialMetrics(
+      [{ id: 9901, kind: 'wall' }, { id: 9902, kind: 'tower' }],
+      transforms,
+    );
+    sim.free();
+
+    expect(metrics.lowestChunkBottomY).toBeGreaterThan(-0.1);
+    expect(metrics.significantOverlapPairCount).toBe(0);
+
+    let allAboveGround = true;
+    for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= transforms.length; b += CHUNK_TRANSFORM_STRIDE) {
+      if ((transforms[b + 3] ?? 0) < 0) { allAboveGround = false; break; }
+    }
+    expect(allAboveGround).toBe(true);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Cross-destructible isolation
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('fracturing the practice wall does not corrupt the tower chunk positions', () => {
+    // When two destructibles share the same Rapier world, a split in one
+    // must not perturb the rigid-body handles belonging to the other.
+    // This test fractures the wall and then checks that the tower's
+    // chunks have not moved from their spawn positions.
+    const VEHICLE_ID = 140;
+    const WALL_ID = 9910;
+    const TOWER_ID = 9911;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: { name: 'Cross-destructible isolation', description: '' },
+      terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        { id: WALL_ID, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
+        { id: TOWER_ID, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.stepDestructibles(); // prime transform buffer
+
+    // Snapshot tower chunk positions before wall impact
+    const towerBefore = new Map<number, [number, number, number]>();
+    {
+      const t0 = sim.getDestructibleChunkTransforms();
+      for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= t0.length; b += CHUNK_TRANSFORM_STRIDE) {
+        if (t0[b] === TOWER_ID) {
+          towerBefore.set(t0[b + 1]!, [t0[b + 2] ?? 0, t0[b + 3] ?? 0, t0[b + 4] ?? 0]);
+        }
+      }
+    }
+    expect(towerBefore.size).toBeGreaterThan(0);
+
+    // Ram the wall — vehicle drives straight at the wall, not the tower
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    let wallFractures = 0;
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const evts = sim.drainDestructibleFractureEvents();
+      for (let i = 0; i < evts.length; i += 2) {
+        if (evts[i] === WALL_ID) wallFractures += evts[i + 1] ?? 0;
+      }
+    }
+    expect(wallFractures, 'Wall must fracture for isolation test to be meaningful').toBeGreaterThan(0);
+
+    // Tower chunks must still be within 0.2 m of their pre-impact poses
+    const towerAfter = sim.getDestructibleChunkTransforms();
+    let maxTowerDrift = 0;
+    for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= towerAfter.length; b += CHUNK_TRANSFORM_STRIDE) {
+      if (towerAfter[b] !== TOWER_ID) continue;
+      const idx = towerAfter[b + 1]!;
+      const before = towerBefore.get(idx);
+      if (!before) continue;
+      const drift = Math.hypot(
+        (towerAfter[b + 2] ?? 0) - before[0],
+        (towerAfter[b + 3] ?? 0) - before[1],
+        (towerAfter[b + 4] ?? 0) - before[2],
+      );
+      if (drift > maxTowerDrift) maxTowerDrift = drift;
+    }
+    expect(maxTowerDrift).toBeLessThan(0.2);
+
+    sim.free();
+  });
 });
