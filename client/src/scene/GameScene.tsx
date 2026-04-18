@@ -1,11 +1,13 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
 import { Suspense, type ReactNode } from 'react';
+import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { requestPointerLockSafe } from '../input/pointerLock';
 import { GameWorld } from './GameWorld';
+import { PostFX, SceneSanitizer } from './PostFX';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
 
@@ -57,6 +59,11 @@ export function GameScene({
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
+      gl={{
+        toneMapping: THREE.ACESFilmicToneMapping,
+        toneMappingExposure: 1.0,
+        outputColorSpace: THREE.SRGBColorSpace,
+      }}
       onPointerDown={(e) => {
         if (touchMode) return;
         requestPointerLockSafe(e.target as HTMLCanvasElement);
@@ -87,6 +94,8 @@ export function GameScene({
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}
         />
+        <SceneSanitizer />
+        <PostFX />
       </Suspense>
     </Canvas>
   );

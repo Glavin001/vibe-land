@@ -270,6 +270,18 @@ export class GameParticles {
     });
   }
 
+  muzzleFlash(position: THREE.Vector3): void {
+    _emitPos.copy(position);
+    _sparkVelMin.set(-1.4, -0.4, -1.4);
+    _sparkVelMax.set(1.4, 1.0, 1.4);
+    this.sparkPool.emit(_emitPos, 6, {
+      velocityMin: _sparkVelMin,
+      velocityMax: _sparkVelMax,
+      lifetime: 0.18,
+      spread: 0.08,
+    });
+  }
+
   jumpPuff(position: THREE.Vector3): void {
     _emitPos.copy(position);
     _dustVelMin.set(-0.5, 0.0, -0.5);

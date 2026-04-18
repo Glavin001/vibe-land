@@ -341,6 +341,38 @@ export class SFXEngine {
     }, 250);
   }
 
+  rifleShot(): void {
+    if (Tone.getContext().state !== "running") return;
+    const toneNow = this.safeToneTime();
+    const noiseNow = this.safeNoiseTime();
+    const subNow = this.safeSubSynthTime();
+    const pitchVar = randRange(1.0, 0.06);
+
+    // Sharp white-noise crack — the snap of the muzzle.
+    this.noiseSynth.noise.type = "white";
+    this.noiseSynth.envelope.attack = 0.001;
+    this.noiseSynth.envelope.decay = 0.08;
+    this.noiseSynth.envelope.sustain = 0;
+    this.noiseSynth.envelope.release = 0.04;
+    this.noiseSynth.volume.value = -7;
+    this.noiseSynth.triggerAttackRelease("16n", noiseNow);
+
+    // Sub thump — body of the report.
+    this.subSynth.volume.value = -8;
+    this.subSynth.triggerAttackRelease(90 * pitchVar, 0.06, subNow);
+
+    // Brief sawtooth sweep — adds metallic tail.
+    this.toneSynth.oscillator.type = "sawtooth";
+    this.toneSynth.envelope.attack = 0.002;
+    this.toneSynth.envelope.decay = 0.09;
+    this.toneSynth.envelope.sustain = 0;
+    this.toneSynth.envelope.release = 0.04;
+    this.toneSynth.volume.value = -14;
+    this.toneSynth.triggerAttackRelease(620 * pitchVar, 0.09, toneNow);
+    this.toneSynth.frequency.setValueAtTime(620 * pitchVar, toneNow);
+    this.toneSynth.frequency.exponentialRampToValueAtTime(180 * pitchVar, toneNow + 0.09);
+  }
+
   damageHit(): void {
     if (Tone.getContext().state !== "running") return;
     const toneNow = this.safeToneTime();

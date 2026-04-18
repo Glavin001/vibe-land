@@ -37,6 +37,7 @@ import {
   hasStoredInputSettings,
   updateInputSettings,
 } from './input/inputSettingsStore';
+import { getAudio } from './audio/audioSingleton';
 
 type AppProps = {
   mode: GameMode;
@@ -387,6 +388,7 @@ export function App({
     setConnected(true);
     setCrosshairState('idle');
     setStatus(practiceMode ? 'Starting firing range...' : 'Connecting...');
+    void getAudio().start();
     if (benchmarkConfig) {
       benchmarkStartedAtRef.current = null;
       benchmarkDisconnectReasonRef.current = null;

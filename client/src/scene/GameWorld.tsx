@@ -1,7 +1,14 @@
 import { useRef, useEffect, useMemo, type ReactNode, type RefObject } from 'react';
-import { Sky } from '@react-three/drei';
+import { Environment, Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { GLTFLoader, SkeletonUtils, type GLTF } from 'three-stdlib';
+import { ScreenShake } from '../feedback/ScreenShake';
+import { FOVPunch } from '../feedback/FOVPunch';
+import { FeedbackPlayer } from '../feedback/FeedbackPlayer';
+import { GameParticles } from '../feedback/GameParticles';
+import { getAudio } from '../audio/audioSingleton';
+import { ENVIRONMENT_PRESETS } from './renderer/environmentPresets';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
 import type { InputBindings } from '../input/bindings';
@@ -987,7 +994,47 @@ export function GameWorld({
     () => onSnapshotRef.current?.(),
     localRenderSmoothingEnabled,
   );
-  const { camera, gl } = useThree();
+  const { camera, gl, scene: r3fScene } = useThree();
+  const audio = useMemo(() => getAudio(), []);
+  const feedback = useMemo(() => new FeedbackPlayer(), []);
+  const particles = useMemo(() => new GameParticles(r3fScene), [r3fScene]);
+  const screenShake = useMemo(() => new ScreenShake(), []);
+  const fovPunch = useMemo(() => new FOVPunch(), []);
+  const baseFovRef = useRef(75);
+
+  useEffect(() => {
+    if (camera instanceof THREE.PerspectiveCamera) {
+      baseFovRef.current = camera.fov;
+    }
+    return () => {
+      particles.dispose();
+      feedback.clear();
+    };
+  }, [camera, feedback, particles]);
+
+  useEffect(() => {
+    const loader = new GLTFLoader();
+    let cancelled = false;
+    loader.load(
+      '/assets/models/animations/UAL1_Standard.glb',
+      (gltf) => {
+        if (cancelled) return;
+        ualGltfRef.current = gltf;
+        console.log(
+          '[game] UAL animations loaded',
+          gltf.animations.map((c) => c.name),
+        );
+      },
+      undefined,
+      (err) => {
+        console.warn('[game] UAL GLB load failed; remote players will fall back to capsule', err);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
@@ -996,6 +1043,9 @@ export function GameWorld({
   const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
+  const remoteAnimsRef = useRef<Map<number, RemoteAnimState>>(new Map());
+  const remoteLastPosRef = useRef<Map<number, [number, number, number]>>(new Map());
+  const ualGltfRef = useRef<GLTF | null>(null);
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const logTimer = useRef(0);
@@ -1689,6 +1739,10 @@ export function GameWorld({
         nextLocalFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
         const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
+        audio.sfx.rifleShot();
+        fovPunch.punch(2.0);
+        screenShake.addTrauma(0.25);
+        particles.muzzleFlash(new THREE.Vector3(aimOrigin[0], aimOrigin[1], aimOrigin[2]));
         const sceneHit = prediction.raycastScene(
           aimOrigin,
           fireDir,
@@ -1824,6 +1878,19 @@ export function GameWorld({
           remoteHits,
           sceneHit?.toi ?? null,
         );
+        for (const hit of remoteHits) {
+          const impact = new THREE.Vector3(
+            aimOrigin[0] + fireDir[0] * hit.distance,
+            aimOrigin[1] + fireDir[1] * hit.distance,
+            aimOrigin[2] + fireDir[2] * hit.distance,
+          );
+          particles.damageBurst(impact);
+          audio.sfx.damageHit();
+          if (hit.kind === 'head') {
+            screenShake.addTrauma(0.45);
+            fovPunch.punch(1.0);
+          }
+        }
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,
@@ -2271,11 +2338,16 @@ export function GameWorld({
       activeIds.add(id);
       let playerGroup = remoteMeshes.current.get(id);
       if (!playerGroup) {
-        playerGroup = createPlayerMesh(id);
+        const built = createSkinnedRemote(id, ualGltfRef.current);
+        playerGroup = built.group;
         group.add(playerGroup);
         remoteMeshes.current.set(id, playerGroup);
-        console.log('[game] Created mesh for remote player', id);
+        if (built.anim) {
+          remoteAnimsRef.current.set(id, built.anim);
+        }
+        console.log('[game] Created mesh for remote player', id, built.anim ? '(skinned)' : '(capsule)');
       }
+      const anim = remoteAnimsRef.current.get(id) ?? null;
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
@@ -2310,24 +2382,54 @@ export function GameWorld({
       }
       playerGroup.position.set(position[0], position[1], position[2]);
       playerGroup.rotation.y = yaw;
-      const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
-      const head = playerGroup.getObjectByName('head');
-      const nose = playerGroup.getObjectByName('nose');
-      if (body) body.visible = !isInVehicle;
-      if (head) head.visible = !isInVehicle;
-      if (nose) nose.visible = !isInVehicle;
-      if (body && body.material instanceof THREE.MeshStandardMaterial) {
-        const baseColor = body.userData.baseColor as THREE.Color | undefined;
-        const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
-        const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
-        const flashColor = new THREE.Color(0xfff36b);
-        body.material.opacity = isDead ? 0.35 : 1;
-        body.material.transparent = isDead;
-        if (baseColor) {
-          body.material.color.copy(baseColor).lerp(flashColor, flashAlpha);
-          body.material.emissive.copy(baseColor).lerp(flashColor, flashAlpha * 0.85);
+      const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
+      const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
+      const flashColor = new THREE.Color(0xfff36b);
+      if (anim) {
+        // Skinned remote: hide the whole group while driving, iterate skinned materials for flash.
+        playerGroup.visible = !isInVehicle;
+        for (const mat of anim.skinnedMaterials) {
+          mat.opacity = isDead ? 0.35 : 1;
+          mat.transparent = isDead;
+          mat.color.copy(anim.baseColor).lerp(flashColor, flashAlpha);
+          mat.emissive.copy(anim.baseColor).lerp(flashColor, flashAlpha * 0.85);
+          mat.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.25, flashAlpha * 1.2);
         }
-        body.material.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.3, flashAlpha * 1.2);
+        // Drive clip selection by measured planar speed.
+        const prev = remoteLastPosRef.current.get(id);
+        let speed = 0;
+        if (prev && frameDelta > 0) {
+          const dx = position[0] - prev[0];
+          const dz = position[2] - prev[2];
+          speed = Math.sqrt(dx * dx + dz * dz) / frameDelta;
+        }
+        const wanted: RemoteClipName = isDead || isInVehicle ? 'idle' : pickRemoteClip(speed);
+        if (wanted !== anim.current) {
+          const next = anim.actions[wanted];
+          const prevAction = anim.actions[anim.current];
+          next.reset().setEffectiveWeight(1).play();
+          prevAction.setEffectiveWeight(0);
+          anim.current = wanted;
+        }
+        anim.mixer.update(frameDelta);
+        remoteLastPosRef.current.set(id, [position[0], position[1], position[2]]);
+      } else {
+        const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
+        const head = playerGroup.getObjectByName('head');
+        const nose = playerGroup.getObjectByName('nose');
+        if (body) body.visible = !isInVehicle;
+        if (head) head.visible = !isInVehicle;
+        if (nose) nose.visible = !isInVehicle;
+        if (body && body.material instanceof THREE.MeshStandardMaterial) {
+          const baseColor = body.userData.baseColor as THREE.Color | undefined;
+          body.material.opacity = isDead ? 0.35 : 1;
+          body.material.transparent = isDead;
+          if (baseColor) {
+            body.material.color.copy(baseColor).lerp(flashColor, flashAlpha);
+            body.material.emissive.copy(baseColor).lerp(flashColor, flashAlpha * 0.85);
+          }
+          body.material.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.3, flashAlpha * 1.2);
+        }
       }
     }
 
@@ -2338,6 +2440,8 @@ export function GameWorld({
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
+        remoteAnimsRef.current.delete(id);
+        remoteLastPosRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
@@ -2470,6 +2574,25 @@ export function GameWorld({
         }
       }
     }
+
+    // Feedback layer — must run at the tail of the frame so screen-shake
+    // and FOV punch writes aren't clobbered by the camera positioning
+    // branches above.
+    feedback.update(frameDelta);
+    particles.update(frameDelta, camera);
+    const shake = screenShake.update(frameDelta);
+    camera.position.x += shake.offsetX;
+    camera.position.y += shake.offsetY;
+    camera.position.z += shake.offsetZ;
+    camera.rotation.x += shake.rotX;
+    camera.rotation.y += shake.rotY;
+    camera.rotation.z += shake.rotZ;
+    if (camera instanceof THREE.PerspectiveCamera) {
+      camera.fov = baseFovRef.current + fovPunch.update(frameDelta);
+      camera.updateProjectionMatrix();
+    } else {
+      fovPunch.update(frameDelta);
+    }
   });
 
   return (
@@ -2483,6 +2606,10 @@ export function GameWorld({
         rayleigh={2.2}
         mieCoefficient={0.008}
         mieDirectionalG={0.86}
+      />
+      <Environment
+        files={ENVIRONMENT_PRESETS.kloofendal_48d_partly_cloudy.path}
+        background={false}
       />
       <ambientLight intensity={0.18} color={0xfdf6eb} />
       <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
@@ -2849,6 +2976,122 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
+}
+
+type RemoteClipName = 'idle' | 'walk' | 'run';
+
+type RemoteAnimState = {
+  mixer: THREE.AnimationMixer;
+  actions: { idle: THREE.AnimationAction; walk: THREE.AnimationAction; run: THREE.AnimationAction };
+  current: RemoteClipName;
+  skinnedMaterials: THREE.MeshStandardMaterial[];
+  baseColor: THREE.Color;
+};
+
+function findClipByKeyword(
+  clips: THREE.AnimationClip[],
+  keywords: string[],
+  fallbackIndex: number,
+): THREE.AnimationClip {
+  for (const kw of keywords) {
+    const found = clips.find((c) => c.name.toLowerCase().includes(kw));
+    if (found) return found;
+  }
+  return clips[Math.min(fallbackIndex, clips.length - 1)];
+}
+
+function createSkinnedRemote(
+  id: number,
+  gltf: GLTF | null,
+): { group: THREE.Group; anim: RemoteAnimState | null } {
+  if (!gltf || gltf.animations.length === 0) {
+    return { group: createPlayerMesh(id), anim: null };
+  }
+
+  const root = SkeletonUtils.clone(gltf.scene) as THREE.Object3D;
+  // Quaternius UAL characters have feet at root y=0; align so the model's
+  // feet land at the bottom of the existing capsule envelope (y=-0.8 from
+  // the player's interpolated centre).
+  root.position.y = -0.8;
+
+  const color = PLAYER_COLORS[id % PLAYER_COLORS.length];
+  const baseColor = new THREE.Color(color);
+  const skinnedMaterials: THREE.MeshStandardMaterial[] = [];
+  root.traverse((obj) => {
+    if (!(obj as THREE.SkinnedMesh).isSkinnedMesh) return;
+    const mesh = obj as THREE.SkinnedMesh;
+    const cloneMat = (m: THREE.Material): THREE.MeshStandardMaterial => {
+      const tinted = new THREE.MeshStandardMaterial({
+        color: baseColor,
+        emissive: baseColor,
+        emissiveIntensity: 0.25,
+        metalness: 0.05,
+        roughness: 0.65,
+      });
+      // Preserve any base map / skinning support inherited from source.
+      if ((m as THREE.MeshStandardMaterial).map) {
+        tinted.map = (m as THREE.MeshStandardMaterial).map;
+      }
+      return tinted;
+    };
+    if (Array.isArray(mesh.material)) {
+      mesh.material = mesh.material.map((m) => cloneMat(m));
+      for (const m of mesh.material) skinnedMaterials.push(m as THREE.MeshStandardMaterial);
+    } else {
+      const replacement = cloneMat(mesh.material);
+      mesh.material = replacement;
+      skinnedMaterials.push(replacement);
+    }
+    mesh.castShadow = true;
+  });
+
+  const group = new THREE.Group();
+  group.add(root);
+
+  // Player ID label, ported from createPlayerMesh.
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 48;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 128, 48);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`P${id}`, 64, 34);
+  const texture = new THREE.CanvasTexture(canvas);
+  const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'label';
+  sprite.scale.set(1.2, 0.45, 1);
+  sprite.position.y = 1.1;
+  group.add(sprite);
+
+  const mixer = new THREE.AnimationMixer(root);
+  const idleClip = findClipByKeyword(gltf.animations, ['idle'], 0);
+  const walkClip = findClipByKeyword(gltf.animations, ['walk'], 1);
+  const runClip = findClipByKeyword(gltf.animations, ['run', 'sprint', 'jog'], 2);
+  const idleAction = mixer.clipAction(idleClip);
+  const walkAction = mixer.clipAction(walkClip);
+  const runAction = mixer.clipAction(runClip);
+  idleAction.setEffectiveWeight(1).play();
+  walkAction.setEffectiveWeight(0).play();
+  runAction.setEffectiveWeight(0).play();
+
+  const anim: RemoteAnimState = {
+    mixer,
+    actions: { idle: idleAction, walk: walkAction, run: runAction },
+    current: 'idle',
+    skinnedMaterials,
+    baseColor,
+  };
+  return { group, anim };
+}
+
+function pickRemoteClip(speed: number): RemoteClipName {
+  if (speed < 0.2) return 'idle';
+  if (speed < 4) return 'walk';
+  return 'run';
 }
 
 function createPlayerMesh(id: number): THREE.Group {

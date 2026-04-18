@@ -8,11 +8,15 @@ test('practice route renders canvas without console errors', async ({ page }) =>
   test.setTimeout(120_000);
 
   const errors: string[] = [];
+  const requestedUrls: string[] = [];
   page.on('pageerror', (err) => {
     errors.push(String(err));
   });
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
+  });
+  page.on('request', (req) => {
+    requestedUrls.push(req.url());
   });
 
   await page.goto('/practice', { waitUntil: 'domcontentloaded' });
@@ -44,4 +48,20 @@ test('practice route renders canvas without console errors', async ({ page }) =>
     errors,
     `console errors during /practice smoke: ${errors.join(' | ')}`,
   ).toEqual([]);
+
+  // Kinema resource wiring: HDR environment, UAL character rig, LUT grade.
+  const hasRequest = (needle: string): boolean =>
+    requestedUrls.some((u) => u.includes(needle));
+  expect(
+    hasRequest('/assets/env/kloofendal_48d_partly_cloudy_1k.hdr'),
+    'expected HDR environment request',
+  ).toBe(true);
+  expect(
+    hasRequest('/assets/models/animations/UAL1_Standard.glb'),
+    'expected UAL skinned-character GLB request',
+  ).toBe(true);
+  expect(
+    hasRequest('Bourbon%2064.CUBE') || hasRequest('Bourbon 64.CUBE'),
+    'expected Bourbon 64 LUT request',
+  ).toBe(true);
 });
