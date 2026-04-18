@@ -19,6 +19,7 @@ function blankWorld(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 

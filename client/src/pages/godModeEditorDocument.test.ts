@@ -28,6 +28,7 @@ function emptyWorld(): WorldDocument {
     terrain: DEFAULT_WORLD_DOCUMENT.terrain,
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 
