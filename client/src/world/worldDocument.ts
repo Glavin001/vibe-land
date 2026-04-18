@@ -1319,11 +1319,7 @@ export function lerp(a: number, b: number, t: number): number {
 // Terrain material helpers
 // ---------------------------------------------------------------------------
 
-export function getTerrainMaterials(world: WorldDocument): TerrainMaterial[] {
-  const tile = world.terrain.tiles[0];
-  if (tile?.materials && tile.materials.length > 0) {
-    return tile.materials;
-  }
+export function getTerrainMaterials(_world: WorldDocument): TerrainMaterial[] {
   return DEFAULT_TERRAIN_MATERIALS;
 }
 
