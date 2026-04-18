@@ -162,7 +162,15 @@ export function computeDestructibleSpatialMetrics(
       transforms[base + 7] ?? 0,
       transforms[base + 8] ?? 1,
     );
-    lowestChunkBottomY = Math.min(lowestChunkBottomY, center[1] - aabbHalfExtents[1]);
+    // Index 10: 1.0 if the owning Rapier body is dynamic (post-fracture debris
+    // that can fall), 0.0 if fixed (support anchor intentionally embedded in
+    // the terrain).  Only dynamic chunks can "fall below the ground plane";
+    // fixed support anchors are deliberately below-ground and must be excluded
+    // from the lowestChunkBottomY guard or they will always trigger a failure.
+    const isDynamic = (transforms[base + 10] ?? 0) > 0;
+    if (isDynamic) {
+      lowestChunkBottomY = Math.min(lowestChunkBottomY, center[1] - aabbHalfExtents[1]);
+    }
 
     const samples = samplesById.get(destructibleId);
     const sample: ChunkMetricsSample = {

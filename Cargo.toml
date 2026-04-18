@@ -7,3 +7,8 @@ resolver = "2"
 
 [profile.release]
 codegen-units = 1
+
+# Local source override for blast-stress-solver while the upstream bug fix
+# is pending a crates.io release.  Remove once a fixed version is published.
+[patch.crates-io]
+blast-stress-solver = { path = "third_party/PhysX/blast/blast-stress-solver-rs" }

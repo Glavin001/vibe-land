@@ -586,30 +586,29 @@ impl DestructibleRegistry {
             Self::sanitize_body_colliders(sim, *handle);
         }
 
-        // Rapier does *not* propagate a `set_position` on a body to its
-        // attached colliders' world positions until the next
-        // `pipeline.step()`.  vibe-land's KCC / broad-phase queries run
-        // **before** the physics step on the same tick, so without this
-        // explicit flush the freshly-spawned chunks remain at origin
-        // inside the broad-phase BVH and the player capsule / vehicle /
-        // ball walks straight through them.
+        // Propagate the body positions to collider world poses so that the
+        // transform buffer and any same-tick shape-cast queries see the
+        // correct positions.
         //
-        // Fix: propagate the body positions to collider world poses,
-        // mark every chunk collider as modified, and flush the
-        // broad-phase BVH.
+        // DO NOT call sync_broad_phase() here.  sync_broad_phase discards
+        // the BroadPhasePairEvent::AddPair events it generates, which
+        // pre-registers all adjacent chunk pairs in broad_phase.pairs as
+        // Occupied.  Once Occupied, those pairs never emit a new AddPair
+        // event — so narrow_phase.register_pairs never receives them and
+        // no inter-chunk contact constraints are ever created.
+        //
+        // Instead, rely on the first pipeline.step() to process Rapier's
+        // internal colliders.modified_colliders list (populated by
+        // insert_with_parent above).  The pipeline forwards AddPair events
+        // to the narrow phase via register_pairs, correctly establishing
+        // contact graph edges between adjacent chunks.  After fracture,
+        // reparented colliders have ColliderChanges::PARENT set, which
+        // causes compute_contacts to re-evaluate their edges with the new
+        // (different) parent bodies and resolve the inter-chunk contacts.
         sim.rigid_bodies
             .propagate_modified_body_positions_to_colliders(&mut sim.colliders);
-        for handle in &handles {
-            if let Some(rb) = sim.rigid_bodies.get(*handle) {
-                for ch in rb.colliders() {
-                    sim.modified_colliders.push(*ch);
-                }
-            }
-        }
-        sim.sync_broad_phase();
 
         let node_count = set.solver().node_count();
-        let transforms_len = node_count as usize * CHUNK_TRANSFORM_STRIDE;
         let handle_count = handles.len();
         let index = self.instances.len();
         self.id_to_index.insert(id, index);
@@ -619,8 +618,69 @@ impl DestructibleRegistry {
             pose,
             set,
             node_count,
-            transforms: vec![0.0; transforms_len],
+            transforms: Vec::new(),
         });
+        // Build initial transforms immediately so that chunk_transforms_slice()
+        // returns non-empty data right after spawn, before the first step() call.
+        // This is needed because the JS side may read chunk transforms to build
+        // the initial snapshot before the first physics tick fires.
+        let initial_transforms = {
+            let inst = self.instances.last().unwrap();
+            let mut ts = Vec::with_capacity(inst.node_count as usize * CHUNK_TRANSFORM_STRIDE);
+            for node_index in 0..inst.node_count {
+                let chunk_index = node_index;
+                let Some(body_handle) = inst.set.node_body(node_index) else {
+                    ts.extend_from_slice(&[
+                        inst.id as f32, chunk_index as f32,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                        0.0, // present = 0
+                        0.0, // pad
+                    ]);
+                    continue;
+                };
+                let Some(rb) = sim.rigid_bodies.get(body_handle) else {
+                    continue;
+                };
+                let (wx, wy, wz, ri, rj, rk, rw) = match inst
+                    .set
+                    .node_collider(node_index)
+                    .and_then(|ch| sim.colliders.get(ch))
+                {
+                    Some(col) => {
+                        let p = col.position();
+                        (
+                            p.translation.vector.x,
+                            p.translation.vector.y,
+                            p.translation.vector.z,
+                            p.rotation.i,
+                            p.rotation.j,
+                            p.rotation.k,
+                            p.rotation.w,
+                        )
+                    }
+                    None => {
+                        let off = inst
+                            .set
+                            .node_local_offset(node_index)
+                            .unwrap_or(BlastVec3::new(0.0, 0.0, 0.0));
+                        let iso = rb.position();
+                        let lp = nalgebra::Point3::new(off.x, off.y, off.z);
+                        let wp = iso.transform_point(&lp);
+                        (wp.x, wp.y, wp.z, iso.rotation.i, iso.rotation.j, iso.rotation.k, iso.rotation.w)
+                    }
+                };
+                ts.extend_from_slice(&[
+                    inst.id as f32,
+                    chunk_index as f32,
+                    wx, wy, wz, ri, rj, rk, rw,
+                    1.0, // present
+                    0.0, // pad
+                ]);
+            }
+            ts
+        };
+        self.transforms.extend_from_slice(&initial_transforms);
+        self.instances.last_mut().unwrap().transforms = initial_transforms;
         dlog(&format!(
             "[destructibles] spawn id={} kind={:?} nodes={} bodies={} pose=({:.2},{:.2},{:.2})",
             id,
@@ -717,24 +777,18 @@ impl DestructibleRegistry {
             );
             Self::sanitize_instance_colliders(instance, sim);
 
-            // Fractures create brand-new rigid bodies + colliders via
-            // Blast's split migrator.  Those bodies start out at the
-            // correct world pose already (Blast carries the parent pose
-            // forward into each child), but the newly-attached
-            // colliders still need their AABBs pushed into the
-            // broad-phase BVH so contacts with them land this tick.
+            // After a split, propagate new body poses into collider world
+            // positions so the transform buffer is correct for the current
+            // tick. Do NOT call sync_broad_phase here: PhysicsPipeline::step
+            // runs BEFORE destructibles.step(), so the physics step for this
+            // tick is already complete. Calling sync_broad_phase would consume
+            // Rapier's internal new-collider event queue and discard the
+            // AddPair events, preventing the narrow phase from creating
+            // chunk-chunk contact pairs. The next pipeline.step() naturally
+            // detects the new colliders and propagates those pairs correctly.
             if step_result.split_events > 0 || step_result.new_bodies > 0 {
                 sim.rigid_bodies
                     .propagate_modified_body_positions_to_colliders(&mut sim.colliders);
-                let touched = Self::instance_body_handles(instance);
-                for bh in touched {
-                    if let Some(rb) = sim.rigid_bodies.get(bh) {
-                        for ch in rb.colliders() {
-                            sim.modified_colliders.push(*ch);
-                        }
-                    }
-                }
-                sim.sync_broad_phase();
             }
 
             if step_result.fractures > 0 || step_result.split_events > 0 {
@@ -839,10 +893,54 @@ impl DestructibleRegistry {
                     rot.k,
                     rot.w,
                     1.0, // present
-                    0.0, // pad
+                    // Bit 0: 1.0 if the owning rigid body is dynamic (post-fracture
+                    // debris), 0.0 if fixed (support anchor embedded in terrain).
+                    // Used by client spatial metrics to exclude fixed support nodes
+                    // from lowestChunkBottomY so anchor nodes intentionally below
+                    // ground do not cause the debris-floor check to fail.
+                    if rb.is_dynamic() { 1.0 } else { 0.0 },
                 ]);
             }
             self.transforms.extend_from_slice(&instance.transforms);
+
+            // Mark every dynamic chunk collider as user-modified so the next
+            // pipeline.step() includes it in broad_phase.update().
+            //
+            // Rapier's broad phase only processes user-modified colliders.
+            // After the first tick following fracture, newly dynamic chunk
+            // bodies are no longer in modified_bodies, so their colliders
+            // drop out of local_modified and broad_phase.update() stops
+            // checking them for new overlapping pairs.  Upper-row chunks that
+            // start high above the ground never receive an AddPair(chunk, ground)
+            // event and therefore fall through the floor.
+            //
+            // Calling get_mut() (which calls ColliderSet::push_once internally)
+            // marks the collider with ColliderChanges::MODIFIED and adds it to
+            // ColliderSet::modified_colliders.  At the start of the next
+            // pipeline.step(), colliders.take_modified() picks these up, they
+            // enter local_modified, broad_phase.update() tests their AABBs
+            // against the BVH, and once the chunk's AABB reaches the ground
+            // AABB an AddPair event fires — permanently registering the pair in
+            // the contact graph so the narrow phase can compute contact forces.
+            //
+            // Only dynamic (post-fracture) and non-sleeping chunks need this;
+            // fixed pre-fracture nodes share the original static body and do
+            // not fall.  Sleeping chunks already have a ground contact edge and
+            // are excluded to avoid unnecessary broad-phase work.
+            for node_index in 0..instance.node_count {
+                let Some(body_handle) = instance.set.node_body(node_index) else {
+                    continue;
+                };
+                let Some(rb) = sim.rigid_bodies.get(body_handle) else {
+                    continue;
+                };
+                if !rb.is_dynamic() || rb.is_sleeping() {
+                    continue;
+                }
+                if let Some(ch) = instance.set.node_collider(node_index) {
+                    sim.colliders.get_mut(ch);
+                }
+            }
         }
         if total_fractures > 0 || total_split_events > 0 || total_new_bodies > 0 {
             let mut post_fracture_max_body_speed_m_s = 0.0_f32;
