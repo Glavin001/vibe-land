@@ -10,8 +10,20 @@ import * as THREE from 'three';
 import { load as loadGlb } from './sharedAssets';
 import type { AnimationProfile } from './types';
 
-const CAPSULE_HEIGHT = 1.3; // 2 * (capsuleRadius + capsuleHalfHeight) in Kinema
-const CAPSULE_BOTTOM = -0.6; // -(capsuleRadius + floatHeight)
+const PHYSICS_CAPSULE_RADIUS = 0.35;
+const PHYSICS_CAPSULE_HALF_SEGMENT = 0.45;
+const PHYSICS_CAPSULE_BOTTOM = -(PHYSICS_CAPSULE_RADIUS + PHYSICS_CAPSULE_HALF_SEGMENT);
+const HEAD_CENTER_OFFSET_Y = 0.75;
+// Feet should not sit at the very bottom of the rounded capsule cap; keeping a
+// small clearance preserves head/body hit-zone alignment while making the soles
+// visually meet the ground.
+const VISUAL_FOOT_CLEARANCE = 0.1;
+const TARGET_VISUAL_FOOT_Y = PHYSICS_CAPSULE_BOTTOM + VISUAL_FOOT_CLEARANCE;
+
+type RigLandmarks = {
+  footY: number;
+  headY: number;
+};
 
 interface BaseMaterialState {
   color: THREE.Color;
@@ -59,14 +71,27 @@ export class CharacterModel {
       }
     });
 
-    const box = new THREE.Box3().setFromObject(root);
-    const modelHeight = box.max.y - box.min.y;
-    if (modelHeight > 0) {
-      root.scale.setScalar(CAPSULE_HEIGHT / modelHeight);
-    }
+    root.updateMatrixWorld(true);
+    const landmarks = CharacterModel.measureRigLandmarks(root);
+    if (landmarks) {
+      const sourceSpan = landmarks.headY - landmarks.footY;
+      const targetSpan = HEAD_CENTER_OFFSET_Y - TARGET_VISUAL_FOOT_Y;
+      if (sourceSpan > 0.0001) {
+        const scale = targetSpan / sourceSpan;
+        root.scale.setScalar(scale);
+        root.position.y = TARGET_VISUAL_FOOT_Y - landmarks.footY * scale;
+      }
+    } else {
+      const box = new THREE.Box3().setFromObject(root);
+      const modelHeight = box.max.y - box.min.y;
+      const fallbackCapsuleHeight = PHYSICS_CAPSULE_HALF_SEGMENT * 2 + PHYSICS_CAPSULE_RADIUS * 2;
+      if (modelHeight > 0) {
+        root.scale.setScalar(fallbackCapsuleHeight / modelHeight);
+      }
 
-    const scaledBox = new THREE.Box3().setFromObject(root);
-    root.position.y = CAPSULE_BOTTOM - scaledBox.min.y;
+      const scaledBox = new THREE.Box3().setFromObject(root);
+      root.position.y = TARGET_VISUAL_FOOT_Y - scaledBox.min.y;
+    }
 
     parent.add(root);
 
@@ -236,6 +261,41 @@ export class CharacterModel {
       if (!boneName && (node as THREE.Bone).isBone) boneName = node.name;
     });
     return boneName || 'root';
+  }
+
+  private static measureRigLandmarks(root: THREE.Object3D): RigLandmarks | null {
+    root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(root);
+    if (!Number.isFinite(box.min.y) || !Number.isFinite(box.max.y)) {
+      return null;
+    }
+
+    const head = CharacterModel.findBoneByName(root, (name) => name === 'head' || name === 'head_01' || name.endsWith('_head'));
+    if (!head) {
+      return null;
+    }
+    const headPosition = new THREE.Vector3();
+    head.getWorldPosition(headPosition);
+
+    return {
+      footY: box.min.y,
+      headY: headPosition.y,
+    };
+  }
+
+  private static findBoneByName(
+    root: THREE.Object3D,
+    predicate: (normalizedName: string) => boolean,
+  ): THREE.Object3D | null {
+    let bone: THREE.Object3D | null = null;
+    root.traverse((node) => {
+      if (bone || !(node as THREE.Bone).isBone) return;
+      const name = node.name.toLowerCase();
+      if (predicate(name)) {
+        bone = node;
+      }
+    });
+    return bone;
   }
 
   private static stripRootMotion(clip: THREE.AnimationClip, rootBoneName: string): void {
