@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, WorldDocument, WorldDocumentError, WorldMeta, WorldTerrain,
-    WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, SpawnArea, WorldDocument, WorldDocumentError, WorldMeta,
+    WorldTerrain, WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -230,5 +230,73 @@ mod tests {
         let vehicles = arena.snapshot_vehicles();
         assert_eq!(vehicles.len(), 1);
         assert!(vehicles[0].py_mm > 0);
+    }
+
+    #[test]
+    fn seed_world_with_spawn_areas_propagates_areas_to_arena() {
+        let area = SpawnArea {
+            id: 1,
+            position: [30.0, 0.0, -20.0],
+            radius: 12.0,
+        };
+        let world = WorldDocument {
+            version: vibe_land_shared::world_document::WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Spawn Test".to_string(),
+                description: String::new(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 64.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                    materials: vec![],
+                    material_weights: None,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+            spawn_areas: vec![area],
+        };
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world.instantiate(&mut arena).expect("instantiate");
+        arena.set_spawn_areas(world.spawn_areas.clone());
+
+        assert_eq!(
+            arena.spawn_areas.len(),
+            1,
+            "spawn area should be registered on arena"
+        );
+
+        let spawn = arena.spawn_player(1);
+        let dx = spawn.x as f32 - 30.0;
+        let dz = spawn.z as f32 - (-20.0);
+        assert!(
+            dx * dx + dz * dz <= 12.0_f32 * 12.0,
+            "player spawn ({:.1}, {:.1}) not within area radius 12 of (30, -20)",
+            spawn.x,
+            spawn.z,
+        );
+    }
+
+    #[test]
+    fn default_world_falls_back_to_legacy_spawn_when_no_areas_configured() {
+        // trail.world.json has no spawnAreas; legacy 8-lane behaviour must apply.
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
+        assert!(
+            arena.spawn_areas.is_empty(),
+            "default world has no spawn areas in JSON; legacy spawn should be active"
+        );
+        // Spawning a player must still succeed with the legacy path.
+        let spawn = arena.spawn_player(42);
+        assert!(
+            spawn.y > -1.0,
+            "legacy spawn should land above ground, got y={:.2}",
+            spawn.y
+        );
     }
 }

@@ -165,6 +165,153 @@ impl PhysicsArena {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::{movement::MoveConfig, physics_arena::PhysicsArena, world_document::SpawnArea};
+
+    fn arena_with_areas(areas: Vec<SpawnArea>) -> PhysicsArena {
+        let mut a = PhysicsArena::new(MoveConfig::default());
+        a.set_spawn_areas(areas);
+        a
+    }
+
+    fn single_area(cx: f32, cz: f32, radius: f32) -> SpawnArea {
+        SpawnArea {
+            id: 1,
+            position: [cx, 0.0, cz],
+            radius,
+        }
+    }
+
+    #[test]
+    fn spawn_area_candidates_yields_17_positions() {
+        let pts: Vec<_> = super::spawn_area_candidates(0.0, 0.0, 10.0).collect();
+        assert_eq!(pts.len(), 17); // 1 center + 8 inner + 8 outer
+        assert_eq!(pts[0], (0.0, 0.0));
+    }
+
+    #[test]
+    fn spawn_area_candidates_center_is_exact_area_center() {
+        let first = super::spawn_area_candidates(7.0, -3.0, 5.0).next().unwrap();
+        assert_eq!(first, (7.0, -3.0));
+    }
+
+    #[test]
+    fn player_spawn_lands_within_area_radius() {
+        let (cx, cz, radius) = (20.0_f32, -15.0_f32, 8.0_f32);
+        let mut arena = arena_with_areas(vec![single_area(cx, cz, radius)]);
+        let spawn = arena.spawn_player(1);
+        let dx = spawn.x as f32 - cx;
+        let dz = spawn.z as f32 - cz;
+        assert!(
+            dx * dx + dz * dz <= radius * radius,
+            "spawn ({:.2}, {:.2}) is outside area (cx={cx}, cz={cz}, r={radius})",
+            spawn.x,
+            spawn.z,
+        );
+    }
+
+    #[test]
+    fn respawn_also_lands_within_area_radius() {
+        let (cx, cz, radius) = (10.0_f32, 5.0_f32, 6.0_f32);
+        let mut arena = arena_with_areas(vec![single_area(cx, cz, radius)]);
+        arena.spawn_player(1);
+        let pos = arena.respawn_player(1).expect("respawn should succeed");
+        let dx = pos[0] - cx;
+        let dz = pos[2] - cz;
+        assert!(
+            dx * dx + dz * dz <= radius * radius,
+            "respawn ({:.2}, {:.2}) is outside area (cx={cx}, cz={cz}, r={radius})",
+            pos[0],
+            pos[2],
+        );
+    }
+
+    #[test]
+    fn round_robin_distributes_across_two_areas() {
+        let mut arena = arena_with_areas(vec![
+            SpawnArea {
+                id: 1,
+                position: [0.0, 0.0, 0.0],
+                radius: 5.0,
+            },
+            SpawnArea {
+                id: 2,
+                position: [200.0, 0.0, 200.0],
+                radius: 5.0,
+            },
+        ]);
+
+        let s1 = arena.spawn_player(1);
+        let s2 = arena.spawn_player(2);
+
+        // Round-robin: player 1 → area A (0,0), player 2 → area B (200,200)
+        let dist1_a = ((s1.x * s1.x + s1.z * s1.z) as f32).sqrt();
+        let dist2_b = (((s2.x - 200.0).powi(2) + (s2.z - 200.0).powi(2)) as f32).sqrt();
+        assert!(
+            dist1_a <= 5.0,
+            "player 1 ({:.1},{:.1}) not in area A",
+            s1.x,
+            s1.z
+        );
+        assert!(
+            dist2_b <= 5.0,
+            "player 2 ({:.1},{:.1}) not in area B",
+            s2.x,
+            s2.z
+        );
+    }
+
+    #[test]
+    fn legacy_lane_spawn_used_when_no_areas() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        assert!(arena.spawn_areas.is_empty());
+        let spawn = arena.spawn_player(1);
+        // Legacy lane 0 → x=0.0, z=0.0
+        assert!(
+            spawn.x.abs() < 0.5,
+            "legacy spawn should be near x=0, got x={:.2}",
+            spawn.x
+        );
+    }
+
+    #[test]
+    fn clearance_check_avoids_occupied_center() {
+        let mut arena = arena_with_areas(vec![single_area(0.0, 0.0, 20.0)]);
+        arena.spawn_player(1); // occupies center (0, 0)
+        let s2 = arena.spawn_player(2);
+        // Player 2 must be > SPAWN_CLEARANCE_RADIUS_M (2.5 m) away from player 1 at (0,0)
+        let dist = ((s2.x * s2.x + s2.z * s2.z) as f32).sqrt();
+        assert!(
+            dist > 2.5,
+            "player 2 spawn ({:.2},{:.2}) collides with player 1 at origin",
+            s2.x,
+            s2.z
+        );
+    }
+
+    #[test]
+    fn fallback_to_area_center_when_all_positions_occupied() {
+        // A tiny area that can only fit one player; a second spawn falls back to area center
+        let mut arena = arena_with_areas(vec![single_area(50.0, 50.0, 0.5)]);
+        // Fill all 17 candidate positions by spawning many players
+        for id in 1..=17 {
+            arena.spawn_player(id);
+        }
+        // 18th spawn hits the fallback path (area center)
+        let fallback = arena.spawn_player(18);
+        let dx = fallback.x as f32 - 50.0;
+        let dz = fallback.z as f32 - 50.0;
+        // Fallback returns the area center itself
+        assert!(
+            dx * dx + dz * dz < 1.0,
+            "fallback spawn ({:.2},{:.2}) not near area center (50,50)",
+            fallback.x,
+            fallback.z
+        );
+    }
+}
+
 /// Generate candidate spawn positions distributed across a circular area.
 /// Returns center first, then inner ring (0.5r), then outer ring (0.85r).
 fn spawn_area_candidates(cx: f64, cz: f64, radius: f64) -> impl Iterator<Item = (f64, f64)> {
