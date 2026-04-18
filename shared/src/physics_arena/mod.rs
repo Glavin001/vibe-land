@@ -4,10 +4,16 @@ use nalgebra::{Point3, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 
-use crate::movement::Vec3d;
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
+use crate::{
+    constants::{
+        BTN_BACK, BTN_FORWARD, BTN_JUMP, BTN_LEFT, BTN_RIGHT, BTN_SPRINT, JUMP_ENERGY_COST,
+        ON_FOOT_IDLE_DRAIN_PER_SEC, ON_FOOT_SPRINT_DRAIN_PER_SEC, ON_FOOT_WALK_DRAIN_PER_SEC,
+    },
+    movement::Vec3d,
+};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 mod player;
@@ -325,5 +331,138 @@ impl PhysicsArena {
             }
         }
         depleted
+    }
+
+    pub fn apply_on_foot_energy_drain(
+        &mut self,
+        player_id: u32,
+        previous_input: &InputCmd,
+        input: &InputCmd,
+        was_on_ground: bool,
+        dt: f32,
+    ) -> bool {
+        if self.vehicle_of_player.contains_key(&player_id) {
+            return false;
+        }
+
+        let Some(player) = self.players.get_mut(&player_id) else {
+            return false;
+        };
+        if player.dead {
+            return false;
+        }
+
+        let drain = on_foot_energy_drain_for_tick(previous_input, input, was_on_ground, dt);
+        if drain <= 0.0 {
+            return false;
+        }
+
+        player.energy = (player.energy - drain).max(0.0);
+        player.energy <= 0.0
+    }
+}
+
+fn input_has_move_intent(input: &InputCmd) -> bool {
+    if input.move_x != 0 || input.move_y != 0 {
+        return true;
+    }
+
+    input.buttons & (BTN_FORWARD | BTN_BACK | BTN_LEFT | BTN_RIGHT) != 0
+}
+
+fn jump_started(previous_input: &InputCmd, input: &InputCmd, was_on_ground: bool) -> bool {
+    was_on_ground && input.buttons & BTN_JUMP != 0 && previous_input.buttons & BTN_JUMP == 0
+}
+
+fn on_foot_energy_drain_for_tick(
+    previous_input: &InputCmd,
+    input: &InputCmd,
+    was_on_ground: bool,
+    dt: f32,
+) -> f32 {
+    let per_second = if input_has_move_intent(input) {
+        if input.buttons & BTN_SPRINT != 0 {
+            ON_FOOT_SPRINT_DRAIN_PER_SEC
+        } else {
+            ON_FOOT_WALK_DRAIN_PER_SEC
+        }
+    } else {
+        ON_FOOT_IDLE_DRAIN_PER_SEC
+    };
+    let jump_cost = if jump_started(previous_input, input, was_on_ground) {
+        JUMP_ENERGY_COST
+    } else {
+        0.0
+    };
+    per_second * dt + jump_cost
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_has_move_intent, jump_started, on_foot_energy_drain_for_tick};
+    use crate::{
+        constants::{
+            BTN_FORWARD, BTN_JUMP, BTN_SPRINT, JUMP_ENERGY_COST, ON_FOOT_IDLE_DRAIN_PER_SEC,
+            ON_FOOT_SPRINT_DRAIN_PER_SEC, ON_FOOT_WALK_DRAIN_PER_SEC,
+        },
+        protocol::InputCmd,
+    };
+
+    fn input() -> InputCmd {
+        InputCmd::default()
+    }
+
+    #[test]
+    fn movement_intent_covers_axes_and_legacy_buttons() {
+        let mut analog = input();
+        analog.move_y = 64;
+        assert!(input_has_move_intent(&analog));
+
+        let mut legacy = input();
+        legacy.buttons = BTN_FORWARD;
+        assert!(input_has_move_intent(&legacy));
+
+        assert!(!input_has_move_intent(&input()));
+    }
+
+    #[test]
+    fn on_foot_energy_drain_matches_idle_walk_and_sprint_rates() {
+        let idle = on_foot_energy_drain_for_tick(&input(), &input(), true, 1.0);
+        assert_eq!(idle, ON_FOOT_IDLE_DRAIN_PER_SEC);
+
+        let mut walk = input();
+        walk.move_y = 127;
+        assert_eq!(
+            on_foot_energy_drain_for_tick(&input(), &walk, true, 1.0),
+            ON_FOOT_WALK_DRAIN_PER_SEC
+        );
+
+        let mut sprint = walk.clone();
+        sprint.buttons |= BTN_SPRINT;
+        assert_eq!(
+            on_foot_energy_drain_for_tick(&walk, &sprint, true, 1.0),
+            ON_FOOT_SPRINT_DRAIN_PER_SEC
+        );
+    }
+
+    #[test]
+    fn jump_cost_only_applies_once_when_grounded() {
+        let previous = input();
+        let mut jumping = input();
+        jumping.buttons = BTN_JUMP;
+
+        assert!(jump_started(&previous, &jumping, true));
+        assert_eq!(
+            on_foot_energy_drain_for_tick(&previous, &jumping, true, 0.0),
+            JUMP_ENERGY_COST
+        );
+        assert_eq!(
+            on_foot_energy_drain_for_tick(&jumping, &jumping, true, 0.0),
+            0.0
+        );
+        assert_eq!(
+            on_foot_energy_drain_for_tick(&previous, &jumping, false, 0.0),
+            0.0
+        );
     }
 }

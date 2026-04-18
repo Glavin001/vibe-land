@@ -68,12 +68,20 @@ pub const OUT_OF_BOUNDS_Y_M: f32 = -12.0;
 // ── Energy / consumables ────────────────────────
 /// Energy each player starts with and is restored to on respawn.
 pub const STARTING_ENERGY: f32 = 1000.0;
+/// Baseline energy drained per second while on foot and idle.
+pub const ON_FOOT_IDLE_DRAIN_PER_SEC: f32 = 1.0;
+/// Energy drained per second while moving on foot.
+pub const ON_FOOT_WALK_DRAIN_PER_SEC: f32 = 2.0;
+/// Energy drained per second while sprinting on foot.
+pub const ON_FOOT_SPRINT_DRAIN_PER_SEC: f32 = 3.0;
+/// Additional one-time energy cost applied when a grounded jump begins.
+pub const JUMP_ENERGY_COST: f32 = 2.0;
 /// Baseline energy drained per second while occupying a vehicle.
 pub const VEHICLE_IDLE_DRAIN_PER_SEC: f32 = 1.0;
 /// Additional vehicle drain scaled by current speed in metres per second.
-pub const VEHICLE_SPEED_DRAIN_COEF: f32 = 0.3;
+pub const VEHICLE_SPEED_DRAIN_COEF: f32 = 0.57;
 /// Energy consumed by a single rifle shot.
-pub const RIFLE_SHOT_ENERGY_COST: f32 = 10.0;
+pub const RIFLE_SHOT_ENERGY_COST: f32 = 1.25;
 /// Additional pickup slack so overlapping batteries feel generous.
 pub const BATTERY_PICKUP_SLACK_M: f32 = 0.3;
 /// Default runtime/authored battery dimensions in metres.

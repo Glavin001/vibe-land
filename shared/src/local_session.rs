@@ -183,9 +183,14 @@ impl LocalSession {
         self.process_respawn(server_time_ms);
 
         let input = take_input_for_tick(&mut self.player);
+        let (previous_input, was_on_ground) = self
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|state| (state.last_input.clone(), state.on_ground))
+            .unwrap_or_default();
         self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
         self.arena.step_vehicles_and_dynamics(dt);
-        self.process_hitscan(server_time_ms);
 
         let gained_energy: f32 = self
             .arena
@@ -198,8 +203,15 @@ impl LocalSession {
                 player.energy += gained_energy;
             }
         }
+        let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
+            LOCAL_PLAYER_ID,
+            &previous_input,
+            &input,
+            was_on_ground,
+            dt,
+        );
         let depleted = self.arena.apply_vehicle_energy_drain(dt);
-        if depleted.contains(&LOCAL_PLAYER_ID) {
+        if depleted_on_foot || depleted.contains(&LOCAL_PLAYER_ID) {
             self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
         }
 
@@ -208,6 +220,8 @@ impl LocalSession {
                 self.kill_local_player(server_time_ms, LocalDeathCause::OutOfBounds);
             }
         }
+
+        self.process_hitscan(server_time_ms);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
@@ -864,6 +878,38 @@ mod tests {
     }
 
     #[test]
+    fn idle_energy_depletion_death_does_not_drop_battery() {
+        let mut session = isolated_energy_session();
+        let dt = 1.0 / SIM_HZ as f32;
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = crate::constants::ON_FOOT_IDLE_DRAIN_PER_SEC * dt * 0.5;
+
+        session.tick(dt);
+
+        assert!(
+            session.battery_states().is_empty(),
+            "idle depletion deaths should not drop a battery"
+        );
+        let player = session
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .expect("local player exists");
+        assert!(
+            player.dead,
+            "idle drain should kill the player when energy runs out"
+        );
+        assert_eq!(
+            player.energy, 0.0,
+            "energy should clamp to zero on depletion"
+        );
+    }
+
+    #[test]
     fn tick_acknowledges_latest_input_in_snapshot() {
         let mut session = LocalSession::new();
         session.connect();
@@ -1036,7 +1082,9 @@ mod tests {
                 .local_player_state()
                 .expect("local player state")
                 .energy_centi,
-            energy_to_centi(142.5)
+            energy_to_centi(
+                100.0 + 42.5 - crate::constants::ON_FOOT_IDLE_DRAIN_PER_SEC / SIM_HZ as f32
+            )
         );
     }
 
