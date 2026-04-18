@@ -7,6 +7,7 @@
 use nalgebra::{point, Isometry3, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::{DynamicRayCastVehicleController, WheelTuning};
 use rapier3d::prelude::*;
+use serde::Serialize;
 use vibe_netcode::physics_arena::DYNAMIC_SUBSTEPS;
 use vibe_netcode::sim_world::SimWorld;
 
@@ -18,14 +19,152 @@ use crate::movement::{
 };
 use crate::protocol::{make_net_vehicle_state, InputCmd, NetVehicleState};
 
-pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
+pub const VEHICLE_TYPE_DELOREAN: u8 = 0;
+pub const VEHICLE_TYPE_CYBERTRUCK: u8 = 1;
+pub const DEFAULT_VEHICLE_TYPE: u8 = VEHICLE_TYPE_DELOREAN;
+
+pub const DELOREAN_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
 pub const VEHICLE_CONTROLLER_SUBSTEPS: usize = 4;
-pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
+pub const DELOREAN_WHEEL_OFFSETS: [[f32; 3]; 4] = [
     [-0.9, 0.0, 1.1],
     [0.9, 0.0, 1.1],
     [-0.9, 0.0, -1.1],
     [0.9, 0.0, -1.1],
 ];
+
+// Legacy stainless-sports-car wedge kept as vehicle type 0 so existing worlds
+// retain their authored look when multiple vehicle types are introduced.
+// Order of side points (closed loop, counter-clockwise in (z, y)):
+//   rear-bottom, front-bottom, front-top (low hood), hood→windshield,
+//   roof peak (front), roof peak (back), cab→bed, rear-top.
+pub const DELOREAN_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = [
+    // Left side (x = -0.9)
+    [-0.9, -0.30, -1.80], // P0 rear-bottom
+    [-0.9, -0.30, 1.80],  // P1 front-bottom
+    [-0.9, -0.05, 1.80],  // P2 front-top (hood)
+    [-0.9, 0.10, 0.55],   // P3 hood → windshield
+    [-0.9, 0.30, 0.05],   // P4 roof peak (front)
+    [-0.9, 0.30, -0.90],  // P5 roof peak (back)
+    [-0.9, 0.05, -1.25],  // P6 cab → bed
+    [-0.9, 0.05, -1.80],  // P7 rear-top
+    // Right side (x = +0.9)
+    [0.9, -0.30, -1.80],
+    [0.9, -0.30, 1.80],
+    [0.9, -0.05, 1.80],
+    [0.9, 0.10, 0.55],
+    [0.9, 0.30, 0.05],
+    [0.9, 0.30, -0.90],
+    [0.9, 0.05, -1.25],
+    [0.9, 0.05, -1.80],
+];
+pub const CYBERTRUCK_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
+pub const CYBERTRUCK_WHEEL_OFFSETS: [[f32; 3]; 4] = DELOREAN_WHEEL_OFFSETS;
+pub const CYBERTRUCK_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = [
+    // Left side (x = -0.9)
+    [-0.9, -0.30, -1.80], // P0 rear-bottom
+    [-0.9, -0.30, 1.80],  // P1 front-bottom
+    [-0.9, 0.02, 1.80],   // P2 blunt front face top
+    [-0.9, 0.18, 1.35],   // P3 short hood / windshield rise
+    [-0.9, 0.36, 0.95],   // P4 cabin peak
+    [-0.9, 0.31, 0.10],   // P5 roof-sail section
+    [-0.9, 0.21, -0.95],  // P6 long rear taper
+    [-0.9, 0.10, -1.80],  // P7 tailgate top
+    // Right side (x = +0.9)
+    [0.9, -0.30, -1.80],
+    [0.9, -0.30, 1.80],
+    [0.9, 0.02, 1.80],
+    [0.9, 0.18, 1.35],
+    [0.9, 0.36, 0.95],
+    [0.9, 0.31, 0.10],
+    [0.9, 0.21, -0.95],
+    [0.9, 0.10, -1.80],
+];
+
+// Legacy compatibility aliases used by older helpers/tests.
+pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = DELOREAN_CHASSIS_HALF_EXTENTS;
+pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = DELOREAN_WHEEL_OFFSETS;
+pub const VEHICLE_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = DELOREAN_CHASSIS_HULL_VERTICES;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VehicleType {
+    Delorean,
+    Cybertruck,
+}
+
+impl VehicleType {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            VEHICLE_TYPE_DELOREAN => Some(Self::Delorean),
+            VEHICLE_TYPE_CYBERTRUCK => Some(Self::Cybertruck),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Delorean => VEHICLE_TYPE_DELOREAN,
+            Self::Cybertruck => VEHICLE_TYPE_CYBERTRUCK,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleDefinition {
+    pub vehicle_type: u8,
+    pub key: &'static str,
+    pub name: &'static str,
+    pub chassis_half_extents: [f32; 3],
+    pub wheel_offsets: [[f32; 3]; 4],
+    pub chassis_hull_vertices: &'static [[f32; 3]],
+    pub suspension_rest_length_m: f32,
+    pub suspension_travel_m: f32,
+    pub wheel_radius_m: f32,
+}
+
+pub const DELOREAN_VEHICLE_DEFINITION: VehicleDefinition = VehicleDefinition {
+    vehicle_type: VEHICLE_TYPE_DELOREAN,
+    key: "delorean",
+    name: "DeLorean",
+    chassis_half_extents: DELOREAN_CHASSIS_HALF_EXTENTS,
+    wheel_offsets: DELOREAN_WHEEL_OFFSETS,
+    chassis_hull_vertices: &DELOREAN_CHASSIS_HULL_VERTICES,
+    suspension_rest_length_m: VEHICLE_SUSPENSION_REST_LENGTH,
+    suspension_travel_m: VEHICLE_SUSPENSION_TRAVEL,
+    wheel_radius_m: VEHICLE_WHEEL_RADIUS,
+};
+
+pub const CYBERTRUCK_VEHICLE_DEFINITION: VehicleDefinition = VehicleDefinition {
+    vehicle_type: VEHICLE_TYPE_CYBERTRUCK,
+    key: "cybertruck",
+    name: "Cybertruck",
+    chassis_half_extents: CYBERTRUCK_CHASSIS_HALF_EXTENTS,
+    wheel_offsets: CYBERTRUCK_WHEEL_OFFSETS,
+    chassis_hull_vertices: &CYBERTRUCK_CHASSIS_HULL_VERTICES,
+    suspension_rest_length_m: VEHICLE_SUSPENSION_REST_LENGTH,
+    suspension_travel_m: VEHICLE_SUSPENSION_TRAVEL,
+    wheel_radius_m: VEHICLE_WHEEL_RADIUS,
+};
+
+pub const VEHICLE_DEFINITIONS: [VehicleDefinition; 2] =
+    [DELOREAN_VEHICLE_DEFINITION, CYBERTRUCK_VEHICLE_DEFINITION];
+
+pub fn canonical_vehicle_type(vehicle_type: u8) -> u8 {
+    VehicleType::from_u8(vehicle_type)
+        .unwrap_or(VehicleType::Delorean)
+        .as_u8()
+}
+
+pub fn vehicle_definitions() -> &'static [VehicleDefinition] {
+    &VEHICLE_DEFINITIONS
+}
+
+pub fn vehicle_definition(vehicle_type: u8) -> &'static VehicleDefinition {
+    match VehicleType::from_u8(vehicle_type).unwrap_or(VehicleType::Delorean) {
+        VehicleType::Delorean => &DELOREAN_VEHICLE_DEFINITION,
+        VehicleType::Cybertruck => &CYBERTRUCK_VEHICLE_DEFINITION,
+    }
+}
 const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 /// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
 const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
@@ -44,6 +183,7 @@ const VEHICLE_EXIT_UP_OFFSET_M: f32 = 1.0;
 /// here via `sim.modified_colliders`).
 pub fn create_vehicle_physics(
     sim: &mut SimWorld,
+    vehicle_type: u8,
     pose: Isometry3<f32>,
 ) -> (
     RigidBodyHandle,
@@ -62,17 +202,20 @@ pub fn create_vehicle_physics(
     // GROUP_1 = terrain/chassis, GROUP_2 = dynamic bodies (balls).
     // Suspension QueryFilter uses GROUP_1 only so the vehicle chassis box
     // pushes balls directly rather than the suspension climbing over them.
+    let definition = vehicle_definition(vehicle_type);
     let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2);
-    let collider = ColliderBuilder::cuboid(
-        VEHICLE_CHASSIS_HALF_EXTENTS[0],
-        VEHICLE_CHASSIS_HALF_EXTENTS[1],
-        VEHICLE_CHASSIS_HALF_EXTENTS[2],
-    )
-    .friction(0.3)
-    .restitution(0.1)
-    .density(VEHICLE_CHASSIS_DENSITY)
-    .collision_groups(chassis_groups)
-    .build();
+    let hull_points: Vec<Point<f32>> = definition
+        .chassis_hull_vertices
+        .iter()
+        .map(|v| point![v[0], v[1], v[2]])
+        .collect();
+    let collider = ColliderBuilder::convex_hull(&hull_points)
+        .unwrap_or_else(|| panic!("{} chassis hull must be valid", definition.key))
+        .friction(0.3)
+        .restitution(0.1)
+        .density(VEHICLE_CHASSIS_DENSITY)
+        .collision_groups(chassis_groups)
+        .build();
     let chassis_collider =
         sim.colliders
             .insert_with_parent(collider, chassis_body, &mut sim.rigid_bodies);
@@ -89,7 +232,7 @@ pub fn create_vehicle_physics(
         max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
         ..WheelTuning::default()
     };
-    for offset in VEHICLE_WHEEL_OFFSETS {
+    for offset in definition.wheel_offsets {
         controller.add_wheel(
             point![offset[0], offset[1], offset[2]],
             -Vector3::y(),
@@ -365,6 +508,7 @@ pub fn make_vehicle_snapshot(
     chassis_body: RigidBodyHandle,
     controller: &DynamicRayCastVehicleController,
 ) -> Option<NetVehicleState> {
+    let vehicle_type = canonical_vehicle_type(vehicle_type);
     let state = read_vehicle_chassis_state(sim, chassis_body)?;
     Some(make_net_vehicle_state(
         id,
@@ -462,8 +606,11 @@ mod tests {
                 Vector3::new(200.0, 0.5, 200.0),
                 0,
             );
-            let (chassis_body, chassis_collider, controller) =
-                create_vehicle_physics(&mut sim, Isometry3::translation(0.0, 1.2, 0.0));
+            let (chassis_body, chassis_collider, controller) = create_vehicle_physics(
+                &mut sim,
+                DEFAULT_VEHICLE_TYPE,
+                Isometry3::translation(0.0, 1.2, 0.0),
+            );
             sim.rebuild_broad_phase();
             Self {
                 sim,
@@ -494,8 +641,11 @@ mod tests {
                 Vector3::new(512.0, 1.0, 512.0),
                 0,
             );
-            let (chassis_body, chassis_collider, controller) =
-                create_vehicle_physics(&mut sim, Isometry3::translation(0.0, 1.2, 0.0));
+            let (chassis_body, chassis_collider, controller) = create_vehicle_physics(
+                &mut sim,
+                DEFAULT_VEHICLE_TYPE,
+                Isometry3::translation(0.0, 1.2, 0.0),
+            );
             sim.rebuild_broad_phase();
             Self {
                 sim,
@@ -522,8 +672,11 @@ mod tests {
                 vec![[0, 2, 1], [2, 3, 1]],
                 0,
             );
-            let (chassis_body, chassis_collider, controller) =
-                create_vehicle_physics(&mut sim, Isometry3::translation(0.0, 1.2, 0.0));
+            let (chassis_body, chassis_collider, controller) = create_vehicle_physics(
+                &mut sim,
+                DEFAULT_VEHICLE_TYPE,
+                Isometry3::translation(0.0, 1.2, 0.0),
+            );
             sim.rebuild_broad_phase();
             Self {
                 sim,
@@ -795,6 +948,16 @@ mod tests {
             "contact refresh changed chassis velocity by {:.6}m/s",
             (after_linvel - before_linvel).norm()
         );
+    }
+
+    #[test]
+    fn vehicle_registry_exposes_legacy_delorean_and_cybertruck_shapes() {
+        let defs = vehicle_definitions();
+        assert_eq!(defs.len(), 2);
+        assert_eq!(defs[0].key, "delorean");
+        assert_eq!(defs[1].key, "cybertruck");
+        assert_ne!(defs[0].chassis_hull_vertices, defs[1].chassis_hull_vertices);
+        assert_eq!(vehicle_definition(255).key, "delorean");
     }
 
     #[test]

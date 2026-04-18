@@ -1,11 +1,15 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  getVehicleDefinition,
   getVehicleWheelConnectionOffsets,
   getVehicleSuspensionRestLengthM,
   getVehicleWheelRadiusM,
   getVehicleWheelVisualAnchors,
 } from './vehicleVisualGeometry';
-import { hydrateSharedVehicleGeometryFromLoadedWasm } from '../wasm/sharedPhysics';
+import {
+  getSharedVehicleDefinitions,
+  hydrateSharedVehicleGeometryFromLoadedWasm,
+} from '../wasm/sharedPhysics';
 import { initWasmForTests } from '../wasm/testInit';
 
 describe('vehicleVisualGeometry', () => {
@@ -58,5 +62,20 @@ describe('vehicleVisualGeometry', () => {
       expect(offsets[i][1]).toBeCloseTo(expectedOffsets[i][1]);
       expect(offsets[i][2]).toBeCloseTo(expectedOffsets[i][2]);
     }
+  });
+
+  it('hydrates both supported vehicle definitions from shared WASM data', () => {
+    const definitions = getSharedVehicleDefinitions();
+    expect(definitions.map((definition) => definition.key)).toEqual(['delorean', 'cybertruck']);
+
+    const delorean = getVehicleDefinition(definitions[0].vehicleType);
+    const cybertruck = getVehicleDefinition(definitions[1].vehicleType);
+    expect(delorean.chassisHullVertices).not.toEqual(cybertruck.chassisHullVertices);
+    expect(cybertruck.chassisHullVertices[2]?.[1]).toBeCloseTo(0.02);
+    expect(cybertruck.chassisHullVertices[3]?.[2]).toBeGreaterThan(cybertruck.chassisHullVertices[4]?.[2] ?? 0);
+    expect(cybertruck.chassisHullVertices[4]?.[2]).toBeGreaterThan(cybertruck.chassisHullVertices[5]?.[2] ?? 0);
+    expect(cybertruck.chassisHullVertices[5]?.[2]).toBeGreaterThan(cybertruck.chassisHullVertices[6]?.[2] ?? 0);
+    expect(cybertruck.chassisHullVertices[4]?.[1]).toBeGreaterThan(cybertruck.chassisHullVertices[5]?.[1] ?? 0);
+    expect(cybertruck.chassisHullVertices[5]?.[1]).toBeGreaterThan(cybertruck.chassisHullVertices[6]?.[1] ?? 0);
   });
 });

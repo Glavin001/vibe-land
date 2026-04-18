@@ -185,6 +185,14 @@ export function useDebugStats() {
   const deepCaptureSamplesRef = useRef<VehicleDeepCaptureSample[]>([]);
 
   const isLocalTransport = useCallback((transport: string): boolean => transport === 'local', []);
+  const cycleRapierDebugPreset = useCallback((reverse = false) => {
+    setRapierDebugPresetIndex((index) => {
+      if (reverse) {
+        return index === 0 ? RAPIER_DEBUG_MODES.length - 1 : index - 1;
+      }
+      return (index + 1) % RAPIER_DEBUG_MODES.length;
+    });
+  }, []);
 
   // F3 toggle
   useEffect(() => {
@@ -199,12 +207,11 @@ export function useDebugStats() {
       }
       if (e.code === 'F6') {
         e.preventDefault();
-        setRapierDebugPresetIndex((index) => {
-          if (e.shiftKey) {
-            return (index + 1) % RAPIER_DEBUG_MODES.length;
-          }
-          return index === 0 ? 1 : 0;
-        });
+        if (e.shiftKey) {
+          cycleRapierDebugPreset(false);
+          return;
+        }
+        setRapierDebugPresetIndex((index) => (index === 0 ? 1 : 0));
         return;
       }
       if (e.code === 'F7') {
@@ -219,7 +226,7 @@ export function useDebugStats() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [cycleRapierDebugPreset]);
 
   const recordSnapshot = useCallback(() => {
     const now = performance.now();
@@ -751,5 +758,6 @@ export function useDebugStats() {
     deepCaptureSampleCount: deepCaptureSamplesRef.current.length,
     rapierDebugModeBits: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].bits,
     rapierDebugLabel: RAPIER_DEBUG_MODES[rapierDebugPresetIndex].label,
+    cycleRapierDebugPreset,
   };
 }
