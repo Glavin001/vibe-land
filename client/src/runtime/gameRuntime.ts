@@ -218,6 +218,37 @@ export interface GameRuntimeClient {
     vz: number,
   ): void;
   syncBroadPhase(): void;
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  removeRagdollBody(id: number): void;
+  getRagdollBodyState(id: number): Float64Array | null;
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void;
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void;
+  removeRagdollJoint(jointId: number): void;
+
   enterVehicle(vehicleId: number, initState: NetVehicleState): void;
   exitVehicle(): void;
   updateVehicle(
@@ -440,6 +471,38 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     vz: number,
   ): void;
   abstract syncBroadPhase(): void;
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+  abstract spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  abstract removeRagdollBody(id: number): void;
+  /** Returns [px, py, pz, qx, qy, qz, qw] or null. */
+  abstract getRagdollBodyState(id: number): Float64Array | null;
+  abstract setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  abstract createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void;
+  abstract createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void;
+  abstract removeRagdollJoint(jointId: number): void;
+
   abstract enterVehicle(vehicleId: number, initState: NetVehicleState): void;
   abstract exitVehicle(): void;
   abstract updateVehicle(
@@ -771,6 +834,14 @@ export class LocalGameRuntime extends BaseGameRuntime {
   syncRemoteVehicle(): void {}
 
   syncBroadPhase(): void {}
+
+  spawnRagdollBody(): void {}
+  removeRagdollBody(): void {}
+  getRagdollBodyState(): null { return null; }
+  setRagdollBodyVelocity(): void {}
+  createRagdollSphericalJoint(): void {}
+  createRagdollRevoluteJoint(): void {}
+  removeRagdollJoint(): void {}
 
   enterVehicle(_vehicleId: number, _initState: NetVehicleState): void {}
 
@@ -1522,6 +1593,60 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   syncBroadPhase(): void {
     this.sim?.syncBroadPhase();
+  }
+
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.sim?.spawnRagdollBody(id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz);
+  }
+
+  removeRagdollBody(id: number): void {
+    this.sim?.removeRagdollBody(id);
+  }
+
+  getRagdollBodyState(id: number): Float64Array | null {
+    const s = this.sim?.getRagdollBodyState(id);
+    return s && s.length === 7 ? s : null;
+  }
+
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.sim?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.sim?.createRagdollSphericalJoint(jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z);
+  }
+
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.sim?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id,
+      a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+
+  removeRagdollJoint(jointId: number): void {
+    this.sim?.removeRagdollJoint(jointId);
   }
 
   enterVehicle(vehicleId: number, initState: NetVehicleState): void {

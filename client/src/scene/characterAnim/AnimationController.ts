@@ -328,6 +328,21 @@ export class AnimationController {
     this.oneShotActive = false;
   }
 
+  /** Freeze the mixer for ragdoll mode. The last animated pose is preserved in bone transforms. */
+  stopAll(): void {
+    this.mixer.stopAllAction();
+    this.currentAction = null;
+    this.additiveAction = null;
+    this.oneShotActive = false;
+    this.locoActive = false;
+    this.currentState = null;
+  }
+
+  /** Resume animation from idle after ragdoll deactivation. */
+  restoreState(): void {
+    this.playImmediate(STATE.idle);
+  }
+
   update(dt: number): void {
     if (!Number.isFinite(dt) || dt <= 0) return;
 

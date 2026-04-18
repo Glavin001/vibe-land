@@ -9,10 +9,12 @@
 import * as THREE from 'three';
 import { AnimationController } from './AnimationController';
 import { CharacterModel } from './CharacterModel';
+import { Ragdoll } from './Ragdoll';
 import { PLAYER_PROFILE } from './profile';
 import { STATE, type AnimationProfile, type StateId } from './types';
+import type { GameRuntimeClient } from '../../runtime/gameRuntime';
 
-/** "dead" is a synthetic state that triggers `profile.deathClip` as a full-override one-shot. */
+/** "dead" is a synthetic state that triggers the physics ragdoll on transition. */
 export type RemoteRenderState = StateId | 'dead';
 
 export interface RemotePlayerHandle {
@@ -40,6 +42,12 @@ export interface RemotePlayerHandle {
   setVisible(visible: boolean): void;
   /** Play any clip by name (e.g. "OverhandThrow", "Death01"). */
   playOneShot(clipName: string): void;
+  /**
+   * Toggle ragdoll physics mode.
+   * Call with active=true when isDead transitions false→true.
+   * Call with active=false on respawn.
+   */
+  setRagdoll(active: boolean, seedVelocity?: THREE.Vector3): void;
   /** Returns true once the GLB has finished loading and the rig is animated. */
   isReady(): boolean;
   dispose(): void;
@@ -48,6 +56,8 @@ export interface RemotePlayerHandle {
 export interface CreateRemotePlayerOptions {
   profile?: AnimationProfile;
   tint?: THREE.Color | number;
+  playerId?: number;
+  runtime?: GameRuntimeClient;
 }
 
 export function createRemotePlayer(
@@ -55,13 +65,18 @@ export function createRemotePlayer(
   options: CreateRemotePlayerOptions = {},
 ): RemotePlayerHandle {
   const profile = options.profile ?? PLAYER_PROFILE;
+  const playerId = options.playerId ?? 0;
+  const runtime = options.runtime ?? null;
+
   const root = new THREE.Group();
   root.name = `RemotePlayer:${profile.id}`;
   parent.add(root);
 
   let model: CharacterModel | null = null;
   let controller: AnimationController | null = null;
-  let lastDeathPlayed = false;
+  let ragdoll: Ragdoll | null = null;
+  let ragdollActive = false;
+  let pendingSeedVelocity: THREE.Vector3 | null = null;
   let pendingTint: THREE.Color | number | null = options.tint ?? null;
   let pendingVisible = true;
   let disposed = false;
@@ -84,6 +99,14 @@ export function createRemotePlayer(
       if (pendingTint != null) m.tint(pendingTint);
       m.setVisible(pendingVisible);
       controller = new AnimationController(m, profile);
+
+      // If ragdoll was requested before the model finished loading, activate now.
+      if (ragdollActive && runtime) {
+        controller.stopAll();
+        ragdoll = new Ragdoll(m, playerId, runtime);
+        ragdoll.activate(pendingSeedVelocity ?? new THREE.Vector3());
+        pendingSeedVelocity = null;
+      }
     })
     .catch((err) => {
       console.warn('[characterAnim] Failed to load player rig — falling back to empty group.', err);
@@ -92,23 +115,25 @@ export function createRemotePlayer(
   return {
     root,
     update(dt, state, speedHorizontal, onGround) {
+      // While ragdoll is active, drive bones from physics and skip mixer entirely.
+      if (ragdollActive) {
+        ragdoll?.update();
+        return;
+      }
+
       if (!controller) return;
 
       if (state === 'dead') {
-        if (profile.deathClip && !lastDeathPlayed) {
+        // Ragdoll should have been activated by setRagdoll — if somehow we get
+        // here without it, fall back to the canned death clip.
+        if (profile.deathClip) {
           controller.playOneShot(profile.deathClip);
-          lastDeathPlayed = true;
         }
         controller.update(dt);
         return;
       }
 
-      if (lastDeathPlayed) {
-        controller.resetOneShot();
-        lastDeathPlayed = false;
-        jumpPhase = 'grounded';
-      }
-
+      // Leaving dead state — ragdoll cleanup is handled in setRagdoll(false).
       switch (jumpPhase) {
         case 'grounded':
           if (!onGround) {
@@ -165,11 +190,35 @@ export function createRemotePlayer(
     playOneShot(clipName) {
       controller?.playOneShot(clipName);
     },
+    setRagdoll(active, seedVelocity) {
+      if (active === ragdollActive) return;
+      ragdollActive = active;
+
+      if (active) {
+        jumpPhase = 'grounded';
+        if (model && controller && runtime) {
+          controller.stopAll();
+          ragdoll = new Ragdoll(model, playerId, runtime);
+          ragdoll.activate(seedVelocity ?? new THREE.Vector3());
+          pendingSeedVelocity = null;
+        } else {
+          // Model not loaded yet — store velocity; activate in onLoad above.
+          pendingSeedVelocity = seedVelocity ?? new THREE.Vector3();
+        }
+      } else {
+        ragdoll?.dispose();
+        ragdoll = null;
+        jumpPhase = 'grounded';
+        controller?.restoreState();
+      }
+    },
     isReady() {
       return controller != null;
     },
     dispose() {
       disposed = true;
+      ragdoll?.dispose();
+      ragdoll = null;
       controller?.dispose();
       model?.dispose();
       controller = null;

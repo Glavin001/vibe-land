@@ -1067,6 +1067,7 @@ export function GameWorld({
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
+  const remoteDeadPrevRef = useRef<Map<number, boolean>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const batteryGroupRef = useRef<THREE.Group>(null);
@@ -2409,7 +2410,7 @@ export function GameWorld({
       activeIds.add(id);
       let handle = remoteMeshes.current.get(id);
       if (!handle) {
-        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
         attachPlayerIdLabel(handle.root, id);
         remoteMeshes.current.set(id, handle);
@@ -2456,7 +2457,22 @@ export function GameWorld({
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
       handle.setFlash(0xfff36b, flashAlpha);
-      handle.setOpacity(isDead ? 0.35 : 1);
+      // Ragdoll is the dead visual cue — keep opacity at 1 while physics-driven.
+      handle.setOpacity(1);
+
+      // Edge-detect isDead transitions to activate/deactivate ragdoll.
+      const wasDead = remoteDeadPrevRef.current.get(id) ?? false;
+      if (isDead && !wasDead) {
+        const sv = new THREE.Vector3(
+          sample?.velocity[0] ?? 0,
+          sample?.velocity[1] ?? 0,
+          sample?.velocity[2] ?? 0,
+        );
+        handle.setRagdoll(true, sv);
+      } else if (!isDead && wasDead) {
+        handle.setRagdoll(false);
+      }
+      remoteDeadPrevRef.current.set(id, isDead);
 
       const vx = sample?.velocity[0] ?? 0;
       const vz = sample?.velocity[2] ?? 0;
@@ -2476,6 +2492,7 @@ export function GameWorld({
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
+        remoteDeadPrevRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
