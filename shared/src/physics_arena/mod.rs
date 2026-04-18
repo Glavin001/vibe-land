@@ -85,6 +85,10 @@ pub struct PhysicsArena {
     pub vehicle_of_player: HashMap<u32, u32>,
     pub batteries: HashMap<u32, Battery>,
     next_battery_id: u32,
+    /// Per-tile terrain material lookup populated by `WorldDocument::instantiate`
+    /// when authored material splatmaps exist. `None` means "use Rapier defaults
+    /// everywhere" — preserves original behaviour for unauthored worlds.
+    pub material_field: Option<crate::world_document::TerrainMaterialField>,
 }
 
 impl PhysicsArena {
@@ -98,11 +102,32 @@ impl PhysicsArena {
             vehicle_of_player: HashMap::new(),
             batteries: HashMap::new(),
             next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
+            material_field: None,
         }
     }
 
     pub fn config(&self) -> &MoveConfig {
         self.dynamic.config()
+    }
+
+    /// Sample blended friction/restitution at a world position. Returns the
+    /// DEFAULT (grass-like) material when no `material_field` is installed.
+    pub fn sample_terrain_material(
+        &self,
+        x: f32,
+        z: f32,
+    ) -> crate::world_document::EffectiveTerrainMaterial {
+        match &self.material_field {
+            Some(field) => field.sample(x, z),
+            None => crate::world_document::EffectiveTerrainMaterial::DEFAULT,
+        }
+    }
+
+    pub fn set_material_field(
+        &mut self,
+        field: Option<crate::world_document::TerrainMaterialField>,
+    ) {
+        self.material_field = field;
     }
 
     pub fn sync_broad_phase(&mut self) {
@@ -143,6 +168,25 @@ impl PhysicsArena {
     ) -> ColliderHandle {
         self.dynamic
             .add_static_heightfield(center, heights, scale, user_data)
+    }
+
+    pub fn add_static_heightfield_with_material(
+        &mut self,
+        center: Vec3,
+        heights: nalgebra::DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+        friction: f32,
+        restitution: f32,
+    ) -> ColliderHandle {
+        self.dynamic.add_static_heightfield_with_material(
+            center,
+            heights,
+            scale,
+            user_data,
+            friction,
+            restitution,
+        )
     }
 
     pub fn add_static_trimesh(

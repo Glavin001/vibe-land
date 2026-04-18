@@ -304,6 +304,18 @@ impl SimWorld {
         scale: Vector3<f32>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_heightfield_with_material(center, heights, scale, user_data, 0.5, 0.0)
+    }
+
+    pub fn add_static_heightfield_with_material(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+        friction: f32,
+        restitution: f32,
+    ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::heightfield_with_flags(
                 heights,
@@ -311,6 +323,8 @@ impl SimWorld {
                 HeightFieldFlags::FIX_INTERNAL_EDGES,
             )
             .translation(center)
+            .friction(friction.max(0.0))
+            .restitution(restitution.clamp(0.0, 1.0))
             .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
             .user_data(user_data)
             .build(),

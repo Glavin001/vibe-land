@@ -88,6 +88,7 @@ fn update_player_motion(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    ground_material_multiplier: f32,
 ) {
     let cfg = &sim.config;
     let dt64 = dt as f64;
@@ -98,18 +99,18 @@ fn update_player_motion(
     let wish = build_wish_dir(input, *yaw);
     let max_speed = pick_move_speed(cfg, input.buttons);
 
-    apply_horizontal_friction(velocity, cfg.friction, dt64, *on_ground);
-    accelerate(
-        velocity,
-        wish,
-        max_speed,
-        if *on_ground {
-            cfg.ground_accel
-        } else {
-            cfg.air_accel
-        },
-        dt64,
-    );
+    // Scale both the decelerating ground friction and the on-ground
+    // acceleration by the material under the player so ice feels slippery
+    // (low friction ⇒ long glide + sluggish start) and pavement feels grippy.
+    // Air movement is unaffected.
+    let multiplier = ground_material_multiplier.clamp(0.05, 4.0) as f64;
+    apply_horizontal_friction(velocity, cfg.friction * multiplier, dt64, *on_ground);
+    let accel = if *on_ground {
+        cfg.ground_accel * multiplier
+    } else {
+        cfg.air_accel
+    };
+    accelerate(velocity, wish, max_speed, accel, dt64);
 
     if *on_ground && (input.buttons & BTN_JUMP != 0) {
         velocity.y = cfg.jump_speed;
@@ -414,11 +415,21 @@ pub fn simulate_player_tick(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    ground_material_multiplier: f32,
 ) -> PlayerTickResult {
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
-    update_player_motion(sim, velocity, yaw, pitch, on_ground, input, dt);
+    update_player_motion(
+        sim,
+        velocity,
+        yaw,
+        pitch,
+        on_ground,
+        input,
+        dt,
+        ground_material_multiplier,
+    );
     result.timings.move_math_ms = elapsed_ms(move_math_started);
 
     let start_position = *position;
@@ -549,7 +560,7 @@ mod tests {
         input: &InputCmd,
         dt: f32,
     ) {
-        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt);
+        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt, 1.0);
         sim.sync_player_collider(collider, pos);
     }
 
@@ -620,6 +631,7 @@ mod tests {
                 &mut on_ground,
                 &input(),
                 1.0 / 60.0,
+                1.0,
             );
             sim.sync_player_collider(collider, &pos);
         }
@@ -634,6 +646,7 @@ mod tests {
             &mut on_ground,
             &input(),
             1.0 / 60.0,
+            1.0,
         );
 
         assert!(on_ground, "player should remain grounded on static floor");

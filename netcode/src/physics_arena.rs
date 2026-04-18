@@ -99,6 +99,25 @@ impl DynamicArena {
             .add_static_heightfield(center, heights, scale, user_data)
     }
 
+    pub fn add_static_heightfield_with_material(
+        &mut self,
+        center: Vec3,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+        friction: f32,
+        restitution: f32,
+    ) -> ColliderHandle {
+        self.sim.add_static_heightfield_with_material(
+            center,
+            heights,
+            scale,
+            user_data,
+            friction,
+            restitution,
+        )
+    }
+
     pub fn add_static_trimesh(
         &mut self,
         vertices: Vec<Point3<f32>>,
