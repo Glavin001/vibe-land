@@ -33,6 +33,7 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   RIFLE_FIRE_INTERVAL_MS,
@@ -2357,6 +2358,7 @@ export function GameWorld({
       remoteLastHpRef.current.set(id, replicatedHp);
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
+      const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2393,7 +2395,7 @@ export function GameWorld({
         : horizontalSpeed > 0.1
           ? STATE.move
           : STATE.idle;
-      handle.update(frameDelta, renderState, horizontalSpeed);
+      handle.update(frameDelta, renderState, horizontalSpeed, isOnGround);
     }
 
     // Remove stale

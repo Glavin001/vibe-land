@@ -315,6 +315,10 @@ export class AnimationController {
       this.additiveAction = action;
     } else {
       this.currentAction = action;
+      // Clear currentState so the next setState() always re-fades into the
+      // returning state (e.g. dead → idle on respawn) instead of treating
+      // it as a no-op when the FSM was already in that state pre-override.
+      this.currentState = null;
       this.oneShotActive = true;
       this.clipFinished = false;
     }

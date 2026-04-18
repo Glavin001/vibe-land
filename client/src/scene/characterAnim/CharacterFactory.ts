@@ -18,8 +18,18 @@ export type RemoteRenderState = StateId | 'dead';
 export interface RemotePlayerHandle {
   /** Top-level group attached to the scene (always present). */
   readonly root: THREE.Group;
-  /** Per-frame entry: dt in seconds, current state, current horizontal speed (m/s). */
-  update(dt: number, state: RemoteRenderState, speedHorizontal: number): void;
+  /**
+   * Per-frame entry. `state` is the desired ground-level state ('idle' | 'move' | 'dead').
+   * The handle layers a jump/air/land sub-FSM on top, driven by `onGround`: when the
+   * player leaves the ground we play Jump_Start → Jump_Loop, and on landing we
+   * play Jump_Land before falling back to the requested state.
+   */
+  update(
+    dt: number,
+    state: RemoteRenderState,
+    speedHorizontal: number,
+    onGround: boolean,
+  ): void;
   /** Re-tint the rig (per-player color). Safe to call before the GLB loads. */
   setTint(color: THREE.Color | number): void;
   /** Yellow hit-flash overlay (0..1). */
@@ -56,6 +66,13 @@ export function createRemotePlayer(
   let pendingVisible = true;
   let disposed = false;
 
+  // Sub-FSM layered on top of the caller's idle/move request:
+  //   grounded → (left ground) → jumping → (Jump_Start finished) → airborne
+  //                            → (touched ground) → landing → (Jump_Land finished) → grounded
+  // Death always wins and resets the phase on respawn.
+  type JumpPhase = 'grounded' | 'jumping' | 'airborne' | 'landing';
+  let jumpPhase: JumpPhase = 'grounded';
+
   CharacterModel.load(profile, root)
     .then((m) => {
       if (disposed) {
@@ -74,21 +91,61 @@ export function createRemotePlayer(
 
   return {
     root,
-    update(dt, state, speedHorizontal) {
+    update(dt, state, speedHorizontal, onGround) {
       if (!controller) return;
-      if (state === 'dead' && profile.deathClip) {
-        if (!lastDeathPlayed) {
+
+      if (state === 'dead') {
+        if (profile.deathClip && !lastDeathPlayed) {
           controller.playOneShot(profile.deathClip);
           lastDeathPlayed = true;
         }
-      } else if (state !== 'dead') {
-        if (lastDeathPlayed) {
-          controller.resetOneShot();
-          lastDeathPlayed = false;
-        }
-        controller.setState(state);
+        controller.update(dt);
+        return;
       }
-      if (state === STATE.move) controller.setSpeed(speedHorizontal);
+
+      if (lastDeathPlayed) {
+        controller.resetOneShot();
+        lastDeathPlayed = false;
+        jumpPhase = 'grounded';
+      }
+
+      switch (jumpPhase) {
+        case 'grounded':
+          if (!onGround) {
+            controller.setState(STATE.jump);
+            jumpPhase = 'jumping';
+          }
+          break;
+        case 'jumping':
+          if (onGround) {
+            controller.setState(STATE.land);
+            jumpPhase = 'landing';
+          } else if (controller.isClipFinished()) {
+            controller.setState(STATE.air);
+            jumpPhase = 'airborne';
+          }
+          break;
+        case 'airborne':
+          if (onGround) {
+            controller.setState(STATE.land);
+            jumpPhase = 'landing';
+          }
+          break;
+        case 'landing':
+          if (!onGround) {
+            controller.setState(STATE.jump);
+            jumpPhase = 'jumping';
+          } else if (controller.isClipFinished()) {
+            jumpPhase = 'grounded';
+          }
+          break;
+      }
+
+      if (jumpPhase === 'grounded') {
+        controller.setState(state);
+        if (state === STATE.move) controller.setSpeed(speedHorizontal);
+      }
+
       controller.update(dt);
     },
     setTint(color) {
