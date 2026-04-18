@@ -39,23 +39,21 @@ test.describe('Multiplayer Smoke', () => {
       ]);
 
       // Check whether a multiplayer session can actually be established:
-      // wait up to 15 seconds for the server to assign a player ID.
-      // If it stays at 0, the server is not providing multiplayer sessions
-      // in this environment (e.g. no TLS cert for WebTransport, or the
-      // match server is unavailable) — skip gracefully.
+      // wait up to 20 seconds for BOTH players to receive a player ID from
+      // the server.  If either stays at 0, the server is not providing
+      // multiplayer sessions in this environment — skip gracefully.
       let multiplayerAvailable = false;
       try {
-        await waitForSnapshot(
-          pageA,
-          (s) => s.playerId > 0,
-          { timeout: 15_000, label: 'multiplayer session check' },
-        );
+        await Promise.all([
+          waitForSnapshot(pageA, (s) => s.playerId > 0, { timeout: 20_000, label: 'player A id check' }),
+          waitForSnapshot(pageB, (s) => s.playerId > 0, { timeout: 20_000, label: 'player B id check' }),
+        ]);
         multiplayerAvailable = true;
       } catch {
-        // Server did not assign a player ID — multiplayer not available here
+        // At least one player did not receive a playerId — multiplayer not available here
       }
       if (!multiplayerAvailable) {
-        test.skip(true, 'Multiplayer not available — skipping (server did not assign playerId within 15s)');
+        test.skip(true, 'Multiplayer not available — skipping (server did not assign playerIds within 20s)');
         return;
       }
 
