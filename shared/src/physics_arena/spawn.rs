@@ -80,7 +80,11 @@ impl PhysicsArena {
             let area_idx = ((self.next_spawn_index + area_offset) % area_count) as usize;
             let (cx, cz, radius) = {
                 let area = &self.spawn_areas[area_idx];
-                (area.position[0] as f64, area.position[2] as f64, area.radius as f64)
+                (
+                    area.position[0] as f64,
+                    area.position[2] as f64,
+                    area.radius as f64,
+                )
             };
 
             // Try candidates distributed across the area (center + inner ring + outer ring)

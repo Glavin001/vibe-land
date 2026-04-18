@@ -8,8 +8,8 @@ use crate::movement::Vec3d;
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
-pub use vibe_netcode::physics_arena::DynamicArena;
 use crate::world_document::SpawnArea;
+pub use vibe_netcode::physics_arena::DynamicArena;
 
 mod player;
 mod spawn;
