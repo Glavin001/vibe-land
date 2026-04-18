@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { computeCustomStencilDiff, type CustomStencilDefinition } from '../../ai/customStencil';
+import { computeCustomStencilDiff, type CustomStencilDefinition, type StencilDiffSample } from '../../ai/customStencil';
 import type { WorldDocument } from '../../world/worldDocument';
 
 const RAISE_COLOR = new THREE.Color(0x4ca5ff);
@@ -30,7 +30,7 @@ export function CustomStencilPreview({
   const qz = quantize(centerZ, QUANTIZE_STEP);
   const paramsKey = JSON.stringify(params);
 
-  const geometry = useMemo(() => {
+  const geometries = useMemo(() => {
     let diff;
     try {
       diff = computeCustomStencilDiff(world, stencilDef, params, qx, qz);
@@ -46,50 +46,57 @@ export function CustomStencilPreview({
     const sampleSpacing = gridSize > 1 ? side / (gridSize - 1) : 1;
     const halfQuad = sampleSpacing * 0.5;
 
-    const vertCount = diff.samples.length * 4;
-    const positions = new Float32Array(vertCount * 3);
-    const colors = new Float32Array(vertCount * 3);
-    const indices: number[] = [];
+    const raiseSamples = diff.samples.filter(s => s.deltaY > 0);
+    const lowerSamples = diff.samples.filter(s => s.deltaY <= 0);
 
-    for (let i = 0; i < diff.samples.length; i += 1) {
-      const s = diff.samples[i];
-      const y = s.afterY + 0.06; // slightly above terrain
-      const base = i * 4;
+    function buildGeo(samples: StencilDiffSample[]) {
+      if (samples.length === 0) return null;
+      const positions = new Float32Array(samples.length * 4 * 3);
+      const colors = new Float32Array(samples.length * 4 * 3);
+      const indices: number[] = [];
 
-      // Four vertices of a small quad centered at (s.x, y, s.z)
-      positions[base * 3 + 0] = s.x - halfQuad;
-      positions[base * 3 + 1] = y;
-      positions[base * 3 + 2] = s.z - halfQuad;
+      for (let i = 0; i < samples.length; i += 1) {
+        const s = samples[i];
+        const y = s.afterY + 0.06; // slightly above final terrain height
+        const base = i * 4;
 
-      positions[(base + 1) * 3 + 0] = s.x + halfQuad;
-      positions[(base + 1) * 3 + 1] = y;
-      positions[(base + 1) * 3 + 2] = s.z - halfQuad;
+        // Four vertices of a small quad centered at (s.x, y, s.z)
+        positions[base * 3 + 0] = s.x - halfQuad;
+        positions[base * 3 + 1] = y;
+        positions[base * 3 + 2] = s.z - halfQuad;
 
-      positions[(base + 2) * 3 + 0] = s.x - halfQuad;
-      positions[(base + 2) * 3 + 1] = y;
-      positions[(base + 2) * 3 + 2] = s.z + halfQuad;
+        positions[(base + 1) * 3 + 0] = s.x + halfQuad;
+        positions[(base + 1) * 3 + 1] = y;
+        positions[(base + 1) * 3 + 2] = s.z - halfQuad;
 
-      positions[(base + 3) * 3 + 0] = s.x + halfQuad;
-      positions[(base + 3) * 3 + 1] = y;
-      positions[(base + 3) * 3 + 2] = s.z + halfQuad;
+        positions[(base + 2) * 3 + 0] = s.x - halfQuad;
+        positions[(base + 2) * 3 + 1] = y;
+        positions[(base + 2) * 3 + 2] = s.z + halfQuad;
 
-      // Color based on direction and intensity
-      const color = s.deltaY > 0 ? RAISE_COLOR : LOWER_COLOR;
-      for (let v = 0; v < 4; v += 1) {
-        colors[(base + v) * 3 + 0] = color.r;
-        colors[(base + v) * 3 + 1] = color.g;
-        colors[(base + v) * 3 + 2] = color.b;
+        positions[(base + 3) * 3 + 0] = s.x + halfQuad;
+        positions[(base + 3) * 3 + 1] = y;
+        positions[(base + 3) * 3 + 2] = s.z + halfQuad;
+
+        // Color based on direction
+        const color = s.deltaY > 0 ? RAISE_COLOR : LOWER_COLOR;
+        for (let v = 0; v < 4; v += 1) {
+          colors[(base + v) * 3 + 0] = color.r;
+          colors[(base + v) * 3 + 1] = color.g;
+          colors[(base + v) * 3 + 2] = color.b;
+        }
+
+        // Two triangles per quad
+        indices.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
       }
 
-      // Two triangles per quad
-      indices.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geo.setIndex(indices);
+      return geo;
     }
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setIndex(indices);
-    return geo;
+    return { raiseGeo: buildGeo(raiseSamples), lowerGeo: buildGeo(lowerSamples) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [world, stencilDef.id, stencilDef.applyFn, paramsKey, qx, qz]);
 
@@ -108,21 +115,41 @@ export function CustomStencilPreview({
 
   useEffect(() => {
     return () => {
-      if (geometry) geometry.dispose();
+      if (geometries?.raiseGeo) geometries.raiseGeo.dispose();
+      if (geometries?.lowerGeo) geometries.lowerGeo.dispose();
     };
-  }, [geometry]);
+  }, [geometries]);
 
-  if (!geometry) return null;
+  if (!geometries) return null;
+  const { raiseGeo, lowerGeo } = geometries;
 
   return (
-    <mesh geometry={geometry} raycast={ignorePointerRaycast} renderOrder={2}>
-      <meshBasicMaterial
-        vertexColors
-        transparent
-        opacity={opacity}
-        side={THREE.DoubleSide}
-        depthWrite={false}
-      />
-    </mesh>
+    <>
+      {raiseGeo && (
+        <mesh geometry={raiseGeo} raycast={ignorePointerRaycast} renderOrder={2}>
+          <meshBasicMaterial
+            vertexColors
+            transparent
+            opacity={opacity}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
+      {lowerGeo && (
+        // depthTest={false} so the lowering shape (below original terrain) is always visible,
+        // letting users see the crater/hole shape even though it's beneath the terrain surface.
+        <mesh geometry={lowerGeo} raycast={ignorePointerRaycast} renderOrder={5}>
+          <meshBasicMaterial
+            vertexColors
+            transparent
+            opacity={opacity}
+            side={THREE.DoubleSide}
+            depthWrite={false}
+            depthTest={false}
+          />
+        </mesh>
+      )}
+    </>
   );
 }

@@ -36,6 +36,8 @@ export const PKT_PONG = 111;
 export const PKT_SNAPSHOT_V2 = 112;
 export const PKT_PLAYER_ROSTER = 113;
 export const PKT_DYNAMIC_BODY_META = 114;
+export const PKT_LOCAL_PLAYER_ENERGY = 115;
+export const PKT_BATTERY_SYNC = 116;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
@@ -53,3 +55,41 @@ export const BLOCK_REMOVE = 2;
 // ── Shape types ─────────────────────────────────
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
+
+// ── Shared gameplay/runtime constants ───────────
+export const SIM_HZ = 60;
+export const SNAPSHOT_HZ_MULTIPLAYER = 30;
+export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
+export const MAX_PENDING_INPUTS = 120;
+export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+export const RIFLE_FIRE_INTERVAL_MS = 100;
+export const PLAYER_EYE_HEIGHT_M = 0.8;
+export const HITSCAN_MAX_DISTANCE_M = 1000.0;
+export const DYNAMIC_BODY_IMPULSE = 6.0;
+export const OUT_OF_BOUNDS_Y_M = -12.0;
+
+// ── Energy / consumables ────────────────────────
+/// Energy each player starts with and is restored to on respawn.
+export const STARTING_ENERGY = 1000.0;
+/// Baseline energy drained per second while on foot and idle.
+export const ON_FOOT_IDLE_DRAIN_PER_SEC = 1.0;
+/// Energy drained per second while moving on foot.
+export const ON_FOOT_WALK_DRAIN_PER_SEC = 2.0;
+/// Energy drained per second while sprinting on foot.
+export const ON_FOOT_SPRINT_DRAIN_PER_SEC = 3.0;
+/// Additional one-time energy cost applied when a grounded jump begins.
+export const JUMP_ENERGY_COST = 2.0;
+/// Baseline energy drained per second while occupying a vehicle.
+export const VEHICLE_IDLE_DRAIN_PER_SEC = 1.0;
+/// Additional vehicle drain scaled by current speed in metres per second.
+export const VEHICLE_SPEED_DRAIN_COEF = 0.57;
+/// Energy consumed by a single rifle shot.
+export const RIFLE_SHOT_ENERGY_COST = 1.25;
+/// Additional pickup slack so overlapping batteries feel generous.
+export const BATTERY_PICKUP_SLACK_M = 0.3;
+/// Default runtime/authored battery dimensions in metres.
+export const DEFAULT_BATTERY_RADIUS_M = 0.4;
+export const DEFAULT_BATTERY_HEIGHT_M = 0.8;
+/// Battery ids live in a separate range for easier debugging and to avoid
+/// collisions with other runtime entity ids.
+export const BATTERY_ID_RANGE_START = 0x40000000;

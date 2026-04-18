@@ -1,9 +1,25 @@
-import init, { WasmSimWorld as RawWasmSimWorld, WasmClockSync, WasmLocalSession } from './pkg/vibe_land_shared.js';
+import init, {
+  WasmSimWorld as RawWasmSimWorld,
+  WasmClockSync,
+  WasmLocalSession as RawWasmLocalSession,
+  vehicle_definitions_json as wasmVehicleDefinitionsJson,
+} from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
 import { installWasmSimWorldCompat } from './compat';
+import {
+  DEFAULT_SHARED_VEHICLE_TYPE,
+  type SharedVehicleDefinition,
+  getSharedVehicleDefinition,
+  getSharedVehicleDefinitions,
+  getSharedVehicleDefaultType,
+  getSharedVehicleGeometry,
+  getSharedVehicleTypeByKey,
+  hydrateSharedVehicleDefinitions,
+} from './sharedVehicleDefinitions';
 
 let initialized = false;
 let initPromise: Promise<void> | null = null;
+
 type WasmDebugRenderBuffers = {
   vertices: Float32Array;
   colors: Float32Array;
@@ -80,6 +96,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   stepDynamics(dt: number): void;
   getVehicleDebug(id: number): number[];
   getVehiclePendingCount(): number;
+  pruneVehiclePendingInputsThrough(ackSeq: number): void;
   debugRender(modeBits: number): WasmDebugRenderBuffers;
   syncRemoteVehicle(
     id: number,
@@ -100,8 +117,53 @@ type WasmSimWorldCtor = {
   prototype: WasmSimWorldInstance;
 };
 
+type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
+  enqueueInput(
+    seq: number,
+    buttons: number,
+    moveX: number,
+    moveY: number,
+    yaw: number,
+    pitch: number,
+  ): void;
+  queueFire(
+    seq: number,
+    shotId: number,
+    weapon: number,
+    clientFireTimeUs: number,
+    clientInterpMs: number,
+    clientDynamicInterpMs: number,
+    dirX: number,
+    dirY: number,
+    dirZ: number,
+  ): void;
+  enterVehicle(vehicleId: number): void;
+  exitVehicle(vehicleId: number): void;
+  getSnapshotMeta(): number[];
+  getLocalPlayerState(): number[];
+  getDynamicBodyStates(): number[];
+  getVehicleStates(): number[];
+  getBatteryStates(): number[];
+  castSceneRay(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    maxToi: number,
+  ): number[];
+  getVehicleDebug(vehicleId: number): number[];
+};
+
+type WasmLocalSessionCtor = {
+  new (worldJson?: string): WasmLocalSessionInstance;
+  prototype: WasmLocalSessionInstance;
+};
+
 installWasmSimWorldCompat(RawWasmSimWorld);
 const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
+const WasmLocalSession = RawWasmLocalSession as unknown as WasmLocalSessionCtor;
 
 export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;
@@ -109,6 +171,7 @@ export async function initSharedPhysics(): Promise<void> {
     initPromise = (async () => {
       await init();
       provideWasmClockSync(WasmClockSync);
+      hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
       initialized = true;
     })().catch((error) => {
       initPromise = null;
@@ -118,5 +181,17 @@ export async function initSharedPhysics(): Promise<void> {
   await initPromise;
 }
 
+export function hydrateSharedVehicleGeometryFromLoadedWasm(): void {
+  hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
+}
+
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };
-export type { WasmDebugRenderBuffers, WasmSimWorldInstance };
+export {
+  DEFAULT_SHARED_VEHICLE_TYPE,
+  getSharedVehicleDefinition,
+  getSharedVehicleDefinitions,
+  getSharedVehicleDefaultType,
+  getSharedVehicleGeometry,
+  getSharedVehicleTypeByKey,
+};
+export type { WasmDebugRenderBuffers, WasmSimWorldInstance, WasmLocalSessionInstance };

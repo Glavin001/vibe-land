@@ -125,6 +125,7 @@ export class SeededRandom {
 // ─────────────────────────────────────────────────────────────────────
 
 export type SimulatedPlayerState = {
+  sim: WasmSimWorld;
   position: [number, number, number];
   velocity: [number, number, number];
   yaw: number;
@@ -135,77 +136,57 @@ export type SimulatedPlayerState = {
   lastAppliedInput: InputCmd | null;
 };
 
-const WALK_SPEED = 6.0;
-const SPRINT_SPEED = 8.5;
-const CROUCH_SPEED = 3.5;
-const GROUND_ACCEL = 80.0;
-const AIR_ACCEL = 18.0;
-const FRICTION = 10.0;
-const GRAVITY = 20.0;
-const JUMP_SPEED = 6.5;
+function createSimulatedPlayer(
+  startPosition: [number, number, number],
+  floorY: number,
+): SimulatedPlayerState {
+  const sim = new WasmSimWorld();
+  sim.addCuboid(0, floorY - 0.5, 0, 500, 0.5, 500);
+  sim.spawnPlayer(0, 2, 0);
+  sim.rebuildBroadPhase();
+  sim.setFullState(
+    startPosition[0],
+    startPosition[1],
+    startPosition[2],
+    0,
+    0,
+    0,
+    0,
+    0,
+    true,
+  );
+  return {
+    sim,
+    position: [...startPosition],
+    velocity: [0, 0, 0],
+    yaw: 0,
+    pitch: 0,
+    onGround: true,
+    lastAckedSeq: 0,
+    inputQueue: [],
+    lastAppliedInput: null,
+  };
+}
 
 function simulatePlayerTick(
   player: SimulatedPlayerState,
   input: InputCmd,
   dt: number,
-  floorY = 0,
 ): void {
+  const result = player.sim.tick(
+    input.seq,
+    input.buttons,
+    input.moveX,
+    input.moveY,
+    input.yaw,
+    input.pitch,
+    dt,
+  );
+  player.position = [result[0], result[1], result[2]];
+  player.velocity = [result[3], result[4], result[5]];
   player.yaw = input.yaw;
   player.pitch = input.pitch;
-
-  if (player.onGround) {
-    const speed = Math.hypot(player.velocity[0], player.velocity[2]);
-    if (speed > 1e-6) {
-      const drop = speed * FRICTION * dt;
-      const newSpeed = Math.max(0, speed - drop);
-      const ratio = newSpeed / speed;
-      player.velocity[0] *= ratio;
-      player.velocity[2] *= ratio;
-    }
-  }
-
-  const sinYaw = Math.sin(input.yaw);
-  const cosYaw = Math.cos(input.yaw);
-  const mx = input.moveX / 127;
-  const my = input.moveY / 127;
-  const wishX = -cosYaw * mx + sinYaw * my;
-  const wishZ = sinYaw * mx + cosYaw * my;
-  const wishLen = Math.hypot(wishX, wishZ);
-  const wishDirX = wishLen > 1e-5 ? wishX / wishLen : 0;
-  const wishDirZ = wishLen > 1e-5 ? wishZ / wishLen : 0;
-  const hasMove = wishLen > 1e-5;
-
-  let moveSpeed = WALK_SPEED;
-  if ((input.buttons & BTN_SPRINT) !== 0) moveSpeed = SPRINT_SPEED;
-  if ((input.buttons & BTN_CROUCH) !== 0) moveSpeed = CROUCH_SPEED;
-
-  if (hasMove) {
-    const currentSpeed = player.velocity[0] * wishDirX + player.velocity[2] * wishDirZ;
-    const addSpeed = Math.max(0, moveSpeed - currentSpeed);
-    if (addSpeed > 0) {
-      const accel = player.onGround ? GROUND_ACCEL : AIR_ACCEL;
-      const accelSpeed = Math.min(addSpeed, accel * moveSpeed * dt);
-      player.velocity[0] += wishDirX * accelSpeed;
-      player.velocity[2] += wishDirZ * accelSpeed;
-    }
-  }
-
-  if (player.onGround && (input.buttons & BTN_JUMP) !== 0) {
-    player.velocity[1] = JUMP_SPEED;
-    player.onGround = false;
-  }
-
-  player.velocity[1] -= GRAVITY * dt;
-
-  player.position[0] += player.velocity[0] * dt;
-  player.position[1] += player.velocity[1] * dt;
-  player.position[2] += player.velocity[2] * dt;
-
-  if (player.position[1] <= floorY && player.velocity[1] <= 0) {
-    player.position[1] = floorY;
-    player.velocity[1] = 0;
-    player.onGround = true;
-  }
+  player.onGround = result[6] !== 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -268,16 +249,7 @@ export class NetcodeTestScenario {
     );
 
     const startPos = config.startPosition ?? [0, 0, 0];
-    this.serverPlayers.set(this.playerId, {
-      position: [...startPos] as [number, number, number],
-      velocity: [0, 0, 0],
-      yaw: 0,
-      pitch: 0,
-      onGround: true,
-      lastAckedSeq: 0,
-      inputQueue: [],
-      lastAppliedInput: null,
-    });
+    this.serverPlayers.set(this.playerId, createSimulatedPlayer(startPos, this.floorY));
   }
 
   /** Must be called after initWasmForTests(). */
@@ -353,7 +325,7 @@ export class NetcodeTestScenario {
           input = { seq: 0, buttons: 0, moveX: 0, moveY: 0, yaw: 0, pitch: 0 };
         }
 
-        simulatePlayerTick(player, input, FIXED_DT, this.floorY);
+        simulatePlayerTick(player, input, FIXED_DT);
       }
 
       if (this.serverTick % this.snapshotInterval === 0) {
@@ -461,19 +433,11 @@ export class NetcodeTestScenario {
   }
 
   addRemotePlayer(id: number, position: [number, number, number]): void {
-    this.serverPlayers.set(id, {
-      position: [...position] as [number, number, number],
-      velocity: [0, 0, 0],
-      yaw: 0,
-      pitch: 0,
-      onGround: true,
-      lastAckedSeq: 0,
-      inputQueue: [],
-      lastAppliedInput: null,
-    });
+    this.serverPlayers.set(id, createSimulatedPlayer(position, this.floorY));
   }
 
   removeRemotePlayer(id: number): void {
+    this.serverPlayers.get(id)?.sim.free();
     this.serverPlayers.delete(id);
   }
 
@@ -534,6 +498,10 @@ export class NetcodeTestScenario {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    for (const player of this.serverPlayers.values()) {
+      player.sim.free();
+    }
+    this.serverPlayers.clear();
     this.client.dispose();
   }
 

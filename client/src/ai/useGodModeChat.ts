@@ -7,7 +7,8 @@ import {
   type ChatImagePart,
   type ChatPart,
 } from './chatTypes';
-import { createLanguageModel, type ProviderId } from './providers';
+import { loadChat, saveChat } from './chatStore';
+import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import { createCaptureScreenshotTool } from './screenshotTool';
@@ -17,6 +18,7 @@ import type { WorldAccessors } from './worldToolHelpers';
 export type ChatStatus = 'idle' | 'streaming' | 'error';
 
 export type GodModeChatOptions = {
+  chatId: string;
   accessors: WorldAccessors;
   provider: ProviderId;
   model: string;
@@ -34,19 +36,22 @@ export type GodModeChatHandle = {
   canSend: boolean;
   sendMessage(text: string, attachments?: ImageAttachment[]): Promise<void>;
   stop(): void;
-  clear(): void;
   pushHumanEdit(summary: string): void;
 };
 
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { accessors, provider, model, apiKey, captureScreenshot } = options;
+  const { chatId, accessors, provider, model, apiKey, captureScreenshot } = options;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
-  const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
+  // Chat is "loaded" when the persisted state for the active chatId has been
+  // hydrated into local state. We gate sends/saves on this so that switching
+  // chats doesn't briefly overwrite the destination chat with empty data.
+  const [loadedChatId, setLoadedChatId] = useState<string | null>(null);
 
   const accessorsRef = useRef(accessors);
   useEffect(() => {
@@ -79,15 +84,39 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     setPendingHumanEdits((prev) => [...prev, summary]);
   }, []);
 
-  const clear = useCallback(() => {
-    stop();
-    setMessages([]);
-    setError(null);
-    setPendingHumanEdits([]);
+  // When chatId changes, abort any in-flight stream and (re)hydrate state
+  // from storage. Race-protected via a cancellation flag.
+  useEffect(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
     setStatus('idle');
-  }, [stop]);
+    setError(null);
+    setMessages([]);
+    setPendingHumanEdits([]);
+    setLoadedChatId(null);
+    let cancelled = false;
+    void loadChat(chatId).then((state) => {
+      if (cancelled) return;
+      setMessages(state.messages);
+      setPendingHumanEdits(state.pendingHumanEdits);
+      setLoadedChatId(chatId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [chatId]);
 
-  const canSend = Boolean(apiKey) && status === 'idle';
+  // Persist whenever local state changes — but only after the chat has been
+  // loaded for the current chatId, to avoid clobbering it during the swap.
+  useEffect(() => {
+    if (loadedChatId !== chatId) return;
+    void saveChat(chatId, { messages, pendingHumanEdits });
+  }, [chatId, loadedChatId, messages, pendingHumanEdits]);
+
+  const isLoaded = loadedChatId === chatId;
+  const canSend = Boolean(apiKey) && status === 'idle' && isLoaded;
 
   const sendMessage = useCallback(
     async (text: string, attachments?: ImageAttachment[]) => {
@@ -99,6 +128,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         return;
       }
       if (status === 'streaming') return;
+      if (!isLoaded) return;
 
       // Snapshot pending human edits and clear them up-front so concurrent
       // edits while we wait for the model start a fresh buffer.
@@ -142,6 +172,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
 
       try {
         const languageModel = createLanguageModel(provider, model, apiKey);
+        const thinkingOpts = getThinkingProviderOptions(provider, model);
         const result = streamText({
           model: languageModel,
           system: SYSTEM_PROMPT,
@@ -159,9 +190,13 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           // Disable automatic retries — for BYOK in the browser, retrying
           // on 429/5xx just wastes the user's quota and delays the error.
           maxRetries: 0,
-          // Prevent OpenAI from issuing multiple tool calls in a single step.
-          // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
-          providerOptions: { openai: { parallelToolCalls: false } },
+          providerOptions: {
+            ...thinkingOpts,
+            // Prevent OpenAI from issuing multiple tool calls in a single step.
+            // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
+            // Deep-merge with any thinking options already under the openai key.
+            openai: { parallelToolCalls: false, ...thinkingOpts.openai },
+          },
         });
 
         // Track in-flight text/reasoning blocks so streamed deltas append to
@@ -298,11 +333,25 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
           }
         }
 
-        if (controller.signal.aborted) {
-          setStatus('idle');
-        } else {
-          setStatus('idle');
+        // Capture cumulative token usage across all tool-use steps.
+        if (!controller.signal.aborted) {
+          try {
+            const { inputTokens, outputTokens } = await result.totalUsage;
+            if (inputTokens !== undefined && outputTokens !== undefined) {
+              setMessages((current) => {
+                const idx = current.findIndex((m) => m.id === assistantId);
+                if (idx === -1) return current;
+                const next = current.slice();
+                next[idx] = { ...current[idx], usage: { inputTokens, outputTokens } };
+                return next;
+              });
+            }
+          } catch {
+            // Usage unavailable from this provider/model — skip silently.
+          }
         }
+
+        setStatus('idle');
       } catch (err) {
         const wrapped = toError(err);
         if (wrapped.name === 'AbortError') {
@@ -317,7 +366,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }
       }
     },
-    [apiKey, messages, model, pendingHumanEdits, provider, status],
+    [apiKey, isLoaded, messages, model, pendingHumanEdits, provider, status],
   );
 
   return useMemo<GodModeChatHandle>(
@@ -329,10 +378,9 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       canSend,
       sendMessage,
       stop,
-      clear,
       pushHumanEdit,
     }),
-    [canSend, clear, error, messages, pendingHumanEdits.length, pushHumanEdit, sendMessage, status, stop],
+    [canSend, error, messages, pendingHumanEdits.length, pushHumanEdit, sendMessage, status, stop],
   );
 }
 

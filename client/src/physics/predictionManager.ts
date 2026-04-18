@@ -2,11 +2,11 @@ import type { WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import type { BlockEditCmd, DynamicBodyStateMeters, InputCmd, NetPlayerState, ServerWorldPacket } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import type { SemanticInputState } from '../input/types';
+import { CLIENT_MAX_CATCHUP_STEPS, CLIENT_PREDICTION_MAX_PENDING_INPUTS, FIXED_DT } from '../runtime/clientSimConstants';
 import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 
-export const FIXED_DT = 1 / 60;
-export const MAX_CATCHUP_STEPS = 4;
+export { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS as MAX_CATCHUP_STEPS };
 export const HARD_SNAP_DISTANCE = 3.0;
 export const VISUAL_SMOOTH_RATE = 8.0;
 export const CORRECTION_DISTANCE = 0.15;
@@ -15,7 +15,7 @@ export const CORRECTION_DISTANCE = 0.15;
  * When pending (unacked) inputs exceed this count, the client pauses tick
  * generation to let the server catch up.
  */
-export const MAX_PENDING_INPUTS = 30;
+export const MAX_PENDING_INPUTS = CLIENT_PREDICTION_MAX_PENDING_INPUTS;
 
 /**
  * Framework-agnostic prediction manager.
@@ -29,6 +29,7 @@ export class PredictionManager {
   private accumulator = 0;
   private prevPosition: [number, number, number] = [0, 0, 0];
   private currPosition: [number, number, number] = [0, 0, 0];
+  private currVelocity: [number, number, number] = [0, 0, 0];
   private correctionOffset: [number, number, number] = [0, 0, 0];
   private nextSeq = 1;
   private tickCount = 0;
@@ -36,11 +37,9 @@ export class PredictionManager {
   private terrainLoaded = false;
   private initialized = false;
   private _lastPhysicsStepMs = 0;
-  readonly isLocalPreview: boolean;
 
-  constructor(private readonly sim: WasmSimWorldInstance, isLocalPreview = false) {
-    this.isLocalPreview = isLocalPreview;
-    this.voxelWorld = new ClientVoxelWorld(sim, !isLocalPreview);
+  constructor(private readonly sim: WasmSimWorldInstance) {
+    this.voxelWorld = new ClientVoxelWorld(sim);
   }
 
   /**
@@ -55,7 +54,7 @@ export class PredictionManager {
     yaw = 0,
     pitch = 0,
   ): InputCmd[] {
-    if (!this.worldLoaded || (!this.initialized && !this.isLocalPreview)) {
+    if (!this.worldLoaded || !this.initialized) {
       return [];
     }
     const semanticInput = normalizeSemanticInput(inputOrButtons, yaw, pitch);
@@ -63,7 +62,7 @@ export class PredictionManager {
     this.accumulator += frameDeltaSec;
     const pendingInputs: InputCmd[] = [];
 
-    if (this.sim.getPendingCount() >= MAX_PENDING_INPUTS) {
+    if (this.sim.getPendingCount() >= CLIENT_PREDICTION_MAX_PENDING_INPUTS) {
       if (this.accumulator > FIXED_DT) {
         this.accumulator = FIXED_DT;
       }
@@ -72,18 +71,9 @@ export class PredictionManager {
 
     let steps = 0;
     let physicsTimeTotal = 0;
-    while (this.accumulator >= FIXED_DT && steps < MAX_CATCHUP_STEPS) {
+    while (this.accumulator >= FIXED_DT && steps < CLIENT_MAX_CATCHUP_STEPS) {
       const seq = this.nextSeq++ & 0xffff;
       const input = buildInputFromState(seq, 0, semanticInput);
-
-      if (this.isLocalPreview && !this.initialized) {
-        // Let the loopback session consume startup inputs, but avoid predicting
-        // from the placeholder spawn state before the first authoritative snapshot.
-        pendingInputs.push(input);
-        this.accumulator -= FIXED_DT;
-        steps++;
-        continue;
-      }
 
       const t0 = performance.now();
       this.sim.tick(input.seq, input.buttons, input.moveX, input.moveY, input.yaw, input.pitch, FIXED_DT);
@@ -93,6 +83,11 @@ export class PredictionManager {
       this.prevPosition = [...this.currPosition] as [number, number, number];
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
+      this.currVelocity = [
+        (this.currPosition[0] - this.prevPosition[0]) / FIXED_DT,
+        (this.currPosition[1] - this.prevPosition[1]) / FIXED_DT,
+        (this.currPosition[2] - this.prevPosition[2]) / FIXED_DT,
+      ];
 
       const decay = Math.exp(-VISUAL_SMOOTH_RATE * FIXED_DT);
       this.correctionOffset[0] *= decay;
@@ -120,16 +115,18 @@ export class PredictionManager {
    */
   reconcile(ackInputSeq: number, playerState: NetPlayerState): void {
     const m = netPlayerStateToMeters(playerState);
+    const onGround = (m.flags & 1) !== 0;
 
     if (!this.initialized) {
       this.sim.setFullState(
         m.position[0], m.position[1], m.position[2],
         m.velocity[0], m.velocity[1], m.velocity[2],
         m.yaw, m.pitch,
-        (m.flags & 1) !== 0,
+        onGround,
       );
       this.currPosition = [...m.position] as [number, number, number];
       this.prevPosition = [...m.position] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
       this.correctionOffset = [0, 0, 0];
       this.initialized = true;
       return;
@@ -141,7 +138,7 @@ export class PredictionManager {
       m.position[0], m.position[1], m.position[2],
       m.velocity[0], m.velocity[1], m.velocity[2],
       m.yaw, m.pitch,
-      (m.flags & 1) !== 0,
+      onGround,
       FIXED_DT,
     );
 
@@ -157,12 +154,14 @@ export class PredictionManager {
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
       this.prevPosition = [...this.currPosition] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
       this.correctionOffset = [0, 0, 0];
     } else {
       this.correctionOffset = [-dx, -dy, -dz];
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
       this.prevPosition = [...this.currPosition] as [number, number, number];
+      this.currVelocity = [...m.velocity] as [number, number, number];
     }
   }
 
@@ -237,12 +236,7 @@ export class PredictionManager {
 
   getVelocity(): [number, number, number] {
     if (!this.initialized) return [0, 0, 0];
-    // Derived from last physics step's position delta (FIXED_DT interval)
-    return [
-      (this.currPosition[0] - this.prevPosition[0]) / FIXED_DT,
-      (this.currPosition[1] - this.prevPosition[1]) / FIXED_DT,
-      (this.currPosition[2] - this.prevPosition[2]) / FIXED_DT,
-    ];
+    return [...this.currVelocity] as [number, number, number];
   }
 
   getNextSeq(): number {

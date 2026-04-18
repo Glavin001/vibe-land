@@ -1,5 +1,8 @@
 export type TransportKind = 'websocket' | 'webtransport';
 export type SpawnPattern = 'spread' | 'clustered' | 'mixed';
+export type PlayBenchmarkMode = 'on_foot' | 'vehicle_driver';
+export type PlayBenchmarkWorldPreset = 'default' | 'flat_vehicle_test' | 'vehicle_bumps_test';
+export type PlayBenchmarkDriverProfile = 'mixed' | 'straight' | 'straight_fast';
 
 export interface LinkProfile {
   latencyMs: number;
@@ -28,6 +31,12 @@ export interface BehaviorConfig {
   fireCooldownTicks: number;
 }
 
+export interface PlayBenchmarkConfig {
+  mode: PlayBenchmarkMode;
+  worldPreset: PlayBenchmarkWorldPreset;
+  driverProfile: PlayBenchmarkDriverProfile;
+}
+
 export interface LoadTestScenario {
   name: string;
   matchId: string;
@@ -43,6 +52,7 @@ export interface LoadTestScenario {
   spawnPattern: SpawnPattern;
   behavior: BehaviorConfig;
   networkProfiles: NetworkProfile[];
+  playBenchmark?: PlayBenchmarkConfig;
 }
 
 export class SeededRandom {
@@ -86,6 +96,11 @@ export const DEFAULT_SCENARIO: LoadTestScenario = {
     fireMode: 'off',
     fireDistanceM: 18,
     fireCooldownTicks: 8,
+  },
+  playBenchmark: {
+    mode: 'on_foot',
+    worldPreset: 'default',
+    driverProfile: 'mixed',
   },
   networkProfiles: [
     {
@@ -135,6 +150,12 @@ export function normalizeScenario(input: Partial<LoadTestScenario>): LoadTestSce
       ...DEFAULT_SCENARIO.behavior,
       ...(input.behavior ?? {}),
     },
+    playBenchmark: input.playBenchmark == null
+      ? { ...DEFAULT_SCENARIO.playBenchmark! }
+      : {
+          ...DEFAULT_SCENARIO.playBenchmark!,
+          ...input.playBenchmark,
+        },
     networkProfiles: input.networkProfiles?.map((profile) => ({
       ...profile,
       transport: profile.transport ?? 'any',

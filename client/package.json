@@ -11,11 +11,8 @@
     "predev": "npm run ensure:wasm-pack && npm run build:wasm",
     "dev": "vite",
     "dev:practice": "vite --open /practice",
-    "predev:local-preview": "npm run ensure:wasm-pack && npm run build:wasm",
-    "dev:local-preview": "npm run dev:practice",
     "build": "npm run build:wasm && tsc -b && vite build",
-    "build:local-preview": "npm run build",
-    "build:vercel-local-preview": "rustup target add wasm32-unknown-unknown && npm run build",
+    "build:vercel": "rustup target add wasm32-unknown-unknown && npm run build",
     "lint": "tsc --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
@@ -25,7 +22,10 @@
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
     "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local",
     "benchmark:strict": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite strict --environment local",
-    "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts"
+    "benchmark:compare": "node --import=tsx/esm benchmark-compare.ts",
+    "e2e": "npx playwright test --config e2e/playwright.config.ts",
+    "e2e:headed": "npx playwright test --config e2e/playwright.config.ts --headed",
+    "e2e:ui": "npx playwright test --config e2e/playwright.config.ts --ui"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^2.0.74",
@@ -36,13 +36,16 @@
     "@rjsf/core": "^6.4.2",
     "@rjsf/utils": "^6.4.2",
     "@rjsf/validator-ajv8": "^6.4.2",
+    "@tailwindcss/vite": "^4.2.2",
     "ai": "^6.0.159",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "tailwindcss": "^4.2.2",
     "three": "^0.170.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@types/three": "^0.170.0",

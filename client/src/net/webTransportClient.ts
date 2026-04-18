@@ -71,6 +71,8 @@ export type WebTransportGameClientOptions = {
 export class WebTransportGameClient {
   private transport: WebTransportLike | null = null;
   private datagramWriter: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  private inputDatagramWriteInFlight = false;
+  private queuedInputDatagram: Uint8Array | null = null;
   private closed = false;
   private closeNotified = false;
 
@@ -151,7 +153,7 @@ export class WebTransportGameClient {
     if (this.closed || !this.datagramWriter || frames.length === 0) {
       return;
     }
-    void this.datagramWriter.write(encodeInputBundle(frames)).catch((error) => this.handleClosed(error));
+    this.writeLatestInputDatagram(encodeInputBundle(frames));
   }
 
   sendFire(command: FireCmd): void {
@@ -194,10 +196,47 @@ export class WebTransportGameClient {
       return;
     }
     this.closed = true;
+    this.inputDatagramWriteInFlight = false;
+    this.queuedInputDatagram = null;
     this.datagramWriter?.releaseLock();
     this.datagramWriter = null;
     this.transport?.close({ closeCode: 0, reason });
     this.transport = null;
+  }
+
+  private writeLatestInputDatagram(packet: Uint8Array): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    if (this.inputDatagramWriteInFlight) {
+      this.queuedInputDatagram = packet;
+      return;
+    }
+    this.flushInputDatagram(packet);
+  }
+
+  private flushInputDatagram(packet: Uint8Array): void {
+    const writer = this.datagramWriter;
+    if (this.closed || !writer) {
+      this.inputDatagramWriteInFlight = false;
+      this.queuedInputDatagram = null;
+      return;
+    }
+    this.inputDatagramWriteInFlight = true;
+    void writer.write(packet)
+      .then(() => {
+        this.inputDatagramWriteInFlight = false;
+        const queued = this.queuedInputDatagram;
+        this.queuedInputDatagram = null;
+        if (queued) {
+          this.flushInputDatagram(queued);
+        }
+      })
+      .catch((error) => {
+        this.inputDatagramWriteInFlight = false;
+        this.queuedInputDatagram = null;
+        this.handleClosed(error);
+      });
   }
 
   private startReliableReader(stream: ReadableStream<Uint8Array>): void {

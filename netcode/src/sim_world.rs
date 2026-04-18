@@ -246,7 +246,12 @@ impl SimWorld {
         };
 
         sim.integration_parameters.dt = 1.0 / 60.0;
-        sim.integration_parameters.num_solver_iterations = 2;
+        // Raycast vehicles are sensitive to under-solved chassis/contact
+        // impulses. The old 2-iteration setting was cheap, but allowed the
+        // suspension and terrain contacts to chatter at multiplayer driving
+        // speeds. Keep this shared so server and WASM prediction solve the
+        // same constraints.
+        sim.integration_parameters.num_solver_iterations = 6;
         sim
     }
 
@@ -300,11 +305,15 @@ impl SimWorld {
         user_data: u128,
     ) -> ColliderHandle {
         self.colliders.insert(
-            ColliderBuilder::heightfield(heights, scale)
-                .translation(center)
-                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
-                .user_data(user_data)
-                .build(),
+            ColliderBuilder::heightfield_with_flags(
+                heights,
+                scale,
+                HeightFieldFlags::FIX_INTERNAL_EDGES,
+            )
+            .translation(center)
+            .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
+            .user_data(user_data)
+            .build(),
         )
     }
 
@@ -315,11 +324,15 @@ impl SimWorld {
         user_data: u128,
     ) -> ColliderHandle {
         self.colliders.insert(
-            ColliderBuilder::trimesh(vertices, indices)
-                .expect("terrain trimesh should be valid")
-                .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
-                .user_data(user_data)
-                .build(),
+            ColliderBuilder::trimesh_with_flags(
+                vertices,
+                indices,
+                TriMeshFlags::FIX_INTERNAL_EDGES,
+            )
+            .expect("terrain trimesh should be valid")
+            .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
+            .user_data(user_data)
+            .build(),
         )
     }
 
@@ -856,8 +869,27 @@ mod tests {
     fn raycast_hits_heightfield_ground() {
         let mut sim = SimWorld::new(MoveConfig::default());
         let heights = DMatrix::from_element(4, 4, 0.0);
-        sim.add_static_heightfield(vector![0.0, 0.0, 0.0], heights, vector![20.0, 1.0, 20.0], 0);
+        let handle = sim.add_static_heightfield(
+            vector![0.0, 0.0, 0.0],
+            heights,
+            vector![20.0, 1.0, 20.0],
+            0,
+        );
         sim.rebuild_broad_phase();
+
+        let collider = sim
+            .colliders
+            .get(handle)
+            .expect("heightfield collider should exist");
+        let Some(heightfield) = collider.shape().as_heightfield() else {
+            panic!("expected heightfield collider shape");
+        };
+        assert!(
+            heightfield
+                .flags()
+                .contains(HeightFieldFlags::FIX_INTERNAL_EDGES),
+            "heightfield colliders must enable FIX_INTERNAL_EDGES for stable contacts"
+        );
 
         let hit = sim.cast_ray([0.0, 5.0, 0.0], [0.0, -1.0, 0.0], 100.0, None);
         assert!(hit.is_some(), "ray should hit heightfield");

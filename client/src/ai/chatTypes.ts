@@ -28,6 +28,11 @@ export type ChatPart =
 
 export type ChatRole = 'user' | 'assistant';
 
+export type ChatUsage = {
+  inputTokens: number;
+  outputTokens: number;
+};
+
 export type ChatMessage = {
   id: string;
   role: ChatRole;
@@ -39,6 +44,8 @@ export type ChatMessage = {
    * chat bubble.
    */
   hiddenContext?: string;
+  /** Cumulative token usage for the full turn (set on assistant messages after the stream completes). */
+  usage?: ChatUsage;
 };
 
 /**

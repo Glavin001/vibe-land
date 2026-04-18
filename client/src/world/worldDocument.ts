@@ -1,4 +1,5 @@
 import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
+import { getSharedVehicleDefinition } from '../wasm/sharedVehicleDefinitions';
 
 export const WORLD_DOCUMENT_VERSION = 2;
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;
@@ -70,12 +71,14 @@ export type StaticProp = {
 
 export type DynamicEntity = {
   id: number;
-  kind: 'box' | 'ball' | 'vehicle';
+  kind: 'box' | 'ball' | 'vehicle' | 'battery';
   position: Vec3;
   rotation: Quaternion;
   halfExtents?: Vec3;
   radius?: number;
   vehicleType?: number;
+  energy?: number;
+  height?: number;
 };
 
 export type WorldDraftRevision = {
@@ -89,6 +92,23 @@ export const DEFAULT_WORLD_DOCUMENT: WorldDocument = parseWorldDocument(defaultW
 
 export function createDefaultWorldDocument(): WorldDocument {
   return cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);
+}
+
+export function createEmptyWorldDocument(): WorldDocument {
+  return {
+    version: WORLD_DOCUMENT_VERSION,
+    meta: {
+      name: 'Untitled World',
+      description: '',
+    },
+    terrain: {
+      tileGridSize: DEFAULT_WORLD_DOCUMENT.terrain.tileGridSize,
+      tileHalfExtentM: DEFAULT_WORLD_DOCUMENT.terrain.tileHalfExtentM,
+      tiles: [createEmptyTerrainTile(DEFAULT_WORLD_DOCUMENT.terrain.tileGridSize, 0, 0)],
+    },
+    staticProps: [],
+    dynamicEntities: [],
+  };
 }
 
 export function parseWorldDocument(raw: unknown): WorldDocument {
@@ -156,6 +176,16 @@ export function cloneWorldDocument(world: WorldDocument): WorldDocument {
     return structuredClone(world);
   }
   return JSON.parse(JSON.stringify(world)) as WorldDocument;
+}
+
+export function removeVehicleEntitiesFromWorldDocument(world: WorldDocument): WorldDocument {
+  if (!world.dynamicEntities.some((entity) => entity.kind === 'vehicle')) {
+    return world;
+  }
+  return {
+    ...world,
+    dynamicEntities: world.dynamicEntities.filter((entity) => entity.kind !== 'vehicle'),
+  };
 }
 
 export function buildDraftRevision(world: WorldDocument, summary: string, now = new Date()): WorldDraftRevision {
@@ -337,13 +367,24 @@ export function sampleTerrainHeightAtWorldPosition(world: WorldDocument, x: numb
   return h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
 }
 
-export function getMinimumDynamicEntityY(world: WorldDocument, entity: Pick<DynamicEntity, 'kind' | 'position' | 'halfExtents' | 'radius'>): number {
+export function getMinimumDynamicEntityY(
+  world: WorldDocument,
+  entity: Pick<DynamicEntity, 'kind' | 'position' | 'halfExtents' | 'radius' | 'vehicleType'>,
+): number {
   const terrainY = sampleTerrainHeightAtWorldPosition(world, entity.position[0], entity.position[2]);
   if (entity.kind === 'box') {
     return terrainY + (entity.halfExtents?.[1] ?? 0.5) + 0.05;
   }
   if (entity.kind === 'ball') {
     return terrainY + (entity.radius ?? 0.5) + 0.05;
+  }
+  if (entity.kind === 'vehicle') {
+    const definition = getSharedVehicleDefinition(entity.vehicleType);
+    const wheelClearance = definition.suspensionRestLengthM
+      + definition.suspensionTravelM
+      + definition.wheelRadiusM;
+    const chassisClearance = definition.chassisHalfExtents.y + 0.1;
+    return terrainY + Math.max(wheelClearance, chassisClearance) + 0.1;
   }
   return terrainY + 0.85;
 }

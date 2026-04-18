@@ -139,6 +139,90 @@ export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
   name: 'default',
   scenarios: [
     createScenarioSpec({
+      name: 'terrain_vehicle_play_1',
+      environment: 'local',
+      warmupS: 4,
+      measureS: 12,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'arena',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'default',
+          driverProfile: 'mixed',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+    createScenarioSpec({
+      name: 'flat_vehicle_play_1',
+      environment: 'local',
+      warmupS: 4,
+      measureS: 12,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'flat_vehicle_test',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'flat_vehicle_test',
+          driverProfile: 'mixed',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+    createScenarioSpec({
       name: 'arena_shared_play_11',
       environment: 'local',
       warmupS: 10,
@@ -390,6 +474,180 @@ export const DEFAULT_SUITE: BenchmarkSuiteSpec = {
   ],
 };
 
+export const VEHICLE_QA_SUITE: BenchmarkSuiteSpec = {
+  name: 'vehicle-qa',
+  scenarios: [
+    createScenarioSpec({
+      name: 'flat_vehicle_straight_fast_1',
+      environment: 'local',
+      warmupS: 3,
+      measureS: 16,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'flat_vehicle_test',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'flat_vehicle_test',
+          driverProfile: 'straight_fast',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+    createScenarioSpec({
+      name: 'terrain_vehicle_straight_1',
+      environment: 'local',
+      warmupS: 4,
+      measureS: 16,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'arena',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'default',
+          driverProfile: 'straight',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+    createScenarioSpec({
+      name: 'terrain_vehicle_straight_fast_1',
+      environment: 'local',
+      warmupS: 3,
+      measureS: 16,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'arena',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'default',
+          driverProfile: 'straight_fast',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+    createScenarioSpec({
+      name: 'bumps_vehicle_straight_fast_1',
+      environment: 'local',
+      warmupS: 3,
+      measureS: 16,
+      playClients: 1,
+      thresholds: strictArenaThresholds,
+      scenario: {
+        matchId: 'vehicle_bumps_test',
+        botCount: 0,
+        rampUpS: 0,
+        inputHz: 15,
+        transportMix: { websocket: 0, webtransport: 0 },
+        spawnPattern: 'clustered',
+        playBenchmark: {
+          mode: 'vehicle_driver',
+          worldPreset: 'vehicle_bumps_test',
+          driverProfile: 'straight_fast',
+        },
+        behavior: {
+          targetAcquireDistanceM: 40,
+          recoveryDistanceM: 32,
+          orbitDistanceM: 4.5,
+          stopDistanceM: 1.6,
+          sprintDistanceM: 8,
+          stuckTickThreshold: 24,
+          jumpCooldownTicks: 30,
+          fireMode: 'off',
+          fireDistanceM: 18,
+          fireCooldownTicks: 12,
+        },
+        networkProfiles: [
+          {
+            name: 'lan',
+            weight: 1,
+            transport: 'any' as const,
+            uplink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+            downlink: { latencyMs: 6, jitterMs: 2, packetLossRate: 0 },
+          },
+        ],
+      },
+    }),
+  ],
+};
+
 export const STRICT_SUITE: BenchmarkSuiteSpec = {
   name: 'strict',
   scenarios: DEFAULT_SUITE.scenarios.filter((scenario) =>
@@ -398,6 +656,7 @@ export const STRICT_SUITE: BenchmarkSuiteSpec = {
 
 export function resolveSuite(name: string): BenchmarkSuiteSpec {
   if (name === 'smoke') return SMOKE_SUITE;
+  if (name === 'vehicle-qa') return VEHICLE_QA_SUITE;
   if (name === 'strict') return STRICT_SUITE;
   if (name === 'default') return DEFAULT_SUITE;
   throw new Error(`Unknown benchmark suite: ${name}`);

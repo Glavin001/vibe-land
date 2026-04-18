@@ -2,25 +2,22 @@ use std::collections::VecDeque;
 
 use crate::{
     constants::{
-        HIT_ZONE_NONE, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
+        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
+        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
+        RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
-    local_arena::{MoveConfig, PhysicsArena},
+    physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
+    vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
 
-const SIM_HZ: u16 = 60;
-const SNAPSHOT_HZ: u16 = SIM_HZ;
-const MAX_PENDING_INPUTS: usize = 120;
 const LOCAL_PLAYER_ID: u32 = 1;
-const LOCAL_RIFLE_INTERVAL_MS: u32 = 100;
-const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
-const HITSCAN_MAX_DISTANCE: f32 = 1000.0;
-const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
+const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -29,9 +26,18 @@ struct PlayerRuntime {
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     next_allowed_fire_ms: u32,
+    respawn_at_ms: Option<u32>,
 }
 
-pub struct LocalPreviewSession {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalDeathCause {
+    #[allow(dead_code)]
+    HpDamage,
+    EnergyDepletion,
+    OutOfBounds,
+}
+
+pub struct LocalSession {
     arena: PhysicsArena,
     connected: bool,
     player: PlayerRuntime,
@@ -40,7 +46,7 @@ pub struct LocalPreviewSession {
     server_tick: u32,
 }
 
-impl LocalPreviewSession {
+impl LocalSession {
     pub fn new() -> Self {
         Self::from_world_document(WorldDocument::demo()).expect("default world document is valid")
     }
@@ -81,7 +87,7 @@ impl LocalPreviewSession {
             .push(encode_welcome_packet(&WelcomePacket {
                 player_id: LOCAL_PLAYER_ID,
                 sim_hz: SIM_HZ,
-                snapshot_hz: SNAPSHOT_HZ,
+                snapshot_hz: SNAPSHOT_HZ_LOCAL,
                 server_time_us,
                 interpolation_delay_ms: 0,
             }));
@@ -129,9 +135,41 @@ impl LocalPreviewSession {
                 }
             }
             PKT_PING | PKT_DEBUG_STATS => {}
-            other => return Err(format!("unsupported local preview packet kind {other}")),
+            other => return Err(format!("unsupported local session packet kind {other}")),
         }
         Ok(())
+    }
+
+    pub fn enqueue_input(&mut self, input: InputCmd) {
+        if !self.connected {
+            return;
+        }
+        enqueue_inputs(&mut self.player, vec![input]);
+    }
+
+    pub fn queue_fire_cmd(&mut self, cmd: FireCmd) {
+        if !self.connected {
+            return;
+        }
+        self.queued_shots.push(cmd);
+    }
+
+    pub fn enter_vehicle(&mut self, vehicle_id: u32) {
+        if !self.connected {
+            return;
+        }
+        if self.arena.vehicles.contains_key(&vehicle_id) {
+            self.arena.enter_vehicle(LOCAL_PLAYER_ID, vehicle_id);
+        }
+    }
+
+    pub fn exit_vehicle(&mut self, vehicle_id: u32) {
+        if !self.connected {
+            return;
+        }
+        if self.arena.vehicle_of_player.get(&LOCAL_PLAYER_ID) == Some(&vehicle_id) {
+            self.arena.exit_vehicle(LOCAL_PLAYER_ID);
+        }
     }
 
     pub fn tick(&mut self, dt: f32) {
@@ -142,15 +180,96 @@ impl LocalPreviewSession {
         self.server_tick += 1;
         let server_time_ms = self.server_time_ms();
 
+        self.process_respawn(server_time_ms);
+
         let input = take_input_for_tick(&mut self.player);
+        let (previous_input, was_on_ground) = self
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|state| (state.last_input.clone(), state.on_ground))
+            .unwrap_or_default();
         self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
-        self.arena.step_vehicles(dt);
-        self.arena.step_dynamics(dt);
+        self.arena.step_vehicles_and_dynamics(dt);
+
+        let gained_energy: f32 = self
+            .arena
+            .collect_batteries_for_player(LOCAL_PLAYER_ID)
+            .into_iter()
+            .map(|(_, energy)| energy)
+            .sum();
+        if gained_energy > 0.0 {
+            if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                player.energy += gained_energy;
+            }
+        }
+        let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
+            LOCAL_PLAYER_ID,
+            &previous_input,
+            &input,
+            was_on_ground,
+            dt,
+        );
+        let depleted = self.arena.apply_vehicle_energy_drain(dt);
+        if depleted_on_foot || depleted.contains(&LOCAL_PLAYER_ID) {
+            self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+        }
+
+        if let Some((position, _, _, _, hp, _)) = self.arena.snapshot_player(LOCAL_PLAYER_ID) {
+            if hp > 0 && position[1] < OUT_OF_BOUNDS_Y_M {
+                self.kill_local_player(server_time_ms, LocalDeathCause::OutOfBounds);
+            }
+        }
+
         self.process_hitscan(server_time_ms);
 
-        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
+        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
         }
+    }
+
+    fn process_respawn(&mut self, server_time_ms: u32) {
+        let Some(deadline) = self.player.respawn_at_ms else {
+            return;
+        };
+        if deadline > server_time_ms {
+            return;
+        }
+        self.player.respawn_at_ms = None;
+        self.player.pending_inputs.clear();
+        self.player.last_applied_input = InputCmd::default();
+        let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
+    }
+
+    fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
+        let battery_drop = if matches!(cause, LocalDeathCause::HpDamage) {
+            self.arena.players.get(&LOCAL_PLAYER_ID).and_then(|player| {
+                if !player.dead && player.energy > 0.0 {
+                    Some((player.position, player.energy))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        self.arena.exit_vehicle(LOCAL_PLAYER_ID);
+        self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
+        if let Some((position, energy)) = battery_drop {
+            let _ = self.arena.spawn_battery(
+                position,
+                energy,
+                crate::constants::DEFAULT_BATTERY_RADIUS_M,
+                crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+            );
+        }
+        if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+            player.energy = 0.0;
+        }
+        self.player.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
+        self.player.pending_inputs.clear();
+        self.player.last_applied_input = InputCmd::default();
     }
 
     pub fn drain_packets(&mut self) -> Vec<Vec<u8>> {
@@ -175,7 +294,7 @@ impl LocalPreviewSession {
                 continue;
             }
             self.player.next_allowed_fire_ms =
-                server_time_ms.saturating_add(LOCAL_RIFLE_INTERVAL_MS);
+                server_time_ms.saturating_add(RIFLE_FIRE_INTERVAL_MS);
 
             if self.arena.vehicle_of_player.contains_key(&LOCAL_PLAYER_ID) {
                 continue;
@@ -189,23 +308,43 @@ impl LocalPreviewSession {
                 continue;
             }
 
+            let mut depleted = false;
+            if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                if player.dead {
+                    continue;
+                }
+                player.energy = (player.energy - crate::constants::RIFLE_SHOT_ENERGY_COST).max(0.0);
+                depleted = player.energy <= 0.0;
+            }
+            if depleted {
+                self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+                continue;
+            }
+
             let origin = [pos[0], pos[1] + PLAYER_EYE_HEIGHT_M, pos[2]];
             let world_toi = self.arena.cast_static_world_ray(
                 origin,
                 shot.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(LOCAL_PLAYER_ID),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
-                HITSCAN_MAX_DISTANCE,
+                HITSCAN_MAX_DISTANCE_M,
                 Some(LOCAL_PLAYER_ID),
             );
 
             let result = if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    make_shot_result(shot.shot_id, shot.weapon)
+                    make_shot_result(
+                        shot.shot_id,
+                        shot.weapon,
+                        SHOT_RESOLUTION_BLOCKED_BY_WORLD,
+                        0,
+                        0.0,
+                        0.0,
+                    )
                 } else {
                     let impact_point = [
                         origin[0] + shot.dir[0] * dynamic_toi,
@@ -222,10 +361,17 @@ impl LocalPreviewSession {
                         impulse,
                         impact_point,
                     );
-                    make_shot_result(shot.shot_id, shot.weapon)
+                    make_shot_result(
+                        shot.shot_id,
+                        shot.weapon,
+                        SHOT_RESOLUTION_DYNAMIC,
+                        dynamic_body_id,
+                        dynamic_toi,
+                        DYNAMIC_BODY_IMPULSE,
+                    )
                 }
             } else {
-                make_shot_result(shot.shot_id, shot.weapon)
+                make_shot_result(shot.shot_id, shot.weapon, SHOT_RESOLUTION_MISS, 0, 0.0, 0.0)
             };
 
             self.outbound_packets
@@ -237,6 +383,7 @@ impl LocalPreviewSession {
         let mut player_states = Vec::new();
         if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
+            let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
                 pos,
@@ -245,6 +392,7 @@ impl LocalPreviewSession {
                 pitch,
                 hp,
                 flags,
+                energy,
             ));
         }
 
@@ -273,8 +421,73 @@ impl LocalPreviewSession {
         self.server_tick * (1000 / SIM_HZ as u32)
     }
 
-    fn server_time_us(&self) -> u64 {
+    pub fn server_time_us(&self) -> u64 {
         (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64)
+    }
+
+    pub fn server_tick(&self) -> u32 {
+        self.server_tick
+    }
+
+    pub fn player_id(&self) -> u32 {
+        LOCAL_PLAYER_ID
+    }
+
+    pub fn ack_input_seq(&self) -> u16 {
+        self.player.last_ack_input_seq
+    }
+
+    pub fn local_player_state(&self) -> Option<NetPlayerState> {
+        let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(LOCAL_PLAYER_ID)?;
+        let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
+        Some(make_net_player_state(
+            LOCAL_PLAYER_ID,
+            pos,
+            vel,
+            yaw,
+            pitch,
+            hp,
+            flags,
+            energy,
+        ))
+    }
+
+    pub fn dynamic_body_states(&self) -> Vec<NetDynamicBodyState> {
+        self.arena
+            .snapshot_dynamic_bodies()
+            .into_iter()
+            .map(|(id, pos, quat, he, vel, angvel, shape_type)| {
+                make_net_dynamic_body_state(id, pos, quat, he, vel, angvel, shape_type)
+            })
+            .collect()
+    }
+
+    pub fn vehicle_states(&self) -> Vec<NetVehicleState> {
+        self.arena.snapshot_vehicles()
+    }
+
+    pub fn battery_states(&self) -> Vec<NetBatteryState> {
+        self.arena
+            .snapshot_batteries()
+            .into_iter()
+            .map(|(id, pos, energy, radius, height)| {
+                make_net_battery_state(id, pos, energy, radius, height)
+            })
+            .collect()
+    }
+
+    pub fn cast_scene_ray(&self, origin: [f32; 3], dir: [f32; 3], max_toi: f32) -> Option<f32> {
+        self.arena
+            .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
+    }
+
+    pub fn vehicle_debug(&self, vehicle_id: u32) -> Option<VehicleDebugSnapshot> {
+        let vehicle = self.arena.vehicles.get(&vehicle_id)?;
+        read_vehicle_debug_snapshot(
+            &self.arena.dynamic.sim,
+            vehicle.chassis_body,
+            &vehicle.controller,
+        )
     }
 }
 
@@ -304,17 +517,28 @@ fn enqueue_inputs(runtime: &mut PlayerRuntime, cmds: Vec<InputCmd>) {
     }
 }
 
-fn make_shot_result(shot_id: u32, weapon: u8) -> ShotResultPacket {
+fn make_shot_result(
+    shot_id: u32,
+    weapon: u8,
+    server_resolution: u8,
+    server_dynamic_body_id: u32,
+    server_dynamic_hit_toi_m: f32,
+    server_dynamic_impulse_mag: f32,
+) -> ShotResultPacket {
     ShotResultPacket {
         shot_id,
         weapon,
         confirmed: false,
         hit_player_id: 0,
         hit_zone: HIT_ZONE_NONE,
-        server_resolution: 0,
-        server_dynamic_body_id: 0,
-        server_dynamic_hit_toi_cm: 0,
-        server_dynamic_impulse_centi: 0,
+        server_resolution,
+        server_dynamic_body_id,
+        server_dynamic_hit_toi_cm: (server_dynamic_hit_toi_m.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
+        server_dynamic_impulse_centi: (server_dynamic_impulse_mag.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
     }
 }
 
@@ -387,13 +611,17 @@ fn encode_welcome_packet(pkt: &WelcomePacket) -> Vec<u8> {
 }
 
 fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
-    let mut out = BytesMut::with_capacity(12);
+    let mut out = BytesMut::with_capacity(20);
     out.put_u8(PKT_SHOT_RESULT);
     out.put_u32_le(pkt.shot_id);
     out.put_u8(pkt.weapon);
     out.put_u8(pkt.confirmed as u8);
     out.put_u32_le(pkt.hit_player_id);
     out.put_u8(pkt.hit_zone);
+    out.put_u8(pkt.server_resolution);
+    out.put_u32_le(pkt.server_dynamic_body_id);
+    out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
+    out.put_u16_le(pkt.server_dynamic_impulse_centi);
     out.to_vec()
 }
 
@@ -481,7 +709,12 @@ fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::constants::BTN_FORWARD;
+    use crate::physics_arena::{MoveConfig, PhysicsArena};
     use crate::unit_conv::angle_to_i16;
+    use crate::world_document::{
+        DynamicEntity, DynamicEntityKind, WorldDocument, WorldMeta, WorldTerrain, WorldTerrainTile,
+    };
+    const BROKEN_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/broken.world.json");
 
     fn decode_snapshot_ack(bytes: &[u8]) -> u16 {
         let mut buf = bytes;
@@ -551,9 +784,78 @@ mod tests {
         vehicles
     }
 
+    fn make_smooth_hill_world() -> WorldDocument {
+        let grid_size = 9usize;
+        let mut heights = Vec::with_capacity(grid_size * grid_size);
+        for row in 0..grid_size {
+            for col in 0..grid_size {
+                let dx = col as f32 - 4.0;
+                let dz = row as f32 - 4.0;
+                let dist = (dx * dx + dz * dz).sqrt();
+                heights.push((5.0 - dist * 1.25).max(0.0));
+            }
+        }
+        WorldDocument {
+            version: 2,
+            meta: WorldMeta {
+                name: "Smooth Hill".to_string(),
+                description: "Brush-like hill for local session tests.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: grid_size as u16,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+        }
+    }
+
+    fn make_flat_test_world() -> WorldDocument {
+        WorldDocument {
+            version: 2,
+            meta: WorldMeta {
+                name: "Flat Test".to_string(),
+                description: "Minimal local session test fixture.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+        }
+    }
+
+    fn isolated_energy_session() -> LocalSession {
+        let mut session =
+            LocalSession::from_world_document(make_flat_test_world()).expect("valid flat world");
+        session.connect();
+        let _ = session.drain_packets();
+        session
+    }
+
+    fn broken_world() -> WorldDocument {
+        serde_json::from_str(BROKEN_WORLD_DOCUMENT_JSON)
+            .expect("broken world document asset should deserialize")
+    }
+
+    fn terrain_height_for_world(world: &WorldDocument, x: f32, z: f32) -> f32 {
+        world.sample_heightfield_surface_at_world_position(x, z)
+    }
+
     #[test]
     fn connect_queues_welcome_packet() {
-        let mut session = LocalPreviewSession::new();
+        let mut session = LocalSession::new();
         session.connect();
 
         let packets = session.drain_packets();
@@ -562,8 +864,54 @@ mod tests {
     }
 
     #[test]
+    fn connect_spawns_local_player_with_starting_energy() {
+        let mut session = LocalSession::new();
+        session.connect();
+
+        let player = session
+            .local_player_state()
+            .expect("local player should exist after connect");
+        assert_eq!(
+            player.energy_centi,
+            energy_to_centi(crate::constants::STARTING_ENERGY)
+        );
+    }
+
+    #[test]
+    fn idle_energy_depletion_death_does_not_drop_battery() {
+        let mut session = isolated_energy_session();
+        let dt = 1.0 / SIM_HZ as f32;
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = crate::constants::ON_FOOT_IDLE_DRAIN_PER_SEC * dt * 0.5;
+
+        session.tick(dt);
+
+        assert!(
+            session.battery_states().is_empty(),
+            "idle depletion deaths should not drop a battery"
+        );
+        let player = session
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .expect("local player exists");
+        assert!(
+            player.dead,
+            "idle drain should kill the player when energy runs out"
+        );
+        assert_eq!(
+            player.energy, 0.0,
+            "energy should clamp to zero on depletion"
+        );
+    }
+
+    #[test]
     fn tick_acknowledges_latest_input_in_snapshot() {
-        let mut session = LocalPreviewSession::new();
+        let mut session = LocalSession::new();
         session.connect();
         let _ = session.drain_packets();
 
@@ -589,8 +937,8 @@ mod tests {
     }
 
     #[test]
-    fn local_preview_can_enter_authored_vehicle() {
-        let mut session = LocalPreviewSession::new();
+    fn local_session_can_enter_authored_vehicle() {
+        let mut session = LocalSession::new();
         session.connect();
         let _ = session.drain_packets();
 
@@ -599,12 +947,11 @@ mod tests {
             .drain_packets()
             .into_iter()
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
-            .expect("initial local preview snapshot");
+            .expect("initial local session snapshot");
         let initial_vehicle = decode_snapshot_vehicle_states(&initial_snapshot);
-        assert_eq!(
-            initial_vehicle.len(),
-            1,
-            "demo local preview should expose one vehicle"
+        assert!(
+            !initial_vehicle.is_empty(),
+            "demo local session should expose at least one vehicle"
         );
         let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
         assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
@@ -619,13 +966,268 @@ mod tests {
             .drain_packets()
             .into_iter()
             .find(|pkt| pkt[0] == PKT_SNAPSHOT)
-            .expect("latest local preview snapshot");
+            .expect("latest local session snapshot");
         let latest_vehicle = decode_snapshot_vehicle_states(&latest_snapshot);
-        assert_eq!(latest_vehicle.len(), 1);
-        let (_, latest_driver_id, _, _, _) = latest_vehicle[0];
+        assert_eq!(latest_vehicle.len(), initial_vehicle.len());
+        let entered = latest_vehicle
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("entered vehicle should still be present");
         assert_eq!(
-            latest_driver_id, LOCAL_PLAYER_ID,
-            "local preview vehicle should be driven by the local player after enter"
+            entered.1, LOCAL_PLAYER_ID,
+            "local session vehicle should be driven by the local player after enter"
         );
+    }
+
+    #[test]
+    fn hp_death_drops_battery_with_remaining_energy() {
+        let mut session = isolated_energy_session();
+
+        let remaining_energy = 321.5;
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = remaining_energy;
+
+        session.kill_local_player(session.server_time_ms(), LocalDeathCause::HpDamage);
+
+        let batteries = session.battery_states();
+        assert_eq!(
+            batteries.len(),
+            1,
+            "hp death should spawn exactly one battery"
+        );
+        assert_eq!(batteries[0].energy_centi, energy_to_centi(remaining_energy));
+        assert_eq!(
+            session
+                .local_player_state()
+                .expect("player state should still be queryable")
+                .energy_centi,
+            0,
+            "corpse energy should be zeroed after battery drop"
+        );
+    }
+
+    #[test]
+    fn rifle_energy_depletion_death_does_not_drop_battery() {
+        let mut session = isolated_energy_session();
+
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = crate::constants::RIFLE_SHOT_ENERGY_COST;
+
+        session.queue_fire_cmd(FireCmd {
+            seq: 1,
+            shot_id: 7,
+            weapon: 1,
+            client_fire_time_us: session.server_time_us(),
+            client_interp_ms: 0,
+            client_dynamic_interp_ms: 0,
+            dir: [1.0, 0.0, 0.0],
+        });
+        session.process_hitscan(session.server_time_ms());
+
+        assert!(
+            session.battery_states().is_empty(),
+            "energy depletion deaths should not drop a battery"
+        );
+        let player = session
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .expect("local player exists");
+        assert!(player.dead, "energy depletion should kill the player");
+        assert_eq!(
+            player.energy, 0.0,
+            "energy should clamp to zero on depletion"
+        );
+    }
+
+    #[test]
+    fn overlapping_battery_pickup_restores_energy_and_removes_battery() {
+        let mut session = isolated_energy_session();
+
+        let player_position = session
+            .arena
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .position;
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = 100.0;
+        let _ = session.arena.spawn_battery(
+            player_position,
+            42.5,
+            crate::constants::DEFAULT_BATTERY_RADIUS_M,
+            crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+        );
+
+        session.tick(1.0 / 60.0);
+
+        assert!(
+            session.battery_states().is_empty(),
+            "picked-up battery should be removed from the world"
+        );
+        assert_eq!(
+            session
+                .local_player_state()
+                .expect("local player state")
+                .energy_centi,
+            energy_to_centi(
+                100.0 + 42.5 - crate::constants::ON_FOOT_IDLE_DRAIN_PER_SEC / SIM_HZ as f32
+            )
+        );
+    }
+
+    fn local_session_keeps_smooth_hill_vehicle_supported() {
+        let mut world = make_smooth_hill_world();
+        let hill_x = 0.0f32;
+        let hill_z = 0.0f32;
+        let vehicle_x = hill_x + 1.5;
+        let vehicle_y = world.sample_heightfield_surface_at_world_position(vehicle_x, hill_z) + 3.0;
+        world.dynamic_entities = vec![DynamicEntity {
+            id: 32,
+            kind: DynamicEntityKind::Vehicle,
+            position: [vehicle_x, vehicle_y, hill_z],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            half_extents: None,
+            radius: None,
+            vehicle_type: Some(0),
+            energy: None,
+            height: None,
+        }];
+
+        let mut session = LocalSession::from_world_document(world.clone()).expect("valid world");
+        session.connect();
+        let _ = session.drain_packets();
+
+        let mut latest_snapshot = None;
+        for _ in 0..240 {
+            session.tick(1.0 / 60.0);
+            latest_snapshot = session
+                .drain_packets()
+                .into_iter()
+                .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+                .or(latest_snapshot);
+        }
+
+        let latest_snapshot = latest_snapshot.expect("latest snapshot");
+        let vehicles = decode_snapshot_vehicle_states(&latest_snapshot);
+        let (_, _, px_mm, py_mm, pz_mm) = vehicles
+            .into_iter()
+            .find(|(id, ..)| *id == 32)
+            .expect("vehicle present");
+        let px = px_mm as f32 / 1000.0;
+        let py = py_mm as f32 / 1000.0;
+        let pz = pz_mm as f32 / 1000.0;
+        let terrain_y = world.sample_heightfield_surface_at_world_position(px, pz);
+        assert!(
+            py > terrain_y - 0.25,
+            "local session hill vehicle fell through terrain: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+        );
+    }
+
+    #[test]
+    fn physics_arena_with_spawned_player_keeps_broken_world_authored_dynamics_supported() {
+        let world = broken_world();
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate broken world");
+        arena.spawn_player(1);
+
+        for _ in 0..360 {
+            let _ = arena.simulate_player_tick(1, &InputCmd::default(), 1.0 / 60.0);
+            arena.step_vehicles_and_dynamics(1.0 / 60.0);
+        }
+
+        for entity in &world.dynamic_entities {
+            match entity.kind {
+                DynamicEntityKind::Vehicle => {
+                    let vehicle = arena
+                        .snapshot_vehicles()
+                        .into_iter()
+                        .find(|vehicle| vehicle.id == entity.id)
+                        .expect("authored vehicle should exist");
+                    let px = vehicle.px_mm as f32 / 1000.0;
+                    let py = vehicle.py_mm as f32 / 1000.0;
+                    let pz = vehicle.pz_mm as f32 / 1000.0;
+                    let terrain_y = terrain_height_for_world(&world, px, pz);
+                    assert!(
+                        py > terrain_y - 0.25,
+                        "arena+player vehicle {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                        entity.id,
+                    );
+                }
+                _ => {
+                    let body = arena
+                        .snapshot_dynamic_bodies()
+                        .into_iter()
+                        .find(|(id, ..)| *id == entity.id)
+                        .expect("authored dynamic body should exist");
+                    let terrain_y = terrain_height_for_world(&world, body.1[0], body.1[2]);
+                    assert!(
+                        body.1[1] > terrain_y - 0.25,
+                        "arena+player {} {} fell through: pos=({:.3}, {:.3}, {:.3}) terrain_y={terrain_y:.3}",
+                        match entity.kind {
+                            DynamicEntityKind::Ball => "ball",
+                            DynamicEntityKind::Box => "box",
+                            DynamicEntityKind::Vehicle => "vehicle",
+                            DynamicEntityKind::Battery => "battery",
+                        },
+                        entity.id,
+                        body.1[0],
+                        body.1[1],
+                        body.1[2],
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_session_keeps_broken_world_authored_dynamics_supported() {
+        let world = broken_world();
+        let mut session = LocalSession::from_world_document(world.clone()).expect("valid world");
+        session.connect();
+        let _ = session.drain_packets();
+
+        for _ in 0..360 {
+            session.tick(1.0 / 60.0);
+            let _ = session.drain_packets();
+        }
+
+        for state in session.dynamic_body_states() {
+            let px = state.px_mm as f32 / 1000.0;
+            let py = state.py_mm as f32 / 1000.0;
+            let pz = state.pz_mm as f32 / 1000.0;
+            let terrain_y = terrain_height_for_world(&world, px, pz);
+            assert!(
+                py > terrain_y - 0.25,
+                "local session dynamic {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                state.id,
+            );
+        }
+
+        for vehicle in session.vehicle_states() {
+            let px = vehicle.px_mm as f32 / 1000.0;
+            let py = vehicle.py_mm as f32 / 1000.0;
+            let pz = vehicle.pz_mm as f32 / 1000.0;
+            let terrain_y = terrain_height_for_world(&world, px, pz);
+            assert!(
+                py > terrain_y - 0.25,
+                "local session vehicle {} fell through: pos=({px:.3}, {py:.3}, {pz:.3}) terrain_y={terrain_y:.3}",
+                vehicle.id,
+            );
+        }
     }
 }
