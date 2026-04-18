@@ -27,6 +27,21 @@ pub struct WorldMeta {
     pub description: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerrainMaterial {
+    pub name: String,
+    pub color: String,
+    pub roughness: f32,
+    pub metalness: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    pub flammability: f32,
+    pub fuel_load: f32,
+    pub burn_rate: f32,
+    pub moisture: f32,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTerrain {
@@ -41,6 +56,10 @@ pub struct WorldTerrainTile {
     pub tile_x: i32,
     pub tile_z: i32,
     pub heights: Vec<f32>,
+    #[serde(default)]
+    pub materials: Vec<TerrainMaterial>,
+    #[serde(default)]
+    pub material_weights: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -191,6 +210,8 @@ impl<'de> Deserialize<'de> for WorldTerrain {
                             0.0;
                             usize::from(tile_grid_size) * usize::from(tile_grid_size)
                         ],
+                        materials: Vec::new(),
+                        material_weights: None,
                     });
                 }
                 tiles.sort_by_key(|tile| (tile.tile_z, tile.tile_x));
@@ -211,6 +232,8 @@ impl<'de> Deserialize<'de> for WorldTerrain {
                     tile_x: 0,
                     tile_z: 0,
                     heights,
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
         })
@@ -859,6 +882,8 @@ mod tests {
                     tile_x: 0,
                     tile_z: 0,
                     heights,
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
             static_props: vec![],
@@ -1028,6 +1053,8 @@ mod tests {
                     tile_x: 0,
                     tile_z: 0,
                     heights: vec![0.0; 4],
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
             static_props: vec![],
@@ -1075,6 +1102,8 @@ mod tests {
                     tile_x: 0,
                     tile_z: 0,
                     heights: vec![0.0; 4],
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
             static_props: vec![],

@@ -55,6 +55,8 @@ fn benchmark_vehicle_world(
                 tile_x: 0,
                 tile_z: 0,
                 heights,
+                materials: Vec::new(),
+                material_weights: None,
             }],
         },
         static_props: vec![],

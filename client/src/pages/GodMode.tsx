@@ -6,11 +6,14 @@ import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
 import {
   DEFAULT_WORLD_DOCUMENT,
+  DEFAULT_TERRAIN_MATERIALS,
   TERRAIN_MAX_HEIGHT,
   TERRAIN_MIN_HEIGHT,
   addTerrainTile,
+  applyMaterialBrush,
   applyTerrainBrush,
   applyTerrainRampStencil,
+  getTerrainMaterials,
   cloneWorldDocument,
   createEmptyWorldDocument,
   getAddableTerrainTiles,
@@ -31,6 +34,7 @@ import {
   type DynamicEntity,
   type Quaternion,
   type StaticProp,
+  type TerrainMaterial,
   type Vec3,
   type WorldDocument,
   type WorldDraftRevision,
@@ -96,7 +100,7 @@ import {
 } from '../wasm/sharedVehicleDefinitions';
 
 type EditorMode = 'edit' | 'play';
-type EditorTool = 'select' | 'terrain';
+type EditorTool = 'select' | 'terrain' | 'paint';
 type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 
@@ -139,6 +143,9 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [rampSideFalloff, setRampSideFalloff] = useState(2);
   const [rampStartFalloff, setRampStartFalloff] = useState(0);
   const [rampEndFalloff, setRampEndFalloff] = useState(0);
+  const [paintMaterial, setPaintMaterial] = useState(0);
+  const [paintRadius, setPaintRadius] = useState(8);
+  const [paintStrength, setPaintStrength] = useState(0.5);
   const [commitMessageDraft, setCommitMessageDraft] = useState('');
   const customStencils = useCustomStencils();
   const [customStencilParams, setCustomStencilParams] = useState<Record<string, Record<string, unknown>>>({});
@@ -801,6 +808,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const canUndo = editHistory.undoStack.length > 0;
   const canRedo = editHistory.redoStack.length > 0;
 
+  const terrainMaterials = useMemo(() => getTerrainMaterials(world), [world]);
+
   const editScene = useMemo(() => (
     <GodModeEditorScene
       world={world}
@@ -809,9 +818,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       selected={selected}
       transformMode={transformMode}
       selectedTransformEntity={selectedTransformEntity}
-      brushRadius={brushRadius}
-      brushStrength={brushStrength}
+      brushRadius={tool === 'paint' ? paintRadius : brushRadius}
+      brushStrength={tool === 'paint' ? paintStrength : brushStrength}
       brushMode={brushMode}
+      paintMaterial={paintMaterial}
+      terrainMaterials={terrainMaterials}
       rampWidth={rampWidth}
       rampLength={rampLength}
       rampGradePct={rampGradePct}
@@ -838,6 +849,9 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           minHeight: brushMinHeight,
           maxHeight: brushMaxHeight,
         }));
+      }}
+      onMaterialPaint={(x, z) => {
+        applyPreviewWorldEdit((current) => applyMaterialBrush(current, x, z, paintRadius, paintStrength, paintMaterial));
       }}
       onDeleteTile={(tileX, tileZ) => {
         if (worldRef.current.terrain.tiles.length <= 1) {
@@ -912,6 +926,10 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     updateSelectedPositionVector,
     updateSelectedRadiusPreview,
     updateSelectedRotationQuaternion,
+    paintMaterial,
+    paintRadius,
+    paintStrength,
+    terrainMaterials,
     world,
   ]);
 
@@ -1077,6 +1095,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
               <div style={buttonRowStyle}>
                 <button type="button" onClick={() => setTool('select')} style={tool === 'select' ? activeButtonStyle : secondaryButtonStyle}>Select</button>
                 <button type="button" onClick={() => setTool('terrain')} style={tool === 'terrain' ? activeButtonStyle : secondaryButtonStyle}>Terrain</button>
+                <button type="button" onClick={() => setTool('paint')} style={tool === 'paint' ? activeButtonStyle : secondaryButtonStyle}>Paint</button>
               </div>
               {tool === 'terrain' && (
                 <div style={fieldStackStyle}>
@@ -1246,6 +1265,42 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                       }}
                     />
                   ) : null}
+                </div>
+              )}
+              {tool === 'paint' && (
+                <div style={fieldStackStyle}>
+                  <div style={mutedTextStyle}>Material</div>
+                  <div style={buttonRowStyle}>
+                    {terrainMaterials.map((mat, index) => (
+                      <button
+                        key={mat.name}
+                        type="button"
+                        onClick={() => setPaintMaterial(index)}
+                        style={{
+                          ...baseButtonStyle,
+                          background: paintMaterial === index ? mat.color : 'rgba(20, 34, 48, 0.96)',
+                          color: paintMaterial === index ? '#000' : '#eef7ff',
+                          borderColor: paintMaterial === index ? mat.color : 'rgba(167, 208, 237, 0.16)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span style={{ width: 12, height: 12, borderRadius: 3, background: mat.color, display: 'inline-block', border: '1px solid rgba(255,255,255,0.2)' }} />
+                        {mat.name}
+                      </button>
+                    ))}
+                  </div>
+                  <label style={fieldLabelStyle}>
+                    Radius
+                    <input type="range" min="2" max="20" step="0.5" value={paintRadius} onChange={(event) => setPaintRadius(Number(event.target.value))} />
+                    <span>{paintRadius.toFixed(1)}m</span>
+                  </label>
+                  <label style={fieldLabelStyle}>
+                    Strength
+                    <input type="range" min="0.05" max="1.0" step="0.05" value={paintStrength} onChange={(event) => setPaintStrength(Number(event.target.value))} />
+                    <span>{paintStrength.toFixed(2)}</span>
+                  </label>
                 </div>
               )}
             </div>
@@ -1552,6 +1607,9 @@ function GodModeEditorScene({
   onTransformHalfExtentsChange,
   onTransformRadiusChange,
   onPaint,
+  onMaterialPaint,
+  paintMaterial,
+  terrainMaterials,
   onAddTile,
   onDeleteTile,
   onApplyRamp,
@@ -1570,6 +1628,8 @@ function GodModeEditorScene({
   brushRadius: number;
   brushStrength: number;
   brushMode: 'raise' | 'lower';
+  paintMaterial: number;
+  terrainMaterials: TerrainMaterial[];
   rampWidth: number;
   rampLength: number;
   rampGradePct: number;
@@ -1592,6 +1652,7 @@ function GodModeEditorScene({
   onTransformHalfExtentsChange: (nextHalfExtents: Vec3) => void;
   onTransformRadiusChange: (nextRadius: number) => void;
   onPaint: (x: number, z: number) => void;
+  onMaterialPaint: (x: number, z: number) => void;
   onAddTile: (tileX: number, tileZ: number) => void;
   onDeleteTile: (tileX: number, tileZ: number) => void;
   onApplyRamp: (x: number, z: number) => void;
@@ -1670,8 +1731,14 @@ function GodModeEditorScene({
       setHoveredTerrainTile(null);
       return;
     }
+    if (tool === 'paint') {
+      onTerrainEditStart();
+      paintingRef.current = true;
+      onMaterialPaint(event.point.x, event.point.z);
+      return;
+    }
     onSelect(null);
-  }, [onApplyCustomStencil, onApplyRamp, onDeleteTile, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
+  }, [onApplyCustomStencil, onApplyRamp, onDeleteTile, onMaterialPaint, onPaint, onSelect, onTerrainEditStart, terrainToolMode, tool]);
 
   const handleTerrainPointerUp = useCallback(() => {
     const wasEditing = paintingRef.current || isRampApplying;
@@ -1777,12 +1844,16 @@ function GodModeEditorScene({
   }, [onTerrainEditEnd]);
 
   useEffect(() => {
-    if (tool !== 'terrain') {
+    if (tool !== 'terrain' && tool !== 'paint') {
       return;
     }
     const interval = window.setInterval(() => {
       const point = terrainPointerRef.current;
       if (!point) {
+        return;
+      }
+      if (tool === 'paint' && paintingRef.current) {
+        onMaterialPaint(point[0], point[2]);
         return;
       }
       if (terrainToolMode === 'sculpt' && paintingRef.current) {
@@ -1798,7 +1869,7 @@ function GodModeEditorScene({
       }
     }, 80);
     return () => window.clearInterval(interval);
-  }, [isRampApplying, onApplyCustomStencil, onApplyRamp, onPaint, terrainToolMode, tool]);
+  }, [isRampApplying, onApplyCustomStencil, onApplyRamp, onMaterialPaint, onPaint, terrainToolMode, tool]);
 
   const hoveredTerrainTileCenter = useMemo(() => {
     if (!hoveredTerrainTile) {
@@ -1987,6 +2058,12 @@ function GodModeEditorScene({
         <mesh ref={brushCursorRef} rotation-x={-Math.PI / 2}>
           <ringGeometry args={[Math.max(brushRadius - brushStrength * 0.5, 0.1), brushRadius, 64]} />
           <meshBasicMaterial color={brushMode === 'raise' ? 0x77ff9b : 0xffa875} transparent opacity={0.65} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+      {tool === 'paint' && (
+        <mesh ref={brushCursorRef} rotation-x={-Math.PI / 2}>
+          <ringGeometry args={[Math.max(brushRadius - 0.3, 0.1), brushRadius, 64]} />
+          <meshBasicMaterial color={terrainMaterials[paintMaterial]?.color ?? '#ffffff'} transparent opacity={0.7} side={THREE.DoubleSide} />
         </mesh>
       )}
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
