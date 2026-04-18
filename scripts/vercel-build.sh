@@ -2,11 +2,11 @@
 #
 # Vercel build entrypoint for vibe-land.
 #
-# The `blast-stress-solver` crate is published on crates.io with
-# prebuilt wasm32 static libraries, so no wasi C++ toolchain or local
-# PhysX clone is required.  This script just ensures the Rust/wasm
-# toolchain is present and runs the normal client build with the
-# `destructibles` feature enabled.
+# The `blast-stress-solver` crate requires a local source override
+# (patches/blast-stress-solver.patch applied to the upstream PhysX repo)
+# because the published crates.io version has a wasm32 symbol conflict
+# that prevents linking.  This script clones the upstream repo, applies
+# the patch, and then runs the normal wasm + client build.
 
 set -euo pipefail
 
@@ -20,8 +20,6 @@ echo "[vercel-build] pwd=$(pwd)"
 echo "[vercel-build] ========================================"
 
 # ── 1. Rust toolchain ────────────────────────────────────────────────────────
-# Vercel's build image includes rustup on recent images; install it if
-# it's missing so we don't break on older images.
 if ! command -v rustup >/dev/null 2>&1; then
   echo "[vercel-build] installing rustup (not present on PATH)"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -39,14 +37,51 @@ if ! command -v wasm-pack >/dev/null 2>&1; then
 fi
 echo "[vercel-build] wasm-pack: $(wasm-pack --version)"
 
-# ── 3. Client install + build ───────────────────────────────────────────────
+# ── 3. Upstream PhysX clone (required by [patch.crates-io] in Cargo.toml) ───
+#
+# Cargo.toml overrides `blast-stress-solver` with a local path so that
+# our wasm shim patch (patches/blast-stress-solver.patch) is included.
+# The path must exist before `cargo metadata` / `wasm-pack build` runs.
+#
+# Upstream: https://github.com/Glavin001/PhysX  branch: feat/rapier-destruction
+# Pinned to: 21145beafb125507fdaace89aef1b295a7bc6624
+PHYSX_DIR="${REPO_ROOT}/third_party/PhysX"
+PHYSX_UPSTREAM="https://github.com/Glavin001/PhysX"
+PHYSX_BRANCH="feat/rapier-destruction"
+PHYSX_COMMIT="21145beafb125507fdaace89aef1b295a7bc6624"
+PATCH_FILE="${REPO_ROOT}/patches/blast-stress-solver.patch"
+
+if [[ ! -d "${PHYSX_DIR}/.git" ]]; then
+  echo "[vercel-build] cloning PhysX upstream (shallow, ${PHYSX_BRANCH})"
+  git clone --depth=1 --branch "${PHYSX_BRANCH}" \
+    "${PHYSX_UPSTREAM}" "${PHYSX_DIR}"
+else
+  echo "[vercel-build] PhysX clone already present, skipping clone"
+fi
+
+echo "[vercel-build] PhysX HEAD: $(git -C "${PHYSX_DIR}" rev-parse HEAD)"
+
+if [[ -f "${PATCH_FILE}" ]]; then
+  echo "[vercel-build] applying patches/blast-stress-solver.patch"
+  # Apply idempotently: reverse-check first, skip if already applied.
+  if git -C "${PHYSX_DIR}" apply --reverse --check "${PATCH_FILE}" 2>/dev/null; then
+    echo "[vercel-build] patch already applied, skipping"
+  else
+    git -C "${PHYSX_DIR}" apply "${PATCH_FILE}"
+    echo "[vercel-build] patch applied"
+  fi
+else
+  echo "[vercel-build] WARNING: ${PATCH_FILE} not found, building unpatched" >&2
+fi
+
+# ── 4. Client install + build ───────────────────────────────────────────────
 echo "[vercel-build] running client install"
 npm --prefix client install
 
-echo "[vercel-build] running client build (blast-stress-solver from crates.io, prebuilt wasm32)"
+echo "[vercel-build] running client build (blast-stress-solver from local PhysX clone)"
 npm --prefix client run build
 
-# ── 4. Verify the built wasm actually has the Blast symbols ─────────────────
+# ── 5. Verify the built wasm actually has the Blast symbols ─────────────────
 WASM_FILE="${REPO_ROOT}/client/src/wasm/pkg/vibe_land_shared_bg.wasm"
 if [[ ! -f "${WASM_FILE}" ]]; then
   echo "[vercel-build] FATAL: ${WASM_FILE} not produced" >&2

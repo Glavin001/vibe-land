@@ -2,9 +2,9 @@
 #
 # Build the `vibe-land-shared` wasm module for the browser.
 #
-# The `blast-stress-solver` crate is published on crates.io with
-# prebuilt wasm32 static libraries, so no local PhysX clone or C++
-# toolchain is required.
+# Requires third_party/PhysX/blast/blast-stress-solver-rs to exist (the
+# [patch.crates-io] override in Cargo.toml points there).  In CI
+# vercel-build.sh clones it; locally it is already present.
 
 set -euo pipefail
 
@@ -16,5 +16,5 @@ OUT_DIR="${REPO_ROOT}/client/src/wasm/pkg"
 
 cd "${SHARED_DIR}"
 
-echo "[build-shared-wasm] building wasm (blast-stress-solver from crates.io)"
+echo "[build-shared-wasm] building wasm (blast-stress-solver from local PhysX clone)"
 exec wasm-pack build --target web --out-dir "${OUT_DIR}"
