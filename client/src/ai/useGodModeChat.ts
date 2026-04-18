@@ -12,10 +12,16 @@ import {
   loadPersistedChatState,
   savePersistedChatState,
 } from './chatStore';
-import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
+import {
+  createLanguageModel,
+  getThinkingProviderOptions,
+  isLocalProvider,
+  type ProviderId,
+} from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import type { WorldAccessors } from './worldToolHelpers';
+import { generateLocal, isLocalModelReady } from './localLlm';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
 
@@ -24,6 +30,11 @@ export type GodModeChatOptions = {
   provider: ProviderId;
   model: string;
   apiKey: string | undefined;
+  /**
+   * For local providers, whether the in-browser model has been loaded and is
+   * ready to generate. Cloud providers ignore this flag.
+   */
+  localReady?: boolean;
 };
 
 export type ImageAttachment = { dataUrl: string; mediaType: string };
@@ -42,8 +53,17 @@ export type GodModeChatHandle = {
 
 const MAX_TOOL_STEPS = 12;
 
+/**
+ * Trimmed system prompt for the local Qwen3-0.6B model. The cloud prompt
+ * assumes tool-calling, which we don't wire up for the small on-device model.
+ */
+const LOCAL_SYSTEM_PROMPT =
+  'You are a helpful, concise assistant embedded in the GodMode editor of Vibe Land, a 3D world editor. ' +
+  'You do not have tools available: respond in plain text only and suggest what the user could do manually or ' +
+  'what they could ask a cloud model (OpenAI, Anthropic, Google) to do with tools. Keep answers short.';
+
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { accessors, provider, model, apiKey } = options;
+  const { accessors, provider, model, apiKey, localReady = false } = options;
   const initialPersistedState = useMemo(() => loadPersistedChatState(), []);
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => initialPersistedState.messages);
@@ -90,14 +110,24 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     savePersistedChatState({ messages, pendingHumanEdits });
   }, [messages, pendingHumanEdits]);
 
-  const canSend = Boolean(apiKey) && status === 'idle';
+  const canSend =
+    status === 'idle' &&
+    (isLocalProvider(provider)
+      ? localReady || isLocalModelReady()
+      : Boolean(apiKey));
 
   const sendMessage = useCallback(
     async (text: string, attachments?: ImageAttachment[]) => {
       const trimmed = text.trim();
       if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
-      if (!apiKey) {
+      const isLocal = isLocalProvider(provider);
+      if (!isLocal && !apiKey) {
         setError(new Error(`Add an API key for ${provider} first.`));
+        setStatus('error');
+        return;
+      }
+      if (isLocal && !(localReady || isLocalModelReady())) {
+        setError(new Error('Download the local model before sending.'));
         setStatus('error');
         return;
       }
@@ -144,7 +174,38 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       abortRef.current = controller;
 
       try {
-        const languageModel = createLanguageModel(provider, model, apiKey);
+        if (isLocal) {
+          setMessages((current) => {
+            const idx = current.findIndex((m) => m.id === assistantId);
+            if (idx === -1) return current;
+            const next = current.slice();
+            next[idx] = { ...current[idx], parts: [{ type: 'text', text: '' }] };
+            return next;
+          });
+          await generateLocal({
+            messages: baseMessages,
+            systemPrompt: LOCAL_SYSTEM_PROMPT,
+            signal: controller.signal,
+            onDelta: (delta) => {
+              setMessages((current) => {
+                const idx = current.findIndex((m) => m.id === assistantId);
+                if (idx === -1) return current;
+                const target = current[idx];
+                const firstText = target.parts[0];
+                const nextParts: ChatPart[] =
+                  firstText && firstText.type === 'text'
+                    ? [{ type: 'text', text: firstText.text + delta }, ...target.parts.slice(1)]
+                    : [{ type: 'text', text: delta }, ...target.parts];
+                const next = current.slice();
+                next[idx] = { ...target, parts: nextParts };
+                return next;
+              });
+            },
+          });
+          setStatus('idle');
+          return;
+        }
+        const languageModel = createLanguageModel(provider, model, apiKey ?? '');
         const thinkingOpts = getThinkingProviderOptions(provider, model);
         const result = streamText({
           model: languageModel,
@@ -318,7 +379,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }
       }
     },
-    [apiKey, messages, model, pendingHumanEdits, provider, status],
+    [apiKey, localReady, messages, model, pendingHumanEdits, provider, status],
   );
 
   return useMemo<GodModeChatHandle>(

@@ -31,6 +31,7 @@
     "@ai-sdk/anthropic": "^2.0.74",
     "@ai-sdk/google": "^2.0.68",
     "@ai-sdk/openai": "^2.0.102",
+    "@huggingface/transformers": "^3.8.1",
     "@react-three/drei": "^9.117.0",
     "@react-three/fiber": "^8.17.0",
     "@rjsf/core": "^6.4.2",

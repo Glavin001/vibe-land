@@ -3,13 +3,24 @@ import type { JSONValue, LanguageModel } from 'ai';
 import { AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI, GoogleGenerativeAIProviderMetadata, GoogleGenerativeAIProviderOptions } from '@ai-sdk/google';
 import { createOpenAI, OpenAIChatLanguageModelOptions, OpenAIResponsesProviderOptions } from '@ai-sdk/openai';
+import { LOCAL_MODEL_LABEL } from './localLlm';
 type ProviderOptionsBag = {
   openai?: OpenAIResponsesProviderOptions;
   anthropic?: AnthropicProviderOptions;
   google?: GoogleGenerativeAIProviderOptions;
 };
 
-export type ProviderId = 'openai' | 'anthropic' | 'google';
+export type ProviderId = 'openai' | 'anthropic' | 'google' | 'local';
+
+/** Providers whose inference runs on-device instead of via a remote API. */
+export function isLocalProvider(provider: ProviderId): boolean {
+  return provider === 'local';
+}
+
+/** Providers that require the user to supply an API key. */
+export function requiresApiKey(provider: ProviderId): boolean {
+  return !isLocalProvider(provider);
+}
 
 // NOTE: model IDs drift over time. These are sensible defaults that the
 // user can override at runtime via the chat settings UI (any string is
@@ -50,16 +61,23 @@ export const MODELS: Record<ProviderId, string[]> = {
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
   ],
+  local: [LOCAL_MODEL_LABEL],
 };
 
 export const PROVIDER_LABELS: Record<ProviderId, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   google: 'Google Gemini',
+  local: 'Local (in-browser)',
 };
 
 export function isProviderId(value: unknown): value is ProviderId {
-  return value === 'openai' || value === 'anthropic' || value === 'google';
+  return (
+    value === 'openai' ||
+    value === 'anthropic' ||
+    value === 'google' ||
+    value === 'local'
+  );
 }
 
 export function defaultModelFor(provider: ProviderId): string {
@@ -78,6 +96,9 @@ export function createLanguageModel(
   modelId: string,
   apiKey: string,
 ): LanguageModel {
+  if (provider === 'local') {
+    throw new Error('Local provider does not use the AI SDK language-model path.');
+  }
   if (!apiKey) {
     throw new Error(`Missing API key for ${PROVIDER_LABELS[provider]}.`);
   }
