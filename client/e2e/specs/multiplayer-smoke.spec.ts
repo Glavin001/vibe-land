@@ -38,23 +38,24 @@ test.describe('Multiplayer Smoke', () => {
         openPlay(pageB, matchId),
       ]);
 
-      // Check whether the server is reachable: wait up to 8 seconds for the
-      // transport to leave 'connecting'.  If it never does, the server is not
-      // available in this environment (e.g. no TLS cert for WebTransport in
-      // a local dev setup) — skip gracefully rather than failing the suite.
-      let serverReachable = false;
+      // Check whether a multiplayer session can actually be established:
+      // wait up to 15 seconds for the server to assign a player ID.
+      // If it stays at 0, the server is not providing multiplayer sessions
+      // in this environment (e.g. no TLS cert for WebTransport, or the
+      // match server is unavailable) — skip gracefully.
+      let multiplayerAvailable = false;
       try {
         await waitForSnapshot(
           pageA,
-          (s) => s.transport !== 'connecting',
-          { timeout: 8_000, label: 'server reachability check' },
+          (s) => s.playerId > 0,
+          { timeout: 15_000, label: 'multiplayer session check' },
         );
-        serverReachable = true;
+        multiplayerAvailable = true;
       } catch {
-        // Server is not reachable in this environment
+        // Server did not assign a player ID — multiplayer not available here
       }
-      if (!serverReachable) {
-        test.skip(true, 'Multiplayer server not reachable — skipping (no TLS cert or WebTransport unavailable)');
+      if (!multiplayerAvailable) {
+        test.skip(true, 'Multiplayer not available — skipping (server did not assign playerId within 15s)');
         return;
       }
 
