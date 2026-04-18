@@ -335,6 +335,11 @@ impl LocalSession {
         }
         self.arena.step_vehicles_and_dynamics(dt);
 
+        let vehicle_killed = self.arena.apply_vehicle_player_collisions();
+        if vehicle_killed.iter().any(|&id| id == LOCAL_PLAYER_ID) {
+            self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+        }
+
         let gained_energy: f32 = self
             .arena
             .collect_batteries_for_player(LOCAL_PLAYER_ID)

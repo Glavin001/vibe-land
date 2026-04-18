@@ -104,6 +104,7 @@ enum DeathCause {
     HpDamage,
     EnergyDepletion,
     OutOfBounds,
+    VehicleCollision,
 }
 
 // ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
@@ -1819,6 +1820,9 @@ impl MatchState {
             .record(dead_players_skipped);
 
         let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        for player_id in self.arena.apply_vehicle_player_collisions() {
+            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
+        }
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -2301,7 +2305,7 @@ impl MatchState {
     }
 
     fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
-        let battery_drop = if matches!(cause, DeathCause::HpDamage) {
+        let battery_drop = if matches!(cause, DeathCause::HpDamage | DeathCause::VehicleCollision) {
             self.arena.players.get(&player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
                     Some((state.position, state.energy))
