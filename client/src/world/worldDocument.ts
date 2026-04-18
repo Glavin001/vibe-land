@@ -222,7 +222,7 @@ export function buildDraftRevision(world: WorldDocument, summary: string, now = 
 export function getNextWorldEntityId(world: WorldDocument): number {
   const highestStatic = world.staticProps.reduce((max, entity) => Math.max(max, entity.id), 0);
   const highestDynamic = world.dynamicEntities.reduce((max, entity) => Math.max(max, entity.id), 0);
-  const highestDestructible = world.destructibles.reduce((max, entity) => Math.max(max, entity.id), 0);
+  const highestDestructible = (world.destructibles ?? []).reduce((max, entity) => Math.max(max, entity.id), 0);
   return Math.max(highestStatic, highestDynamic, highestDestructible) + 1;
 }
 

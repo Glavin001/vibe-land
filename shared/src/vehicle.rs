@@ -596,6 +596,7 @@ mod tests {
                     &mut self.impulse_joints,
                     &mut self.multibody_joints,
                     &mut self.ccd_solver,
+                    &(),
                     substep_dt,
                 );
             }
