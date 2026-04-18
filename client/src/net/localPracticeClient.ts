@@ -4,6 +4,8 @@ import {
   type BatteryStateMeters,
   SIM_HZ,
   encodeInputBundle,
+  encodeVehicleEnterPacket,
+  encodeVehicleExitPacket,
   netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
@@ -46,6 +48,8 @@ export interface PracticeBotHost {
   disconnectBot(botId: number): boolean;
   setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
   sendBotInputs(botId: number, cmds: InputCmd[]): void;
+  sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
+  sendBotVehicleExit(botId: number, vehicleId: number): void;
 }
 
 export class LocalPracticeClient implements PracticeBotHost {
@@ -173,6 +177,26 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
     } catch (error) {
       console.warn('[local-practice] bot input rejected', error);
+    }
+  }
+
+  sendBotVehicleEnter(botId: number, vehicleId: number, _seat = 0): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeVehicleEnterPacket(vehicleId >>> 0, 0));
+    } catch (error) {
+      console.warn('[local-practice] bot vehicle enter rejected', error);
+    }
+  }
+
+  sendBotVehicleExit(botId: number, vehicleId: number): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeVehicleExitPacket(vehicleId >>> 0));
+    } catch (error) {
+      console.warn('[local-practice] bot vehicle exit rejected', error);
     }
   }
 
@@ -380,6 +404,7 @@ export class LocalPracticeClient implements PracticeBotHost {
         yaw: meters.yaw,
         pitch: meters.pitch,
         hp: meters.hp,
+        flags: state.flags,
       });
     }
 

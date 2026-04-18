@@ -16,7 +16,16 @@ export type ObservedPlayer = {
   state: PlayerStateMeters;
 };
 
-export type BotBrainMode = 'acquire_target' | 'follow_target' | 'recover_center' | 'hold_anchor' | 'dead';
+export type BotBrainMode =
+  | 'acquire_target'
+  | 'follow_target'
+  | 'recover_center'
+  | 'hold_anchor'
+  | 'dead'
+  | 'walking_to_vehicle'
+  | 'entering_vehicle'
+  | 'driving'
+  | 'exiting_vehicle';
 
 export interface BotBrainState {
   mode: BotBrainMode;

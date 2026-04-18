@@ -17,6 +17,7 @@ import {
   getSharedPlayerNavigationProfileAsync,
   type SharedPlayerNavigationProfile,
 } from '../../wasm/sharedPhysics';
+import type { VehicleProfile } from '../types';
 import { buildWorldGeometry, type BotWorldGeometry } from './worldGeometry';
 
 export type NavMeshMode = 'solo' | 'tiled';
@@ -173,5 +174,36 @@ export async function buildBotNavMeshFromSharedProfile(
   return buildBotNavMesh(world, {
     ...options,
     navigationProfile,
+  });
+}
+
+/**
+ * Builds a second, vehicle-sized navmesh for the same world. The walkable
+ * radius is inflated to {@link VehicleProfile.agentRadius} so narrow alleys
+ * and doorways that a player can squeeze through on foot are automatically
+ * excluded — the vehicle simply can't path there.
+ *
+ * The climb height is dropped to match a car's max step-over (a wheeled
+ * chassis can't take 0.55 m curbs) and the slope angle is tightened too so
+ * drivable polygons only cover geometry a raycast-vehicle can physically
+ * traverse.
+ *
+ * Callers should not rebuild this mesh every tick — build once per world
+ * and reuse it across all vehicle-mode bots.
+ */
+export function buildVehicleBotNavMesh(
+  world: WorldDocument,
+  profile: VehicleProfile,
+  overrides: Partial<BuildBotNavMeshOptions> = {},
+): BotNavMesh {
+  const navigationProfile: SharedPlayerNavigationProfile = {
+    walkableRadius: profile.agentRadius,
+    walkableHeight: profile.agentHeight,
+    walkableClimb: 0.15,
+    walkableSlopeAngleDegrees: 25,
+  };
+  return buildBotNavMesh(world, {
+    navigationProfile,
+    ...overrides,
   });
 }

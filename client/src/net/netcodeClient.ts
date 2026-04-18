@@ -41,6 +41,8 @@ export type RemotePlayer = {
   yaw: number;
   pitch: number;
   hp: number;
+  /** Latest player state flags (FLAG_DEAD, FLAG_IN_VEHICLE, ...). */
+  flags: number;
 };
 
 export type NetcodeClientConfig = {
@@ -410,6 +412,7 @@ export class NetcodeClient {
         yaw,
         pitch,
         hp: player.hp,
+        flags: player.flags,
       });
     }
 
@@ -740,6 +743,7 @@ export class NetcodeClient {
               yaw: m.yaw,
               pitch: m.pitch,
               hp: m.hp,
+              flags: ps.flags,
             });
           }
         }

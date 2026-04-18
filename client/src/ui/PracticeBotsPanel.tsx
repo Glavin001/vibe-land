@@ -22,6 +22,7 @@ interface PracticeBotsPanelProps {
   onUpdateNavTuning: (patch: Partial<PracticeBotNavTuning>) => void;
   onResetNavTuning: () => void;
   onToggleDebugOverlay: (value: boolean) => void;
+  onSetUseVehicles: (value: boolean) => void;
 }
 
 interface NavTuningDraft {
@@ -83,6 +84,7 @@ export function PracticeBotsPanel({
   onUpdateNavTuning,
   onResetNavTuning,
   onToggleDebugOverlay,
+  onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
   const [botInfos, setBotInfos] = useState<BotDebugInfo[]>([]);
@@ -93,6 +95,7 @@ export function PracticeBotsPanel({
   const behavior = stats?.behavior ?? 'harass';
   const maxSpeed = stats?.maxSpeed ?? 3.0;
   const activeNav = navConfig;
+  const useVehicles = stats?.useVehicles ?? false;
 
   const [countSliderRef, countDragStart, countDragEnd] = useDraggableInputSync(count);
   const [countNumberRef] = useDraggableInputSync(count);
@@ -240,6 +243,18 @@ export function PracticeBotsPanel({
                 );
               })}
             </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {panelLabel('Vehicles')}
+            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
+              <input
+                type="checkbox"
+                checked={useVehicles}
+                onChange={(event) => onSetUseVehicles(event.target.checked)}
+                className="accent-sky-300"
+              />
+              <span>bots can drive vehicles to reach targets</span>
+            </label>
           </div>
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Debug')}
