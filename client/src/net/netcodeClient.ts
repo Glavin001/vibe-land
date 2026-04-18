@@ -11,6 +11,8 @@ import {
   type VehicleSample,
 } from './interpolation';
 import {
+  type BatteryStateMeters,
+  type BatterySyncPacket,
   encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
   netStateToMeters,
@@ -21,6 +23,8 @@ import {
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
+  type LocalPlayerEnergyPacket,
+  type NetBatteryState,
   type NetPlayerState,
   type NetVehicleState,
   type PlayerRosterPacket,
@@ -83,6 +87,7 @@ export class NetcodeClient {
   latestServerTick = 0;
   rttMs = 0;
   localPlayerHp = 100;
+  localPlayerEnergy = 0;
   localPlayerFlags = 0;
 
   private pushVehicleSample(
@@ -105,6 +110,7 @@ export class NetcodeClient {
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
+  readonly batteries = new Map<number, BatteryStateMeters>();
   private readonly dynamicBodyLastSeenTick = new Map<number, number>();
   private readonly vehicleLastSeenTick = new Map<number, number>();
   private readonly dynamicBodyServerTimeUs = new Map<number, number>();
@@ -308,6 +314,22 @@ export class NetcodeClient {
     }
   }
 
+  private applyLocalPlayerEnergy(packet: LocalPlayerEnergyPacket): void {
+    this.localPlayerEnergy = packet.energyCenti / 100;
+  }
+
+  private applyBatterySync(packet: BatterySyncPacket): void {
+    if (packet.fullResync) {
+      this.batteries.clear();
+    }
+    for (const id of packet.removedIds) {
+      this.batteries.delete(id);
+    }
+    for (const battery of packet.batteryStates) {
+      this.batteries.set(battery.id, batteryStateToMeters(battery));
+    }
+  }
+
   private applySnapshotV2(
     packet: SnapshotV2Packet,
     source: 'wt-datagram' | 'wt-reliable' | 'websocket' | 'local' | 'direct',
@@ -347,6 +369,7 @@ export class NetcodeClient {
       pitchI16: packet.selfState.pitchI16,
       hp: packet.selfState.hp,
       flags: packet.selfState.flags,
+      energyCenti: 0,
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
@@ -632,6 +655,12 @@ export class NetcodeClient {
       case 'dynamicBodyMeta':
         this.applyDynamicBodyMeta(packet);
         break;
+      case 'localPlayerEnergy':
+        this.applyLocalPlayerEnergy(packet);
+        break;
+      case 'batterySync':
+        this.applyBatterySync(packet);
+        break;
       case 'snapshot': {
         if (packet.serverTick <= this.latestServerTick) {
           this.debugTelemetry.observeDroppedSnapshot(source, packet.serverTick, this.latestServerTick);
@@ -878,7 +907,19 @@ export class NetcodeClient {
     this.vehicles.clear();
     this.vehicleLastSeenTick.clear();
     this.vehicleInterpolator.retainOnly(new Set());
+    this.batteries.clear();
+    this.localPlayerEnergy = 0;
   }
+}
+
+function batteryStateToMeters(state: NetBatteryState): BatteryStateMeters {
+  return {
+    id: state.id,
+    position: [state.pxMm / 1000, state.pyMm / 1000, state.pzMm / 1000],
+    energy: state.energyCenti / 100,
+    radius: state.radiusCm / 100,
+    height: state.heightCm / 100,
+  };
 }
 
 function describeDisconnectReason(prefix: string, reason: unknown): string {

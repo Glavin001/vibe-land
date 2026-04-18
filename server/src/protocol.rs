@@ -30,6 +30,8 @@ pub enum ServerPacket {
     Snapshot(SnapshotPacket),
     SnapshotV2(SnapshotV2Packet),
     ShotResult(ShotResultPacket),
+    LocalPlayerEnergy(LocalPlayerEnergyPacket),
+    BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
@@ -53,6 +55,8 @@ pub enum ClientDatagram {
 pub enum ServerReliablePacket {
     Welcome(WelcomePacket),
     ShotResult(ShotResultPacket),
+    LocalPlayerEnergy(LocalPlayerEnergyPacket),
+    BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
@@ -182,6 +186,18 @@ pub struct DynamicBodyMetaEntry {
 #[derive(Clone, Debug, Default)]
 pub struct DynamicBodyMetaPacket {
     pub entries: Vec<DynamicBodyMetaEntry>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocalPlayerEnergyPacket {
+    pub energy_centi: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct BatterySyncPacket {
+    pub full_resync: bool,
+    pub battery_states: Vec<NetBatteryState>,
+    pub removed_ids: Vec<u32>,
 }
 
 // ── Server-only decode/encode functions ─────────
@@ -316,6 +332,28 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u32_le(pkt.server_dynamic_body_id);
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
+        }
+        ServerReliablePacket::LocalPlayerEnergy(pkt) => {
+            out.put_u8(PKT_LOCAL_PLAYER_ENERGY);
+            out.put_u32_le(pkt.energy_centi);
+        }
+        ServerReliablePacket::BatterySync(pkt) => {
+            out.put_u8(PKT_BATTERY_SYNC);
+            out.put_u8(pkt.full_resync as u8);
+            out.put_u16_le(pkt.battery_states.len() as u16);
+            out.put_u16_le(pkt.removed_ids.len() as u16);
+            for battery in &pkt.battery_states {
+                out.put_u32_le(battery.id);
+                out.put_i32_le(battery.px_mm);
+                out.put_i32_le(battery.py_mm);
+                out.put_i32_le(battery.pz_mm);
+                out.put_u32_le(battery.energy_centi);
+                out.put_u16_le(battery.radius_cm);
+                out.put_u16_le(battery.height_cm);
+            }
+            for id in &pkt.removed_ids {
+                out.put_u32_le(*id);
+            }
         }
         ServerReliablePacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
@@ -715,6 +753,12 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
         }
+        ServerPacket::LocalPlayerEnergy(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::LocalPlayerEnergy(pkt.clone()))
+        }
+        ServerPacket::BatterySync(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::BatterySync(pkt.clone()))
+        }
         ServerPacket::ChunkFull(pkt) => {
             out.put_u8(PKT_CHUNK_FULL);
             out.put_i16_le(pkt.chunk[0]);
@@ -845,6 +889,7 @@ mod tests {
                 pitch_i16: -500,
                 hp: 88,
                 flags: 1,
+                energy_centi: 0,
             }],
             projectile_states: vec![],
             dynamic_body_states: vec![],
