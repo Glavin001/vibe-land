@@ -45,7 +45,8 @@ import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPla
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
-import { PracticeGuestPlayer } from './PracticeGuestPlayer';
+import { PracticeGuestPlayer, type GuestCameraMap } from './PracticeGuestPlayer';
+import { SplitScreenRenderer } from './SplitScreenRenderer';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -1072,6 +1073,7 @@ export function GameWorld({
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
+  const guestCamerasRef = useRef<GuestCameraMap>(new Map());
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
@@ -2772,8 +2774,17 @@ export function GameWorld({
           device={guest.device}
           inputBindings={inputBindings}
           runtimeRef={runtimeRef}
+          guestCamerasRef={guestCamerasRef}
         />
       ))}
+
+      {practiceMode && practiceGuests && practiceGuests.length > 0 && (
+        <SplitScreenRenderer
+          guestSlotIds={practiceGuests.map((g) => g.slotId)}
+          guestHumanIds={practiceGuests.map((g) => g.humanId)}
+          guestCamerasRef={guestCamerasRef}
+        />
+      )}
     </>
   );
 }
