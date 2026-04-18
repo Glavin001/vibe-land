@@ -18,6 +18,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     crouch: false,
     firePrimary: false,
     firePrimaryValue: 0,
+    aimSecondary: false,
     handbrake: false,
     interactPressed: false,
     resetVehiclePressed: false,

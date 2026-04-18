@@ -46,6 +46,7 @@ export type KeyboardBindings = {
   materialSlot2: KeyboardCodeBinding;
   handbrake: KeyboardCodeBinding;
   firePrimaryMouseButton: MouseButtonBinding;
+  aimSecondaryMouseButton: MouseButtonBinding;
 };
 
 export type GamepadBindings = {
@@ -59,6 +60,7 @@ export type GamepadBindings = {
   sprintButton: GamepadButtonBinding;
   crouchButton: GamepadButtonBinding;
   firePrimaryButton: GamepadButtonBinding;
+  aimSecondaryButton: GamepadButtonBinding;
   handbrakeButton: GamepadButtonBinding;
   interactButton: GamepadButtonBinding;
   resetVehicleButton: GamepadButtonBinding;
@@ -92,6 +94,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     materialSlot2: 'Digit2',
     handbrake: 'Space',
     firePrimaryMouseButton: 0,
+    aimSecondaryMouseButton: 2,
   },
   gamepad: {
     moveXAxis: 0,
@@ -104,6 +107,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     sprintButton: 10,
     crouchButton: 1,
     firePrimaryButton: 7,
+    aimSecondaryButton: 6,
     handbrakeButton: 0,
     interactButton: 2,
     resetVehicleButton: 3,

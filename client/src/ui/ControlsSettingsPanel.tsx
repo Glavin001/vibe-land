@@ -27,7 +27,7 @@ type ControlsSettingsPanelProps = {
   onResetAll: () => void;
 };
 
-type KeyboardKeyField = Exclude<keyof KeyboardBindings, 'firePrimaryMouseButton'>;
+type KeyboardKeyField = Exclude<keyof KeyboardBindings, 'firePrimaryMouseButton' | 'aimSecondaryMouseButton'>;
 
 type BindingSectionProps = {
   title: string;
@@ -65,6 +65,7 @@ const gamepadButtonRows: Array<{ key: Exclude<keyof GamepadBindings, 'moveXAxis'
   { key: 'sprintButton', label: 'Sprint' },
   { key: 'crouchButton', label: 'Crouch' },
   { key: 'firePrimaryButton', label: 'Fire Primary' },
+  { key: 'aimSecondaryButton', label: 'Aim / Scope' },
   { key: 'handbrakeButton', label: 'Vehicle Handbrake' },
   { key: 'interactButton', label: 'Interact / Enter / Exit Vehicle' },
   { key: 'resetVehicleButton', label: 'Reset Vehicle' },
@@ -178,6 +179,22 @@ export function ControlsSettingsPanel({
                   </select>
                 )}
                 onReset={() => onKeyboardBindingReset('firePrimaryMouseButton')}
+              />
+              <BindingRow
+                label="Aim / Scope"
+                currentLabel={mouseButtonLabel(bindings.keyboard.aimSecondaryMouseButton)}
+                editor={(
+                  <select
+                    value={bindings.keyboard.aimSecondaryMouseButton}
+                    onChange={(event) => onKeyboardBindingChange('aimSecondaryMouseButton', Number(event.target.value) as KeyboardBindings['aimSecondaryMouseButton'])}
+                    style={selectStyle}
+                  >
+                    {MOUSE_BUTTON_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                )}
+                onReset={() => onKeyboardBindingReset('aimSecondaryMouseButton')}
               />
             </div>
           </BindingSection>
