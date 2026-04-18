@@ -924,8 +924,8 @@ impl DestructibleRegistry {
             }
             self.transforms.extend_from_slice(&instance.transforms);
 
-            // Mark every dynamic chunk collider as user-modified so the next
-            // pipeline.step() includes it in broad_phase.update().
+            // Mark chunk colliders as user-modified so the next pipeline.step()
+            // includes them in broad_phase.update().
             //
             // Rapier's broad phase only processes user-modified colliders.
             // After the first tick following fracture, newly dynamic chunk
@@ -944,10 +944,16 @@ impl DestructibleRegistry {
             // AABB an AddPair event fires — permanently registering the pair in
             // the contact graph so the narrow phase can compute contact forces.
             //
-            // Only dynamic (post-fracture) and non-sleeping chunks need this;
-            // fixed pre-fracture nodes share the original static body and do
-            // not fall.  Sleeping chunks already have a ground contact edge and
-            // are excluded to avoid unnecessary broad-phase work.
+            // On split ticks, fixed (support) bodies are also marked: the
+            // body_tracker repositions them from their old multi-node centroid
+            // to the support-node centroid, but propagate_modified_body_positions_to_colliders
+            // updates only world positions without adding colliders to
+            // modified_colliders.  The broad phase therefore keeps stale BVH
+            // entries for the support colliders, so dynamic chunks fall through
+            // them instead of landing on top.  Marking support colliders on the
+            // split tick forces one BVH refresh and permanently registers the
+            // correct contact pairs.
+            let had_split = step_result.split_events > 0 || step_result.new_bodies > 0;
             for node_index in 0..instance.node_count {
                 let Some(body_handle) = instance.set.node_body(node_index) else {
                     continue;
@@ -955,7 +961,13 @@ impl DestructibleRegistry {
                 let Some(rb) = sim.rigid_bodies.get(body_handle) else {
                     continue;
                 };
-                if !rb.is_dynamic() || rb.is_sleeping() {
+                let skip = if rb.is_dynamic() {
+                    rb.is_sleeping()
+                } else {
+                    // Fixed bodies: only refresh on split ticks (they were repositioned).
+                    !had_split
+                };
+                if skip {
                     continue;
                 }
                 if let Some(ch) = instance.set.node_collider(node_index) {

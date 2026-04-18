@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { initWasmForTests, WasmSimWorld } from '../wasm/testInit';
 import { parseDestructibleDebugConfig, parseDestructibleDebugState } from '../physics/destructibleDebug';
+import { computeDestructibleSpatialMetrics } from '../physics/destructibleSpatialMetrics';
 import { serializeWorldDocument, type WorldDocument } from './worldDocument';
 
 /** Mirror of `shared/src/constants.rs :: BTN_FORWARD`. */
@@ -723,7 +724,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       lowestChunkY = Math.min(lowestChunkY, transforms[i + 3] ?? Number.POSITIVE_INFINITY);
     }
 
-    expect(debugState.dynamicMinBodyParentlessStaticContactPairs).toBeGreaterThan(0);
+    // With the overlap fix, body_B rests on the fixed support layer (body_A), not terrain.
+    expect(debugState.dynamicMinBodySameInstanceFixedContactPairs).toBeGreaterThan(0);
     expect(debugState.dynamicMinBodyActiveContactPairs).toBeGreaterThan(0);
     expect(debugState.dynamicMinBodySpeedMs).toBeLessThan(0.1);
     expect(debugState.dynamicMinBodyY).toBeGreaterThan(0.15);
@@ -1024,5 +1026,161 @@ describe('Destructible scenarios (Blast stress solver)', () => {
 
       sim.free();
     });
+  });
+
+  it('fractured wall chunks do not overlap after debris settles (overlap regression)', () => {
+    // Regression test for the post-fracture overlap bug: after a vehicle rams
+    // the practice wall and bonds break, split chunks must stay at their
+    // original grid positions (not collapse into each other).  This test
+    // mirrors the E2E assertion `significantOverlapPairCount === 0`.
+    const VEHICLE_ID = 98;
+    const WALL_ID = 9400;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480; // 8 seconds of continuous throttle
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: {
+        name: 'Chunk overlap regression',
+        description: 'Mirrors practice-destructibles E2E overlap check.',
+      },
+      terrain: {
+        tileGridSize: 9,
+        tileHalfExtentM: 16,
+        tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }],
+      },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        {
+          id: WALL_ID,
+          kind: 'wall',
+          position: [0, 0, 8],
+          rotation: [0, 0, 0, 1],
+        },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) {
+      sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    }
+    let totalFractures = 0;
+    let firstFractureTick = -1;
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const events = sim.drainDestructibleFractureEvents();
+      for (let i = 1; i < events.length; i += 2) {
+        totalFractures += events[i] ?? 0;
+      }
+      if (totalFractures > 0 && firstFractureTick < 0) {
+        firstFractureTick = t;
+      }
+    }
+
+    // Fracture must have fired — otherwise we're not testing the right thing
+    expect(totalFractures).toBeGreaterThan(0);
+
+    const destructibles2: Array<{ id: number; kind: 'wall' | 'tower' }> = [{ id: WALL_ID, kind: 'wall' }];
+
+    // Replay: simulate only up to firstFractureTick + small number of ticks to pinpoint when overlaps develop
+    const sim2 = new WasmSimWorld();
+    sim2.loadWorldDocument(serializeWorldDocument(world));
+    sim2.rebuildBroadPhase();
+    sim2.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim2.setLocalVehicle(VEHICLE_ID);
+    for (let t = 0; t < 10; t += 1) { sim2.tickVehicle(t, 0, 0, 0, 0, 0, DT); }
+    for (let t = 0; t < firstFractureTick + 1; t += 1) {
+      sim2.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+      sim2.drainDestructibleFractureEvents();
+    }
+    const metricsAtFracture = computeDestructibleSpatialMetrics(destructibles2, sim2.getDestructibleChunkTransforms());
+    console.log(`[DIAG] At fracture tick ${firstFractureTick}: significantOverlapPairCount=${metricsAtFracture.significantOverlapPairCount}`);
+
+    // Helper: extract position of a specific chunk by chunkIndex from transform buffer
+    function getChunkPos(transforms: ArrayLike<number>, id: number, chunkIdx: number): [number, number, number] | null {
+      for (let b = 0; b + 10 < transforms.length; b += CHUNK_TRANSFORM_STRIDE) {
+        if (transforms[b] === id && transforms[b + 1] === chunkIdx) {
+          return [transforms[b + 2] ?? 0, transforms[b + 3] ?? 0, transforms[b + 4] ?? 0];
+        }
+      }
+      return null;
+    }
+
+    // Track chunk positions at each extra tick - extended to 120 to capture terrain impact
+    let firstOverlapTick = -1;
+    for (let extraTick = 1; extraTick <= 120; extraTick += 1) {
+      sim2.tickVehicle(10 + firstFractureTick + extraTick, BTN_FORWARD, 0, 0, 0, 0, DT);
+      const fracEventsThisTick = sim2.drainDestructibleFractureEvents();
+      const t = sim2.getDestructibleChunkTransforms();
+      const pos0 = getChunkPos(t, WALL_ID, 0);
+      const pos1 = getChunkPos(t, WALL_ID, 1);
+      const pos13 = getChunkPos(t, WALL_ID, 13);
+      const m = computeDestructibleSpatialMetrics(destructibles2, t);
+      const fracStr = fracEventsThisTick.length > 0 ? ` FRACTURE[${fracEventsThisTick}]` : '';
+      // Only print every 5 ticks to reduce noise, plus always on fracture or new overlap
+      const isMilestone = extraTick <= 20 || extraTick % 10 === 0 || fracEventsThisTick.length > 0 || (m.significantOverlapPairCount > 0 && firstOverlapTick < 0);
+      if (isMilestone) {
+        console.log(`[DIAG] +${extraTick}: chunk0.y=${pos0?.[1]?.toFixed(4)} chunk1.y=${pos1?.[1]?.toFixed(4)} chunk13.y=${pos13?.[1]?.toFixed(4)} overlaps=${m.significantOverlapPairCount}${fracStr}`);
+      }
+      if (extraTick === 1) {
+        // Dump ALL chunk y positions to see initial placement
+        const allYByChunk: Record<number, number> = {};
+        for (let b = 0; b + 10 < t.length; b += CHUNK_TRANSFORM_STRIDE) {
+          if (t[b] === WALL_ID) {
+            allYByChunk[t[b + 1]!] = parseFloat((t[b + 3] ?? 0).toFixed(4));
+          }
+        }
+        // Sort by chunkIndex and print
+        const sorted = Object.keys(allYByChunk).map(Number).sort((a,b)=>a-b);
+        const yStr = sorted.map(idx => `${idx}:${allYByChunk[idx]}`).join(' ');
+        console.log(`[DIAG] +1 all chunk y-positions: ${yStr}`);
+      }
+      if (m.significantOverlapPairCount > 0 && firstOverlapTick < 0) {
+        firstOverlapTick = extraTick;
+        console.log(`[DIAG] FIRST OVERLAPS at +${extraTick}: ${m.significantOverlapPairCount} pairs`);
+        console.log('[DIAG] sample pairs:', JSON.stringify(m.sampleOverlapPairs?.slice(0, 3), null, 2));
+      }
+      // Dump detailed positions at key diagnostic ticks
+      if ([1, 13, 14, 15, 16, 17, 18, 19, 20, 25, 30].includes(extraTick) || (m.significantOverlapPairCount > 0 && extraTick === firstOverlapTick)) {
+        // Print ix=0 column (nodes 0-5) with full xyz
+        const col0: string[] = [];
+        for (let nodeIdx = 0; nodeIdx <= 5; nodeIdx++) {
+          for (let b = 0; b + 10 < t.length; b += CHUNK_TRANSFORM_STRIDE) {
+            if (t[b] === WALL_ID && t[b + 1] === nodeIdx) {
+              const x = (t[b + 2] ?? 0).toFixed(3);
+              const y = (t[b + 3] ?? 0).toFixed(4);
+              const z = (t[b + 4] ?? 0).toFixed(3);
+              col0.push(`n${nodeIdx}(${x},${y},${z})`);
+              break;
+            }
+          }
+        }
+        console.log(`[DIAG] +${extraTick} col0: ${col0.join(' ')} overlaps=${m.significantOverlapPairCount}`);
+        if (m.significantOverlapPairCount > 0) {
+          console.log('[DIAG] sample pairs:', JSON.stringify(m.sampleOverlapPairs?.slice(0, 2), null, 2));
+        }
+      }
+    }
+    sim2.free();
+
+    const transforms = sim.getDestructibleChunkTransforms();
+    const destructibles: Array<{ id: number; kind: 'wall' | 'tower' }> = [
+      { id: WALL_ID, kind: 'wall' },
+    ];
+    const metrics = computeDestructibleSpatialMetrics(destructibles, transforms);
+
+    sim.free();
+
+    expect(
+      metrics.significantOverlapPairCount,
+      `Expected no significant chunk overlaps after fracture, got ${metrics.significantOverlapPairCount}. Sample pairs: ${JSON.stringify(metrics.sampleOverlapPairs, null, 2)}`,
+    ).toBe(0);
+    expect(metrics.nearCoincidentPairCount).toBe(0);
+    expect(metrics.maxOverlapPenetrationM).toBeLessThan(0.05);
   });
 });

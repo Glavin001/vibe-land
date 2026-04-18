@@ -382,8 +382,41 @@ impl WasmSimWorld {
     }
 
     /// Rebuild the broad-phase BVH.  Call after adding/removing colliders.
+    ///
+    /// A zero-dt physics step runs first so the narrow phase receives AddPair
+    /// events for every adjacent collider pair before broad_phase.pairs marks
+    /// them Occupied.  Without this, post-fracture contact detection silently
+    /// fails for pairs that were same-body before the split (e.g. adjacent
+    /// wall-chunk colliders on different bodies after a Blast fracture) because
+    /// the broad phase never re-emits AddPair for already-Occupied pairs and
+    /// the narrow phase contact graph never gets the required edges.
     #[wasm_bindgen(js_name = rebuildBroadPhase)]
     pub fn rebuild_broad_phase(&mut self) {
+        // Run a zero-dt step so the narrow phase registers contact graph edges
+        // for all initially-overlapping pairs (including same-body pairs like
+        // adjacent wall chunks).  After fracture the same edges will be re-used
+        // with the updated parent bodies, enabling contact resolution.
+        if let Some(pipeline) = &mut self.vehicle_pipeline {
+            let params = {
+                let mut p = self.sim.integration_parameters;
+                p.dt = 0.0;
+                p
+            };
+            pipeline.step(
+                &self.gravity,
+                &params,
+                &mut self.sim.island_manager,
+                &mut self.sim.broad_phase,
+                &mut self.sim.narrow_phase,
+                &mut self.sim.rigid_bodies,
+                &mut self.sim.colliders,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+                &mut self.vehicle_ccd,
+                &(),
+                &(),
+            );
+        }
         self.sim.rebuild_broad_phase();
     }
 
