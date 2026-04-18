@@ -7,6 +7,7 @@ use rapier3d::prelude::*;
 pub use crate::movement::{vehicle_wheel_params, MoveConfig, VEHICLE_MAX_STEER_RAD};
 use crate::protocol::*;
 pub use crate::simulation::{simulate_player_tick, PlayerTickResult};
+use crate::world_document::SpawnArea;
 use crate::{
     constants::{
         BTN_BACK, BTN_FORWARD, BTN_JUMP, BTN_LEFT, BTN_RIGHT, BTN_SPRINT, JUMP_ENERGY_COST,
@@ -90,6 +91,7 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+    pub spawn_areas: Vec<SpawnArea>,
     pub batteries: HashMap<u32, Battery>,
     next_battery_id: u32,
     /// Per-tile terrain material lookup populated by `WorldDocument::instantiate`
@@ -107,10 +109,15 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            spawn_areas: Vec::new(),
             batteries: HashMap::new(),
             next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
             material_field: None,
         }
+    }
+
+    pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {
+        self.spawn_areas = areas;
     }
 
     pub fn config(&self) -> &MoveConfig {

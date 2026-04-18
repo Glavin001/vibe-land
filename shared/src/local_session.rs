@@ -69,6 +69,7 @@ impl LocalSession {
         world
             .instantiate(&mut arena)
             .map_err(|error| error.to_string())?;
+        arena.set_spawn_areas(world.spawn_areas.clone());
 
         Ok(Self {
             arena,
@@ -1091,6 +1092,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -1114,6 +1116,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 

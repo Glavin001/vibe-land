@@ -179,13 +179,14 @@ const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
 const WasmLocalSession = RawWasmLocalSession as unknown as WasmLocalSessionCtor;
 
 function readSharedPlayerNavigationProfileFromWasm(): SharedPlayerNavigationProfile {
-  const raw = Array.from(wasmPlayerNavigationProfile());
-  return Object.freeze({
+  const raw = wasmPlayerNavigationProfile();
+  const profile: SharedPlayerNavigationProfile = {
     walkableRadius: raw[0] ?? 0,
     walkableHeight: raw[1] ?? 0,
     walkableClimb: raw[2] ?? 0,
     walkableSlopeAngleDegrees: raw[3] ?? 0,
-  });
+  };
+  return Object.freeze(profile);
 }
 export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;

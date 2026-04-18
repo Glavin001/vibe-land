@@ -30,6 +30,7 @@ import {
   serializeWorldDocument,
   terrainTileSideLength,
   yawFromQuaternion,
+  type SpawnArea,
   type TerrainTileCoordinate,
   type DynamicEntity,
   type Quaternion,
@@ -69,9 +70,11 @@ import {
 } from './godModeHistory';
 import {
   addDynamicEntityToWorld,
+  addSpawnAreaToWorld,
   addStaticCuboidToWorld,
   clonePlayWorldSnapshot,
   getSelectedDynamic,
+  getSelectedSpawnArea,
   getSelectedStatic,
   removeSelectedTargetFromWorld,
   resolveSelectedTransformEntity,
@@ -426,6 +429,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
 
   const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
   const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
+  const selectedSpawnArea = useMemo(() => getSelectedSpawnArea(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
     return resolveSelectedTransformEntity(world, selected);
   }, [selected, world]);
@@ -725,6 +729,18 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     }
   }, [applyCommittedWorldEdit]);
 
+  const addSpawnArea = useCallback(() => {
+    let nextSelected: SelectedTarget = null;
+    const changed = applyCommittedWorldEdit((current) => {
+      const result = addSpawnAreaToWorld(current);
+      nextSelected = result.selected;
+      return result.world;
+    });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
+    }
+  }, [applyCommittedWorldEdit]);
+
   const removeSelected = useCallback(() => {
     if (!selected) {
       return;
@@ -884,6 +900,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       onCanvasReady={(canvas) => {
         editorCanvasRef.current = canvas;
       }}
+      spawnAreas={world.spawnAreas}
     />
   ), [
     brushMaxHeight,
@@ -1304,7 +1321,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <button type="button" onClick={() => addDynamicEntity('box')} style={secondaryButtonStyle}>Dynamic Box</button>
                 <button type="button" onClick={() => addDynamicEntity('ball')} style={secondaryButtonStyle}>Ball</button>
                 <button type="button" onClick={() => addDynamicEntity('vehicle')} style={secondaryButtonStyle}>Vehicle</button>
+                <button type="button" onClick={addSpawnArea} style={secondaryButtonStyle}>Spawn Area</button>
               </div>
+              {world.spawnAreas.length > 0 && (
+                <div style={mutedTextStyle}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
+              )}
+              {world.spawnAreas.length === 0 && (
+                <div style={mutedTextStyle}>No spawn areas — players use the default spawn lanes.</div>
+              )}
             </div>
 
             <div style={sectionStyle}>
@@ -1379,6 +1403,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
                   yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
                   onYawChange={updateSelectedYaw}
+                  onDelete={removeSelected}
+                />
+              )}
+              {selectedSpawnArea && (
+                <SpawnAreaEditorFields
+                  area={selectedSpawnArea}
+                  onPositionChange={updateSelectedPosition}
+                  onRadiusChange={updateSelectedRadius}
                   onDelete={removeSelected}
                 />
               )}
@@ -1609,6 +1641,7 @@ function GodModeEditorScene({
   activeCustomParams,
   onApplyCustomStencil,
   onCanvasReady,
+  spawnAreas,
 }: {
   world: WorldDocument;
   tool: EditorTool;
@@ -1651,6 +1684,7 @@ function GodModeEditorScene({
   activeCustomParams: Record<string, unknown>;
   onApplyCustomStencil: (x: number, z: number) => void;
   onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
+  spawnAreas: SpawnArea[];
 }) {
   const paintingRef = useRef(false);
   const brushCursorRef = useRef<THREE.Mesh>(null);
@@ -2029,6 +2063,47 @@ function GodModeEditorScene({
             />
           </mesh>
         ))}
+      </group>
+      <group>
+        {spawnAreas.map((area) => {
+          const isSelected = selected?.kind === 'spawnArea' && selected.id === area.id;
+          const terrainY = sampleTerrainHeightAtWorldPosition(world, area.position[0], area.position[2]);
+          const y = terrainY + 0.06;
+          return (
+            <group
+              key={area.id}
+              ref={(obj) => registerSelectableObject(`spawnArea:${area.id}`, obj)}
+              position={[area.position[0], y, area.position[2]]}
+            >
+              <mesh
+                rotation-x={-Math.PI / 2}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  onSelect({ kind: 'spawnArea', id: area.id });
+                }}
+              >
+                <circleGeometry args={[area.radius, 64]} />
+                <meshBasicMaterial
+                  color={isSelected ? 0x7fffff : 0x00e890}
+                  transparent
+                  opacity={0.18}
+                  side={THREE.DoubleSide}
+                  depthWrite={false}
+                />
+              </mesh>
+              <mesh rotation-x={-Math.PI / 2}>
+                <ringGeometry args={[Math.max(0.1, area.radius - 0.25), area.radius, 64]} />
+                <meshBasicMaterial
+                  color={isSelected ? 0x7fffff : 0x00e890}
+                  transparent
+                  opacity={0.75}
+                  side={THREE.DoubleSide}
+                  depthWrite={false}
+                />
+              </mesh>
+            </group>
+          );
+        })}
       </group>
       {canShowTransform && (
         <TransformControls
@@ -2434,6 +2509,44 @@ function EditorFields({
         </label>
       )}
       <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete</button>
+    </div>
+  );
+}
+
+function SpawnAreaEditorFields({
+  area,
+  onPositionChange,
+  onRadiusChange,
+  onDelete,
+}: {
+  area: SpawnArea;
+  onPositionChange: (axis: 0 | 1 | 2, value: number) => void;
+  onRadiusChange: (value: number) => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div style={fieldStackStyle}>
+      <div style={{ fontWeight: 600 }}>Spawn Area {area.id}</div>
+      <label style={fieldLabelStyle}>
+        Position X
+        <input type="number" step="0.1" value={area.position[0]} onChange={(event) => onPositionChange(0, Number(event.target.value))} />
+      </label>
+      <label style={fieldLabelStyle}>
+        Position Z
+        <input type="number" step="0.1" value={area.position[2]} onChange={(event) => onPositionChange(2, Number(event.target.value))} />
+      </label>
+      <label style={fieldLabelStyle}>
+        Radius
+        <input
+          type="number"
+          min="1"
+          step="0.5"
+          value={area.radius}
+          onChange={(event) => onRadiusChange(Number(event.target.value))}
+        />
+        <span>{area.radius.toFixed(1)}m</span>
+      </label>
+      <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete Spawn Area</button>
     </div>
   );
 }

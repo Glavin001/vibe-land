@@ -10,6 +10,14 @@ pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.w
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpawnArea {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub radius: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorldDocument {
     #[serde(default = "world_document_version")]
     pub version: u32,
@@ -17,6 +25,8 @@ pub struct WorldDocument {
     pub terrain: WorldTerrain,
     pub static_props: Vec<StaticProp>,
     pub dynamic_entities: Vec<DynamicEntity>,
+    #[serde(default)]
+    pub spawn_areas: Vec<SpawnArea>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1242,6 +1252,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -1423,6 +1434,7 @@ mod tests {
                 energy: Some(275.0),
                 height: Some(1.4),
             }],
+            spawn_areas: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1472,6 +1484,7 @@ mod tests {
                 energy: None,
                 height: None,
             }],
+            spawn_areas: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
