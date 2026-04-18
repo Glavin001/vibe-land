@@ -283,20 +283,29 @@ mod tests {
     }
 
     #[test]
-    fn default_world_falls_back_to_legacy_spawn_when_no_areas_configured() {
-        // trail.world.json has no spawnAreas; legacy 8-lane behaviour must apply.
+    fn default_world_registers_authored_spawn_areas() {
         let mut arena = PhysicsArena::new(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
         assert!(
-            arena.spawn_areas.is_empty(),
-            "default world has no spawn areas in JSON; legacy spawn should be active"
+            !arena.spawn_areas.is_empty(),
+            "default world should register authored spawn areas from trail.world.json"
         );
-        // Spawning a player must still succeed with the legacy path.
         let spawn = arena.spawn_player(42);
         assert!(
             spawn.y > -1.0,
-            "legacy spawn should land above ground, got y={:.2}",
+            "spawn should land above ground, got y={:.2}",
             spawn.y
+        );
+        let inside_any_area = arena.spawn_areas.iter().any(|area| {
+            let dx = spawn.x as f32 - area.position[0];
+            let dz = spawn.z as f32 - area.position[2];
+            dx * dx + dz * dz <= area.radius * area.radius
+        });
+        assert!(
+            inside_any_area,
+            "default world spawn ({:.2}, {:.2}) should land inside an authored spawn area",
+            spawn.x,
+            spawn.z
         );
     }
 }
