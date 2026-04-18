@@ -99,6 +99,25 @@ impl DynamicArena {
             .add_static_heightfield(center, heights, scale, user_data)
     }
 
+    pub fn add_static_heightfield_with_material(
+        &mut self,
+        center: Vec3,
+        heights: DMatrix<f32>,
+        scale: Vec3,
+        user_data: u128,
+        friction: f32,
+        restitution: f32,
+    ) -> ColliderHandle {
+        self.sim.add_static_heightfield_with_material(
+            center,
+            heights,
+            scale,
+            user_data,
+            friction,
+            restitution,
+        )
+    }
+
     pub fn add_static_trimesh(
         &mut self,
         vertices: Vec<Point3<f32>>,
@@ -239,6 +258,10 @@ impl DynamicArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
+        self.step_dynamics_with_hooks(dt, &());
+    }
+
+    pub fn step_dynamics_with_hooks(&mut self, dt: f32, hooks: &dyn PhysicsHooks) {
         let substep_dt = dt / DYNAMIC_SUBSTEPS as f32;
         for _ in 0..DYNAMIC_SUBSTEPS {
             self.sim.integration_parameters.dt = substep_dt;
@@ -253,7 +276,7 @@ impl DynamicArena {
                 &mut self.impulse_joints,
                 &mut self.multibody_joints,
                 &mut self.ccd_solver,
-                &(),
+                hooks,
                 &(),
             );
         }

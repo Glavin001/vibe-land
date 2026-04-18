@@ -292,6 +292,12 @@ export function App({
   const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
     setPracticeBotDebugOverlay(value);
   }, []);
+  const handleSetBotUseVehicles = useCallback((value: boolean) => {
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setUseVehicles(value);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
 
   useEffect(() => {
     if (!practiceMode) {
@@ -1008,6 +1014,7 @@ export function App({
         onUpdateNavTuning={handleUpdateBotNavTuning}
         onResetNavTuning={handleResetBotNavTuning}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
+        onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar
         hp={displayStats.hp}
