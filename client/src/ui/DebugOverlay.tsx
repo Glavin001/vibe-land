@@ -197,6 +197,7 @@ export type DebugStats = {
   velocity: [number, number, number];
   speedMs: number;
   hp: number;
+  energy: number;
   onGround: boolean;
   inVehicle: boolean;
   dead: boolean;
@@ -396,6 +397,7 @@ export const DEFAULT_STATS: DebugStats = {
   velocity: [0, 0, 0],
   speedMs: 0,
   hp: 100,
+  energy: 0,
   onGround: false,
   inVehicle: false,
   dead: false,
@@ -654,6 +656,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     '## Player',
     `- player_id: ${stats.playerId}`,
     `- hp: ${stats.hp}`,
+    `- energy: ${fmt(stats.energy, 1)}`,
     `- status_flags: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`,
     `- pos_m: [${fmt(p[0], 3)}, ${fmt(p[1], 3)}, ${fmt(p[2], 3)}]`,
     `- vel_mps: [${fmt(v[0], 3)}, ${fmt(v[1], 3)}, ${fmt(v[2], 3)}]`,
@@ -1029,7 +1032,7 @@ export function DebugOverlay({
       )}
 
       <Section title="Player">
-        {`ID: ${stats.playerId}  HP: ${stats.hp}`}
+        {`ID: ${stats.playerId}  HP: ${stats.hp}  Energy: ${fmt(stats.energy, 1)}`}
         {`Status: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`}
         {`Pos: ${fmt(p[0], 2)}, ${fmt(p[1], 2)}, ${fmt(p[2], 2)}`}
         {`Vel: ${fmt(v[0], 2)}, ${fmt(v[1], 2)}, ${fmt(v[2], 2)}`}

@@ -39,6 +39,7 @@ function makeNetState(opts: {
     pitchI16: angleToI16(opts.pitch ?? 0),
     hp: opts.hp ?? 100,
     flags: opts.flags ?? 0,
+    energyCenti: 0,
   };
 }
 
@@ -772,6 +773,52 @@ describe('NetcodeClient', () => {
 
       expect(received).not.toBeNull();
       expect(received?.hitZone).toBe(2);
+    });
+  });
+
+  describe('energy and batteries', () => {
+    it('applies owner-only energy updates', () => {
+      const client = new NetcodeClient({});
+
+      client.handlePacket({ type: 'localPlayerEnergy', energyCenti: 54321 });
+
+      expect(client.localPlayerEnergy).toBe(543.21);
+    });
+
+    it('applies battery full resyncs and removals', () => {
+      const client = new NetcodeClient({});
+
+      client.handlePacket({
+        type: 'batterySync',
+        fullResync: true,
+        batteryStates: [
+          {
+            id: 9,
+            pxMm: 1500,
+            pyMm: 250,
+            pzMm: -2000,
+            energyCenti: 4200,
+            radiusCm: 60,
+            heightCm: 140,
+          },
+        ],
+        removedIds: [],
+      });
+      expect(client.batteries.get(9)).toEqual({
+        id: 9,
+        position: [1.5, 0.25, -2],
+        energy: 42,
+        radius: 0.6,
+        height: 1.4,
+      });
+
+      client.handlePacket({
+        type: 'batterySync',
+        fullResync: false,
+        batteryStates: [],
+        removedIds: [9],
+      });
+      expect(client.batteries.has(9)).toBe(false);
     });
   });
 

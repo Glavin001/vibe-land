@@ -46,6 +46,15 @@ pub struct Vehicle {
 }
 
 #[derive(Clone, Debug)]
+pub struct Battery {
+    pub id: u32,
+    pub position: Vec3d,
+    pub energy: f32,
+    pub radius: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Debug)]
 pub struct PlayerMotorState {
     pub collider: ColliderHandle,
     pub position: Vec3d,
@@ -56,6 +65,7 @@ pub struct PlayerMotorState {
     pub hp: u8,
     pub dead: bool,
     pub last_input: InputCmd,
+    pub energy: f32,
 }
 
 /// Shared authoritative physics world: wraps `DynamicArena` and adds
@@ -67,6 +77,8 @@ pub struct PhysicsArena {
     pub vehicles: HashMap<u32, Vehicle>,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
+    pub batteries: HashMap<u32, Battery>,
+    next_battery_id: u32,
 }
 
 impl PhysicsArena {
@@ -78,6 +90,8 @@ impl PhysicsArena {
             vehicles: HashMap::new(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
+            batteries: HashMap::new(),
+            next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
         }
     }
 
@@ -179,5 +193,137 @@ impl PhysicsArena {
         &self,
     ) -> Vec<(u32, [f32; 3], [f32; 4], [f32; 3], [f32; 3], [f32; 3], u8)> {
         self.dynamic.snapshot_dynamic_bodies()
+    }
+
+    pub fn player_energy(&self, player_id: u32) -> Option<f32> {
+        self.players.get(&player_id).map(|state| state.energy)
+    }
+
+    pub fn spawn_battery(&mut self, position: Vec3d, energy: f32, radius: f32, height: f32) -> u32 {
+        let id = self.next_battery_id;
+        self.next_battery_id = self.next_battery_id.saturating_add(1);
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+        id
+    }
+
+    pub fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vec3d,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        self.batteries.insert(
+            id,
+            Battery {
+                id,
+                position,
+                energy,
+                radius,
+                height,
+            },
+        );
+    }
+
+    pub fn remove_battery(&mut self, id: u32) -> Option<Battery> {
+        self.batteries.remove(&id)
+    }
+
+    pub fn snapshot_batteries(&self) -> Vec<(u32, [f32; 3], f32, f32, f32)> {
+        self.batteries
+            .values()
+            .map(|battery| {
+                (
+                    battery.id,
+                    [
+                        battery.position.x as f32,
+                        battery.position.y as f32,
+                        battery.position.z as f32,
+                    ],
+                    battery.energy,
+                    battery.radius,
+                    battery.height,
+                )
+            })
+            .collect()
+    }
+
+    pub fn collect_batteries_for_player(&mut self, player_id: u32) -> Vec<(u32, f32)> {
+        let Some(player) = self.players.get(&player_id) else {
+            return Vec::new();
+        };
+        if player.dead {
+            return Vec::new();
+        }
+
+        let player_pos = player.position;
+        let cfg = self.dynamic.config();
+        let player_half_height = cfg.capsule_half_segment + cfg.capsule_radius;
+        let player_radius = cfg.capsule_radius;
+        let slack = crate::constants::BATTERY_PICKUP_SLACK_M;
+        let mut collected = Vec::new();
+        let mut collected_ids = Vec::new();
+
+        for battery in self.batteries.values() {
+            let dx = (battery.position.x - player_pos.x) as f32;
+            let dy = (battery.position.y - player_pos.y) as f32;
+            let dz = (battery.position.z - player_pos.z) as f32;
+            let horiz = (dx * dx + dz * dz).sqrt();
+            let horiz_limit = player_radius + battery.radius + slack;
+            let vert_limit = player_half_height + battery.height * 0.5 + slack;
+            if horiz <= horiz_limit && dy.abs() <= vert_limit {
+                collected.push((battery.id, battery.energy));
+                collected_ids.push(battery.id);
+            }
+        }
+
+        for id in collected_ids {
+            self.batteries.remove(&id);
+        }
+        collected
+    }
+
+    pub fn apply_vehicle_energy_drain(&mut self, dt: f32) -> Vec<u32> {
+        use crate::constants::{VEHICLE_IDLE_DRAIN_PER_SEC, VEHICLE_SPEED_DRAIN_COEF};
+
+        let drain_inputs: Vec<_> = self
+            .vehicle_of_player
+            .iter()
+            .filter_map(|(&player_id, &vehicle_id)| {
+                let vehicle = self.vehicles.get(&vehicle_id)?;
+                let body = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body)?;
+                let velocity = body.linvel();
+                let speed =
+                    (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z)
+                        .sqrt();
+                Some((player_id, speed))
+            })
+            .collect();
+
+        let mut depleted = Vec::new();
+        for (player_id, speed) in drain_inputs {
+            let Some(player) = self.players.get_mut(&player_id) else {
+                continue;
+            };
+            if player.dead {
+                continue;
+            }
+            let drain = (VEHICLE_IDLE_DRAIN_PER_SEC + VEHICLE_SPEED_DRAIN_COEF * speed) * dt;
+            player.energy = (player.energy - drain).max(0.0);
+            if player.energy <= 0.0 {
+                depleted.push(player_id);
+            }
+        }
+        depleted
     }
 }
