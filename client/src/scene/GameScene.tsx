@@ -21,6 +21,7 @@ type GameSceneProps = {
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
+  showDebugHelpers?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
@@ -43,6 +44,7 @@ export function GameScene({
   onSnapshot,
   rapierDebugModeBits = 0,
   showRenderStats,
+  showDebugHelpers = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
@@ -82,6 +84,7 @@ export function GameScene({
           inputBindings={inputBindings}
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
+          showDebugHelpers={showDebugHelpers}
           benchmarkAutopilot={benchmarkAutopilot}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}

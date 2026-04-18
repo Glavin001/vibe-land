@@ -33,6 +33,7 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   RIFLE_FIRE_INTERVAL_MS,
@@ -61,17 +62,30 @@ import {
   updateLocalVehicleMeshPose,
   type LocalVehicleVisualPoseState,
 } from './vehicleLocalMeshPose';
+import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } from './characterAnim/CharacterFactory';
+import { PLAYER_PROFILE } from './characterAnim/profile';
+import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
+import { STATE } from './characterAnim/types';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+// Keep these in lockstep with `MoveConfig::default()` / hitscan constants in
+// the shared Rust physics code so the debug helper matches the authoritative
+// collision capsule and head zone.
+const PLAYER_CAPSULE_RADIUS = 0.35;
+const PLAYER_CAPSULE_HALF_SEGMENT = 0.45;
+const PLAYER_CAPSULE_BODY_LENGTH = PLAYER_CAPSULE_HALF_SEGMENT * 2;
+const PLAYER_HEAD_RADIUS = 0.22;
+const PLAYER_HEAD_CENTER_OFFSET_Y = 0.75;
 const LOCAL_SHOT_TRACE_TTL_MS = 90;
 const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
+const PLAYER_DEBUG_HELPER_NAME = 'playerPhysicsDebugHelper';
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -296,6 +310,7 @@ type GameWorldProps = {
   inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
+  showDebugHelpers?: boolean;
   benchmarkAutopilot?: {
     enabled: boolean;
     clientIndex: number;
@@ -336,6 +351,56 @@ type VehicleSupportDebugState = {
   contacts: THREE.Mesh[];
   labels: VehicleSupportLabelState[];
 };
+
+function createPlayerDebugHelper(color: number): THREE.Group {
+  const group = new THREE.Group();
+  group.name = PLAYER_DEBUG_HELPER_NAME;
+
+  const capsule = new THREE.Mesh(
+    new THREE.CapsuleGeometry(PLAYER_CAPSULE_RADIUS, PLAYER_CAPSULE_BODY_LENGTH, 6, 12),
+    new THREE.MeshBasicMaterial({
+      color,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  group.add(capsule);
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(PLAYER_HEAD_RADIUS, 12, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xff7a7a,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  head.position.y = PLAYER_HEAD_CENTER_OFFSET_Y;
+  group.add(head);
+
+  const eyeGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, PLAYER_EYE_HEIGHT, 0),
+  ]);
+  const eyeLine = new THREE.Line(
+    eyeGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0xfff27a,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  group.add(eyeLine);
+
+  return group;
+}
 
 type LocalVehicleMotionState = {
   vehicleId: number | null;
@@ -960,12 +1025,14 @@ export function GameWorld({
   inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
+  showDebugHelpers = false,
   benchmarkAutopilot,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
+  const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
   const predictionWorldJson = useMemo(
     () => practiceMode
@@ -996,7 +1063,8 @@ export function GameWorld({
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
-  const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const localPlayerDebugRef = useRef<THREE.Group>(null);
+  const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
@@ -1146,6 +1214,12 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
+
+  useEffect(() => {
+    preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
+      // CharacterFactory logs the warning and falls back to an empty group.
+    });
+  }, []);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -1872,6 +1946,10 @@ export function GameWorld({
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
+    if (localPlayerDebugRef.current) {
+      localPlayerDebugRef.current.visible = showDebugHelpers && !isDriving;
+      localPlayerDebugRef.current.position.set(pos[0], pos[1], pos[2]);
+    }
 
     if (isDriving && vehiclePoseForCamera) {
       const chassisPos = vehiclePoseForCamera.position;
@@ -2329,18 +2407,18 @@ export function GameWorld({
 
     for (const [id, rp] of currentRemote) {
       activeIds.add(id);
-      let playerGroup = remoteMeshes.current.get(id);
-      if (!playerGroup) {
-        playerGroup = createPlayerMesh(id);
-        group.add(playerGroup);
-        remoteMeshes.current.set(id, playerGroup);
+      let handle = remoteMeshes.current.get(id);
+      if (!handle) {
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
+        attachPlayerIdLabel(handle.root, id);
+        remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
       let yaw = sample?.yaw ?? rp.yaw;
-      const hp = sample?.hp ?? rp.hp;
       const replicatedHp = rp.hp;
       const previousHp = remoteLastHpRef.current.get(id);
       if (previousHp != null && replicatedHp < previousHp) {
@@ -2349,6 +2427,7 @@ export function GameWorld({
       remoteLastHpRef.current.set(id, replicatedHp);
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
+      const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2368,33 +2447,32 @@ export function GameWorld({
           break;
         }
       }
-      playerGroup.position.set(position[0], position[1], position[2]);
-      playerGroup.rotation.y = yaw;
-      const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
-      const head = playerGroup.getObjectByName('head');
-      const nose = playerGroup.getObjectByName('nose');
-      if (body) body.visible = !isInVehicle;
-      if (head) head.visible = !isInVehicle;
-      if (nose) nose.visible = !isInVehicle;
-      if (body && body.material instanceof THREE.MeshStandardMaterial) {
-        const baseColor = body.userData.baseColor as THREE.Color | undefined;
-        const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
-        const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
-        const flashColor = new THREE.Color(0xfff36b);
-        body.material.opacity = isDead ? 0.35 : 1;
-        body.material.transparent = isDead;
-        if (baseColor) {
-          body.material.color.copy(baseColor).lerp(flashColor, flashAlpha);
-          body.material.emissive.copy(baseColor).lerp(flashColor, flashAlpha * 0.85);
-        }
-        body.material.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.3, flashAlpha * 1.2);
-      }
+      handle.root.position.set(position[0], position[1], position[2]);
+      handle.root.rotation.y = yaw;
+      handle.setVisible(!isInVehicle);
+      const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
+      if (debugHelper) debugHelper.visible = showDebugHelpers && !isInVehicle;
+
+      const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
+      const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
+      handle.setFlash(0xfff36b, flashAlpha);
+      handle.setOpacity(isDead ? 0.35 : 1);
+
+      const vx = sample?.velocity[0] ?? 0;
+      const vz = sample?.velocity[2] ?? 0;
+      const horizontalSpeed = Math.hypot(vx, vz);
+      const renderState: RemoteRenderState = isDead
+        ? 'dead'
+        : horizontalSpeed > 0.1
+          ? STATE.move
+          : STATE.idle;
+      handle.update(frameDelta, renderState, horizontalSpeed, isOnGround);
     }
 
     // Remove stale
-    for (const [id, mesh] of remoteMeshes.current) {
+    for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
-        group.remove(mesh);
+        handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
@@ -2614,6 +2692,11 @@ export function GameWorld({
       ))}
 
       <RapierDebugLines runtimeRef={runtimeRef} modeBits={rapierDebugModeBits} />
+
+      {/* Local player physics capsule */}
+      <group ref={localPlayerDebugRef}>
+        <primitive object={localPlayerDebugHelper} />
+      </group>
 
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
@@ -3178,37 +3261,7 @@ function estimateVehicleForwardSpeed(
   return velocity.dot(forward);
 }
 
-function createPlayerMesh(id: number): THREE.Group {
-  const group = new THREE.Group();
-  const color = PLAYER_COLORS[id % PLAYER_COLORS.length];
-
-  // Body capsule
-  const bodyGeom = new THREE.CapsuleGeometry(0.35, 0.9, 8, 12);
-  const bodyMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 });
-  const body = new THREE.Mesh(bodyGeom, bodyMat);
-  body.name = 'body';
-  body.userData.baseColor = new THREE.Color(color);
-  body.position.y = 0;
-  group.add(body);
-
-  // Head
-  const headGeom = new THREE.SphereGeometry(0.22, 12, 8);
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
-  const head = new THREE.Mesh(headGeom, headMat);
-  head.name = 'head';
-  head.position.y = 0.75;
-  group.add(head);
-
-  // Direction indicator
-  const noseGeom = new THREE.ConeGeometry(0.1, 0.25, 6);
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
-  const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.name = 'nose';
-  nose.rotation.x = -Math.PI / 2;
-  nose.position.set(0, 0.75, 0.3);
-  group.add(nose);
-
-  // Player ID label
+function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 48;
@@ -3222,9 +3275,10 @@ function createPlayerMesh(id: number): THREE.Group {
   const texture = new THREE.CanvasTexture(canvas);
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'idLabel';
   sprite.scale.set(1.2, 0.45, 1);
-  sprite.position.y = 1.4;
-  group.add(sprite);
-
-  return group;
+  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
+  // Place the label just above the head.
+  sprite.position.y = 1.0;
+  parent.add(sprite);
 }

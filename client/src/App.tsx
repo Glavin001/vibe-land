@@ -168,6 +168,8 @@ export function App({
     deepCaptureEnabled,
     deepCaptureSampleCount,
     rapierDebugModeBits,
+    rapierDebugLabel,
+    cycleRapierDebugPreset,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const touchMode = isTouchDevice();
@@ -760,6 +762,8 @@ export function App({
           onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+          rapierDebugLabel={rapierDebugLabel}
+          onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
           deepCaptureEnabled={deepCaptureEnabled}
           deepCaptureSampleCount={deepCaptureSampleCount}
         />
@@ -791,6 +795,7 @@ export function App({
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
+          showDebugHelpers={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
