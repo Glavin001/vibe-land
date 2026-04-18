@@ -2,6 +2,7 @@ import init, {
   WasmSimWorld as RawWasmSimWorld,
   WasmClockSync,
   WasmLocalSession as RawWasmLocalSession,
+  player_navigation_profile as wasmPlayerNavigationProfile,
   vehicle_definitions_json as wasmVehicleDefinitionsJson,
 } from './pkg/vibe_land_shared.js';
 import { provideWasmClockSync } from '../net/interpolation';
@@ -20,6 +21,13 @@ import {
 let initialized = false;
 let initPromise: Promise<void> | null = null;
 
+export type SharedPlayerNavigationProfile = {
+  walkableRadius: number;
+  walkableHeight: number;
+  walkableClimb: number;
+  walkableSlopeAngleDegrees: number;
+};
+let sharedPlayerNavigationProfile: SharedPlayerNavigationProfile | null = null;
 type WasmDebugRenderBuffers = {
   vertices: Float32Array;
   colors: Float32Array;
@@ -149,6 +157,10 @@ type WasmSimWorldCtor = {
 };
 
 type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
+  connectBot(botId: number): boolean;
+  disconnectBot(botId: number): boolean;
+  handleBotPacket(botId: number, bytes: Uint8Array): void;
+  setBotMaxSpeed(botId: number, maxSpeed: number): boolean;
   enqueueInput(
     seq: number,
     buttons: number,
@@ -172,6 +184,7 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   exitVehicle(vehicleId: number): void;
   getSnapshotMeta(): number[];
   getLocalPlayerState(): number[];
+  getRemotePlayerStates(): number[];
   getDynamicBodyStates(): number[];
   getVehicleStates(): number[];
   getBatteryStates(): number[];
@@ -196,12 +209,22 @@ installWasmSimWorldCompat(RawWasmSimWorld);
 const WasmSimWorld = RawWasmSimWorld as unknown as WasmSimWorldCtor;
 const WasmLocalSession = RawWasmLocalSession as unknown as WasmLocalSessionCtor;
 
+function readSharedPlayerNavigationProfileFromWasm(): SharedPlayerNavigationProfile {
+  const raw = Array.from(wasmPlayerNavigationProfile());
+  return Object.freeze({
+    walkableRadius: raw[0] ?? 0,
+    walkableHeight: raw[1] ?? 0,
+    walkableClimb: raw[2] ?? 0,
+    walkableSlopeAngleDegrees: raw[3] ?? 0,
+  });
+}
 export async function initSharedPhysics(): Promise<void> {
   if (initialized) return;
   if (!initPromise) {
     initPromise = (async () => {
       await init();
       provideWasmClockSync(WasmClockSync);
+      sharedPlayerNavigationProfile = readSharedPlayerNavigationProfileFromWasm();
       hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
       initialized = true;
     })().catch((error) => {
@@ -214,6 +237,22 @@ export async function initSharedPhysics(): Promise<void> {
 
 export function hydrateSharedVehicleGeometryFromLoadedWasm(): void {
   hydrateSharedVehicleDefinitions(wasmVehicleDefinitionsJson());
+}
+
+export function hydrateSharedPlayerNavigationProfileFromLoadedWasm(): void {
+  sharedPlayerNavigationProfile = readSharedPlayerNavigationProfileFromWasm();
+}
+
+export function getSharedPlayerNavigationProfile(): SharedPlayerNavigationProfile {
+  if (!sharedPlayerNavigationProfile) {
+    throw new Error('Shared physics is not initialized; player navigation profile is unavailable.');
+  }
+  return sharedPlayerNavigationProfile;
+}
+
+export async function getSharedPlayerNavigationProfileAsync(): Promise<SharedPlayerNavigationProfile> {
+  await initSharedPhysics();
+  return getSharedPlayerNavigationProfile();
 }
 
 export { WasmSimWorld, WasmClockSync, WasmLocalSession };

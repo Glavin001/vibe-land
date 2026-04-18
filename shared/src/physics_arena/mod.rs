@@ -71,6 +71,7 @@ pub struct PlayerMotorState {
     pub hp: u8,
     pub dead: bool,
     pub last_input: InputCmd,
+    pub max_speed_override: Option<f64>,
     pub energy: f32,
 }
 
