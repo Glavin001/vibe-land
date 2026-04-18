@@ -1,6 +1,8 @@
 export type ShotTraceKind = 'miss' | 'world' | 'body' | 'head';
 
 export type LocalShotTrace = {
+  id: number;
+  shooterId: number | null;
   origin: [number, number, number];
   end: [number, number, number];
   kind: ShotTraceKind;
@@ -58,4 +60,18 @@ export function shotTraceColor(kind: ShotTraceKind): number {
 
 export function isShotTraceActive(trace: LocalShotTrace | null, nowMs: number): boolean {
   return Boolean(trace && trace.expiresAtMs > nowMs);
+}
+
+export function pruneExpiredTraces(traces: LocalShotTrace[], nowMs: number): void {
+  let write = 0;
+  for (let read = 0; read < traces.length; read += 1) {
+    const trace = traces[read];
+    if (trace.expiresAtMs > nowMs) {
+      if (write !== read) {
+        traces[write] = trace;
+      }
+      write += 1;
+    }
+  }
+  traces.length = write;
 }

@@ -26,6 +26,7 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   PKT_WELCOME,
+  PKT_SHOT_FIRED,
   PKT_SHOT_RESULT,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
@@ -636,6 +637,80 @@ describe('shotResult packet decode', () => {
     if (packet.type === 'shotResult') {
       expect(packet.hitZone).toBe(2);
     }
+  });
+});
+
+function buildShotFiredBinary(opts: {
+  shooterPlayerId?: number;
+  shotId?: number;
+  weapon?: number;
+  hitKind?: number;
+  hitZone?: number;
+  serverFireTimeUs?: number;
+  originPxMm?: number;
+  originPyMm?: number;
+  originPzMm?: number;
+  endPxMm?: number;
+  endPyMm?: number;
+  endPzMm?: number;
+}): Uint8Array {
+  const size = 1 + 4 + 4 + 1 + 1 + 1 + 8 + 12 + 12;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+
+  view.setUint8(o++, PKT_SHOT_FIRED);
+  view.setUint32(o, opts.shooterPlayerId ?? 10, true); o += 4;
+  view.setUint32(o, opts.shotId ?? 7, true); o += 4;
+  view.setUint8(o++, opts.weapon ?? 1);
+  view.setUint8(o++, opts.hitKind ?? 1);
+  view.setUint8(o++, opts.hitZone ?? 2);
+  view.setBigUint64(o, BigInt(opts.serverFireTimeUs ?? 0), true); o += 8;
+  view.setInt32(o, opts.originPxMm ?? 100, true); o += 4;
+  view.setInt32(o, opts.originPyMm ?? 200, true); o += 4;
+  view.setInt32(o, opts.originPzMm ?? 300, true); o += 4;
+  view.setInt32(o, opts.endPxMm ?? 400, true); o += 4;
+  view.setInt32(o, opts.endPyMm ?? 500, true); o += 4;
+  view.setInt32(o, opts.endPzMm ?? 600, true);
+
+  return buf;
+}
+
+describe('shotFired packet decode', () => {
+  it('decodes broadcast shot-fired packets', () => {
+    const binary = buildShotFiredBinary({
+      shooterPlayerId: 42,
+      shotId: 99,
+      weapon: 1,
+      hitKind: 1,
+      hitZone: 2,
+      serverFireTimeUs: 1_234_567_890,
+      originPxMm: 1500,
+      originPyMm: 2000,
+      originPzMm: -3000,
+      endPxMm: 4500,
+      endPyMm: 2100,
+      endPzMm: -3050,
+    });
+    const packet = decodeServerReliablePacket(binary);
+
+    expect(packet.type).toBe('shotFired');
+    if (packet.type === 'shotFired') {
+      expect(packet.shooterPlayerId).toBe(42);
+      expect(packet.shotId).toBe(99);
+      expect(packet.weapon).toBe(1);
+      expect(packet.hitKind).toBe(1);
+      expect(packet.hitZone).toBe(2);
+      expect(packet.serverFireTimeUs).toBe(1_234_567_890);
+      expect(packet.originPxMm).toBe(1500);
+      expect(packet.endPzMm).toBe(-3050);
+    }
+  });
+
+  it('dispatches shot-fired packets through decodeServerPacket', () => {
+    const binary = buildShotFiredBinary({});
+    const packet = decodeServerPacket(binary);
+    expect(packet.type).toBe('shotFired');
   });
 });
 

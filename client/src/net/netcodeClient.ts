@@ -31,6 +31,7 @@ import {
   type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
 } from './protocol';
@@ -52,6 +53,7 @@ export type NetcodeClientConfig = {
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -812,6 +814,9 @@ export class NetcodeClient {
           packet.serverDynamicImpulseCenti,
         );
         this.config.onShotResult?.(packet);
+        break;
+      case 'shotFired':
+        this.config.onShotFired?.(packet);
         break;
       default:
         break;
