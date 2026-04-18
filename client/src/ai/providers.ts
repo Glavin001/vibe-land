@@ -1,9 +1,13 @@
 import type { JSONValue, LanguageModel } from 'ai';
 
-type ProviderOptionsBag = Record<string, Record<string, JSONValue>>;
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
+import { AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI, GoogleGenerativeAIProviderMetadata, GoogleGenerativeAIProviderOptions } from '@ai-sdk/google';
+import { createOpenAI, OpenAIChatLanguageModelOptions, OpenAIResponsesProviderOptions } from '@ai-sdk/openai';
+type ProviderOptionsBag = {
+  openai?: OpenAIResponsesProviderOptions;
+  anthropic?: AnthropicProviderOptions;
+  google?: GoogleGenerativeAIProviderOptions;
+};
 
 export type ProviderId = 'openai' | 'anthropic' | 'google';
 
@@ -132,7 +136,7 @@ export function getThinkingProviderOptions(
       // reasoningSummary:'auto' makes reasoning stream as reasoning-delta events.
       // GPT-4.x and older chat-only models don't support this option.
       if (/^gpt-5/.test(modelId) || /^o\d/.test(modelId)) {
-        return { openai: { reasoningEffort: 'medium', reasoningSummary: 'auto' } };
+        return { openai: { reasoningEffort: 'low', reasoningSummary: 'auto' } };
       }
       return {};
     }
@@ -143,7 +147,7 @@ export function getThinkingProviderOptions(
       }
       // Gemini 2.5 → thinkingBudget (token count)
       if (/^gemini-2\.5/.test(modelId)) {
-        return { google: { thinkingConfig: { thinkingBudget: 8000, includeThoughts: true } } };
+        return { google: { thinkingConfig: { thinkingBudget: 2000, includeThoughts: true } } };
       }
       return {};
     }
