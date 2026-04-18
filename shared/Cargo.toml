@@ -32,4 +32,4 @@ simd-stable = ["rapier3d/simd-stable", "vibe-netcode/simd-stable"]
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
-blast-stress-solver = { version = "0.1.0", default-features = false, features = ["scenarios", "rapier"] }
+blast-stress-solver = { version = "0.1.1", default-features = false, features = ["scenarios", "rapier"] }
