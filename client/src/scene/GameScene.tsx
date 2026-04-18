@@ -61,7 +61,7 @@ export function GameScene({
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
       gl={{
         toneMapping: THREE.ACESFilmicToneMapping,
-        toneMappingExposure: 1.0,
+        toneMappingExposure: 0.5,
         outputColorSpace: THREE.SRGBColorSpace,
       }}
       onPointerDown={(e) => {

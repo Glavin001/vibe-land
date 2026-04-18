@@ -2610,6 +2610,7 @@ export function GameWorld({
       <Environment
         files={ENVIRONMENT_PRESETS.kloofendal_48d_partly_cloudy.path}
         background={false}
+        environmentIntensity={0.35}
       />
       <ambientLight intensity={0.18} color={0xfdf6eb} />
       <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
