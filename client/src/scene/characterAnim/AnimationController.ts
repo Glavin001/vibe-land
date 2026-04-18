@@ -328,19 +328,18 @@ export class AnimationController {
     this.oneShotActive = false;
   }
 
-  /** Freeze the mixer for ragdoll mode. The last animated pose is preserved in bone transforms. */
-  stopAll(): void {
-    this.mixer.stopAllAction();
-    this.currentAction = null;
-    this.additiveAction = null;
-    this.oneShotActive = false;
-    this.locoActive = false;
+  /**
+   * Called after a ragdoll deactivates (respawn). The mixer was never stopped
+   * (that would T-pose the bones via PropertyBinding.restoreOriginalState);
+   * instead the FSM was simply paused via skipped update() calls while
+   * Ragdoll.update() drove the bones directly. We clear currentState so the
+   * next setState() call from the caller always triggers a fresh fade-in
+   * rather than being treated as a no-op.
+   */
+  resumeFromRagdoll(): void {
     this.currentState = null;
-  }
-
-  /** Resume animation from idle after ragdoll deactivation. */
-  restoreState(): void {
-    this.playImmediate(STATE.idle);
+    this.oneShotActive = false;
+    this.clipFinished = false;
   }
 
   update(dt: number): void {

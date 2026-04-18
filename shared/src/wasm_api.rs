@@ -800,8 +800,7 @@ impl WasmSimWorld {
             .can_sleep(true)
             .build();
         let body_handle = self.sim.rigid_bodies.insert(body);
-        let dyn_groups =
-            InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
         let collider = ColliderBuilder::cuboid(hx, hy, hz)
             .density(2.0)
             .restitution(0.3)
@@ -846,8 +845,7 @@ impl WasmSimWorld {
         let p = rb.translation();
         let r = rb.rotation();
         Box::new([
-            p.x as f64, p.y as f64, p.z as f64,
-            r.i as f64, r.j as f64, r.k as f64, r.w as f64,
+            p.x as f64, p.y as f64, p.z as f64, r.i as f64, r.j as f64, r.k as f64, r.w as f64,
         ])
     }
 
@@ -856,8 +854,12 @@ impl WasmSimWorld {
     pub fn set_ragdoll_body_velocity(
         &mut self,
         id: u32,
-        vx: f32, vy: f32, vz: f32,
-        wx: f32, wy: f32, wz: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
     ) {
         let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
             return;
@@ -875,11 +877,19 @@ impl WasmSimWorld {
         joint_id: u32,
         b1_id: u32,
         b2_id: u32,
-        a1x: f32, a1y: f32, a1z: f32,
-        a2x: f32, a2y: f32, a2z: f32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
     ) {
-        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else { return; };
-        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else { return; };
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
         let joint = SphericalJointBuilder::new()
             .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
             .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
@@ -895,14 +905,24 @@ impl WasmSimWorld {
         joint_id: u32,
         b1_id: u32,
         b2_id: u32,
-        a1x: f32, a1y: f32, a1z: f32,
-        a2x: f32, a2y: f32, a2z: f32,
-        ax: f32, ay: f32, az: f32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
         limit_min: f32,
         limit_max: f32,
     ) {
-        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else { return; };
-        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else { return; };
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
         let axis = nalgebra::Unit::new_normalize(vector![ax, ay, az]);
         let joint = RevoluteJointBuilder::new(axis)
             .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))

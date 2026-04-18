@@ -101,8 +101,13 @@ export function createRemotePlayer(
       controller = new AnimationController(m, profile);
 
       // If ragdoll was requested before the model finished loading, activate now.
+      // IMPORTANT: do NOT call mixer.stopAllAction() — that triggers Three's
+      // PropertyBinding.restoreOriginalState() which snaps every bone back to
+      // the bind pose (T-pose). We just skip calling controller.update(dt)
+      // while ragdollActive; the mixer freezes at the last animated pose and
+      // our Ragdoll.update() writes over the bones each frame.
       if (ragdollActive && runtime) {
-        controller.stopAll();
+        m.root.updateMatrixWorld(true);
         ragdoll = new Ragdoll(m, playerId, runtime);
         ragdoll.activate(pendingSeedVelocity ?? new THREE.Vector3());
         pendingSeedVelocity = null;
@@ -197,7 +202,16 @@ export function createRemotePlayer(
       if (active) {
         jumpPhase = 'grounded';
         if (model && controller && runtime) {
-          controller.stopAll();
+          // IMPORTANT: do NOT call mixer.stopAllAction() — that triggers
+          // Three's PropertyBinding.restoreOriginalState() which resets every
+          // bone to the bind pose (T-pose). We just stop calling
+          // controller.update(dt) while ragdollActive; the mixer freezes with
+          // bones at their last animated pose, and our Ragdoll.update() writes
+          // over them each frame.
+          //
+          // Force a fresh matrixWorld so the calibration snapshot reads the
+          // exact bone transforms the mixer last produced.
+          model.root.updateMatrixWorld(true);
           ragdoll = new Ragdoll(model, playerId, runtime);
           ragdoll.activate(seedVelocity ?? new THREE.Vector3());
           pendingSeedVelocity = null;
@@ -209,7 +223,8 @@ export function createRemotePlayer(
         ragdoll?.dispose();
         ragdoll = null;
         jumpPhase = 'grounded';
-        controller?.restoreState();
+        // Force the FSM to fade back into an animation next frame.
+        controller?.resumeFromRagdoll();
       }
     },
     isReady() {
