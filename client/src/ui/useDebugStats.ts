@@ -443,7 +443,7 @@ export function useDebugStats() {
       recentEvents: string[];
     },
     position: [number, number, number],
-    player: { velocity: [number, number, number]; hp: number; localFlags: number },
+    player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
   ) => {
     // Rolling FPS
     const times = frameTimes.current;
@@ -668,6 +668,7 @@ export function useDebugStats() {
     s.velocity = player.velocity;
     s.speedMs = speedMs;
     s.hp = player.hp;
+    s.energy = player.energy;
     s.onGround = (player.localFlags & 0x1) !== 0;  // FLAG_ON_GROUND
     s.inVehicle = (player.localFlags & 0x2) !== 0; // FLAG_IN_VEHICLE
     s.dead = (player.localFlags & 0x4) !== 0;      // FLAG_DEAD
@@ -723,8 +724,9 @@ export function useDebugStats() {
       }
     }
 
-    // Throttled React state update for overlay rendering (10Hz)
-    if (visibleRef.current && now - lastUiUpdate.current >= OVERLAY_UPDATE_INTERVAL_MS) {
+    // Keep this updated even when the debug overlay is hidden because the
+    // always-visible HUD reads from the same display stats object.
+    if (now - lastUiUpdate.current >= OVERLAY_UPDATE_INTERVAL_MS) {
       lastUiUpdate.current = now;
       setDisplayStats({ ...s });
     }

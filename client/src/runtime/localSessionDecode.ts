@@ -1,7 +1,10 @@
 import {
+  energyFromCenti,
   netDynamicBodyStateToMeters,
   netVehicleStateToMeters,
+  type BatteryStateMeters,
   type DynamicBodyStateMeters,
+  type NetBatteryState,
   type NetDynamicBodyState,
   type NetPlayerState,
   type NetVehicleState,
@@ -9,9 +12,10 @@ import {
 } from '../net/protocol';
 
 export const SNAPSHOT_META_STRIDE = 4;
-export const PLAYER_STATE_STRIDE = 11;
+export const PLAYER_STATE_STRIDE = 12;
 export const DYNAMIC_BODY_STATE_STRIDE = 18;
 export const VEHICLE_STATE_STRIDE = 21;
+export const BATTERY_STATE_STRIDE = 7;
 
 export type LocalSessionSnapshotMeta = {
   serverTimeUs: number;
@@ -44,6 +48,19 @@ export function decodeLocalSessionPlayerState(raw: ArrayLike<number>): NetPlayer
     pitchI16: Math.trunc(raw[8] ?? 0),
     hp: Math.trunc(raw[9] ?? 0),
     flags: Math.trunc(raw[10] ?? 0),
+    energyCenti: Math.trunc(raw[11] ?? 0),
+  };
+}
+
+export function decodeLocalSessionBatteryState(raw: ArrayLike<number>, offset: number): NetBatteryState {
+  return {
+    id: Math.trunc(raw[offset] ?? 0),
+    pxMm: Math.trunc(raw[offset + 1] ?? 0),
+    pyMm: Math.trunc(raw[offset + 2] ?? 0),
+    pzMm: Math.trunc(raw[offset + 3] ?? 0),
+    energyCenti: Math.trunc(raw[offset + 4] ?? 0),
+    radiusCm: Math.trunc(raw[offset + 5] ?? 0),
+    heightCm: Math.trunc(raw[offset + 6] ?? 0),
   };
 }
 
@@ -112,4 +129,19 @@ export function decodeLocalSessionVehicles(raw: ArrayLike<number>): VehicleState
     vehicles.push(netVehicleStateToMeters(decodeLocalSessionVehicleState(raw, offset)));
   }
   return vehicles;
+}
+
+export function decodeLocalSessionBatteries(raw: ArrayLike<number>): BatteryStateMeters[] {
+  const batteries: BatteryStateMeters[] = [];
+  for (let offset = 0; offset + BATTERY_STATE_STRIDE <= raw.length; offset += BATTERY_STATE_STRIDE) {
+    const battery = decodeLocalSessionBatteryState(raw, offset);
+    batteries.push({
+      id: battery.id,
+      position: [battery.pxMm / 1000, battery.pyMm / 1000, battery.pzMm / 1000],
+      energy: energyFromCenti(battery.energyCenti),
+      radius: battery.radiusCm / 100,
+      height: battery.heightCm / 100,
+    });
+  }
+  return batteries;
 }

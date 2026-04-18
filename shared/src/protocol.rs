@@ -27,6 +27,18 @@ pub struct NetPlayerState {
     pub pitch_i16: i16,
     pub hp: u8,
     pub flags: u16,
+    pub energy_centi: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NetBatteryState {
+    pub id: u32,
+    pub px_mm: i32,
+    pub py_mm: i32,
+    pub pz_mm: i32,
+    pub energy_centi: u32,
+    pub radius_cm: u16,
+    pub height_cm: u16,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -198,6 +210,7 @@ pub fn make_net_player_state(
     pitch: f32,
     hp: u8,
     flags: u16,
+    energy: f32,
 ) -> NetPlayerState {
     NetPlayerState {
         id: player_id,
@@ -211,6 +224,44 @@ pub fn make_net_player_state(
         pitch_i16: angle_to_i16(pitch),
         hp,
         flags,
+        energy_centi: energy_to_centi(energy),
+    }
+}
+
+#[inline]
+pub fn energy_to_centi(energy: f32) -> u32 {
+    let centi = (energy.max(0.0) * 100.0).round();
+    if centi >= u32::MAX as f32 {
+        u32::MAX
+    } else {
+        centi as u32
+    }
+}
+
+#[inline]
+pub fn energy_from_centi(centi: u32) -> f32 {
+    centi as f32 / 100.0
+}
+
+pub fn make_net_battery_state(
+    id: u32,
+    pos: [f32; 3],
+    energy: f32,
+    radius: f32,
+    height: f32,
+) -> NetBatteryState {
+    NetBatteryState {
+        id,
+        px_mm: meters_to_mm(pos[0]),
+        py_mm: meters_to_mm(pos[1]),
+        pz_mm: meters_to_mm(pos[2]),
+        energy_centi: energy_to_centi(energy),
+        radius_cm: (radius.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
+        height_cm: (height.max(0.0) * 100.0)
+            .round()
+            .clamp(0.0, u16::MAX as f32) as u16,
     }
 }
 

@@ -282,7 +282,7 @@ type FrameDebugCallback = (
     recentEvents: string[];
   },
   position: [number, number, number],
-  player: { velocity: [number, number, number]; hp: number; localFlags: number },
+  player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
 ) => void;
 
 type GameWorldProps = {
@@ -1001,6 +1001,8 @@ export function GameWorld({
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
+  const batteryGroupRef = useRef<THREE.Group>(null);
+  const batteryMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
   const selectedMaterialRef = useRef(2);
@@ -2228,6 +2230,7 @@ export function GameWorld({
         {
           velocity: physStats.velocity,
           hp: client?.localPlayerHp ?? 100,
+          energy: client?.localPlayerEnergy ?? 0,
           localFlags: client?.localPlayerFlags ?? 0,
         },
       );
@@ -2462,6 +2465,41 @@ export function GameWorld({
     }
 
     // --- Vehicle rendering ---
+    const batGroup = batteryGroupRef.current;
+    if (batGroup && client) {
+      const activeBatteryIds = new Set<number>();
+      for (const [id, battery] of client.batteries) {
+        activeBatteryIds.add(id);
+        let mesh = batteryMeshes.current.get(id);
+        if (!mesh) {
+          mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(battery.radius, battery.radius, battery.height, 16),
+            new THREE.MeshStandardMaterial({
+              color: 0xffd24a,
+              emissive: 0x886400,
+              emissiveIntensity: 0.6,
+              roughness: 0.35,
+              metalness: 0.7,
+            }),
+          );
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          batGroup.add(mesh);
+          batteryMeshes.current.set(id, mesh);
+        }
+        mesh.position.set(battery.position[0], battery.position[1], battery.position[2]);
+      }
+      for (const [id, mesh] of batteryMeshes.current) {
+        if (!activeBatteryIds.has(id)) {
+          batGroup.remove(mesh);
+          (mesh.geometry as THREE.BufferGeometry).dispose();
+          (mesh.material as THREE.Material).dispose();
+          batteryMeshes.current.delete(id);
+        }
+      }
+    }
+
+    // --- Vehicle rendering ---
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
@@ -2578,6 +2616,9 @@ export function GameWorld({
 
       {/* Dynamic body group */}
       <group ref={dynamicBodyGroupRef} />
+
+      {/* Battery group */}
+      <group ref={batteryGroupRef} />
 
       {/* Vehicle group */}
       <group ref={vehicleGroupRef} />
