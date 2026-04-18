@@ -1,6 +1,14 @@
 [workspace]
 members = ["netcode", "shared", "server"]
+# Exclude third_party/ from the workspace — it may contain vendored
+# crates (e.g. from past PhysX clones) that are not workspace members.
+exclude = ["third_party"]
 resolver = "2"
 
 [profile.release]
 codegen-units = 1
+
+# Local source override — commented out now that the fix is in v0.1.1 on crates.io.
+# Uncomment (and adjust path) only when iterating on blast-stress-solver locally.
+# [patch.crates-io]
+# blast-stress-solver = { path = "third_party/PhysX/blast/blast-stress-solver-rs" }

@@ -17,6 +17,10 @@ pub struct WorldDocument {
     pub terrain: WorldTerrain,
     pub static_props: Vec<StaticProp>,
     pub dynamic_entities: Vec<DynamicEntity>,
+    /// Blast-driven destructible structures (wall/tower).  Optional so
+    /// legacy world documents without the field still parse cleanly.
+    #[serde(default)]
+    pub destructibles: Vec<DestructibleDoc>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,6 +111,27 @@ pub enum DynamicEntityKind {
     Ball,
     Vehicle,
     Battery,
+}
+
+/// A destructible structure placed in the world, backed by the Blast
+/// stress-solver (see `destructibles` module).  The Blast scenario is
+/// chosen by `kind`; position/rotation place the resulting chunks in the
+/// world.  `id` must be unique within the document.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DestructibleDoc {
+    pub id: u32,
+    pub kind: DestructibleKind,
+    pub position: [f32; 3],
+    #[serde(default = "identity_rotation")]
+    pub rotation: [f32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DestructibleKind {
+    Wall,
+    Tower,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +300,14 @@ pub trait WorldDocumentArena {
         rotation: [f32; 4],
     );
 
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    );
+
     fn spawn_battery_with_id(
         &mut self,
         _id: u32,
@@ -351,6 +384,16 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
             position,
             rotation,
         );
+    }
+
+    fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) {
+        crate::physics_arena::PhysicsArena::spawn_destructible(self, id, kind, position, rotation);
     }
 
     fn spawn_battery_with_id(
@@ -745,6 +788,15 @@ impl WorldDocument {
         // folding them into the static rebuild path.
         arena.rebuild_broad_phase();
 
+        for destructible in &self.destructibles {
+            arena.spawn_destructible(
+                destructible.id,
+                destructible.kind,
+                destructible.position,
+                destructible.rotation,
+            );
+        }
+
         for entity in &self.dynamic_entities {
             match entity.kind {
                 DynamicEntityKind::Box => {
@@ -888,6 +940,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 
@@ -1038,6 +1091,33 @@ mod tests {
         assert_eq!(decoded.dynamic_entities.len(), world.dynamic_entities.len());
     }
 
+    #[cfg(target_arch = "wasm32")]
+    #[test]
+    fn instantiate_spawns_destructibles_into_local_preview_arena() {
+        let mut world = WorldDocument::demo();
+        world.destructibles = vec![
+            DestructibleDoc {
+                id: 2000,
+                kind: DestructibleKind::Wall,
+                position: [0.0, 0.0, 8.0],
+                rotation: identity_rotation(),
+            },
+            DestructibleDoc {
+                id: 2001,
+                kind: DestructibleKind::Tower,
+                position: [10.0, 0.5, -5.0],
+                rotation: identity_rotation(),
+            },
+        ];
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate world with destructibles");
+
+        assert_eq!(arena.destructible_count(), world.destructibles.len());
+    }
+
     #[test]
     fn instantiate_authored_battery_entity_preserves_energy_and_dimensions() {
         let world = WorldDocument {
@@ -1069,6 +1149,7 @@ mod tests {
                 energy: Some(275.0),
                 height: Some(1.4),
             }],
+            destructibles: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1118,6 +1199,7 @@ mod tests {
                 energy: None,
                 height: None,
             }],
+            destructibles: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());

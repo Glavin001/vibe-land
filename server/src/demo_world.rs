@@ -71,6 +71,7 @@ fn benchmark_vehicle_world(
             energy: None,
             height: None,
         }],
+        destructibles: vec![],
     }
 }
 

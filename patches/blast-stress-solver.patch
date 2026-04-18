@@ -1,0 +1,16 @@
+diff --git a/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs b/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
+index e55fc08..526348a 100644
+--- a/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
++++ b/blast/blast-stress-solver-rs/src/wasm_runtime_shims.rs
+@@ -137,11 +137,6 @@ pub unsafe extern "C" fn __cxa_atexit(
+     0
+ }
+ 
+-#[unsafe(no_mangle)]
+-pub extern "C" fn __cxa_uncaught_exceptions() -> c_int {
+-    0
+-}
+-
+ // -----------------------------------------------------------------------------
+ // String / memory helpers
+ // -----------------------------------------------------------------------------

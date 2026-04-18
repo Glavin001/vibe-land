@@ -14,6 +14,11 @@ use crate::{
     },
     movement::Vec3d,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::{
+    destructibles::{pose_from_world_doc, DestructibleRegistry},
+    world_document::DestructibleKind,
+};
 pub use vibe_netcode::physics_arena::DynamicArena;
 
 mod player;
@@ -86,10 +91,24 @@ pub struct PhysicsArena {
     pub vehicle_of_player: HashMap<u32, u32>,
     pub batteries: HashMap<u32, Battery>,
     next_battery_id: u32,
+    #[cfg(target_arch = "wasm32")]
+    destructibles: DestructibleRegistry,
+    #[cfg(target_arch = "wasm32")]
+    collision_tx: std::sync::mpsc::Sender<CollisionEvent>,
+    #[cfg(target_arch = "wasm32")]
+    collision_rx: std::sync::mpsc::Receiver<CollisionEvent>,
+    #[cfg(target_arch = "wasm32")]
+    contact_force_tx: std::sync::mpsc::Sender<ContactForceEvent>,
+    #[cfg(target_arch = "wasm32")]
+    contact_force_rx: std::sync::mpsc::Receiver<ContactForceEvent>,
 }
 
 impl PhysicsArena {
     pub fn new(config: MoveConfig) -> Self {
+        #[cfg(target_arch = "wasm32")]
+        let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
+        #[cfg(target_arch = "wasm32")]
+        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         Self {
             dynamic: DynamicArena::new(config),
             players: HashMap::new(),
@@ -99,6 +118,16 @@ impl PhysicsArena {
             vehicle_of_player: HashMap::new(),
             batteries: HashMap::new(),
             next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
+            #[cfg(target_arch = "wasm32")]
+            destructibles: DestructibleRegistry::new(),
+            #[cfg(target_arch = "wasm32")]
+            collision_tx,
+            #[cfg(target_arch = "wasm32")]
+            collision_rx,
+            #[cfg(target_arch = "wasm32")]
+            contact_force_tx,
+            #[cfg(target_arch = "wasm32")]
+            contact_force_rx,
         }
     }
 
@@ -193,7 +222,36 @@ impl PhysicsArena {
     }
 
     pub fn step_dynamics(&mut self, dt: f32) {
-        self.dynamic.step_dynamics(dt);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let collector = ChannelEventCollector::new(
+                self.collision_tx.clone(),
+                self.contact_force_tx.clone(),
+            );
+            self.dynamic
+                .step_dynamics_with_event_handler(dt, &collector);
+            drop(collector);
+            if !self.destructibles.is_empty() {
+                self.destructibles
+                    .drain_collision_events(&mut self.dynamic.sim, &self.collision_rx);
+                self.destructibles
+                    .drain_contact_forces(&self.dynamic.sim, &self.contact_force_rx);
+                self.destructibles.step(
+                    &mut self.dynamic.sim,
+                    &mut self.dynamic.impulse_joints,
+                    &mut self.dynamic.multibody_joints,
+                );
+            } else {
+                while self.contact_force_rx.try_recv().is_ok() {}
+                while self.collision_rx.try_recv().is_ok() {}
+            }
+            return;
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.dynamic.step_dynamics(dt);
+        }
     }
 
     pub fn snapshot_dynamic_bodies(
@@ -244,6 +302,91 @@ impl PhysicsArena {
 
     pub fn remove_battery(&mut self, id: u32) -> Option<Battery> {
         self.batteries.remove(&id)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) -> bool {
+        let pose = pose_from_world_doc(position, rotation);
+        match kind {
+            DestructibleKind::Wall => {
+                self.destructibles
+                    .spawn_wall(&mut self.dynamic.sim, id, pose)
+            }
+            DestructibleKind::Tower => {
+                self.destructibles
+                    .spawn_tower(&mut self.dynamic.sim, id, pose)
+            }
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn spawn_destructible(
+        &mut self,
+        id: u32,
+        kind: crate::world_document::DestructibleKind,
+        position: [f32; 3],
+        rotation: [f32; 4],
+    ) -> bool {
+        let _ = (id, kind, position, rotation);
+        false
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_count(&self) -> usize {
+        self.destructibles.len()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_count(&self) -> usize {
+        0
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        self.destructibles.chunk_transforms_slice()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        &[]
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        self.destructibles.debug_state_slice().into()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        Box::new([])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        self.destructibles.debug_config_slice().into()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        Box::new([])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.destructibles
+            .drain_fracture_events()
+            .into_boxed_slice()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        Box::new([])
     }
 
     pub fn snapshot_batteries(&self) -> Vec<(u32, [f32; 3], f32, f32, f32)> {

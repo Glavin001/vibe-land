@@ -12,6 +12,16 @@
 
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
+import type { DestructibleDebugConfig, DestructibleDebugState } from './physics/destructibleDebug';
+import type { DestructibleSpatialMetrics } from './physics/destructibleSpatialMetrics';
+
+export interface E2EDestructiblesSnapshot {
+  chunkCount: number;
+  fractureEventsTotal: number;
+  debugState: DestructibleDebugState;
+  debugConfig: DestructibleDebugConfig;
+  spatialMetrics: DestructibleSpatialMetrics;
+}
 
 export interface GameE2ESnapshot {
   // Identity
@@ -58,6 +68,9 @@ export interface GameE2ESnapshot {
   shotsFired: number;
   lastShotOutcome: string;
 
+  // Destructibles
+  destructibles: E2EDestructiblesSnapshot;
+
   // Debug stats (subset for assertions)
   debugStats: {
     fps: number;
@@ -101,6 +114,80 @@ const refs = {
   nearestVehicleId: null as number | null,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
+  destructibles: {
+    chunkCount: 0,
+    fractureEventsTotal: 0,
+    debugState: {
+      impactSeq: 0,
+      impactProcessed: 0,
+      impactMaxForceN: 0,
+      impactMaxSpeedMs: 0,
+      impactMaxSplashNodes: 0,
+      impactMaxBodyNodeCount: 0,
+      impactMaxSplashWeightSum: 0,
+      impactMaxEstimatedInjectedForceN: 0,
+      impactInstanceId: 0,
+      fractureSeq: 0,
+      fractureInstanceId: 0,
+      fractureInstanceBodyCount: 0,
+      fractures: 0,
+      splitEvents: 0,
+      newBodies: 0,
+      activeBodies: 0,
+      postFractureMaxBodySpeedMs: 0,
+      postFractureFastBodyCount: 0,
+      sameInstanceDynamicCollisionStarts: 0,
+      fixedCollisionStarts: 0,
+      dynamicMinBodyY: 0,
+      parentlessStaticCollisionStarts: 0,
+      dynamicMinBodyInstanceId: 0,
+      dynamicMinBodySpeedMs: 0,
+      dynamicMinBodyLinvelY: 0,
+      dynamicMinBodyHasSupport: false,
+      dynamicMinBodyActiveContactPairs: 0,
+      dynamicMinBodySameInstanceFixedContactPairs: 0,
+      dynamicMinBodyParentlessStaticContactPairs: 0,
+      currentMaxBodySpeedMs: 0,
+      currentMaxBodySpeedInstanceId: 0,
+      dynamicMinBodyX: 0,
+      dynamicMinBodyZ: 0,
+      dynamicMinBodyMaxLocalOffsetM: 0,
+      dynamicMinBodyCcdEnabled: false,
+      contactEventsSeenTotal: 0,
+      contactEventsMatchingTotal: 0,
+      contactEventsOtherDestructibleSkippedTotal: 0,
+      contactEventsBelowForceSkippedTotal: 0,
+      contactEventsMissingPartnerBodySkippedTotal: 0,
+      contactEventsBelowSpeedSkippedTotal: 0,
+      contactEventsMissingBodyOrNodeSkippedTotal: 0,
+      contactEventsAcceptedTotal: 0,
+      contactEventsMaxRawForceN: 0,
+      contactEventsMaxPartnerSpeedMs: 0,
+      contactEventsCollisionGraceOverridesTotal: 0,
+    },
+    debugConfig: {
+      contactSplashRadiusM: 0,
+      contactForceScale: 0,
+      minImpactForceN: 0,
+      minImpactSpeedMs: 0,
+      collisionImpactGraceSecs: 0,
+      wallMaterialScale: 0,
+      towerMaterialScale: 0,
+      maxFracturesPerFrame: 0,
+      maxNewBodiesPerFrame: 0,
+      applyExcessForces: false,
+      debrisCollisionMode: 'all',
+    },
+    spatialMetrics: {
+      overlapPairCount: 0,
+      significantOverlapPairCount: 0,
+      maxOverlapPenetrationM: 0,
+      nearCoincidentPairCount: 0,
+      minCenterDistanceM: -1,
+      lowestChunkBottomY: 0,
+      sampleOverlapPairs: [],
+    },
+  } as E2EDestructiblesSnapshot,
 };
 
 /** Update bridge refs. Called by App component on state changes. */
@@ -131,6 +218,7 @@ export function updateE2EBridgeFrameState(state: {
   nearestVehicleId: number | null;
   remotePlayers: Array<{ id: number; position: [number, number, number] }>;
   stats: DebugStats;
+  destructibles: E2EDestructiblesSnapshot;
 }): void {
   refs.cameraPosition = state.cameraPosition;
   refs.cameraYaw = state.cameraYaw;
@@ -139,6 +227,7 @@ export function updateE2EBridgeFrameState(state: {
   refs.nearestVehicleId = state.nearestVehicleId;
   refs.remotePlayers = state.remotePlayers;
   refs.statsSnapshot = state.stats;
+  refs.destructibles = state.destructibles;
 }
 
 function buildSnapshot(): GameE2ESnapshot {
@@ -170,6 +259,7 @@ function buildSnapshot(): GameE2ESnapshot {
     })),
     shotsFired: s.shotsFired,
     lastShotOutcome: s.lastShotOutcome,
+    destructibles: refs.destructibles,
     debugStats: {
       fps: s.fps,
       transport: s.transport,
@@ -200,7 +290,7 @@ declare global {
 }
 
 const bridge: VibeE2EBridge = {
-  version: 1,
+  version: 3,
   snapshot: buildSnapshot,
 };
 

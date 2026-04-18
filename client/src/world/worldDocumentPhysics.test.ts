@@ -81,6 +81,7 @@ function makeFlatWorldWithGrid(tileGridSize: number, tileHalfExtentM: number): W
     },
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 
@@ -112,6 +113,7 @@ function makeSmoothHillWorld(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 
@@ -140,6 +142,7 @@ function makeAsymmetricWorld(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    destructibles: [],
   };
 }
 

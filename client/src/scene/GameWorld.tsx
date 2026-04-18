@@ -10,6 +10,8 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { parseDestructibleDebugConfig, parseDestructibleDebugState } from '../physics/destructibleDebug';
+import { computeDestructibleSpatialMetrics } from '../physics/destructibleSpatialMetrics';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -47,6 +49,7 @@ import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { DestructibleChunks } from './DestructibleChunks';
 import {
   DEFAULT_WORLD_DOCUMENT,
   removeVehicleEntitiesFromWorldDocument,
@@ -68,6 +71,43 @@ import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } f
 import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
+
+/**
+ * Practice-mode destructible structures.  Injected into the world
+ * document at runtime (instead of authored in `trail.world.json`) so
+ * the shared physics test suite — which exercises the default world —
+ * stays unaffected by the Blast solver.
+ *
+ * The trail world's practice spawn / vehicles cluster around
+ * `(0..8, *, 0)` on flat terrain (`terrain Y ≈ 0` for roughly
+ * `x ∈ [-10, 12], z ∈ [-10, 6]`), with a ball pit at
+ * `x ∈ [8, 15], z ∈ [8, 15]`.  Positions below are chosen to sit in
+ * the flat area a short drive from each vehicle, in their own empty
+ * space (no overlap with the second car at `(8, 2, 0)`, the ball pit,
+ * or the hilly terrain outside the plaza). The wall is intentionally
+ * placed straight ahead of the origin car so `/practice` browser
+ * verification can drive into it with a single forward input.
+ *
+ * Y values account for the scenario local geometry:
+ *   - `build_wall_scenario` (WallOptions::default) spans 6m along
+ *     local X, 0.32m thick along Z, local y ∈ [0, 3].  Pose y=0
+ *     sits the wall's base flush with flat ground.
+ *   - `build_tower_scenario` (TowerOptions::default) is a
+ *     4×4-column × 8-story column (~2m × 4m × 2m) with a fixed
+ *     support row at local y=-0.5.  Pose y=0.5 keeps the dynamic
+ *     structure above ground while the support row anchors it.
+ */
+const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
+  id: number;
+  kind: 'wall' | 'tower';
+  position: [number, number, number];
+  rotation: [number, number, number, number];
+}> = [
+  // Wall: 8m straight ahead of the origin vehicle — enter and drive forward.
+  { id: 2000, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
+  // Tower: 5m N of the second vehicle at (8, *, 0) — drive forward to hit.
+  { id: 2001, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
+];
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -1038,8 +1078,29 @@ export function GameWorld({
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
+  // In practice mode we overlay Blast destructibles onto the base world
+  // document so they flow through `loadWorldDocument` → `spawn_wall` /
+  // `spawn_tower` and through `<DestructibleChunks>` rendering without
+  // touching the authored `trail.world.json` (which the shared physics
+  // test suite loads).
+  const effectiveWorldDocument = useMemo(() => {
+    if (!practiceMode) return worldDocument;
+    if (worldDocument.destructibles.length > 0) return worldDocument;
+    return {
+      ...worldDocument,
+      destructibles: PRACTICE_DESTRUCTIBLES.map((d) => ({
+        id: d.id,
+        kind: d.kind,
+        position: [...d.position] as [number, number, number],
+        rotation: [...d.rotation] as [number, number, number, number],
+      })),
+    };
+  }, [practiceMode, worldDocument]);
+  const worldJson = useMemo(
+    () => serializeWorldDocument(effectiveWorldDocument),
+    [effectiveWorldDocument],
+  );
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
-  const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
   const predictionWorldJson = useMemo(
     () => practiceMode
       ? worldJson
@@ -1094,6 +1155,7 @@ export function GameWorld({
     lastEnterPressedAtMs: null,
   });
   const vehicleSupportDebugEnabledRef = useRef(false);
+  const destructibleFractureEventsTotalRef = useRef(0);
 
   // Vehicle refs
   const vehicleGroupRef = useRef<THREE.Group>(null);
@@ -1221,6 +1283,10 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
 
+  useEffect(() => {
+    destructibleFractureEventsTotalRef.current = 0;
+  }, [mode, worldJson]);
+ 
   useEffect(() => {
     if (!practiceBots || !practiceMode || !ready) return;
     const host = runtimeRef.current?.getPracticeBotHost();
@@ -1782,7 +1848,6 @@ export function GameWorld({
         }
       }
     }
-
     prediction.submitInput(frameDelta, resolvedInput);
 
     const canUseAimActions = !isDrivingNow && !localDead
@@ -2346,6 +2411,18 @@ export function GameWorld({
 
     // E2E bridge: publish frame state for read-only snapshot
     {
+      const chunkTransforms = client.getDestructibleChunkTransforms();
+      const fractureEvents = Array.from(client.drainDestructibleFractureEvents());
+      for (let index = 1; index < fractureEvents.length; index += 2) {
+        destructibleFractureEventsTotalRef.current += Number(fractureEvents[index] ?? 0);
+      }
+      const destructibles = {
+        chunkCount: chunkTransforms.length / 11,
+        fractureEventsTotal: destructibleFractureEventsTotalRef.current,
+        debugState: parseDestructibleDebugState(client.getDestructibleDebugState()),
+        debugConfig: parseDestructibleDebugConfig(client.getDestructibleDebugConfig()),
+        spatialMetrics: computeDestructibleSpatialMetrics(effectiveWorldDocument.destructibles, chunkTransforms),
+      };
       const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
       for (const [id, rp] of state.remotePlayers) {
         const sample = state.remoteInterpolator.sample(
@@ -2364,6 +2441,7 @@ export function GameWorld({
         drivenVehicleId: drivenVehicleId ?? null,
         nearestVehicleId: nearestVehicleIdRef.current,
         remotePlayers: remoteSummaries,
+        destructibles,
         stats: {
           ...DEFAULT_STATS,
           frameTimeMs: frameDelta * 1000,
@@ -2710,8 +2788,14 @@ export function GameWorld({
         shadow-normalBias={0.03}
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
-      <WorldTerrain world={worldDocument} />
-      <WorldStaticProps world={worldDocument} />
+      <WorldTerrain world={effectiveWorldDocument} />
+      <WorldStaticProps world={effectiveWorldDocument} />
+      {practiceMode && effectiveWorldDocument.destructibles.length > 0 && (
+        <DestructibleChunks
+          world={effectiveWorldDocument}
+          getChunkTransforms={() => runtimeRef.current?.getDestructibleChunkTransforms() ?? new Float32Array(0)}
+        />
+      )}
 
       {renderBlocks.map((block) => (
         <WorldBlock

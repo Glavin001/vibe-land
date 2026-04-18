@@ -8,6 +8,7 @@ use crate::{
         PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
         SNAPSHOT_HZ_LOCAL,
     },
+    debug_render::{render_debug_buffers, DebugLineBuffers},
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
@@ -753,6 +754,22 @@ impl LocalSession {
             .collect()
     }
 
+    pub fn debug_render(
+        &self,
+        debug_pipeline: &mut rapier3d::pipeline::DebugRenderPipeline,
+        mode_bits: u32,
+    ) -> DebugLineBuffers {
+        render_debug_buffers(
+            debug_pipeline,
+            mode_bits,
+            &self.arena.dynamic.sim.rigid_bodies,
+            &self.arena.dynamic.sim.colliders,
+            &self.arena.dynamic.impulse_joints,
+            &self.arena.dynamic.multibody_joints,
+            &self.arena.dynamic.sim.narrow_phase,
+        )
+    }
+
     pub fn cast_scene_ray(&self, origin: [f32; 3], dir: [f32; 3], max_toi: f32) -> Option<f32> {
         self.arena
             .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
@@ -765,6 +782,22 @@ impl LocalSession {
             vehicle.chassis_body,
             &vehicle.controller,
         )
+    }
+
+    pub fn destructible_chunk_transforms(&self) -> &[f32] {
+        self.arena.destructible_chunk_transforms()
+    }
+
+    pub fn destructible_debug_state(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_state()
+    }
+
+    pub fn destructible_debug_config(&self) -> Box<[f64]> {
+        self.arena.destructible_debug_config()
+    }
+
+    pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
+        self.arena.drain_destructible_fracture_events()
     }
 }
 
@@ -1091,6 +1124,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 
@@ -1114,6 +1148,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            destructibles: vec![],
         }
     }
 
@@ -1766,5 +1801,24 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    #[test]
+    fn local_session_debug_render_produces_rapier_shape_lines() {
+        let mut session = LocalSession::new();
+        session.connect();
+
+        let mut pipeline = crate::debug_render::default_debug_pipeline();
+        let buffers = session.debug_render(
+            &mut pipeline,
+            rapier3d::pipeline::DebugRenderMode::COLLIDER_SHAPES.bits(),
+        );
+
+        assert!(
+            !buffers.vertices.is_empty(),
+            "expected debug-render vertices"
+        );
+        assert_eq!(buffers.vertices.len() % 3, 0);
+        assert_eq!(buffers.colors.len(), (buffers.vertices.len() / 3) * 4);
     }
 }

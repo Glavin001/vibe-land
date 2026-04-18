@@ -9,6 +9,7 @@ inspiration/
 loadtest-results/
 benchmark-results/
 test-results/
+third_party/
 playwright-report/
 blob-report/
 logs/
