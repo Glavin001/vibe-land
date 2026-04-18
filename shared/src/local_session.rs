@@ -336,8 +336,14 @@ impl LocalSession {
         self.arena.step_vehicles_and_dynamics(dt);
 
         let vehicle_killed = self.arena.apply_vehicle_player_collisions();
-        if vehicle_killed.iter().any(|&id| id == LOCAL_PLAYER_ID) {
-            self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+        for killed_id in vehicle_killed {
+            if killed_id == LOCAL_PLAYER_ID {
+                self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+            } else if let Some(runtime) = self.players.get_mut(&killed_id) {
+                if runtime.is_bot {
+                    runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+                }
+            }
         }
 
         let gained_energy: f32 = self
