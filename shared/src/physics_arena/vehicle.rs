@@ -94,6 +94,7 @@ impl PhysicsArena {
                 &mut vehicle.controller,
                 &driver_input,
                 dt,
+                self.material_field.as_ref(),
             );
         }
     }
