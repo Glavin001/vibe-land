@@ -37,6 +37,12 @@ import {
   hasStoredInputSettings,
   updateInputSettings,
 } from './input/inputSettingsStore';
+import {
+  PracticeBotRuntime,
+  type PracticeBotBehaviorKind,
+  type PracticeBotStats,
+} from './bots';
+import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
 
 type AppProps = {
@@ -211,6 +217,87 @@ export function App({
       debugOverlayVisible: debugVisible,
     });
   }, [practiceMode, multiplayerMatchId, connected, status, playerId, debugVisible]);
+
+  const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
+  const [practiceBotRuntime, setPracticeBotRuntime] = useState<PracticeBotRuntime | null>(null);
+  const [practiceBotStats, setPracticeBotStats] = useState<PracticeBotStats | null>(null);
+  const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
+  const refreshPracticeBotStats = useCallback(() => {
+    const runtime = practiceBotRuntimeRef.current;
+    setPracticeBotStats(runtime ? runtime.stats() : null);
+  }, []);
+  const handleSetBotCount = useCallback((count: number) => {
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setBotCount(count);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleClearBots = useCallback(() => {
+    practiceBotRuntimeRef.current?.clear();
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleSetBotBehavior = useCallback((kind: PracticeBotBehaviorKind) => {
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setBehavior(kind);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleSetBotMaxSpeed = useCallback((speed: number) => {
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setMaxSpeed(speed);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
+  const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
+    setPracticeBotDebugOverlay(value);
+  }, []);
+
+  useEffect(() => {
+    if (!practiceMode) {
+      const existing = practiceBotRuntimeRef.current;
+      if (existing) {
+        existing.clear();
+        existing.detach();
+      }
+      practiceBotRuntimeRef.current = null;
+      setPracticeBotRuntime(null);
+      setPracticeBotStats(null);
+      setPracticeBotDebugOverlay(false);
+      return;
+    }
+    setPracticeBotRuntime(null);
+    setPracticeBotStats(null);
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const runtime = await PracticeBotRuntime.create(effectiveWorldDocument, { maxAgentRadius: 0.6 });
+          if (cancelled) {
+            runtime.clear();
+            runtime.detach();
+            return;
+          }
+          practiceBotRuntimeRef.current = runtime;
+          setPracticeBotRuntime(runtime);
+          setPracticeBotStats(runtime.stats());
+        } catch (error) {
+          if (!cancelled) {
+            console.error('Failed to initialize practice bots', error);
+          }
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+      const existing = practiceBotRuntimeRef.current;
+      if (existing) {
+        existing.clear();
+        existing.detach();
+        practiceBotRuntimeRef.current = null;
+      }
+    };
+  }, [practiceMode, effectiveWorldDocument]);
 
   useEffect(() => {
     saveInputBindings(inputBindings);
@@ -747,16 +834,26 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
-        <DebugOverlay
-          stats={displayStats}
-          visible={debugVisible}
-          localRenderSmoothingEnabled={localRenderSmoothingEnabled}
-          onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
-          vehicleSmoothingEnabled={vehicleSmoothingEnabled}
-          onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
-          deepCaptureEnabled={deepCaptureEnabled}
-          deepCaptureSampleCount={deepCaptureSampleCount}
-        />
+      <PracticeBotsPanel
+        visible={practiceMode && connected && !calibrationOpen}
+        stats={practiceBotStats}
+        debugOverlay={practiceBotDebugOverlay}
+        onSetBotCount={handleSetBotCount}
+        onClear={handleClearBots}
+        onSetBehavior={handleSetBotBehavior}
+        onSetMaxSpeed={handleSetBotMaxSpeed}
+        onToggleDebugOverlay={handleToggleBotDebugOverlay}
+      />
+      <DebugOverlay
+        stats={displayStats}
+        visible={debugVisible}
+        localRenderSmoothingEnabled={localRenderSmoothingEnabled}
+        onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
+        vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+        onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        deepCaptureEnabled={deepCaptureEnabled}
+        deepCaptureSampleCount={deepCaptureSampleCount}
+      />
       {debugVisible && (
         <div
           ref={renderStatsParentRef}
@@ -786,6 +883,8 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
+          practiceBots={practiceMode ? practiceBotRuntime : null}
+          practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}

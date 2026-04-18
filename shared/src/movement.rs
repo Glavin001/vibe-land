@@ -4,6 +4,27 @@ pub use vibe_netcode::movement::{accelerate, apply_horizontal_friction, MoveConf
 use crate::constants::*;
 use crate::protocol::InputCmd;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerNavigationProfile {
+    pub walkable_radius: f32,
+    pub walkable_height: f32,
+    pub walkable_climb: f32,
+    pub walkable_slope_angle_degrees: f32,
+}
+
+pub fn player_navigation_profile(config: &MoveConfig) -> PlayerNavigationProfile {
+    PlayerNavigationProfile {
+        walkable_radius: config.capsule_radius,
+        walkable_height: 2.0 * (config.capsule_half_segment + config.capsule_radius),
+        walkable_climb: config.max_step_height,
+        walkable_slope_angle_degrees: config.max_slope_radians.to_degrees(),
+    }
+}
+
+pub fn default_player_navigation_profile() -> PlayerNavigationProfile {
+    player_navigation_profile(&MoveConfig::default())
+}
+
 // ── Vehicle tuning constants ─────────────────────
 pub const VEHICLE_MAX_STEER_RAD: f32 = 0.5;
 pub const VEHICLE_ENGINE_FORCE: f32 = 4000.0; // 2 rear wheels × 4000 N / ~600 kg ≈ 13 m/s² — sporty car
@@ -244,5 +265,21 @@ mod tests {
         assert_eq!(pick_move_speed(&cfg, 0), 6.0);
         assert_eq!(pick_move_speed(&cfg, BTN_SPRINT), 8.5);
         assert_eq!(pick_move_speed(&cfg, BTN_CROUCH), 3.5);
+    }
+
+    #[test]
+    fn default_player_navigation_profile_matches_move_config() {
+        let cfg = MoveConfig::default();
+        let profile = default_player_navigation_profile();
+        assert_eq!(profile.walkable_radius, cfg.capsule_radius);
+        assert_eq!(
+            profile.walkable_height,
+            2.0 * (cfg.capsule_half_segment + cfg.capsule_radius)
+        );
+        assert_eq!(profile.walkable_climb, cfg.max_step_height);
+        assert_eq!(
+            profile.walkable_slope_angle_degrees,
+            cfg.max_slope_radians.to_degrees()
+        );
     }
 }

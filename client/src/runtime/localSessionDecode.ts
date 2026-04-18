@@ -47,6 +47,26 @@ export function decodeLocalSessionPlayerState(raw: ArrayLike<number>): NetPlayer
   };
 }
 
+export function decodeLocalSessionPlayers(raw: ArrayLike<number>): NetPlayerState[] {
+  const players: NetPlayerState[] = [];
+  for (let offset = 0; offset + PLAYER_STATE_STRIDE <= raw.length; offset += PLAYER_STATE_STRIDE) {
+    players.push({
+      id: Math.trunc(raw[offset] ?? 0),
+      pxMm: Math.trunc(raw[offset + 1] ?? 0),
+      pyMm: Math.trunc(raw[offset + 2] ?? 0),
+      pzMm: Math.trunc(raw[offset + 3] ?? 0),
+      vxCms: Math.trunc(raw[offset + 4] ?? 0),
+      vyCms: Math.trunc(raw[offset + 5] ?? 0),
+      vzCms: Math.trunc(raw[offset + 6] ?? 0),
+      yawI16: Math.trunc(raw[offset + 7] ?? 0),
+      pitchI16: Math.trunc(raw[offset + 8] ?? 0),
+      hp: Math.trunc(raw[offset + 9] ?? 0),
+      flags: Math.trunc(raw[offset + 10] ?? 0),
+    });
+  }
+  return players;
+}
+
 export function decodeLocalSessionDynamicBodyState(raw: ArrayLike<number>, offset: number): NetDynamicBodyState {
   return {
     id: Math.trunc(raw[offset] ?? 0),

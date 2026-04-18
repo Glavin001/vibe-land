@@ -83,6 +83,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                max_speed_override: None,
             },
         );
 

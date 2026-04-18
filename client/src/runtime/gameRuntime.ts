@@ -1,6 +1,6 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
-import { LocalPracticeClient } from '../net/localPracticeClient';
+import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
 import { NetcodeClient, type RemotePlayer } from '../net/netcodeClient';
 import {
@@ -227,6 +227,7 @@ export interface GameRuntimeClient {
   getDrivenVehicleId(): number | null;
   getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   isInVehicle(): boolean;
+  getPracticeBotHost(): PracticeBotHost | null;
 }
 
 function createDefaultConnectionState(): RuntimeConnectionState {
@@ -446,6 +447,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract getDrivenVehicleId(): number | null;
   abstract getLocalVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null;
   abstract isInVehicle(): boolean;
+  abstract getPracticeBotHost(): PracticeBotHost | null;
 }
 
 export class LocalGameRuntime extends BaseGameRuntime {
@@ -795,6 +797,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   isInVehicle(): boolean {
     return this.getDrivenVehicleId() != null;
+  }
+
+  getPracticeBotHost(): PracticeBotHost | null {
+    return this.client;
   }
 }
 
@@ -1554,5 +1560,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   isInVehicle(): boolean {
     return this.vehiclePrediction?.isActive() ?? false;
+  }
+
+  getPracticeBotHost(): PracticeBotHost | null {
+    return null;
   }
 }
