@@ -52,7 +52,7 @@ export class LocalPracticeClient {
   private readonly vehicleServerTimeUs = new Map<number, number>();
   private readonly debugTelemetry = new NetDebugTelemetry();
   private session: WasmLocalSessionInstance | null = null;
-  private frameHandle: number | null = null;
+  private tickChannel: MessageChannel | null = null;
   private tickAccumulatorSec = 0;
   private lastTickTimeMs = 0;
   private closedByClient = false;
@@ -79,9 +79,9 @@ export class LocalPracticeClient {
 
   disconnect(): void {
     this.closedByClient = true;
-    if (this.frameHandle != null) {
-      cancelAnimationFrame(this.frameHandle);
-      this.frameHandle = null;
+    if (this.tickChannel != null) {
+      this.tickChannel.port1.onmessage = null;
+      this.tickChannel = null;
     }
     this.tickAccumulatorSec = 0;
     this.lastTickTimeMs = 0;
@@ -255,10 +255,14 @@ export class LocalPracticeClient {
 
   private startTickLoop(): void {
     this.lastTickTimeMs = performance.now();
-    const step = (nowMs: number) => {
+    const channel = new MessageChannel();
+    this.tickChannel = channel;
+
+    const step = () => {
       if (!this.session || this.closedByClient) {
         return;
       }
+      const nowMs = performance.now();
       const elapsedSec = Math.min(Math.max((nowMs - this.lastTickTimeMs) / 1000, 0), 0.1);
       this.lastTickTimeMs = nowMs;
       this.tickAccumulatorSec += elapsedSec;
@@ -274,9 +278,19 @@ export class LocalPracticeClient {
       if (ticks > 0) {
         this.syncFromSession(true);
       }
-      this.frameHandle = requestAnimationFrame(step);
+      // Schedule next tick independent of rendering frame rate.
+      // If we're behind schedule, fire immediately via MessageChannel.
+      // Otherwise sleep until the next tick is due, then signal via the channel.
+      const sleepMs = Math.max(0, Math.floor(1000 * (FIXED_DT - this.tickAccumulatorSec)) - 1);
+      if (sleepMs <= 1) {
+        channel.port2.postMessage(null);
+      } else {
+        setTimeout(() => { channel.port2.postMessage(null); }, sleepMs);
+      }
     };
-    this.frameHandle = requestAnimationFrame(step);
+
+    channel.port1.onmessage = step;
+    channel.port2.postMessage(null);
   }
 
   private syncFromSession(emitCallbacks: boolean): void {

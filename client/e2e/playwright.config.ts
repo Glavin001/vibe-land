@@ -58,6 +58,9 @@ export default defineConfig({
         '--use-gl=angle',
       ],
     },
+    // In CI (no GPU, swiftshader) a 64×64 viewport cuts WebGL fill rate by ~225×,
+    // keeping rAF near 60fps so r3f useFrame-driven physics runs at full speed.
+    ...(process.env.CI ? { viewport: { width: 64, height: 64 } } : {}),
   },
   projects: [
     {
