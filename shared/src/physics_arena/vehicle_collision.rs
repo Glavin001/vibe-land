@@ -221,11 +221,7 @@ mod tests {
         let killed = arena.apply_vehicle_player_collisions();
         assert!(killed.is_empty(), "half-speed direct should not kill");
         let hp = arena.players.get(&3).unwrap().hp;
-        assert!(
-            (30..=70).contains(&hp),
-            "expected ~half damage, hp={}",
-            hp,
-        );
+        assert!((30..=70).contains(&hp), "expected ~half damage, hp={}", hp,);
     }
 
     #[test]
@@ -235,10 +231,7 @@ mod tests {
         let vid = arena.spawn_vehicle(0, Vec3::new(0.0, 0.0, 0.0));
         let rb = arena.vehicles.get(&vid).unwrap().chassis_body;
         if let Some(body) = arena.dynamic.sim.rigid_bodies.get_mut(rb) {
-            body.set_linvel(
-                vector![VEHICLE_LETHAL_SPEED_M_S + 5.0, 0.0, 0.0],
-                true,
-            );
+            body.set_linvel(vector![VEHICLE_LETHAL_SPEED_M_S + 5.0, 0.0, 0.0], true);
         }
         // Mark the player as the driver without calling `enter_vehicle`
         // (which would disable the capsule collider and defeat the test).
