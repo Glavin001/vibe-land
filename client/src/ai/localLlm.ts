@@ -4,7 +4,7 @@
  * tool-calling, streaming, and download-progress on the same `streamText` path
  * the cloud providers use, so the chat hook doesn't need a special branch.
  *
- * The ONNX weights (~570 MB at q4f16) are fetched from the Hugging Face CDN on
+ * The ONNX weights (~370 MB at q4) are fetched from the Hugging Face CDN on
  * first use and cached by the browser. We gate that download behind an
  * explicit user confirmation in the UI — `downloadLocalModel` is only called
  * after the user clicks the download button.
@@ -14,7 +14,15 @@ import type { LanguageModel } from 'ai';
 
 export const LOCAL_MODEL_ID = 'onnx-community/Qwen3-0.6B-ONNX';
 export const LOCAL_MODEL_LABEL = 'Qwen3-0.6B';
-export const LOCAL_MODEL_APPROX_SIZE_MB = 570;
+export const LOCAL_MODEL_APPROX_SIZE_MB = 370;
+
+// Qwen3 ships several quantized ONNX variants. `q4f16` is fastest on WebGPU
+// but crashes on some drivers with an opaque onnxruntime pointer error
+// ("An error occurred during model execution: 1154280696") because the
+// fp16 matmul kernels fail to compile or run out of shared memory. `q4`
+// uses 4-bit weights with fp32 activations and works across WebGPU and
+// WASM backends at a modest speed cost, so we default to it.
+const LOCAL_DTYPE = 'q4' as const;
 
 type LocalLanguageModelWithLifecycle = LanguageModel & {
   availability: () => Promise<'unavailable' | 'downloadable' | 'available'>;
@@ -42,10 +50,9 @@ export function isWebGpuAvailable(): boolean {
  */
 export function getLocalLanguageModel(): LanguageModel {
   if (!modelInstance) {
-    const device = isWebGpuAvailable() ? 'webgpu' : 'wasm';
     modelInstance = transformersJS(LOCAL_MODEL_ID, {
-      device,
-      dtype: 'q4f16',
+      device: isWebGpuAvailable() ? 'webgpu' : 'wasm',
+      dtype: LOCAL_DTYPE,
     }) as unknown as LocalLanguageModelWithLifecycle;
   }
   return modelInstance;
