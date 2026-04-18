@@ -4,6 +4,7 @@ import { Suspense, type ReactNode } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
+import { requestPointerLockSafe } from '../input/pointerLock';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -59,7 +60,7 @@ export function GameScene({
       data-testid="game-canvas"
       onPointerDown={(e) => {
         if (touchMode) return;
-        (e.target as HTMLCanvasElement).requestPointerLock();
+        requestPointerLockSafe(e.target as HTMLCanvasElement);
       }}
     >
       <Suspense fallback={null}>

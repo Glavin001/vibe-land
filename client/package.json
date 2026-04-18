@@ -17,6 +17,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:world-docs": "vitest run src/world/worldDocumentPhysics.test.ts",
+    "e2e": "playwright test",
     "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts",
     "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
@@ -42,6 +43,7 @@
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.2.2",
     "three": "^0.170.0",
+    "tone": "^15.1.22",
     "zod": "^3.25.76"
   },
   "devDependencies": {
