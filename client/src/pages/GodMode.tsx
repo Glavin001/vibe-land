@@ -92,7 +92,7 @@ import {
   getSharedVehicleDefinition,
   getSharedVehicleDefinitions,
   getSharedVehicleDefaultType,
-} from '../wasm/sharedPhysics';
+} from '../wasm/sharedVehicleDefinitions';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';

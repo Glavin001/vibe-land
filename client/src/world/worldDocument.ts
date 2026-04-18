@@ -1,5 +1,5 @@
 import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
-import { getSharedVehicleDefinition } from '../wasm/sharedPhysics';
+import { getSharedVehicleDefinition } from '../wasm/sharedVehicleDefinitions';
 
 export const WORLD_DOCUMENT_VERSION = 2;
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;

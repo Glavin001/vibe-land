@@ -1,7 +1,7 @@
 import {
   getSharedVehicleDefinition,
   type SharedVehicleDefinition,
-} from '../wasm/sharedPhysics';
+} from '../wasm/sharedVehicleDefinitions';
 
 export function getVehicleDefinition(vehicleType?: number): SharedVehicleDefinition {
   return getSharedVehicleDefinition(vehicleType);

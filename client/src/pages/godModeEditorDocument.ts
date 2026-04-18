@@ -10,7 +10,7 @@ import {
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
-import { getSharedVehicleTypeByKey } from '../wasm/sharedPhysics';
+import { getSharedVehicleTypeByKey } from '../wasm/sharedVehicleDefinitions';
 
 const DEFAULT_EDITOR_VEHICLE_TYPE = getSharedVehicleTypeByKey('cybertruck') ?? 0;
 
