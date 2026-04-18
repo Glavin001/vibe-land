@@ -484,10 +484,10 @@ impl TerrainMaterialField {
         let (center_x, center_z) = (tile.tile_x as f32 * side, tile.tile_z as f32 * side);
         let max_index = (grid_size - 1) as f32;
         let max_cell = (grid_size - 2) as f32;
-        let col = (((x - center_x + self.tile_half_extent_m) / side) * max_index)
-            .clamp(0.0, max_index);
-        let row = (((z - center_z + self.tile_half_extent_m) / side) * max_index)
-            .clamp(0.0, max_index);
+        let col =
+            (((x - center_x + self.tile_half_extent_m) / side) * max_index).clamp(0.0, max_index);
+        let row =
+            (((z - center_z + self.tile_half_extent_m) / side) * max_index).clamp(0.0, max_index);
         let cell_col = col.floor().min(max_cell) as usize;
         let cell_row = row.floor().min(max_cell) as usize;
         let u = col - cell_col as f32;
@@ -910,9 +910,7 @@ impl WorldDocument {
                 weights: tile
                     .material_weights
                     .as_ref()
-                    .filter(|w| {
-                        w.len() == grid_size * grid_size * tile.materials.len().max(1)
-                    })
+                    .filter(|w| w.len() == grid_size * grid_size * tile.materials.len().max(1))
                     .cloned(),
             })
             .collect();
@@ -2046,10 +2044,7 @@ mod tests {
     /// Build a single-tile flat world whose left half is `left_material` and
     /// right half is `right_material` (split on x=0). Grid size 3 keeps the
     /// bilinear interpolation at x=0 midpoint sharp.
-    fn split_material_world(
-        left: TerrainMaterial,
-        right: TerrainMaterial,
-    ) -> WorldDocument {
+    fn split_material_world(left: TerrainMaterial, right: TerrainMaterial) -> WorldDocument {
         let grid_size: usize = 3;
         let vertex_count = grid_size * grid_size;
         let heights = vec![0.0f32; vertex_count];
@@ -2360,7 +2355,10 @@ mod tests {
                 saw_pavement = true;
             }
         }
-        assert!(saw_ice, "expected contacts on the ice side of the split tile");
+        assert!(
+            saw_ice,
+            "expected contacts on the ice side of the split tile"
+        );
         assert!(
             saw_pavement,
             "expected contacts on the pavement side of the split tile"
@@ -2380,10 +2378,8 @@ mod tests {
             world
                 .instantiate(&mut arena)
                 .expect("instantiate material world");
-            let box_id = arena.spawn_dynamic_box(
-                vector![spawn_x, 0.6, 0.0],
-                vector![0.5, 0.5, 0.5],
-            );
+            let box_id =
+                arena.spawn_dynamic_box(vector![spawn_x, 0.6, 0.0], vector![0.5, 0.5, 0.5]);
             // Let it settle onto the heightfield so contacts are persistent.
             for _ in 0..30 {
                 arena.step_dynamics(DT);

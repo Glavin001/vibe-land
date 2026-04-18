@@ -80,4 +80,3 @@ impl PhysicsHooks for TerrainMaterialHook<'_> {
         }
     }
 }
-
