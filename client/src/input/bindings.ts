@@ -13,6 +13,8 @@ export type KeyboardCodeBinding =
   | 'ShiftRight'
   | 'ControlLeft'
   | 'ControlRight'
+  | 'AltLeft'
+  | 'AltRight'
   | 'ArrowUp'
   | 'ArrowDown'
   | 'ArrowLeft'
@@ -47,6 +49,7 @@ export type KeyboardBindings = {
   handbrake: KeyboardCodeBinding;
   firePrimaryMouseButton: MouseButtonBinding;
   aimSecondaryMouseButton: MouseButtonBinding;
+  aimSecondaryKey: KeyboardCodeBinding;
 };
 
 export type GamepadBindings = {
@@ -95,6 +98,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     handbrake: 'Space',
     firePrimaryMouseButton: 0,
     aimSecondaryMouseButton: 2,
+    aimSecondaryKey: 'AltLeft',
   },
   gamepad: {
     moveXAxis: 0,
@@ -133,6 +137,8 @@ export const KEYBOARD_CODE_OPTIONS: Array<{ value: KeyboardCodeBinding; label: s
   { value: 'ShiftRight', label: 'Right Shift' },
   { value: 'ControlLeft', label: 'Left Ctrl' },
   { value: 'ControlRight', label: 'Right Ctrl' },
+  { value: 'AltLeft', label: 'Left Alt / Option' },
+  { value: 'AltRight', label: 'Right Alt / Option' },
   { value: 'ArrowUp', label: 'Arrow Up' },
   { value: 'ArrowDown', label: 'Arrow Down' },
   { value: 'ArrowLeft', label: 'Arrow Left' },
@@ -185,6 +191,7 @@ function cloneDefaultBindings(): InputBindings {
 function isKeyboardBinding(value: unknown): value is KeyboardBindings {
   if (!value || typeof value !== 'object') return false;
   const binding = value as Record<string, unknown>;
+  const hasAimSecondaryKey = binding.aimSecondaryKey == null || typeof binding.aimSecondaryKey === 'string';
   return typeof binding.moveForward === 'string'
     && typeof binding.moveBackward === 'string'
     && typeof binding.moveLeft === 'string'
@@ -199,7 +206,9 @@ function isKeyboardBinding(value: unknown): value is KeyboardBindings {
     && typeof binding.materialSlot1 === 'string'
     && typeof binding.materialSlot2 === 'string'
     && typeof binding.handbrake === 'string'
-    && typeof binding.firePrimaryMouseButton === 'number';
+    && typeof binding.firePrimaryMouseButton === 'number'
+    && typeof binding.aimSecondaryMouseButton === 'number'
+    && hasAimSecondaryKey;
 }
 
 function isGamepadBinding(value: unknown): value is GamepadBindings {

@@ -36,6 +36,11 @@ describe('pickActiveFamily', () => {
     expect(pickActiveFamily(null, keyboardMouse, null)).toBe('keyboardMouse');
   });
 
+  it('treats aimSecondary as meaningful input', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', aimSecondary: true, activityId: 1 });
+    expect(pickActiveFamily(null, keyboardMouse, null)).toBe('keyboardMouse');
+  });
+
   it('keeps current family when the other family has no newer activity', () => {
     const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 4 });
     const gamepad = snapshot({ family: 'gamepad', moveX: 1, activityId: 3 });

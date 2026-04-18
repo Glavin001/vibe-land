@@ -143,7 +143,7 @@ export function ControlsSettingsPanel({
         </div>
 
         <div style={bodyStyle}>
-          <BindingSection title="Keyboard + Mouse" subtitle="Mouse look stays on pointer lock movement.">
+          <BindingSection title="Keyboard + Mouse" subtitle="Mouse look stays on pointer lock movement. Aim / Scope can use either the mouse binding or the keyboard key.">
             <div style={tableStyle}>
               {keyboardRows.map((row) => (
                 <BindingRow
@@ -181,7 +181,7 @@ export function ControlsSettingsPanel({
                 onReset={() => onKeyboardBindingReset('firePrimaryMouseButton')}
               />
               <BindingRow
-                label="Aim / Scope"
+                label="Aim / Scope Mouse"
                 currentLabel={mouseButtonLabel(bindings.keyboard.aimSecondaryMouseButton)}
                 editor={(
                   <select
@@ -195,6 +195,22 @@ export function ControlsSettingsPanel({
                   </select>
                 )}
                 onReset={() => onKeyboardBindingReset('aimSecondaryMouseButton')}
+              />
+              <BindingRow
+                label="Aim / Scope Key"
+                currentLabel={keyboardCodeLabel(bindings.keyboard.aimSecondaryKey)}
+                editor={(
+                  <select
+                    value={bindings.keyboard.aimSecondaryKey}
+                    onChange={(event) => onKeyboardBindingChange('aimSecondaryKey', event.target.value as KeyboardBindings['aimSecondaryKey'])}
+                    style={selectStyle}
+                  >
+                    {KEYBOARD_CODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                )}
+                onReset={() => onKeyboardBindingReset('aimSecondaryKey')}
               />
             </div>
           </BindingSection>

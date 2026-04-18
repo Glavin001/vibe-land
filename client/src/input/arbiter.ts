@@ -14,6 +14,7 @@ export function hasMeaningfulInput(snapshot: ActionSnapshot | null): boolean {
     || snapshot.sprint
     || snapshot.crouch
     || snapshot.firePrimary
+    || snapshot.aimSecondary
     || snapshot.handbrake
     || snapshot.interactPressed
     || snapshot.resetVehiclePressed
