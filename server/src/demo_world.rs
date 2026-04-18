@@ -283,12 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn default_world_registers_authored_spawn_areas() {
+    fn default_world_spawn_areas_are_loaded_and_player_lands_within_one() {
+        // trail.world.json defines authored spawn areas; players must spawn inside one.
         let mut arena = PhysicsArena::new(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
         assert!(
             !arena.spawn_areas.is_empty(),
-            "default world should register authored spawn areas from trail.world.json"
+            "default world should load spawn areas from trail.world.json"
         );
         let spawn = arena.spawn_player(42);
         assert!(
@@ -303,9 +304,10 @@ mod tests {
         });
         assert!(
             inside_any_area,
-            "default world spawn ({:.2}, {:.2}) should land inside an authored spawn area",
+            "player spawn ({:.1}, {:.1}) not inside any of the {} spawn areas",
             spawn.x,
-            spawn.z
+            spawn.z,
+            arena.spawn_areas.len(),
         );
     }
 }
