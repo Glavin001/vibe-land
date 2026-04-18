@@ -12,7 +12,10 @@
 #   1. Rust + wasm32 target
 #   2. wasm-pack
 #   3. wasi-sdk (clang + wasi-sysroot + libc++ for wasm32)
-#   4. PhysX/Blast source clone (required by [patch.crates-io] override)
+#
+# NOTE: Step 4 (PhysX/Blast source clone) is no longer needed:
+#   blast-stress-solver v0.1.1 is now sourced from crates.io directly.
+#   The [patch.crates-io] override in Cargo.toml is commented out.
 #
 # See `docs/BLAST_INTEGRATION.md` for the full toolchain story.
 
@@ -104,39 +107,42 @@ export BLAST_WASM_CXX_LIB_DIR
 echo "[vercel-build] BLAST_WASM_CXX_INCLUDE=${BLAST_WASM_CXX_INCLUDE}"
 echo "[vercel-build] BLAST_WASM_CXX_LIB_DIR=${BLAST_WASM_CXX_LIB_DIR}"
 
-# Force the `cc` crate to use wasi-sdk's clang for the wasm32 target.
+# Force the `cc` crate to use wasi-sdk's clang for the wasm32 target ONLY.
+# Use target-triple-specific env vars so native host builds (e.g. cargo install
+# wasm-bindgen-cli, which compiles `ring` for x86_64) continue to use the
+# system compiler and don't fail with "assert.h file not found".
 export CC_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang"
 export CXX_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/clang++"
 export AR_wasm32_unknown_unknown="${WASI_SDK_ROOT}/bin/llvm-ar"
 export CC_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang"
 export CXX_wasm32_wasi="${WASI_SDK_ROOT}/bin/clang++"
 export AR_wasm32_wasi="${WASI_SDK_ROOT}/bin/llvm-ar"
-export TARGET_CC="${WASI_SDK_ROOT}/bin/clang"
-export TARGET_CXX="${WASI_SDK_ROOT}/bin/clang++"
-export TARGET_AR="${WASI_SDK_ROOT}/bin/llvm-ar"
-export CC="${WASI_SDK_ROOT}/bin/clang"
-export CXX="${WASI_SDK_ROOT}/bin/clang++"
-export AR="${WASI_SDK_ROOT}/bin/llvm-ar"
-export PATH="${WASI_SDK_ROOT}/bin:${PATH}"
+# Do NOT export generic CC/CXX/AR or prepend wasi-sdk to PATH — that would
+# cause cargo-install of native crates (ring, wasm-bindgen-cli) to compile
+# with the wasi clang which lacks native system headers.
 
 # Validate env vars point at real paths.
 for var in BLAST_WASM_SYSROOT BLAST_WASM_CXX_INCLUDE BLAST_WASM_CXX_LIB_DIR \
-           CC_wasm32_unknown_unknown CXX_wasm32_unknown_unknown \
-           CC CXX AR; do
+           CC_wasm32_unknown_unknown CXX_wasm32_unknown_unknown; do
   eval "val=\${$var}"
   if [[ ! -e "${val}" ]]; then
     echo "[vercel-build] WARNING: ${var}=${val} does not exist" >&2
   fi
 done
 
-# ── 4. Clone PhysX / Blast stress solver at the pinned SHA ──────────────────
-./scripts/setup-blast.sh
-
-if [[ ! -f "${REPO_ROOT}/third_party/PhysX/blast/blast-stress-solver-rs/build.rs" ]]; then
-  echo "[vercel-build] FATAL: blast-stress-solver crate missing after setup-blast.sh" >&2
-  exit 1
-fi
-echo "[vercel-build] blast-stress-solver ready at third_party/PhysX/blast/blast-stress-solver-rs"
+# ── 4. PhysX/Blast source clone — skipped (not needed with crates.io v0.1.1) ─
+# blast-stress-solver v0.1.1 is published on crates.io with the upstream fix
+# already applied.  The [patch.crates-io] path override in Cargo.toml is
+# commented out.  Re-enable setup-blast.sh only when iterating on the C++
+# source locally.
+#
+# ./scripts/setup-blast.sh
+#
+# if [[ ! -f "${REPO_ROOT}/third_party/PhysX/blast/blast-stress-solver-rs/build.rs" ]]; then
+#   echo "[vercel-build] FATAL: blast-stress-solver crate missing after setup-blast.sh" >&2
+#   exit 1
+# fi
+# echo "[vercel-build] blast-stress-solver ready at third_party/PhysX/blast/blast-stress-solver-rs"
 
 # ── 5. Client install + build ───────────────────────────────────────────────
 echo "[vercel-build] running client install"
