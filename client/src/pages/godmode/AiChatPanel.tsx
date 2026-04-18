@@ -39,10 +39,9 @@ import type { WorldAccessors } from '../../ai/worldToolHelpers';
 import {
   LOCAL_MODEL_APPROX_SIZE_MB,
   LOCAL_MODEL_LABEL,
+  downloadLocalModel,
   isLocalModelReady,
   isWebGpuAvailable,
-  loadLocalModel,
-  type LocalLoadProgress,
 } from '../../ai/localLlm';
 import { useSpeechRecognition } from '../../ai/speech';
 
@@ -52,12 +51,7 @@ export type AiChatPanelHandle = {
 
 type LocalLoadState =
   | { status: 'idle' }
-  | {
-    status: 'downloading';
-    progress: number;
-    file?: string;
-    stage?: LocalLoadProgress['status'];
-  }
+  | { status: 'downloading'; progress: number }
   | { status: 'ready' }
   | { status: 'error'; message: string };
 
@@ -189,18 +183,13 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const startLocalDownload = useCallback(async () => {
     setLocalLoadState({ status: 'downloading', progress: 0 });
     try {
-      await loadLocalModel({
-        onProgress: (evt) => {
-          setLocalLoadState((prev) => {
-            if (prev.status !== 'downloading') return prev;
-            const next: LocalLoadState = {
-              status: 'downloading',
-              progress: clampPercent(evt.progress ?? prev.progress),
-              file: evt.file ?? prev.file,
-              stage: evt.status,
-            };
-            return next;
-          });
+      await downloadLocalModel({
+        onProgress: (progressPct) => {
+          setLocalLoadState((prev) =>
+            prev.status === 'downloading'
+              ? { status: 'downloading', progress: clampPercent(progressPct) }
+              : prev,
+          );
         },
       });
       setLocalLoadState({ status: 'ready' });
@@ -269,7 +258,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const modelOptions = useMemo(() => MODELS[settings.provider], [settings.provider]);
   const placeholderHint = providerIsLocal
     ? localLoadState.status === 'ready'
-      ? `Ask ${LOCAL_MODEL_LABEL} (runs on your device, no tools)…`
+      ? `Ask ${LOCAL_MODEL_LABEL} (runs on your device)…`
       : `Download ${LOCAL_MODEL_LABEL} from Settings to start chatting`
     : apiKey
       ? `Ask ${PROVIDER_LABELS[settings.provider]} (${settings.model}) to edit the world…`
@@ -539,8 +528,7 @@ function LocalModelStatus({
           <div style={{ ...progressFillStyle, width: `${pct}%` }} />
         </div>
         <p style={mutedStyle}>
-          {pct}% · {state.file ?? 'preparing…'}
-          {state.stage ? ` (${state.stage})` : ''}
+          {pct}%
         </p>
       </div>
     );
@@ -550,8 +538,9 @@ function LocalModelStatus({
       <div style={localStatusStyle}>
         <div style={fieldLabelStyle}>{LOCAL_MODEL_LABEL} is ready.</div>
         <p style={mutedStyle}>
-          Inference runs on your device. No API key needed. Tool-calling is disabled
-          for this model.
+          Inference runs on your device. No API key or network calls required.
+          Tool-calling uses Qwen3&apos;s native format — quality is lower than
+          cloud models.
         </p>
       </div>
     );

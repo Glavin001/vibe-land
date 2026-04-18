@@ -21,7 +21,7 @@ import {
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import type { WorldAccessors } from './worldToolHelpers';
-import { generateLocal, isLocalModelReady } from './localLlm';
+import { isLocalModelReady } from './localLlm';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
 
@@ -52,15 +52,6 @@ export type GodModeChatHandle = {
 };
 
 const MAX_TOOL_STEPS = 12;
-
-/**
- * Trimmed system prompt for the local Qwen3-0.6B model. The cloud prompt
- * assumes tool-calling, which we don't wire up for the small on-device model.
- */
-const LOCAL_SYSTEM_PROMPT =
-  'You are a helpful, concise assistant embedded in the GodMode editor of Vibe Land, a 3D world editor. ' +
-  'You do not have tools available: respond in plain text only and suggest what the user could do manually or ' +
-  'what they could ask a cloud model (OpenAI, Anthropic, Google) to do with tools. Keep answers short.';
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   const { accessors, provider, model, apiKey, localReady = false } = options;
@@ -174,37 +165,6 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       abortRef.current = controller;
 
       try {
-        if (isLocal) {
-          setMessages((current) => {
-            const idx = current.findIndex((m) => m.id === assistantId);
-            if (idx === -1) return current;
-            const next = current.slice();
-            next[idx] = { ...current[idx], parts: [{ type: 'text', text: '' }] };
-            return next;
-          });
-          await generateLocal({
-            messages: baseMessages,
-            systemPrompt: LOCAL_SYSTEM_PROMPT,
-            signal: controller.signal,
-            onDelta: (delta) => {
-              setMessages((current) => {
-                const idx = current.findIndex((m) => m.id === assistantId);
-                if (idx === -1) return current;
-                const target = current[idx];
-                const firstText = target.parts[0];
-                const nextParts: ChatPart[] =
-                  firstText && firstText.type === 'text'
-                    ? [{ type: 'text', text: firstText.text + delta }, ...target.parts.slice(1)]
-                    : [{ type: 'text', text: delta }, ...target.parts];
-                const next = current.slice();
-                next[idx] = { ...target, parts: nextParts };
-                return next;
-              });
-            },
-          });
-          setStatus('idle');
-          return;
-        }
         const languageModel = createLanguageModel(provider, model, apiKey ?? '');
         const thinkingOpts = getThinkingProviderOptions(provider, model);
         const result = streamText({

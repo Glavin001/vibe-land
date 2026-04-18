@@ -3,7 +3,7 @@ import type { JSONValue, LanguageModel } from 'ai';
 import { AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI, GoogleGenerativeAIProviderMetadata, GoogleGenerativeAIProviderOptions } from '@ai-sdk/google';
 import { createOpenAI, OpenAIChatLanguageModelOptions, OpenAIResponsesProviderOptions } from '@ai-sdk/openai';
-import { LOCAL_MODEL_LABEL } from './localLlm';
+import { getLocalLanguageModel, LOCAL_MODEL_LABEL } from './localLlm';
 type ProviderOptionsBag = {
   openai?: OpenAIResponsesProviderOptions;
   anthropic?: AnthropicProviderOptions;
@@ -97,7 +97,10 @@ export function createLanguageModel(
   apiKey: string,
 ): LanguageModel {
   if (provider === 'local') {
-    throw new Error('Local provider does not use the AI SDK language-model path.');
+    // The local model ignores `modelId` (only Qwen3-0.6B is wired up) and
+    // doesn't need an API key. The Transformers.js adapter is an AI SDK
+    // LanguageModel, so streamText uses it on the same code path as cloud.
+    return getLocalLanguageModel();
   }
   if (!apiKey) {
     throw new Error(`Missing API key for ${PROVIDER_LABELS[provider]}.`);
