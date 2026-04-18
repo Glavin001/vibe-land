@@ -55,10 +55,18 @@ export type TerrainMaterial = {
 };
 
 export const DEFAULT_TERRAIN_MATERIALS: TerrainMaterial[] = [
+  // Natural / auto-generated (first 4 drive splatmap auto-gen)
   { name: 'grass', color: '#5a8c46', roughness: 0.95, metalness: 0.02, friction: 0.6, restitution: 0.1, flammability: 0.5, fuelLoad: 0.15, burnRate: 0.85, moisture: 0.4 },
   { name: 'rock', color: '#8a8278', roughness: 0.92, metalness: 0.05, friction: 0.8, restitution: 0.3, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.1 },
   { name: 'dirt', color: '#87684a', roughness: 0.98, metalness: 0.01, friction: 0.5, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.3 },
   { name: 'sand', color: '#d6c08d', roughness: 0.96, metalness: 0.01, friction: 0.4, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.05 },
+  // Paintable extras (not auto-generated; apply via paint tool)
+  { name: 'ice', color: '#c8e6f0', roughness: 0.15, metalness: 0.0, friction: 0.05, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 1.0 },
+  { name: 'snow', color: '#f4f8fa', roughness: 0.85, metalness: 0.0, friction: 0.3, restitution: 0.02, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.9 },
+  { name: 'mud', color: '#4a3a28', roughness: 0.98, metalness: 0.02, friction: 0.35, restitution: 0.0, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.95 },
+  { name: 'pavement', color: '#3a3b40', roughness: 0.75, metalness: 0.05, friction: 0.9, restitution: 0.15, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.05 },
+  { name: 'wood', color: '#6b4a2a', roughness: 0.85, metalness: 0.02, friction: 0.65, restitution: 0.2, flammability: 0.4, fuelLoad: 0.9, burnRate: 0.15, moisture: 0.15 },
+  { name: 'lava', color: '#ff5a1a', roughness: 0.5, metalness: 0.0, friction: 0.4, restitution: 0.1, flammability: 1.0, fuelLoad: 1.0, burnRate: 0.05, moisture: 0.0 },
 ];
 
 export const MAX_MATERIAL_CHANNELS = 4;
