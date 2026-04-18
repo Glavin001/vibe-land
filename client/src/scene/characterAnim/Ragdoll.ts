@@ -143,15 +143,23 @@ export class Ragdoll {
         cfg.hx * s, cfg.hy * s, cfg.hz * s,
         bodyWorldPos.x, bodyWorldPos.y, bodyWorldPos.z,
         bodyOrientQuat.x, bodyOrientQuat.y, bodyOrientQuat.z, bodyOrientQuat.w,
-        seedVelocity.x, seedVelocity.y, seedVelocity.z,
+        0, 0, 0,
         0, 0, 0,
       );
 
-      // Add a small random angular kick to pelvis for natural tumble.
-      if (part === 'pelvis') {
+      // Only the torso carries the player's last-frame velocity; limbs are
+      // dragged along by joints for a natural shot reaction.
+      if (part === 'torso') {
         this.runtime.setRagdollBodyVelocity(
           bId,
           seedVelocity.x, seedVelocity.y, seedVelocity.z,
+          0, 0, 0,
+        );
+      } else if (part === 'pelvis') {
+        // Small random angular kick for natural tumble (no linear velocity).
+        this.runtime.setRagdollBodyVelocity(
+          bId,
+          0, 0, 0,
           (Math.random() - 0.5) * 4,
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 4,
