@@ -35,9 +35,12 @@ pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.3;
 pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.2;
 pub const VEHICLE_WHEEL_RADIUS: f32 = 0.35;
 pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
-// Chassis collider density — cuboid 0.9*0.3*1.8m * 8 corners * density ≈ mass in kg.
-// Volume = 0.9*0.6*3.6 ≈ 1.944 m³; density=155 → mass ≈ 300 kg (light car).
-pub const VEHICLE_CHASSIS_DENSITY: f32 = 155.0;
+// Chassis collider density. The chassis is now a Cybertruck-style wedge
+// (`VEHICLE_CHASSIS_HULL_VERTICES`), whose convex-hull volume is ≈ 2.85 m³ —
+// roughly 73% of the previous cuboid's 3.888 m³. Density was 155 kg/m³ for
+// the cuboid; scaled by 3.888 / 2.85 ≈ 1.36 to preserve mass and keep the
+// suspension near critically damped at the same ~300 kg chassis mass.
+pub const VEHICLE_CHASSIS_DENSITY: f32 = 211.0;
 
 /// Vehicle control inputs derived from a player `InputCmd`.
 pub struct VehicleInputCmd {

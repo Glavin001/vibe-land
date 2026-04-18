@@ -33,6 +33,7 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   RIFLE_FIRE_INTERVAL_MS,
@@ -53,7 +54,7 @@ import {
   type WorldDocument,
 } from '../world/worldDocument';
 import {
-  getVehicleChassisHalfExtents,
+  getVehicleDefinition,
   getVehicleWheelConnectionOffsets,
   getVehicleWheelRadiusM,
   getVehicleWheelVisualAnchors,
@@ -63,17 +64,30 @@ import {
   updateLocalVehicleMeshPose,
   type LocalVehicleVisualPoseState,
 } from './vehicleLocalMeshPose';
+import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } from './characterAnim/CharacterFactory';
+import { PLAYER_PROFILE } from './characterAnim/profile';
+import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
+import { STATE } from './characterAnim/types';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+// Keep these in lockstep with `MoveConfig::default()` / hitscan constants in
+// the shared Rust physics code so the debug helper matches the authoritative
+// collision capsule and head zone.
+const PLAYER_CAPSULE_RADIUS = 0.35;
+const PLAYER_CAPSULE_HALF_SEGMENT = 0.45;
+const PLAYER_CAPSULE_BODY_LENGTH = PLAYER_CAPSULE_HALF_SEGMENT * 2;
+const PLAYER_HEAD_RADIUS = 0.22;
+const PLAYER_HEAD_CENTER_OFFSET_Y = 0.75;
 const LOCAL_SHOT_TRACE_TTL_MS = 90;
 const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
 const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
+const PLAYER_DEBUG_HELPER_NAME = 'playerPhysicsDebugHelper';
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -283,7 +297,7 @@ type FrameDebugCallback = (
     recentEvents: string[];
   },
   position: [number, number, number],
-  player: { velocity: [number, number, number]; hp: number; localFlags: number },
+  player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
 ) => void;
 
 type GameWorldProps = {
@@ -298,6 +312,7 @@ type GameWorldProps = {
   inputBindings: InputBindings;
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
+  showDebugHelpers?: boolean;
   benchmarkAutopilot?: {
     enabled: boolean;
     clientIndex: number;
@@ -340,6 +355,56 @@ type VehicleSupportDebugState = {
   contacts: THREE.Mesh[];
   labels: VehicleSupportLabelState[];
 };
+
+function createPlayerDebugHelper(color: number): THREE.Group {
+  const group = new THREE.Group();
+  group.name = PLAYER_DEBUG_HELPER_NAME;
+
+  const capsule = new THREE.Mesh(
+    new THREE.CapsuleGeometry(PLAYER_CAPSULE_RADIUS, PLAYER_CAPSULE_BODY_LENGTH, 6, 12),
+    new THREE.MeshBasicMaterial({
+      color,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  group.add(capsule);
+
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(PLAYER_HEAD_RADIUS, 12, 10),
+    new THREE.MeshBasicMaterial({
+      color: 0xff7a7a,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.75,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  head.position.y = PLAYER_HEAD_CENTER_OFFSET_Y;
+  group.add(head);
+
+  const eyeGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, PLAYER_EYE_HEIGHT, 0),
+  ]);
+  const eyeLine = new THREE.Line(
+    eyeGeometry,
+    new THREE.LineBasicMaterial({
+      color: 0xfff27a,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  );
+  group.add(eyeLine);
+
+  return group;
+}
 
 type LocalVehicleMotionState = {
   vehicleId: number | null;
@@ -778,8 +843,9 @@ function updateVehicleSupportDebug(
   debugState.group.visible = enabled && localVehicleDebug != null;
   if (!debugState.group.visible || !localVehicleDebug) return;
 
-  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets();
-  const wheelRadiusM = getVehicleWheelRadiusM();
+  const vehicleType = vehicleMeshGroup.userData.vehicleType as number | undefined;
+  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets(vehicleType);
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleType);
   const down = new THREE.Vector3(0, -1, 0);
   const up = new THREE.Vector3(0, 1, 0);
   const inverseWorldQuat = vehicleMeshGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
@@ -963,6 +1029,7 @@ export function GameWorld({
   inputBindings,
   onSnapshot,
   rapierDebugModeBits = 0,
+  showDebugHelpers = false,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
@@ -971,6 +1038,7 @@ export function GameWorld({
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
+  const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
   const predictionWorldJson = useMemo(
     () => practiceMode
@@ -1001,11 +1069,14 @@ export function GameWorld({
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
-  const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const localPlayerDebugRef = useRef<THREE.Group>(null);
+  const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
+  const batteryGroupRef = useRef<THREE.Group>(null);
+  const batteryMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
   const selectedMaterialRef = useRef(2);
@@ -1173,6 +1244,12 @@ export function GameWorld({
       practiceBots.detach({ preserveHostBots: true });
     };
   }, [practiceBots, practiceMode, ready]);
+
+  useEffect(() => {
+    preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
+      // CharacterFactory logs the warning and falls back to an empty group.
+    });
+  }, []);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -1899,6 +1976,10 @@ export function GameWorld({
     const pos = predictedPos ?? state.localPosition;
     const yaw = yawRef.current;
     const pitch = pitchRef.current;
+    if (localPlayerDebugRef.current) {
+      localPlayerDebugRef.current.visible = showDebugHelpers && !isDriving;
+      localPlayerDebugRef.current.position.set(pos[0], pos[1], pos[2]);
+    }
 
     if (isDriving && vehiclePoseForCamera) {
       const chassisPos = vehiclePoseForCamera.position;
@@ -2257,6 +2338,7 @@ export function GameWorld({
         {
           velocity: physStats.velocity,
           hp: client?.localPlayerHp ?? 100,
+          energy: client?.localPlayerEnergy ?? 0,
           localFlags: client?.localPlayerFlags ?? 0,
         },
       );
@@ -2355,18 +2437,18 @@ export function GameWorld({
 
     for (const [id, rp] of currentRemote) {
       activeIds.add(id);
-      let playerGroup = remoteMeshes.current.get(id);
-      if (!playerGroup) {
-        playerGroup = createPlayerMesh(id);
-        group.add(playerGroup);
-        remoteMeshes.current.set(id, playerGroup);
+      let handle = remoteMeshes.current.get(id);
+      if (!handle) {
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
+        attachPlayerIdLabel(handle.root, id);
+        remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
       let yaw = sample?.yaw ?? rp.yaw;
-      const hp = sample?.hp ?? rp.hp;
       const replicatedHp = rp.hp;
       const previousHp = remoteLastHpRef.current.get(id);
       if (previousHp != null && replicatedHp < previousHp) {
@@ -2375,6 +2457,7 @@ export function GameWorld({
       remoteLastHpRef.current.set(id, replicatedHp);
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
+      const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2394,33 +2477,32 @@ export function GameWorld({
           break;
         }
       }
-      playerGroup.position.set(position[0], position[1], position[2]);
-      playerGroup.rotation.y = yaw;
-      const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
-      const head = playerGroup.getObjectByName('head');
-      const nose = playerGroup.getObjectByName('nose');
-      if (body) body.visible = !isInVehicle;
-      if (head) head.visible = !isInVehicle;
-      if (nose) nose.visible = !isInVehicle;
-      if (body && body.material instanceof THREE.MeshStandardMaterial) {
-        const baseColor = body.userData.baseColor as THREE.Color | undefined;
-        const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
-        const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
-        const flashColor = new THREE.Color(0xfff36b);
-        body.material.opacity = isDead ? 0.35 : 1;
-        body.material.transparent = isDead;
-        if (baseColor) {
-          body.material.color.copy(baseColor).lerp(flashColor, flashAlpha);
-          body.material.emissive.copy(baseColor).lerp(flashColor, flashAlpha * 0.85);
-        }
-        body.material.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.3, flashAlpha * 1.2);
-      }
+      handle.root.position.set(position[0], position[1], position[2]);
+      handle.root.rotation.y = yaw;
+      handle.setVisible(!isInVehicle);
+      const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
+      if (debugHelper) debugHelper.visible = showDebugHelpers && !isInVehicle;
+
+      const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
+      const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
+      handle.setFlash(0xfff36b, flashAlpha);
+      handle.setOpacity(isDead ? 0.35 : 1);
+
+      const vx = sample?.velocity[0] ?? 0;
+      const vz = sample?.velocity[2] ?? 0;
+      const horizontalSpeed = Math.hypot(vx, vz);
+      const renderState: RemoteRenderState = isDead
+        ? 'dead'
+        : horizontalSpeed > 0.1
+          ? STATE.move
+          : STATE.idle;
+      handle.update(frameDelta, renderState, horizontalSpeed, isOnGround);
     }
 
     // Remove stale
-    for (const [id, mesh] of remoteMeshes.current) {
+    for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
-        group.remove(mesh);
+        handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
@@ -2491,6 +2573,41 @@ export function GameWorld({
     }
 
     // --- Vehicle rendering ---
+    const batGroup = batteryGroupRef.current;
+    if (batGroup && client) {
+      const activeBatteryIds = new Set<number>();
+      for (const [id, battery] of client.batteries) {
+        activeBatteryIds.add(id);
+        let mesh = batteryMeshes.current.get(id);
+        if (!mesh) {
+          mesh = new THREE.Mesh(
+            new THREE.CylinderGeometry(battery.radius, battery.radius, battery.height, 16),
+            new THREE.MeshStandardMaterial({
+              color: 0xffd24a,
+              emissive: 0x886400,
+              emissiveIntensity: 0.6,
+              roughness: 0.35,
+              metalness: 0.7,
+            }),
+          );
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          batGroup.add(mesh);
+          batteryMeshes.current.set(id, mesh);
+        }
+        mesh.position.set(battery.position[0], battery.position[1], battery.position[2]);
+      }
+      for (const [id, mesh] of batteryMeshes.current) {
+        if (!activeBatteryIds.has(id)) {
+          batGroup.remove(mesh);
+          (mesh.geometry as THREE.BufferGeometry).dispose();
+          (mesh.material as THREE.Material).dispose();
+          batteryMeshes.current.delete(id);
+        }
+      }
+    }
+
+    // --- Vehicle rendering ---
     const vGroup = vehicleGroupRef.current;
     if (vGroup && client) {
       const activeVehicleIds = new Set<number>();
@@ -2502,9 +2619,13 @@ export function GameWorld({
 
       for (const [id, vs] of client.vehicles) {
         activeVehicleIds.add(id);
+        const vehicleType = vs.vehicleType ?? 0;
         let vehicleMeshGroup = vehicleMeshes.current.get(id);
-        if (!vehicleMeshGroup) {
-          vehicleMeshGroup = createVehicleMesh(id);
+        if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType) {
+          if (vehicleMeshGroup) {
+            vGroup.remove(vehicleMeshGroup);
+          }
+          vehicleMeshGroup = createVehicleMesh(id, vehicleType);
           vGroup.add(vehicleMeshGroup);
           vehicleMeshes.current.set(id, vehicleMeshGroup);
         }
@@ -2602,11 +2723,19 @@ export function GameWorld({
 
       <RapierDebugLines runtimeRef={runtimeRef} modeBits={rapierDebugModeBits} />
 
+      {/* Local player physics capsule */}
+      <group ref={localPlayerDebugRef}>
+        <primitive object={localPlayerDebugHelper} />
+      </group>
+
       {/* Remote player group */}
       <group ref={remoteGroupRef} />
 
       {/* Dynamic body group */}
       <group ref={dynamicBodyGroupRef} />
+
+      {/* Battery group */}
+      <group ref={batteryGroupRef} />
 
       {/* Vehicle group */}
       <group ref={vehicleGroupRef} />
@@ -2804,46 +2933,265 @@ function updateLocalShotTraceVisuals(
   }
 }
 
-function createVehicleMesh(_id: number): THREE.Group {
+type VehicleSurfaceSegment = { z0: number; y0: number; z1: number; y1: number };
+
+function vehicleSideProfile(vehicleType: number): [number, number][] {
+  const definition = getVehicleDefinition(vehicleType);
+  const leftX = -definition.chassisHalfExtents.x;
+  const sideProfile = definition.chassisHullVertices
+    .filter(([x]) => Math.abs(x - leftX) < 0.001)
+    .map(([, y, z]) => [z, y] as [number, number]);
+  if (sideProfile.length > 0) {
+    return sideProfile;
+  }
+  return definition.chassisHullVertices
+    .slice(0, definition.chassisHullVertices.length / 2)
+    .map(([, y, z]) => [z, y] as [number, number]);
+}
+
+function profileSegment(
+  sideProfile: [number, number][],
+  start: number,
+  end: number,
+): VehicleSurfaceSegment {
+  const [z0, y0] = sideProfile[start] ?? sideProfile[0] ?? [0, 0];
+  const [z1, y1] = sideProfile[end] ?? sideProfile[start] ?? [0, 0];
+  return { z0, y0, z1, y1 };
+}
+
+function addVehicleGlassPanels(
+  group: THREE.Group,
+  halfWidth: number,
+  segments: VehicleSurfaceSegment[],
+): void {
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0c10,
+    metalness: 0.25,
+    roughness: 0.12,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const glassInset = 0.012;
+  for (const seg of segments) {
+    const dz = seg.z1 - seg.z0;
+    const dy = seg.y1 - seg.y0;
+    const len = Math.hypot(dz, dy);
+    if (len < 1e-4) continue;
+    const nz = -dy / len;
+    const ny = dz / len;
+    const panelGeom = new THREE.PlaneGeometry(halfWidth * 2, len);
+    const panel = new THREE.Mesh(panelGeom, glassMat);
+    const midZ = (seg.z0 + seg.z1) / 2 - nz * glassInset;
+    const midY = (seg.y0 + seg.y1) / 2 - ny * glassInset;
+    panel.position.set(0, midY, midZ);
+    panel.rotation.set(Math.atan2(dy, dz) - Math.PI / 2, 0, 0);
+    panel.receiveShadow = true;
+    group.add(panel);
+  }
+}
+
+function addCybertruckTrim(
+  group: THREE.Group,
+  chassisHalfExtents: { x: number; y: number; z: number },
+  wheelVisualAnchors: [number, number, number][],
+  sideProfile: [number, number][],
+): void {
+  addVehicleGlassPanels(group, chassisHalfExtents.x - 0.08, [
+    profileSegment(sideProfile, 3, 4),
+    profileSegment(sideProfile, 4, 5),
+  ]);
+
+  const lightBarMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xffffff,
+    emissiveIntensity: 1.2,
+    roughness: 0.4,
+    metalness: 0.0,
+  });
+  const frontLight = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.03, 0.02), lightBarMat);
+  frontLight.position.set(0, 0.02, chassisHalfExtents.z - 0.005);
+  group.add(frontLight);
+
+  const tailLightMat = new THREE.MeshStandardMaterial({
+    color: 0xff2020,
+    emissive: 0xff1a1a,
+    emissiveIntensity: 1.0,
+    roughness: 0.4,
+    metalness: 0.0,
+  });
+  const tailLight = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.03, 0.02), tailLightMat);
+  tailLight.position.set(0, 0.09, -chassisHalfExtents.z + 0.005);
+  group.add(tailLight);
+
+  const claddingMat = new THREE.MeshStandardMaterial({
+    color: 0x15171a,
+    roughness: 0.95,
+    metalness: 0.05,
+  });
+  const claddingGeom = new THREE.BoxGeometry(
+    chassisHalfExtents.x * 2 + 0.02,
+    0.12,
+    chassisHalfExtents.z * 2 - 0.1,
+  );
+  const cladding = new THREE.Mesh(claddingGeom, claddingMat);
+  cladding.position.set(0, -chassisHalfExtents.y + 0.06, 0);
+  cladding.castShadow = true;
+  cladding.receiveShadow = true;
+  group.add(cladding);
+
+  const sideInsetMat = new THREE.MeshStandardMaterial({
+    color: 0x252a31,
+    roughness: 0.82,
+    metalness: 0.18,
+  });
+  for (const side of [-1, 1]) {
+    const forwardInset = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.20, 1.05), sideInsetMat);
+    forwardInset.position.set(side * (chassisHalfExtents.x - 0.02), -0.01, 0.78);
+    group.add(forwardInset);
+
+    const rearInset = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.18, 1.55), sideInsetMat);
+    rearInset.position.set(side * (chassisHalfExtents.x - 0.02), -0.03, -0.75);
+    group.add(rearInset);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const [ax, , az] = wheelVisualAnchors[i];
+    const isFront = i < 2;
+    const arch = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, isFront ? 0.24 : 0.21, isFront ? 0.82 : 0.76),
+      claddingMat,
+    );
+    arch.position.set(
+      ax * 0.985,
+      isFront ? -0.04 : -0.06,
+      az + (isFront ? 0.03 : -0.01),
+    );
+    arch.castShadow = true;
+    group.add(arch);
+  }
+}
+
+function addDeloreanTrim(
+  group: THREE.Group,
+  chassisHalfExtents: { x: number; y: number; z: number },
+  sideProfile: [number, number][],
+): void {
+  addVehicleGlassPanels(group, chassisHalfExtents.x - 0.1, [
+    profileSegment(sideProfile, 2, 3),
+    profileSegment(sideProfile, 3, 4),
+    profileSegment(sideProfile, 4, 5),
+  ]);
+
+  const fasciaMat = new THREE.MeshStandardMaterial({
+    color: 0x1c2026,
+    roughness: 0.7,
+    metalness: 0.15,
+  });
+  const frontFascia = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.08, 0.08), fasciaMat);
+  frontFascia.position.set(0, -0.12, chassisHalfExtents.z - 0.04);
+  group.add(frontFascia);
+
+  const tailPanelMat = new THREE.MeshStandardMaterial({
+    color: 0x842a22,
+    emissive: 0x5e1b15,
+    emissiveIntensity: 0.9,
+    roughness: 0.45,
+    metalness: 0.0,
+  });
+  const tailPanel = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.08, 0.05), tailPanelMat);
+  tailPanel.position.set(0, 0.06, -chassisHalfExtents.z + 0.03);
+  group.add(tailPanel);
+
+  const sideTrimMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2f36,
+    roughness: 0.55,
+    metalness: 0.4,
+  });
+  for (const side of [-1, 1]) {
+    const sideTrim = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.1, 1.4), sideTrimMat);
+    sideTrim.position.set(side * (chassisHalfExtents.x - 0.03), -0.02, -0.1);
+    group.add(sideTrim);
+  }
+
+  const louverMat = new THREE.MeshStandardMaterial({
+    color: 0x20242a,
+    roughness: 0.8,
+    metalness: 0.1,
+  });
+  for (let index = 0; index < 4; index += 1) {
+    const louver = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.02, 0.18), louverMat);
+    louver.position.set(0, 0.18 + index * 0.025, -0.85 - index * 0.08);
+    louver.rotation.x = -0.28;
+    group.add(louver);
+  }
+}
+
+function createVehicleMesh(_id: number, vehicleType: number): THREE.Group {
   const group = new THREE.Group();
-  const wheelVisualAnchors = getVehicleWheelVisualAnchors();
-  const chassisHalfExtents = getVehicleChassisHalfExtents();
+  const vehicleDefinition = getVehicleDefinition(vehicleType);
+  const wheelVisualAnchors = getVehicleWheelVisualAnchors(vehicleDefinition.vehicleType);
+  const chassisHalfExtents = vehicleDefinition.chassisHalfExtents;
+  const sideProfile = vehicleSideProfile(vehicleDefinition.vehicleType);
+  group.userData.vehicleType = vehicleDefinition.vehicleType;
+  group.userData.vehicleKey = vehicleDefinition.key;
   group.userData.renderState = {
     lastBodyPosition: null,
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
   } satisfies VehicleRenderState;
 
-  // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
-  const chassisGeom = new THREE.BoxGeometry(
-    chassisHalfExtents.x * 2,
-    chassisHalfExtents.y * 2,
-    chassisHalfExtents.z * 2,
+  const bodyShape = new THREE.Shape();
+  bodyShape.moveTo(sideProfile[0]?.[0] ?? -chassisHalfExtents.z, sideProfile[0]?.[1] ?? -chassisHalfExtents.y);
+  for (let i = 1; i < sideProfile.length; i++) {
+    bodyShape.lineTo(sideProfile[i][0], sideProfile[i][1]);
+  }
+  bodyShape.closePath();
+  const bodyGeom = new THREE.ExtrudeGeometry(bodyShape, {
+    depth: chassisHalfExtents.x * 2,
+    bevelEnabled: vehicleDefinition.key === 'cybertruck',
+    bevelSize: 0.015,
+    bevelThickness: 0.015,
+    bevelSegments: 1,
+    curveSegments: 1,
+  });
+  bodyGeom.translate(0, 0, -chassisHalfExtents.x);
+  bodyGeom.rotateY(-Math.PI / 2);
+  const body = new THREE.Mesh(bodyGeom, new THREE.MeshStandardMaterial({
+    color: vehicleDefinition.key === 'cybertruck' ? 0xc9ccd1 : 0xb8bcc5,
+    roughness: vehicleDefinition.key === 'cybertruck' ? 0.38 : 0.28,
+    metalness: 0.85,
+    flatShading: vehicleDefinition.key === 'cybertruck',
+  }));
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  if (vehicleDefinition.key === 'cybertruck') {
+    addCybertruckTrim(group, chassisHalfExtents, wheelVisualAnchors, sideProfile);
+  } else {
+    addDeloreanTrim(group, chassisHalfExtents, sideProfile);
+  }
+
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleDefinition.vehicleType);
+  const tireWidth = 0.33;
+  const tireGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, tireWidth, 20);
+  const tireMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a,
+    roughness: 0.95,
+    metalness: 0.0,
+    flatShading: true,
+  });
+  const rimGeom = new THREE.CylinderGeometry(
+    wheelRadiusM * 0.6,
+    wheelRadiusM * 0.6,
+    tireWidth + 0.01,
+    8,
   );
-  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
-  const chassis = new THREE.Mesh(chassisGeom, chassisMat);
-  chassis.castShadow = true;
-  chassis.receiveShadow = true;
-  group.add(chassis);
-
-  // Keep visual detail inside the collider bounds so the mesh reads honestly.
-  const roofGeom = new THREE.BoxGeometry(1.2, 0.18, 1.4);
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x9ba5b4, roughness: 0.46, metalness: 0.18 });
-  const roof = new THREE.Mesh(roofGeom, roofMat);
-  roof.position.set(0, 0.14, -0.05);
-  roof.castShadow = true;
-  group.add(roof);
-
-  const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
-  const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.position.set(0, 0.04, chassisHalfExtents.z - 0.42);
-  nose.castShadow = true;
-  group.add(nose);
-
-  // Wheels: FL, FR, RL, RR
-  const wheelRadiusM = getVehicleWheelRadiusM();
-  const wheelGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, 0.3, 12);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
+  const rimMat = new THREE.MeshStandardMaterial({
+    color: vehicleDefinition.key === 'cybertruck' ? 0x2a2e33 : 0x737882,
+    roughness: 0.5,
+    metalness: 0.6,
+    flatShading: true,
+  });
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
     pivot.position.set(...wheelVisualAnchors[i]);
@@ -2854,11 +3202,16 @@ function createVehicleMesh(_id: number): THREE.Group {
     spinGroup.name = `wheel_spin_${i}`;
     pivot.add(spinGroup);
 
-    const wheel = new THREE.Mesh(wheelGeom, wheelMat);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.name = `wheel_${i}`;
-    wheel.castShadow = true;
-    spinGroup.add(wheel);
+    const tire = new THREE.Mesh(tireGeom, tireMat);
+    tire.rotation.z = Math.PI / 2;
+    tire.name = `wheel_${i}`;
+    tire.castShadow = true;
+    spinGroup.add(tire);
+
+    const rim = new THREE.Mesh(rimGeom, rimMat);
+    rim.rotation.z = Math.PI / 2;
+    rim.castShadow = true;
+    spinGroup.add(rim);
   }
 
   return group;
@@ -2880,7 +3233,8 @@ function updateVehicleWheelVisuals(
 ): void {
   const renderState = vehicleMeshGroup.userData.renderState as VehicleRenderState | undefined;
   if (!renderState) return;
-  const wheelRadiusM = getVehicleWheelRadiusM();
+  const vehicleType = vehicleMeshGroup.userData.vehicleType as number | undefined;
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleType);
 
   const bodySpeed = estimateVehicleForwardSpeed(renderState.lastBodyPosition, position, quaternion, frameDeltaSec);
   renderState.lastBodyPosition = [...position];
@@ -2941,37 +3295,7 @@ function estimateVehicleForwardSpeed(
   return velocity.dot(forward);
 }
 
-function createPlayerMesh(id: number): THREE.Group {
-  const group = new THREE.Group();
-  const color = PLAYER_COLORS[id % PLAYER_COLORS.length];
-
-  // Body capsule
-  const bodyGeom = new THREE.CapsuleGeometry(0.35, 0.9, 8, 12);
-  const bodyMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 });
-  const body = new THREE.Mesh(bodyGeom, bodyMat);
-  body.name = 'body';
-  body.userData.baseColor = new THREE.Color(color);
-  body.position.y = 0;
-  group.add(body);
-
-  // Head
-  const headGeom = new THREE.SphereGeometry(0.22, 12, 8);
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
-  const head = new THREE.Mesh(headGeom, headMat);
-  head.name = 'head';
-  head.position.y = 0.75;
-  group.add(head);
-
-  // Direction indicator
-  const noseGeom = new THREE.ConeGeometry(0.1, 0.25, 6);
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
-  const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.name = 'nose';
-  nose.rotation.x = -Math.PI / 2;
-  nose.position.set(0, 0.75, 0.3);
-  group.add(nose);
-
-  // Player ID label
+function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 48;
@@ -2985,9 +3309,10 @@ function createPlayerMesh(id: number): THREE.Group {
   const texture = new THREE.CanvasTexture(canvas);
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'idLabel';
   sprite.scale.set(1.2, 0.45, 1);
-  sprite.position.y = 1.4;
-  group.add(sprite);
-
-  return group;
+  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
+  // Place the label just above the head.
+  sprite.position.y = 1.0;
+  parent.add(sprite);
 }

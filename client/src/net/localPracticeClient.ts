@@ -1,6 +1,7 @@
 import { PlayerInterpolator, ServerClockEstimator, type DynamicBodySample, type VehicleSample } from './interpolation';
 import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
+  type BatteryStateMeters,
   SIM_HZ,
   encodeInputBundle,
   netPlayerStateToMeters,
@@ -15,6 +16,7 @@ import {
 } from './protocol';
 import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstants';
 import {
+  decodeLocalSessionBatteries,
   decodeLocalSessionDynamicBodies,
   decodeLocalSessionPlayers,
   decodeLocalSessionPlayerState,
@@ -52,12 +54,14 @@ export class LocalPracticeClient implements PracticeBotHost {
   readonly remotePlayers = new Map<number, RemotePlayer>();
   readonly dynamicBodies = new Map<number, DynamicBodyStateMeters>();
   readonly vehicles = new Map<number, VehicleStateMeters>();
+  readonly batteries = new Map<number, BatteryStateMeters>();
 
   playerId = 0;
   latestServerTick = 0;
   interpolationDelayMs = 0;
   dynamicBodyInterpolationDelayMs = 0;
   localPlayerHp = 100;
+  localPlayerEnergy = 0;
   localPlayerFlags = 0;
   rttMs = 0;
   currentAckInputSeq = 0;
@@ -332,6 +336,7 @@ export class LocalPracticeClient implements PracticeBotHost {
     this.currentLocalPlayerState = playerState;
     if (playerState) {
       this.localPlayerHp = playerState.hp;
+      this.localPlayerEnergy = playerState.energyCenti / 100;
       this.localPlayerFlags = playerState.flags;
       if (emitCallbacks) {
         this.config.onLocalSnapshot?.(ackInputSeq, playerState);
@@ -341,6 +346,7 @@ export class LocalPracticeClient implements PracticeBotHost {
     this.syncRemotePlayers(serverTimeUs, session.getRemotePlayerStates());
     this.syncDynamicBodies(serverTimeUs, session.getDynamicBodyStates());
     const localVehicleState = this.syncVehicles(serverTimeUs, session.getVehicleStates());
+    this.syncBatteries(session.getBatteryStates());
     this.currentLocalVehicleState = localVehicleState;
     if (localVehicleState && emitCallbacks) {
       this.config.onLocalVehicleSnapshot?.(localVehicleState, ackInputSeq);
@@ -423,5 +429,19 @@ export class LocalPracticeClient implements PracticeBotHost {
     }
 
     return localVehicleState;
+  }
+
+  private syncBatteries(raw: ArrayLike<number>): void {
+    const activeIds = new Set<number>();
+    for (const battery of decodeLocalSessionBatteries(raw)) {
+      activeIds.add(battery.id);
+      this.batteries.set(battery.id, battery);
+    }
+
+    for (const id of [...this.batteries.keys()]) {
+      if (!activeIds.has(id)) {
+        this.batteries.delete(id);
+      }
+    }
   }
 }

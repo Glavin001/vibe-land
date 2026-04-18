@@ -1,0 +1,62 @@
+// Animation profile ported from Kinema's PLAYER_PROFILE
+// (src/character/animation/profiles.ts). Clip names match the Quaternius
+// Universal Animation Library bundled GLBs verbatim, so every clip is
+// addressable by string from playOneShot()/playLoop() even if the state
+// is not driven by netcode yet.
+
+import type { AnimationProfile } from './types';
+
+const UAL1_URL = '/models/UAL1_Standard.glb';
+const UAL2_URL = '/models/UAL2_Standard.glb';
+
+export const PLAYER_PROFILE: AnimationProfile = {
+  id: 'ual-mannequin-player',
+  modelUrl: UAL1_URL,
+  animationUrls: [UAL1_URL, UAL2_URL],
+  stateMap: {
+    idle: { clip: 'Idle_Loop', loop: true },
+    jump: { clip: 'Jump_Start', loop: false },
+    air: { clip: 'Jump_Loop', loop: true },
+    land: { clip: 'Jump_Land', loop: false },
+    crouch: { clip: 'Crouch_Idle_Loop', loop: true },
+    interact: { clip: 'Interact', loop: false },
+    grab: { clip: 'Push_Loop', loop: true },
+    airJump: { clip: 'NinjaJump_Start', loop: false },
+    climb: { clip: 'ClimbUp_1m_RM', loop: true },
+    rope: { clip: 'NinjaJump_Idle_Loop', loop: true },
+  },
+  locomotion: {
+    walk: 'Walk_Loop',
+    jog: 'Jog_Fwd_Loop',
+    sprint: 'Sprint_Loop',
+    thresholds: [2.0, 4.0],
+  },
+  crouchLocomotion: {
+    idle: 'Crouch_Idle_Loop',
+    moving: 'Crouch_Fwd_Loop',
+  },
+  carryLocomotion: {
+    idle: 'Idle_Loop',
+    moving: 'Walk_Carry_Loop',
+  },
+  fallbacks: {
+    land: 'idle',
+  },
+  deathClip: 'Death01',
+  throwClip: 'OverhandThrow',
+  spikeDamageClipCandidates: ['Hit_Chest', 'Hit_Head'],
+  additiveOneShots: ['OverhandThrow', 'Interact', 'Hit_Chest', 'Hit_Head'],
+  animationEvents: {
+    OverhandThrow: [{ time: 0.35, event: 'release' }],
+  },
+};
+
+export const NPC_PROFILE: AnimationProfile = {
+  id: 'ual-mannequin-npc',
+  modelUrl: UAL1_URL,
+  animationUrls: [UAL1_URL],
+  stateMap: {
+    idle: { clip: 'Idle_Loop', loop: true },
+    move: { clip: 'Walk_Loop', loop: true },
+  },
+};

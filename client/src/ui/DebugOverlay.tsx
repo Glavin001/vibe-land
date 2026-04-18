@@ -197,6 +197,7 @@ export type DebugStats = {
   velocity: [number, number, number];
   speedMs: number;
   hp: number;
+  energy: number;
   onGround: boolean;
   inVehicle: boolean;
   dead: boolean;
@@ -396,6 +397,7 @@ export const DEFAULT_STATS: DebugStats = {
   velocity: [0, 0, 0],
   speedMs: 0,
   hp: 100,
+  energy: 0,
   onGround: false,
   inVehicle: false,
   dead: false,
@@ -654,6 +656,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     '## Player',
     `- player_id: ${stats.playerId}`,
     `- hp: ${stats.hp}`,
+    `- energy: ${fmt(stats.energy, 1)}`,
     `- status_flags: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`,
     `- pos_m: [${fmt(p[0], 3)}, ${fmt(p[1], 3)}, ${fmt(p[2], 3)}]`,
     `- vel_mps: [${fmt(v[0], 3)}, ${fmt(v[1], 3)}, ${fmt(v[2], 3)}]`,
@@ -691,6 +694,8 @@ export function DebugOverlay({
   onToggleLocalRenderSmoothing,
   vehicleSmoothingEnabled = false,
   onToggleVehicleSmoothing,
+  rapierDebugLabel = 'off',
+  onCycleRapierDebugPreset,
   deepCaptureEnabled = false,
   deepCaptureSampleCount = 0,
 }: {
@@ -700,6 +705,8 @@ export function DebugOverlay({
   onToggleLocalRenderSmoothing?: () => void;
   vehicleSmoothingEnabled?: boolean;
   onToggleVehicleSmoothing?: () => void;
+  rapierDebugLabel?: string;
+  onCycleRapierDebugPreset?: () => void;
   deepCaptureEnabled?: boolean;
   deepCaptureSampleCount?: number;
 }) {
@@ -794,6 +801,7 @@ export function DebugOverlay({
             }}
           >
             <div>F3 show / hide</div>
+            <div>F6 Rapier debug</div>
             <div>F4 copy report</div>
             <div>F7 deep capture</div>
           </div>
@@ -919,6 +927,66 @@ export function DebugOverlay({
               : 'Uses the raw local vehicle pose so you can verify whether the filter is causing the wobble.'}
           </div>
         </div>
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: stats.rapierDebugModeBits !== 0
+              ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+              : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))',
+            border: `1px solid ${stats.rapierDebugModeBits !== 0 ? 'rgba(118, 255, 170, 0.28)' : 'rgba(228, 234, 241, 0.18)'}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Rapier Physics Debug
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Toggle the collider wireframe overlay for physics inspection.
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={stats.rapierDebugModeBits !== 0}
+              onClick={onCycleRapierDebugPreset}
+              style={{
+                background: stats.rapierDebugModeBits !== 0 ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${stats.rapierDebugModeBits !== 0 ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: stats.rapierDebugModeBits !== 0 ? '#98ffbc' : '#d8dee6',
+                borderRadius: 999,
+                cursor: onCycleRapierDebugPreset ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: stats.rapierDebugModeBits !== 0 ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Rapier ${rapierDebugLabel.toUpperCase()}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {'Click to cycle off -> shapes -> joints -> full. F6 toggles off/shapes, Shift+F6 cycles every mode.'}
+          </div>
+        </div>
       </div>
 
       <Section title="Rendering">
@@ -1029,7 +1097,7 @@ export function DebugOverlay({
       )}
 
       <Section title="Player">
-        {`ID: ${stats.playerId}  HP: ${stats.hp}`}
+        {`ID: ${stats.playerId}  HP: ${stats.hp}  Energy: ${fmt(stats.energy, 1)}`}
         {`Status: ${fmtFlags(stats.onGround, stats.inVehicle, stats.dead)}`}
         {`Pos: ${fmt(p[0], 2)}, ${fmt(p[1], 2)}, ${fmt(p[2], 2)}`}
         {`Vel: ${fmt(v[0], 2)}, ${fmt(v[1], 2)}, ${fmt(v[2], 2)}`}

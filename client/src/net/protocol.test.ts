@@ -29,6 +29,8 @@ import {
   PKT_SHOT_RESULT,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
+  PKT_LOCAL_PLAYER_ENERGY,
+  PKT_BATTERY_SYNC,
   PKT_PING,
   PKT_PONG,
 } from './protocol';
@@ -460,6 +462,60 @@ describe('V2 metadata decode', () => {
   });
 });
 
+function buildLocalPlayerEnergyBinary(energyCenti = 12345): Uint8Array {
+  const buf = new Uint8Array(1 + 4);
+  const view = new DataView(buf.buffer);
+  view.setUint8(0, PKT_LOCAL_PLAYER_ENERGY);
+  view.setUint32(1, energyCenti, true);
+  return buf;
+}
+
+function buildBatterySyncBinary(): Uint8Array {
+  const buf = new Uint8Array(1 + 1 + 2 + 2 + 24 + 4);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_BATTERY_SYNC);
+  view.setUint8(o++, 1);
+  view.setUint16(o, 1, true); o += 2;
+  view.setUint16(o, 1, true); o += 2;
+  view.setUint32(o, 77, true); o += 4;
+  view.setInt32(o, 1500, true); o += 4;
+  view.setInt32(o, 250, true); o += 4;
+  view.setInt32(o, -2000, true); o += 4;
+  view.setUint32(o, 4321, true); o += 4;
+  view.setUint16(o, 60, true); o += 2;
+  view.setUint16(o, 140, true); o += 2;
+  view.setUint32(o, 88, true);
+  return buf;
+}
+
+describe('energy and battery reliable decode', () => {
+  it('decodes owner-only local energy packets', () => {
+    const packet = decodeServerReliablePacket(buildLocalPlayerEnergyBinary(54321));
+    expect(packet).toEqual({ type: 'localPlayerEnergy', energyCenti: 54321 });
+  });
+
+  it('decodes battery sync packets with state and removals', () => {
+    const packet = decodeServerReliablePacket(buildBatterySyncBinary());
+    expect(packet.type).toBe('batterySync');
+    if (packet.type === 'batterySync') {
+      expect(packet.fullResync).toBe(true);
+      expect(packet.batteryStates).toEqual([
+        {
+          id: 77,
+          pxMm: 1500,
+          pyMm: 250,
+          pzMm: -2000,
+          energyCenti: 4321,
+          radiusCm: 60,
+          heightCm: 140,
+        },
+      ]);
+      expect(packet.removedIds).toEqual([88]);
+    }
+  });
+});
+
 // ──────────────────────────────────────────────
 // Welcome packet decode
 // ──────────────────────────────────────────────
@@ -626,6 +682,11 @@ describe('decodeServerPacket', () => {
     const binary = buildShotResultBinary({});
     const packet = decodeServerPacket(binary);
     expect(packet.type).toBe('shotResult');
+  });
+
+  it('dispatches local energy and battery sync packets', () => {
+    expect(decodeServerPacket(buildLocalPlayerEnergyBinary()).type).toBe('localPlayerEnergy');
+    expect(decodeServerPacket(buildBatterySyncBinary()).type).toBe('batterySync');
   });
 
   it('throws on unknown packet kind', () => {

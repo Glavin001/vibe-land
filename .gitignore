@@ -7,10 +7,10 @@ tsconfig.tsbuildinfo
 debug*.log
 inspiration/
 loadtest-results/
-client/benchmark-results/
-client/e2e/test-results/
-client/e2e/playwright-report/
-client/e2e/blob-report/
+benchmark-results/
+test-results/
+playwright-report/
+blob-report/
 logs/
 .vercel
 .env*.local

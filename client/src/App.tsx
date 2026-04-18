@@ -18,6 +18,7 @@ import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
+import { EnergyBar } from './ui/EnergyBar';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -182,6 +183,8 @@ export function App({
     deepCaptureEnabled,
     deepCaptureSampleCount,
     rapierDebugModeBits,
+    rapierDebugLabel,
+    cycleRapierDebugPreset,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const touchMode = isTouchDevice();
@@ -945,6 +948,11 @@ export function App({
         onResetNavTuning={handleResetBotNavTuning}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
       />
+      <EnergyBar
+        hp={displayStats.hp}
+        energy={displayStats.energy}
+        visible={connected}
+      />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -952,6 +960,8 @@ export function App({
         onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
         vehicleSmoothingEnabled={vehicleSmoothingEnabled}
         onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        rapierDebugLabel={rapierDebugLabel}
+        onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
         deepCaptureSampleCount={deepCaptureSampleCount}
       />
@@ -983,6 +993,7 @@ export function App({
           rapierDebugModeBits={rapierDebugModeBits}
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
+          showDebugHelpers={debugVisible}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceMode ? practiceBotRuntime : null}
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}

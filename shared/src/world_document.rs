@@ -3,10 +3,7 @@ use std::fmt;
 use nalgebra::{vector, DMatrix, Quaternion, UnitQuaternion, Vector3};
 use serde::{de::Deserializer, Deserialize, Serialize};
 
-use crate::{
-    movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS},
-    vehicle::{VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_WHEEL_OFFSETS},
-};
+use crate::vehicle::{vehicle_definition, DEFAULT_VEHICLE_TYPE};
 
 pub const WORLD_DOCUMENT_VERSION: u32 = 2;
 pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
@@ -30,6 +27,21 @@ pub struct WorldMeta {
     pub description: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerrainMaterial {
+    pub name: String,
+    pub color: String,
+    pub roughness: f32,
+    pub metalness: f32,
+    pub friction: f32,
+    pub restitution: f32,
+    pub flammability: f32,
+    pub fuel_load: f32,
+    pub burn_rate: f32,
+    pub moisture: f32,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorldTerrain {
@@ -44,6 +56,10 @@ pub struct WorldTerrainTile {
     pub tile_x: i32,
     pub tile_z: i32,
     pub heights: Vec<f32>,
+    #[serde(default)]
+    pub materials: Vec<TerrainMaterial>,
+    #[serde(default)]
+    pub material_weights: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,6 +94,10 @@ pub struct DynamicEntity {
     pub radius: Option<f32>,
     #[serde(default)]
     pub vehicle_type: Option<u8>,
+    #[serde(default)]
+    pub energy: Option<f32>,
+    #[serde(default)]
+    pub height: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -86,6 +106,7 @@ pub enum DynamicEntityKind {
     Box,
     Ball,
     Vehicle,
+    Battery,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,6 +127,9 @@ pub enum WorldDocumentError {
         entity_id: u32,
     },
     MissingRadius {
+        entity_id: u32,
+    },
+    MissingBatteryEnergy {
         entity_id: u32,
     },
 }
@@ -129,6 +153,9 @@ impl fmt::Display for WorldDocumentError {
             }
             Self::MissingRadius { entity_id } => {
                 write!(f, "dynamic entity {entity_id} missing radius")
+            }
+            Self::MissingBatteryEnergy { entity_id } => {
+                write!(f, "battery entity {entity_id} missing energy")
             }
         }
     }
@@ -183,6 +210,8 @@ impl<'de> Deserialize<'de> for WorldTerrain {
                             0.0;
                             usize::from(tile_grid_size) * usize::from(tile_grid_size)
                         ],
+                        materials: Vec::new(),
+                        material_weights: None,
                     });
                 }
                 tiles.sort_by_key(|tile| (tile.tile_z, tile.tile_x));
@@ -203,6 +232,8 @@ impl<'de> Deserialize<'de> for WorldTerrain {
                     tile_x: 0,
                     tile_z: 0,
                     heights,
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
         })
@@ -243,6 +274,16 @@ pub trait WorldDocumentArena {
         position: Vector3<f32>,
         rotation: [f32; 4],
     );
+
+    fn spawn_battery_with_id(
+        &mut self,
+        _id: u32,
+        _position: Vector3<f32>,
+        _energy: f32,
+        _radius: f32,
+        _height: f32,
+    ) {
+    }
 
     fn rebuild_broad_phase(&mut self);
 }
@@ -312,6 +353,21 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
         );
     }
 
+    fn spawn_battery_with_id(
+        &mut self,
+        id: u32,
+        position: Vector3<f32>,
+        energy: f32,
+        radius: f32,
+        height: f32,
+    ) {
+        let position =
+            crate::movement::Vec3d::new(position.x as f64, position.y as f64, position.z as f64);
+        crate::physics_arena::PhysicsArena::spawn_battery_with_id(
+            self, id, position, energy, radius, height,
+        );
+    }
+
     fn rebuild_broad_phase(&mut self) {
         crate::physics_arena::PhysicsArena::rebuild_broad_phase(self);
     }
@@ -354,13 +410,15 @@ impl WorldDocument {
         x: f32,
         z: f32,
         rotation: [f32; 4],
+        vehicle_type: u8,
     ) -> f32 {
-        let mut offsets = Vec::with_capacity(VEHICLE_WHEEL_OFFSETS.len() + 4);
-        for offset in VEHICLE_WHEEL_OFFSETS {
+        let definition = vehicle_definition(vehicle_type);
+        let mut offsets = Vec::with_capacity(definition.wheel_offsets.len() + 4);
+        for offset in definition.wheel_offsets {
             offsets.push((offset[0], offset[2]));
         }
-        let half_x = VEHICLE_CHASSIS_HALF_EXTENTS[0];
-        let half_z = VEHICLE_CHASSIS_HALF_EXTENTS[2];
+        let half_x = definition.chassis_half_extents[0];
+        let half_z = definition.chassis_half_extents[2];
         offsets.extend_from_slice(&[
             (-half_x, -half_z),
             (-half_x, half_z),
@@ -411,11 +469,20 @@ impl WorldDocument {
         support_height + radius + 0.05
     }
 
-    fn minimum_vehicle_spawn_center_y(&self, x: f32, z: f32, rotation: [f32; 4]) -> f32 {
-        let support_height = self.sample_vehicle_support_height_at_world_position(x, z, rotation);
-        let wheel_clearance =
-            VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_SUSPENSION_TRAVEL + VEHICLE_WHEEL_RADIUS;
-        let chassis_clearance = VEHICLE_CHASSIS_HALF_EXTENTS[1] + 0.1;
+    fn minimum_vehicle_spawn_center_y(
+        &self,
+        x: f32,
+        z: f32,
+        rotation: [f32; 4],
+        vehicle_type: u8,
+    ) -> f32 {
+        let definition = vehicle_definition(vehicle_type);
+        let support_height =
+            self.sample_vehicle_support_height_at_world_position(x, z, rotation, vehicle_type);
+        let wheel_clearance = definition.suspension_rest_length_m
+            + definition.suspension_travel_m
+            + definition.wheel_radius_m;
+        let chassis_clearance = definition.chassis_half_extents[1] + 0.1;
         support_height + wheel_clearance.max(chassis_clearance) + 0.1
     }
 
@@ -718,17 +785,44 @@ impl WorldDocument {
                     );
                 }
                 DynamicEntityKind::Vehicle => {
+                    let vehicle_type = entity.vehicle_type.unwrap_or(DEFAULT_VEHICLE_TYPE);
                     let min_vehicle_y = self.minimum_vehicle_spawn_center_y(
                         entity.position[0],
                         entity.position[2],
                         entity.rotation,
+                        vehicle_type,
                     );
                     let spawn_y = entity.position[1].max(min_vehicle_y);
                     arena.spawn_vehicle_with_id(
                         entity.id,
-                        entity.vehicle_type.unwrap_or(0),
+                        vehicle_type,
                         Vector3::new(entity.position[0], spawn_y, entity.position[2]),
                         entity.rotation,
+                    );
+                }
+                DynamicEntityKind::Battery => {
+                    let energy = entity
+                        .energy
+                        .ok_or(WorldDocumentError::MissingBatteryEnergy {
+                            entity_id: entity.id,
+                        })?;
+                    let radius = entity
+                        .radius
+                        .unwrap_or(crate::constants::DEFAULT_BATTERY_RADIUS_M);
+                    let height = entity
+                        .height
+                        .unwrap_or(crate::constants::DEFAULT_BATTERY_HEIGHT_M);
+                    let terrain_y = self.sample_heightfield_surface_at_world_position(
+                        entity.position[0],
+                        entity.position[2],
+                    );
+                    let spawn_y = entity.position[1].max(terrain_y + height * 0.5 + 0.02);
+                    arena.spawn_battery_with_id(
+                        entity.id,
+                        Vector3::new(entity.position[0], spawn_y, entity.position[2]),
+                        energy,
+                        radius,
+                        height,
                     );
                 }
             }
@@ -788,6 +882,8 @@ mod tests {
                     tile_x: 0,
                     tile_z: 0,
                     heights,
+                    materials: Vec::new(),
+                    material_weights: None,
                 }],
             },
             static_props: vec![],
@@ -851,6 +947,8 @@ mod tests {
                         half_extents: None,
                         radius: Some(radius),
                         vehicle_type: None,
+                        energy: None,
+                        height: None,
                     });
                     next_id += 1;
                 }
@@ -938,6 +1036,98 @@ mod tests {
         let decoded: WorldDocument = serde_json::from_str(&json).expect("deserialize world");
         assert_eq!(decoded.version, WORLD_DOCUMENT_VERSION);
         assert_eq!(decoded.dynamic_entities.len(), world.dynamic_entities.len());
+    }
+
+    #[test]
+    fn instantiate_authored_battery_entity_preserves_energy_and_dimensions() {
+        let world = WorldDocument {
+            version: WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Battery Test".to_string(),
+                description: "Single authored battery".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 5.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                    materials: Vec::new(),
+                    material_weights: None,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![DynamicEntity {
+                id: 4242,
+                kind: DynamicEntityKind::Battery,
+                position: [1.5, 0.0, -2.0],
+                rotation: identity_rotation(),
+                half_extents: None,
+                radius: Some(0.6),
+                vehicle_type: None,
+                energy: Some(275.0),
+                height: Some(1.4),
+            }],
+        };
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate battery world");
+
+        let batteries = arena.snapshot_batteries();
+        assert_eq!(batteries.len(), 1);
+        let (id, position, energy, radius, height) = batteries[0];
+        assert_eq!(id, 4242);
+        assert!((position[0] - 1.5).abs() < 0.01);
+        assert!((position[2] + 2.0).abs() < 0.01);
+        assert_eq!(energy, 275.0);
+        assert_eq!(radius, 0.6);
+        assert_eq!(height, 1.4);
+    }
+
+    #[test]
+    fn instantiate_battery_entity_requires_energy_field() {
+        let world = WorldDocument {
+            version: WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Broken Battery".to_string(),
+                description: "Missing energy".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 5.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                    materials: Vec::new(),
+                    material_weights: None,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![DynamicEntity {
+                id: 7,
+                kind: DynamicEntityKind::Battery,
+                position: [0.0, 0.0, 0.0],
+                rotation: identity_rotation(),
+                half_extents: None,
+                radius: None,
+                vehicle_type: None,
+                energy: None,
+                height: None,
+            }],
+        };
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let error = world
+            .instantiate(&mut arena)
+            .expect_err("battery without energy should fail");
+        assert!(matches!(
+            error,
+            WorldDocumentError::MissingBatteryEnergy { entity_id: 7 }
+        ));
     }
 
     #[test]
@@ -1030,6 +1220,8 @@ mod tests {
             half_extents: None,
             radius: Some(0.5),
             vehicle_type: None,
+            energy: None,
+            height: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1170,6 +1362,8 @@ mod tests {
             half_extents: None,
             radius: None,
             vehicle_type: Some(0),
+            energy: None,
+            height: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1348,6 +1542,8 @@ mod tests {
             half_extents: None,
             radius: Some(0.3),
             vehicle_type: None,
+            energy: None,
+            height: None,
         }];
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1423,6 +1619,7 @@ mod tests {
                             DynamicEntityKind::Ball => "ball",
                             DynamicEntityKind::Box => "box",
                             DynamicEntityKind::Vehicle => "vehicle",
+                            DynamicEntityKind::Battery => "battery",
                         },
                         entity.id,
                         body.1[0],
