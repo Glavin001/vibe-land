@@ -1,7 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    debug_render::{render_debug_buffers, DebugLineBuffers},
     constants::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD,
         HIT_ZONE_NONE, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE,
@@ -9,6 +8,7 @@ use crate::{
         PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
         SNAPSHOT_HZ_LOCAL,
     },
+    debug_render::{render_debug_buffers, DebugLineBuffers},
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
@@ -1657,7 +1657,10 @@ mod tests {
             rapier3d::pipeline::DebugRenderMode::COLLIDER_SHAPES.bits(),
         );
 
-        assert!(!buffers.vertices.is_empty(), "expected debug-render vertices");
+        assert!(
+            !buffers.vertices.is_empty(),
+            "expected debug-render vertices"
+        );
         assert_eq!(buffers.vertices.len() % 3, 0);
         assert_eq!(buffers.colors.len(), (buffers.vertices.len() / 3) * 4);
     }

@@ -228,7 +228,8 @@ impl PhysicsArena {
                 self.collision_tx.clone(),
                 self.contact_force_tx.clone(),
             );
-            self.dynamic.step_dynamics_with_event_handler(dt, &collector);
+            self.dynamic
+                .step_dynamics_with_event_handler(dt, &collector);
             drop(collector);
             if !self.destructibles.is_empty() {
                 self.destructibles
@@ -313,9 +314,13 @@ impl PhysicsArena {
     ) -> bool {
         let pose = pose_from_world_doc(position, rotation);
         match kind {
-            DestructibleKind::Wall => self.destructibles.spawn_wall(&mut self.dynamic.sim, id, pose),
+            DestructibleKind::Wall => {
+                self.destructibles
+                    .spawn_wall(&mut self.dynamic.sim, id, pose)
+            }
             DestructibleKind::Tower => {
-                self.destructibles.spawn_tower(&mut self.dynamic.sim, id, pose)
+                self.destructibles
+                    .spawn_tower(&mut self.dynamic.sim, id, pose)
             }
         }
     }
