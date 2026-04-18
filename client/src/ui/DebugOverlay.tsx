@@ -693,6 +693,8 @@ export function DebugOverlay({
   onToggleVehicleSmoothing,
   deepCaptureEnabled = false,
   deepCaptureSampleCount = 0,
+  renderSettings,
+  onRenderSettingsChange,
 }: {
   stats: DebugStats;
   visible: boolean;
@@ -702,6 +704,10 @@ export function DebugOverlay({
   onToggleVehicleSmoothing?: () => void;
   deepCaptureEnabled?: boolean;
   deepCaptureSampleCount?: number;
+  renderSettings?: import('../scene/renderSettings').RenderSettings;
+  onRenderSettingsChange?: (
+    patch: Partial<import('../scene/renderSettings').RenderSettings>,
+  ) => void;
 }) {
   if (!visible) return null;
 
@@ -918,6 +924,12 @@ export function DebugOverlay({
               : 'Uses the raw local vehicle pose so you can verify whether the filter is causing the wobble.'}
           </div>
         </div>
+        {renderSettings && onRenderSettingsChange && (
+          <RenderSettingsBlock
+            settings={renderSettings}
+            onChange={onRenderSettingsChange}
+          />
+        )}
       </div>
 
       <Section title="Rendering">
@@ -1103,5 +1115,142 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         ))}
       </div>
     </section>
+  );
+}
+
+type RenderSettingsType = import('../scene/renderSettings').RenderSettings;
+
+function RenderSettingsBlock({
+  settings,
+  onChange,
+}: {
+  settings: RenderSettingsType;
+  onChange: (patch: Partial<RenderSettingsType>) => void;
+}) {
+  const toggleBase: React.CSSProperties = {
+    font: 'inherit',
+    fontWeight: 700,
+    letterSpacing: '0.03em',
+    padding: '6px 12px',
+    borderRadius: 999,
+    cursor: 'pointer',
+  };
+  const toggleStyle = (on: boolean): React.CSSProperties => ({
+    ...toggleBase,
+    background: on ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+    border: `1px solid ${on ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+    color: on ? '#98ffbc' : '#d8dee6',
+  });
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gap: 8,
+        padding: '10px 12px',
+        borderRadius: 10,
+        background: 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))',
+        border: '1px solid rgba(228, 234, 241, 0.18)',
+      }}
+    >
+      <div style={{ color: '#f0fff4', fontSize: 13, fontWeight: 700 }}>
+        Rendering FX
+      </div>
+      <div style={{ color: '#94b69f', fontSize: 11, lineHeight: 1.35 }}>
+        Toggle and tune Kinema visual extras. Persisted to localStorage.
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          aria-pressed={settings.aceTonemapping}
+          onClick={() => onChange({ aceTonemapping: !settings.aceTonemapping })}
+          style={toggleStyle(settings.aceTonemapping)}
+        >
+          {`ACES ${settings.aceTonemapping ? 'ON' : 'OFF'}`}
+        </button>
+        <button
+          type="button"
+          aria-pressed={settings.environmentEnabled}
+          onClick={() => onChange({ environmentEnabled: !settings.environmentEnabled })}
+          style={toggleStyle(settings.environmentEnabled)}
+        >
+          {`HDR IBL ${settings.environmentEnabled ? 'ON' : 'OFF'}`}
+        </button>
+        <button
+          type="button"
+          aria-pressed={settings.postFxEnabled}
+          onClick={() => onChange({ postFxEnabled: !settings.postFxEnabled })}
+          style={toggleStyle(settings.postFxEnabled)}
+        >
+          {`LUT ${settings.postFxEnabled ? 'ON' : 'OFF'}`}
+        </button>
+      </div>
+
+      <RenderSlider
+        label="Exposure"
+        value={settings.toneMappingExposure}
+        min={0.05}
+        max={2.0}
+        step={0.05}
+        disabled={!settings.aceTonemapping}
+        onChange={(v) => onChange({ toneMappingExposure: v })}
+      />
+      <RenderSlider
+        label="IBL intensity"
+        value={settings.environmentIntensity}
+        min={0}
+        max={2.0}
+        step={0.05}
+        disabled={!settings.environmentEnabled}
+        onChange={(v) => onChange({ environmentIntensity: v })}
+      />
+    </div>
+  );
+}
+
+function RenderSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const valueStr = value.toFixed(2);
+  return (
+    <label
+      style={{
+        display: 'grid',
+        gridTemplateColumns: '96px 1fr 44px',
+        alignItems: 'center',
+        gap: 8,
+        opacity: disabled ? 0.45 : 1,
+        color: '#d5eddc',
+        fontSize: 11,
+      }}
+    >
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.currentTarget.value))}
+        style={{ width: '100%' }}
+      />
+      <span style={{ fontFamily: 'monospace', textAlign: 'right' }}>{valueStr}</span>
+    </label>
   );
 }

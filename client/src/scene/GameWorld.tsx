@@ -9,6 +9,7 @@ import { FeedbackPlayer } from '../feedback/FeedbackPlayer';
 import { GameParticles } from '../feedback/GameParticles';
 import { getAudio } from '../audio/audioSingleton';
 import { ENVIRONMENT_PRESETS } from './renderer/environmentPresets';
+import { DEFAULT_RENDER_SETTINGS, type RenderSettings } from './renderSettings';
 import type { GameMode } from '../app/gameMode';
 import { isPracticeMode } from '../app/gameMode';
 import type { InputBindings } from '../input/bindings';
@@ -313,6 +314,7 @@ type GameWorldProps = {
   // firing-range scene, so the player's feel during drills is identical to
   // normal play.
   sceneExtras?: ReactNode;
+  renderSettings?: RenderSettings;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -968,6 +970,7 @@ export function GameWorld({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
+  renderSettings = DEFAULT_RENDER_SETTINGS,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
@@ -1011,6 +1014,16 @@ export function GameWorld({
       feedback.clear();
     };
   }, [camera, feedback, particles]);
+
+  // Runtime render-settings mutation: tonemapping and exposure apply to the
+  // live WebGLRenderer, so flipping the DebugOverlay toggles updates the
+  // view without reloading.
+  useEffect(() => {
+    gl.toneMapping = renderSettings.aceTonemapping
+      ? THREE.ACESFilmicToneMapping
+      : THREE.NoToneMapping;
+    gl.toneMappingExposure = renderSettings.toneMappingExposure;
+  }, [gl, renderSettings.aceTonemapping, renderSettings.toneMappingExposure]);
 
   useEffect(() => {
     const loader = new GLTFLoader();
@@ -2607,11 +2620,13 @@ export function GameWorld({
         mieCoefficient={0.008}
         mieDirectionalG={0.86}
       />
-      <Environment
-        files={ENVIRONMENT_PRESETS.kloofendal_48d_partly_cloudy.path}
-        background={false}
-        environmentIntensity={0.35}
-      />
+      {renderSettings.environmentEnabled && (
+        <Environment
+          files={ENVIRONMENT_PRESETS.kloofendal_48d_partly_cloudy.path}
+          background={false}
+          environmentIntensity={renderSettings.environmentIntensity}
+        />
+      )}
       <ambientLight intensity={0.18} color={0xfdf6eb} />
       <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
       <directionalLight

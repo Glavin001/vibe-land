@@ -10,6 +10,7 @@ import { GameWorld } from './GameWorld';
 import { PostFX, SceneSanitizer } from './PostFX';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+import { DEFAULT_RENDER_SETTINGS, type RenderSettings } from './renderSettings';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -30,6 +31,7 @@ type GameSceneProps = {
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
+  renderSettings?: RenderSettings;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -52,6 +54,7 @@ export function GameScene({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
+  renderSettings = DEFAULT_RENDER_SETTINGS,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -60,8 +63,8 @@ export function GameScene({
       shadows
       camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
       gl={{
-        toneMapping: THREE.ACESFilmicToneMapping,
-        toneMappingExposure: 0.5,
+        toneMapping: THREE.NoToneMapping,
+        toneMappingExposure: 1.0,
         outputColorSpace: THREE.SRGBColorSpace,
       }}
       onPointerDown={(e) => {
@@ -93,9 +96,10 @@ export function GameScene({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}
+          renderSettings={renderSettings}
         />
         <SceneSanitizer />
-        <PostFX />
+        {renderSettings.postFxEnabled && <PostFX />}
       </Suspense>
     </Canvas>
   );

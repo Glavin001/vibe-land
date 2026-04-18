@@ -38,6 +38,12 @@ import {
   updateInputSettings,
 } from './input/inputSettingsStore';
 import { getAudio } from './audio/audioSingleton';
+import {
+  DEFAULT_RENDER_SETTINGS,
+  loadRenderSettings,
+  saveRenderSettings,
+  type RenderSettings,
+} from './scene/renderSettings';
 
 type AppProps = {
   mode: GameMode;
@@ -156,6 +162,16 @@ export function App({
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
+  const [renderSettings, setRenderSettingsState] = useState<RenderSettings>(() =>
+    typeof window === 'undefined' ? DEFAULT_RENDER_SETTINGS : loadRenderSettings(),
+  );
+  const updateRenderSettings = useCallback((patch: Partial<RenderSettings>) => {
+    setRenderSettingsState((prev) => {
+      const next = { ...prev, ...patch };
+      saveRenderSettings(next);
+      return next;
+    });
+  }, []);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -742,6 +758,8 @@ export function App({
           onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
           deepCaptureEnabled={deepCaptureEnabled}
           deepCaptureSampleCount={deepCaptureSampleCount}
+          renderSettings={renderSettings}
+          onRenderSettingsChange={updateRenderSettings}
         />
       {debugVisible && (
         <div
@@ -775,6 +793,7 @@ export function App({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
+          renderSettings={renderSettings}
         />
       )}
     </div>
