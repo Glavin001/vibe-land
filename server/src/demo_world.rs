@@ -70,6 +70,8 @@ fn benchmark_vehicle_world(
             half_extents: None,
             radius: None,
             vehicle_type: Some(0),
+            energy: None,
+            height: None,
         }],
         spawn_areas: vec![],
     }
@@ -127,6 +129,7 @@ mod tests {
 
         assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
         assert_eq!(arena.vehicles.len(), 2);
+        assert_eq!(arena.batteries.len(), 4);
     }
 
     #[test]

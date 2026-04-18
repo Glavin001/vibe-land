@@ -50868,6 +50868,78 @@
         1
       ],
       "vehicleType": 0
+    },
+    {
+      "id": 9001,
+      "kind": "battery",
+      "position": [
+        4,
+        2.5,
+        6
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "energy": 250,
+      "radius": 0.3,
+      "height": 0.6
+    },
+    {
+      "id": 9002,
+      "kind": "battery",
+      "position": [
+        -6,
+        2.5,
+        -2
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "energy": 500,
+      "radius": 0.4,
+      "height": 0.8
+    },
+    {
+      "id": 9003,
+      "kind": "battery",
+      "position": [
+        10,
+        2.5,
+        -8
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "energy": 1000,
+      "radius": 0.5,
+      "height": 1
+    },
+    {
+      "id": 9004,
+      "kind": "battery",
+      "position": [
+        -10,
+        2.5,
+        8
+      ],
+      "rotation": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "energy": 750,
+      "radius": 0.45,
+      "height": 0.9
     }
   ]
 }

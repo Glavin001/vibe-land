@@ -11,7 +11,9 @@ use wasm_bindgen::prelude::*;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::local_session::LocalSession;
 use crate::movement::{MoveConfig, Vec3d, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_WHEEL_RADIUS};
-use crate::protocol::{FireCmd, InputCmd, NetDynamicBodyState, NetPlayerState, NetVehicleState};
+use crate::protocol::{
+    FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+};
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
@@ -1352,6 +1354,7 @@ pub struct WasmLocalSession {
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
 const LOCAL_VEHICLE_STATE_STRIDE: usize = 21;
+const LOCAL_BATTERY_STATE_STRIDE: usize = 7;
 
 #[wasm_bindgen]
 impl WasmLocalSession {
@@ -1475,6 +1478,16 @@ impl WasmLocalSession {
         out.into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = getBatteryStates)]
+    pub fn get_battery_states(&self) -> Box<[f64]> {
+        let states = self.inner.battery_states();
+        let mut out = Vec::with_capacity(states.len() * LOCAL_BATTERY_STATE_STRIDE);
+        for state in &states {
+            push_battery_state(&mut out, state);
+        }
+        out.into_boxed_slice()
+    }
+
     #[wasm_bindgen(js_name = castSceneRay)]
     pub fn cast_scene_ray(
         &self,
@@ -1556,6 +1569,7 @@ fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
         state.pitch_i16 as f64,
         state.hp as f64,
         state.flags as f64,
+        state.energy_centi as f64,
     ])
 }
 
@@ -1605,6 +1619,18 @@ fn push_vehicle_state(out: &mut Vec<f64>, state: &NetVehicleState) {
         state.wheel_data[1] as f64,
         state.wheel_data[2] as f64,
         state.wheel_data[3] as f64,
+    ]);
+}
+
+fn push_battery_state(out: &mut Vec<f64>, state: &NetBatteryState) {
+    out.extend_from_slice(&[
+        state.id as f64,
+        state.px_mm as f64,
+        state.py_mm as f64,
+        state.pz_mm as f64,
+        state.energy_centi as f64,
+        state.radius_cm as f64,
+        state.height_cm as f64,
     ]);
 }
 

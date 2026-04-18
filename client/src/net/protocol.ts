@@ -17,6 +17,8 @@ import {
   PKT_CHUNK_DIFF,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
+  PKT_LOCAL_PLAYER_ENERGY,
+  PKT_BATTERY_SYNC,
   PKT_PING,
   PKT_PONG,
   BTN_FORWARD,
@@ -60,6 +62,25 @@ export type NetPlayerState = {
   pitchI16: number;
   hp: number;
   flags: number;
+  energyCenti: number;
+};
+
+export type NetBatteryState = {
+  id: number;
+  pxMm: number;
+  pyMm: number;
+  pzMm: number;
+  energyCenti: number;
+  radiusCm: number;
+  heightCm: number;
+};
+
+export type BatteryStateMeters = {
+  id: number;
+  position: [number, number, number];
+  energy: number;
+  radius: number;
+  height: number;
 };
 
 export type NetProjectileState = {
@@ -283,9 +304,23 @@ export type ShotResultPacket = {
   serverDynamicImpulseCenti: number;
 };
 
+export type LocalPlayerEnergyPacket = {
+  type: 'localPlayerEnergy';
+  energyCenti: number;
+};
+
+export type BatterySyncPacket = {
+  type: 'batterySync';
+  fullResync: boolean;
+  batteryStates: NetBatteryState[];
+  removedIds: number[];
+};
+
 export type ServerReliablePacket =
   | WelcomePacket
   | ShotResultPacket
+  | LocalPlayerEnergyPacket
+  | BatterySyncPacket
   | ChunkFullPacket
   | ChunkDiffPacket
   | SnapshotPacket
@@ -303,6 +338,8 @@ export type ServerPacket =
   | SnapshotPacket
   | SnapshotV2Packet
   | ShotResultPacket
+  | LocalPlayerEnergyPacket
+  | BatterySyncPacket
   | ChunkFullPacket
   | ChunkDiffPacket
   | PlayerRosterPacket
@@ -482,6 +519,10 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return decodePlayerRosterPacket(view, o);
     case PKT_DYNAMIC_BODY_META:
       return decodeDynamicBodyMetaPacket(view, o);
+    case PKT_LOCAL_PLAYER_ENERGY:
+      return { type: 'localPlayerEnergy', energyCenti: view.getUint32(o, true) };
+    case PKT_BATTERY_SYNC:
+      return decodeBatterySyncPacket(view, o);
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
@@ -518,6 +559,7 @@ export function decodeSnapshotPacket(view: DataView, o: number): SnapshotPacket 
       pitchI16: view.getInt16(o + 24, true),
       hp: view.getUint8(o + 26),
       flags: view.getUint16(o + 27, true),
+      energyCenti: 0,
     });
     o += 29;
   }
@@ -756,6 +798,31 @@ function decodeDynamicBodyMetaPacket(view: DataView, o: number): DynamicBodyMeta
   return { type: 'dynamicBodyMeta', entries };
 }
 
+function decodeBatterySyncPacket(view: DataView, o: number): BatterySyncPacket {
+  const fullResync = view.getUint8(o++) !== 0;
+  const batteryCount = view.getUint16(o, true); o += 2;
+  const removedCount = view.getUint16(o, true); o += 2;
+  const batteryStates: NetBatteryState[] = [];
+  for (let i = 0; i < batteryCount; i += 1) {
+    batteryStates.push({
+      id: view.getUint32(o, true),
+      pxMm: view.getInt32(o + 4, true),
+      pyMm: view.getInt32(o + 8, true),
+      pzMm: view.getInt32(o + 12, true),
+      energyCenti: view.getUint32(o + 16, true),
+      radiusCm: view.getUint16(o + 20, true),
+      heightCm: view.getUint16(o + 22, true),
+    });
+    o += 24;
+  }
+  const removedIds: number[] = [];
+  for (let i = 0; i < removedCount; i += 1) {
+    removedIds.push(view.getUint32(o, true));
+    o += 4;
+  }
+  return { type: 'batterySync', fullResync, batteryStates, removedIds };
+}
+
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -896,6 +963,10 @@ export function encodeVehicleExitPacket(vehicleId: number): Uint8Array {
 
 export function mmToMeters(value: number): number {
   return value / 1000;
+}
+
+export function energyFromCenti(value: number): number {
+  return value / 100;
 }
 
 export function q2_5mmToMeters(value: number): number {
@@ -1088,6 +1159,10 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return decodePlayerRosterPacket(view, 1);
     case PKT_DYNAMIC_BODY_META:
       return decodeDynamicBodyMetaPacket(view, 1);
+    case PKT_LOCAL_PLAYER_ENERGY:
+      return { type: 'localPlayerEnergy', energyCenti: view.getUint32(1, true) };
+    case PKT_BATTERY_SYNC:
+      return decodeBatterySyncPacket(view, 1);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

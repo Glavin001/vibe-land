@@ -132,6 +132,7 @@ impl PhysicsArena {
                 hp: 100,
                 dead: false,
                 last_input: InputCmd::default(),
+                energy: crate::constants::STARTING_ENERGY,
             },
         );
 
@@ -156,6 +157,7 @@ impl PhysicsArena {
         state.hp = 100;
         state.dead = false;
         state.last_input = InputCmd::default();
+        state.energy = crate::constants::STARTING_ENERGY;
         self.dynamic
             .sim
             .sync_player_collider(state.collider, &state.position);
