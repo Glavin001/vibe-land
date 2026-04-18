@@ -279,14 +279,13 @@ export class LocalPracticeClient {
         this.syncFromSession(true);
       }
       // Schedule next tick independent of rendering frame rate.
-      // If we're behind schedule, fire immediately via MessageChannel.
-      // Otherwise sleep until the next tick is due, then signal via the channel.
-      const sleepMs = Math.max(0, Math.floor(1000 * (FIXED_DT - this.tickAccumulatorSec)) - 1);
-      if (sleepMs <= 1) {
-        channel.port2.postMessage(null);
-      } else {
-        setTimeout(() => { channel.port2.postMessage(null); }, sleepMs);
-      }
+      // Always use setTimeout (minimum 1 ms) so the browser event loop
+      // can process other tasks — specifically rAF and React renders —
+      // between physics ticks.  Posting via MessageChannel with no sleep
+      // (sleepMs = 0) queues tasks faster than rAF can fire, starving
+      // useFrame and preventing input dispatch.
+      const sleepMs = Math.max(1, Math.floor(1000 * (FIXED_DT - this.tickAccumulatorSec)) - 1);
+      setTimeout(() => { channel.port2.postMessage(null); }, sleepMs);
     };
 
     channel.port1.onmessage = step;
