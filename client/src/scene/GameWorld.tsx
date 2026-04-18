@@ -61,6 +61,10 @@ import {
   updateLocalVehicleMeshPose,
   type LocalVehicleVisualPoseState,
 } from './vehicleLocalMeshPose';
+import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } from './characterAnim/CharacterFactory';
+import { PLAYER_PROFILE } from './characterAnim/profile';
+import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
+import { STATE } from './characterAnim/types';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -995,7 +999,7 @@ export function GameWorld({
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
-  const remoteMeshes = useRef<Map<number, THREE.Group>>(new Map());
+  const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
@@ -1145,6 +1149,12 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
+
+  useEffect(() => {
+    preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
+      // CharacterFactory logs the warning and falls back to an empty group.
+    });
+  }, []);
 
   useFrame((_frameState, delta) => {
     if (!ready) return;
@@ -2328,18 +2338,17 @@ export function GameWorld({
 
     for (const [id, rp] of currentRemote) {
       activeIds.add(id);
-      let playerGroup = remoteMeshes.current.get(id);
-      if (!playerGroup) {
-        playerGroup = createPlayerMesh(id);
-        group.add(playerGroup);
-        remoteMeshes.current.set(id, playerGroup);
+      let handle = remoteMeshes.current.get(id);
+      if (!handle) {
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        attachPlayerIdLabel(handle.root, id);
+        remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
       let yaw = sample?.yaw ?? rp.yaw;
-      const hp = sample?.hp ?? rp.hp;
       const replicatedHp = rp.hp;
       const previousHp = remoteLastHpRef.current.get(id);
       if (previousHp != null && replicatedHp < previousHp) {
@@ -2367,33 +2376,30 @@ export function GameWorld({
           break;
         }
       }
-      playerGroup.position.set(position[0], position[1], position[2]);
-      playerGroup.rotation.y = yaw;
-      const body = playerGroup.getObjectByName('body') as THREE.Mesh | undefined;
-      const head = playerGroup.getObjectByName('head');
-      const nose = playerGroup.getObjectByName('nose');
-      if (body) body.visible = !isInVehicle;
-      if (head) head.visible = !isInVehicle;
-      if (nose) nose.visible = !isInVehicle;
-      if (body && body.material instanceof THREE.MeshStandardMaterial) {
-        const baseColor = body.userData.baseColor as THREE.Color | undefined;
-        const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
-        const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
-        const flashColor = new THREE.Color(0xfff36b);
-        body.material.opacity = isDead ? 0.35 : 1;
-        body.material.transparent = isDead;
-        if (baseColor) {
-          body.material.color.copy(baseColor).lerp(flashColor, flashAlpha);
-          body.material.emissive.copy(baseColor).lerp(flashColor, flashAlpha * 0.85);
-        }
-        body.material.emissiveIntensity = isDead ? 0 : Math.max(hp < 30 ? 0.6 : 0.3, flashAlpha * 1.2);
-      }
+      handle.root.position.set(position[0], position[1], position[2]);
+      handle.root.rotation.y = yaw;
+      handle.setVisible(!isInVehicle);
+
+      const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
+      const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
+      handle.setFlash(0xfff36b, flashAlpha);
+      handle.setOpacity(isDead ? 0.35 : 1);
+
+      const vx = sample?.velocity[0] ?? 0;
+      const vz = sample?.velocity[2] ?? 0;
+      const horizontalSpeed = Math.hypot(vx, vz);
+      const renderState: RemoteRenderState = isDead
+        ? 'dead'
+        : horizontalSpeed > 0.1
+          ? STATE.move
+          : STATE.idle;
+      handle.update(frameDelta, renderState, horizontalSpeed);
     }
 
     // Remove stale
-    for (const [id, mesh] of remoteMeshes.current) {
+    for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
-        group.remove(mesh);
+        handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
@@ -2948,37 +2954,7 @@ function estimateVehicleForwardSpeed(
   return velocity.dot(forward);
 }
 
-function createPlayerMesh(id: number): THREE.Group {
-  const group = new THREE.Group();
-  const color = PLAYER_COLORS[id % PLAYER_COLORS.length];
-
-  // Body capsule
-  const bodyGeom = new THREE.CapsuleGeometry(0.35, 0.9, 8, 12);
-  const bodyMat = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.3 });
-  const body = new THREE.Mesh(bodyGeom, bodyMat);
-  body.name = 'body';
-  body.userData.baseColor = new THREE.Color(color);
-  body.position.y = 0;
-  group.add(body);
-
-  // Head
-  const headGeom = new THREE.SphereGeometry(0.22, 12, 8);
-  const headMat = new THREE.MeshStandardMaterial({ color: 0xffccaa });
-  const head = new THREE.Mesh(headGeom, headMat);
-  head.name = 'head';
-  head.position.y = 0.75;
-  group.add(head);
-
-  // Direction indicator
-  const noseGeom = new THREE.ConeGeometry(0.1, 0.25, 6);
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0xff4444 });
-  const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.name = 'nose';
-  nose.rotation.x = -Math.PI / 2;
-  nose.position.set(0, 0.75, 0.3);
-  group.add(nose);
-
-  // Player ID label
+function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
   canvas.height = 48;
@@ -2992,9 +2968,10 @@ function createPlayerMesh(id: number): THREE.Group {
   const texture = new THREE.CanvasTexture(canvas);
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'idLabel';
   sprite.scale.set(1.2, 0.45, 1);
-  sprite.position.y = 1.4;
-  group.add(sprite);
-
-  return group;
+  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
+  // Place the label just above the head.
+  sprite.position.y = 1.0;
+  parent.add(sprite);
 }
