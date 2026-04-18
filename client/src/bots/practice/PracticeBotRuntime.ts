@@ -8,7 +8,11 @@ import { FLAG_DEAD } from '../../net/protocol';
 import { FLAG_IN_VEHICLE } from '../../net/sharedConstants';
 import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
-import type { WorldDocument } from '../../world/worldDocument';
+import type {
+  PreconfiguredBot,
+  SpawnArea,
+  WorldDocument,
+} from '../../world/worldDocument';
 import { BotBrain } from '../agent/BotBrain';
 import {
   harassNearest,
@@ -187,6 +191,13 @@ interface PracticeBot {
   pendingDestination: Vec3Tuple | null;
   /** Tick count since the last FSM transition — used for timeouts. */
   fsmTicks: number;
+  /**
+   * Optional per-bot max speed. When set, overrides the runtime's
+   * shared `maxSpeed` for this bot (used by preconfigured rosters).
+   */
+  maxSpeedOverride: number | null;
+  /** True when this bot came from the world document roster. */
+  preconfigured: boolean;
 }
 
 const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
@@ -376,6 +387,8 @@ export class PracticeBotRuntime {
     if (kind === this.behaviorKind) return;
     this.behaviorKind = kind;
     for (const bot of this.bots.values()) {
+      // Preconfigured bots keep their roster-specified behavior.
+      if (bot.preconfigured) continue;
       bot.brain.setBehavior(makeBehavior(kind));
       bot.behaviorKind = kind;
     }
@@ -385,40 +398,104 @@ export class PracticeBotRuntime {
     const clamped = Math.max(0.5, Math.min(12, speed));
     this.maxSpeed = clamped;
     for (const bot of this.bots.values()) {
+      const effective = bot.maxSpeedOverride ?? clamped;
       const agent = this.crowd.getAgent(bot.handle.id);
-      if (agent) agent.maxSpeed = clamped;
-      this.host?.setBotMaxSpeed(bot.id, clamped);
+      if (agent) agent.maxSpeed = effective;
+      this.host?.setBotMaxSpeed(bot.id, effective);
     }
   }
 
   setBotCount(target: number): void {
     const clamped = Math.max(0, Math.min(32, Math.floor(target)));
-    while (this.bots.size < clamped) {
+    const preconfiguredCount = this.getPreconfiguredCount();
+    const floor = preconfiguredCount;
+    const effective = Math.max(clamped, floor);
+    while (this.bots.size < effective) {
       this.spawnBot();
     }
-    if (this.bots.size > clamped) {
-      const ids = Array.from(this.bots.keys());
-      for (let i = clamped; i < ids.length; i += 1) {
-        this.removeBot(ids[i]);
+    if (this.bots.size > effective) {
+      // Remove only non-preconfigured bots, newest first.
+      const removable: number[] = [];
+      for (const [id, bot] of this.bots) {
+        if (!bot.preconfigured) removable.push(id);
+      }
+      // Remove from the tail so roster bots stay stable.
+      while (this.bots.size > effective && removable.length > 0) {
+        const id = removable.pop()!;
+        this.removeBot(id);
       }
     }
   }
 
-  spawnBot(snapshot?: Partial<PracticeBotSnapshot>): number {
+  getPreconfiguredCount(): number {
+    let count = 0;
+    for (const bot of this.bots.values()) {
+      if (bot.preconfigured) count += 1;
+    }
+    return count;
+  }
+
+  applyPreconfiguredRoster(bots: readonly PreconfiguredBot[]): void {
+    // Remove any previously-registered preconfigured bots so re-applying
+    // a new roster is idempotent (e.g. after editing in world builder).
+    const existingIds: number[] = [];
+    for (const [id, bot] of this.bots) {
+      if (bot.preconfigured) existingIds.push(id);
+    }
+    for (const id of existingIds) this.removeBot(id);
+
+    for (const entry of bots) {
+      const id = PRACTICE_BOT_ID_BASE + entry.id;
+      const spawn = this.pickBotSpawnPoint(entry.spawnAreaId ?? null);
+      this.spawnBot({
+        id,
+        position: spawn,
+        anchor: spawn,
+        behaviorKind: entry.behavior,
+        maxSpeedOverride: entry.maxSpeed ?? null,
+        preconfigured: true,
+      });
+    }
+  }
+
+  private pickBotSpawnPoint(preferredAreaId: number | null): Vec3Tuple {
+    const areas = this.world.spawnAreas.filter((area) => (
+      area.allowedKinds.includes('bot')
+      && (preferredAreaId === null || area.id === preferredAreaId)
+    ));
+    const candidates = areas.length > 0
+      ? areas
+      : this.world.spawnAreas.filter((area) => area.allowedKinds.includes('bot'));
+    if (candidates.length > 0) {
+      const pick = sampleSpawnAreaPoint(candidates[Math.floor(Math.random() * candidates.length)]);
+      const snapped = this.crowd.findNearestWalkable(pick);
+      return snapped ? ([snapped.position[0], snapped.position[1], snapped.position[2]] as Vec3Tuple) : pick;
+    }
+    return this.crowd.findRandomWalkable() ?? [0, 2, 0];
+  }
+
+  spawnBot(snapshot?: Partial<PracticeBotSnapshot> & {
+    behaviorKind?: PracticeBotBehaviorKind;
+    maxSpeedOverride?: number | null;
+    preconfigured?: boolean;
+  }): number {
     const spawn = snapshot?.position ?? this.crowd.findRandomWalkable() ?? [0, 2, 0];
     const handle = this.crowd.addBot(spawn);
+    const behaviorKind = snapshot?.behaviorKind ?? this.behaviorKind;
+    const maxSpeedOverride = snapshot?.maxSpeedOverride ?? null;
+    const effectiveMaxSpeed = maxSpeedOverride ?? this.maxSpeed;
     const agent = this.crowd.getAgent(handle.id);
-    if (agent) agent.maxSpeed = this.maxSpeed;
+    if (agent) agent.maxSpeed = effectiveMaxSpeed;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
+    const brain = new BotBrain(this.crowd, handle, makeBehavior(behaviorKind), {
       anchor: snapshot?.anchor ?? spawn,
     });
     this.bots.set(id, {
       id,
       handle,
       brain,
-      behaviorKind: this.behaviorKind,
+      behaviorKind,
       seq: 0,
       lastIntent: makeIdleIntent(),
       vehicleStage: 'on_foot',
@@ -426,6 +503,8 @@ export class PracticeBotRuntime {
       vehicleHandle: null,
       pendingDestination: null,
       fsmTicks: 0,
+      maxSpeedOverride,
+      preconfigured: snapshot?.preconfigured ?? false,
     });
     if (this.host) {
       const alreadyConnected = this.host.remotePlayers.has(id);
@@ -435,7 +514,7 @@ export class PracticeBotRuntime {
       this.syncBotToAuthoritativeSpawn(this.bots.get(id) ?? null, this.host, {
         preserveAnchor: alreadyConnected,
       });
-      this.host.setBotMaxSpeed(id, this.maxSpeed);
+      this.host.setBotMaxSpeed(id, effectiveMaxSpeed);
     }
     return id;
   }
@@ -1095,6 +1174,17 @@ function makeIdleIntent(): BotIntent {
     vehicleAction: null,
     vehicleId: null,
   };
+}
+
+function sampleSpawnAreaPoint(area: SpawnArea): Vec3Tuple {
+  // Uniform sample inside the disc of the area (√r for uniformity).
+  const theta = Math.random() * Math.PI * 2;
+  const r = Math.sqrt(Math.random()) * Math.max(0, area.radius);
+  return [
+    area.position[0] + Math.cos(theta) * r,
+    area.position[1],
+    area.position[2] + Math.sin(theta) * r,
+  ];
 }
 
 function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {

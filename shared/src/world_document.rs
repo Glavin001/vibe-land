@@ -5,8 +5,19 @@ use serde::{de::Deserializer, Deserialize, Serialize};
 
 use crate::vehicle::{vehicle_definition, DEFAULT_VEHICLE_TYPE};
 
-pub const WORLD_DOCUMENT_VERSION: u32 = 2;
+pub const WORLD_DOCUMENT_VERSION: u32 = 3;
 pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
+
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayerKind {
+    Human,
+    Bot,
+}
+
+fn default_allowed_kinds() -> Vec<PlayerKind> {
+    vec![PlayerKind::Human, PlayerKind::Bot]
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,6 +25,27 @@ pub struct SpawnArea {
     pub id: u32,
     pub position: [f32; 3],
     pub radius: f32,
+    #[serde(default = "default_allowed_kinds")]
+    pub allowed_kinds: Vec<PlayerKind>,
+}
+
+impl SpawnArea {
+    pub fn allows(&self, kind: PlayerKind) -> bool {
+        self.allowed_kinds.is_empty() || self.allowed_kinds.contains(&kind)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PreconfiguredBot {
+    pub id: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub behavior: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_speed: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_area_id: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,6 +59,8 @@ pub struct WorldDocument {
     pub dynamic_entities: Vec<DynamicEntity>,
     #[serde(default)]
     pub spawn_areas: Vec<SpawnArea>,
+    #[serde(default)]
+    pub bots: Vec<PreconfiguredBot>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1253,6 +1287,7 @@ mod tests {
             static_props: vec![],
             dynamic_entities: vec![],
             spawn_areas: vec![],
+            bots: vec![],
         }
     }
 
@@ -1435,6 +1470,7 @@ mod tests {
                 height: Some(1.4),
             }],
             spawn_areas: vec![],
+            bots: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1485,6 +1521,7 @@ mod tests {
                 height: None,
             }],
             spawn_areas: vec![],
+            bots: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1770,7 +1807,7 @@ mod tests {
         world
             .instantiate(&mut arena)
             .expect("instantiate demo world");
-        arena.spawn_player(1);
+        arena.spawn_player(1, PlayerKind::Human);
         let vehicle_id = nearest_vehicle_to_origin(&arena);
         arena.enter_vehicle(1, vehicle_id);
 
@@ -2095,6 +2132,8 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
+            bots: vec![],
         }
     }
 
@@ -2120,6 +2159,8 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
+            bots: vec![],
         }
     }
 
@@ -2208,7 +2249,7 @@ mod tests {
                 .instantiate(&mut arena)
                 .expect("instantiate material world");
             let player_id = 1;
-            arena.spawn_player(player_id);
+            arena.spawn_player(player_id, PlayerKind::Human);
             // Settle onto ground.
             for _ in 0..120 {
                 arena.simulate_player_tick(player_id, &InputCmd::default(), DT);

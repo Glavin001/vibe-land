@@ -37,6 +37,7 @@ function benchmarkVehicleWorld(
       vehicleType: 0,
     }],
     spawnAreas: [],
+    bots: [],
   };
 }
 

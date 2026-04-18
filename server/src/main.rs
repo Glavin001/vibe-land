@@ -38,6 +38,7 @@ use vibe_land_shared::constants::{
     RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
     VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
+use vibe_land_shared::world_document::PlayerKind;
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
@@ -1392,7 +1393,7 @@ impl MatchState {
                     warn!(match_id = %self.id, player_id = conn.player_id, "player handle pool exhausted");
                     return;
                 };
-                self.arena.spawn_player(conn.player_id);
+                self.arena.spawn_player(conn.player_id, PlayerKind::Human);
                 let identity = conn.identity.clone();
                 let transport = conn.transport.as_str();
                 self.player_handles.insert(conn.player_id, player_handle);
@@ -2292,7 +2293,7 @@ impl MatchState {
                 runtime.battery_full_resync_pending = true;
                 runtime.last_sent_energy_centi = None;
             }
-            let _ = self.arena.respawn_player(player_id);
+            let _ = self.arena.respawn_player(player_id, PlayerKind::Human);
         }
     }
 
