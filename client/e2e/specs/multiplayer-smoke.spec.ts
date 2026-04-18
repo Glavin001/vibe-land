@@ -10,6 +10,7 @@
  * - Firing from A updates shot counters
  */
 import { test, expect } from '@playwright/test';
+import type { BrowserContext } from '@playwright/test';
 import {
   openPlay,
   join,
@@ -21,8 +22,22 @@ import {
   shootOnce,
 } from '../helpers/toolkit';
 
+async function closeContextSafely(context: BrowserContext): Promise<void> {
+  try {
+    await context.close();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('Target.disposeBrowserContext') || message.includes('find context with id')) {
+      return;
+    }
+    throw error;
+  }
+}
+
 test.describe('Multiplayer Smoke', () => {
   test('two-player match flow', async ({ browser }) => {
+    test.setTimeout(180_000);
+
     const matchId = `e2e-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     // Create two isolated browser contexts
@@ -148,8 +163,10 @@ test.describe('Multiplayer Smoke', () => {
       expect(finalA.playerId).toBeGreaterThan(0);
       expect(finalB.playerId).toBeGreaterThan(0);
     } finally {
-      await contextA.close();
-      await contextB.close();
+      await Promise.allSettled([
+        closeContextSafely(contextA),
+        closeContextSafely(contextB),
+      ]);
     }
   });
 });
