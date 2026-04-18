@@ -4,6 +4,10 @@ export function getVehicleChassisHalfExtents(): { x: number; y: number; z: numbe
   return getSharedVehicleGeometry().chassisHalfExtents;
 }
 
+export function getVehicleChassisHullVertices(): [number, number, number][] {
+  return getSharedVehicleGeometry().chassisHullVertices;
+}
+
 export function getVehicleWheelConnectionOffsets(): [number, number, number][] {
   return getSharedVehicleGeometry().wheelOffsets;
 }

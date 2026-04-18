@@ -18,8 +18,8 @@ use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
     apply_vehicle_input_step, create_vehicle_physics, read_vehicle_chassis_state,
     read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
-    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CONTROLLER_SUBSTEPS,
-    VEHICLE_WHEEL_OFFSETS,
+    vehicle_exit_position, VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_CHASSIS_HULL_VERTICES,
+    VEHICLE_CONTROLLER_SUBSTEPS, VEHICLE_WHEEL_OFFSETS,
 };
 use crate::world_document::{StaticPropKind, WorldDocument};
 use vibe_netcode::clock_sync::ServerClockEstimator;
@@ -41,6 +41,12 @@ pub fn vehicle_chassis_half_extents() -> Box<[f32]> {
 #[wasm_bindgen]
 pub fn vehicle_wheel_offsets() -> Box<[f32]> {
     VEHICLE_WHEEL_OFFSETS.concat().into_boxed_slice()
+}
+
+/// Returns the chassis convex-hull vertices as a flat array of (x, y, z) triples.
+#[wasm_bindgen]
+pub fn vehicle_chassis_hull_vertices() -> Box<[f32]> {
+    VEHICLE_CHASSIS_HULL_VERTICES.concat().into_boxed_slice()
 }
 
 /// Returns the suspension rest length in metres.

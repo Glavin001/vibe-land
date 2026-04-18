@@ -3,6 +3,7 @@ import init, {
   WasmClockSync,
   WasmLocalSession as RawWasmLocalSession,
   vehicle_chassis_half_extents as wasmVehicleChassisHalfExtents,
+  vehicle_chassis_hull_vertices as wasmVehicleChassisHullVertices,
   vehicle_suspension_rest_length as wasmVehicleSuspensionRestLength,
   vehicle_wheel_offsets as wasmVehicleWheelOffsets,
   vehicle_wheel_radius as wasmVehicleWheelRadius,
@@ -15,6 +16,7 @@ let initPromise: Promise<void> | null = null;
 
 export type SharedVehicleGeometry = {
   chassisHalfExtents: { x: number; y: number; z: number };
+  chassisHullVertices: [number, number, number][];
   wheelOffsets: [number, number, number][];
   suspensionRestLengthM: number;
   wheelRadiusM: number;
@@ -22,6 +24,27 @@ export type SharedVehicleGeometry = {
 
 const FALLBACK_VEHICLE_GEOMETRY: SharedVehicleGeometry = Object.freeze({
   chassisHalfExtents: Object.freeze({ x: 0.9, y: 0.3, z: 1.8 }),
+  // Cybertruck-style wedge inscribed in the chassis AABB. Must stay in sync
+  // with VEHICLE_CHASSIS_HULL_VERTICES in shared/src/vehicle.rs. The wasm
+  // hydrate path overwrites this once the shared crate is loaded.
+  chassisHullVertices: Object.freeze([
+    Object.freeze([-0.9, -0.30, -1.80] as [number, number, number]),
+    Object.freeze([-0.9, -0.30, 1.80] as [number, number, number]),
+    Object.freeze([-0.9, -0.05, 1.80] as [number, number, number]),
+    Object.freeze([-0.9, 0.10, 0.55] as [number, number, number]),
+    Object.freeze([-0.9, 0.30, 0.05] as [number, number, number]),
+    Object.freeze([-0.9, 0.30, -0.90] as [number, number, number]),
+    Object.freeze([-0.9, 0.05, -1.25] as [number, number, number]),
+    Object.freeze([-0.9, 0.05, -1.80] as [number, number, number]),
+    Object.freeze([0.9, -0.30, -1.80] as [number, number, number]),
+    Object.freeze([0.9, -0.30, 1.80] as [number, number, number]),
+    Object.freeze([0.9, -0.05, 1.80] as [number, number, number]),
+    Object.freeze([0.9, 0.10, 0.55] as [number, number, number]),
+    Object.freeze([0.9, 0.30, 0.05] as [number, number, number]),
+    Object.freeze([0.9, 0.30, -0.90] as [number, number, number]),
+    Object.freeze([0.9, 0.05, -1.25] as [number, number, number]),
+    Object.freeze([0.9, 0.05, -1.80] as [number, number, number]),
+  ]) as [number, number, number][],
   wheelOffsets: Object.freeze([
     Object.freeze([-0.9, 0.0, 1.1] as [number, number, number]),
     Object.freeze([0.9, 0.0, 1.1] as [number, number, number]),
@@ -189,12 +212,24 @@ function readSharedVehicleGeometryFromWasm(): SharedVehicleGeometry {
       wheelOffsetsFlat[i + 2] ?? 0,
     ]);
   }
+  const hullFlat = Array.from(wasmVehicleChassisHullVertices());
+  const chassisHullVertices: [number, number, number][] = [];
+  for (let i = 0; i < hullFlat.length; i += 3) {
+    chassisHullVertices.push([
+      hullFlat[i] ?? 0,
+      hullFlat[i + 1] ?? 0,
+      hullFlat[i + 2] ?? 0,
+    ]);
+  }
   return {
     chassisHalfExtents: {
       x: halfExtents[0] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.x,
       y: halfExtents[1] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.y,
       z: halfExtents[2] ?? FALLBACK_VEHICLE_GEOMETRY.chassisHalfExtents.z,
     },
+    chassisHullVertices: chassisHullVertices.length > 0
+      ? chassisHullVertices
+      : (FALLBACK_VEHICLE_GEOMETRY.chassisHullVertices as [number, number, number][]),
     wheelOffsets,
     suspensionRestLengthM: wasmVehicleSuspensionRestLength(),
     wheelRadiusM: wasmVehicleWheelRadius(),

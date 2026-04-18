@@ -26,6 +26,34 @@ pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = [
     [-0.9, 0.0, -1.1],
     [0.9, 0.0, -1.1],
 ];
+
+// Cybertruck-style wedge inscribed in the chassis AABB. 7-point side profile
+// in the (z, y) plane (z = forward, y = up), extruded across the full width
+// (x = ±VEHICLE_CHASSIS_HALF_EXTENTS[0]). Used both as the visual body and as
+// the physics `convex_hull` collider so visuals and collisions match.
+// Order of side points (closed loop, counter-clockwise in (z, y)):
+//   rear-bottom, front-bottom, front-top (low hood), hood→windshield,
+//   roof peak (front), roof peak (back), cab→bed, rear-top.
+pub const VEHICLE_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = [
+    // Left side (x = -0.9)
+    [-0.9, -0.30, -1.80], // P0 rear-bottom
+    [-0.9, -0.30, 1.80],  // P1 front-bottom
+    [-0.9, -0.05, 1.80],  // P2 front-top (hood)
+    [-0.9, 0.10, 0.55],   // P3 hood → windshield
+    [-0.9, 0.30, 0.05],   // P4 roof peak (front)
+    [-0.9, 0.30, -0.90],  // P5 roof peak (back)
+    [-0.9, 0.05, -1.25],  // P6 cab → bed
+    [-0.9, 0.05, -1.80],  // P7 rear-top
+    // Right side (x = +0.9)
+    [0.9, -0.30, -1.80],
+    [0.9, -0.30, 1.80],
+    [0.9, -0.05, 1.80],
+    [0.9, 0.10, 0.55],
+    [0.9, 0.30, 0.05],
+    [0.9, 0.30, -0.90],
+    [0.9, 0.05, -1.25],
+    [0.9, 0.05, -1.80],
+];
 const VEHICLE_RESET_LIFT_M: f32 = 1.0;
 /// Nudge along preserved heading so the chassis clears nearby geometry after uprighting.
 const VEHICLE_RESET_FORWARD_M: f32 = 0.45;
@@ -63,16 +91,17 @@ pub fn create_vehicle_physics(
     // Suspension QueryFilter uses GROUP_1 only so the vehicle chassis box
     // pushes balls directly rather than the suspension climbing over them.
     let chassis_groups = InteractionGroups::new(Group::GROUP_1, Group::GROUP_1 | Group::GROUP_2);
-    let collider = ColliderBuilder::cuboid(
-        VEHICLE_CHASSIS_HALF_EXTENTS[0],
-        VEHICLE_CHASSIS_HALF_EXTENTS[1],
-        VEHICLE_CHASSIS_HALF_EXTENTS[2],
-    )
-    .friction(0.3)
-    .restitution(0.1)
-    .density(VEHICLE_CHASSIS_DENSITY)
-    .collision_groups(chassis_groups)
-    .build();
+    let hull_points: Vec<Point<f32>> = VEHICLE_CHASSIS_HULL_VERTICES
+        .iter()
+        .map(|v| point![v[0], v[1], v[2]])
+        .collect();
+    let collider = ColliderBuilder::convex_hull(&hull_points)
+        .expect("cybertruck chassis hull must be valid")
+        .friction(0.3)
+        .restitution(0.1)
+        .density(VEHICLE_CHASSIS_DENSITY)
+        .collision_groups(chassis_groups)
+        .build();
     let chassis_collider =
         sim.colliders
             .insert_with_parent(collider, chassis_body, &mut sim.rigid_bodies);
