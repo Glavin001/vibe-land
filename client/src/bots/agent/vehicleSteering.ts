@@ -6,15 +6,15 @@
  * `input_to_vehicle_cmd` in `shared/src/movement.rs:31` interprets
  * `move_y`/`move_x` (or the equivalent button bits) in the vehicle's local
  * frame:
- *   - `move_y > 0` → throttle → chassis drives along its local **−Z** axis
- *     (Rapier raycast-vehicle convention; see `vehicle_wheel_params`).
+ *   - `move_y > 0` → throttle → chassis drives along its local **+Z** axis
+ *     (`index_forward_axis = 2` in `create_vehicle_physics`).
  *   - `move_x > 0` → steer right in the vehicle's forward direction.
  *
  * So to go from "desired world velocity" → "buttons", we rotate the
  * world-space desired velocity into chassis-local coordinates via the
  * **inverse** of the chassis quaternion and look at the resulting (x, z):
  *
- *   localForward = −localZ  // "ahead" direction in chassis frame
+ *   localForward =  localZ  // "ahead" direction in chassis frame
  *   localRight   =  localX  // "right" direction in chassis frame
  *   heading      = atan2(localRight, localForward)   // 0 = ahead, +π/2 = right
  *
@@ -124,9 +124,9 @@ export function vehicleAgentStateToIntent(
 
   if (planarSpeed >= opts.minDesiredSpeed) {
     const local = rotateVectorByQuaternionInverse(desiredVelocity, chassisQuaternion);
-    // Chassis local forward is −Z (see Rapier sign convention in
-    // `vehicle_wheel_params`). +X is right.
-    const forward = -local[2];
+    // Chassis forward is +Z (see `index_forward_axis = 2` in
+    // `create_vehicle_physics`). +X is right.
+    const forward = local[2];
     const right = local[0];
     // 0 = straight ahead, +π/2 = full right, ±π = directly behind.
     const heading = Math.atan2(right, forward);
