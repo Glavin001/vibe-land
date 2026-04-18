@@ -15,6 +15,8 @@ export type WorldTerrainTile = {
   tileX: number;
   tileZ: number;
   heights: number[];
+  materials?: TerrainMaterial[];
+  materialWeights?: number[];
 };
 
 export type TerrainTileCoordinate = {
@@ -38,6 +40,36 @@ export type TerrainRampStencil = {
   startFalloffM: number;
   endFalloffM: number;
 };
+
+export type TerrainMaterial = {
+  name: string;
+  color: string;
+  roughness: number;
+  metalness: number;
+  friction: number;
+  restitution: number;
+  flammability: number;
+  fuelLoad: number;
+  burnRate: number;
+  moisture: number;
+};
+
+export const DEFAULT_TERRAIN_MATERIALS: TerrainMaterial[] = [
+  // Natural / auto-generated (first 4 drive splatmap auto-gen)
+  { name: 'grass', color: '#5a8c46', roughness: 0.95, metalness: 0.02, friction: 0.6, restitution: 0.1, flammability: 0.5, fuelLoad: 0.15, burnRate: 0.85, moisture: 0.4 },
+  { name: 'rock', color: '#8a8278', roughness: 0.92, metalness: 0.05, friction: 0.8, restitution: 0.3, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.1 },
+  { name: 'dirt', color: '#87684a', roughness: 0.98, metalness: 0.01, friction: 0.5, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.3 },
+  { name: 'sand', color: '#d6c08d', roughness: 0.96, metalness: 0.01, friction: 0.4, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.05 },
+  // Paintable extras (not auto-generated; apply via paint tool)
+  { name: 'ice', color: '#c8e6f0', roughness: 0.15, metalness: 0.0, friction: 0.05, restitution: 0.05, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 1.0 },
+  { name: 'snow', color: '#f4f8fa', roughness: 0.85, metalness: 0.0, friction: 0.3, restitution: 0.02, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.9 },
+  { name: 'mud', color: '#4a3a28', roughness: 0.98, metalness: 0.02, friction: 0.35, restitution: 0.0, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.95 },
+  { name: 'pavement', color: '#3a3b40', roughness: 0.75, metalness: 0.05, friction: 0.9, restitution: 0.15, flammability: 0.0, fuelLoad: 0.0, burnRate: 0.0, moisture: 0.05 },
+  { name: 'wood', color: '#6b4a2a', roughness: 0.85, metalness: 0.02, friction: 0.65, restitution: 0.2, flammability: 0.4, fuelLoad: 0.9, burnRate: 0.15, moisture: 0.15 },
+  { name: 'lava', color: '#ff5a1a', roughness: 0.5, metalness: 0.0, friction: 0.4, restitution: 0.1, flammability: 1.0, fuelLoad: 1.0, burnRate: 0.05, moisture: 0.0 },
+];
+
+export const MAX_MATERIAL_CHANNELS = 4;
 
 export type WorldDocument = {
   version: number;
@@ -159,11 +191,20 @@ export function serializeWorldDocument(world: WorldDocument): string {
       terrain: {
         tileGridSize: world.terrain.tileGridSize,
         tileHalfExtentM: world.terrain.tileHalfExtentM,
-        tiles: sortTerrainTiles(world.terrain.tiles).map((tile) => ({
-          tileX: tile.tileX,
-          tileZ: tile.tileZ,
-          heights: [...tile.heights],
-        })),
+        tiles: sortTerrainTiles(world.terrain.tiles).map((tile) => {
+          const entry: Record<string, unknown> = {
+            tileX: tile.tileX,
+            tileZ: tile.tileZ,
+            heights: [...tile.heights],
+          };
+          if (tile.materials && tile.materials.length > 0) {
+            entry.materials = tile.materials;
+          }
+          if (tile.materialWeights && tile.materialWeights.length > 0) {
+            entry.materialWeights = [...tile.materialWeights];
+          }
+          return entry;
+        }),
       },
     },
     null,
@@ -1000,11 +1041,18 @@ function normalizeTerrain(rawTerrain: Partial<WorldDocument['terrain']> & Partia
       if (!Array.isArray(candidateTile.heights) || candidateTile.heights.length !== expectedHeightCount) {
         throw new Error('World document terrain tile heights length does not match tileGridSize.');
       }
-      return {
+      const normalized: WorldTerrainTile = {
         tileX: candidateTile.tileX,
         tileZ: candidateTile.tileZ,
         heights: [...candidateTile.heights],
       };
+      if (Array.isArray(candidateTile.materials) && candidateTile.materials.length > 0) {
+        normalized.materials = candidateTile.materials;
+      }
+      if (Array.isArray(candidateTile.materialWeights) && candidateTile.materialWeights.length > 0) {
+        normalized.materialWeights = [...candidateTile.materialWeights];
+      }
+      return normalized;
     });
     if (tiles.length === 0) {
       tiles.push(createEmptyTerrainTile(tileGridSize, 0, 0));
@@ -1265,4 +1313,222 @@ export function clampNumber(value: number, min: number, max: number): number {
 
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
+}
+
+// ---------------------------------------------------------------------------
+// Terrain material helpers
+// ---------------------------------------------------------------------------
+
+export function getTerrainMaterials(_world: WorldDocument): TerrainMaterial[] {
+  return DEFAULT_TERRAIN_MATERIALS;
+}
+
+function smoothstepRange(edge0: number, edge1: number, x: number): number {
+  if (edge1 <= edge0) return x >= edge0 ? 1 : 0;
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Generate material weights for a single tile from geometry normals and positions.
+ * Returns a flat Float32Array of length vertexCount * numMaterials.
+ */
+export function generateAutoMaterialWeightsForTile(
+  numMaterials: number,
+  tileGridSize: number,
+  normals: { getY: (index: number) => number },
+  positions: { getX: (index: number) => number; getY: (index: number) => number; getZ: (index: number) => number },
+): Float32Array {
+  const vertexCount = tileGridSize * tileGridSize;
+  const weights = new Float32Array(vertexCount * numMaterials);
+  const seed1 = 42;
+  const seed2 = 137;
+  const seed3 = 271;
+
+  for (let i = 0; i < vertexCount; i += 1) {
+    const height = positions.getY(i);
+    const worldX = positions.getX(i);
+    const worldZ = positions.getZ(i);
+    const height01 = clamp((height + 1) * 0.5, 0, 1);
+    const slope01 = clamp(1 - normals.getY(i), 0, 1);
+
+    const n1 = fbmNoise2D(worldX * 0.06 + 100, worldZ * 0.06 + 100, 3, seed1) * 0.5 + 0.5;
+    const n2 = fbmNoise2D(worldX * 0.09 + 200, worldZ * 0.09 + 200, 3, seed2) * 0.5 + 0.5;
+    const n3 = fbmNoise2D(worldX * 0.12 + 300, worldZ * 0.12 + 300, 2, seed3) * 0.5 + 0.5;
+
+    let w0 = smoothstepRange(0.0, 0.35, 1 - slope01) * smoothstepRange(0.0, 0.6, 1 - height01);
+    w0 *= 0.7 + n1 * 0.6;
+    let w1 = smoothstepRange(0.25, 0.65, slope01) + smoothstepRange(0.8, 1.0, height01) * 0.5;
+    w1 *= 0.8 + n2 * 0.4;
+    let w2 = smoothstepRange(0.12, 0.4, slope01) * (1 - smoothstepRange(0.65, 1.0, slope01));
+    w2 *= 0.6 + n3 * 0.8;
+    let w3 = numMaterials > 3 ? smoothstepRange(0.6, 0.85, height01) * (1 - slope01 * 0.7) : 0;
+    w3 *= 0.7 + n1 * 0.5;
+
+    const total = w0 + w1 + w2 + w3;
+    const base = i * numMaterials;
+    if (total > 0) {
+      const inv = 1 / total;
+      weights[base] = w0 * inv;
+      if (numMaterials > 1) weights[base + 1] = w1 * inv;
+      if (numMaterials > 2) weights[base + 2] = w2 * inv;
+      if (numMaterials > 3) weights[base + 3] = w3 * inv;
+    } else {
+      weights[base] = 1;
+    }
+  }
+  return weights;
+}
+
+/**
+ * Get or generate material weights for a tile.
+ */
+export function getOrGenerateTileMaterialWeights(
+  tile: WorldTerrainTile,
+  numMaterials: number,
+  tileGridSize: number,
+  normals: { getY: (index: number) => number },
+  positions: { getX: (index: number) => number; getY: (index: number) => number; getZ: (index: number) => number },
+): Float32Array {
+  const vertexCount = tileGridSize * tileGridSize;
+  const expectedLength = vertexCount * numMaterials;
+  if (tile.materialWeights && tile.materialWeights.length === expectedLength) {
+    return new Float32Array(tile.materialWeights);
+  }
+  return generateAutoMaterialWeightsForTile(numMaterials, tileGridSize, normals, positions);
+}
+
+/**
+ * Generate approximate material weights for a tile using only height data.
+ * Used to bootstrap the paint brush when no explicit weights exist.
+ */
+function generateAutoMaterialWeightsFromTileHeights(
+  world: WorldDocument,
+  tile: WorldTerrainTile,
+  numMaterials: number,
+): Float32Array {
+  const gridSize = world.terrain.tileGridSize;
+  const vertexCount = gridSize * gridSize;
+  const weights = new Float32Array(vertexCount * numMaterials);
+  const cellSize = terrainTileSideLength(world) / (gridSize - 1);
+  const seed1 = 42;
+  const seed2 = 137;
+  const seed3 = 271;
+
+  for (let row = 0; row < gridSize; row += 1) {
+    for (let col = 0; col < gridSize; col += 1) {
+      const i = row * gridSize + col;
+      const h = tile.heights[i] ?? 0;
+      const height01 = clamp((h + 1) * 0.5, 0, 1);
+
+      const hL = tile.heights[row * gridSize + Math.max(0, col - 1)] ?? 0;
+      const hR = tile.heights[row * gridSize + Math.min(gridSize - 1, col + 1)] ?? 0;
+      const hU = tile.heights[Math.max(0, row - 1) * gridSize + col] ?? 0;
+      const hD = tile.heights[Math.min(gridSize - 1, row + 1) * gridSize + col] ?? 0;
+      const dx = (hR - hL) / (2 * cellSize);
+      const dz = (hD - hU) / (2 * cellSize);
+      const slope01 = clamp(Math.sqrt(dx * dx + dz * dz) * 0.5, 0, 1);
+
+      const [worldX, worldZ] = getTerrainTileWorldPosition(world, tile, row, col);
+      const n1 = fbmNoise2D(worldX * 0.06 + 100, worldZ * 0.06 + 100, 3, seed1) * 0.5 + 0.5;
+      const n2 = fbmNoise2D(worldX * 0.09 + 200, worldZ * 0.09 + 200, 3, seed2) * 0.5 + 0.5;
+      const n3 = fbmNoise2D(worldX * 0.12 + 300, worldZ * 0.12 + 300, 2, seed3) * 0.5 + 0.5;
+
+      let w0 = smoothstepRange(0.0, 0.35, 1 - slope01) * smoothstepRange(0.0, 0.6, 1 - height01);
+      w0 *= 0.7 + n1 * 0.6;
+      let w1 = smoothstepRange(0.25, 0.65, slope01) + smoothstepRange(0.8, 1.0, height01) * 0.5;
+      w1 *= 0.8 + n2 * 0.4;
+      let w2 = smoothstepRange(0.12, 0.4, slope01) * (1 - smoothstepRange(0.65, 1.0, slope01));
+      w2 *= 0.6 + n3 * 0.8;
+      let w3 = numMaterials > 3 ? smoothstepRange(0.6, 0.85, height01) * (1 - slope01 * 0.7) : 0;
+      w3 *= 0.7 + n1 * 0.5;
+
+      const total = w0 + w1 + w2 + w3;
+      const base = i * numMaterials;
+      if (total > 0) {
+        const inv = 1 / total;
+        weights[base] = w0 * inv;
+        if (numMaterials > 1) weights[base + 1] = w1 * inv;
+        if (numMaterials > 2) weights[base + 2] = w2 * inv;
+        if (numMaterials > 3) weights[base + 3] = w3 * inv;
+      } else {
+        weights[base] = 1;
+      }
+    }
+  }
+  return weights;
+}
+
+/**
+ * Paint material brush across all tiles that overlap the brush radius.
+ */
+export function applyMaterialBrush(
+  world: WorldDocument,
+  centerX: number,
+  centerZ: number,
+  radius: number,
+  strength: number,
+  materialIndex: number,
+): WorldDocument {
+  const materials = getTerrainMaterials(world);
+  const numMaterials = materials.length;
+  if (materialIndex < 0 || materialIndex >= numMaterials) return world;
+
+  const gridSize = world.terrain.tileGridSize;
+  const vertexCount = gridSize * gridSize;
+  const expectedLength = vertexCount * numMaterials;
+  const next: WorldDocument = {
+    ...world,
+    terrain: { ...world.terrain, tiles: [...world.terrain.tiles] },
+  };
+  let mutated = false;
+
+  for (let tileIndex = 0; tileIndex < world.terrain.tiles.length; tileIndex += 1) {
+    const sourceTile = world.terrain.tiles[tileIndex];
+    let weights: Float32Array;
+    if (sourceTile.materialWeights && sourceTile.materialWeights.length === expectedLength) {
+      weights = new Float32Array(sourceTile.materialWeights);
+    } else {
+      weights = generateAutoMaterialWeightsFromTileHeights(world, sourceTile, numMaterials);
+    }
+
+    let tileMutated = false;
+    for (let row = 0; row < gridSize; row += 1) {
+      for (let col = 0; col < gridSize; col += 1) {
+        const [x, z] = getTerrainTileWorldPosition(next, sourceTile, row, col);
+        const distance = Math.hypot(x - centerX, z - centerZ);
+        if (distance > radius) continue;
+
+        const falloff = 1 - distance / radius;
+        const amount = strength * falloff * falloff;
+        const base = (row * gridSize + col) * numMaterials;
+
+        weights[base + materialIndex] = clampNumber(weights[base + materialIndex] + amount, 0, 1);
+
+        let total = 0;
+        for (let m = 0; m < numMaterials; m += 1) {
+          total += weights[base + m];
+        }
+        if (total > 0) {
+          const inv = 1 / total;
+          for (let m = 0; m < numMaterials; m += 1) {
+            weights[base + m] *= inv;
+          }
+        }
+        tileMutated = true;
+      }
+    }
+
+    if (tileMutated) {
+      next.terrain.tiles[tileIndex] = {
+        ...sourceTile,
+        heights: [...sourceTile.heights],
+        materials,
+        materialWeights: Array.from(weights),
+      };
+      mutated = true;
+    }
+  }
+
+  return mutated ? next : world;
 }
