@@ -4,8 +4,13 @@ import { createVehicleQueryFilter } from '../crowd/vehicleQueryFilter';
 import { vehicleAgentStateToIntent } from '../agent/vehicleSteering';
 
 import type { PracticeBotHost } from '../../net/localPracticeClient';
-import { FLAG_DEAD } from '../../net/protocol';
-import { FLAG_IN_VEHICLE } from '../../net/sharedConstants';
+import { FLAG_DEAD, aimDirectionFromAngles } from '../../net/protocol';
+import {
+  FLAG_IN_VEHICLE,
+  PLAYER_EYE_HEIGHT_M,
+  RIFLE_FIRE_INTERVAL_MS,
+  WEAPON_HITSCAN,
+} from '../../net/sharedConstants';
 import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
@@ -147,6 +152,8 @@ export interface BotDebugInfo {
   targetPlayerId: number | null;
   maxSpeed: number;
   firePrimary: boolean;
+  /** Total FireCmd packets emitted by this bot since spawn. */
+  shotsFired: number;
   /** Vehicle FSM stage — `'on_foot'` for walking bots. */
   vehicleStage: VehicleFsmStage;
   /** Vehicle id this bot is currently reserving / driving, or null. */
@@ -170,6 +177,12 @@ interface PracticeBot {
   behaviorKind: PracticeBotBehaviorKind;
   seq: number;
   lastIntent: BotIntent;
+  /** Monotonic shot id used in outgoing FireCmd packets. */
+  nextShotId: number;
+  /** Wall-clock ms at which this bot is next allowed to emit a FireCmd. */
+  nextFireMs: number;
+  /** Running count of FireCmds emitted, surfaced in the debug overlay. */
+  shotsFired: number;
   /**
    * Current vehicle FSM stage. Driven by `tickVehicleFsm`; `on_foot` is
    * the ground state whenever `useVehicles` is false.
@@ -194,6 +207,21 @@ const DEFAULT_MAX_SPEED = 3.0;
 const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
+
+// ~1° of yaw/pitch jitter: enough to prevent reliable headshots, not enough
+// to make the bot feel broken.
+const DEFAULT_AIM_JITTER_RAD = 0.02;
+// Lead moving targets by ~80 ms — matches the practice tick at 60 Hz and
+// feels natural without being a wall-hack aimbot.
+const DEFAULT_AIM_LEAD_SEC = 0.08;
+// ~200 ms reaction delay at 60 Hz before the first shot lands.
+const DEFAULT_FIRE_PREP_TICKS = 12;
+// Engagement range for the harass behavior's fire intent. Rifle hitscan
+// reaches farther than this but accuracy falls off quickly past 30 m.
+const DEFAULT_HARASS_FIRE_RANGE_M = 28;
+// Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
+// racing the server and getting shots silently dropped.
+const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
 
 export class PracticeBotRuntime {
   readonly crowd: BotCrowd;
@@ -223,6 +251,15 @@ export class PracticeBotRuntime {
   private vehicleCrowd: BotCrowd | null = null;
   /** navcat QueryFilter paired with the vehicle crowd. Built lazily alongside it. */
   private vehicleQueryFilter: ReturnType<typeof createVehicleQueryFilter> | null = null;
+  /**
+   * Position + timestamp cache used to estimate velocity of observed
+   * players (specifically, the local player) between ticks. Bots use this
+   * for aim-lead in steering. Keyed by observed player id.
+   */
+  private readonly observedVelocities = new Map<
+    number,
+    { position: Vec3Tuple; sampleMs: number; velocity: Vec3Tuple }
+  >();
   /**
    * Reservation map — prevents two bots racing for the same car.
    * Key: vehicleId. Value: botId holding the reservation.
@@ -413,6 +450,10 @@ export class PracticeBotRuntime {
     this.nextId = Math.max(this.nextId, id + 1);
     const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
       anchor: snapshot?.anchor ?? spawn,
+      aimJitterRad: DEFAULT_AIM_JITTER_RAD,
+      aimLeadSec: DEFAULT_AIM_LEAD_SEC,
+      firePrepTicks: DEFAULT_FIRE_PREP_TICKS,
+      seed: id >>> 0,
     });
     this.bots.set(id, {
       id,
@@ -421,6 +462,9 @@ export class PracticeBotRuntime {
       behaviorKind: this.behaviorKind,
       seq: 0,
       lastIntent: makeIdleIntent(),
+      nextShotId: 1,
+      nextFireMs: 0,
+      shotsFired: 0,
       vehicleStage: 'on_foot',
       reservedVehicleId: null,
       vehicleHandle: null,
@@ -649,6 +693,7 @@ export class PracticeBotRuntime {
         targetPlayerId: bot.lastIntent.targetPlayerId,
         maxSpeed: this.maxSpeed,
         firePrimary: bot.lastIntent.firePrimary,
+        shotsFired: bot.shotsFired,
         vehicleStage: bot.vehicleStage,
         reservedVehicleId: bot.reservedVehicleId,
       });
@@ -678,9 +723,15 @@ export class PracticeBotRuntime {
               selfSnapshot.position[2],
             ],
             isDead: localIsDead,
+            velocity: this.sampleObservedVelocity(
+              selfSnapshot.id,
+              selfSnapshot.position,
+              nowMs,
+            ),
           },
         ]
       : [];
+    this.pruneObservedVelocities(selfSnapshot?.id ?? null);
 
     for (const bot of this.bots.values()) {
       const remote = host.remotePlayers.get(bot.id);
@@ -772,6 +823,127 @@ export class PracticeBotRuntime {
       } else if (intent.vehicleAction === 'exit' && intent.vehicleId != null) {
         host.sendBotVehicleExit(bot.id, intent.vehicleId);
       }
+
+      this.maybeEmitFire(bot, intent, selfTemplate.dead, nowMs);
+    }
+  }
+
+  /**
+   * If the bot's brain wants to fire this tick, emit a `FireCmd` through
+   * the host — provided the 100 ms rifle cooldown has elapsed, the bot is
+   * alive + on foot, and the server can't already tell that the shot
+   * would be blocked by static world geometry. Shots that would be
+   * occluded are suppressed so we don't spam packets the server would
+   * only resolve as `SHOT_RESOLUTION_BLOCKED_BY_WORLD`.
+   */
+  private maybeEmitFire(
+    bot: PracticeBot,
+    intent: BotIntent,
+    isDead: boolean,
+    nowMs: number,
+  ): void {
+    if (!intent.firePrimary) return;
+    if (isDead) return;
+    if (bot.vehicleStage !== 'on_foot') return;
+    if (nowMs < bot.nextFireMs) return;
+    const host = this.host;
+    if (!host) return;
+
+    const remote = host.remotePlayers.get(bot.id);
+    if (!remote) return;
+
+    const dir = aimDirectionFromAngles(intent.yaw, intent.pitch);
+    const origin: [number, number, number] = [
+      remote.position[0],
+      remote.position[1] + PLAYER_EYE_HEIGHT_M,
+      remote.position[2],
+    ];
+
+    if (host.castSceneRay) {
+      const targetDist = this.targetDistanceForFire(bot, origin);
+      if (targetDist !== null) {
+        const hit = host.castSceneRay(origin, dir, targetDist + 0.5);
+        if (hit && hit.toi < targetDist - 0.25) {
+          // World geometry between us and the target — don't waste a shot.
+          return;
+        }
+      }
+    }
+
+    const shotId = bot.nextShotId;
+    bot.nextShotId = (bot.nextShotId + 1) >>> 0 || 1;
+    bot.nextFireMs = nowMs + RIFLE_FIRE_INTERVAL_MS + LOCAL_FIRE_COOLDOWN_SLACK_MS;
+    bot.shotsFired += 1;
+
+    host.sendBotFire(bot.id, {
+      seq: bot.seq,
+      shotId,
+      weapon: WEAPON_HITSCAN,
+      clientFireTimeUs: Math.floor(nowMs * 1000),
+      clientInterpMs: 0,
+      clientDynamicInterpMs: 0,
+      dir,
+    });
+  }
+
+  private targetDistanceForFire(bot: PracticeBot, origin: Vec3Tuple): number | null {
+    const targetId = bot.lastIntent.targetPlayerId;
+    if (targetId === null) return null;
+    const host = this.host;
+    if (!host) return null;
+    const target = host.remotePlayers.get(targetId);
+    const position = target?.position
+      ?? (this.observedVelocities.get(targetId)?.position ?? null);
+    if (!position) return null;
+    const dx = position[0] - origin[0];
+    const dy = position[1] + PLAYER_EYE_HEIGHT_M * 0.5 - origin[1];
+    const dz = position[2] - origin[2];
+    return Math.hypot(dx, dy, dz);
+  }
+
+  private sampleObservedVelocity(
+    id: number,
+    position: [number, number, number],
+    nowMs: number,
+  ): Vec3Tuple | undefined {
+    const previous = this.observedVelocities.get(id);
+    if (!previous) {
+      this.observedVelocities.set(id, {
+        position: [position[0], position[1], position[2]],
+        sampleMs: nowMs,
+        velocity: [0, 0, 0],
+      });
+      return [0, 0, 0];
+    }
+    const dtMs = nowMs - previous.sampleMs;
+    if (dtMs < 1) {
+      return [previous.velocity[0], previous.velocity[1], previous.velocity[2]];
+    }
+    const dt = dtMs / 1000;
+    // Low-pass to reject single-tick jitter while still reacting quickly.
+    const alpha = 0.4;
+    const instX = (position[0] - previous.position[0]) / dt;
+    const instY = (position[1] - previous.position[1]) / dt;
+    const instZ = (position[2] - previous.position[2]) / dt;
+    const vel: Vec3Tuple = [
+      previous.velocity[0] * (1 - alpha) + instX * alpha,
+      previous.velocity[1] * (1 - alpha) + instY * alpha,
+      previous.velocity[2] * (1 - alpha) + instZ * alpha,
+    ];
+    previous.position[0] = position[0];
+    previous.position[1] = position[1];
+    previous.position[2] = position[2];
+    previous.sampleMs = nowMs;
+    previous.velocity[0] = vel[0];
+    previous.velocity[1] = vel[1];
+    previous.velocity[2] = vel[2];
+    return [vel[0], vel[1], vel[2]];
+  }
+
+  private pruneObservedVelocities(keepId: number | null): void {
+    if (this.observedVelocities.size === 0) return;
+    for (const id of [...this.observedVelocities.keys()]) {
+      if (id !== keepId) this.observedVelocities.delete(id);
     }
   }
 
@@ -1108,7 +1280,8 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
       return harassNearest({
         acquireDistanceM: 80,
         releaseDistanceM: 120,
-        fireDistanceM: 0,
+        fireDistanceM: DEFAULT_HARASS_FIRE_RANGE_M,
+        minFireDistanceM: 2,
       });
   }
 }

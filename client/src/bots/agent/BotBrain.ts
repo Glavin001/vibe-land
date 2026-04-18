@@ -101,6 +101,7 @@ export class BotBrain {
       decision.targetPlayerId,
       decision.fireAim,
       this.options,
+      decision.fireAimVelocity ?? null,
     );
   }
 

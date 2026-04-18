@@ -3,6 +3,7 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  encodeFirePacket,
   encodeInputBundle,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
@@ -48,8 +49,14 @@ export interface PracticeBotHost {
   disconnectBot(botId: number): boolean;
   setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
   sendBotInputs(botId: number, cmds: InputCmd[]): void;
+  sendBotFire(botId: number, cmd: FireCmd): void;
   sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
   sendBotVehicleExit(botId: number, vehicleId: number): void;
+  castSceneRay?(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance?: number,
+  ): { toi: number } | null;
 }
 
 export class LocalPracticeClient implements PracticeBotHost {
@@ -177,6 +184,16 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
     } catch (error) {
       console.warn('[local-practice] bot input rejected', error);
+    }
+  }
+
+  sendBotFire(botId: number, cmd: FireCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeFirePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] bot fire rejected', error);
     }
   }
 

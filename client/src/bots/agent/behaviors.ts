@@ -14,6 +14,8 @@ export interface BotBehaviorContext {
 export interface BehaviorDecision {
   target: Vec3Tuple | null;
   fireAim: Vec3Tuple | null;
+  /** Velocity of the target being aimed at (for aim-lead). Optional. */
+  fireAimVelocity?: Vec3Tuple | null;
   targetPlayerId: number | null;
   mode: 'acquire_target' | 'follow_target' | 'recover_center' | 'hold_anchor' | 'dead';
 }
@@ -56,6 +58,11 @@ export interface HarassNearestOptions {
   acquireDistanceM?: number;
   releaseDistanceM?: number;
   fireDistanceM?: number;
+  /**
+   * Minimum planar distance below which a bot will not try to fire. Prevents
+   * point-blank shots while the bot is physically clipping the target.
+   */
+  minFireDistanceM?: number;
   targetMemoryTicks?: number;
 }
 
@@ -63,6 +70,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const acquire = options.acquireDistanceM ?? 40;
   const release = options.releaseDistanceM ?? acquire * 1.5;
   const fireRange = options.fireDistanceM ?? 18;
+  const minFireRange = options.minFireDistanceM ?? 1.5;
   const targetMemoryTicks = options.targetMemoryTicks ?? 45;
   const state = {
     lockedPlayerId: null as number | null,
@@ -88,7 +96,15 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
       );
 
     if (shouldFollowObserved) {
-      const fireAim = nearest.distance <= fireRange ? nearest.player.position : null;
+      const inFireWindow = nearest.distance <= fireRange && nearest.distance >= minFireRange;
+      const fireAim = inFireWindow ? nearest.player.position : null;
+      const fireAimVelocity = inFireWindow && nearest.player.velocity
+        ? ([
+            nearest.player.velocity[0],
+            nearest.player.velocity[1],
+            nearest.player.velocity[2],
+          ] as Vec3Tuple)
+        : null;
       state.lockedPlayerId = nearest.player.id;
       state.lastKnownTarget = [
         nearest.player.position[0],
@@ -103,6 +119,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
           nearest.player.position[2],
         ],
         fireAim,
+        fireAimVelocity,
         targetPlayerId: nearest.player.id,
         mode: 'follow_target',
       };
