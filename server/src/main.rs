@@ -1658,6 +1658,7 @@ impl MatchState {
         let mut players_in_vehicles = 0.0f32;
         let mut dead_players_skipped = 0.0f32;
         let mut player_centers = Vec::with_capacity(ids.len());
+        let mut on_foot_energy_drains = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
             if self.arena.vehicle_of_player.contains_key(&player_id) {
                 players_in_vehicles += 1.0;
@@ -1670,6 +1671,12 @@ impl MatchState {
             {
                 dead_players_skipped += 1.0;
             }
+            let (previous_input, was_on_ground) = self
+                .arena
+                .players
+                .get(&player_id)
+                .map(|state| (state.last_input.clone(), state.on_ground))
+                .unwrap_or_default();
             let input = self
                 .players
                 .get_mut(&player_id)
@@ -1684,6 +1691,7 @@ impl MatchState {
                     )
                 })
                 .unwrap_or_default();
+            on_foot_energy_drains.push((player_id, previous_input, input.clone(), was_on_ground));
             if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
                 player_move_math_ms += result.timings.move_math_ms;
                 player_query_ctx_ms += result.timings.query_ctx_ms;
@@ -1855,6 +1863,17 @@ impl MatchState {
                 if let Some(state) = self.arena.players.get_mut(&player_id) {
                     state.energy += gained_energy;
                 }
+            }
+        }
+        for (player_id, previous_input, input, was_on_ground) in on_foot_energy_drains {
+            if self.arena.apply_on_foot_energy_drain(
+                player_id,
+                &previous_input,
+                &input,
+                was_on_ground,
+                dt,
+            ) {
+                self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
             }
         }
         for player_id in self.arena.apply_vehicle_energy_drain(dt) {
