@@ -30,6 +30,7 @@ import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionMa
 import type { RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { getOrCreatePlayerIdentity } from './playerIdentity';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
 
@@ -964,7 +965,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       this.applyWorldPacket(packet);
     }
 
-    const identity = 'player-' + Math.random().toString(36).slice(2, 8);
+    const identity = getOrCreatePlayerIdentity();
     const token = 'mvp-token';
     const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
     await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);

@@ -62,6 +62,10 @@ const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_LAG_COMP_MS: u32 = 250;
 const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
+/// How long the server parks a disconnected player's runtime (arena slot,
+/// energy, vehicle attachment, pending-input state) waiting for the same
+/// identity to reconnect.
+const RECONNECT_GRACE: Duration = Duration::from_secs(60);
 const RIFLE_BODY_DAMAGE: u8 = 25;
 const RIFLE_HEAD_DAMAGE: u8 = 50;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
@@ -587,10 +591,11 @@ struct SessionConfig {
 }
 
 struct PlayerConnection {
-    player_id: u32,
+    session_id: u32,
     identity: String,
     transport: ClientTransport,
     tx: mpsc::Sender<Vec<u8>>,
+    resolved_player_id: Option<tokio::sync::oneshot::Sender<u32>>,
 }
 
 enum MatchEvent {
@@ -632,6 +637,10 @@ struct PlayerRuntime {
     last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
     last_sent_vehicle_tick: HashMap<u32, u32>,
     last_sent_dynamic_tick: HashMap<u32, u32>,
+    // When `Some(instant)`, this runtime is in the 60s grace window waiting for
+    // reconnect. While set, no live socket reads/writes reach it. Cleared by the
+    // reconnect path; evicted by `evict_stale_disconnected` once elapsed.
+    disconnected_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -890,17 +899,30 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     anyhow::ensure!(raw.len() >= 4 + payload_len, "ClientHello truncated");
     let hello = decode_client_hello(&raw[4..4 + payload_len])?;
 
-    let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
+    let session_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
 
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
+    // WebTransport identities are ephemeral (unique per session), so the match
+    // loop will never treat them as reconnects — `session_id` is always the
+    // resolved id. We still use the oneshot for API uniformity.
+    let (resolved_tx, resolved_rx) = tokio::sync::oneshot::channel::<u32>();
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
-        player_id,
-        identity: format!("wt-player-{player_id}"),
+        session_id,
+        identity: format!("wt-player-{session_id}"),
         transport: ClientTransport::WebTransport,
         tx: out_tx,
+        resolved_player_id: Some(resolved_tx),
     }))?;
+
+    let player_id = match resolved_rx.await {
+        Ok(id) => id,
+        Err(_) => {
+            warn!(session_id, "match loop dropped resolved_player_id channel");
+            return Ok(());
+        }
+    };
 
     // Writer: prefer datagrams for snapshots/pings; fall back to reliable stream
     // if the datagram is too large for the current QUIC path MTU.
@@ -1041,18 +1063,28 @@ async fn handle_socket(
 ) -> Result<()> {
     app.verifier.verify(&query.identity, &query.token).await?;
 
-    let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
+    let session_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), match_id.clone()).await;
 
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(PLAYER_OUTBOUND_QUEUE_CAPACITY);
 
+    let (resolved_tx, resolved_rx) = tokio::sync::oneshot::channel::<u32>();
     handle.tx.send(MatchEvent::Connect(PlayerConnection {
-        player_id,
+        session_id,
         identity: query.identity.clone(),
         transport: ClientTransport::WebSocket,
         tx: out_tx.clone(),
+        resolved_player_id: Some(resolved_tx),
     }))?;
+
+    let player_id = match resolved_rx.await {
+        Ok(id) => id,
+        Err(_) => {
+            warn!(session_id, "match loop dropped resolved_player_id channel");
+            return Ok(());
+        }
+    };
 
     let telemetry = handle.telemetry.clone();
     let writer = tokio::spawn(async move {
@@ -1338,6 +1370,36 @@ impl MatchState {
         }
     }
 
+    /// Drop runtimes whose grace window has expired, freeing the arena slot
+    /// and player handle for reuse. Called at ~1 Hz from `tick`.
+    fn evict_stale_disconnected(&mut self) {
+        let now = Instant::now();
+        let stale: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(id, rt)| match rt.disconnected_at {
+                Some(since) if now.duration_since(since) >= RECONNECT_GRACE => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        for player_id in &stale {
+            self.players.remove(player_id);
+            self.release_player_handle(*player_id);
+            self.arena.remove_player(*player_id);
+            self.history.remove_player(*player_id);
+            info!(
+                match_id = %self.id,
+                player_id,
+                active_players = self.players.len(),
+                "evicted disconnected player after grace window expired"
+            );
+        }
+        self.queue_roster_sync();
+    }
+
     fn build_player_roster_packet(&self) -> protocol::PlayerRosterPacket {
         let mut entries: Vec<_> = self
             .player_handles
@@ -1387,57 +1449,110 @@ impl MatchState {
 
     fn handle_event(&mut self, event: MatchEvent) {
         match event {
-            MatchEvent::Connect(conn) => {
-                let Some(player_handle) = self.allocate_player_handle() else {
-                    warn!(match_id = %self.id, player_id = conn.player_id, "player handle pool exhausted");
-                    return;
+            MatchEvent::Connect(mut conn) => {
+                // Reconnect: a runtime with the same identity is parked in the
+                // 60s grace window (disconnected_at = Some). Swap its socket
+                // handles instead of spawning a fresh arena player so the
+                // player resumes exactly where they left off.
+                let reconnect_target = self.players.iter().find_map(|(id, rt)| {
+                    if rt.identity == conn.identity && rt.disconnected_at.is_some() {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                });
+
+                let resolved_player_id = if let Some(existing_id) = reconnect_target {
+                    // Safe: we just found this entry in `self.players`.
+                    let runtime = self
+                        .players
+                        .get_mut(&existing_id)
+                        .expect("reconnect target vanished between lookup and update");
+                    runtime.tx = conn.tx.clone();
+                    runtime.transport = conn.transport;
+                    runtime.disconnected_at = None;
+                    // The new socket has no prior knowledge of world state —
+                    // force full resends of anything we track as "last sent".
+                    runtime.battery_full_resync_pending = true;
+                    runtime.last_sent_dynamic_body_pose.clear();
+                    runtime.last_sent_vehicle_tick.clear();
+                    runtime.last_sent_dynamic_tick.clear();
+                    runtime.visible_dynamic_bodies.clear();
+                    runtime.visible_batteries.clear();
+                    runtime.last_sent_energy_centi = None;
+                    info!(
+                        match_id = %self.id,
+                        player_id = existing_id,
+                        session_id = conn.session_id,
+                        identity = %conn.identity,
+                        active_players = self.players.len(),
+                        "player reconnected within grace window"
+                    );
+                    existing_id
+                } else {
+                    let Some(player_handle) = self.allocate_player_handle() else {
+                        warn!(match_id = %self.id, session_id = conn.session_id, "player handle pool exhausted");
+                        // Still reply so the socket task doesn't hang.
+                        if let Some(reply) = conn.resolved_player_id.take() {
+                            let _ = reply.send(conn.session_id);
+                        }
+                        return;
+                    };
+                    let player_id = conn.session_id;
+                    self.arena.spawn_player(player_id);
+                    let identity = conn.identity.clone();
+                    let transport = conn.transport.as_str();
+                    self.player_handles.insert(player_id, player_handle);
+                    self.players.insert(
+                        player_id,
+                        PlayerRuntime {
+                            identity: conn.identity.clone(),
+                            transport: conn.transport,
+                            tx: conn.tx.clone(),
+                            pending_inputs: VecDeque::new(),
+                            last_applied_input: InputCmd::default(),
+                            last_received_input_seq: None,
+                            last_ack_input_seq: 0,
+                            estimated_one_way_ms: 40,
+                            pending_server_ping: None,
+                            last_bundle_recv: None,
+                            bundle_intervals_ms: VecDeque::new(),
+                            bundle_sizes: VecDeque::new(),
+                            client_correction_m: 0.0,
+                            client_physics_ms: 0.0,
+                            client_debug_seen: false,
+                            last_processed_shot_id: None,
+                            next_allowed_fire_ms: 0,
+                            respawn_at_ms: None,
+                            visible_dynamic_bodies: HashSet::new(),
+                            visible_batteries: HashSet::new(),
+                            battery_full_resync_pending: true,
+                            last_sent_energy_centi: None,
+                            last_sent_dynamic_body_pose: HashMap::new(),
+                            last_sent_vehicle_tick: HashMap::new(),
+                            last_sent_dynamic_tick: HashMap::new(),
+                            disconnected_at: None,
+                        },
+                    );
+                    info!(
+                        match_id = %self.id,
+                        player_id,
+                        %identity,
+                        transport,
+                        active_players = self.players.len(),
+                        "player connected to match"
+                    );
+                    player_id
                 };
-                self.arena.spawn_player(conn.player_id);
-                let identity = conn.identity.clone();
-                let transport = conn.transport.as_str();
-                self.player_handles.insert(conn.player_id, player_handle);
-                self.players.insert(
-                    conn.player_id,
-                    PlayerRuntime {
-                        identity: conn.identity,
-                        transport: conn.transport,
-                        tx: conn.tx.clone(),
-                        pending_inputs: VecDeque::new(),
-                        last_applied_input: InputCmd::default(),
-                        last_received_input_seq: None,
-                        last_ack_input_seq: 0,
-                        estimated_one_way_ms: 40,
-                        pending_server_ping: None,
-                        last_bundle_recv: None,
-                        bundle_intervals_ms: VecDeque::new(),
-                        bundle_sizes: VecDeque::new(),
-                        client_correction_m: 0.0,
-                        client_physics_ms: 0.0,
-                        client_debug_seen: false,
-                        last_processed_shot_id: None,
-                        next_allowed_fire_ms: 0,
-                        respawn_at_ms: None,
-                        visible_dynamic_bodies: HashSet::new(),
-                        visible_batteries: HashSet::new(),
-                        battery_full_resync_pending: true,
-                        last_sent_energy_centi: None,
-                        last_sent_dynamic_body_pose: HashMap::new(),
-                        last_sent_vehicle_tick: HashMap::new(),
-                        last_sent_dynamic_tick: HashMap::new(),
-                    },
-                );
-                info!(
-                    match_id = %self.id,
-                    player_id = conn.player_id,
-                    %identity,
-                    transport,
-                    active_players = self.players.len(),
-                    "player connected to match"
-                );
+
+                // Tell the socket task which player_id to route through.
+                if let Some(reply) = conn.resolved_player_id.take() {
+                    let _ = reply.send(resolved_player_id);
+                }
 
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
-                    player_id: conn.player_id,
+                    player_id: resolved_player_id,
                     sim_hz: SIM_HZ,
                     snapshot_hz: SNAPSHOT_HZ,
                     server_time_us,
@@ -1447,7 +1562,7 @@ impl MatchState {
                 self.send_initial_metadata(&conn.tx);
                 self.queue_roster_sync();
 
-                if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
+                if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(resolved_player_id) {
                     for key in self.world.visible_chunks_around(pos, CHUNK_RADIUS_ON_JOIN) {
                         if let Some(full) = self.world.chunk_full_packet(key) {
                             let _ = try_queue_packet(
@@ -1460,65 +1575,68 @@ impl MatchState {
                 }
             }
             MatchEvent::Disconnect { player_id } => {
-                let disconnect_runtime = self.players.get(&player_id).map(|runtime| {
-                    (
-                        runtime.transport.as_str().to_string(),
-                        runtime.pending_inputs.len(),
-                        runtime
-                            .last_bundle_recv
-                            .map(|instant| instant.elapsed().as_secs_f32() * 1000.0),
-                        runtime.last_received_input_seq,
-                        runtime.last_ack_input_seq,
-                    )
-                });
+                // Park the runtime in the 60s grace window. A reconnect with
+                // the same identity swaps its socket handles; otherwise
+                // `evict_stale_disconnected` removes it once the window
+                // expires.
+                let Some(runtime) = self.players.get_mut(&player_id) else {
+                    info!(
+                        match_id = %self.id,
+                        player_id,
+                        active_players = self.players.len(),
+                        "disconnect for unknown player"
+                    );
+                    return;
+                };
+                if runtime.disconnected_at.is_some() {
+                    // Stale Disconnect from the prior socket after a reconnect
+                    // already swapped in a new tx. Ignore — the new socket is
+                    // live.
+                    return;
+                }
+                runtime.disconnected_at = Some(Instant::now());
+                let transport = runtime.transport.as_str().to_string();
+                let pending_inputs = runtime.pending_inputs.len();
+                let input_silence_ms = runtime
+                    .last_bundle_recv
+                    .map(|instant| instant.elapsed().as_secs_f32() * 1000.0);
+                let last_received_input_seq = runtime.last_received_input_seq;
+                let last_ack_input_seq = runtime.last_ack_input_seq;
+
                 let latest_health = self
                     .stats_registry
                     .read()
                     .ok()
                     .and_then(|registry| registry.get(&self.id).cloned());
-                self.players.remove(&player_id);
-                self.release_player_handle(player_id);
-                self.arena.remove_player(player_id);
-                self.history.remove_player(player_id);
-                if let Some((
+                info!(
+                    match_id = %self.id,
+                    player_id,
                     transport,
                     pending_inputs,
                     input_silence_ms,
                     last_received_input_seq,
                     last_ack_input_seq,
-                )) = disconnect_runtime
-                {
-                    info!(
-                        match_id = %self.id,
-                        player_id,
-                        transport,
-                        pending_inputs,
-                        input_silence_ms,
-                        last_received_input_seq,
-                        last_ack_input_seq,
-                        active_players = self.players.len(),
-                        tick_ms_p95 = latest_health.as_ref().map(|stats| stats.timings.total_ms.p95),
-                        max_pending_inputs = latest_health
-                            .as_ref()
-                            .map(|stats| stats.players.iter().map(|player| player.pending_inputs).max().unwrap_or(0)),
-                        datagram_fallbacks = latest_health.as_ref().map(|stats| stats.network.datagram_fallbacks),
-                        strict_snapshot_drops = latest_health.as_ref().map(|stats| stats.network.strict_snapshot_drops),
-                        "player disconnected from match"
-                    );
-                } else {
-                    info!(
-                        match_id = %self.id,
-                        player_id,
-                        active_players = self.players.len(),
-                        "player disconnected from match"
-                    );
-                }
+                    active_players = self.players.len(),
+                    tick_ms_p95 = latest_health.as_ref().map(|stats| stats.timings.total_ms.p95),
+                    max_pending_inputs = latest_health
+                        .as_ref()
+                        .map(|stats| stats.players.iter().map(|player| player.pending_inputs).max().unwrap_or(0)),
+                    datagram_fallbacks = latest_health.as_ref().map(|stats| stats.network.datagram_fallbacks),
+                    strict_snapshot_drops = latest_health.as_ref().map(|stats| stats.network.strict_snapshot_drops),
+                    "player disconnected — entering reconnect grace window"
+                );
                 self.queue_roster_sync();
             }
             MatchEvent::Packet { player_id, packet } => {
                 let Some(runtime) = self.players.get_mut(&player_id) else {
                     return;
                 };
+                // Drop stale packets that raced the Disconnect event. The
+                // reconnect path clears `disconnected_at` before any new
+                // packets can arrive on the new socket.
+                if runtime.disconnected_at.is_some() {
+                    return;
+                }
                 let is_dead = self
                     .arena
                     .players
@@ -1626,12 +1744,25 @@ impl MatchState {
         let tick_started = Instant::now();
         self.server_tick += 1;
         self.reclaim_player_handles();
+        // Sweep grace-period reconnect slots ~1 Hz. Cheap: O(#players) and the
+        // match-wide player count is small.
+        if self.server_tick % (SIM_HZ as u32) == 0 {
+            self.evict_stale_disconnected();
+        }
         let dt = 1.0 / SIM_HZ as f32;
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
 
-        let ids: Vec<u32> = self.players.keys().copied().collect();
+        // Skip simulation for runtimes parked in the reconnect grace window:
+        // their arena collider + motor state are frozen where they were at
+        // disconnect so the returning player resumes exactly where they left
+        // off.
+        let ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(id, rt)| rt.disconnected_at.is_none().then_some(*id))
+            .collect();
         let player_sim_started = Instant::now();
         let mut player_move_math_ms = 0.0f32;
         let mut player_query_ctx_ms = 0.0f32;
@@ -3483,6 +3614,7 @@ mod tests {
             last_sent_dynamic_body_pose: HashMap::new(),
             last_sent_vehicle_tick: HashMap::new(),
             last_sent_dynamic_tick: HashMap::new(),
+            disconnected_at: None,
         }
     }
 
