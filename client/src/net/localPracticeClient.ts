@@ -3,6 +3,8 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  encodeInputBundle,
+  netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
@@ -16,6 +18,7 @@ import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstant
 import {
   decodeLocalSessionBatteries,
   decodeLocalSessionDynamicBodies,
+  decodeLocalSessionPlayers,
   decodeLocalSessionPlayerState,
   decodeLocalSessionSnapshotMeta,
   decodeLocalSessionVehicleState,
@@ -32,7 +35,20 @@ export type LocalPracticeClientConfig = {
   worldJson?: string;
 };
 
-export class LocalPracticeClient {
+export interface PracticeBotHost {
+  readonly remotePlayers: Map<number, RemotePlayer>;
+  readonly vehicles: Map<number, VehicleStateMeters>;
+  readonly playerId: number;
+  readonly localPlayerHp: number;
+  readonly localPlayerFlags: number;
+
+  connectBot(botId: number): boolean;
+  disconnectBot(botId: number): boolean;
+  setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
+  sendBotInputs(botId: number, cmds: InputCmd[]): void;
+}
+
+export class LocalPracticeClient implements PracticeBotHost {
   readonly interpolator = new PlayerInterpolator();
   readonly serverClock = new ServerClockEstimator();
   readonly remotePlayers = new Map<number, RemotePlayer>();
@@ -125,6 +141,39 @@ export class LocalPracticeClient {
 
   sendBlockEdit(_cmd: BlockEditCmd): void {
     // Practice mode does not currently expose direct block-edit authority.
+  }
+
+  connectBot(botId: number): boolean {
+    const added = this.session?.connectBot(botId >>> 0) ?? false;
+    if (added) {
+      this.syncFromSession(true);
+    }
+    return added;
+  }
+
+  disconnectBot(botId: number): boolean {
+    const removed = this.session?.disconnectBot(botId >>> 0) ?? false;
+    if (removed) {
+      this.syncFromSession(true);
+    }
+    return removed;
+  }
+
+  setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean {
+    const session = this.session;
+    if (!session) return false;
+    const value = maxSpeedMps == null ? -1 : maxSpeedMps;
+    return session.setBotMaxSpeed(botId >>> 0, value);
+  }
+
+  sendBotInputs(botId: number, cmds: InputCmd[]): void {
+    const session = this.session;
+    if (!session || cmds.length === 0) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
+    } catch (error) {
+      console.warn('[local-practice] bot input rejected', error);
+    }
   }
 
   sendVehicleEnter(vehicleId: number, _seat = 0): void {
@@ -294,6 +343,7 @@ export class LocalPracticeClient {
       }
     }
 
+    this.syncRemotePlayers(serverTimeUs, session.getRemotePlayerStates());
     this.syncDynamicBodies(serverTimeUs, session.getDynamicBodyStates());
     const localVehicleState = this.syncVehicles(serverTimeUs, session.getVehicleStates());
     this.syncBatteries(session.getBatteryStates());
@@ -305,9 +355,40 @@ export class LocalPracticeClient {
     this.debugTelemetry.observeAcceptedSnapshot(
       'direct',
       this.latestServerTick,
-      playerState ? 1 : 0,
+      (playerState ? 1 : 0) + this.remotePlayers.size,
       this.dynamicBodies.size,
     );
+  }
+
+  private syncRemotePlayers(serverTimeUs: number, raw: ArrayLike<number>): void {
+    const activeIds = new Set<number>();
+    for (const state of decodeLocalSessionPlayers(raw)) {
+      activeIds.add(state.id);
+      const meters = netPlayerStateToMeters(state);
+      this.interpolator.push(state.id, {
+        serverTimeUs,
+        position: meters.position,
+        velocity: meters.velocity,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+        flags: state.flags,
+      });
+      this.remotePlayers.set(state.id, {
+        id: state.id,
+        position: meters.position,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+      });
+    }
+
+    for (const id of [...this.remotePlayers.keys()]) {
+      if (!activeIds.has(id)) {
+        this.remotePlayers.delete(id);
+        this.interpolator.remove(id);
+      }
+    }
   }
 
   private syncDynamicBodies(serverTimeUs: number, raw: ArrayLike<number>): void {

@@ -43,6 +43,8 @@ import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
+import type { PracticeBotRuntime } from '../bots';
+import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -316,6 +318,8 @@ type GameWorldProps = {
     clientIndex: number;
     scenario: LoadTestScenario;
   };
+  practiceBots?: PracticeBotRuntime | null;
+  practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
@@ -1027,6 +1031,8 @@ export function GameWorld({
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
   benchmarkAutopilot,
+  practiceBots,
+  practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   sceneExtras,
@@ -1214,6 +1220,30 @@ export function GameWorld({
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
   }, [benchmarkAutopilot]);
+
+  useEffect(() => {
+    if (!practiceBots || !practiceMode || !ready) return;
+    const host = runtimeRef.current?.getPracticeBotHost();
+    if (!host) return;
+    const getSelf = () => {
+      const client = runtimeRef.current;
+      const state = client?.state;
+      if (!client || !state) return null;
+      const inVehicle = (host.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
+      const position = inVehicle
+        ? state.localPosition
+        : client.getPosition() ?? state.localPosition;
+      return {
+        id: host.playerId,
+        position: [position[0], position[1], position[2]] as [number, number, number],
+        dead: (host.localPlayerFlags & FLAG_DEAD) !== 0 || host.localPlayerHp <= 0,
+      };
+    };
+    practiceBots.attach(host, getSelf);
+    return () => {
+      practiceBots.detach({ preserveHostBots: true });
+    };
+  }, [practiceBots, practiceMode, ready]);
 
   useEffect(() => {
     preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
@@ -2722,6 +2752,10 @@ export function GameWorld({
 
       {/* Crosshair */}
       <CrosshairHUD />
+
+      {practiceMode && practiceBots && practiceBotsDebugOverlay && (
+        <BotsDebugOverlay runtime={practiceBots} />
+      )}
 
       {sceneExtras}
     </>
