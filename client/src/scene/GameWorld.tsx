@@ -51,7 +51,7 @@ import {
   type WorldDocument,
 } from '../world/worldDocument';
 import {
-  getVehicleChassisHalfExtents,
+  getVehicleDefinition,
   getVehicleWheelConnectionOffsets,
   getVehicleWheelRadiusM,
   getVehicleWheelVisualAnchors,
@@ -774,8 +774,9 @@ function updateVehicleSupportDebug(
   debugState.group.visible = enabled && localVehicleDebug != null;
   if (!debugState.group.visible || !localVehicleDebug) return;
 
-  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets();
-  const wheelRadiusM = getVehicleWheelRadiusM();
+  const vehicleType = vehicleMeshGroup.userData.vehicleType as number | undefined;
+  const wheelConnectionOffsets = getVehicleWheelConnectionOffsets(vehicleType);
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleType);
   const down = new THREE.Vector3(0, -1, 0);
   const up = new THREE.Vector3(0, 1, 0);
   const inverseWorldQuat = vehicleMeshGroup.getWorldQuaternion(new THREE.Quaternion()).invert();
@@ -2510,9 +2511,13 @@ export function GameWorld({
 
       for (const [id, vs] of client.vehicles) {
         activeVehicleIds.add(id);
+        const vehicleType = vs.vehicleType ?? 0;
         let vehicleMeshGroup = vehicleMeshes.current.get(id);
-        if (!vehicleMeshGroup) {
-          vehicleMeshGroup = createVehicleMesh(id);
+        if (!vehicleMeshGroup || vehicleMeshGroup.userData.vehicleType !== vehicleType) {
+          if (vehicleMeshGroup) {
+            vGroup.remove(vehicleMeshGroup);
+          }
+          vehicleMeshGroup = createVehicleMesh(id, vehicleType);
           vGroup.add(vehicleMeshGroup);
           vehicleMeshes.current.set(id, vehicleMeshGroup);
         }
@@ -2811,46 +2816,265 @@ function updateLocalShotTraceVisuals(
   }
 }
 
-function createVehicleMesh(_id: number): THREE.Group {
+type VehicleSurfaceSegment = { z0: number; y0: number; z1: number; y1: number };
+
+function vehicleSideProfile(vehicleType: number): [number, number][] {
+  const definition = getVehicleDefinition(vehicleType);
+  const leftX = -definition.chassisHalfExtents.x;
+  const sideProfile = definition.chassisHullVertices
+    .filter(([x]) => Math.abs(x - leftX) < 0.001)
+    .map(([, y, z]) => [z, y] as [number, number]);
+  if (sideProfile.length > 0) {
+    return sideProfile;
+  }
+  return definition.chassisHullVertices
+    .slice(0, definition.chassisHullVertices.length / 2)
+    .map(([, y, z]) => [z, y] as [number, number]);
+}
+
+function profileSegment(
+  sideProfile: [number, number][],
+  start: number,
+  end: number,
+): VehicleSurfaceSegment {
+  const [z0, y0] = sideProfile[start] ?? sideProfile[0] ?? [0, 0];
+  const [z1, y1] = sideProfile[end] ?? sideProfile[start] ?? [0, 0];
+  return { z0, y0, z1, y1 };
+}
+
+function addVehicleGlassPanels(
+  group: THREE.Group,
+  halfWidth: number,
+  segments: VehicleSurfaceSegment[],
+): void {
+  const glassMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0c10,
+    metalness: 0.25,
+    roughness: 0.12,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const glassInset = 0.012;
+  for (const seg of segments) {
+    const dz = seg.z1 - seg.z0;
+    const dy = seg.y1 - seg.y0;
+    const len = Math.hypot(dz, dy);
+    if (len < 1e-4) continue;
+    const nz = -dy / len;
+    const ny = dz / len;
+    const panelGeom = new THREE.PlaneGeometry(halfWidth * 2, len);
+    const panel = new THREE.Mesh(panelGeom, glassMat);
+    const midZ = (seg.z0 + seg.z1) / 2 - nz * glassInset;
+    const midY = (seg.y0 + seg.y1) / 2 - ny * glassInset;
+    panel.position.set(0, midY, midZ);
+    panel.rotation.set(Math.atan2(dy, dz) - Math.PI / 2, 0, 0);
+    panel.receiveShadow = true;
+    group.add(panel);
+  }
+}
+
+function addCybertruckTrim(
+  group: THREE.Group,
+  chassisHalfExtents: { x: number; y: number; z: number },
+  wheelVisualAnchors: [number, number, number][],
+  sideProfile: [number, number][],
+): void {
+  addVehicleGlassPanels(group, chassisHalfExtents.x - 0.08, [
+    profileSegment(sideProfile, 3, 4),
+    profileSegment(sideProfile, 4, 5),
+  ]);
+
+  const lightBarMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: 0xffffff,
+    emissiveIntensity: 1.2,
+    roughness: 0.4,
+    metalness: 0.0,
+  });
+  const frontLight = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.03, 0.02), lightBarMat);
+  frontLight.position.set(0, 0.02, chassisHalfExtents.z - 0.005);
+  group.add(frontLight);
+
+  const tailLightMat = new THREE.MeshStandardMaterial({
+    color: 0xff2020,
+    emissive: 0xff1a1a,
+    emissiveIntensity: 1.0,
+    roughness: 0.4,
+    metalness: 0.0,
+  });
+  const tailLight = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.03, 0.02), tailLightMat);
+  tailLight.position.set(0, 0.09, -chassisHalfExtents.z + 0.005);
+  group.add(tailLight);
+
+  const claddingMat = new THREE.MeshStandardMaterial({
+    color: 0x15171a,
+    roughness: 0.95,
+    metalness: 0.05,
+  });
+  const claddingGeom = new THREE.BoxGeometry(
+    chassisHalfExtents.x * 2 + 0.02,
+    0.12,
+    chassisHalfExtents.z * 2 - 0.1,
+  );
+  const cladding = new THREE.Mesh(claddingGeom, claddingMat);
+  cladding.position.set(0, -chassisHalfExtents.y + 0.06, 0);
+  cladding.castShadow = true;
+  cladding.receiveShadow = true;
+  group.add(cladding);
+
+  const sideInsetMat = new THREE.MeshStandardMaterial({
+    color: 0x252a31,
+    roughness: 0.82,
+    metalness: 0.18,
+  });
+  for (const side of [-1, 1]) {
+    const forwardInset = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.20, 1.05), sideInsetMat);
+    forwardInset.position.set(side * (chassisHalfExtents.x - 0.02), -0.01, 0.78);
+    group.add(forwardInset);
+
+    const rearInset = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.18, 1.55), sideInsetMat);
+    rearInset.position.set(side * (chassisHalfExtents.x - 0.02), -0.03, -0.75);
+    group.add(rearInset);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const [ax, , az] = wheelVisualAnchors[i];
+    const isFront = i < 2;
+    const arch = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, isFront ? 0.24 : 0.21, isFront ? 0.82 : 0.76),
+      claddingMat,
+    );
+    arch.position.set(
+      ax * 0.985,
+      isFront ? -0.04 : -0.06,
+      az + (isFront ? 0.03 : -0.01),
+    );
+    arch.castShadow = true;
+    group.add(arch);
+  }
+}
+
+function addDeloreanTrim(
+  group: THREE.Group,
+  chassisHalfExtents: { x: number; y: number; z: number },
+  sideProfile: [number, number][],
+): void {
+  addVehicleGlassPanels(group, chassisHalfExtents.x - 0.1, [
+    profileSegment(sideProfile, 2, 3),
+    profileSegment(sideProfile, 3, 4),
+    profileSegment(sideProfile, 4, 5),
+  ]);
+
+  const fasciaMat = new THREE.MeshStandardMaterial({
+    color: 0x1c2026,
+    roughness: 0.7,
+    metalness: 0.15,
+  });
+  const frontFascia = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.08, 0.08), fasciaMat);
+  frontFascia.position.set(0, -0.12, chassisHalfExtents.z - 0.04);
+  group.add(frontFascia);
+
+  const tailPanelMat = new THREE.MeshStandardMaterial({
+    color: 0x842a22,
+    emissive: 0x5e1b15,
+    emissiveIntensity: 0.9,
+    roughness: 0.45,
+    metalness: 0.0,
+  });
+  const tailPanel = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.08, 0.05), tailPanelMat);
+  tailPanel.position.set(0, 0.06, -chassisHalfExtents.z + 0.03);
+  group.add(tailPanel);
+
+  const sideTrimMat = new THREE.MeshStandardMaterial({
+    color: 0x2a2f36,
+    roughness: 0.55,
+    metalness: 0.4,
+  });
+  for (const side of [-1, 1]) {
+    const sideTrim = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.1, 1.4), sideTrimMat);
+    sideTrim.position.set(side * (chassisHalfExtents.x - 0.03), -0.02, -0.1);
+    group.add(sideTrim);
+  }
+
+  const louverMat = new THREE.MeshStandardMaterial({
+    color: 0x20242a,
+    roughness: 0.8,
+    metalness: 0.1,
+  });
+  for (let index = 0; index < 4; index += 1) {
+    const louver = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.02, 0.18), louverMat);
+    louver.position.set(0, 0.18 + index * 0.025, -0.85 - index * 0.08);
+    louver.rotation.x = -0.28;
+    group.add(louver);
+  }
+}
+
+function createVehicleMesh(_id: number, vehicleType: number): THREE.Group {
   const group = new THREE.Group();
-  const wheelVisualAnchors = getVehicleWheelVisualAnchors();
-  const chassisHalfExtents = getVehicleChassisHalfExtents();
+  const vehicleDefinition = getVehicleDefinition(vehicleType);
+  const wheelVisualAnchors = getVehicleWheelVisualAnchors(vehicleDefinition.vehicleType);
+  const chassisHalfExtents = vehicleDefinition.chassisHalfExtents;
+  const sideProfile = vehicleSideProfile(vehicleDefinition.vehicleType);
+  group.userData.vehicleType = vehicleDefinition.vehicleType;
+  group.userData.vehicleKey = vehicleDefinition.key;
   group.userData.renderState = {
     lastBodyPosition: null,
     wheels: Array.from({ length: 4 }, () => ({ spinAngle: 0, steerAngle: 0 })),
   } satisfies VehicleRenderState;
 
-  // Match the Rapier chassis cuboid exactly: 0.9 x 0.3 x 1.8 half-extents.
-  const chassisGeom = new THREE.BoxGeometry(
-    chassisHalfExtents.x * 2,
-    chassisHalfExtents.y * 2,
-    chassisHalfExtents.z * 2,
+  const bodyShape = new THREE.Shape();
+  bodyShape.moveTo(sideProfile[0]?.[0] ?? -chassisHalfExtents.z, sideProfile[0]?.[1] ?? -chassisHalfExtents.y);
+  for (let i = 1; i < sideProfile.length; i++) {
+    bodyShape.lineTo(sideProfile[i][0], sideProfile[i][1]);
+  }
+  bodyShape.closePath();
+  const bodyGeom = new THREE.ExtrudeGeometry(bodyShape, {
+    depth: chassisHalfExtents.x * 2,
+    bevelEnabled: vehicleDefinition.key === 'cybertruck',
+    bevelSize: 0.015,
+    bevelThickness: 0.015,
+    bevelSegments: 1,
+    curveSegments: 1,
+  });
+  bodyGeom.translate(0, 0, -chassisHalfExtents.x);
+  bodyGeom.rotateY(-Math.PI / 2);
+  const body = new THREE.Mesh(bodyGeom, new THREE.MeshStandardMaterial({
+    color: vehicleDefinition.key === 'cybertruck' ? 0xc9ccd1 : 0xb8bcc5,
+    roughness: vehicleDefinition.key === 'cybertruck' ? 0.38 : 0.28,
+    metalness: 0.85,
+    flatShading: vehicleDefinition.key === 'cybertruck',
+  }));
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  if (vehicleDefinition.key === 'cybertruck') {
+    addCybertruckTrim(group, chassisHalfExtents, wheelVisualAnchors, sideProfile);
+  } else {
+    addDeloreanTrim(group, chassisHalfExtents, sideProfile);
+  }
+
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleDefinition.vehicleType);
+  const tireWidth = 0.33;
+  const tireGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, tireWidth, 20);
+  const tireMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a,
+    roughness: 0.95,
+    metalness: 0.0,
+    flatShading: true,
+  });
+  const rimGeom = new THREE.CylinderGeometry(
+    wheelRadiusM * 0.6,
+    wheelRadiusM * 0.6,
+    tireWidth + 0.01,
+    8,
   );
-  const chassisMat = new THREE.MeshStandardMaterial({ color: 0x6f7684, roughness: 0.58, metalness: 0.22 });
-  const chassis = new THREE.Mesh(chassisGeom, chassisMat);
-  chassis.castShadow = true;
-  chassis.receiveShadow = true;
-  group.add(chassis);
-
-  // Keep visual detail inside the collider bounds so the mesh reads honestly.
-  const roofGeom = new THREE.BoxGeometry(1.2, 0.18, 1.4);
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x9ba5b4, roughness: 0.46, metalness: 0.18 });
-  const roof = new THREE.Mesh(roofGeom, roofMat);
-  roof.position.set(0, 0.14, -0.05);
-  roof.castShadow = true;
-  group.add(roof);
-
-  const noseGeom = new THREE.BoxGeometry(1.0, 0.12, 0.55);
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0x9d643d, roughness: 0.6, metalness: 0.14 });
-  const nose = new THREE.Mesh(noseGeom, noseMat);
-  nose.position.set(0, 0.04, chassisHalfExtents.z - 0.42);
-  nose.castShadow = true;
-  group.add(nose);
-
-  // Wheels: FL, FR, RL, RR
-  const wheelRadiusM = getVehicleWheelRadiusM();
-  const wheelGeom = new THREE.CylinderGeometry(wheelRadiusM, wheelRadiusM, 0.3, 12);
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.9 });
+  const rimMat = new THREE.MeshStandardMaterial({
+    color: vehicleDefinition.key === 'cybertruck' ? 0x2a2e33 : 0x737882,
+    roughness: 0.5,
+    metalness: 0.6,
+    flatShading: true,
+  });
   for (let i = 0; i < 4; i++) {
     const pivot = new THREE.Group();
     pivot.position.set(...wheelVisualAnchors[i]);
@@ -2861,11 +3085,16 @@ function createVehicleMesh(_id: number): THREE.Group {
     spinGroup.name = `wheel_spin_${i}`;
     pivot.add(spinGroup);
 
-    const wheel = new THREE.Mesh(wheelGeom, wheelMat);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.name = `wheel_${i}`;
-    wheel.castShadow = true;
-    spinGroup.add(wheel);
+    const tire = new THREE.Mesh(tireGeom, tireMat);
+    tire.rotation.z = Math.PI / 2;
+    tire.name = `wheel_${i}`;
+    tire.castShadow = true;
+    spinGroup.add(tire);
+
+    const rim = new THREE.Mesh(rimGeom, rimMat);
+    rim.rotation.z = Math.PI / 2;
+    rim.castShadow = true;
+    spinGroup.add(rim);
   }
 
   return group;
@@ -2887,7 +3116,8 @@ function updateVehicleWheelVisuals(
 ): void {
   const renderState = vehicleMeshGroup.userData.renderState as VehicleRenderState | undefined;
   if (!renderState) return;
-  const wheelRadiusM = getVehicleWheelRadiusM();
+  const vehicleType = vehicleMeshGroup.userData.vehicleType as number | undefined;
+  const wheelRadiusM = getVehicleWheelRadiusM(vehicleType);
 
   const bodySpeed = estimateVehicleForwardSpeed(renderState.lastBodyPosition, position, quaternion, frameDeltaSec);
   renderState.lastBodyPosition = [...position];

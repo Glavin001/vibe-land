@@ -3,10 +3,7 @@ use std::fmt;
 use nalgebra::{vector, DMatrix, Quaternion, UnitQuaternion, Vector3};
 use serde::{de::Deserializer, Deserialize, Serialize};
 
-use crate::{
-    movement::{VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS},
-    vehicle::{VEHICLE_CHASSIS_HALF_EXTENTS, VEHICLE_WHEEL_OFFSETS},
-};
+use crate::vehicle::{vehicle_definition, DEFAULT_VEHICLE_TYPE};
 
 pub const WORLD_DOCUMENT_VERSION: u32 = 2;
 pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.world.json");
@@ -390,13 +387,15 @@ impl WorldDocument {
         x: f32,
         z: f32,
         rotation: [f32; 4],
+        vehicle_type: u8,
     ) -> f32 {
-        let mut offsets = Vec::with_capacity(VEHICLE_WHEEL_OFFSETS.len() + 4);
-        for offset in VEHICLE_WHEEL_OFFSETS {
+        let definition = vehicle_definition(vehicle_type);
+        let mut offsets = Vec::with_capacity(definition.wheel_offsets.len() + 4);
+        for offset in definition.wheel_offsets {
             offsets.push((offset[0], offset[2]));
         }
-        let half_x = VEHICLE_CHASSIS_HALF_EXTENTS[0];
-        let half_z = VEHICLE_CHASSIS_HALF_EXTENTS[2];
+        let half_x = definition.chassis_half_extents[0];
+        let half_z = definition.chassis_half_extents[2];
         offsets.extend_from_slice(&[
             (-half_x, -half_z),
             (-half_x, half_z),
@@ -447,11 +446,20 @@ impl WorldDocument {
         support_height + radius + 0.05
     }
 
-    fn minimum_vehicle_spawn_center_y(&self, x: f32, z: f32, rotation: [f32; 4]) -> f32 {
-        let support_height = self.sample_vehicle_support_height_at_world_position(x, z, rotation);
-        let wheel_clearance =
-            VEHICLE_SUSPENSION_REST_LENGTH + VEHICLE_SUSPENSION_TRAVEL + VEHICLE_WHEEL_RADIUS;
-        let chassis_clearance = VEHICLE_CHASSIS_HALF_EXTENTS[1] + 0.1;
+    fn minimum_vehicle_spawn_center_y(
+        &self,
+        x: f32,
+        z: f32,
+        rotation: [f32; 4],
+        vehicle_type: u8,
+    ) -> f32 {
+        let definition = vehicle_definition(vehicle_type);
+        let support_height =
+            self.sample_vehicle_support_height_at_world_position(x, z, rotation, vehicle_type);
+        let wheel_clearance = definition.suspension_rest_length_m
+            + definition.suspension_travel_m
+            + definition.wheel_radius_m;
+        let chassis_clearance = definition.chassis_half_extents[1] + 0.1;
         support_height + wheel_clearance.max(chassis_clearance) + 0.1
     }
 
@@ -754,15 +762,17 @@ impl WorldDocument {
                     );
                 }
                 DynamicEntityKind::Vehicle => {
+                    let vehicle_type = entity.vehicle_type.unwrap_or(DEFAULT_VEHICLE_TYPE);
                     let min_vehicle_y = self.minimum_vehicle_spawn_center_y(
                         entity.position[0],
                         entity.position[2],
                         entity.rotation,
+                        vehicle_type,
                     );
                     let spawn_y = entity.position[1].max(min_vehicle_y);
                     arena.spawn_vehicle_with_id(
                         entity.id,
-                        entity.vehicle_type.unwrap_or(0),
+                        vehicle_type,
                         Vector3::new(entity.position[0], spawn_y, entity.position[2]),
                         entity.rotation,
                     );

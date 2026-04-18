@@ -76,6 +76,7 @@ import {
   updateSelectedTargetPosition,
   updateSelectedTargetRadius,
   updateSelectedTargetRotation,
+  updateSelectedTargetVehicleType,
   type SelectedTarget,
   type SelectedTransformEntity,
 } from './godModeEditorDocument';
@@ -87,6 +88,11 @@ import type { SplineData } from '../ai/splineData';
 import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
 import { useCustomStencils } from '../ai/customStencilStore';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
+import {
+  getSharedVehicleDefinition,
+  getSharedVehicleDefinitions,
+  getSharedVehicleDefaultType,
+} from '../wasm/sharedVehicleDefinitions';
 
 type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain';
@@ -768,6 +774,13 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     applyPreviewWorldEdit((current) => updateSelectedTargetRadius(current, selected, nextRadius));
   }, [applyPreviewWorldEdit, selected]);
 
+  const updateSelectedVehicleType = useCallback((value: number) => {
+    if (selected?.kind !== 'dynamic') {
+      return;
+    }
+    applyCommittedWorldEdit((current) => updateSelectedTargetVehicleType(current, selected, value));
+  }, [applyCommittedWorldEdit, selected]);
+
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
     const yawRadians = (yawDegrees * Math.PI) / 180;
     const nextRotation = quaternionFromYaw(yawRadians);
@@ -1299,6 +1312,16 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   onDimensionsChange={updateSelectedHalfExtent}
                   radius={selectedDynamic.radius}
                   onRadiusChange={updateSelectedRadius}
+                  vehicleType={selectedDynamic.kind === 'vehicle'
+                    ? (selectedDynamic.vehicleType ?? getSharedVehicleDefaultType())
+                    : undefined}
+                  vehicleTypeOptions={selectedDynamic.kind === 'vehicle'
+                    ? getSharedVehicleDefinitions().map((definition) => ({
+                      value: definition.vehicleType,
+                      label: definition.name,
+                    }))
+                    : undefined}
+                  onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
                   yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
                   onYawChange={updateSelectedYaw}
                   onDelete={removeSelected}
@@ -1915,7 +1938,10 @@ function GodModeEditorScene({
             {entity.kind === 'ball' ? (
               <sphereGeometry args={[entity.radius ?? 0.5, 24, 24]} />
             ) : (
-              <boxGeometry args={scaleExtents(entity.halfExtents ?? (entity.kind === 'vehicle' ? [1.4, 0.6, 2.4] : [0.5, 0.5, 0.5]))} />
+              <boxGeometry args={scaleExtents(
+                entity.halfExtents
+                ?? (entity.kind === 'vehicle' ? previewVehicleHalfExtents(entity.vehicleType) : [0.5, 0.5, 0.5]),
+              )} />
             )}
             <meshStandardMaterial
               color={
@@ -2266,6 +2292,9 @@ function EditorFields({
   onDimensionsChange,
   radius,
   onRadiusChange,
+  vehicleType,
+  vehicleTypeOptions,
+  onVehicleTypeChange,
   yawDegrees,
   onYawChange,
   onDelete,
@@ -2277,6 +2306,9 @@ function EditorFields({
   onDimensionsChange?: (axis: 0 | 1 | 2, value: number) => void;
   radius?: number;
   onRadiusChange?: (value: number) => void;
+  vehicleType?: number;
+  vehicleTypeOptions?: Array<{ value: number; label: string }>;
+  onVehicleTypeChange?: (value: number) => void;
   yawDegrees?: number;
   onYawChange?: (value: number) => void;
   onDelete: () => void;
@@ -2308,6 +2340,16 @@ function EditorFields({
           <input type="number" min="0.1" step="0.1" value={radius} onChange={(event) => onRadiusChange(Number(event.target.value))} />
         </label>
       )}
+      {vehicleType != null && vehicleTypeOptions && onVehicleTypeChange && (
+        <label style={fieldLabelStyle}>
+          Vehicle Type
+          <select value={vehicleType} onChange={(event) => onVehicleTypeChange(Number(event.target.value))}>
+            {vehicleTypeOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      )}
       {yawDegrees != null && onYawChange && (
         <label style={fieldLabelStyle}>
           Yaw
@@ -2330,6 +2372,11 @@ function clampDimension(value: number): number {
 function clampBrushHeight(value: number, min: number, max: number): number {
   const fallback = Number.isFinite(value) ? value : min;
   return Math.min(Math.max(fallback, min), max);
+}
+
+function previewVehicleHalfExtents(vehicleType?: number): [number, number, number] {
+  const halfExtents = getSharedVehicleDefinition(vehicleType).chassisHalfExtents;
+  return [halfExtents.x, halfExtents.y, halfExtents.z];
 }
 
 function scaleExtents(extents: [number, number, number]): [number, number, number] {

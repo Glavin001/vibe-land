@@ -1,4 +1,5 @@
 import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
+import { getSharedVehicleDefinition } from '../wasm/sharedVehicleDefinitions';
 
 export const WORLD_DOCUMENT_VERSION = 2;
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;
@@ -366,13 +367,24 @@ export function sampleTerrainHeightAtWorldPosition(world: WorldDocument, x: numb
   return h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
 }
 
-export function getMinimumDynamicEntityY(world: WorldDocument, entity: Pick<DynamicEntity, 'kind' | 'position' | 'halfExtents' | 'radius'>): number {
+export function getMinimumDynamicEntityY(
+  world: WorldDocument,
+  entity: Pick<DynamicEntity, 'kind' | 'position' | 'halfExtents' | 'radius' | 'vehicleType'>,
+): number {
   const terrainY = sampleTerrainHeightAtWorldPosition(world, entity.position[0], entity.position[2]);
   if (entity.kind === 'box') {
     return terrainY + (entity.halfExtents?.[1] ?? 0.5) + 0.05;
   }
   if (entity.kind === 'ball') {
     return terrainY + (entity.radius ?? 0.5) + 0.05;
+  }
+  if (entity.kind === 'vehicle') {
+    const definition = getSharedVehicleDefinition(entity.vehicleType);
+    const wheelClearance = definition.suspensionRestLengthM
+      + definition.suspensionTravelM
+      + definition.wheelRadiusM;
+    const chassisClearance = definition.chassisHalfExtents.y + 0.1;
+    return terrainY + Math.max(wheelClearance, chassisClearance) + 0.1;
   }
   return terrainY + 0.85;
 }
