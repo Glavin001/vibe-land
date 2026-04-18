@@ -68,7 +68,11 @@ test.describe('Practice Destructibles', () => {
     const beforeDrive = await snapshot(page);
     expect(beforeDrive.destructibles.debugState.contactEventsAcceptedTotal).toBe(0);
 
-    await driveForward(page, 2500);
+    // Drive long enough for the vehicle to reach the wall even in slow CI
+    // environments where swiftshader rendering keeps physics at ~30% real-time.
+    // The wall is 8 m ahead; at 30% real-time, 6 s wall-clock gives ~2 s of
+    // physics time, which is enough for the car to accelerate to the wall.
+    await driveForward(page, 6_000);
 
     const afterImpact = await waitForSnapshot(
       page,
@@ -76,7 +80,7 @@ test.describe('Practice Destructibles', () => {
         s.destructibles.debugState.contactEventsMatchingTotal > 0
         && s.destructibles.fractureEventsTotal > 0
       ),
-      { timeout: 10_000, label: 'destructible impact telemetry' },
+      { timeout: 20_000, label: 'destructible impact telemetry' },
     );
 
     expect(afterImpact.destructibles.debugState.contactEventsSeenTotal).toBeGreaterThan(0);
@@ -85,12 +89,13 @@ test.describe('Practice Destructibles', () => {
     expect(afterImpact.destructibles.fractureEventsTotal).toBeGreaterThan(0);
     expect(afterImpact.cameraPosition[2]).toBeGreaterThan(beforeDrive.cameraPosition[2]);
 
-    await page.waitForTimeout(3_000);
+    // Allow debris more time to settle in slow CI environments.
+    await page.waitForTimeout(5_000);
 
     const settled = await waitForSnapshot(
       page,
       (s) => s.destructibles.fractureEventsTotal > 0,
-      { timeout: 5_000, label: 'fractured debris settle window' },
+      { timeout: 10_000, label: 'fractured debris settle window' },
     );
 
     expect(
