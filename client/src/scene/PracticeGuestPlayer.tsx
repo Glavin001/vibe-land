@@ -6,8 +6,12 @@ import { LocalPracticeClient, type LocalHumanSlotHandle } from '../net/localPrac
 import { GameInputManager } from '../input/manager';
 import type { InputBindings } from '../input/bindings';
 import type { LocalDeviceAssignment } from '../input/types';
-import { advanceLookAngles } from '../input/resolver';
-import { buildInputFromButtons } from './inputBuilder';
+import {
+  advanceLookAngles,
+  advanceVehicleCamera,
+  VEHICLE_CAMERA_DEFAULT_PITCH,
+} from '../input/resolver';
+import { buildInputFromState } from './inputBuilder';
 import {
   BTN_CROUCH,
   BTN_JUMP,
@@ -16,18 +20,44 @@ import {
   BTN_BACK,
   BTN_LEFT,
   BTN_RIGHT,
+  FLAG_DEAD,
+  WEAPON_HITSCAN,
+  RIFLE_FIRE_INTERVAL_MS,
 } from '../net/sharedConstants';
+import type { VehicleStateMeters } from '../net/protocol';
 
 const PLAYER_EYE_HEIGHT = 0.8;
+const VEHICLE_INTERACT_RADIUS = 4.0;
+const VEHICLE_CAMERA_DISTANCE = 6.5;
+const VEHICLE_CAMERA_HEIGHT = 2.5;
+/**
+ * Each guest reserves a distinct shot-id prefix so its locally-generated
+ * shot ids never collide with slot 0's (which starts at 1 and counts up).
+ * 24-bit shards give us ~16M shots per slot before wraparound.
+ */
+const GUEST_SHOT_ID_SHARD = 0x01000000;
 
 export type GuestCameraMap = Map<number, THREE.PerspectiveCamera>;
 
+export type GuestHudEntry = {
+  hp: number;
+  energy: number;
+  /** Whether this slot is currently driving a vehicle. */
+  inVehicle: boolean;
+  /** Whether the player slot is still alive (hp > 0 and not flagged dead). */
+  alive: boolean;
+};
+
+export type GuestHudMap = Map<number, GuestHudEntry>;
+
 interface PracticeGuestPlayerProps {
+  slotId: number;
   humanId: number;
   device: LocalDeviceAssignment;
   inputBindings: InputBindings;
   runtimeRef: RefObject<GameRuntimeClient | null>;
   guestCamerasRef: RefObject<GuestCameraMap>;
+  guestHudRef: RefObject<GuestHudMap>;
 }
 
 function buttonsFromMove(moveX: number, moveY: number): number {
@@ -39,26 +69,64 @@ function buttonsFromMove(moveX: number, moveY: number): number {
   return buttons;
 }
 
+function findDrivenVehicle(
+  client: LocalPracticeClient,
+  humanId: number,
+): { id: number; state: VehicleStateMeters } | null {
+  for (const [id, state] of client.vehicles) {
+    if (state.driverId === humanId) return { id, state };
+  }
+  return null;
+}
+
+function findNearestEnterableVehicle(
+  client: LocalPracticeClient,
+  position: [number, number, number],
+): number | null {
+  let best: { id: number; dist: number } | null = null;
+  for (const [id, vs] of client.vehicles) {
+    if (vs.driverId !== 0) continue;
+    const dx = vs.position[0] - position[0];
+    const dz = vs.position[2] - position[2];
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < VEHICLE_INTERACT_RADIUS && (best == null || dist < best.dist)) {
+      best = { id, dist };
+    }
+  }
+  return best ? best.id : null;
+}
+
 /**
  * Drives one local split-screen **guest** slot (slotId >= 1). Connects to
  * the shared WASM session via `LocalPracticeClient.connectHuman`, samples
  * its dedicated `GameInputManager`, and owns a per-slot
- * `THREE.PerspectiveCamera` positioned first-person at the guest's
- * current sim position. The camera is registered in `guestCamerasRef` so
- * `SplitScreenRenderer` can render one pass per slot.
+ * `THREE.PerspectiveCamera` that tracks the guest's position (first-person
+ * on foot, chase-cam while driving). Each frame it:
+ *
+ * 1. Samples input and forwards an `InputCmd` through its slot handle.
+ * 2. Issues fire packets when primary-fire is pressed on foot.
+ * 3. Handles E/interact for enter/exit of the nearest authored vehicle.
+ * 4. Publishes HP/energy/alive/inVehicle state into the shared HUD ref so
+ *    the per-viewport HUD overlay can render it without extra wiring.
  */
 export function PracticeGuestPlayer({
+  slotId,
   humanId,
   device,
   inputBindings,
   runtimeRef,
   guestCamerasRef,
+  guestHudRef,
 }: PracticeGuestPlayerProps) {
   const managerRef = useRef<GameInputManager | null>(null);
   const handleRef = useRef<LocalHumanSlotHandle | null>(null);
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
+  const vehicleOrbitYawRef = useRef(0);
+  const vehicleOrbitPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
   const seqRef = useRef(0);
+  const nextShotIdRef = useRef((slotId + 1) * GUEST_SHOT_ID_SHARD + 1);
+  const nextFireMsRef = useRef(0);
   const { camera: defaultCamera } = useThree();
   const camera = useMemo(() => {
     const cam = new THREE.PerspectiveCamera(
@@ -103,41 +171,153 @@ export function PracticeGuestPlayer({
     };
   }, [humanId, camera, guestCamerasRef]);
 
+  useEffect(() => {
+    const hud = guestHudRef.current;
+    if (!hud) return;
+    hud.set(humanId, { hp: 100, energy: 0, inVehicle: false, alive: true });
+    return () => {
+      hud.delete(humanId);
+    };
+  }, [humanId, guestHudRef]);
+
   useFrame((_state, delta) => {
     const manager = managerRef.current;
     const handle = handleRef.current;
-    if (!manager || !handle) return;
-    const sample = manager.sample(delta, false, 'onFoot', inputBindings, 'auto');
+    const runtime = runtimeRef.current;
+    const host = runtime?.getPracticeBotHost();
+    if (!manager || !handle || !(host instanceof LocalPracticeClient)) return;
+
+    const drivenVehicle = findDrivenVehicle(host, humanId);
+    const isDriving = drivenVehicle != null;
+
+    const sample = manager.sample(
+      delta,
+      false,
+      isDriving ? 'vehicle' : 'onFoot',
+      inputBindings,
+      'auto',
+    );
     const action = sample.action;
-    const look = action
-      ? advanceLookAngles(yawRef.current, pitchRef.current, action)
-      : { yaw: yawRef.current, pitch: pitchRef.current };
-    yawRef.current = look.yaw;
-    pitchRef.current = look.pitch;
-    if (action) {
-      let buttons = buttonsFromMove(action.moveX, action.moveY);
-      if (action.jump) buttons |= BTN_JUMP;
-      if (action.sprint) buttons |= BTN_SPRINT;
-      if (action.crouch) buttons |= BTN_CROUCH;
-      seqRef.current = (seqRef.current + 1) & 0xffff;
-      const cmd = buildInputFromButtons(seqRef.current, 0, buttons, look.yaw, look.pitch);
-      handle.sendInputs([cmd]);
+
+    if (isDriving) {
+      const updated = advanceVehicleCamera(
+        vehicleOrbitYawRef.current,
+        vehicleOrbitPitchRef.current,
+        action,
+        16,
+        delta,
+      );
+      vehicleOrbitYawRef.current = updated.orbitYaw;
+      vehicleOrbitPitchRef.current = updated.orbitPitch;
+    } else {
+      const look = action
+        ? advanceLookAngles(yawRef.current, pitchRef.current, action)
+        : { yaw: yawRef.current, pitch: pitchRef.current };
+      yawRef.current = look.yaw;
+      pitchRef.current = look.pitch;
     }
 
-    const host = runtimeRef.current?.getPracticeBotHost();
-    if (host instanceof LocalPracticeClient) {
-      const remote = host.remotePlayers.get(humanId);
-      if (remote) {
-        const [px, py, pz] = remote.position;
-        const yaw = look.yaw;
-        const pitch = look.pitch;
-        camera.position.set(px, py + PLAYER_EYE_HEIGHT, pz);
-        camera.lookAt(
-          px + Math.sin(yaw) * Math.cos(pitch),
-          py + PLAYER_EYE_HEIGHT + Math.sin(pitch),
-          pz + Math.cos(yaw) * Math.cos(pitch),
-        );
+    const remote = host.remotePlayers.get(humanId);
+    const pos: [number, number, number] = remote?.position ?? [0, 0, 0];
+    const alive = remote ? remote.hp > 0 && (remote.flags & FLAG_DEAD) === 0 : true;
+
+    if (action && alive) {
+      let buttons: number;
+      let moveX: number;
+      let moveY: number;
+      let sendYaw: number;
+      let sendPitch: number;
+      if (isDriving) {
+        moveX = Math.max(-1, Math.min(1, action.steer ?? action.moveX ?? 0));
+        moveY = Math.max(-1, Math.min(1, (action.throttle ?? 0) - (action.brake ?? 0)));
+        buttons = 0;
+        if (action.handbrake) buttons |= BTN_JUMP;
+        sendYaw = vehicleOrbitYawRef.current;
+        sendPitch = vehicleOrbitPitchRef.current;
+      } else {
+        moveX = action.moveX;
+        moveY = action.moveY;
+        buttons = buttonsFromMove(moveX, moveY);
+        if (action.jump) buttons |= BTN_JUMP;
+        if (action.sprint) buttons |= BTN_SPRINT;
+        if (action.crouch) buttons |= BTN_CROUCH;
+        sendYaw = yawRef.current;
+        sendPitch = pitchRef.current;
       }
+      seqRef.current = (seqRef.current + 1) & 0xffff;
+      const cmd = buildInputFromState(seqRef.current, 0, {
+        moveX,
+        moveY,
+        yaw: sendYaw,
+        pitch: sendPitch,
+        buttons,
+      });
+      handle.sendInputs([cmd]);
+
+      if (action.interactPressed) {
+        if (isDriving && drivenVehicle) {
+          handle.exitVehicle(drivenVehicle.id);
+        } else if (!isDriving) {
+          const nearest = findNearestEnterableVehicle(host, pos);
+          if (nearest != null) handle.enterVehicle(nearest);
+        }
+      }
+
+      if (!isDriving && action.firePrimary) {
+        const now = performance.now();
+        if (now >= nextFireMsRef.current) {
+          nextFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
+          const yaw = yawRef.current;
+          const pitch = pitchRef.current;
+          const dir: [number, number, number] = [
+            Math.sin(yaw) * Math.cos(pitch),
+            Math.sin(pitch),
+            Math.cos(yaw) * Math.cos(pitch),
+          ];
+          const shotId = nextShotIdRef.current;
+          nextShotIdRef.current = shotId + 1;
+          handle.sendFire({
+            seq: seqRef.current,
+            shotId: shotId >>> 0,
+            weapon: WEAPON_HITSCAN,
+            clientFireTimeUs: host.serverClock.serverNowUs(),
+            clientInterpMs: 0,
+            clientDynamicInterpMs: 0,
+            dir,
+          });
+        }
+      }
+    }
+
+    // Camera tracking: first-person on foot; chase-cam when driving.
+    if (isDriving && drivenVehicle) {
+      const vpos = drivenVehicle.state.position;
+      const totalYaw = vehicleOrbitYawRef.current;
+      const totalPitch = vehicleOrbitPitchRef.current;
+      const camX = vpos[0] - Math.sin(totalYaw) * VEHICLE_CAMERA_DISTANCE * Math.cos(totalPitch);
+      const camY = vpos[1] + VEHICLE_CAMERA_HEIGHT + Math.sin(totalPitch) * VEHICLE_CAMERA_DISTANCE;
+      const camZ = vpos[2] - Math.cos(totalYaw) * VEHICLE_CAMERA_DISTANCE * Math.cos(totalPitch);
+      camera.position.set(camX, camY, camZ);
+      camera.lookAt(vpos[0], vpos[1] + 1.0, vpos[2]);
+    } else if (remote) {
+      const yaw = yawRef.current;
+      const pitch = pitchRef.current;
+      camera.position.set(pos[0], pos[1] + PLAYER_EYE_HEIGHT, pos[2]);
+      camera.lookAt(
+        pos[0] + Math.sin(yaw) * Math.cos(pitch),
+        pos[1] + PLAYER_EYE_HEIGHT + Math.sin(pitch),
+        pos[2] + Math.cos(yaw) * Math.cos(pitch),
+      );
+    }
+
+    const hud = guestHudRef.current;
+    if (hud) {
+      hud.set(humanId, {
+        hp: remote?.hp ?? 0,
+        energy: (remote?.energyCenti ?? 0) / 100,
+        inVehicle: isDriving,
+        alive,
+      });
     }
   });
 

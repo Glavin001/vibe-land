@@ -14,6 +14,8 @@ import {
 } from './input/bindings';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
+import type { GuestHudMap } from './scene/PracticeGuestPlayer';
+import { SplitScreenHud, type SplitScreenHudPlayer } from './scene/SplitScreenHud';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
@@ -233,6 +235,7 @@ export function App({
   const benchmarkResultRef = useRef<PlayWorkerResult | null>(null);
   const vehicleBenchmarkAccumulatorRef = useRef<VehicleBenchmarkAccumulator>(createVehicleBenchmarkAccumulator());
   const autoConnectAttemptedRef = useRef(false);
+  const guestHudRef = useRef<GuestHudMap>(new Map());
 
   // Calibration wizard state (firing range only).
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -904,7 +907,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && (
+      {connected && !splitScreen && (
         <div
           style={{
             position: 'absolute',
@@ -1004,8 +1007,29 @@ export function App({
       <EnergyBar
         hp={displayStats.hp}
         energy={displayStats.energy}
-        visible={connected}
+        visible={connected && !splitScreen}
       />
+      {splitScreen && (() => {
+        const hudPlayers: SplitScreenHudPlayer[] = localPlayers.map((slot) => (
+          slot.slotId === 0
+            ? { slotId: 0, humanId: null, label: 'P1' }
+            : {
+                slotId: slot.slotId,
+                humanId: LOCAL_HUMAN_ID_BASE + slot.slotId,
+                label: `P${slot.slotId + 1}`,
+              }
+        ));
+        return (
+          <SplitScreenHud
+            players={hudPlayers}
+            primaryHp={displayStats.hp}
+            primaryEnergy={displayStats.energy}
+            primaryVisible={connected}
+            crosshairState={crosshairState}
+            guestHudRef={guestHudRef}
+          />
+        );
+      })()}
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -1054,6 +1078,7 @@ export function App({
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={calibrationSceneExtras}
           practiceGuests={practiceGuests}
+          guestHudRef={guestHudRef}
         />
       )}
     </div>

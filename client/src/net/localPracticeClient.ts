@@ -3,6 +3,7 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  encodeFirePacket,
   encodeInputBundle,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
@@ -61,6 +62,7 @@ export interface PracticeBotHost {
 export interface LocalHumanSlotHandle {
   readonly humanId: number;
   sendInputs(cmds: InputCmd[]): void;
+  sendFire(cmd: FireCmd): void;
   enterVehicle(vehicleId: number, seat?: number): void;
   exitVehicle(vehicleId: number): void;
   disconnect(): void;
@@ -223,6 +225,7 @@ export class LocalPracticeClient implements PracticeBotHost {
     return {
       humanId: humanId >>> 0,
       sendInputs: (cmds) => this.sendHumanInputs(humanId, cmds),
+      sendFire: (cmd) => this.sendHumanFire(humanId, cmd),
       enterVehicle: (vehicleId, seat = 0) => this.sendHumanVehicleEnter(humanId, vehicleId, seat),
       exitVehicle: (vehicleId) => this.sendHumanVehicleExit(humanId, vehicleId),
       disconnect: () => this.disconnectHuman(humanId),
@@ -244,6 +247,16 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleHumanPacket(humanId >>> 0, encodeInputBundle(cmds));
     } catch (error) {
       console.warn('[local-practice] human input rejected', error);
+    }
+  }
+
+  sendHumanFire(humanId: number, cmd: FireCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleHumanPacket(humanId >>> 0, encodeFirePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] human fire rejected', error);
     }
   }
 
@@ -472,6 +485,7 @@ export class LocalPracticeClient implements PracticeBotHost {
         pitch: meters.pitch,
         hp: meters.hp,
         flags: state.flags,
+        energyCenti: state.energyCenti,
       });
     }
 

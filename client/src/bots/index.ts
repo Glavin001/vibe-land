@@ -60,6 +60,7 @@ export {
   type BotDebugInfo,
   type BotObstacleDebugInfo,
   type LocalSelfAccessor,
+  type LocalSelvesAccessor,
   type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,
   type PracticeBotNavDebugConfig,

@@ -1,10 +1,11 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
-import { Suspense, type ReactNode } from 'react';
+import { Suspense, type ReactNode, type RefObject } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
+import type { GuestHudMap } from './PracticeGuestPlayer';
 import type { InputFamilyMode, InputSample, LocalDeviceAssignment } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
 
@@ -37,6 +38,7 @@ type GameSceneProps = {
   vehicleSmoothingEnabled?: boolean;
   sceneExtras?: ReactNode;
   practiceGuests?: PracticeGuestSpec[];
+  guestHudRef?: RefObject<GuestHudMap>;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -63,6 +65,7 @@ export function GameScene({
   vehicleSmoothingEnabled = false,
   sceneExtras,
   practiceGuests,
+  guestHudRef,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -104,6 +107,7 @@ export function GameScene({
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           sceneExtras={sceneExtras}
           practiceGuests={practiceGuests}
+          guestHudRef={guestHudRef}
         />
       </Suspense>
     </Canvas>

@@ -45,7 +45,7 @@ import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPla
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
-import { PracticeGuestPlayer, type GuestCameraMap } from './PracticeGuestPlayer';
+import { PracticeGuestPlayer, type GuestCameraMap, type GuestHudMap } from './PracticeGuestPlayer';
 import { SplitScreenRenderer } from './SplitScreenRenderer';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
@@ -333,6 +333,10 @@ type GameWorldProps = {
    * spawns a `PracticeGuestPlayer` that owns its own input device and
    * drives a dedicated sim-side player id via `LocalPracticeClient.connectHuman`. */
   practiceGuests?: Array<{ slotId: number; humanId: number; device: import('../input/types').LocalDeviceAssignment }>;
+  /** Optional external ref that receives per-guest HUD state (hp/energy/etc).
+   * When provided, `PracticeGuestPlayer` populates this ref; the DOM HUD
+   * overlay outside the Canvas reads from it to render per-viewport stats. */
+  guestHudRef?: RefObject<GuestHudMap>;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -1043,6 +1047,7 @@ export function GameWorld({
   vehicleSmoothingEnabled = false,
   sceneExtras,
   practiceGuests,
+  guestHudRef: guestHudRefProp,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -1074,6 +1079,8 @@ export function GameWorld({
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const guestCamerasRef = useRef<GuestCameraMap>(new Map());
+  const guestHudFallbackRef = useRef<GuestHudMap>(new Map());
+  const guestHudRef = guestHudRefProp ?? guestHudFallbackRef;
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
@@ -1233,25 +1240,40 @@ export function GameWorld({
     if (!practiceBots || !practiceMode || !ready) return;
     const host = runtimeRef.current?.getPracticeBotHost();
     if (!host) return;
-    const getSelf = () => {
+    const getSelves = () => {
       const client = runtimeRef.current;
       const state = client?.state;
-      if (!client || !state) return null;
+      if (!client || !state) return [];
+      const selves: Array<{ id: number; position: [number, number, number]; dead: boolean }> = [];
       const inVehicle = (host.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
       const position = inVehicle
         ? state.localPosition
         : client.getPosition() ?? state.localPosition;
-      return {
+      selves.push({
         id: host.playerId,
-        position: [position[0], position[1], position[2]] as [number, number, number],
+        position: [position[0], position[1], position[2]],
         dead: (host.localPlayerFlags & FLAG_DEAD) !== 0 || host.localPlayerHp <= 0,
-      };
+      });
+      // Include every local-human guest so bots targeting "nearest" can pick
+      // any split-screen player, not just slot 0.
+      if (practiceGuests) {
+        for (const guest of practiceGuests) {
+          const remote = host.remotePlayers.get(guest.humanId);
+          if (!remote) continue;
+          selves.push({
+            id: guest.humanId,
+            position: [remote.position[0], remote.position[1], remote.position[2]],
+            dead: (remote.flags & FLAG_DEAD) !== 0 || remote.hp <= 0,
+          });
+        }
+      }
+      return selves;
     };
-    practiceBots.attach(host, getSelf);
+    practiceBots.attach(host, getSelves);
     return () => {
       practiceBots.detach({ preserveHostBots: true });
     };
-  }, [practiceBots, practiceMode, ready]);
+  }, [practiceBots, practiceMode, ready, practiceGuests]);
 
   useEffect(() => {
     preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
@@ -2770,11 +2792,13 @@ export function GameWorld({
       {practiceMode && practiceGuests?.map((guest) => (
         <PracticeGuestPlayer
           key={guest.slotId}
+          slotId={guest.slotId}
           humanId={guest.humanId}
           device={guest.device}
           inputBindings={inputBindings}
           runtimeRef={runtimeRef}
           guestCamerasRef={guestCamerasRef}
+          guestHudRef={guestHudRef}
         />
       ))}
 
