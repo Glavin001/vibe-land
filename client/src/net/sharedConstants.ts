@@ -40,6 +40,7 @@ export const PKT_PLAYER_ROSTER = 113;
 export const PKT_DYNAMIC_BODY_META = 114;
 export const PKT_LOCAL_PLAYER_ENERGY = 115;
 export const PKT_BATTERY_SYNC = 116;
+export const PKT_SHOT_FIRED = 117;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;

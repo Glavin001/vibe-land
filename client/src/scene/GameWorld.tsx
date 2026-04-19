@@ -20,7 +20,15 @@ import {
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
-import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import {
+  pickShotTraceIntercept,
+  pruneExpiredTraces,
+  shotTraceColor,
+  shotTraceCoreColor,
+  type LocalShotTrace,
+  type RemoteShotHit,
+  type ShotTraceKind,
+} from './shotTrace';
 import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
@@ -44,8 +52,8 @@ import {
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
-import { netPlayerStateToMeters } from '../net/protocol';
+import type { NetVehicleState, ShotFiredPacket, VehicleStateMeters } from '../net/protocol';
+import { netPlayerStateToMeters, shotFiredToWorldEndpoints } from '../net/protocol';
 import { publishMeleeFeedback } from '../ui/meleeFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
@@ -93,13 +101,28 @@ const PLAYER_CAPSULE_HALF_SEGMENT = 0.45;
 const PLAYER_CAPSULE_BODY_LENGTH = PLAYER_CAPSULE_HALF_SEGMENT * 2;
 const PLAYER_HEAD_RADIUS = 0.22;
 const PLAYER_HEAD_CENTER_OFFSET_Y = 0.75;
-const LOCAL_SHOT_TRACE_TTL_MS = 90;
+const LOCAL_SHOT_TRACE_TTL_MS = 140;
 const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
-const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
-const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
+const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.034;
+const LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS = 0.012;
+const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.11;
+const LOCAL_SHOT_TRACE_CORE_IMPACT_RADIUS = 0.045;
+const SHOT_TRACE_POOL_SIZE = 16;
+const SHOT_TRACE_MAX_ACTIVE = 32;
+const SHOT_RESOLUTION_MISS_VALUE = 0;
+const SHOT_RESOLUTION_PLAYER_VALUE = 1;
+const SHOT_RESOLUTION_DYNAMIC_VALUE = 2;
+const SHOT_RESOLUTION_BLOCKED_BY_WORLD_VALUE = 3;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const PLAYER_DEBUG_HELPER_NAME = 'playerPhysicsDebugHelper';
+
+type ShotTraceVisualSlot = {
+  beamOuter: THREE.Mesh | null;
+  beamCore: THREE.Mesh | null;
+  impactOuter: THREE.Mesh | null;
+  impactCore: THREE.Mesh | null;
+};
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -1087,6 +1110,28 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
+  const activeShotTracesRef = useRef<LocalShotTrace[]>([]);
+  const nextShotTraceIdRef = useRef(1);
+  const runtimeRefForShotFired = useRef<GameRuntimeClient | null>(null);
+  const handleServerShotFired = useRef((packet: ShotFiredPacket) => {
+    const client = runtimeRefForShotFired.current;
+    if (!client) return;
+    if (packet.shooterPlayerId === client.playerId) return;
+    const offsetUs = client.serverClock.getOffsetUs();
+    const firedAtLocalMs = (packet.serverFireTimeUs - offsetUs) / 1000;
+    const expiresAtMs = firedAtLocalMs + LOCAL_SHOT_TRACE_TTL_MS;
+    const nowMs = performance.now();
+    if (expiresAtMs <= nowMs) return;
+    const { origin, end } = shotFiredToWorldEndpoints(packet);
+    pushActiveShotTrace(activeShotTracesRef.current, {
+      id: nextShotTraceIdRef.current++,
+      shooterId: packet.shooterPlayerId,
+      origin,
+      end,
+      kind: shotKindFromServer(packet.hitKind, packet.hitZone),
+      expiresAtMs,
+    });
+  }).current;
   const { ready, renderBlocks, runtimeRef } = useGameRuntime(
     mode,
     worldJson,
@@ -1095,7 +1140,9 @@ export function GameWorld({
     onDisconnect,
     () => onSnapshotRef.current?.(),
     localRenderSmoothingEnabled,
+    handleServerShotFired,
   );
+  runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
@@ -1120,7 +1167,6 @@ export function GameWorld({
   const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
   const remoteHpBarsRef = useRef<Map<number, RemoteHpBarHandle>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
-  const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
     benchmarkAutopilot?.enabled
       ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
@@ -1147,8 +1193,14 @@ export function GameWorld({
   const vehicleCameraYawOffsetRef = useRef(0);
   const vehicleCameraPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
   const lastVehicleLookAtMsRef = useRef(performance.now());
-  const shotTraceBeamRef = useRef<THREE.Mesh>(null);
-  const shotTraceImpactRef = useRef<THREE.Mesh>(null);
+  const shotTracePoolRef = useRef<ShotTraceVisualSlot[]>(
+    Array.from({ length: SHOT_TRACE_POOL_SIZE }, () => ({
+      beamOuter: null,
+      beamCore: null,
+      impactOuter: null,
+      impactCore: null,
+    })),
+  );
   const localVehicleMeshDeltaSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleRestJitterSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleStraightJitterSamplesRef = useRef<TimedScalar[]>([]);
@@ -1984,12 +2036,17 @@ export function GameWorld({
             nearestRenderedBodyRadiusM: nearestRenderedCandidate?.radius ?? null,
           },
         );
-        localShotTraceRef.current = createLocalShotTrace(
-          camera,
-          now,
-          fireDir,
-          remoteHits,
-          sceneHit?.toi ?? null,
+        pushActiveShotTrace(
+          activeShotTracesRef.current,
+          createLocalShotTrace(
+            nextShotTraceIdRef.current++,
+            client.playerId,
+            camera,
+            now,
+            fireDir,
+            remoteHits,
+            sceneHit?.toi ?? null,
+          ),
         );
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
@@ -2185,12 +2242,7 @@ export function GameWorld({
       physStats.pendingInputs,
     );
 
-    updateLocalShotTraceVisuals(
-      localShotTraceRef.current,
-      now,
-      shotTraceBeamRef.current,
-      shotTraceImpactRef.current,
-    );
+    updatePooledShotTraceVisuals(activeShotTracesRef.current, now, shotTracePoolRef.current);
 
     // Debug overlay stats
     if (onDebugFrameRef.current) {
@@ -2946,15 +2998,73 @@ export function GameWorld({
       {/* Vehicle group */}
       <group ref={vehicleGroupRef} />
 
-      {/* Local shot trace */}
-      <mesh ref={shotTraceBeamRef} visible={false}>
-        <cylinderGeometry args={[LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10]} />
-        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
-      </mesh>
-      <mesh ref={shotTraceImpactRef} visible={false}>
-        <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
-        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
-      </mesh>
+      {/* Shot trace pool (shared by local predicted + server-broadcast traces) */}
+      {Array.from({ length: SHOT_TRACE_POOL_SIZE }, (_, i) => (
+        <group key={`shot-trace-${i}`}>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].beamOuter = mesh;
+            }}
+            visible={false}
+          >
+            <cylinderGeometry args={[LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].beamCore = mesh;
+            }}
+            visible={false}
+          >
+            <cylinderGeometry args={[LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS, LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS, 1, 10]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+            />
+          </mesh>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].impactOuter = mesh;
+            }}
+            visible={false}
+          >
+            <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].impactCore = mesh;
+            }}
+            visible={false}
+          >
+            <sphereGeometry args={[LOCAL_SHOT_TRACE_CORE_IMPACT_RADIUS, 10, 8]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+            />
+          </mesh>
+        </group>
+      ))}
 
       {/* Crosshair */}
       <CrosshairHUD />
@@ -3071,6 +3181,8 @@ function CrosshairHUD() {
 }
 
 function createLocalShotTrace(
+  id: number,
+  shooterId: number | null,
   camera: THREE.Camera,
   nowMs: number,
   aimDirection: [number, number, number],
@@ -3087,6 +3199,8 @@ function createLocalShotTrace(
   ] as [number, number, number];
 
   return {
+    id,
+    shooterId,
     origin: [pseudoMuzzleOrigin.x, pseudoMuzzleOrigin.y, pseudoMuzzleOrigin.z],
     end,
     kind: intercept.kind,
@@ -3094,48 +3208,101 @@ function createLocalShotTrace(
   };
 }
 
-function updateLocalShotTraceVisuals(
-  trace: LocalShotTrace | null,
+function pushActiveShotTrace(traces: LocalShotTrace[], trace: LocalShotTrace): void {
+  if (traces.length >= SHOT_TRACE_MAX_ACTIVE) {
+    traces.shift();
+  }
+  traces.push(trace);
+}
+
+function shotKindFromServer(hitKind: number, hitZone: number): ShotTraceKind {
+  if (hitKind === SHOT_RESOLUTION_PLAYER_VALUE) {
+    return hitZone === HIT_ZONE_HEAD ? 'head' : 'body';
+  }
+  if (
+    hitKind === SHOT_RESOLUTION_DYNAMIC_VALUE ||
+    hitKind === SHOT_RESOLUTION_BLOCKED_BY_WORLD_VALUE
+  ) {
+    return 'world';
+  }
+  return 'miss';
+}
+
+const _shotTraceBeamDelta = new THREE.Vector3();
+const _shotTraceBeamMid = new THREE.Vector3();
+const _shotTraceBeamDirection = new THREE.Vector3();
+const _shotTraceBeamUp = new THREE.Vector3(0, 1, 0);
+
+function updateShotTraceMeshPair(
+  trace: LocalShotTrace,
   nowMs: number,
-  beam: THREE.Mesh | null,
-  impact: THREE.Mesh | null,
-) {
-  if (!beam || !impact) return;
-  if (!isShotTraceActive(trace, nowMs)) {
-    beam.visible = false;
-    impact.visible = false;
-    return;
-  }
-  if (!trace) {
-    beam.visible = false;
-    impact.visible = false;
-    return;
-  }
-
+  slot: ShotTraceVisualSlot,
+): void {
+  const { beamOuter, beamCore, impactOuter, impactCore } = slot;
+  if (!beamOuter || !beamCore || !impactOuter || !impactCore) return;
   const alpha = Math.max(0, (trace.expiresAtMs - nowMs) / LOCAL_SHOT_TRACE_TTL_MS);
-  const color = shotTraceColor(trace.kind);
-  const origin = new THREE.Vector3(...trace.origin);
-  const end = new THREE.Vector3(...trace.end);
-  const delta = new THREE.Vector3().subVectors(end, origin);
-  const length = Math.max(delta.length(), 0.001);
-  const mid = new THREE.Vector3().addVectors(origin, end).multiplyScalar(0.5);
-  const direction = delta.normalize();
+  const outerColor = shotTraceColor(trace.kind);
+  const coreColor = shotTraceCoreColor(trace.kind);
+  _shotTraceBeamDelta.set(
+    trace.end[0] - trace.origin[0],
+    trace.end[1] - trace.origin[1],
+    trace.end[2] - trace.origin[2],
+  );
+  const length = Math.max(_shotTraceBeamDelta.length(), 0.001);
+  _shotTraceBeamMid.set(
+    (trace.origin[0] + trace.end[0]) * 0.5,
+    (trace.origin[1] + trace.end[1]) * 0.5,
+    (trace.origin[2] + trace.end[2]) * 0.5,
+  );
+  _shotTraceBeamDirection.copy(_shotTraceBeamDelta).normalize();
 
-  beam.visible = true;
-  beam.position.copy(mid);
-  beam.scale.set(1, length, 1);
-  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
-  if (beam.material instanceof THREE.MeshBasicMaterial) {
-    beam.material.color.setHex(color);
-    beam.material.opacity = alpha * 0.9;
+  for (const beam of [beamOuter, beamCore]) {
+    beam.visible = true;
+    beam.position.copy(_shotTraceBeamMid);
+    beam.scale.set(1, length, 1);
+    beam.quaternion.setFromUnitVectors(_shotTraceBeamUp, _shotTraceBeamDirection);
+  }
+  if (beamOuter.material instanceof THREE.MeshBasicMaterial) {
+    beamOuter.material.color.setHex(outerColor);
+    beamOuter.material.opacity = alpha * 0.62;
+  }
+  if (beamCore.material instanceof THREE.MeshBasicMaterial) {
+    beamCore.material.color.setHex(coreColor);
+    beamCore.material.opacity = Math.min(1, alpha * 0.98);
   }
 
-  impact.visible = true;
-  impact.position.copy(end);
-  impact.scale.setScalar(0.85 + alpha * 0.55);
-  if (impact.material instanceof THREE.MeshBasicMaterial) {
-    impact.material.color.setHex(color);
-    impact.material.opacity = alpha;
+  for (const impact of [impactOuter, impactCore]) {
+    impact.visible = true;
+    impact.position.set(trace.end[0], trace.end[1], trace.end[2]);
+  }
+  impactOuter.scale.setScalar(0.95 + alpha * 0.75);
+  impactCore.scale.setScalar(0.85 + alpha * 0.45);
+  if (impactOuter.material instanceof THREE.MeshBasicMaterial) {
+    impactOuter.material.color.setHex(outerColor);
+    impactOuter.material.opacity = alpha * 0.78;
+  }
+  if (impactCore.material instanceof THREE.MeshBasicMaterial) {
+    impactCore.material.color.setHex(coreColor);
+    impactCore.material.opacity = Math.min(1, alpha * 0.96);
+  }
+}
+
+function updatePooledShotTraceVisuals(
+  traces: LocalShotTrace[],
+  nowMs: number,
+  pool: ShotTraceVisualSlot[],
+): void {
+  pruneExpiredTraces(traces, nowMs);
+  const rendered = Math.min(traces.length, pool.length);
+  for (let i = 0; i < rendered; i += 1) {
+    updateShotTraceMeshPair(traces[i], nowMs, pool[i]);
+  }
+  for (let i = rendered; i < pool.length; i += 1) {
+    const slot = pool[i];
+    if (slot.beamOuter) slot.beamOuter.visible = false;
+    if (slot.beamCore) slot.beamCore.visible = false;
+    if (slot.impactOuter) slot.impactOuter.visible = false;
+    if (slot.impactCore) slot.impactCore.visible = false;
   }
 }
 
