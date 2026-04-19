@@ -64,6 +64,11 @@ export interface HarassNearestOptions {
    */
   minFireDistanceM?: number;
   targetMemoryTicks?: number;
+  /**
+   * Once a bot enters its fire window it stops moving for this many ticks so
+   * it visibly pauses to shoot rather than running through the target.
+   */
+  standAndShootTicks?: number;
 }
 
 export function harassNearest(options: HarassNearestOptions = {}): Behavior {
@@ -72,10 +77,12 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const fireRange = options.fireDistanceM ?? 18;
   const minFireRange = options.minFireDistanceM ?? 1.5;
   const targetMemoryTicks = options.targetMemoryTicks ?? 45;
+  const standAndShootTicks = options.standAndShootTicks ?? 18;
   const state = {
     lockedPlayerId: null as number | null,
     lastKnownTarget: null as Vec3Tuple | null,
     lastSeenTick: -Infinity,
+    standUntilTick: -Infinity,
   };
 
   return (ctx) => {
@@ -112,16 +119,22 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
         nearest.player.position[2],
       ];
       state.lastSeenTick = ctx.tick;
+      if (inFireWindow) {
+        state.standUntilTick = ctx.tick + standAndShootTicks;
+      }
+      const standing = ctx.tick <= state.standUntilTick;
       return {
-        target: [
-          nearest.player.position[0],
-          nearest.player.position[1],
-          nearest.player.position[2],
-        ],
+        target: standing
+          ? null
+          : [
+              nearest.player.position[0],
+              nearest.player.position[1],
+              nearest.player.position[2],
+            ],
         fireAim,
         fireAimVelocity,
         targetPlayerId: nearest.player.id,
-        mode: 'follow_target',
+        mode: standing ? 'acquire_target' : 'follow_target',
       };
     }
 
