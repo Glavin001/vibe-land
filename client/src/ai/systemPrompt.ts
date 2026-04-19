@@ -30,6 +30,28 @@ type WorldDocument = {
     radius?: number;              // ball only
     vehicleType?: number;         // vehicle only
   }>;
+  destructibles: Array<
+    | { id: number; kind: 'wall' | 'tower'; position: [x,y,z]; rotation: [x,y,z,w] }
+    | {
+        id: number;
+        kind: 'structure';
+        position: [x, y, z];
+        rotation: [x, y, z, w];
+        density?: number;              // kg/m³, default 2400
+        solverMaterialScale?: number;  // Blast stiffness multiplier, default 1
+        chunks: Array<{
+          shape: 'box' | 'sphere' | 'capsule';
+          position: [x, y, z];           // in structure-local frame
+          rotation: [x, y, z, w];
+          halfExtents?: [hx, hy, hz];    // box only
+          radius?: number;               // sphere + capsule
+          height?: number;               // capsule cylinder segment (caps excluded)
+          mass?: number;                 // overrides density-derived mass
+          material?: string;
+          anchor?: boolean;              // static support; replaces implicit y==0 rule
+        }>;
+      }
+  >;
 };
 \`\`\`
 
@@ -123,6 +145,98 @@ Terrain write helpers also return when changed: \`samplesAffected, deltaMin, del
 - \`ctx.deformTerrainAlongSpline({ splineId, profile, mode?, applyMode?, strength?, falloff?, sampleSpacing? })\` — powerful profile-based terrain deformation along a spline (see Splines section below).
 - \`ctx.applyTerrainRamp(stencil)\` — see TerrainRampStencil below.
 - \`ctx.addTerrainTile(tileX, tileZ)\` / \`ctx.removeTerrainTile(tileX, tileZ)\`
+
+## Destructible structures
+
+Destructibles are authored assemblies of chunks that fracture under impact. Single-player runs them through NVIDIA Blast's stress solver (chunks stay bonded until the solver tears bonds apart). Multiplayer falls back to independent dynamic rigid bodies — one per chunk — so in MP a structure just collapses into loose pieces.
+
+**Read:**
+- \`ctx.listDestructibles()\` → full array of destructibles (factory + structures with chunks).
+- \`ctx.getDestructible(id)\` → one destructible or null.
+
+**Create / remove:**
+- \`ctx.addDestructibleStructure({ position, rotation?, density?, solverMaterialScale?, chunks })\` → \`{ changed, id?, reason? }\`. \`chunks\` must be a non-empty array (≤ 4096).
+- \`ctx.removeDestructible(id)\` → \`{ changed, reason? }\`.
+
+**Edit structure / factory pose:**
+- \`ctx.updateDestructible(id, { position?, rotation?, density?, solverMaterialScale? })\` → \`{ changed, reason? }\`. \`density\`/\`solverMaterialScale\` only valid for \`structure\` kind.
+
+**Chunk-level CRUD (structure kind only):**
+- \`ctx.addChunk(structureId, chunk)\` → \`{ changed, chunkIndex?, reason? }\`.
+- \`ctx.updateChunk(structureId, chunkIndex, patch)\` → \`{ changed, reason? }\`. Patch is a partial Chunk; shape-specific fields are re-validated against the merged result.
+- \`ctx.removeChunk(structureId, chunkIndex)\` → \`{ changed, reason? }\`. Refuses to remove the last chunk (use \`removeDestructible\` instead).
+- \`ctx.duplicateChunk(structureId, chunkIndex, offset?)\` → \`{ changed, chunkIndex?, reason? }\`. \`offset\` is an optional \`[dx, dy, dz]\` in structure-local space.
+
+**Convert a factory (wall / tower) to a structure you can edit:**
+- \`ctx.convertFactoryToStructure(id)\` → \`{ changed, reason? }\`. Expands the factory into its equivalent box chunks so \`addChunk\`/\`updateChunk\`/\`removeChunk\` can then operate on it. Calling any chunk-level helper on a factory destructible without converting first returns \`{ changed: false, reason: 'factory destructibles are immutable; convert to structure first' }\`.
+
+**Auto-bonding:** Blast wires bonds between any two chunks whose surfaces are in contact (within ~1 cm). **Leave no gaps** — a chunk floating 2 cm above its neighbor will not bond and will fall immediately. Overlap is fine (bonds still form); gaps are not.
+
+**Anchors:** \`anchor: true\` pins a chunk as a static support — it never moves. Anchors replace the old implicit \`y == 0\` rule, so mark the bottom row of any stacked structure as anchors, or the whole thing collapses on spawn. On the native server, non-box anchors fall back to tight-fit AABB cuboids.
+
+**Multiplayer reality:** in MP there is no stress solver — every non-anchor chunk is an independent dynamic body. Design structures so that removing bonds yields sensible physics: an arch in MP will collapse immediately unless both pillars are fully anchored. Anchors stay put in both single-player and multiplayer.
+
+**Authoring tips:**
+- Chunk positions are in the **structure's local frame**. The structure's own \`position\`/\`rotation\` applies on top.
+- Box chunks only pay for collider: \`halfExtents\` is required. Spheres need \`radius\`. Capsules need \`radius\` + \`height\` (cylinder segment; caps are added on top).
+- Mass defaults to \`volume × structure.density\`. Override with \`mass\` only when you need a specific value.
+- Max 4096 chunks per structure. Stay well under this for performance.
+
+**Worked example — build a 3-chunk arch:**
+\`\`\`js
+const halfSide = 0.25;      // each chunk is 0.5 m on a side
+const step = 2 * halfSide;   // 0.5 m
+const pillarHeight = 5;      // 5 chunks per pillar
+const span = 3 * step;       // lintel spans 3 chunks → 1.5 m outer-to-outer
+const pillarX = span * 0.5 - halfSide;
+const chunks = [];
+// Two pillars, bottom-anchored.
+for (const sign of [-1, 1]) {
+  for (let i = 0; i < pillarHeight; i++) {
+    chunks.push({
+      shape: 'box',
+      position: [sign * pillarX, halfSide + i * step, 0],
+      rotation: ctx.identityQuaternion(),
+      halfExtents: [halfSide, halfSide, halfSide],
+      anchor: i === 0,
+    });
+  }
+}
+// Lintel: 3 chunks resting on the pillar tops, no gap.
+const lintelY = halfSide + pillarHeight * step + halfSide;  // sits exactly on the pillars
+for (let i = -1; i <= 1; i++) {
+  chunks.push({
+    shape: 'box',
+    position: [i * step, lintelY, 0],
+    rotation: ctx.identityQuaternion(),
+    halfExtents: [halfSide, halfSide, halfSide],
+  });
+}
+const baseY = ctx.sampleTerrainHeight(0, 0);
+const { id, reason } = ctx.addDestructibleStructure({
+  position: [0, baseY, 0],
+  chunks,
+});
+return { id, chunkCount: chunks.length, reason };
+\`\`\`
+
+**Worked example — retune one chunk's mass and demolish a corner:**
+\`\`\`js
+const target = ctx.listDestructibles().find((d) => d.kind === 'structure');
+if (!target) return { changed: false, reason: 'no structure in world' };
+// Make the top chunk heavier so it drops faster when bonds break.
+const topIdx = target.chunks.reduce(
+  (best, c, i, arr) => (c.position[1] > arr[best].position[1] ? i : best),
+  0,
+);
+const massResult = ctx.updateChunk(target.id, topIdx, { mass: 80 });
+// Knock out a corner chunk entirely.
+const cornerIdx = target.chunks.findIndex((c) => !c.anchor);
+const removeResult = cornerIdx >= 0
+  ? ctx.removeChunk(target.id, cornerIdx)
+  : { changed: false, reason: 'no dynamic chunk to remove' };
+return { massResult, removeResult };
+\`\`\`
 
 ## Spline helpers
 

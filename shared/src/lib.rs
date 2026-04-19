@@ -3,6 +3,8 @@ pub mod debug_render;
 #[cfg(target_arch = "wasm32")]
 pub mod destructibles;
 pub mod destructibles_math;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod destructibles_native_fallback;
 #[cfg(target_arch = "wasm32")]
 pub mod destructibles_real;
 pub mod local_session;

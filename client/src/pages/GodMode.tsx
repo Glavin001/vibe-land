@@ -68,9 +68,11 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import {
+  addDestructibleStructureToWorld,
   addDynamicEntityToWorld,
   addStaticCuboidToWorld,
   clonePlayWorldSnapshot,
+  getSelectedDestructible,
   getSelectedDynamic,
   getSelectedStatic,
   removeSelectedTargetFromWorld,
@@ -426,6 +428,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
 
   const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
   const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
+  const selectedDestructible = useMemo(() => getSelectedDestructible(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
     return resolveSelectedTransformEntity(world, selected);
   }, [selected, world]);
@@ -717,6 +720,18 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     let nextSelected: SelectedTarget = null;
     const changed = applyCommittedWorldEdit((current) => {
       const result = addDynamicEntityToWorld(current, kind);
+      nextSelected = result.selected;
+      return result.world;
+    });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
+    }
+  }, [applyCommittedWorldEdit]);
+
+  const addDestructibleStructure = useCallback(() => {
+    let nextSelected: SelectedTarget = null;
+    const changed = applyCommittedWorldEdit((current) => {
+      const result = addDestructibleStructureToWorld(current);
       nextSelected = result.selected;
       return result.world;
     });
@@ -1304,6 +1319,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <button type="button" onClick={() => addDynamicEntity('box')} style={secondaryButtonStyle}>Dynamic Box</button>
                 <button type="button" onClick={() => addDynamicEntity('ball')} style={secondaryButtonStyle}>Ball</button>
                 <button type="button" onClick={() => addDynamicEntity('vehicle')} style={secondaryButtonStyle}>Vehicle</button>
+                <button type="button" onClick={addDestructibleStructure} style={secondaryButtonStyle}>Destructible</button>
               </div>
             </div>
 
@@ -1381,6 +1397,31 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   onYawChange={updateSelectedYaw}
                   onDelete={removeSelected}
                 />
+              )}
+              {selectedDestructible && (
+                <EditorFields
+                  title={`destructible ${selectedDestructible.kind} ${selectedDestructible.id}`}
+                  position={selectedDestructible.position}
+                  onPositionChange={updateSelectedPosition}
+                  yawDegrees={(yawFromQuaternion(selectedDestructible.rotation) * 180) / Math.PI}
+                  onYawChange={updateSelectedYaw}
+                  onDelete={removeSelected}
+                >
+                  {selectedDestructible.kind === 'structure' ? (
+                    <div style={mutedTextStyle}>
+                      {selectedDestructible.chunks.length} chunk{selectedDestructible.chunks.length === 1 ? '' : 's'}
+                      {' · '}density {selectedDestructible.density ?? 2400} kg/m³
+                      {' · '}solver scale {selectedDestructible.solverMaterialScale ?? 1}
+                      <br />
+                      Use the AI chat to add / remove / tune individual chunks.
+                    </div>
+                  ) : (
+                    <div style={mutedTextStyle}>
+                      Factory {selectedDestructible.kind} — immutable preset. Ask the AI to convert it to a
+                      structure if you want to edit individual chunks.
+                    </div>
+                  )}
+                </EditorFields>
               )}
             </div>
           </>
@@ -2375,6 +2416,7 @@ function EditorFields({
   yawDegrees,
   onYawChange,
   onDelete,
+  children,
 }: {
   title: string;
   position: [number, number, number];
@@ -2389,6 +2431,7 @@ function EditorFields({
   yawDegrees?: number;
   onYawChange?: (value: number) => void;
   onDelete: () => void;
+  children?: React.ReactNode;
 }) {
   return (
     <div style={fieldStackStyle}>
@@ -2433,6 +2476,7 @@ function EditorFields({
           <input type="number" step="1" value={yawDegrees} onChange={(event) => onYawChange(Number(event.target.value))} />
         </label>
       )}
+      {children}
       <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete</button>
     </div>
   );

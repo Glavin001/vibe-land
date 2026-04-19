@@ -297,13 +297,18 @@ impl WasmSimWorld {
         }
 
         for doc in &world.destructibles {
-            let pose = pose_from_world_doc(doc.kind, doc.position, doc.rotation);
-            match doc.kind {
-                DocDestructibleKind::Wall => {
-                    self.destructibles.spawn_wall(&mut self.sim, doc.id, pose);
+            match doc {
+                crate::world_document::DestructibleDoc::Wall { id, position, rotation } => {
+                    let pose = pose_from_world_doc(DocDestructibleKind::Wall, *position, *rotation);
+                    self.destructibles.spawn_wall(&mut self.sim, *id, pose);
                 }
-                DocDestructibleKind::Tower => {
-                    self.destructibles.spawn_tower(&mut self.sim, doc.id, pose);
+                crate::world_document::DestructibleDoc::Tower { id, position, rotation } => {
+                    let pose =
+                        pose_from_world_doc(DocDestructibleKind::Tower, *position, *rotation);
+                    self.destructibles.spawn_tower(&mut self.sim, *id, pose);
+                }
+                crate::world_document::DestructibleDoc::Structure { .. } => {
+                    self.destructibles.spawn_structure(&mut self.sim, doc);
                 }
             }
         }
@@ -340,6 +345,22 @@ impl WasmSimWorld {
                 pose_from_world_doc(DocDestructibleKind::Tower, [px, py, pz], [qx, qy, qz, qw]),
             ),
             _ => false,
+        }
+    }
+
+    /// Spawn an authored `DestructibleDoc::Structure` from a JSON doc.
+    /// The JSON must deserialize to a full `DestructibleDoc` (tagged
+    /// `"kind":"structure"`). Returns `true` if the structure was
+    /// spawned.
+    #[wasm_bindgen(js_name = spawnDestructibleStructure)]
+    pub fn spawn_destructible_structure(&mut self, json_doc: &str) -> Result<bool, JsValue> {
+        let doc: crate::world_document::DestructibleDoc = serde_json::from_str(json_doc)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        match &doc {
+            crate::world_document::DestructibleDoc::Structure { .. } => {
+                Ok(self.destructibles.spawn_structure(&mut self.sim, &doc))
+            }
+            _ => Ok(false),
         }
     }
 

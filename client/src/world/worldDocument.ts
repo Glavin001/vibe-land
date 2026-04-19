@@ -120,16 +120,75 @@ export type DynamicEntity = {
 };
 
 /**
- * A destructible structure backed by NVIDIA Blast's stress solver. Kind
- * selects the scenario builder (wall / tower); position + rotation place
- * the resulting chunks in world space.
+ * A destructible structure backed by NVIDIA Blast's stress solver in
+ * single-player (WASM) builds; native-server multiplayer falls back to
+ * independent dynamic rigid bodies (one per chunk).
+ *
+ * `wall` and `tower` are factory kinds — opaque scenarios produced by
+ * preset Blast builders. `structure` is fully authored: chunks are
+ * composed from `box | sphere | capsule` primitives and auto-bonded by
+ * Blast at build time (chunks must be in contact for bonds to form).
+ *
+ * Chunk ordering matters: the native-server fallback assigns each chunk a
+ * stable rigid-body id of `(destructible.id << 12) | chunk_index`, so a
+ * single destructible can hold at most **4096 chunks**.
  */
-export type Destructible = {
+export type Destructible =
+  | FactoryDestructible
+  | StructureDestructible;
+
+export type FactoryDestructible = {
   id: number;
   kind: 'wall' | 'tower';
   position: Vec3;
   rotation: Quaternion;
 };
+
+export type StructureDestructible = {
+  id: number;
+  kind: 'structure';
+  position: Vec3;
+  rotation: Quaternion;
+  /** Material density in kg/m³; defaults to 2400 when omitted. */
+  density?: number;
+  /** Multiplier on Blast per-material stiffness; defaults to 1. */
+  solverMaterialScale?: number;
+  chunks: Chunk[];
+};
+
+export type ChunkShape = 'box' | 'sphere' | 'capsule';
+
+/**
+ * One authored chunk inside a `structure` destructible. Position and
+ * rotation are in the structure's local frame (applied after the
+ * structure's world pose).
+ *
+ * Shape-specific size fields:
+ *  - `box` → `halfExtents` required.
+ *  - `sphere` → `radius` required.
+ *  - `capsule` → `radius` + `height` required (cylinder segment length,
+ *    excluding the two hemispherical caps).
+ *
+ * `mass` overrides the density-derived mass. `anchor=true` marks the
+ * chunk as a static support (replaces the implicit `y==0` rule). On
+ * native servers, anchored chunks are spawned as static cuboids
+ * (sphere/capsule anchors fall back to a tight-fit cuboid AABB).
+ */
+export type Chunk = {
+  shape: ChunkShape;
+  position: Vec3;
+  rotation: Quaternion;
+  halfExtents?: Vec3;
+  radius?: number;
+  height?: number;
+  mass?: number;
+  material?: string;
+  anchor?: boolean;
+};
+
+export const DEFAULT_STRUCTURE_DENSITY_KG_M3 = 2400;
+export const DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE = 1;
+export const MAX_CHUNKS_PER_STRUCTURE = 4096;
 
 export type WorldDraftRevision = {
   id: string;
@@ -201,11 +260,94 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
       ...(entity as DynamicEntity),
       rotation: normalizeQuaternion((entity as Partial<DynamicEntity>).rotation),
     })),
-    destructibles: rawDestructibles.map((entity) => ({
-      ...(entity as Destructible),
-      rotation: normalizeQuaternion((entity as Partial<Destructible>).rotation),
-    })),
+    destructibles: rawDestructibles.map((raw) => normalizeDestructible(raw)),
   };
+}
+
+function normalizeDestructible(raw: unknown): Destructible {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Destructible entry must be an object.');
+  }
+  const candidate = raw as {
+    id?: number;
+    kind?: string;
+    position?: Vec3;
+    rotation?: unknown;
+    density?: number;
+    solverMaterialScale?: number;
+    chunks?: unknown[];
+  };
+  if (typeof candidate.id !== 'number') {
+    throw new Error('Destructible is missing id.');
+  }
+  const position = (candidate.position ?? [0, 0, 0]) as Vec3;
+  const rotation = normalizeQuaternion(candidate.rotation as Partial<Quaternion> | undefined);
+  if (candidate.kind === 'wall' || candidate.kind === 'tower') {
+    return { id: candidate.id, kind: candidate.kind, position, rotation };
+  }
+  if (candidate.kind === 'structure') {
+    const rawChunks = Array.isArray(candidate.chunks) ? candidate.chunks : [];
+    if (rawChunks.length > MAX_CHUNKS_PER_STRUCTURE) {
+      throw new Error(
+        `Destructible ${candidate.id} has ${rawChunks.length} chunks (max ${MAX_CHUNKS_PER_STRUCTURE}).`,
+      );
+    }
+    const chunks = rawChunks.map((rawChunk, index) => normalizeChunk(rawChunk, candidate.id!, index));
+    return {
+      id: candidate.id,
+      kind: 'structure',
+      position,
+      rotation,
+      ...(typeof candidate.density === 'number' ? { density: candidate.density } : {}),
+      ...(typeof candidate.solverMaterialScale === 'number'
+        ? { solverMaterialScale: candidate.solverMaterialScale }
+        : {}),
+      chunks,
+    };
+  }
+  throw new Error(`Destructible ${candidate.id} has unknown kind ${String(candidate.kind)}.`);
+}
+
+function normalizeChunk(raw: unknown, structureId: number, chunkIndex: number): Chunk {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`Chunk [${structureId}:${chunkIndex}] must be an object.`);
+  }
+  const c = raw as Partial<Chunk> & { shape?: string };
+  if (c.shape !== 'box' && c.shape !== 'sphere' && c.shape !== 'capsule') {
+    throw new Error(`Chunk [${structureId}:${chunkIndex}] has unknown shape ${String(c.shape)}.`);
+  }
+  const position = (c.position ?? [0, 0, 0]) as Vec3;
+  const rotation = normalizeQuaternion(c.rotation as Partial<Quaternion> | undefined);
+  if (c.shape === 'box') {
+    if (!Array.isArray(c.halfExtents) || c.halfExtents.length !== 3) {
+      throw new Error(`Box chunk [${structureId}:${chunkIndex}] is missing halfExtents.`);
+    }
+  } else if (c.shape === 'sphere') {
+    if (typeof c.radius !== 'number' || !(c.radius > 0)) {
+      throw new Error(`Sphere chunk [${structureId}:${chunkIndex}] is missing positive radius.`);
+    }
+  } else if (c.shape === 'capsule') {
+    if (typeof c.radius !== 'number' || !(c.radius > 0)) {
+      throw new Error(`Capsule chunk [${structureId}:${chunkIndex}] is missing positive radius.`);
+    }
+    if (typeof c.height !== 'number' || !(c.height >= 0)) {
+      throw new Error(`Capsule chunk [${structureId}:${chunkIndex}] is missing non-negative height.`);
+    }
+  }
+  const chunk: Chunk = {
+    shape: c.shape,
+    position,
+    rotation,
+  };
+  if (Array.isArray(c.halfExtents) && c.halfExtents.length === 3) {
+    chunk.halfExtents = [...c.halfExtents] as Vec3;
+  }
+  if (typeof c.radius === 'number') chunk.radius = c.radius;
+  if (typeof c.height === 'number') chunk.height = c.height;
+  if (typeof c.mass === 'number') chunk.mass = c.mass;
+  if (typeof c.material === 'string') chunk.material = c.material;
+  if (c.anchor === true) chunk.anchor = true;
+  return chunk;
 }
 
 export function serializeWorldDocument(world: WorldDocument): string {

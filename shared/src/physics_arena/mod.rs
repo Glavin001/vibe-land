@@ -337,36 +337,71 @@ impl PhysicsArena {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn spawn_destructible(
-        &mut self,
-        id: u32,
-        kind: DestructibleKind,
-        position: [f32; 3],
-        rotation: [f32; 4],
-    ) -> bool {
-        let pose = pose_from_world_doc(kind, position, rotation);
-        match kind {
-            DestructibleKind::Wall => {
+    pub fn spawn_destructible(&mut self, doc: &crate::world_document::DestructibleDoc) -> bool {
+        match doc {
+            crate::world_document::DestructibleDoc::Wall { id, position, rotation } => {
+                let pose = pose_from_world_doc(DestructibleKind::Wall, *position, *rotation);
                 self.destructibles
-                    .spawn_wall(&mut self.dynamic.sim, id, pose)
+                    .spawn_wall(&mut self.dynamic.sim, *id, pose)
             }
-            DestructibleKind::Tower => {
+            crate::world_document::DestructibleDoc::Tower { id, position, rotation } => {
+                let pose = pose_from_world_doc(DestructibleKind::Tower, *position, *rotation);
                 self.destructibles
-                    .spawn_tower(&mut self.dynamic.sim, id, pose)
+                    .spawn_tower(&mut self.dynamic.sim, *id, pose)
+            }
+            crate::world_document::DestructibleDoc::Structure { .. } => {
+                self.destructibles.spawn_structure(&mut self.dynamic.sim, doc)
             }
         }
     }
 
+    /// Native (non-wasm) fallback: expand destructibles into independent
+    /// dynamic rigid bodies since the native build has no Blast solver.
+    /// Each chunk becomes its own body with stable id
+    /// `(destructible_id << 12) | chunk_index`. Anchor chunks become
+    /// static cuboids (sphere/capsule anchors fall back to a tight-fit
+    /// AABB cuboid).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn spawn_destructible(
-        &mut self,
-        id: u32,
-        kind: crate::world_document::DestructibleKind,
-        position: [f32; 3],
-        rotation: [f32; 4],
-    ) -> bool {
-        let _ = (id, kind, position, rotation);
-        false
+    pub fn spawn_destructible(&mut self, doc: &crate::world_document::DestructibleDoc) -> bool {
+        use crate::destructibles_native_fallback::{
+            factory_chunks_for_fallback, spawn_native_chunk,
+        };
+        use nalgebra::UnitQuaternion;
+        let doc_pos = doc.position();
+        let doc_rot = doc.rotation();
+        let doc_id = doc.id();
+        let rot = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+            doc_rot[3],
+            doc_rot[0],
+            doc_rot[1],
+            doc_rot[2],
+        ));
+        let chunks = match doc {
+            crate::world_document::DestructibleDoc::Wall { .. }
+            | crate::world_document::DestructibleDoc::Tower { .. } => {
+                factory_chunks_for_fallback(doc.factory_kind().expect("factory"))
+            }
+            crate::world_document::DestructibleDoc::Structure { chunks, .. } => chunks.clone(),
+        };
+        if chunks.len() > crate::world_document::MAX_CHUNKS_PER_STRUCTURE {
+            return false;
+        }
+        let density = match doc {
+            crate::world_document::DestructibleDoc::Structure { density, .. } => *density,
+            _ => crate::world_document::DEFAULT_STRUCTURE_DENSITY_KG_M3,
+        };
+        for (chunk_index, chunk) in chunks.iter().enumerate() {
+            let body_id = (doc_id << 12) | (chunk_index as u32 & 0x0fff);
+            spawn_native_chunk(
+                self,
+                body_id,
+                chunk,
+                Vector3::new(doc_pos[0], doc_pos[1], doc_pos[2]),
+                rot,
+                density,
+            );
+        }
+        true
     }
 
     #[cfg(target_arch = "wasm32")]
