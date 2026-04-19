@@ -514,7 +514,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [mode]);
 
   const handleExport = useCallback(() => {
-    const blob = new Blob([serializeWorldDocument(world)], { type: 'application/json' });
+    const blob = new Blob([serializeWorldDocument(world, { pretty: true })], { type: 'application/json' });
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = href;

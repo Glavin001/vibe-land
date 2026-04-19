@@ -3,6 +3,22 @@ import { App } from '../App';
 import { parseWorldDocument, type WorldDocument } from '../world/worldDocument';
 import { fetchCloudConfig, fetchPublishedWorld } from '../world/worldsCloud';
 
+async function loadPublishedWorldForRoute(id: string): Promise<unknown> {
+  const params = new URLSearchParams(window.location.search);
+  const useLocalPublished = import.meta.env.DEV && params.get('local') === '1';
+  if (useLocalPublished) {
+    const response = await fetch(`/published/${encodeURIComponent(id)}.world.json`);
+    if (!response.ok) {
+      throw new Error(
+        `Local world file missing (HTTP ${response.status}). Place worlds/${id}.world.json at the repo root or drop ?local=1.`,
+      );
+    }
+    return response.json();
+  }
+  const config = await fetchCloudConfig();
+  return fetchPublishedWorld(id, config.publicUrl);
+}
+
 type LoadState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
@@ -14,15 +30,13 @@ type SharedPracticePageProps = {
 
 export function SharedPracticePage({ id }: SharedPracticePageProps) {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
+  const loadFromLocalDevFile = import.meta.env.DEV
+    && new URLSearchParams(window.location.search).get('local') === '1';
 
   useEffect(() => {
     let cancelled = false;
     setState({ kind: 'loading' });
-    fetchCloudConfig()
-      .then((config) => {
-        if (cancelled) return;
-        return fetchPublishedWorld(id, config.publicUrl);
-      })
+    loadPublishedWorldForRoute(id)
       .then((raw) => {
         if (cancelled || !raw) return;
         const world = parseWorldDocument(raw);
@@ -50,7 +64,16 @@ export function SharedPracticePage({ id }: SharedPracticePageProps) {
           </div>
           <h1 className="text-3xl font-bold m-0 mb-2 text-white/90">Loading world…</h1>
           <p className="text-white/45 m-0 text-sm leading-relaxed">
-            Fetching <code className="font-mono text-white/60">{id}</code> from the cloud.
+            {loadFromLocalDevFile ? (
+              <>
+                Loading <code className="font-mono text-white/60">{id}</code> from{' '}
+                <code className="font-mono text-white/60">worlds/{id}.world.json</code> (dev).
+              </>
+            ) : (
+              <>
+                Fetching <code className="font-mono text-white/60">{id}</code> from the cloud.
+              </>
+            )}
           </p>
         </div>
       </div>

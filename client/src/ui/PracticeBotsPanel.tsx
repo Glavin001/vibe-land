@@ -89,7 +89,7 @@ export function PracticeBotsPanel({
   const useVehicles = stats?.useVehicles ?? false;
 
   useEffect(() => {
-    if (!visible || !open || !runtime) {
+    if (!visible || !open || !runtime || !debugOverlay) {
       setBotInfos([]);
       return;
     }
@@ -101,9 +101,9 @@ export function PracticeBotsPanel({
       setBotInfos(next);
     };
     sync();
-    const interval = setInterval(sync, 100);
+    const interval = setInterval(sync, 250);
     return () => clearInterval(interval);
-  }, [open, runtime, visible]);
+  }, [debugOverlay, open, runtime, visible]);
 
   useEffect(() => {
     setCountDraft(String(desiredCount));
