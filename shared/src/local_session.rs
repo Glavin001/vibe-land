@@ -601,8 +601,7 @@ impl LocalSession {
                 if runtime.next_allowed_melee_ms > server_time_ms {
                     continue;
                 }
-                runtime.next_allowed_melee_ms =
-                    server_time_ms.saturating_add(MELEE_COOLDOWN_MS);
+                runtime.next_allowed_melee_ms = server_time_ms.saturating_add(MELEE_COOLDOWN_MS);
                 runtime.last_processed_swing_id = Some(cmd.swing_id);
             }
 
@@ -648,8 +647,7 @@ impl LocalSession {
             if aim_xz_len <= 1e-4 {
                 // Aim is (nearly) vertical — cone is ill-defined; skip.
                 if let Some(runtime) = self.players.get_mut(&attacker_id) {
-                    runtime.melee_flag_clear_tick =
-                        self.server_tick + MELEE_FLAG_DURATION_TICKS;
+                    runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
                 }
                 continue;
             }
@@ -1955,16 +1953,16 @@ mod tests {
     }
 
     fn place_player_at(session: &mut LocalSession, id: u32, x: f64, y: f64, z: f64) {
-        let state = session
-            .arena
-            .players
-            .get_mut(&id)
-            .expect("player exists");
+        let state = session.arena.players.get_mut(&id).expect("player exists");
         state.position = crate::movement::Vec3d::new(x, y, z);
         state.velocity = crate::movement::Vec3d::zeros();
         let collider = state.collider;
         let pos = state.position;
-        session.arena.dynamic.sim.sync_player_collider(collider, &pos);
+        session
+            .arena
+            .dynamic
+            .sim
+            .sync_player_collider(collider, &pos);
     }
 
     #[test]
@@ -1985,12 +1983,7 @@ mod tests {
         });
         session.process_melee(session.server_time_ms());
 
-        let victim_hp = session
-            .arena
-            .players
-            .get(&bot_id)
-            .expect("bot exists")
-            .hp;
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100 - MELEE_DAMAGE);
     }
 
@@ -2022,12 +2015,7 @@ mod tests {
         });
         session.process_melee(session.server_time_ms());
 
-        let victim_hp = session
-            .arena
-            .players
-            .get(&bot_id)
-            .expect("bot exists")
-            .hp;
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(
             victim_hp,
             100 - MELEE_DAMAGE,
@@ -2055,12 +2043,7 @@ mod tests {
         });
         session.process_melee(session.server_time_ms());
 
-        let victim_hp = session
-            .arena
-            .players
-            .get(&bot_id)
-            .expect("bot exists")
-            .hp;
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100, "vehicle occupants are immune to melee");
     }
 }

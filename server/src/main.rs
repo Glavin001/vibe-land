@@ -34,10 +34,10 @@ use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING,
-    HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
-    MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_RANGE_M,
-    OUT_OF_BOUNDS_Y_M, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST,
-    SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
+    MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M,
+    PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ,
+    SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
@@ -2801,8 +2801,7 @@ impl MatchState {
             }
 
             if let Some(runtime) = self.players.get_mut(&queued.player_id) {
-                runtime.melee_flag_clear_tick =
-                    self.server_tick + MELEE_FLAG_DURATION_TICKS;
+                runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
             }
         }
     }
@@ -2819,7 +2818,11 @@ impl MatchState {
                     .get(&player_id)
                     .map(|runtime| self.server_tick < runtime.melee_flag_clear_tick)
                     .unwrap_or(false);
-                let flags = if meleeing { flags | FLAG_MELEEING } else { flags };
+                let flags = if meleeing {
+                    flags | FLAG_MELEEING
+                } else {
+                    flags
+                };
                 player_states.push((
                     player_id,
                     pos,

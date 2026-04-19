@@ -12,7 +12,8 @@ use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLin
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
-    FireCmd, InputCmd, MeleeCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+    FireCmd, InputCmd, MeleeCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState,
+    NetVehicleState,
 };
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
