@@ -337,6 +337,13 @@ type FrameDebugCallback = (
     lastShotServerDynamicImpulseMag: number;
     recentEvents: string[];
   },
+  destructibles: {
+    chunkCount: number;
+    fractureEventsTotal: number;
+    debugState: ReturnType<typeof parseDestructibleDebugState>;
+    debugConfig: ReturnType<typeof parseDestructibleDebugConfig>;
+    loggingEnabled: boolean;
+  },
   position: [number, number, number],
   player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
 ) => void;
@@ -1290,7 +1297,12 @@ export function GameWorld({
   useEffect(() => {
     destructibleFractureEventsTotalRef.current = 0;
   }, [mode, worldJson]);
- 
+
+  useEffect(() => {
+    if (!ready) return;
+    runtimeRef.current?.setDestructiblesLogging(practiceMode && showDebugHelpers);
+  }, [practiceMode, ready, runtimeRef, showDebugHelpers]);
+
   useEffect(() => {
     if (!practiceBots || !practiceMode || !ready) return;
     const host = runtimeRef.current?.getPracticeBotHost();
@@ -2155,6 +2167,14 @@ export function GameWorld({
       shotTraceBeamRef.current,
       shotTraceImpactRef.current,
     );
+    const destructibleChunkTransforms = client.getDestructibleChunkTransforms();
+    const destructibleFractureEvents = Array.from(client.drainDestructibleFractureEvents());
+    for (let index = 1; index < destructibleFractureEvents.length; index += 2) {
+      destructibleFractureEventsTotalRef.current += Number(destructibleFractureEvents[index] ?? 0);
+    }
+    const destructibleDebugState = parseDestructibleDebugState(client.getDestructibleDebugState());
+    const destructibleDebugConfig = parseDestructibleDebugConfig(client.getDestructibleDebugConfig());
+    const destructibleLoggingEnabled = practiceMode && showDebugHelpers;
 
     // Debug overlay stats
     if (onDebugFrameRef.current) {
@@ -2403,6 +2423,13 @@ export function GameWorld({
           lastShotServerDynamicImpulseMag: -1,
           recentEvents: [],
         },
+        {
+          chunkCount: destructibleChunkTransforms.length / 11,
+          fractureEventsTotal: destructibleFractureEventsTotalRef.current,
+          debugState: destructibleDebugState,
+          debugConfig: destructibleDebugConfig,
+          loggingEnabled: destructibleLoggingEnabled,
+        },
         pos as [number, number, number],
         {
           velocity: physStats.velocity,
@@ -2415,17 +2442,13 @@ export function GameWorld({
 
     // E2E bridge: publish frame state for read-only snapshot
     {
-      const chunkTransforms = client.getDestructibleChunkTransforms();
-      const fractureEvents = Array.from(client.drainDestructibleFractureEvents());
-      for (let index = 1; index < fractureEvents.length; index += 2) {
-        destructibleFractureEventsTotalRef.current += Number(fractureEvents[index] ?? 0);
-      }
       const destructibles = {
-        chunkCount: chunkTransforms.length / 11,
+        chunkCount: destructibleChunkTransforms.length / 11,
         fractureEventsTotal: destructibleFractureEventsTotalRef.current,
-        debugState: parseDestructibleDebugState(client.getDestructibleDebugState()),
-        debugConfig: parseDestructibleDebugConfig(client.getDestructibleDebugConfig()),
-        spatialMetrics: computeDestructibleSpatialMetrics(effectiveWorldDocument.destructibles, chunkTransforms),
+        debugState: destructibleDebugState,
+        debugConfig: destructibleDebugConfig,
+        loggingEnabled: destructibleLoggingEnabled,
+        spatialMetrics: computeDestructibleSpatialMetrics(effectiveWorldDocument.destructibles, destructibleChunkTransforms),
       };
       const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
       for (const [id, rp] of state.remotePlayers) {

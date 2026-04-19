@@ -845,8 +845,15 @@ impl DestructibleRegistry {
                 self.fracture_events.push(instance.id);
                 self.fracture_events.push(step_result.fractures as u32);
                 dlog(&format!(
-                    "[destructibles] FRACTURE id={} fractures={} splits={}",
-                    instance.id, step_result.fractures, step_result.split_events,
+                    "[destructibles] FRACTURE id={} kind={:?} fractures={} splits={} new_bodies={} body_count={} wall_scale={:.2} tower_scale={:.2}",
+                    instance.id,
+                    instance.kind,
+                    step_result.fractures,
+                    step_result.split_events,
+                    step_result.new_bodies,
+                    Self::instance_body_handles(instance).len(),
+                    self.runtime_config.wall_material_scale,
+                    self.runtime_config.tower_material_scale,
                 ));
             }
 
@@ -1324,8 +1331,27 @@ impl DestructibleRegistry {
             self.debug_impact_max_estimated_injected_force_n = max_estimated_injected_force_n;
             self.debug_impact_instance_id = impact_instance_id;
             dlog(&format!(
-                "[destructibles] drain_contact_forces processed={}",
-                processed
+                "[destructibles] IMPACT accepted={} impact_seq={} inst={} raw_force_n={:.1} partner_speed_m_s={:.2} injected_force_n={:.1} splash_nodes={} body_nodes={} splash_weight_sum={:.2} contact_seen/matching/accepted={}/{}/{} skipped_force/speed/other/missing={}/{}/{}/{} grace={} wall_scale={:.2} tower_scale={:.2}",
+                processed,
+                self.debug_impact_seq.wrapping_add(1),
+                impact_instance_id,
+                max_force_n,
+                max_speed_m_s,
+                max_estimated_injected_force_n,
+                max_splash_nodes,
+                max_body_node_count,
+                max_splash_weight_sum,
+                self.debug_contact_events_seen_total,
+                self.debug_contact_events_matching_total,
+                self.debug_contact_events_accepted_total.saturating_add(processed as u32),
+                self.debug_contact_events_below_force_skipped_total,
+                self.debug_contact_events_below_speed_skipped_total,
+                self.debug_contact_events_other_destructible_skipped_total,
+                self.debug_contact_events_missing_body_or_node_skipped_total
+                    .saturating_add(self.debug_contact_events_missing_partner_body_skipped_total),
+                self.debug_contact_events_collision_grace_overrides_total,
+                self.runtime_config.wall_material_scale,
+                self.runtime_config.tower_material_scale,
             ));
         }
     }

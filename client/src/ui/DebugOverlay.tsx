@@ -6,6 +6,12 @@ import {
   DESTRUCTIBLE_MATERIAL_SCALE_STEP,
   type DestructibleTuning,
 } from '../physics/destructibleTuning';
+import {
+  EMPTY_DESTRUCTIBLE_DEBUG_CONFIG,
+  EMPTY_DESTRUCTIBLE_DEBUG_STATE,
+  type DestructibleDebugConfig,
+  type DestructibleDebugState,
+} from '../physics/destructibleDebug';
 
 export type DebugStats = {
   // Rendering
@@ -211,6 +217,13 @@ export type DebugStats = {
   inVehicle: boolean;
   dead: boolean;
 
+  // Destructibles
+  destructibleChunkCount: number;
+  destructibleFractureEventsTotal: number;
+  destructibleDebugState: DestructibleDebugState;
+  destructibleDebugConfig: DestructibleDebugConfig;
+  destructibleLoggingEnabled: boolean;
+
   // System
   heapUsedMb: number;
   heapTotalMb: number;
@@ -410,6 +423,11 @@ export const DEFAULT_STATS: DebugStats = {
   onGround: false,
   inVehicle: false,
   dead: false,
+  destructibleChunkCount: 0,
+  destructibleFractureEventsTotal: 0,
+  destructibleDebugState: EMPTY_DESTRUCTIBLE_DEBUG_STATE,
+  destructibleDebugConfig: EMPTY_DESTRUCTIBLE_DEBUG_CONFIG,
+  destructibleLoggingEnabled: false,
   heapUsedMb: -1,
   heapTotalMb: -1,
 };
@@ -1286,6 +1304,21 @@ export function DebugOverlay({
           {`Susp force spread/delta: ${fmt(stats.vehicleSuspensionForceSpreadN, 1)} / ${fmt(stats.vehicleSuspensionForceDeltaRms5sN, 1)}N`}
           {`Grounded min/max/transitions 5s: ${fmt(stats.vehicleGroundedMin5s, 0)}/${fmt(stats.vehicleGroundedMax5s, 0)}/${stats.vehicleGroundedTransitions5s}`}
           {`Steer: ${fmt(stats.vehicleSteering, 3)}  engine: ${fmt(stats.vehicleEngineForce, 0)}  brake: ${fmt(stats.vehicleBrake, 0)}`}
+        </Section>
+      )}
+
+      {(stats.destructibleChunkCount > 0 || stats.destructibleDebugState.impactSeq > 0 || stats.destructibleDebugState.fractureSeq > 0) && (
+        <Section title="Destructibles">
+          {`Chunks/fracture events: ${stats.destructibleChunkCount} / ${stats.destructibleFractureEventsTotal}`}
+          {`Logging: ${stats.destructibleLoggingEnabled ? 'verbose ON' : 'off'}  wall/tower scale: ${fmt(stats.destructibleDebugConfig.wallMaterialScale, 0)}x / ${fmt(stats.destructibleDebugConfig.towerMaterialScale, 0)}x`}
+          {`Impact seq/accepted: ${fmt(stats.destructibleDebugState.impactSeq, 0)} / ${fmt(stats.destructibleDebugState.impactProcessed, 0)}  inst: ${stats.destructibleDebugState.impactInstanceId || '—'}`}
+          {`Impact raw/injected: ${fmt(stats.destructibleDebugState.impactMaxForceN, 0)} / ${fmt(stats.destructibleDebugState.impactMaxEstimatedInjectedForceN, 0)} N`}
+          {`Impact speed/splash/bodyNodes: ${fmt(stats.destructibleDebugState.impactMaxSpeedMs, 2)} m/s  ${fmt(stats.destructibleDebugState.impactMaxSplashNodes, 0)} / ${fmt(stats.destructibleDebugState.impactMaxBodyNodeCount, 0)}`}
+          {`Contacts seen/matching/accepted: ${fmt(stats.destructibleDebugState.contactEventsSeenTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsMatchingTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsAcceptedTotal, 0)}`}
+          {`Skipped force/speed/other/missing: ${fmt(stats.destructibleDebugState.contactEventsBelowForceSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsBelowSpeedSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsOtherDestructibleSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsMissingBodyOrNodeSkippedTotal + stats.destructibleDebugState.contactEventsMissingPartnerBodySkippedTotal, 0)}`}
+          {`Contact max raw/speed/grace: ${fmt(stats.destructibleDebugState.contactEventsMaxRawForceN, 0)} N / ${fmt(stats.destructibleDebugState.contactEventsMaxPartnerSpeedMs, 2)} m/s / ${fmt(stats.destructibleDebugState.contactEventsCollisionGraceOverridesTotal, 0)}`}
+          {`Fracture seq/count: ${fmt(stats.destructibleDebugState.fractureSeq, 0)} / ${fmt(stats.destructibleDebugState.fractures, 0)}  splits/newBodies/active: ${fmt(stats.destructibleDebugState.splitEvents, 0)} / ${fmt(stats.destructibleDebugState.newBodies, 0)} / ${fmt(stats.destructibleDebugState.activeBodies, 0)}`}
+          {`Post-fracture max/fast: ${fmt(stats.destructibleDebugState.postFractureMaxBodySpeedMs, 2)} m/s / ${fmt(stats.destructibleDebugState.postFractureFastBodyCount, 0)}  current max: ${fmt(stats.destructibleDebugState.currentMaxBodySpeedMs, 2)} m/s`}
         </Section>
       )}
 

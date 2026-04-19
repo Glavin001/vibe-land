@@ -449,6 +449,13 @@ export function useDebugStats() {
       lastShotServerDynamicImpulseMag: number;
       recentEvents: string[];
     },
+    destructibles: {
+      chunkCount: number;
+      fractureEventsTotal: number;
+      debugState: DebugStats['destructibleDebugState'];
+      debugConfig: DebugStats['destructibleDebugConfig'];
+      loggingEnabled: boolean;
+    },
     position: [number, number, number],
     player: { velocity: [number, number, number]; hp: number; energy: number; localFlags: number },
   ) => {
@@ -671,6 +678,11 @@ export function useDebugStats() {
     s.vehicleAuthCurrentOffsetMs = vehicle.authCurrentOffsetMs;
     s.vehiclePredictedAuthDeltaRms5sM = vehicle.predictedAuthDeltaRms5sM;
     s.vehiclePredictedAuthDeltaPeak5sM = vehicle.predictedAuthDeltaPeak5sM;
+    s.destructibleChunkCount = destructibles.chunkCount;
+    s.destructibleFractureEventsTotal = destructibles.fractureEventsTotal;
+    s.destructibleDebugState = destructibles.debugState;
+    s.destructibleDebugConfig = destructibles.debugConfig;
+    s.destructibleLoggingEnabled = destructibles.loggingEnabled;
     s.position = position;
     s.velocity = player.velocity;
     s.speedMs = speedMs;

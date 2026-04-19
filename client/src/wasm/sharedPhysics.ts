@@ -196,6 +196,7 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   getDestructibleDebugState(): number[];
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
+  setDestructiblesLogging(enabled: boolean): void;
 };
 
 type WasmLocalSessionCtor = {

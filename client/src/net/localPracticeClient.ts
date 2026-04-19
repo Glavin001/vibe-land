@@ -108,6 +108,13 @@ export class LocalPracticeClient implements PracticeBotHost {
 
   ping(): void {}
 
+  setDestructiblesLogging(enabled: boolean): void {
+    const session = this.session as (WasmLocalSessionInstance & {
+      setDestructiblesLogging?: (enabled: boolean) => void;
+    }) | null;
+    session?.setDestructiblesLogging?.(enabled);
+  }
+
   disconnect(): void {
     this.closedByClient = true;
     if (this.frameHandle != null) {

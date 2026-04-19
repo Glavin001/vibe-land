@@ -1886,6 +1886,11 @@ impl WasmLocalSession {
         self.inner.destructible_debug_config()
     }
 
+    #[wasm_bindgen(js_name = setDestructiblesLogging)]
+    pub fn set_destructibles_logging(&mut self, enabled: bool) {
+        set_destructibles_log_enabled(enabled);
+    }
+
     #[wasm_bindgen(js_name = drainDestructibleFractureEvents)]
     pub fn drain_destructible_fracture_events(&mut self) -> Box<[u32]> {
         self.inner.drain_destructible_fracture_events()

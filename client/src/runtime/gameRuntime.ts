@@ -82,6 +82,7 @@ type RuntimeWorldAccess = {
   getDestructibleDebugState(): number[];
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
+  setDestructiblesLogging?(enabled: boolean): void;
 };
 
 export type RuntimeConnectionState = {
@@ -249,6 +250,7 @@ export interface GameRuntimeClient {
   getDestructibleDebugState(): number[];
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
+  setDestructiblesLogging(enabled: boolean): void;
   getPracticeBotHost(): PracticeBotHost | null;
 }
 
@@ -498,6 +500,9 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   drainDestructibleFractureEvents(): Uint32Array {
     return this.worldAccess?.drainDestructibleFractureEvents() ?? new Uint32Array(0);
   }
+  setDestructiblesLogging(enabled: boolean): void {
+    this.worldAccess?.setDestructiblesLogging?.(enabled);
+  }
   getPracticeBotHost(): PracticeBotHost | null {
     return this.practiceBotHost;
   }
@@ -518,6 +523,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
     getDestructibleDebugState: () => this.client?.getDestructibleDebugState() ?? [],
     getDestructibleDebugConfig: () => this.client?.getDestructibleDebugConfig() ?? [],
     drainDestructibleFractureEvents: () => this.client?.drainDestructibleFractureEvents() ?? new Uint32Array(0),
+    setDestructiblesLogging: (enabled: boolean) => this.client?.setDestructiblesLogging(enabled),
   };
 
   constructor(
@@ -909,6 +915,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     getDestructibleDebugState: () => this.sim ? Array.from(this.sim.getDestructibleDebugState()) : [],
     getDestructibleDebugConfig: () => this.sim ? Array.from(this.sim.getDestructibleDebugConfig()) : [],
     drainDestructibleFractureEvents: () => this.sim?.drainDestructibleFractureEvents() ?? new Uint32Array(0),
+    setDestructiblesLogging: (enabled: boolean) => this.sim?.setDestructiblesLogging(enabled),
   };
 
   constructor(
