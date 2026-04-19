@@ -384,9 +384,34 @@ impl LocalSession {
         for killed_id in vehicle_killed {
             if killed_id == LOCAL_PLAYER_ID {
                 self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
-            } else if let Some(runtime) = self.players.get_mut(&killed_id) {
-                if runtime.is_bot {
-                    runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+            } else {
+                let is_bot = self.players.get(&killed_id).map(|r| r.is_bot).unwrap_or(false);
+                if is_bot {
+                    let battery_drop = self.arena.players.get(&killed_id).and_then(|player| {
+                        if player.energy > 0.0 {
+                            Some((player.position, player.energy))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some((position, energy)) = battery_drop {
+                        let height = crate::constants::DEFAULT_BATTERY_HEIGHT_M;
+                        let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+                        let mut snapped = position;
+                        snapped.y = terrain_y + height as f64 * 0.5 + 0.02;
+                        let _ = self.arena.spawn_battery(
+                            snapped,
+                            energy,
+                            crate::constants::DEFAULT_BATTERY_RADIUS_M,
+                            height,
+                        );
+                    }
+                    if let Some(player) = self.arena.players.get_mut(&killed_id) {
+                        player.energy = 0.0;
+                    }
+                    if let Some(runtime) = self.players.get_mut(&killed_id) {
+                        runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+                    }
                 }
             }
         }
@@ -849,6 +874,28 @@ impl LocalSession {
             return;
         }
         if is_bot {
+            let battery_drop = self.arena.players.get(&victim_id).and_then(|player| {
+                if player.energy > 0.0 {
+                    Some((player.position, player.energy))
+                } else {
+                    None
+                }
+            });
+            if let Some((position, energy)) = battery_drop {
+                let height = crate::constants::DEFAULT_BATTERY_HEIGHT_M;
+                let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+                let mut snapped = position;
+                snapped.y = terrain_y + height as f64 * 0.5 + 0.02;
+                let _ = self.arena.spawn_battery(
+                    snapped,
+                    energy,
+                    crate::constants::DEFAULT_BATTERY_RADIUS_M,
+                    height,
+                );
+            }
+            if let Some(player) = self.arena.players.get_mut(&victim_id) {
+                player.energy = 0.0;
+            }
             if let Some(runtime) = self.players.get_mut(&victim_id) {
                 runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
             }
