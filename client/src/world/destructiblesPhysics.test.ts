@@ -45,7 +45,7 @@ function makeWallWorld(): WorldDocument {
       {
         id: 7001,
         kind: 'wall',
-        position: [0, 0.5, 0],
+        position: [0, 0, 0],
         rotation: [0, 0, 0, 1],
       },
     ],
@@ -126,6 +126,9 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const parsed = parseDestructibleDebugConfig(config);
 
     expect(parsed.debrisCollisionMode).toBe('all');
+    expect(parsed.collisionImpactGraceSecs).toBeCloseTo(0.05, 5);
+    expect(parsed.impactCooldownSecs).toBeCloseTo(0.5, 5);
+    expect(parsed.maxInjectedImpactForceN).toBe(250);
 
     sim.free();
   });
@@ -374,8 +377,9 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const BALL_RADIUS = 0.3;
     const WALL_ID = 9101;
     // Wall default dims from shared/src/scenarios/wall.rs: span=6, height=3,
-    // thickness=0.32.  Place it at y=0.5 so its top face is at ~y=3.5.
-    const WALL_POSITION: [number, number, number] = [0, 0.5, 0];
+    // thickness=0.32. Authored y=0 now sinks the fixed support row below
+    // grade, so the visible wall top sits at ~y=2.5.
+    const WALL_POSITION: [number, number, number] = [0, 0, 0];
     const DROP_HEIGHT = 8.0;
     const DT = 1 / 60;
     const STEPS = 240;
@@ -627,6 +631,108 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     sim.free();
   });
 
+  it('vehicle impact telemetry caps injected force before routing stress into Blast', () => {
+    const VEHICLE_ID = 195;
+    const WALL_ID = 9351;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: {
+        name: 'Vehicle impact force cap',
+        description: 'Verifies destructible impact injection is capped before entering Blast.',
+      },
+      terrain: {
+        tileGridSize: 9,
+        tileHalfExtentM: 16,
+        tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }],
+      },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        {
+          id: WALL_ID,
+          kind: 'wall',
+          position: [0, 0, 8],
+          rotation: [0, 0, 0, 1],
+        },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+
+    for (let t = 0; t < 10; t += 1) {
+      sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    }
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+    }
+
+    const debugState = parseDestructibleDebugState(sim.getDestructibleDebugState());
+    const debugConfig = parseDestructibleDebugConfig(sim.getDestructibleDebugConfig());
+    sim.free();
+
+    expect(debugState.contactEventsAcceptedTotal).toBeGreaterThan(0);
+    expect(debugState.contactEventsForceCappedTotal).toBeGreaterThan(0);
+    expect(debugState.impactMaxForceN).toBeGreaterThan(debugState.impactMaxEstimatedInjectedForceN);
+    expect(debugState.impactMaxEstimatedInjectedForceN).toBeLessThanOrEqual(debugConfig.maxInjectedImpactForceN);
+  });
+
+  it('sustained vehicle contact is rate-limited instead of repeatedly injecting wall damage', () => {
+    const VEHICLE_ID = 196;
+    const WALL_ID = 9352;
+    const DT = 1 / 60;
+    const DRIVE_TICKS = 480;
+
+    const world: WorldDocument = {
+      version: 2,
+      meta: {
+        name: 'Vehicle impact cooldown',
+        description: 'Verifies repeated wall contact is throttled instead of injecting every frame.',
+      },
+      terrain: {
+        tileGridSize: 9,
+        tileHalfExtentM: 16,
+        tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }],
+      },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        {
+          id: WALL_ID,
+          kind: 'wall',
+          position: [0, 0, 8],
+          rotation: [0, 0, 0, 1],
+        },
+      ],
+    };
+
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(world));
+    sim.rebuildBroadPhase();
+    sim.spawnVehicle(VEHICLE_ID, 0, 0, 1.2, 0, 0, 0, 0, 1);
+    sim.setLocalVehicle(VEHICLE_ID);
+
+    for (let t = 0; t < 10; t += 1) {
+      sim.tickVehicle(t, 0, 0, 0, 0, 0, DT);
+    }
+    for (let t = 0; t < DRIVE_TICKS; t += 1) {
+      sim.tickVehicle(10 + t, BTN_FORWARD, 0, 0, 0, 0, DT);
+    }
+
+    const debugState = parseDestructibleDebugState(sim.getDestructibleDebugState());
+    sim.free();
+
+    expect(debugState.contactEventsAcceptedTotal).toBeGreaterThan(0);
+    expect(debugState.contactEventsCooldownSkippedTotal).toBeGreaterThan(0);
+    expect(debugState.contactEventsCollisionGraceOverridesTotal).toBe(0);
+  });
+
   it('fractured wall debris generates chunk-on-chunk contacts instead of ghosting through itself', () => {
     const VEHICLE_ID = 96;
     const WALL_ID = 9302;
@@ -650,7 +756,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
         {
           id: WALL_ID,
           kind: 'wall',
-          position: [0, 0.5, 8],
+          position: [0, 0, 8],
           rotation: [0, 0, 0, 1],
         },
       ],
@@ -697,7 +803,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
         {
           id: WALL_ID,
           kind: 'wall',
-          position: [0, 0.5, 8],
+          position: [0, 0, 8],
           rotation: [0, 0, 0, 1],
         },
       ],
@@ -719,9 +825,11 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const transforms = Array.from(sim.getDestructibleChunkTransforms());
     sim.free();
 
-    let lowestChunkY = Number.POSITIVE_INFINITY;
+    let lowestDynamicChunkY = Number.POSITIVE_INFINITY;
     for (let i = 0; i < transforms.length; i += CHUNK_TRANSFORM_STRIDE) {
-      lowestChunkY = Math.min(lowestChunkY, transforms[i + 3] ?? Number.POSITIVE_INFINITY);
+      const isDynamic = (transforms[i + 10] ?? 0) > 0;
+      if (!isDynamic) continue;
+      lowestDynamicChunkY = Math.min(lowestDynamicChunkY, transforms[i + 3] ?? Number.POSITIVE_INFINITY);
     }
 
     // With the overlap fix, body_B rests on the fixed support layer (body_A), not terrain.
@@ -729,7 +837,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     expect(debugState.dynamicMinBodyActiveContactPairs).toBeGreaterThan(0);
     expect(debugState.dynamicMinBodySpeedMs).toBeLessThan(0.1);
     expect(debugState.dynamicMinBodyY).toBeGreaterThan(0.15);
-    expect(lowestChunkY).toBeGreaterThan(0.15);
+    expect(lowestDynamicChunkY).toBeGreaterThan(0.15);
   });
 
   it('despawn removes the destructible and clears the chunk buffer', () => {
@@ -945,9 +1053,10 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     it('a ball dropped on the practice wall rests on top (never below wall base)', () => {
       // Non-penetration assertion: track the ball's minimum Y across
       // the whole drop simulation.  If the ball phases through, its
-      // y will dip below the wall's top face.  With wall at y=0,
-      // height=3, top face ≈ y=3.  Ball radius 0.3 → ball centre at
-      // rest should sit near y ≈ 3.3.
+      // y will dip below the wall's top face. Authored y=0 sinks the
+      // fixed support row below grade, so the visible top face sits at
+      // ≈ y=2.5. Ball radius 0.3 → ball centre at rest should sit near
+      // y ≈ 2.8.
       const SHAPE_BALL = 1;
       const BALL_ID = 9500;
       const BALL_RADIUS = 0.3;
@@ -978,11 +1087,11 @@ describe('Destructible scenarios (Blast stress solver)', () => {
 
       // Strict non-penetration: ball must never dip below the wall's
       // top face more than a small penetration margin.  Wall top
-      // sits at y ≈ 3 (position y=0, height=3).  Allow 0.35 of soft
+      // sits at y ≈ 2.5 after the support row is buried.  Allow 0.35 of soft
       // penetration for numerical settling.
       expect(minY).toBeGreaterThan(2.6);
       // Rest position must be at or above the wall top.
-      expect(restY).toBeGreaterThan(2.8);
+      expect(restY).toBeGreaterThan(2.75);
 
       sim.free();
     });
@@ -1371,7 +1480,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
       staticProps: [],
       dynamicEntities: [],
-      destructibles: [{ id: 9721, kind: 'wall', position: [0, 0.5, 0], rotation: [0, S45, 0, C45] }],
+      destructibles: [{ id: 9721, kind: 'wall', position: [0, 0, 0], rotation: [0, S45, 0, C45] }],
     };
 
     const sim = new WasmSimWorld();
@@ -1385,10 +1494,10 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const state = sim.getDynamicBodyState(BALL_ID);
     sim.free();
 
-    // Wall base at y=0.5, height=3 → top face at y≈3.5.
-    // Ball (radius 0.3) lands on top → centre at y≈3.8.
+    // Authored y=0 sinks the support row, so the visible wall top is at y≈2.5.
+    // Ball (radius 0.3) lands on top → centre at y≈2.8.
     // If chunks are at origin (rotation bug), ball falls to terrain (y≈0.3).
-    expect(state[1]).toBeGreaterThan(2.5);
+    expect(state[1]).toBeGreaterThan(2.2);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -1406,7 +1515,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       terrain: { tileGridSize: 9, tileHalfExtentM: 16, tiles: [{ tileX: 0, tileZ: 0, heights: makeFlatTileHeights(9) }] },
       staticProps: [],
       dynamicEntities: [],
-      destructibles: [{ id: WALL_ID, kind: 'wall', position: [0, 0.5, 8], rotation: [0, 0, 0, 1] }],
+      destructibles: [{ id: WALL_ID, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] }],
     };
 
     const sim = new WasmSimWorld();
@@ -1486,11 +1595,15 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     expect(metrics.lowestChunkBottomY).toBeGreaterThan(-0.1);
     expect(metrics.significantOverlapPairCount).toBe(0);
 
-    let allAboveGround = true;
+    let allDynamicAboveGround = true;
     for (let b = 0; b + CHUNK_TRANSFORM_STRIDE <= transforms.length; b += CHUNK_TRANSFORM_STRIDE) {
-      if ((transforms[b + 3] ?? 0) < 0) { allAboveGround = false; break; }
+      const isDynamic = (transforms[b + 10] ?? 0) > 0;
+      if (isDynamic && (transforms[b + 3] ?? 0) < 0) {
+        allDynamicAboveGround = false;
+        break;
+      }
     }
-    expect(allAboveGround).toBe(true);
+    expect(allDynamicAboveGround).toBe(true);
   });
 
   // ─────────────────────────────────────────────────────────────────────

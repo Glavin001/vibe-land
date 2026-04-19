@@ -45,6 +45,8 @@ export type DestructibleDebugState = {
   contactEventsMaxRawForceN: number;
   contactEventsMaxPartnerSpeedMs: number;
   contactEventsCollisionGraceOverridesTotal: number;
+  contactEventsCooldownSkippedTotal: number;
+  contactEventsForceCappedTotal: number;
 };
 
 export type DestructibleDebugConfig = {
@@ -59,6 +61,8 @@ export type DestructibleDebugConfig = {
   maxNewBodiesPerFrame: number;
   applyExcessForces: boolean;
   debrisCollisionMode: 'all' | 'noDebrisPairs' | 'debrisGroundOnly' | 'debrisNone';
+  impactCooldownSecs: number;
+  maxInjectedImpactForceN: number;
 };
 
 export const EMPTY_DESTRUCTIBLE_DEBUG_STATE: DestructibleDebugState = Object.freeze({
@@ -108,6 +112,8 @@ export const EMPTY_DESTRUCTIBLE_DEBUG_STATE: DestructibleDebugState = Object.fre
   contactEventsMaxRawForceN: 0,
   contactEventsMaxPartnerSpeedMs: 0,
   contactEventsCollisionGraceOverridesTotal: 0,
+  contactEventsCooldownSkippedTotal: 0,
+  contactEventsForceCappedTotal: 0,
 });
 
 export const EMPTY_DESTRUCTIBLE_DEBUG_CONFIG: DestructibleDebugConfig = Object.freeze({
@@ -122,6 +128,8 @@ export const EMPTY_DESTRUCTIBLE_DEBUG_CONFIG: DestructibleDebugConfig = Object.f
   maxNewBodiesPerFrame: 0,
   applyExcessForces: false,
   debrisCollisionMode: 'all',
+  impactCooldownSecs: 0,
+  maxInjectedImpactForceN: 0,
 });
 
 export function parseDestructibleDebugState(raw: ArrayLike<number> | null | undefined): DestructibleDebugState {
@@ -174,6 +182,8 @@ export function parseDestructibleDebugState(raw: ArrayLike<number> | null | unde
     contactEventsMaxRawForceN: num(43),
     contactEventsMaxPartnerSpeedMs: num(44),
     contactEventsCollisionGraceOverridesTotal: num(45),
+    contactEventsCooldownSkippedTotal: num(46),
+    contactEventsForceCappedTotal: num(47),
   };
 }
 
@@ -197,5 +207,7 @@ export function parseDestructibleDebugConfig(raw: ArrayLike<number> | null | und
         : debrisCollisionModeCode === 2 ? 'debrisGroundOnly'
           : debrisCollisionModeCode === 3 ? 'debrisNone'
             : 'all',
+    impactCooldownSecs: num(11),
+    maxInjectedImpactForceN: num(12),
   };
 }

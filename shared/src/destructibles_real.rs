@@ -84,11 +84,18 @@ const BASE_SHEAR_FATAL: f32 = 0.0036;
 /// practice tuning separate.
 pub const DEFAULT_WALL_MATERIAL_SCALE: f32 = 10.0;
 pub const DEFAULT_TOWER_MATERIAL_SCALE: f32 = 10.0;
+const USER_MATERIAL_SCALE_REFERENCE: f32 = 10.0;
+const SOLVER_MATERIAL_SCALE_REFERENCE: f32 = 10_000.0;
+const USER_TO_SOLVER_SCALE_EXPONENT: f32 = 6.0;
 const CONTACT_SPLASH_RADIUS: f32 = 2.0;
 const CONTACT_FORCE_SCALE: f32 = 1.0;
 const MIN_IMPACT_FORCE_N: f32 = 500.0;
-const MIN_IMPACT_SPEED_M_S: f32 = 1.5;
-const COLLISION_IMPACT_GRACE_SECS: f32 = 0.12;
+const MIN_IMPACT_SPEED_M_S: f32 = 0.5;
+const COLLISION_IMPACT_GRACE_SECS: f32 = 0.05;
+const IMPACT_COOLDOWN_SECS: f32 = 0.50;
+const MAX_INJECTED_IMPACT_FORCE_N: f32 = 250.0;
+const WALL_AUTHORED_Y_TO_SOLVER_Y_OFFSET_M: f32 = 0.5;
+const TOWER_AUTHORED_Y_TO_SOLVER_Y_OFFSET_M: f32 = 0.25;
 
 /// Stride of [`DestructibleRegistry::chunk_transforms`] in `f32`s:
 /// `[destructibleId, chunkIndex, px, py, pz, qx, qy, qz, qw, present, _pad]`.
@@ -109,7 +116,17 @@ impl Default for DestructibleRuntimeConfig {
     }
 }
 
+fn effective_solver_material_scale(material_scale: f32) -> f32 {
+    let clamped = material_scale.max(0.0);
+    if clamped <= 0.0 {
+        return 0.0;
+    }
+    SOLVER_MATERIAL_SCALE_REFERENCE
+        * (clamped / USER_MATERIAL_SCALE_REFERENCE).powf(USER_TO_SOLVER_SCALE_EXPONENT)
+}
+
 fn scaled_solver_settings(material_scale: f32) -> SolverSettings {
+    let material_scale = effective_solver_material_scale(material_scale);
     SolverSettings {
         max_solver_iterations_per_frame: 24,
         graph_reduction_level: 0,
@@ -236,6 +253,7 @@ pub struct DestructibleRegistry {
     debug_dynamic_min_body_max_local_offset_m: f32,
     debug_dynamic_min_body_ccd_enabled: u32,
     recent_external_collision_starts: HashMap<(ColliderHandle, ColliderHandle), f32>,
+    recent_external_impacts: HashMap<(RigidBodyHandle, u32), f32>,
     debug_contact_events_seen_total: u32,
     debug_contact_events_matching_total: u32,
     debug_contact_events_other_destructible_skipped_total: u32,
@@ -247,6 +265,8 @@ pub struct DestructibleRegistry {
     debug_contact_events_max_raw_force_n: f32,
     debug_contact_events_max_partner_speed_m_s: f32,
     debug_contact_events_collision_grace_overrides_total: u32,
+    debug_contact_events_cooldown_skipped_total: u32,
+    debug_contact_events_force_capped_total: u32,
 }
 
 impl DestructibleRegistry {
@@ -298,6 +318,7 @@ impl DestructibleRegistry {
             debug_dynamic_min_body_max_local_offset_m: 0.0,
             debug_dynamic_min_body_ccd_enabled: 0,
             recent_external_collision_starts: HashMap::new(),
+            recent_external_impacts: HashMap::new(),
             debug_contact_events_seen_total: 0,
             debug_contact_events_matching_total: 0,
             debug_contact_events_other_destructible_skipped_total: 0,
@@ -309,6 +330,8 @@ impl DestructibleRegistry {
             debug_contact_events_max_raw_force_n: 0.0,
             debug_contact_events_max_partner_speed_m_s: 0.0,
             debug_contact_events_collision_grace_overrides_total: 0,
+            debug_contact_events_cooldown_skipped_total: 0,
+            debug_contact_events_force_capped_total: 0,
         }
     }
 
@@ -324,7 +347,7 @@ impl DestructibleRegistry {
         self.instances.iter().map(|i| i.chunk_count()).sum()
     }
 
-    pub fn debug_state_slice(&self) -> [f64; 46] {
+    pub fn debug_state_slice(&self) -> [f64; 48] {
         [
             self.debug_impact_seq as f64,
             self.debug_impact_processed as f64,
@@ -372,10 +395,12 @@ impl DestructibleRegistry {
             self.debug_contact_events_max_raw_force_n as f64,
             self.debug_contact_events_max_partner_speed_m_s as f64,
             self.debug_contact_events_collision_grace_overrides_total as f64,
+            self.debug_contact_events_cooldown_skipped_total as f64,
+            self.debug_contact_events_force_capped_total as f64,
         ]
     }
 
-    pub fn debug_config_slice(&self) -> [f64; 11] {
+    pub fn debug_config_slice(&self) -> [f64; 13] {
         let policy = configured_fracture_policy();
         let debris_collision_mode = configured_debris_collision_mode();
         [
@@ -395,18 +420,9 @@ impl DestructibleRegistry {
                 DebrisCollisionMode::DebrisGroundOnly => 2.0,
                 DebrisCollisionMode::DebrisNone => 3.0,
             },
+            IMPACT_COOLDOWN_SECS as f64,
+            MAX_INJECTED_IMPACT_FORCE_N as f64,
         ]
-    }
-
-    fn collider_pair_key(
-        collider_a: ColliderHandle,
-        collider_b: ColliderHandle,
-    ) -> (ColliderHandle, ColliderHandle) {
-        if collider_a.into_raw_parts().0 <= collider_b.into_raw_parts().0 {
-            (collider_a, collider_b)
-        } else {
-            (collider_b, collider_a)
-        }
     }
 
     pub fn get(&self, id: u32) -> Option<&DestructibleInstance> {
@@ -1115,11 +1131,12 @@ impl DestructibleRegistry {
         // A threshold on `total_force_magnitude` cheaply filters out
         // normal-force resting contacts: a ~0.5 kg ball at rest produces
         // ~5 N, a ~1.5 t vehicle crash produces hundreds of kN, so a
-        // 500 N cutoff cleanly separates the two.
-        // Belt-and-braces: also require the partner body to be moving.
-        // A settled vehicle idling against a wall would otherwise drip
-        // stress in via `total_force_magnitude` from gravity on its
-        // 1.5 t chassis.
+        // 500 N cutoff cleanly separates the two. For vehicle-first
+        // gameplay, we only admit stress during the immediate
+        // post-contact-start window, clamp the injected magnitude, and
+        // rate-limit impacts per partner-body/destructible pair so a car
+        // scraping or resting against a wall does not keep feeding
+        // damage every frame.
         let mut processed = 0usize;
         let mut max_force_n = 0.0_f32;
         let mut max_speed_m_s = 0.0_f32;
@@ -1128,6 +1145,12 @@ impl DestructibleRegistry {
         let mut max_splash_weight_sum = 0.0_f32;
         let mut max_estimated_injected_force_n = 0.0_f32;
         let mut impact_instance_id = 0u32;
+        self.recent_external_collision_starts
+            .retain(|_, started_at| {
+                self.sim_time_secs - *started_at <= COLLISION_IMPACT_GRACE_SECS
+            });
+        self.recent_external_impacts
+            .retain(|_, started_at| self.sim_time_secs - *started_at <= IMPACT_COOLDOWN_SECS);
         while let Ok(event) = contact_rx.try_recv() {
             self.debug_contact_events_seen_total =
                 self.debug_contact_events_seen_total.saturating_add(1);
@@ -1170,6 +1193,21 @@ impl DestructibleRegistry {
                     .saturating_add(1);
                 continue;
             }
+            let pair_key =
+                if event.collider1.into_raw_parts().0 <= event.collider2.into_raw_parts().0 {
+                    (event.collider1, event.collider2)
+                } else {
+                    (event.collider2, event.collider1)
+                };
+            if !self
+                .recent_external_collision_starts
+                .contains_key(&pair_key)
+            {
+                self.debug_contact_events_below_speed_skipped_total = self
+                    .debug_contact_events_below_speed_skipped_total
+                    .saturating_add(1);
+                continue;
+            }
 
             // Cheap force-magnitude gate up front: light bodies (balls,
             // player capsules) generate only a few newtons of contact
@@ -1188,8 +1226,13 @@ impl DestructibleRegistry {
             // destructibles don't slowly disintegrate under their own
             // passengers.
             let partner_body_handle = sim.colliders.get(other_collider).and_then(|c| c.parent());
-            let Some(partner_body) = partner_body_handle.and_then(|h| sim.rigid_bodies.get(h))
-            else {
+            let Some(partner_body_handle) = partner_body_handle else {
+                self.debug_contact_events_missing_partner_body_skipped_total = self
+                    .debug_contact_events_missing_partner_body_skipped_total
+                    .saturating_add(1);
+                continue;
+            };
+            let Some(partner_body) = sim.rigid_bodies.get(partner_body_handle) else {
                 self.debug_contact_events_missing_partner_body_skipped_total = self
                     .debug_contact_events_missing_partner_body_skipped_total
                     .saturating_add(1);
@@ -1217,29 +1260,33 @@ impl DestructibleRegistry {
                 force_dir / force_mag_sq.sqrt()
             };
             if partner_speed_sq < MIN_IMPACT_SPEED_M_S * MIN_IMPACT_SPEED_M_S {
-                let pair_key = Self::collider_pair_key(event.collider1, event.collider2);
-                let collision_start_recent = self
-                    .recent_external_collision_starts
-                    .get(&pair_key)
-                    .map(|started_at| {
-                        self.sim_time_secs - *started_at <= COLLISION_IMPACT_GRACE_SECS
-                    })
-                    .unwrap_or(false);
-                if !collision_start_recent {
-                    self.debug_contact_events_below_speed_skipped_total = self
-                        .debug_contact_events_below_speed_skipped_total
+                self.debug_contact_events_below_speed_skipped_total = self
+                    .debug_contact_events_below_speed_skipped_total
+                    .saturating_add(1);
+                continue;
+            }
+
+            let impact_inst_id = self.instances[inst_idx].id;
+            let impact_key = (partner_body_handle, impact_inst_id);
+            if let Some(last_impact_at) = self.recent_external_impacts.get(&impact_key) {
+                if self.sim_time_secs - *last_impact_at <= IMPACT_COOLDOWN_SECS {
+                    self.debug_contact_events_cooldown_skipped_total = self
+                        .debug_contact_events_cooldown_skipped_total
                         .saturating_add(1);
                     continue;
                 }
-                self.debug_contact_events_collision_grace_overrides_total = self
-                    .debug_contact_events_collision_grace_overrides_total
-                    .saturating_add(1);
             }
 
-            let force_world: Vector3<f32> = direction * event.total_force_magnitude;
             let impact_force_n = event.total_force_magnitude;
             let impact_speed_m_s = partner_speed_m_s;
-            let impact_inst_id = self.instances[inst_idx].id;
+            let unclamped_injected_force_n = impact_force_n * CONTACT_FORCE_SCALE;
+            let injected_force_n = unclamped_injected_force_n.min(MAX_INJECTED_IMPACT_FORCE_N);
+            if injected_force_n < unclamped_injected_force_n {
+                self.debug_contact_events_force_capped_total = self
+                    .debug_contact_events_force_capped_total
+                    .saturating_add(1);
+            }
+            let force_world: Vector3<f32> = direction * injected_force_n;
 
             let inst = &mut self.instances[inst_idx];
             let Some(body_handle) = inst.set.node_body(node_index) else {
@@ -1299,7 +1346,7 @@ impl DestructibleRegistry {
             } else {
                 0.0
             };
-            let estimated_injected_force_n = impact_force_n * CONTACT_FORCE_SCALE;
+            let estimated_injected_force_n = injected_force_n;
             max_force_n = max_force_n.max(impact_force_n);
             max_speed_m_s = max_speed_m_s.max(impact_speed_m_s);
             max_splash_nodes = max_splash_nodes.max(splash.len());
@@ -1316,6 +1363,8 @@ impl DestructibleRegistry {
                 );
                 inst.set.add_force(other_node, other_local, f);
             }
+            self.recent_external_impacts
+                .insert(impact_key, self.sim_time_secs);
             processed += 1;
             self.debug_contact_events_accepted_total =
                 self.debug_contact_events_accepted_total.saturating_add(1);
@@ -1331,7 +1380,7 @@ impl DestructibleRegistry {
             self.debug_impact_max_estimated_injected_force_n = max_estimated_injected_force_n;
             self.debug_impact_instance_id = impact_instance_id;
             dlog(&format!(
-                "[destructibles] IMPACT accepted={} impact_seq={} inst={} raw_force_n={:.1} partner_speed_m_s={:.2} injected_force_n={:.1} splash_nodes={} body_nodes={} splash_weight_sum={:.2} contact_seen/matching/accepted={}/{}/{} skipped_force/speed/other/missing={}/{}/{}/{} grace={} wall_scale={:.2} tower_scale={:.2}",
+                "[destructibles] IMPACT accepted={} impact_seq={} inst={} raw_force_n={:.1} partner_speed_m_s={:.2} injected_force_n={:.1} splash_nodes={} body_nodes={} splash_weight_sum={:.2} contact_seen/matching/accepted={}/{}/{} skipped_force/speed/cooldown/other/missing={}/{}/{}/{}/{} grace={} capped={} cooldown_secs={:.2} max_injected_force_n={:.1} wall_scale={:.2} tower_scale={:.2} solver_ref={:.1}@{:.1}x exp={:.1} wall_solver_scale={:.1} tower_solver_scale={:.1}",
                 processed,
                 self.debug_impact_seq.wrapping_add(1),
                 impact_instance_id,
@@ -1346,12 +1395,21 @@ impl DestructibleRegistry {
                 self.debug_contact_events_accepted_total.saturating_add(processed as u32),
                 self.debug_contact_events_below_force_skipped_total,
                 self.debug_contact_events_below_speed_skipped_total,
+                self.debug_contact_events_cooldown_skipped_total,
                 self.debug_contact_events_other_destructible_skipped_total,
                 self.debug_contact_events_missing_body_or_node_skipped_total
                     .saturating_add(self.debug_contact_events_missing_partner_body_skipped_total),
                 self.debug_contact_events_collision_grace_overrides_total,
+                self.debug_contact_events_force_capped_total,
+                IMPACT_COOLDOWN_SECS,
+                MAX_INJECTED_IMPACT_FORCE_N,
                 self.runtime_config.wall_material_scale,
                 self.runtime_config.tower_material_scale,
+                SOLVER_MATERIAL_SCALE_REFERENCE,
+                USER_MATERIAL_SCALE_REFERENCE,
+                USER_TO_SOLVER_SCALE_EXPONENT,
+                effective_solver_material_scale(self.runtime_config.wall_material_scale),
+                effective_solver_material_scale(self.runtime_config.tower_material_scale),
             ));
         }
     }
@@ -1462,8 +1520,12 @@ impl DestructibleRegistry {
                 .iter()
                 .any(|inst| inst.set.collider_node(c2).is_some());
             if c1_is_destructible ^ c2_is_destructible {
-                self.recent_external_collision_starts
-                    .insert(Self::collider_pair_key(c1, c2), now);
+                let pair_key = if c1.into_raw_parts().0 <= c2.into_raw_parts().0 {
+                    (c1, c2)
+                } else {
+                    (c2, c1)
+                };
+                self.recent_external_collision_starts.insert(pair_key, now);
             }
             self.register_support_contact(sim, c1, c2, now);
             self.register_support_contact(sim, c2, c1, now);
@@ -1648,8 +1710,21 @@ impl Default for DestructibleRegistry {
 /// Convenience: build an [`Isometry3`] from a `[f32; 3]` position and a
 /// `[f32; 4]` quaternion (x, y, z, w) as stored in
 /// [`crate::world_document::DestructibleDoc`].
-pub fn pose_from_world_doc(position: [f32; 3], rotation: [f32; 4]) -> Isometry3<f32> {
-    let translation = Translation3::new(position[0], position[1], position[2]);
+pub fn pose_from_world_doc(
+    kind: crate::world_document::DestructibleKind,
+    position: [f32; 3],
+    rotation: [f32; 4],
+) -> Isometry3<f32> {
+    // Upstream wall/tower scenarios include a fixed support row at the
+    // bottom. Authoring coordinates should place the visible/destructible
+    // mass at the requested height, not leave that support lip sticking up
+    // above the ground where vehicles hit it first.
+    let y = position[1]
+        - match kind {
+            crate::world_document::DestructibleKind::Wall => WALL_AUTHORED_Y_TO_SOLVER_Y_OFFSET_M,
+            crate::world_document::DestructibleKind::Tower => TOWER_AUTHORED_Y_TO_SOLVER_Y_OFFSET_M,
+        };
+    let translation = Translation3::new(position[0], y, position[2]);
     // Renormalize to guard against round-trip drift in the JSON → f32
     // pipeline — Blast's chunks are rigid, any non-unit quaternion here
     // shows up as a progressive scaling artifact.

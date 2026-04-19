@@ -164,6 +164,8 @@ const refs = {
       contactEventsMaxRawForceN: 0,
       contactEventsMaxPartnerSpeedMs: 0,
       contactEventsCollisionGraceOverridesTotal: 0,
+      contactEventsCooldownSkippedTotal: 0,
+      contactEventsForceCappedTotal: 0,
     },
     debugConfig: {
       contactSplashRadiusM: 0,
@@ -177,6 +179,8 @@ const refs = {
       maxNewBodiesPerFrame: 0,
       applyExcessForces: false,
       debrisCollisionMode: 'all',
+      impactCooldownSecs: 0,
+      maxInjectedImpactForceN: 0,
     },
     spatialMetrics: {
       overlapPairCount: 0,
@@ -290,7 +294,7 @@ declare global {
 }
 
 const bridge: VibeE2EBridge = {
-  version: 3,
+  version: 4,
   snapshot: buildSnapshot,
 };
 

@@ -89,14 +89,11 @@ import { STATE } from './characterAnim/types';
  * placed straight ahead of the origin car so `/practice` browser
  * verification can drive into it with a single forward input.
  *
- * Y values account for the scenario local geometry:
- *   - `build_wall_scenario` (WallOptions::default) spans 6m along
- *     local X, 0.32m thick along Z, local y ∈ [0, 3].  Pose y=0
- *     sits the wall's base flush with flat ground.
- *   - `build_tower_scenario` (TowerOptions::default) is a
- *     4×4-column × 8-story column (~2m × 4m × 2m) with a fixed
- *     support row at local y=-0.5.  Pose y=0.5 keeps the dynamic
- *     structure above ground while the support row anchors it.
+ * Shared destructible spawning now compensates for the upstream fixed
+ * support row, so authored positions place the playable structure at
+ * ground level instead of leaving that support lip exposed as a curb.
+ * The practice coordinates below therefore remain the intuitive
+ * authoring values: wall at `y=0`, tower at `y=0.5`.
  */
 const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
   id: number;

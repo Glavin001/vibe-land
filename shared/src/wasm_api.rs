@@ -294,7 +294,7 @@ impl WasmSimWorld {
         }
 
         for doc in &world.destructibles {
-            let pose = pose_from_world_doc(doc.position, doc.rotation);
+            let pose = pose_from_world_doc(doc.kind, doc.position, doc.rotation);
             match doc.kind {
                 DocDestructibleKind::Wall => {
                     self.destructibles.spawn_wall(&mut self.sim, doc.id, pose);
@@ -325,10 +325,17 @@ impl WasmSimWorld {
         qz: f32,
         qw: f32,
     ) -> bool {
-        let pose = pose_from_world_doc([px, py, pz], [qx, qy, qz, qw]);
         match kind {
-            "wall" => self.destructibles.spawn_wall(&mut self.sim, id, pose),
-            "tower" => self.destructibles.spawn_tower(&mut self.sim, id, pose),
+            "wall" => self.destructibles.spawn_wall(
+                &mut self.sim,
+                id,
+                pose_from_world_doc(DocDestructibleKind::Wall, [px, py, pz], [qx, qy, qz, qw]),
+            ),
+            "tower" => self.destructibles.spawn_tower(
+                &mut self.sim,
+                id,
+                pose_from_world_doc(DocDestructibleKind::Tower, [px, py, pz], [qx, qy, qz, qw]),
+            ),
             _ => false,
         }
     }

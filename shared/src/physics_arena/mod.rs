@@ -349,7 +349,7 @@ impl PhysicsArena {
         position: [f32; 3],
         rotation: [f32; 4],
     ) -> bool {
-        let pose = pose_from_world_doc(position, rotation);
+        let pose = pose_from_world_doc(kind, position, rotation);
         match kind {
             DestructibleKind::Wall => {
                 self.destructibles
