@@ -37,6 +37,24 @@ describe('bot brain', () => {
     expect(intent.targetPlayerId).toBeNull();
   });
 
+  it('can disable the distance-based recovery leash', () => {
+    const scenario = normalizeScenario({
+      botCount: 4,
+      spawnPattern: 'spread',
+      enableRecoveryLeash: false,
+      behavior: {
+        targetAcquireDistanceM: 80,
+      },
+    });
+    const state = createBotBrainState(0, scenario);
+    const intent = stepBotBrain(state, scenario, player([80, 2, 0]), [
+      { id: 2, state: player([83, 2, 0]) },
+    ]);
+
+    expect(intent.mode).toBe('follow_target');
+    expect(intent.targetPlayerId).toBe(2);
+  });
+
   it('can request fire input when combat behavior is enabled', () => {
     const scenario = normalizeScenario({
       botCount: 4,

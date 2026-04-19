@@ -15,6 +15,13 @@ export interface ObservedPlayer {
   id: number;
   position: Vec3Tuple;
   isDead: boolean;
+  /**
+   * Planar-aware velocity in world-space meters/second, sampled at roughly
+   * the observer's tick rate. Used by aim-lead logic in steering; callers
+   * that can't cheaply estimate velocity may omit it.
+   */
+  velocity?: Vec3Tuple;
+  isInVehicle?: boolean;
 }
 
 /**
@@ -37,6 +44,7 @@ export interface BotIntent {
   yaw: number;
   pitch: number;
   firePrimary: boolean;
+  meleePrimary: boolean;
   mode: BotMode;
   targetPlayerId: number | null;
   /**

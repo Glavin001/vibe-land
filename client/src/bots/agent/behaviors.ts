@@ -14,6 +14,9 @@ export interface BotBehaviorContext {
 export interface BehaviorDecision {
   target: Vec3Tuple | null;
   fireAim: Vec3Tuple | null;
+  /** Velocity of the target being aimed at (for aim-lead). Optional. */
+  fireAimVelocity?: Vec3Tuple | null;
+  meleeAim: Vec3Tuple | null;
   targetPlayerId: number | null;
   mode: 'acquire_target' | 'follow_target' | 'recover_center' | 'hold_anchor' | 'dead';
 }
@@ -23,6 +26,7 @@ export type Behavior = (ctx: BotBehaviorContext) => BehaviorDecision;
 const DEAD_DECISION: BehaviorDecision = {
   target: null,
   fireAim: null,
+  meleeAim: null,
   targetPlayerId: null,
   mode: 'dead',
 };
@@ -33,6 +37,7 @@ export function moveTo(point: Vec3Tuple): Behavior {
     return {
       target: [point[0], point[1], point[2]],
       fireAim: null,
+      meleeAim: null,
       targetPlayerId: null,
       mode: 'follow_target',
     };
@@ -46,6 +51,7 @@ export function holdAnchor(anchor?: Vec3Tuple): Behavior {
     return {
       target: [a[0], self.position[1], a[2]],
       fireAim: null,
+      meleeAim: null,
       targetPlayerId: null,
       mode: 'hold_anchor',
     };
@@ -56,18 +62,35 @@ export interface HarassNearestOptions {
   acquireDistanceM?: number;
   releaseDistanceM?: number;
   fireDistanceM?: number;
+  /**
+   * Minimum planar distance below which a bot will not try to fire. Prevents
+   * point-blank shots while the bot is physically clipping the target.
+   */
+  minFireDistanceM?: number;
+  meleeDistanceM?: number;
+  meleeAgainstVehicleDistanceM?: number;
   targetMemoryTicks?: number;
+  /**
+   * Once a bot enters its fire window it stops moving for this many ticks so
+   * it visibly pauses to shoot rather than running through the target.
+   */
+  standAndShootTicks?: number;
 }
 
 export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const acquire = options.acquireDistanceM ?? 40;
   const release = options.releaseDistanceM ?? acquire * 1.5;
   const fireRange = options.fireDistanceM ?? 18;
+  const minFireRange = options.minFireDistanceM ?? 1.5;
+  const meleeRange = options.meleeDistanceM ?? 2.0;
+  const meleeVehicleRange = options.meleeAgainstVehicleDistanceM ?? 3.0;
   const targetMemoryTicks = options.targetMemoryTicks ?? 45;
+  const standAndShootTicks = options.standAndShootTicks ?? 18;
   const state = {
     lockedPlayerId: null as number | null,
     lastKnownTarget: null as Vec3Tuple | null,
     lastSeenTick: -Infinity,
+    standUntilTick: -Infinity,
   };
 
   return (ctx) => {
@@ -88,7 +111,20 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
       );
 
     if (shouldFollowObserved) {
-      const fireAim = nearest.distance <= fireRange ? nearest.player.position : null;
+      const meleeThreshold = nearest.player.isInVehicle ? meleeVehicleRange : meleeRange;
+      const inMelee = nearest.distance <= meleeThreshold;
+      const inFireWindow = !inMelee
+        && nearest.distance <= fireRange
+        && nearest.distance >= minFireRange;
+      const fireAim = inFireWindow ? nearest.player.position : null;
+      const fireAimVelocity = inFireWindow && nearest.player.velocity
+        ? ([
+            nearest.player.velocity[0],
+            nearest.player.velocity[1],
+            nearest.player.velocity[2],
+          ] as Vec3Tuple)
+        : null;
+      const meleeAim = inMelee ? nearest.player.position : null;
       state.lockedPlayerId = nearest.player.id;
       state.lastKnownTarget = [
         nearest.player.position[0],
@@ -96,15 +132,23 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
         nearest.player.position[2],
       ];
       state.lastSeenTick = ctx.tick;
+      if (inFireWindow) {
+        state.standUntilTick = ctx.tick + standAndShootTicks;
+      }
+      const standing = ctx.tick <= state.standUntilTick;
       return {
-        target: [
-          nearest.player.position[0],
-          nearest.player.position[1],
-          nearest.player.position[2],
-        ],
+        target: standing
+          ? null
+          : [
+              nearest.player.position[0],
+              nearest.player.position[1],
+              nearest.player.position[2],
+            ],
         fireAim,
+        fireAimVelocity,
+        meleeAim,
         targetPlayerId: nearest.player.id,
-        mode: 'follow_target',
+        mode: standing ? 'acquire_target' : 'follow_target',
       };
     }
 
@@ -120,6 +164,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
           state.lastKnownTarget[2],
         ],
         fireAim: null,
+        meleeAim: null,
         targetPlayerId: state.lockedPlayerId,
         mode: 'follow_target',
       };
@@ -131,6 +176,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
     return {
       target: [anchor[0], self.position[1], anchor[2]],
       fireAim: null,
+      meleeAim: null,
       targetPlayerId: null,
       mode: 'hold_anchor',
     };
@@ -161,6 +207,7 @@ export function wander(options: WanderOptions = {}): Behavior {
     return {
       target: state.target,
       fireAim: null,
+      meleeAim: null,
       targetPlayerId: null,
       mode: 'hold_anchor',
     };

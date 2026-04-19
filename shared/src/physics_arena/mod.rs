@@ -21,6 +21,7 @@ mod player;
 mod spawn;
 mod terrain_material_hook;
 mod vehicle;
+mod vehicle_collision;
 
 pub use terrain_material_hook::{
     is_terrain_material_collider, tag_terrain_user_data, TerrainMaterialHook,
@@ -77,9 +78,17 @@ pub struct PlayerMotorState {
     pub on_ground: bool,
     pub hp: u8,
     pub dead: bool,
+    pub spawn_protected: bool,
     pub last_input: InputCmd,
     pub max_speed_override: Option<f64>,
     pub energy: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerDamageOutcome {
+    Ignored,
+    Damaged,
+    Killed,
 }
 
 /// Shared authoritative physics world: wraps `DynamicArena` and adds

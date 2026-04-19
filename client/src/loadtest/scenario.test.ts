@@ -52,6 +52,7 @@ describe('loadtest scenario', () => {
 
   it('fills in default combat behavior fields', () => {
     const scenario = normalizeScenario({});
+    expect(scenario.enableRecoveryLeash).toBe(true);
     expect(scenario.behavior.fireMode).toBe('off');
     expect(scenario.behavior.fireDistanceM).toBeGreaterThan(0);
     expect(scenario.behavior.fireCooldownTicks).toBeGreaterThan(0);

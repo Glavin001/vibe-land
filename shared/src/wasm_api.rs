@@ -12,7 +12,8 @@ use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLin
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
-    FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+    FireCmd, InputCmd, MeleeCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState,
+    NetVehicleState,
 };
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
@@ -1718,6 +1719,24 @@ impl WasmLocalSession {
         });
     }
 
+    #[wasm_bindgen(js_name = queueMelee)]
+    pub fn queue_melee(
+        &mut self,
+        seq: u16,
+        swing_id: u32,
+        client_time_us: f64,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        self.inner.queue_melee_cmd(MeleeCmd {
+            seq,
+            swing_id,
+            client_time_us: client_time_us.max(0.0).round() as u64,
+            yaw,
+            pitch,
+        });
+    }
+
     #[wasm_bindgen(js_name = enterVehicle)]
     pub fn enter_vehicle(&mut self, vehicle_id: u32) {
         self.inner.enter_vehicle(vehicle_id);
@@ -1798,6 +1817,36 @@ impl WasmLocalSession {
             .cast_scene_ray([ox, oy, oz], [dx, dy, dz], max_toi)
         {
             Some(toi) => Box::new([toi]),
+            None => Box::new([]),
+        }
+    }
+
+    #[wasm_bindgen(js_name = classifyHitscanPlayer)]
+    pub fn classify_hitscan_player(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        body_x: f32,
+        body_y: f32,
+        body_z: f32,
+        blocker_toi: f32,
+    ) -> Box<[f32]> {
+        let blocker = if blocker_toi.is_finite() {
+            Some(blocker_toi)
+        } else {
+            None
+        };
+        match self.inner.classify_hitscan_player(
+            [ox, oy, oz],
+            [dx, dy, dz],
+            [body_x, body_y, body_z],
+            blocker,
+        ) {
+            Some((distance, kind)) => Box::new([distance, kind as f32]),
             None => Box::new([]),
         }
     }

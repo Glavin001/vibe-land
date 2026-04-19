@@ -80,15 +80,15 @@ export function GalleryPage() {
   }, [state, ownedSummaries]);
 
   return (
-    <div className="relative min-h-full bg-[#050c16] text-[#edf6ff] flex items-start justify-center p-8 overflow-hidden">
+    <div className="relative h-full w-full bg-[#050c16] text-[#edf6ff] overflow-x-hidden overflow-y-auto">
 
-      {/* Ambient glows */}
-      <div className="pointer-events-none absolute inset-0">
+      {/* Ambient glows — fixed so they stay put while content scrolls */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[800px] h-[500px] rounded-full bg-sky-500/[0.06] blur-[120px]" />
         <div className="absolute top-1/2 -right-32 w-[400px] h-[400px] rounded-full bg-violet-600/[0.04] blur-[100px]" />
       </div>
 
-      <div className="relative z-10 w-full max-w-[1280px]">
+      <div className="relative z-10 mx-auto w-full max-w-[1280px] px-8 py-8">
 
         {/* Header */}
         <div className="flex items-baseline justify-between flex-wrap gap-4 mb-8">

@@ -5,6 +5,7 @@ import {
   PKT_CLIENT_HELLO,
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
+  PKT_MELEE,
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
@@ -13,6 +14,7 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   PKT_SHOT_RESULT,
+  PKT_SHOT_FIRED,
   PKT_CHUNK_FULL,
   PKT_CHUNK_DIFF,
   PKT_PLAYER_ROSTER,
@@ -48,6 +50,14 @@ export type FireCmd = {
   clientInterpMs: number;
   clientDynamicInterpMs: number;
   dir: [number, number, number];
+};
+
+export type MeleeCmd = {
+  seq: number;
+  swingId: number;
+  clientTimeUs: number;
+  yaw: number;
+  pitch: number;
 };
 
 export type NetPlayerState = {
@@ -304,6 +314,22 @@ export type ShotResultPacket = {
   serverDynamicImpulseCenti: number;
 };
 
+export type ShotFiredPacket = {
+  type: 'shotFired';
+  shooterPlayerId: number;
+  shotId: number;
+  weapon: number;
+  hitKind: number;
+  hitZone: number;
+  serverFireTimeUs: number;
+  originPxMm: number;
+  originPyMm: number;
+  originPzMm: number;
+  endPxMm: number;
+  endPyMm: number;
+  endPzMm: number;
+};
+
 export type LocalPlayerEnergyPacket = {
   type: 'localPlayerEnergy';
   energyCenti: number;
@@ -319,6 +345,7 @@ export type BatterySyncPacket = {
 export type ServerReliablePacket =
   | WelcomePacket
   | ShotResultPacket
+  | ShotFiredPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -338,6 +365,7 @@ export type ServerPacket =
   | SnapshotPacket
   | SnapshotV2Packet
   | ShotResultPacket
+  | ShotFiredPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -458,6 +486,19 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
   return out;
 }
 
+export function encodeMeleePacket(packet: MeleeCmd): Uint8Array {
+  const out = new Uint8Array(1 + 2 + 4 + 8 + 2 + 2);
+  const view = new DataView(out.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_MELEE);
+  view.setUint16(o, packet.seq & 0xffff, true); o += 2;
+  view.setUint32(o, packet.swingId >>> 0, true); o += 4;
+  setUint64(view, o, packet.clientTimeUs); o += 8;
+  view.setInt16(o, angleToI16(packet.yaw), true); o += 2;
+  view.setInt16(o, angleToI16(packet.pitch), true); o += 2;
+  return out;
+}
+
 export function frameReliablePacket(payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(4 + payload.length);
   const view = new DataView(out.buffer);
@@ -509,6 +550,35 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         serverDynamicBodyId,
         serverDynamicHitToiCm,
         serverDynamicImpulseCenti,
+      };
+    }
+    case PKT_SHOT_FIRED: {
+      const shooterPlayerId = view.getUint32(o, true); o += 4;
+      const shotId = view.getUint32(o, true); o += 4;
+      const weapon = view.getUint8(o++);
+      const hitKind = view.getUint8(o++);
+      const hitZone = view.getUint8(o++);
+      const serverFireTimeUs = getUint64(view, o); o += 8;
+      const originPxMm = view.getInt32(o, true); o += 4;
+      const originPyMm = view.getInt32(o, true); o += 4;
+      const originPzMm = view.getInt32(o, true); o += 4;
+      const endPxMm = view.getInt32(o, true); o += 4;
+      const endPyMm = view.getInt32(o, true); o += 4;
+      const endPzMm = view.getInt32(o, true); o += 4;
+      return {
+        type: 'shotFired',
+        shooterPlayerId,
+        shotId,
+        weapon,
+        hitKind,
+        hitZone,
+        serverFireTimeUs,
+        originPxMm,
+        originPyMm,
+        originPzMm,
+        endPxMm,
+        endPyMm,
+        endPzMm,
       };
     }
     case PKT_CHUNK_FULL:
@@ -890,6 +960,15 @@ export function netPlayerStateToMeters(state: NetPlayerState): PlayerStateMeters
   };
 }
 
+export function shotFiredToWorldEndpoints(
+  packet: ShotFiredPacket,
+): { origin: [number, number, number]; end: [number, number, number] } {
+  return {
+    origin: [mmToMeters(packet.originPxMm), mmToMeters(packet.originPyMm), mmToMeters(packet.originPzMm)],
+    end: [mmToMeters(packet.endPxMm), mmToMeters(packet.endPyMm), mmToMeters(packet.endPzMm)],
+  };
+}
+
 export function netProjectileStateToMeters(state: NetProjectileState): ProjectileStateMeters {
   return {
     position: [mmToMeters(state.pxMm), mmToMeters(state.pyMm), mmToMeters(state.pzMm)],
@@ -1146,6 +1225,7 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
   switch (kind) {
     case PKT_WELCOME:
     case PKT_SHOT_RESULT:
+    case PKT_SHOT_FIRED:
       return decodeServerReliablePacket(data);
     case PKT_SNAPSHOT:
       return decodeServerDatagramPacket(data);

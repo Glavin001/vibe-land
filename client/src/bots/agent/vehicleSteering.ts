@@ -159,6 +159,7 @@ export function vehicleAgentStateToIntent(
     yaw: passthrough.yaw,
     pitch: passthrough.pitch,
     firePrimary: passthrough.firePrimary ?? false,
+    meleePrimary: false,
     mode: passthrough.mode,
     targetPlayerId: passthrough.targetPlayerId,
     vehicleAction: passthrough.vehicleAction ?? null,

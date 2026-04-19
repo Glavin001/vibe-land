@@ -24,6 +24,7 @@ import {
   type FireCmd,
   type InputCmd,
   type LocalPlayerEnergyPacket,
+  type MeleeCmd,
   type NetBatteryState,
   type NetPlayerState,
   type NetVehicleState,
@@ -31,6 +32,7 @@ import {
   type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
 } from './protocol';
@@ -52,6 +54,7 @@ export type NetcodeClientConfig = {
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -258,6 +261,14 @@ export class NetcodeClient {
       this.wtClient.sendFire(cmd);
     } else {
       this.socket?.sendFire(cmd);
+    }
+  }
+
+  sendMelee(cmd: MeleeCmd): void {
+    if (this.wtClient) {
+      this.wtClient.sendMelee(cmd);
+    } else {
+      this.socket?.sendMelee(cmd);
     }
   }
 
@@ -812,6 +823,9 @@ export class NetcodeClient {
           packet.serverDynamicImpulseCenti,
         );
         this.config.onShotResult?.(packet);
+        break;
+      case 'shotFired':
+        this.config.onShotFired?.(packet);
         break;
       default:
         break;

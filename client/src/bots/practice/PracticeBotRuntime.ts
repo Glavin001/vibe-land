@@ -4,8 +4,15 @@ import { createVehicleQueryFilter } from '../crowd/vehicleQueryFilter';
 import { vehicleAgentStateToIntent } from '../agent/vehicleSteering';
 
 import type { PracticeBotHost } from '../../net/localPracticeClient';
-import { FLAG_DEAD } from '../../net/protocol';
-import { FLAG_IN_VEHICLE } from '../../net/sharedConstants';
+import { FLAG_DEAD, aimDirectionFromAngles } from '../../net/protocol';
+import {
+  FLAG_IN_VEHICLE,
+  HITSCAN_MAX_DISTANCE_M,
+  MELEE_COOLDOWN_MS,
+  PLAYER_EYE_HEIGHT_M,
+  RIFLE_FIRE_INTERVAL_MS,
+  WEAPON_HITSCAN,
+} from '../../net/sharedConstants';
 import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
@@ -41,6 +48,10 @@ export interface LocalSelfSnapshot {
 }
 
 export const PRACTICE_BOT_ID_BASE = 1_000_000;
+export const MAX_PRACTICE_BOTS = 200;
+export const PRACTICE_BOT_WALK_SPEED = 6.0;
+export const PRACTICE_BOT_SPRINT_SPEED = 8.5;
+export const PRACTICE_BOT_SPRINT_DISTANCE_M = 10.0;
 
 export type PracticeBotBehaviorKind = 'harass' | 'wander' | 'hold';
 
@@ -48,12 +59,15 @@ export interface PracticeBotRuntimeOptions {
   maxAgentRadius?: number;
   snapHalfExtents?: Vec3Tuple;
   initialBehavior?: PracticeBotBehaviorKind;
+  /** @deprecated Practice bots always use the shared human walk/sprint speeds. */
   maxSpeed?: number;
   tickHz?: number;
   navigationProfile?: SharedPlayerNavigationProfile;
   cellSize?: number;
   cellHeight?: number;
   tileSizeVoxels?: number;
+  /** Whether bots are allowed to emit rifle fire. */
+  enableShooting?: boolean;
   /** Whether bots start with vehicle mode enabled. */
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
@@ -92,6 +106,8 @@ export interface PracticeBotStats {
   maxSpeed: number;
   navTriangles: number;
   running: boolean;
+  /** Whether the bot runtime currently allows ranged fire. */
+  enableShooting: boolean;
   /** Whether the vehicle-aware planner is currently enabled. */
   useVehicles: boolean;
   /** Number of vehicle-sized tris in the lazy vehicle navmesh, 0 if unbuilt. */
@@ -147,6 +163,8 @@ export interface BotDebugInfo {
   targetPlayerId: number | null;
   maxSpeed: number;
   firePrimary: boolean;
+  /** Total FireCmd packets emitted by this bot since spawn. */
+  shotsFired: number;
   /** Vehicle FSM stage — `'on_foot'` for walking bots. */
   vehicleStage: VehicleFsmStage;
   /** Vehicle id this bot is currently reserving / driving, or null. */
@@ -163,13 +181,28 @@ export interface PracticeBotSnapshot {
   anchor: Vec3Tuple;
 }
 
+export interface PracticeBotShotVisual {
+  shooterId: number;
+  origin: Vec3Tuple;
+  end: Vec3Tuple;
+  kind: 'miss' | 'world' | 'body';
+}
+
 interface PracticeBot {
   id: number;
   handle: BotHandle;
   brain: BotBrain;
   behaviorKind: PracticeBotBehaviorKind;
   seq: number;
+  swingSeq: number;
+  nextAllowedMeleeMs: number;
   lastIntent: BotIntent;
+  /** Monotonic shot id used in outgoing FireCmd packets. */
+  nextShotId: number;
+  /** Wall-clock ms at which this bot is next allowed to emit a FireCmd. */
+  nextFireMs: number;
+  /** Running count of FireCmds emitted, surfaced in the debug overlay. */
+  shotsFired: number;
   /**
    * Current vehicle FSM stage. Driven by `tickVehicleFsm`; `on_foot` is
    * the ground state whenever `useVehicles` is false.
@@ -190,14 +223,30 @@ interface PracticeBot {
 }
 
 const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
-const DEFAULT_MAX_SPEED = 3.0;
 const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
 
+// ~1° of yaw/pitch jitter: enough to prevent reliable headshots, not enough
+// to make the bot feel broken.
+const DEFAULT_AIM_JITTER_RAD = 0.02;
+// Lead moving targets by ~80 ms — matches the practice tick at 60 Hz and
+// feels natural without being a wall-hack aimbot.
+const DEFAULT_AIM_LEAD_SEC = 0.08;
+// ~200 ms reaction delay at 60 Hz before the first shot lands.
+const DEFAULT_FIRE_PREP_TICKS = 12;
+// Engagement range for the harass behavior's fire intent. Rifle hitscan
+// reaches farther than this but practice bots now hold to a shorter,
+// fairer combat distance in foggy arenas.
+const DEFAULT_HARASS_FIRE_RANGE_M = 20;
+// Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
+// racing the server and getting shots silently dropped.
+const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
+
 export class PracticeBotRuntime {
   readonly crowd: BotCrowd;
   private readonly bots = new Map<number, PracticeBot>();
+  private readonly shotVisualListeners = new Set<(shot: PracticeBotShotVisual) => void>();
   private nextId = PRACTICE_BOT_ID_BASE;
   private behaviorKind: PracticeBotBehaviorKind;
   private maxSpeed: number;
@@ -212,6 +261,8 @@ export class PracticeBotRuntime {
   private readonly maxAgentRadius: number;
   /** Whether the walk-vs-drive planner is active. */
   private useVehicles: boolean;
+  /** Whether bots may emit FireCmd packets. */
+  private enableShooting: boolean;
   /** Static physical profile of the vehicle the bots would drive. */
   private readonly vehicleProfile: VehicleProfile;
   /**
@@ -223,6 +274,15 @@ export class PracticeBotRuntime {
   private vehicleCrowd: BotCrowd | null = null;
   /** navcat QueryFilter paired with the vehicle crowd. Built lazily alongside it. */
   private vehicleQueryFilter: ReturnType<typeof createVehicleQueryFilter> | null = null;
+  /**
+   * Position + timestamp cache used to estimate velocity of observed
+   * players (specifically, the local player) between ticks. Bots use this
+   * for aim-lead in steering. Keyed by observed player id.
+   */
+  private readonly observedVelocities = new Map<
+    number,
+    { position: Vec3Tuple; sampleMs: number; velocity: Vec3Tuple }
+  >();
   /**
    * Reservation map — prevents two bots racing for the same car.
    * Key: vehicleId. Value: botId holding the reservation.
@@ -269,8 +329,9 @@ export class PracticeBotRuntime {
     this.maxAgentRadius = options.maxAgentRadius ?? 0.6;
     this.crowd = crowd;
     this.behaviorKind = options.initialBehavior ?? DEFAULT_BEHAVIOR;
-    this.maxSpeed = options.maxSpeed ?? DEFAULT_MAX_SPEED;
+    this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
+    this.enableShooting = options.enableShooting ?? true;
     this.useVehicles = options.useVehicles ?? false;
     this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
   }
@@ -288,7 +349,7 @@ export class PracticeBotRuntime {
       this.syncBotToAuthoritativeSpawn(bot, this.host, {
         preserveAnchor: alreadyConnected,
       });
-      this.host.setBotMaxSpeed(bot.id, this.maxSpeed);
+      this.host.setBotMaxSpeed(bot.id, null);
     }
     this.running = true;
     this.lastTickMs = performance.now();
@@ -332,6 +393,7 @@ export class PracticeBotRuntime {
       maxSpeed: this.maxSpeed,
       navTriangles: this.crowd.nav.geometry.triangleCount,
       running: this.running,
+      enableShooting: this.enableShooting,
       useVehicles: this.useVehicles,
       vehicleNavTriangles: this.vehicleCrowd?.nav.geometry.triangleCount ?? 0,
     };
@@ -365,6 +427,10 @@ export class PracticeBotRuntime {
     }
   }
 
+  setEnableShooting(value: boolean): void {
+    this.enableShooting = value;
+  }
+
   private ensureVehicleCrowd(): BotCrowd {
     if (this.vehicleCrowd) return this.vehicleCrowd;
     this.vehicleCrowd = createVehicleBotCrowd(this.world, this.vehicleProfile);
@@ -382,17 +448,17 @@ export class PracticeBotRuntime {
   }
 
   setMaxSpeed(speed: number): void {
-    const clamped = Math.max(0.5, Math.min(12, speed));
-    this.maxSpeed = clamped;
+    void speed;
+    this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     for (const bot of this.bots.values()) {
       const agent = this.crowd.getAgent(bot.handle.id);
-      if (agent) agent.maxSpeed = clamped;
-      this.host?.setBotMaxSpeed(bot.id, clamped);
+      if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
+      this.host?.setBotMaxSpeed(bot.id, null);
     }
   }
 
   setBotCount(target: number): void {
-    const clamped = Math.max(0, Math.min(32, Math.floor(target)));
+    const clamped = Math.max(0, Math.min(MAX_PRACTICE_BOTS, Math.floor(target)));
     while (this.bots.size < clamped) {
       this.spawnBot();
     }
@@ -408,11 +474,15 @@ export class PracticeBotRuntime {
     const spawn = snapshot?.position ?? this.crowd.findRandomWalkable() ?? [0, 2, 0];
     const handle = this.crowd.addBot(spawn);
     const agent = this.crowd.getAgent(handle.id);
-    if (agent) agent.maxSpeed = this.maxSpeed;
+    if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
     const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
       anchor: snapshot?.anchor ?? spawn,
+      aimJitterRad: DEFAULT_AIM_JITTER_RAD,
+      aimLeadSec: DEFAULT_AIM_LEAD_SEC,
+      firePrepTicks: DEFAULT_FIRE_PREP_TICKS,
+      seed: id >>> 0,
     });
     this.bots.set(id, {
       id,
@@ -420,7 +490,12 @@ export class PracticeBotRuntime {
       brain,
       behaviorKind: this.behaviorKind,
       seq: 0,
+      swingSeq: 0,
+      nextAllowedMeleeMs: 0,
       lastIntent: makeIdleIntent(),
+      nextShotId: 1,
+      nextFireMs: 0,
+      shotsFired: 0,
       vehicleStage: 'on_foot',
       reservedVehicleId: null,
       vehicleHandle: null,
@@ -435,7 +510,7 @@ export class PracticeBotRuntime {
       this.syncBotToAuthoritativeSpawn(this.bots.get(id) ?? null, this.host, {
         preserveAnchor: alreadyConnected,
       });
-      this.host.setBotMaxSpeed(id, this.maxSpeed);
+      this.host.setBotMaxSpeed(id, null);
     }
     return id;
   }
@@ -462,6 +537,13 @@ export class PracticeBotRuntime {
       this.crowd.removeObstacleAgent(agentId);
     }
     this.vehicleObstacleAgents.clear();
+  }
+
+  onShotVisual(listener: (shot: PracticeBotShotVisual) => void): () => void {
+    this.shotVisualListeners.add(listener);
+    return () => {
+      this.shotVisualListeners.delete(listener);
+    };
   }
 
   captureBotSnapshots(): PracticeBotSnapshot[] {
@@ -649,6 +731,7 @@ export class PracticeBotRuntime {
         targetPlayerId: bot.lastIntent.targetPlayerId,
         maxSpeed: this.maxSpeed,
         firePrimary: bot.lastIntent.firePrimary,
+        shotsFired: bot.shotsFired,
         vehicleStage: bot.vehicleStage,
         reservedVehicleId: bot.reservedVehicleId,
       });
@@ -668,6 +751,7 @@ export class PracticeBotRuntime {
     const localHp = host.localPlayerHp;
     const selfSnapshot = this.getSelf?.() ?? null;
     const localIsDead = selfSnapshot?.dead ?? ((localFlags & FLAG_DEAD) !== 0 || localHp <= 0);
+    const localIsInVehicle = (localFlags & FLAG_IN_VEHICLE) !== 0;
     const observed: ObservedPlayer[] = selfSnapshot
       ? [
           {
@@ -678,9 +762,16 @@ export class PracticeBotRuntime {
               selfSnapshot.position[2],
             ],
             isDead: localIsDead,
+            velocity: this.sampleObservedVelocity(
+              selfSnapshot.id,
+              selfSnapshot.position,
+              nowMs,
+            ),
+            isInVehicle: localIsInVehicle,
           },
         ]
       : [];
+    this.pruneObservedVelocities(selfSnapshot?.id ?? null);
 
     for (const bot of this.bots.values()) {
       const remote = host.remotePlayers.get(bot.id);
@@ -767,11 +858,178 @@ export class PracticeBotRuntime {
         intent.pitch,
       );
       host.sendBotInputs(bot.id, [cmd]);
+      if (intent.meleePrimary && nowMs >= bot.nextAllowedMeleeMs) {
+        bot.nextAllowedMeleeMs = nowMs + MELEE_COOLDOWN_MS;
+        bot.swingSeq = (bot.swingSeq + 1) >>> 0;
+        host.sendBotMelee(bot.id, {
+          seq: bot.seq,
+          swingId: bot.swingSeq,
+          clientTimeUs: Math.round(performance.now() * 1000),
+          yaw: intent.yaw,
+          pitch: intent.pitch,
+        });
+      }
       if (intent.vehicleAction === 'enter' && intent.vehicleId != null) {
         host.sendBotVehicleEnter(bot.id, intent.vehicleId);
       } else if (intent.vehicleAction === 'exit' && intent.vehicleId != null) {
         host.sendBotVehicleExit(bot.id, intent.vehicleId);
       }
+
+      this.maybeEmitFire(bot, intent, selfTemplate.dead, nowMs);
+    }
+  }
+
+  /**
+   * If the bot's brain wants to fire this tick, emit a `FireCmd` through
+   * the host — provided the 100 ms rifle cooldown has elapsed, the bot is
+   * alive + on foot, and the server can't already tell that the shot
+   * would be blocked by static world geometry. Shots that would be
+   * occluded are suppressed so we don't spam packets the server would
+   * only resolve as `SHOT_RESOLUTION_BLOCKED_BY_WORLD`.
+   */
+  private maybeEmitFire(
+    bot: PracticeBot,
+    intent: BotIntent,
+    isDead: boolean,
+    nowMs: number,
+  ): void {
+    if (!this.enableShooting) return;
+    if (!intent.firePrimary) return;
+    if (isDead) return;
+    if (bot.vehicleStage !== 'on_foot') return;
+    if (nowMs < bot.nextFireMs) return;
+    const host = this.host;
+    if (!host) return;
+
+    const remote = host.remotePlayers.get(bot.id);
+    if (!remote) return;
+
+    const dir = aimDirectionFromAngles(intent.yaw, intent.pitch);
+    const origin: [number, number, number] = [
+      remote.position[0],
+      remote.position[1] + PLAYER_EYE_HEIGHT_M,
+      remote.position[2],
+    ];
+
+    if (host.castSceneRay) {
+      const targetDist = this.targetDistanceForFire(bot, origin);
+      if (targetDist !== null) {
+        const hit = host.castSceneRay(origin, dir, targetDist + 0.5);
+        if (hit && hit.toi < targetDist - 0.25) {
+          // World geometry between us and the target — don't waste a shot.
+          return;
+        }
+      }
+    }
+
+    const shotId = bot.nextShotId;
+    bot.nextShotId = (bot.nextShotId + 1) >>> 0 || 1;
+    bot.nextFireMs = nowMs + RIFLE_FIRE_INTERVAL_MS + LOCAL_FIRE_COOLDOWN_SLACK_MS;
+    bot.shotsFired += 1;
+
+    host.sendBotFire(bot.id, {
+      seq: bot.seq,
+      shotId,
+      weapon: WEAPON_HITSCAN,
+      clientFireTimeUs: Math.floor(nowMs * 1000),
+      clientInterpMs: 0,
+      clientDynamicInterpMs: 0,
+      dir,
+    });
+    this.emitShotVisual(bot, origin, dir);
+  }
+
+  private targetDistanceForFire(bot: PracticeBot, origin: Vec3Tuple): number | null {
+    const targetId = bot.lastIntent.targetPlayerId;
+    if (targetId === null) return null;
+    const host = this.host;
+    if (!host) return null;
+    const target = host.remotePlayers.get(targetId);
+    const position = target?.position
+      ?? (this.observedVelocities.get(targetId)?.position ?? null);
+    if (!position) return null;
+    const dx = position[0] - origin[0];
+    const dy = position[1] + PLAYER_EYE_HEIGHT_M * 0.5 - origin[1];
+    const dz = position[2] - origin[2];
+    return Math.hypot(dx, dy, dz);
+  }
+
+  private emitShotVisual(
+    bot: PracticeBot,
+    origin: Vec3Tuple,
+    dir: Vec3Tuple,
+  ): void {
+    if (this.shotVisualListeners.size === 0) return;
+    const targetDistance = this.targetDistanceForFire(bot, origin);
+    const worldHit = this.host?.castSceneRay?.(origin, dir, HITSCAN_MAX_DISTANCE_M) ?? null;
+    const hitDistance = worldHit?.toi ?? null;
+    const distance = targetDistance != null
+      ? Math.min(targetDistance, hitDistance ?? Number.POSITIVE_INFINITY, HITSCAN_MAX_DISTANCE_M)
+      : Math.min(hitDistance ?? HITSCAN_MAX_DISTANCE_M, HITSCAN_MAX_DISTANCE_M);
+    const kind: PracticeBotShotVisual['kind'] = targetDistance != null && (hitDistance == null || targetDistance <= hitDistance + 0.25)
+      ? 'body'
+      : hitDistance != null
+        ? 'world'
+        : 'miss';
+    const end: Vec3Tuple = [
+      origin[0] + dir[0] * distance,
+      origin[1] + dir[1] * distance,
+      origin[2] + dir[2] * distance,
+    ];
+    const shot: PracticeBotShotVisual = {
+      shooterId: bot.id,
+      origin: [origin[0], origin[1], origin[2]],
+      end,
+      kind,
+    };
+    for (const listener of this.shotVisualListeners) {
+      listener(shot);
+    }
+  }
+
+  private sampleObservedVelocity(
+    id: number,
+    position: [number, number, number],
+    nowMs: number,
+  ): Vec3Tuple | undefined {
+    const previous = this.observedVelocities.get(id);
+    if (!previous) {
+      this.observedVelocities.set(id, {
+        position: [position[0], position[1], position[2]],
+        sampleMs: nowMs,
+        velocity: [0, 0, 0],
+      });
+      return [0, 0, 0];
+    }
+    const dtMs = nowMs - previous.sampleMs;
+    if (dtMs < 1) {
+      return [previous.velocity[0], previous.velocity[1], previous.velocity[2]];
+    }
+    const dt = dtMs / 1000;
+    // Low-pass to reject single-tick jitter while still reacting quickly.
+    const alpha = 0.4;
+    const instX = (position[0] - previous.position[0]) / dt;
+    const instY = (position[1] - previous.position[1]) / dt;
+    const instZ = (position[2] - previous.position[2]) / dt;
+    const vel: Vec3Tuple = [
+      previous.velocity[0] * (1 - alpha) + instX * alpha,
+      previous.velocity[1] * (1 - alpha) + instY * alpha,
+      previous.velocity[2] * (1 - alpha) + instZ * alpha,
+    ];
+    previous.position[0] = position[0];
+    previous.position[1] = position[1];
+    previous.position[2] = position[2];
+    previous.sampleMs = nowMs;
+    previous.velocity[0] = vel[0];
+    previous.velocity[1] = vel[1];
+    previous.velocity[2] = vel[2];
+    return [vel[0], vel[1], vel[2]];
+  }
+
+  private pruneObservedVelocities(keepId: number | null): void {
+    if (this.observedVelocities.size === 0) return;
+    for (const id of [...this.observedVelocities.keys()]) {
+      if (id !== keepId) this.observedVelocities.delete(id);
     }
   }
 
@@ -1027,8 +1285,7 @@ export class PracticeBotRuntime {
       DEFAULT_QUERY_FILTER,
     );
     if (walkLength === null) return null;
-    const walkSpeed = Math.max(1, this.maxSpeed);
-    const walkTimeSec = walkLength / walkSpeed;
+    const walkTimeSec = this.estimateFootTravelTimeSec(walkLength);
 
     const vehicleCrowd = this.ensureVehicleCrowd();
     const vehicleFilter = this.vehicleQueryFilter ?? DEFAULT_QUERY_FILTER;
@@ -1058,7 +1315,7 @@ export class PracticeBotRuntime {
         vehicleFilter,
       );
       if (driveLength === null) continue;
-      const driveTime = walkToLength / walkSpeed
+      const driveTime = this.estimateFootTravelTimeSec(walkToLength)
         + driveLength / profile.cruiseSpeed
         + profile.enterExitOverheadSec;
       if (!best || driveTime < best.travelTime) {
@@ -1070,6 +1327,12 @@ export class PracticeBotRuntime {
     // Otherwise the bot would thrash at the walk/drive boundary.
     if (best.travelTime > walkTimeSec * 0.75) return null;
     return { vehicleId: best.vehicleId, vehiclePosition: best.vehiclePosition };
+  }
+
+  private estimateFootTravelTimeSec(pathLengthM: number): number {
+    const walkDistance = Math.min(pathLengthM, PRACTICE_BOT_SPRINT_DISTANCE_M);
+    const sprintDistance = Math.max(0, pathLengthM - walkDistance);
+    return (walkDistance / PRACTICE_BOT_WALK_SPEED) + (sprintDistance / PRACTICE_BOT_SPRINT_SPEED);
   }
 
   /**
@@ -1090,6 +1353,7 @@ function makeIdleIntent(): BotIntent {
     yaw: 0,
     pitch: 0,
     firePrimary: false,
+    meleePrimary: false,
     mode: 'hold_anchor',
     targetPlayerId: null,
     vehicleAction: null,
@@ -1105,10 +1369,14 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
       return holdAnchor();
     case 'harass':
     default:
+      // Practice mode deliberately uses plain harass behavior instead of the
+      // arena-specific recovery wrapper, so bots do not leash back to center
+      // or spawn by default while chasing the local player.
       return harassNearest({
-        acquireDistanceM: 80,
+        acquireDistanceM: 40,
         releaseDistanceM: 120,
-        fireDistanceM: 0,
+        fireDistanceM: DEFAULT_HARASS_FIRE_RANGE_M,
+        minFireDistanceM: 2,
       });
   }
 }

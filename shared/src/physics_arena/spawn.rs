@@ -6,51 +6,79 @@ use super::{PhysicsArena, PlayerMotorState};
 use crate::movement::Vec3d;
 use crate::protocol::InputCmd;
 
+/// Hard minimum separation between a new spawn and any existing threat.
+/// Below this, capsule colliders would overlap and the newcomer would be
+/// within melee range (MELEE_RANGE_M = 1 m + capsule radius) on the first
+/// frame. Used as a bool filter in legacy lane mode; area-mode scoring
+/// always picks the max-distance candidate, so this acts only as a
+/// final-resort floor.
+const SPAWN_MIN_CLEARANCE_M: f64 = 2.5;
+
 impl PhysicsArena {
     fn spawn_lane_position(lane: u32) -> (f64, f64) {
         (lane as f64 * 2.0, 0.0)
     }
 
-    fn spawn_lane_is_clear(&self, x: f64, z: f64) -> bool {
-        const SPAWN_CLEARANCE_RADIUS_M: f64 = 2.5;
-        let clearance_sq = SPAWN_CLEARANCE_RADIUS_M * SPAWN_CLEARANCE_RADIUS_M;
-
-        if self.players.values().any(|player| {
+    /// Squared distance in the X/Z plane from (x, z) to the nearest living
+    /// player. Only players are scored as combat threats — inanimate dynamic
+    /// bodies (crates, ragdolls) and unoccupied vehicles can't smack the
+    /// newcomer, so pulling spawns away from them would just distort the
+    /// distribution without preventing the "swarmed at spawn" problem.
+    /// Dead players are skipped since they can't attack until they respawn.
+    /// Returns `f64::INFINITY` when no live players are present.
+    fn min_player_distance_sq(&self, x: f64, z: f64) -> f64 {
+        let mut best = f64::INFINITY;
+        for player in self.players.values() {
+            if player.dead {
+                continue;
+            }
             let dx = player.position.x - x;
             let dz = player.position.z - z;
-            dx * dx + dz * dz < clearance_sq
-        }) {
-            return false;
+            let d = dx * dx + dz * dz;
+            if d < best {
+                best = d;
+            }
         }
+        best
+    }
 
-        if self.dynamic.dynamic_bodies.values().any(|body| {
-            let Some(rb) = self.dynamic.sim.rigid_bodies.get(body.body_handle) else {
+    /// True if (x, z) has no rigid body within `SPAWN_MIN_CLEARANCE_M`. This
+    /// is a physical-overlap guard distinct from combat scoring: a newcomer
+    /// must not spawn inside a player capsule, a crate, or a parked car.
+    fn spawn_lane_is_clear(&self, x: f64, z: f64) -> bool {
+        let clearance_sq = SPAWN_MIN_CLEARANCE_M * SPAWN_MIN_CLEARANCE_M;
+
+        for player in self.players.values() {
+            let dx = player.position.x - x;
+            let dz = player.position.z - z;
+            if dx * dx + dz * dz < clearance_sq {
                 return false;
-            };
-            let pos = rb.translation();
-            let dx = pos.x as f64 - x;
-            let dz = pos.z as f64 - z;
-            dx * dx + dz * dz < clearance_sq
-        }) {
-            return false;
+            }
         }
-
-        if self.vehicles.values().any(|vehicle| {
-            let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) else {
-                return false;
-            };
-            let pos = rb.translation();
-            let dx = pos.x as f64 - x;
-            let dz = pos.z as f64 - z;
-            dx * dx + dz * dz < clearance_sq
-        }) {
-            return false;
+        for body in self.dynamic.dynamic_bodies.values() {
+            if let Some(rb) = self.dynamic.sim.rigid_bodies.get(body.body_handle) {
+                let pos = rb.translation();
+                let dx = pos.x as f64 - x;
+                let dz = pos.z as f64 - z;
+                if dx * dx + dz * dz < clearance_sq {
+                    return false;
+                }
+            }
         }
-
+        for vehicle in self.vehicles.values() {
+            if let Some(rb) = self.dynamic.sim.rigid_bodies.get(vehicle.chassis_body) {
+                let pos = rb.translation();
+                let dx = pos.x as f64 - x;
+                let dz = pos.z as f64 - z;
+                if dx * dx + dz * dz < clearance_sq {
+                    return false;
+                }
+            }
+        }
         true
     }
 
-    fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
+    pub fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
         self.cast_static_world_ray([x as f32, 40.0, z as f32], [0.0, -1.0, 0.0], 100.0, None)
             .map(|toi| 40.0 - toi as f64)
             .unwrap_or(0.0)
@@ -73,40 +101,78 @@ impl PhysicsArena {
     }
 
     fn next_spawn_position_from_areas(&mut self) -> Vec3d {
+        // Enumerate every candidate across every spawn area and score each
+        // by squared distance to the nearest living player. The candidate
+        // with the greatest minimum distance wins — this picks the area
+        // farthest from spawn campers and, within that area, the spot
+        // with the most breathing room before anyone can reach the
+        // newcomer. Candidates that physically overlap an existing
+        // collider (player, crate, vehicle) are demoted behind clear
+        // ones so we don't spawn inside something; on a densely occupied
+        // map we still return the best we have as a last resort.
+        //
+        // When no players are alive, every candidate ties on score (∞).
+        // Ties are broken by round-robin rotation starting at
+        // `next_spawn_index`, then by candidate index within the area,
+        // so successive empty-map spawns still distribute across areas.
+        // After picking, we advance `next_spawn_index` past the chosen
+        // area so the next spawn prefers a different one.
         let area_count = self.spawn_areas.len() as u32;
+        let rotation_base = self.next_spawn_index;
 
-        // Try areas round-robin starting from next_spawn_index
+        let mut best_x = 0.0_f64;
+        let mut best_z = 0.0_f64;
+        let mut best_area_idx: u32 = 0;
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best_clear = false;
+        let mut best_rotation_rank: u32 = u32::MAX;
+        let mut best_candidate_rank: u32 = u32::MAX;
+
         for area_offset in 0..area_count {
-            let area_idx = ((self.next_spawn_index + area_offset) % area_count) as usize;
+            let area_idx = (rotation_base.wrapping_add(area_offset)) % area_count;
             let (cx, cz, radius) = {
-                let area = &self.spawn_areas[area_idx];
+                let area = &self.spawn_areas[area_idx as usize];
                 (
                     area.position[0] as f64,
                     area.position[2] as f64,
                     area.radius as f64,
                 )
             };
-
-            // Try candidates distributed across the area (center + inner ring + outer ring)
-            let candidates = spawn_area_candidates(cx, cz, radius);
-            for (x, z) in candidates {
-                if self.spawn_lane_is_clear(x, z) {
-                    self.next_spawn_index = self.next_spawn_index.wrapping_add(1);
-                    let terrain_y = self.terrain_y_at(x, z);
-                    return Vector3::<f64>::new(x, terrain_y + 2.0, z);
+            for (candidate_rank, (x, z)) in spawn_area_candidates(cx, cz, radius).enumerate() {
+                let score = self.min_player_distance_sq(x, z);
+                let clear = self.spawn_lane_is_clear(x, z);
+                let candidate_rank = candidate_rank as u32;
+                // Prefer (physically clear, higher player score). Break
+                // floating-point ties on the score with an epsilon so
+                // near-identical candidates don't churn the winner.
+                let better = if best_rotation_rank == u32::MAX {
+                    true
+                } else if clear != best_clear {
+                    clear && !best_clear
+                } else if score > best_score + 1e-3 {
+                    true
+                } else if score + 1e-3 < best_score {
+                    false
+                } else if area_offset != best_rotation_rank {
+                    area_offset < best_rotation_rank
+                } else {
+                    candidate_rank < best_candidate_rank
+                };
+                if better {
+                    best_x = x;
+                    best_z = z;
+                    best_area_idx = area_idx;
+                    best_score = score;
+                    best_clear = clear;
+                    best_rotation_rank = area_offset;
+                    best_candidate_rank = candidate_rank;
                 }
             }
         }
 
-        // All areas fully occupied — fall back to the area selected by rotation
-        self.next_spawn_index = self.next_spawn_index.wrapping_add(1);
-        let area_idx = (self.next_spawn_index.wrapping_sub(1) % area_count) as usize;
-        let (cx, cz) = {
-            let area = &self.spawn_areas[area_idx];
-            (area.position[0] as f64, area.position[2] as f64)
-        };
-        let terrain_y = self.terrain_y_at(cx, cz);
-        Vector3::<f64>::new(cx, terrain_y + 2.0, cz)
+        self.next_spawn_index = best_area_idx.wrapping_add(1);
+        let terrain_y = self.terrain_y_at(best_x, best_z);
+        Vector3::<f64>::new(best_x, terrain_y + 2.0, best_z)
     }
 
     fn next_spawn_position(&mut self) -> Vec3d {
@@ -131,6 +197,7 @@ impl PhysicsArena {
                 on_ground: false,
                 hp: 100,
                 dead: false,
+                spawn_protected: false,
                 last_input: InputCmd::default(),
                 max_speed_override: None,
                 energy: crate::constants::STARTING_ENERGY,
@@ -157,6 +224,7 @@ impl PhysicsArena {
         state.on_ground = false;
         state.hp = 100;
         state.dead = false;
+        state.spawn_protected = false;
         state.last_input = InputCmd::default();
         state.energy = crate::constants::STARTING_ENERGY;
         self.dynamic
@@ -246,7 +314,9 @@ mod tests {
         let s1 = arena.spawn_player(1);
         let s2 = arena.spawn_player(2);
 
-        // Round-robin: player 1 → area A (0,0), player 2 → area B (200,200)
+        // Empty map → round-robin tie-break puts player 1 in area A.
+        // Player 1 then becomes a threat at A's centre, so the scorer
+        // sends player 2 to area B (200,200).
         let dist1_a = ((s1.x * s1.x + s1.z * s1.z) as f32).sqrt();
         let dist2_b = (((s2.x - 200.0).powi(2) + (s2.z - 200.0).powi(2)) as f32).sqrt();
         assert!(
@@ -277,38 +347,168 @@ mod tests {
     }
 
     #[test]
-    fn clearance_check_avoids_occupied_center() {
-        let mut arena = arena_with_areas(vec![single_area(0.0, 0.0, 20.0)]);
+    fn spawn_maximizes_distance_from_occupying_player() {
+        // With a single wide area and a player camping dead-center, the
+        // scoring algorithm should push the newcomer to the outer ring
+        // (≈ 0.85 · radius away) — far more than the 2.5 m hard minimum.
+        let radius = 20.0_f32;
+        let mut arena = arena_with_areas(vec![single_area(0.0, 0.0, radius)]);
         arena.spawn_player(1); // occupies center (0, 0)
         let s2 = arena.spawn_player(2);
-        // Player 2 must be > SPAWN_CLEARANCE_RADIUS_M (2.5 m) away from player 1 at (0,0)
         let dist = ((s2.x * s2.x + s2.z * s2.z) as f32).sqrt();
+        // Outer ring sits at 0.85 · radius. Allow a small epsilon for
+        // terrain sampling / floating-point drift.
+        let expected_outer_ring = 0.85 * radius;
         assert!(
-            dist > 2.5,
-            "player 2 spawn ({:.2},{:.2}) collides with player 1 at origin",
+            dist >= expected_outer_ring - 0.1,
+            "player 2 spawn ({:.2},{:.2}) should land on the outer ring (~{:.1} m) \
+             to maximize separation from player 1 at origin, got {:.2} m",
             s2.x,
-            s2.z
+            s2.z,
+            expected_outer_ring,
+            dist,
         );
     }
 
     #[test]
-    fn fallback_to_area_center_when_all_positions_occupied() {
-        // A tiny area that can only fit one player; a second spawn falls back to area center
+    fn crowded_area_still_returns_position_within_radius() {
+        // Tiny area where every candidate ends up near-overlapping a
+        // previous spawn. The scorer has no good answer, but it must
+        // still return *some* position inside the area rather than
+        // bailing out or returning off-map junk.
         let mut arena = arena_with_areas(vec![single_area(50.0, 50.0, 0.5)]);
-        // Fill all 17 candidate positions by spawning many players
         for id in 1..=17 {
             arena.spawn_player(id);
         }
-        // 18th spawn hits the fallback path (area center)
-        let fallback = arena.spawn_player(18);
-        let dx = fallback.x as f32 - 50.0;
-        let dz = fallback.z as f32 - 50.0;
-        // Fallback returns the area center itself
+        let crowded = arena.spawn_player(18);
+        let dx = crowded.x as f32 - 50.0;
+        let dz = crowded.z as f32 - 50.0;
+        // Every candidate sits within 0.85·radius = 0.425 m of center,
+        // so the returned spawn must stay within a tight disc.
         assert!(
             dx * dx + dz * dz < 1.0,
-            "fallback spawn ({:.2},{:.2}) not near area center (50,50)",
-            fallback.x,
-            fallback.z
+            "crowded-area spawn ({:.2},{:.2}) should still land inside the area near (50,50)",
+            crowded.x,
+            crowded.z
+        );
+    }
+
+    #[test]
+    fn spawn_prefers_area_farthest_from_existing_threat() {
+        // Spawn-camper scenario: a hostile player is stationed at area A.
+        // New spawns must prefer area B even if A appears first in the
+        // round-robin rotation.
+        let mut arena = arena_with_areas(vec![
+            SpawnArea {
+                id: 1,
+                position: [0.0, 0.0, 0.0],
+                radius: 4.0,
+            },
+            SpawnArea {
+                id: 2,
+                position: [150.0, 0.0, 0.0],
+                radius: 4.0,
+            },
+        ]);
+
+        // Place a spawn camper at area A's centre by having player 1
+        // spawn there first (no threats yet → round-robin picks A).
+        let s1 = arena.spawn_player(1);
+        assert!(
+            s1.x.abs() <= 4.0 && s1.z.abs() <= 4.0,
+            "setup: player 1 should land in area A at origin"
+        );
+
+        // Every subsequent spawn should flee to area B — the camper in A
+        // keeps the "min distance to threat" much smaller for any
+        // candidate inside A than for any candidate inside B.
+        for id in 2..=5 {
+            let spawn = arena.spawn_player(id);
+            let dist_from_b = ((spawn.x - 150.0).powi(2) + spawn.z.powi(2)).sqrt();
+            assert!(
+                dist_from_b <= 4.0,
+                "player {id} spawn ({:.2},{:.2}) should land in area B (150,0), \
+                 not next to the camper in area A",
+                spawn.x,
+                spawn.z
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_picks_opposite_side_of_single_area_from_threat() {
+        // With a single big area and one threat parked off-centre, the
+        // scorer must pick the candidate diametrically opposite so the
+        // newcomer gets the most breathing room available.
+        let radius = 15.0_f32;
+        let mut arena = arena_with_areas(vec![single_area(0.0, 0.0, radius)]);
+        arena.spawn_player(1);
+
+        // Forcibly move player 1 to +X edge (simulate a camper pushing
+        // forward) so the scorer sees a lopsided threat distribution.
+        {
+            let state = arena.players.get_mut(&1).expect("player 1 exists");
+            state.position.x = 12.0;
+            state.position.z = 0.0;
+        }
+
+        let s2 = arena.spawn_player(2);
+        // Expect the winning candidate to have negative x (opposite the
+        // camper). The outer ring at 0.85·15 ≈ 12.75 m should be picked
+        // on the -X side.
+        assert!(
+            s2.x < -5.0,
+            "player 2 spawn ({:.2},{:.2}) should land on the far side from the \
+             camper at (12, 0), got x={:.2}",
+            s2.x,
+            s2.z,
+            s2.x,
+        );
+    }
+
+    #[test]
+    fn empty_map_spawns_round_robin_across_areas() {
+        // On an empty map all candidates tie on score (∞). The tie-break
+        // is round-robin rotation so successive spawns spread out
+        // instead of piling into one area.
+        let mut arena = arena_with_areas(vec![
+            SpawnArea {
+                id: 1,
+                position: [0.0, 0.0, 0.0],
+                radius: 3.0,
+            },
+            SpawnArea {
+                id: 2,
+                position: [1000.0, 0.0, 0.0],
+                radius: 3.0,
+            },
+            SpawnArea {
+                id: 3,
+                position: [0.0, 0.0, 1000.0],
+                radius: 3.0,
+            },
+        ]);
+
+        // Remove each player right after spawning so the map stays empty
+        // and we only observe the round-robin tiebreak behavior.
+        let mut area_hits = [0u32; 3];
+        for id in 1..=6u32 {
+            let spawn = arena.spawn_player(id);
+            let hit = if spawn.x.abs() < 50.0 && spawn.z.abs() < 50.0 {
+                0
+            } else if (spawn.x - 1000.0).abs() < 50.0 {
+                1
+            } else {
+                2
+            };
+            area_hits[hit] += 1;
+            arena.remove_player(id);
+        }
+        // Six spawns across three areas → each area sees exactly two.
+        assert_eq!(
+            area_hits,
+            [2, 2, 2],
+            "empty-map spawns should distribute evenly via round-robin, got {area_hits:?}"
         );
     }
 }
