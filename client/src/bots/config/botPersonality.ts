@@ -45,7 +45,17 @@ export interface BotPersonality {
   // ---------- Combat ----------
   fireMode: BotFireMode;
   fireDistanceM: number;
+  /** Planar distance below which the bot refuses to fire (prevents point-blank clip shots). */
+  minFireDistanceM: number;
   fireCooldownTicks: number;
+  /** Ticks the bot holds still after entering fire range before it visibly resumes moving. */
+  standAndShootTicks: number;
+  /** Ticks of consecutive valid fireAim before firePrimary is asserted (reaction-time sim). */
+  firePrepTicks: number;
+  /** Radians of random yaw/pitch jitter added to the fire aim per tick. */
+  aimJitterRad: number;
+  /** Seconds of target velocity to project aim forward for aim-lead. */
+  aimLeadSec: number;
   meleeDistanceM: number;
   meleeAgainstVehicleDistanceM: number;
 
@@ -61,13 +71,17 @@ export interface BotPersonality {
 }
 
 /**
- * Defaults that preserve historical behavior:
- *  - Locomotion / target / fire numbers come from `loadtest/scenario.ts` (the
- *    place where these were already named and tuned).
- *  - Steering reflexes (jump cooldown, stuck threshold) come from the
- *    practice steering defaults in `agent/steering.ts`.
- *  - Melee / target memory come from `harassNearest`'s defaults.
- *  - Vehicles default off — practice opts in via the panel toggle.
+ * Defaults matching the practice bot's canonical tuning — the "smart bot"
+ * baseline. Load-test scenarios that want quieter bots opt in via
+ * {@link LoadTestScenario.behavior} / {@link LoadTestScenario.personality}
+ * (e.g. `fireMode: 'off'`, narrower `targetAcquireDistanceM`).
+ *
+ *  - Target acquisition / fire ranges (80 / 120 / 28 m) mirror the practice
+ *    floors that previously lived inline in `PracticeBotRuntime`.
+ *  - Aim jitter / lead / fire prep are the practice values that make shots
+ *    land plausibly without feeling like an aimbot.
+ *  - Vehicles default off — practice still opts in via the panel toggle and
+ *    the load-test runtime will honour `useVehicles` once its FSM ships.
  */
 export const DEFAULT_BOT_PERSONALITY: BotPersonality = Object.freeze({
   behaviorKind: 'harass',
@@ -77,14 +91,19 @@ export const DEFAULT_BOT_PERSONALITY: BotPersonality = Object.freeze({
   orbitDistanceM: 4.5,
   sprintDistanceM: 8,
 
-  targetAcquireDistanceM: 40,
-  targetReleaseDistanceM: 60,
+  targetAcquireDistanceM: 80,
+  targetReleaseDistanceM: 120,
   targetMemoryTicks: 45,
   recoveryDistanceM: 32,
 
-  fireMode: 'off',
-  fireDistanceM: 18,
+  fireMode: 'nearest_target',
+  fireDistanceM: 28,
+  minFireDistanceM: 2,
   fireCooldownTicks: 8,
+  standAndShootTicks: 18,
+  firePrepTicks: 12,
+  aimJitterRad: 0.02,
+  aimLeadSec: 0.08,
   meleeDistanceM: 2.0,
   meleeAgainstVehicleDistanceM: 3.0,
 

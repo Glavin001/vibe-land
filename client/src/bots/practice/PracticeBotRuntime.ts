@@ -17,13 +17,7 @@ import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
 import { BotBrain } from '../agent/BotBrain';
-import {
-  arenaHarass,
-  harassNearest,
-  holdAnchor,
-  wander,
-  type Behavior,
-} from '../agent/behaviors';
+import { makeBehaviorFromPersonality } from '../agent/behaviors';
 import {
   type BotPersonality,
   resolvePersonality,
@@ -221,17 +215,6 @@ const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
 
-// ~1° of yaw/pitch jitter: enough to prevent reliable headshots, not enough
-// to make the bot feel broken.
-const DEFAULT_AIM_JITTER_RAD = 0.02;
-// Lead moving targets by ~80 ms — matches the practice tick at 60 Hz and
-// feels natural without being a wall-hack aimbot.
-const DEFAULT_AIM_LEAD_SEC = 0.08;
-// ~200 ms reaction delay at 60 Hz before the first shot lands.
-const DEFAULT_FIRE_PREP_TICKS = 12;
-// Engagement range for the harass behavior's fire intent. Rifle hitscan
-// reaches farther than this but accuracy falls off quickly past 30 m.
-const DEFAULT_HARASS_FIRE_RANGE_M = 28;
 // Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
 // racing the server and getting shots silently dropped.
 const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
@@ -451,7 +434,7 @@ export class PracticeBotRuntime {
     this.behaviorKind = kind;
     this.personality.behaviorKind = kind;
     for (const bot of this.bots.values()) {
-      bot.brain.setBehavior(makeBehavior(kind, this.personality));
+      bot.brain.setBehavior(makeBehaviorFromPersonality(this.personality));
       bot.behaviorKind = kind;
     }
   }
@@ -487,15 +470,15 @@ export class PracticeBotRuntime {
     if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind, this.personality), {
+    const brain = new BotBrain(this.crowd, handle, makeBehaviorFromPersonality(this.personality), {
       anchor: snapshot?.anchor ?? spawn,
       jumpCooldownTicks: this.personality.jumpCooldownTicks,
       stuckTicksBeforeJump: this.personality.stuckTickThreshold,
       minMoveSpeed: this.personality.minMoveSpeedM,
       meleeDistanceM: this.personality.meleeDistanceM,
-      aimJitterRad: DEFAULT_AIM_JITTER_RAD,
-      aimLeadSec: DEFAULT_AIM_LEAD_SEC,
-      firePrepTicks: DEFAULT_FIRE_PREP_TICKS,
+      aimJitterRad: this.personality.aimJitterRad,
+      aimLeadSec: this.personality.aimLeadSec,
+      firePrepTicks: this.personality.firePrepTicks,
       seed: id >>> 0,
     });
     this.bots.set(id, {
@@ -1373,29 +1356,6 @@ function makeIdleIntent(): BotIntent {
     vehicleAction: null,
     vehicleId: null,
   };
-}
-
-function makeBehavior(
-  kind: PracticeBotBehaviorKind,
-  personality: BotPersonality,
-): Behavior {
-  switch (kind) {
-    case 'wander':
-      return wander({ radiusM: 18 });
-    case 'hold':
-      return holdAnchor();
-    case 'harass':
-    default:
-      return harassNearest({
-        acquireDistanceM: Math.max(personality.targetAcquireDistanceM, 80),
-        releaseDistanceM: Math.max(personality.targetReleaseDistanceM, 120),
-        fireDistanceM: DEFAULT_HARASS_FIRE_RANGE_M,
-        minFireDistanceM: 2,
-        meleeDistanceM: personality.meleeDistanceM,
-        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
-        targetMemoryTicks: personality.targetMemoryTicks,
-      });
-  }
 }
 
 void FLAG_DEAD;

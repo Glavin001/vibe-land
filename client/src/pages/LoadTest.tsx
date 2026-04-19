@@ -127,6 +127,54 @@ function createScenarioPresets(matchId: string): ScenarioPreset[] {
       scenario: () => createPageScenario(matchId),
     },
     {
+      id: 'practice-quality-10',
+      label: 'Practice Quality 10',
+      description:
+        '10 WT bots tuned to match the practice-page brain: aggressive acquisition (80 m), hitscan fire at 28 m with aim jitter + lead, melee, target memory, and vehicles.',
+      scenario: () => createScenario(matchId, {
+        name: 'arena-practice-quality-10',
+        botCount: 10,
+        rampUpS: 4,
+        inputHz: 60,
+        transportMix: { websocket: 0, webtransport: 10 },
+        spawnPattern: 'spread',
+        networkProfiles: [buildLanProfile()],
+        behavior: {
+          ...DEFAULT_SCENARIO.behavior,
+          // Match the practice floors so scenario.behavior does not tone
+          // the personality back down when it gets merged on top of the
+          // practice-quality defaults in DEFAULT_BOT_PERSONALITY.
+          targetAcquireDistanceM: 80,
+          stuckTickThreshold: 18,
+          fireMode: 'nearest_target',
+          fireDistanceM: 28,
+          fireCooldownTicks: 8,
+        },
+        personality: {
+          // Aim knobs — these are the practice values. Setting them here
+          // documents the scenario's intent and lets you tweak in one place.
+          aimJitterRad: 0.02,
+          aimLeadSec: 0.08,
+          firePrepTicks: 12,
+          standAndShootTicks: 18,
+          // Explicit target acquisition tuning so remote bots will chase a
+          // real player as far as practice bots do locally.
+          targetAcquireDistanceM: 80,
+          targetReleaseDistanceM: 120,
+          targetMemoryTicks: 45,
+          minFireDistanceM: 2,
+          meleeDistanceM: 2.0,
+          meleeAgainstVehicleDistanceM: 3.0,
+          // Opt in to the shared vehicle FSM so bots walk to cars and drive
+          // when a reservation is available. The LoadTestBotRuntime only
+          // honours this once the vehicle FSM is extracted from practice;
+          // until then it behaves like useVehicles=false at runtime but
+          // keeps the scenario JSON aligned with practice.
+          useVehicles: true,
+        },
+      }),
+    },
+    {
       id: 'real-10',
       label: 'Realistic 10',
       description: '10 WT bots at 60 Hz to match real player input cadence.',

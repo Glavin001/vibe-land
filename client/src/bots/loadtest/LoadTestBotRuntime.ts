@@ -13,12 +13,7 @@
  * `personality.useVehicles = true` in this runtime currently has no effect.
  */
 import { BotBrain } from '../agent/BotBrain';
-import {
-  arenaHarass,
-  holdAnchor,
-  wander,
-  type Behavior,
-} from '../agent/behaviors';
+import { makeBehaviorFromPersonality } from '../agent/behaviors';
 import {
   resolvePersonality,
   type BotPersonality,
@@ -178,12 +173,16 @@ export class LoadTestBotRuntime {
     // would otherwise flip `desiredVelocity` backward and make the bot
     // wobble between two points.
     if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
-    const brain = new BotBrain(this.crowd, crowdHandle, makeBehavior(this.personality), {
+    const brain = new BotBrain(this.crowd, crowdHandle, makeBehaviorFromPersonality(this.personality), {
       anchor: options.anchor,
       jumpCooldownTicks: this.personality.jumpCooldownTicks,
       stuckTicksBeforeJump: this.personality.stuckTickThreshold,
       minMoveSpeed: this.personality.minMoveSpeedM,
       meleeDistanceM: this.personality.meleeDistanceM,
+      aimJitterRad: this.personality.aimJitterRad,
+      aimLeadSec: this.personality.aimLeadSec,
+      firePrepTicks: this.personality.firePrepTicks,
+      seed: options.id >>> 0,
     });
     const bot: InternalBot = {
       id: options.id,
@@ -246,30 +245,6 @@ export class LoadTestBotRuntime {
       const intent = bot.brain.think(inputs.self, remotePlayers);
       bot.onIntent(intent);
     }
-  }
-}
-
-function makeBehavior(personality: BotPersonality): Behavior {
-  switch (personality.behaviorKind) {
-    case 'wander':
-      return wander({ radiusM: 18 });
-    case 'hold':
-      return holdAnchor();
-    case 'harass':
-    default:
-      return arenaHarass({
-        acquireDistanceM: personality.targetAcquireDistanceM,
-        releaseDistanceM: personality.targetReleaseDistanceM,
-        targetMemoryTicks: personality.targetMemoryTicks,
-        fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
-        meleeDistanceM: personality.meleeDistanceM,
-        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
-        recoveryDistanceM: personality.recoveryDistanceM,
-        preferCenterWhenIdle: false,
-        fireAtCenter:
-          personality.fireMode === 'center'
-          || personality.fireMode === 'nearest_target_or_center',
-      });
   }
 }
 

@@ -17,6 +17,13 @@ export function personalityFromScenario(
   scenario: LoadTestScenario,
 ): Partial<BotPersonality> {
   const b = scenario.behavior;
+  // `BehaviorConfig` was the original pre-personality shape. Translate its
+  // fields onto the unified personality; anything the behavior block does not
+  // cover (aim knobs, melee ranges, target release, standAndShootTicks…) is
+  // left as its {@link DEFAULT_BOT_PERSONALITY} value and overridden below by
+  // scenario.personality when provided. A practice-quality scenario therefore
+  // inherits the same aim jitter / fire prep / acquire-release defaults
+  // without each preset having to restate them.
   const fromBehavior: Partial<BotPersonality> = {
     behaviorKind: 'harass',
     stopDistanceM: b.stopDistanceM,

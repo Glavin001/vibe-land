@@ -2,6 +2,7 @@
  * Composable behavior primitives for bots.
  */
 
+import type { BotPersonality } from '../config/botPersonality';
 import type { BotSelfState, ObservedPlayer, Vec3Tuple } from '../types';
 
 export interface BotBehaviorContext {
@@ -252,6 +253,42 @@ export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
 
     return decision;
   };
+}
+
+/**
+ * Construct the `Behavior` driven by a unified {@link BotPersonality}. Both
+ * {@link PracticeBotRuntime} and {@link LoadTestBotRuntime} call this so
+ * that a personality JSON produces the exact same in-game behavior whether
+ * the bot is running locally or over WebTransport.
+ */
+export function makeBehaviorFromPersonality(
+  personality: BotPersonality,
+  options: { fireAtCenter?: boolean; preferCenterWhenIdle?: boolean } = {},
+): Behavior {
+  switch (personality.behaviorKind) {
+    case 'wander':
+      return wander({ radiusM: 18 });
+    case 'hold':
+      return holdAnchor();
+    case 'harass':
+    default:
+      return arenaHarass({
+        acquireDistanceM: personality.targetAcquireDistanceM,
+        releaseDistanceM: personality.targetReleaseDistanceM,
+        targetMemoryTicks: personality.targetMemoryTicks,
+        recoveryDistanceM: personality.recoveryDistanceM,
+        fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
+        minFireDistanceM: personality.minFireDistanceM,
+        standAndShootTicks: personality.standAndShootTicks,
+        meleeDistanceM: personality.meleeDistanceM,
+        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
+        preferCenterWhenIdle: options.preferCenterWhenIdle ?? false,
+        fireAtCenter:
+          options.fireAtCenter
+          ?? (personality.fireMode === 'center'
+            || personality.fireMode === 'nearest_target_or_center'),
+      });
+  }
 }
 
 export interface WanderOptions {
