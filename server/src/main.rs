@@ -48,12 +48,12 @@ use crate::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
-        make_net_shot_fired, mm_to_meters,
-        BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket,
-        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
-        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY,
-        PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        make_net_shot_fired, mm_to_meters, BatterySyncPacket, ClientPacket, FireCmd, InputCmd,
+        LocalPlayerEnergyPacket, NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket,
+        WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC,
+        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -2597,9 +2597,7 @@ impl MatchState {
                         (Some(w), Some(d)) if w < d => {
                             (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
                         }
-                        (_, Some(d)) => {
-                            (project(d), SHOT_RESOLUTION_DYNAMIC, HIT_ZONE_NONE)
-                        }
+                        (_, Some(d)) => (project(d), SHOT_RESOLUTION_DYNAMIC, HIT_ZONE_NONE),
                         (Some(w), None) => {
                             (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
                         }
@@ -2697,8 +2695,7 @@ impl MatchState {
             // Broadcast the shot-fired trace to every connected player so remote
             // observers see the bullet. Stamped with the current server tick so
             // clients can suppress packets whose render window has already expired.
-            let server_fire_time_us =
-                (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
+            let server_fire_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
             let shot_fired = ServerPacket::ShotFired(make_net_shot_fired(
                 queued.player_id,
                 queued.cmd.shot_id,
