@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { applyBotSnapshotState } from './botSnapshot';
-import type { ObservedPlayer } from './brain';
+import type { ObservedPlayer } from '../bots/types';
 import type { PlayerStateMeters, ServerDatagramPacket, ServerReliablePacket } from '../net/protocol';
 
 function makeState(): {
@@ -14,14 +14,8 @@ function makeState(): {
     remotePlayers: new Map<number, ObservedPlayer>([
       [99, {
         id: 99,
-        state: {
-          position: [100, 0, 100],
-          velocity: [0, 0, 0],
-          yaw: 0,
-          pitch: 0,
-          hp: 1,
-          flags: 0,
-        },
+        position: [100, 0, 100],
+        isDead: false,
       }],
     ]),
   };
@@ -71,7 +65,8 @@ describe('applyBotSnapshotState', () => {
     expect(applyBotSnapshotState(state, packet)).toBe(true);
     expect(state.localState?.position).toEqual([1, 2, 3]);
     expect(state.remotePlayers.size).toBe(1);
-    expect(state.remotePlayers.get(8)?.state.position).toEqual([4, 1.5, 5]);
+    expect(state.remotePlayers.get(8)?.position).toEqual([4, 1.5, 5]);
+    expect(state.remotePlayers.get(8)?.isDead).toBe(false);
   });
 
   it('updates bot state from snapshotV2 packets', () => {
@@ -118,8 +113,8 @@ describe('applyBotSnapshotState', () => {
     expect(state.localState?.velocity).toEqual([1.2, 0.3, -0.6]);
     expect(state.remotePlayers.size).toBe(1);
     expect(state.remotePlayers.has(99)).toBe(false);
-    expect(state.remotePlayers.get(3)?.state.position[0]).toBeCloseTo(11);
-    expect(state.remotePlayers.get(3)?.state.position[2]).toBeCloseTo(-4.5);
+    expect(state.remotePlayers.get(3)?.position[0]).toBeCloseTo(11);
+    expect(state.remotePlayers.get(3)?.position[2]).toBeCloseTo(-4.5);
   });
 
   it('ignores non-snapshot packets', () => {

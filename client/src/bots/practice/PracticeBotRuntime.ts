@@ -11,11 +11,16 @@ import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
 import { BotBrain } from '../agent/BotBrain';
 import {
+  arenaHarass,
   harassNearest,
   holdAnchor,
   wander,
   type Behavior,
 } from '../agent/behaviors';
+import {
+  type BotPersonality,
+  resolvePersonality,
+} from '../config/botPersonality';
 import {
   BotCrowd,
   createBotCrowd,
@@ -58,33 +63,22 @@ export interface PracticeBotRuntimeOptions {
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
   vehicleProfile?: VehicleProfile;
+  /**
+   * Unified bot personality. Fields here become the canonical defaults for
+   * behavior selection, locomotion, target acquisition, fire/melee ranges,
+   * and reflexes. Legacy scalar options on this struct (`initialBehavior`,
+   * `maxSpeed`, `useVehicles`, `vehicleProfile`) still win when supplied,
+   * for backwards compatibility with callers that haven't migrated.
+   */
+  personality?: Partial<BotPersonality>;
 }
 
 export interface PracticeBotRuntimeSyncOptions extends PracticeBotRuntimeOptions {
   navigationProfile: SharedPlayerNavigationProfile;
 }
 
-/**
- * Stock {@link VehicleProfile} for the default practice-mode vehicle (the
- * small Rapier raycast car). Values are intentionally conservative — tune
- * `turningRadius` and `cruiseSpeed` after playtesting.
- *
- * - `turningRadius`: at `VEHICLE_MAX_STEER_RAD = 0.5 rad` and a 1.8 m
- *   wheelbase, the kinematic lower bound is ≈ 1.8 / tan(0.5) ≈ 3.3 m. We
- *   bump to 5 m to account for the raycast-vehicle's drift and the fact
- *   that A* costs use centroids, not wheelbase geometry.
- * - `cruiseSpeed`: empirical — the chassis reaches ~14 m/s on a straight
- *   with the default engine force. 12 m/s leaves margin for the car
- *   actually *exiting* a corner.
- */
-export const DEFAULT_VEHICLE_PROFILE: VehicleProfile = Object.freeze({
-  turningRadius: 5,
-  agentRadius: 1.3,
-  agentHeight: 1.5,
-  cruiseSpeed: 12,
-  enterDistance: 2.5,
-  enterExitOverheadSec: 1.5,
-});
+export { DEFAULT_VEHICLE_PROFILE } from './practiceVehicleDefaults';
+import { DEFAULT_VEHICLE_PROFILE } from './practiceVehicleDefaults';
 
 export interface PracticeBotStats {
   bots: number;
@@ -204,6 +198,7 @@ export class PracticeBotRuntime {
   private behaviorKind: PracticeBotBehaviorKind;
   private maxSpeed: number;
   private readonly tickHz: number;
+  private readonly personality: BotPersonality;
   private host: PracticeBotHost | null = null;
   private getSelf: LocalSelfAccessor | null = null;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
@@ -270,11 +265,23 @@ export class PracticeBotRuntime {
     this.world = world;
     this.maxAgentRadius = options.maxAgentRadius ?? 0.6;
     this.crowd = crowd;
-    this.behaviorKind = options.initialBehavior ?? DEFAULT_BEHAVIOR;
-    this.maxSpeed = options.maxSpeed ?? DEFAULT_MAX_SPEED;
+    const personality = resolvePersonality(options.personality);
+    this.personality = personality;
+    this.behaviorKind = options.initialBehavior ?? personality.behaviorKind;
+    this.maxSpeed = options.maxSpeed ?? personality.maxSpeed;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
-    this.useVehicles = options.useVehicles ?? false;
-    this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
+    this.useVehicles = options.useVehicles ?? personality.useVehicles;
+    this.vehicleProfile = options.vehicleProfile ?? personality.vehicleProfile;
+  }
+
+  /**
+   * Resolved unified bot personality. Mutated in place by the runtime's
+   * setters so behaviors spawned later see the latest tuning. Callers that
+   * want to swap personality wholesale should construct a new runtime —
+   * this is intentionally a get-only accessor.
+   */
+  getPersonality(): BotPersonality {
+    return this.personality;
   }
 
   attach(host: PracticeBotHost, getSelf: LocalSelfAccessor): void {
@@ -357,6 +364,7 @@ export class PracticeBotRuntime {
   setUseVehicles(value: boolean): void {
     if (value === this.useVehicles) return;
     this.useVehicles = value;
+    this.personality.useVehicles = value;
     if (value) {
       this.ensureVehicleCrowd();
     } else {
@@ -377,8 +385,9 @@ export class PracticeBotRuntime {
   setBehavior(kind: PracticeBotBehaviorKind): void {
     if (kind === this.behaviorKind) return;
     this.behaviorKind = kind;
+    this.personality.behaviorKind = kind;
     for (const bot of this.bots.values()) {
-      bot.brain.setBehavior(makeBehavior(kind));
+      bot.brain.setBehavior(makeBehavior(kind, this.personality));
       bot.behaviorKind = kind;
     }
   }
@@ -386,6 +395,7 @@ export class PracticeBotRuntime {
   setMaxSpeed(speed: number): void {
     const clamped = Math.max(0.5, Math.min(12, speed));
     this.maxSpeed = clamped;
+    this.personality.maxSpeed = clamped;
     for (const bot of this.bots.values()) {
       const agent = this.crowd.getAgent(bot.handle.id);
       if (agent) agent.maxSpeed = clamped;
@@ -413,8 +423,12 @@ export class PracticeBotRuntime {
     if (agent) agent.maxSpeed = this.maxSpeed;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
+    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind, this.personality), {
       anchor: snapshot?.anchor ?? spawn,
+      jumpCooldownTicks: this.personality.jumpCooldownTicks,
+      stuckTicksBeforeJump: this.personality.stuckTickThreshold,
+      minMoveSpeed: this.personality.minMoveSpeedM,
+      meleeDistanceM: this.personality.meleeDistanceM,
     });
     this.bots.set(id, {
       id,
@@ -1115,7 +1129,10 @@ function makeIdleIntent(): BotIntent {
   };
 }
 
-function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
+function makeBehavior(
+  kind: PracticeBotBehaviorKind,
+  personality: BotPersonality,
+): Behavior {
   switch (kind) {
     case 'wander':
       return wander({ radiusM: 18 });
@@ -1123,10 +1140,16 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
       return holdAnchor();
     case 'harass':
     default:
+      // Practice harass keeps `fireDistanceM: 0` so the local-session bots
+      // never strafe-shoot the player — they melee instead. Personality
+      // controls the "ranged combat" knobs that load-test consumers want.
       return harassNearest({
-        acquireDistanceM: 80,
-        releaseDistanceM: 120,
+        acquireDistanceM: Math.max(personality.targetAcquireDistanceM, 80),
+        releaseDistanceM: Math.max(personality.targetReleaseDistanceM, 120),
         fireDistanceM: 0,
+        meleeDistanceM: personality.meleeDistanceM,
+        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
+        targetMemoryTicks: personality.targetMemoryTicks,
       });
   }
 }

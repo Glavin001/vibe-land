@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import { buildInputFromButtons } from '../scene/inputBuilder';
-import { stepBotBrain, createBotBrainState, type ObservedPlayer } from '../loadtest/brain';
+import {
+  LoadTestBotRuntime,
+  type LoadTestBotHandle,
+} from '../bots';
+import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
 import { PacketImpairment } from '../loadtest/networkModel';
+import { personalityFromScenario, playerStateToBotSelf } from '../loadtest/personalityFromScenario';
 import type { BenchmarkPageState, WebTransportWorkerResult } from '../benchmark/contracts';
 import {
   DEFAULT_SCENARIO,
   SeededRandom,
+  anchorForBot,
   chooseWeightedProfile,
   normalizeScenario,
   parseScenarioJson,
@@ -32,16 +38,21 @@ type BrowserBot = {
   connected: boolean;
   playerId: number;
   seq: number;
-  tickHandle: number | null;
+  /**
+   * Handle returned by {@link LoadTestBotRuntime.addBot}. The runtime owns
+   * the per-bot {@link BotBrain} and ticks it on a shared schedule.
+   */
+  brainHandle: LoadTestBotHandle | null;
   localState: PlayerStateMeters | null;
   remotePlayers: Map<number, ObservedPlayer>;
-  brainState: ReturnType<typeof createBotBrainState>;
   currentTargetPlayerId: number | null;
   inboundImpairment: PacketImpairment<ServerReliablePacket | ServerDatagramPacket>;
   outboundImpairment: PacketImpairment<ReturnType<typeof buildInputFromButtons>>;
   snapshotsReceived: number;
   shotsFired: number;
   shotId: number;
+  /** Counts down each tick; only fires when zero. */
+  fireCooldownTicks: number;
 };
 
 type ScenarioPreset = {
@@ -233,6 +244,7 @@ export function LoadTestPage() {
   const [snapshotsReceived, setSnapshotsReceived] = useState(0);
   const [bottleneck, setBottleneck] = useState('waiting for server stats');
   const botsRef = useRef<BrowserBot[]>([]);
+  const runtimeRef = useRef<LoadTestBotRuntime | null>(null);
   const statsSocketRef = useRef<WebSocket | null>(null);
   const presets = createScenarioPresets(launchConfigRef.current.requestedMatchId);
   const activePresetId = detectActivePreset(scenarioText, presets);
@@ -275,6 +287,8 @@ export function LoadTestPage() {
       completionTimerRef.current = null;
     }
     stopBots(botsRef.current);
+    runtimeRef.current?.dispose();
+    runtimeRef.current = null;
     statsSocketRef.current?.close();
   }, []);
 
@@ -312,6 +326,8 @@ export function LoadTestPage() {
 
       stopBots(botsRef.current);
       botsRef.current = [];
+      runtimeRef.current?.dispose();
+      runtimeRef.current = null;
       runStartedAtRef.current = new Date().toISOString();
       peakConnectedBotsRef.current = 0;
       latestBottleneckRef.current = 'waiting for server stats';
@@ -337,6 +353,14 @@ export function LoadTestPage() {
         result: null,
       });
       connectStatsSocket(scenario.matchId);
+
+      const runtime = await LoadTestBotRuntime.create({
+        personality: personalityFromScenario(scenario),
+        tickHz: scenario.inputHz,
+        matchId: scenario.matchId,
+      });
+      runtime.start();
+      runtimeRef.current = runtime;
 
       const rng = new SeededRandom(scenario.seed);
       const results = await Promise.allSettled(
@@ -424,6 +448,8 @@ export function LoadTestPage() {
     const result = buildBenchmarkResult(completedScenario);
     stopBots(botsRef.current);
     botsRef.current = [];
+    runtimeRef.current?.dispose();
+    runtimeRef.current = null;
     statsSocketRef.current?.close();
     statsSocketRef.current = null;
     setRunning(false);
@@ -561,9 +587,9 @@ export function LoadTestPage() {
       onDatagramPacket: (packet) => inboundImpairment.enqueue(packet),
       onClose: () => {
         bot.connected = false;
-        if (bot.tickHandle !== null) {
-          window.clearInterval(bot.tickHandle);
-          bot.tickHandle = null;
+        if (bot.brainHandle && runtimeRef.current) {
+          runtimeRef.current.removeBot(bot.brainHandle.id);
+          bot.brainHandle = null;
         }
         updateCounters();
       },
@@ -577,10 +603,9 @@ export function LoadTestPage() {
       playerId: 0,
       seq: 0,
       shotId: 1,
-      tickHandle: null,
+      brainHandle: null,
       localState: null,
       remotePlayers: new Map<number, ObservedPlayer>(),
-      brainState: createBotBrainState(id - 1, scenario),
       currentTargetPlayerId: null,
       inboundImpairment,
       outboundImpairment: new PacketImpairment(
@@ -592,29 +617,47 @@ export function LoadTestPage() {
       ),
       snapshotsReceived: 0,
       shotsFired: 0,
+      fireCooldownTicks: 0,
     } satisfies Partial<BrowserBot>);
 
-    bot.tickHandle = window.setInterval(() => {
-      if (!bot.connected || !bot.localState) {
-        return;
-      }
-      bot.seq = (bot.seq + 1) & 0xffff;
-      const intent = stepBotBrain(bot.brainState, scenario, bot.localState, Array.from(bot.remotePlayers.values()));
-      bot.currentTargetPlayerId = intent.targetPlayerId;
-      bot.outboundImpairment.enqueue(buildInputFromButtons(bot.seq, 0, intent.buttons, intent.yaw, intent.pitch));
-      if (intent.firePrimary) {
-        bot.shotsFired += 1;
-        client.sendFire({
-          seq: bot.seq,
-          shotId: bot.shotId++ >>> 0,
-          weapon: WEAPON_HITSCAN,
-          clientFireTimeUs: Date.now() * 1000,
-          clientInterpMs: client.sessionConfig.interpolation_delay_ms,
-          clientDynamicInterpMs: Math.min(client.sessionConfig.interpolation_delay_ms, 16),
-          dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
-        });
-      }
-    }, 1000 / scenario.inputHz);
+    const runtime = runtimeRef.current;
+    if (runtime) {
+      const anchor2d = anchorForBot(id - 1, scenario);
+      const anchor: Vec3Tuple = [anchor2d[0], 1.0, anchor2d[1]];
+      bot.brainHandle = runtime.addBot({
+        id,
+        anchor,
+        getInputs: () => ({
+          self: playerStateToBotSelf(bot.localState),
+          remotePlayers: bot.remotePlayers.values(),
+        }),
+        onIntent: (intent: BotIntent) => {
+          if (!bot.connected || !bot.localState) {
+            bot.fireCooldownTicks = Math.max(0, bot.fireCooldownTicks - 1);
+            return;
+          }
+          bot.seq = (bot.seq + 1) & 0xffff;
+          bot.currentTargetPlayerId = intent.targetPlayerId;
+          bot.outboundImpairment.enqueue(
+            buildInputFromButtons(bot.seq, 0, intent.buttons, intent.yaw, intent.pitch),
+          );
+          if (intent.firePrimary && bot.fireCooldownTicks <= 0) {
+            bot.fireCooldownTicks = scenario.behavior.fireCooldownTicks;
+            bot.shotsFired += 1;
+            client.sendFire({
+              seq: bot.seq,
+              shotId: bot.shotId++ >>> 0,
+              weapon: WEAPON_HITSCAN,
+              clientFireTimeUs: Date.now() * 1000,
+              clientInterpMs: client.sessionConfig.interpolation_delay_ms,
+              clientDynamicInterpMs: Math.min(client.sessionConfig.interpolation_delay_ms, 16),
+              dir: aimDirectionFromAngles(intent.yaw, intent.pitch),
+            });
+          }
+          bot.fireCooldownTicks = Math.max(0, bot.fireCooldownTicks - 1);
+        },
+      });
+    }
 
     return bot;
   }
@@ -640,10 +683,7 @@ export function LoadTestPage() {
 
 function stopBots(bots: BrowserBot[]): void {
   for (const bot of bots) {
-    if (bot.tickHandle !== null) {
-      window.clearInterval(bot.tickHandle);
-      bot.tickHandle = null;
-    }
+    bot.brainHandle = null;
     bot.inboundImpairment.dispose();
     bot.outboundImpairment.dispose();
     bot.client.close();

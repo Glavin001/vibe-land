@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { harassNearest } from './behaviors';
+import { arenaHarass, harassNearest } from './behaviors';
 import type { BotBehaviorContext } from './behaviors';
 
 function makeContext(overrides: Partial<BotBehaviorContext> = {}): BotBehaviorContext {
@@ -189,5 +189,140 @@ describe('harassNearest', () => {
     }));
     expect(decision.mode).toBe('hold_anchor');
     expect(decision.target).toEqual([50, 1, -10]);
+  });
+});
+
+describe('arenaHarass', () => {
+  it('follows the nearest player when safely on the arena', () => {
+    const behavior = arenaHarass({ acquireDistanceM: 40, recoveryDistanceM: 32 });
+    const decision = behavior({
+      self: {
+        position: [0, 2, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [
+        { id: 2, position: [5, 2, 0], isDead: false },
+        { id: 3, position: [9, 2, 0], isDead: false },
+      ],
+      anchor: [0, 2, 0],
+      tick: 1,
+    });
+
+    expect(decision.mode).toBe('follow_target');
+    expect(decision.targetPlayerId).toBe(2);
+  });
+
+  it('recovers toward center when far outside the arena', () => {
+    const behavior = arenaHarass({ acquireDistanceM: 40, recoveryDistanceM: 32 });
+    const decision = behavior({
+      self: {
+        position: [80, 2, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [],
+      anchor: [80, 2, 0],
+      tick: 1,
+    });
+
+    expect(decision.mode).toBe('recover_center');
+    expect(decision.target).toEqual([0, 2, 0]);
+    expect(decision.targetPlayerId).toBeNull();
+  });
+
+  it('recovers when below the floor regardless of arena distance', () => {
+    const behavior = arenaHarass({ recoveryFloorY: 0.5 });
+    const decision = behavior({
+      self: {
+        position: [3, 0.1, 3],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [{ id: 9, position: [4, 0.1, 3], isDead: false }],
+      anchor: [3, 0.1, 3],
+      tick: 1,
+    });
+
+    expect(decision.mode).toBe('recover_center');
+  });
+
+  it('emits fireAim against the nearest target inside fireDistance', () => {
+    const behavior = arenaHarass({
+      acquireDistanceM: 40,
+      fireDistanceM: 20,
+      meleeDistanceM: 1.0,
+    });
+    const decision = behavior({
+      self: {
+        position: [0, 2, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [{ id: 7, position: [3, 2, 0], isDead: false }],
+      anchor: [0, 2, 0],
+      tick: 1,
+    });
+
+    expect(decision.fireAim).toEqual([3, 2, 0]);
+    expect(decision.targetPlayerId).toBe(7);
+  });
+
+  it('falls back to center as fire target when fireAtCenter is set', () => {
+    const behavior = arenaHarass({
+      acquireDistanceM: 40,
+      fireDistanceM: 18,
+      fireAtCenter: true,
+    });
+    const decision = behavior({
+      self: {
+        position: [3, 1.0, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [],
+      anchor: [3, 1.0, 0],
+      tick: 1,
+    });
+
+    expect(decision.fireAim).toEqual([0, 1.0, 0]);
+  });
+
+  it('returns to center when idle and preferCenterWhenIdle is set', () => {
+    const behavior = arenaHarass({
+      acquireDistanceM: 5,
+      preferCenterWhenIdle: true,
+    });
+    const decision = behavior({
+      self: {
+        position: [4, 1, 4],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [],
+      anchor: [4, 1, 4],
+      tick: 1,
+    });
+
+    expect(decision.mode).toBe('recover_center');
+    expect(decision.target).toEqual([0, 1, 0]);
   });
 });

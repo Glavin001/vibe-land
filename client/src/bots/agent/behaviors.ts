@@ -151,6 +151,77 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   };
 }
 
+export interface ArenaHarassOptions extends HarassNearestOptions {
+  /** Distance from arena origin (XZ plane) above which the bot retreats to center. */
+  recoveryDistanceM?: number;
+  /** Y-coordinate below which the bot is considered "off the arena" and recovers. */
+  recoveryFloorY?: number;
+  /** When true, the bot retreats to center if it has no acquired target (instead of holding anchor). */
+  preferCenterWhenIdle?: boolean;
+  /** Optional secondary fire intent: enables aiming at the arena center when no player is in fireRange. */
+  fireAtCenter?: boolean;
+}
+
+/**
+ * Like {@link harassNearest}, but adds the load-test arena semantics:
+ *
+ *  - If the bot has fallen off the arena (`y < recoveryFloorY`) or wandered
+ *    too far from origin, it retreats to `(0, y, 0)` and emits no fire/melee.
+ *  - When idle and `preferCenterWhenIdle` is set (clustered spawn pattern),
+ *    the bot returns to center instead of holding anchor.
+ *  - When `fireAtCenter` is set, the bot's fire intent falls back to the
+ *    arena center if no player is in fire range.
+ *
+ * This is the canonical behavior for both load-test bots and any practice
+ * bot scenario that needs arena-style chase + recovery.
+ */
+export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
+  const recoveryDistance = options.recoveryDistanceM ?? 32;
+  const recoveryFloorY = options.recoveryFloorY ?? 0.5;
+  const preferCenterWhenIdle = options.preferCenterWhenIdle ?? false;
+  const fireAtCenter = options.fireAtCenter ?? false;
+  const fireRange = options.fireDistanceM ?? 18;
+  const inner = harassNearest(options);
+  const CENTER_AIM: Vec3Tuple = [0, 1.0, 0];
+
+  return (ctx) => {
+    const { self } = ctx;
+    if (self.dead) return DEAD_DECISION;
+
+    const centerDistance = Math.hypot(self.position[0], self.position[2]);
+    if (self.position[1] < recoveryFloorY || centerDistance > recoveryDistance) {
+      return {
+        target: [0, self.position[1], 0],
+        fireAim: null,
+        meleeAim: null,
+        targetPlayerId: null,
+        mode: 'recover_center',
+      };
+    }
+
+    const decision = inner(ctx);
+
+    if (decision.mode === 'hold_anchor' && preferCenterWhenIdle) {
+      return {
+        ...decision,
+        target: [0, self.position[1], 0],
+        mode: 'recover_center',
+      };
+    }
+
+    if (
+      fireAtCenter
+      && decision.fireAim === null
+      && decision.meleeAim === null
+      && centerDistance <= fireRange
+    ) {
+      return { ...decision, fireAim: CENTER_AIM };
+    }
+
+    return decision;
+  };
+}
+
 export interface WanderOptions {
   radiusM?: number;
   retargetEveryTicks?: number;
