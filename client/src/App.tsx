@@ -19,6 +19,7 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { LowEnergyWarning } from './ui/LowEnergyWarning';
 import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
@@ -1052,6 +1053,10 @@ export function App({
       />
       <EnergyBar
         hp={displayStats.hp}
+        energy={displayStats.energy}
+        visible={connected}
+      />
+      <LowEnergyWarning
         energy={displayStats.energy}
         visible={connected}
       />
