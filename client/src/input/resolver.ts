@@ -15,13 +15,18 @@ export function normalizeAxis(value: number): number {
   return clamp(value, -1, 1);
 }
 
-export function advanceLookAngles(yaw: number, pitch: number, action: ActionSnapshot | null): { yaw: number; pitch: number } {
+export function advanceLookAngles(
+  yaw: number,
+  pitch: number,
+  action: ActionSnapshot | null,
+  lookMultiplier: number = 1,
+): { yaw: number; pitch: number } {
   if (!action) {
     return { yaw, pitch };
   }
   return {
-    yaw: yaw + action.lookX,
-    pitch: clamp(pitch + action.lookY, LOOK_PITCH_MIN, LOOK_PITCH_MAX),
+    yaw: yaw + action.lookX * lookMultiplier,
+    pitch: clamp(pitch + action.lookY * lookMultiplier, LOOK_PITCH_MIN, LOOK_PITCH_MAX),
   };
 }
 
@@ -74,11 +79,13 @@ export function resolveOnFootInput(
     pitch,
     buttons,
     firePrimary: action?.firePrimary ?? false,
+    aimSecondary: action?.aimSecondary ?? false,
     interactPressed: action?.interactPressed ?? false,
     blockRemovePressed: action?.blockRemovePressed ?? false,
     blockPlacePressed: action?.blockPlacePressed ?? false,
     materialSlot1Pressed: action?.materialSlot1Pressed ?? false,
     materialSlot2Pressed: action?.materialSlot2Pressed ?? false,
+    meleePressed: action?.meleePressed ?? false,
   };
 }
 
@@ -100,10 +107,12 @@ export function resolveVehicleInput(
     pitch,
     buttons,
     firePrimary: false,
+    aimSecondary: false,
     interactPressed: action?.interactPressed ?? false,
     blockRemovePressed: false,
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }

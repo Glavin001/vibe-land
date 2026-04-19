@@ -100,6 +100,7 @@ export class BotBrain {
       decision.mode,
       decision.targetPlayerId,
       decision.fireAim,
+      decision.meleeAim,
       this.options,
     );
   }

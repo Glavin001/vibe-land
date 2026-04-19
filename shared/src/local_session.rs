@@ -2,11 +2,12 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     constants::{
-        DYNAMIC_BODY_IMPULSE, FLAG_DEAD, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD,
-        HIT_ZONE_NONE, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE,
-        PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
-        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
-        SNAPSHOT_HZ_LOCAL,
+        DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
+        MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
+        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MELEE,
+        PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
@@ -16,6 +17,11 @@ use crate::{
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
+use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
+use rapier3d::prelude::{
+    ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
+    RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
+};
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
@@ -31,6 +37,9 @@ struct PlayerRuntime {
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     next_allowed_fire_ms: u32,
+    next_allowed_melee_ms: u32,
+    last_processed_swing_id: Option<u32>,
+    melee_flag_clear_tick: u32,
     is_bot: bool,
     respawn_cooldown_ticks: u32,
     respawn_at_ms: Option<u32>,
@@ -49,8 +58,13 @@ pub struct LocalSession {
     connected: bool,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<(u32, FireCmd)>,
+    queued_melees: Vec<(u32, MeleeCmd)>,
     outbound_packets: Vec<Vec<u8>>,
     server_tick: u32,
+    // Client-local ragdoll bodies (not server-reconciled). These live in the
+    // same physics world as terrain/vehicles so they collide naturally.
+    ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
+    ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
 }
 
 impl LocalSession {
@@ -76,8 +90,11 @@ impl LocalSession {
             connected: false,
             players: HashMap::new(),
             queued_shots: Vec::new(),
+            queued_melees: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
+            ragdoll_bodies: HashMap::new(),
+            ragdoll_joint_handles: HashMap::new(),
         })
     }
 
@@ -108,6 +125,7 @@ impl LocalSession {
         }
         self.connected = false;
         self.queued_shots.clear();
+        self.queued_melees.clear();
         let ids: Vec<u32> = self.players.keys().copied().collect();
         for id in ids {
             self.arena.remove_player(id);
@@ -193,6 +211,11 @@ impl LocalSession {
                 self.queued_shots.push((bot_id, shot));
                 Ok(())
             }
+            PKT_MELEE => {
+                let cmd = decode_melee_cmd(&mut buf)?;
+                self.queued_melees.push((bot_id, cmd));
+                Ok(())
+            }
             PKT_VEHICLE_ENTER => {
                 let vehicle_id = decode_vehicle_enter(&mut buf)?;
                 if self.arena.vehicles.contains_key(&vehicle_id) {
@@ -233,6 +256,10 @@ impl LocalSession {
                 self.queued_shots
                     .push((LOCAL_PLAYER_ID, decode_fire_cmd(&mut buf)?));
             }
+            PKT_MELEE => {
+                self.queued_melees
+                    .push((LOCAL_PLAYER_ID, decode_melee_cmd(&mut buf)?));
+            }
             PKT_VEHICLE_ENTER => {
                 let vehicle_id = decode_vehicle_enter(&mut buf)?;
                 if self.arena.vehicles.contains_key(&vehicle_id) {
@@ -265,6 +292,13 @@ impl LocalSession {
             return;
         }
         self.queued_shots.push((LOCAL_PLAYER_ID, cmd));
+    }
+
+    pub fn queue_melee_cmd(&mut self, cmd: MeleeCmd) {
+        if !self.connected {
+            return;
+        }
+        self.queued_melees.push((LOCAL_PLAYER_ID, cmd));
     }
 
     pub fn enter_vehicle(&mut self, vehicle_id: u32) {
@@ -376,6 +410,7 @@ impl LocalSession {
         }
 
         self.process_hitscan(server_time_ms);
+        self.process_melee(server_time_ms);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
@@ -570,6 +605,133 @@ impl LocalSession {
         }
     }
 
+    // TODO: lag-compensate melee
+    fn process_melee(&mut self, server_time_ms: u32) {
+        let swings = std::mem::take(&mut self.queued_melees);
+        for (attacker_id, cmd) in swings {
+            {
+                let Some(runtime) = self.players.get_mut(&attacker_id) else {
+                    continue;
+                };
+                if runtime
+                    .last_processed_swing_id
+                    .map(|prev| prev == cmd.swing_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if runtime.next_allowed_melee_ms > server_time_ms {
+                    continue;
+                }
+                runtime.next_allowed_melee_ms = server_time_ms.saturating_add(MELEE_COOLDOWN_MS);
+                runtime.last_processed_swing_id = Some(cmd.swing_id);
+            }
+
+            if self.arena.vehicle_of_player.contains_key(&attacker_id) {
+                continue;
+            }
+            let Some((attacker_pos, _vel, _yaw, _pitch, attacker_hp, attacker_flags)) =
+                self.arena.snapshot_player(attacker_id)
+            else {
+                continue;
+            };
+            if attacker_hp == 0 || (attacker_flags & FLAG_DEAD) != 0 {
+                continue;
+            }
+
+            if attacker_id == LOCAL_PLAYER_ID {
+                let mut depleted = false;
+                if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                    if player.dead {
+                        continue;
+                    }
+                    player.energy = (player.energy - MELEE_ENERGY_COST).max(0.0);
+                    depleted = player.energy <= 0.0;
+                }
+                if depleted {
+                    self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+                    continue;
+                }
+            }
+
+            let eye = [
+                attacker_pos[0],
+                attacker_pos[1] + PLAYER_EYE_HEIGHT_M,
+                attacker_pos[2],
+            ];
+            let cos_p = cmd.pitch.cos();
+            let aim = [
+                cmd.yaw.sin() * cos_p,
+                cmd.pitch.sin(),
+                cmd.yaw.cos() * cos_p,
+            ];
+            let aim_xz_len = (aim[0] * aim[0] + aim[2] * aim[2]).sqrt();
+            if aim_xz_len <= 1e-4 {
+                // Aim is (nearly) vertical — cone is ill-defined; skip.
+                if let Some(runtime) = self.players.get_mut(&attacker_id) {
+                    runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
+                }
+                continue;
+            }
+            let aim_xz = [aim[0] / aim_xz_len, aim[2] / aim_xz_len];
+
+            let capsule_radius = self.arena.config().capsule_radius;
+            let max_reach = MELEE_RANGE_M + capsule_radius;
+            let max_reach_sq = max_reach * max_reach;
+
+            let mut best: Option<(u32, f32)> = None;
+            for &victim_id in self.players.keys() {
+                if victim_id == attacker_id {
+                    continue;
+                }
+                if self.arena.vehicle_of_player.contains_key(&victim_id) {
+                    continue;
+                }
+                let Some((victim_pos, _vv, _vy, _vp, victim_hp, victim_flags)) =
+                    self.arena.snapshot_player(victim_id)
+                else {
+                    continue;
+                };
+                if victim_hp == 0 || (victim_flags & FLAG_DEAD) != 0 {
+                    continue;
+                }
+                let dx = victim_pos[0] - eye[0];
+                let dy = victim_pos[1] - attacker_pos[1];
+                let dz = victim_pos[2] - eye[2];
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq > max_reach_sq {
+                    continue;
+                }
+                let planar_len = (dx * dx + dz * dz).sqrt();
+                if planar_len <= 1e-4 {
+                    // Directly overlapping — accept.
+                    let dist = dist_sq.sqrt();
+                    if best.map(|(_, d)| dist < d).unwrap_or(true) {
+                        best = Some((victim_id, dist));
+                    }
+                    continue;
+                }
+                let to_victim_xz = [dx / planar_len, dz / planar_len];
+                let dot = aim_xz[0] * to_victim_xz[0] + aim_xz[1] * to_victim_xz[1];
+                if dot < MELEE_HALF_CONE_COS {
+                    continue;
+                }
+                let dist = dist_sq.sqrt();
+                if best.map(|(_, d)| dist < d).unwrap_or(true) {
+                    best = Some((victim_id, dist));
+                }
+            }
+
+            if let Some((victim_id, _dist)) = best {
+                self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+            }
+
+            if let Some(runtime) = self.players.get_mut(&attacker_id) {
+                runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
+            }
+        }
+    }
+
     fn cast_player_hitscan(
         &self,
         shooter_id: u32,
@@ -617,6 +779,13 @@ impl LocalSession {
             .map(|runtime| runtime.is_bot)
             .unwrap_or(false);
         let died = self.arena.apply_player_damage(victim_id, damage);
+        // Hit-stagger: block melee swings for a short window after taking damage.
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
+            if runtime.next_allowed_melee_ms < until {
+                runtime.next_allowed_melee_ms = until;
+            }
+        }
         if !died {
             return;
         }
@@ -636,6 +805,7 @@ impl LocalSession {
         if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
             let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
+            let flags = self.flags_with_melee(LOCAL_PLAYER_ID, flags);
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
                 pos,
@@ -652,6 +822,7 @@ impl LocalSession {
                 continue;
             }
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(id) {
+                let flags = self.flags_with_melee(id, flags);
                 player_states.push(make_net_player_state(
                     id, pos, vel, yaw, pitch, hp, flags, 0.0,
                 ));
@@ -711,6 +882,7 @@ impl LocalSession {
     pub fn local_player_state(&self) -> Option<NetPlayerState> {
         let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(LOCAL_PLAYER_ID)?;
         let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
+        let flags = self.flags_with_melee(LOCAL_PLAYER_ID, flags);
         Some(make_net_player_state(
             LOCAL_PLAYER_ID,
             pos,
@@ -734,11 +906,25 @@ impl LocalSession {
         ids.into_iter()
             .filter_map(|id| {
                 let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(id)?;
+                let flags = self.flags_with_melee(id, flags);
                 Some(make_net_player_state(
                     id, pos, vel, yaw, pitch, hp, flags, 0.0,
                 ))
             })
             .collect()
+    }
+
+    fn flags_with_melee(&self, player_id: u32, flags: u16) -> u16 {
+        let meleeing = self
+            .players
+            .get(&player_id)
+            .map(|runtime| self.server_tick < runtime.melee_flag_clear_tick)
+            .unwrap_or(false);
+        if meleeing {
+            flags | FLAG_MELEEING
+        } else {
+            flags
+        }
     }
 
     pub fn dynamic_body_states(&self) -> Vec<NetDynamicBodyState> {
@@ -777,6 +963,174 @@ impl LocalSession {
             vehicle.chassis_body,
             &vehicle.controller,
         )
+    }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let body = RigidBodyBuilder::dynamic()
+            .position(Isometry3::from_parts(Translation3::new(px, py, pz), iso))
+            .linvel(vector![vx, vy, vz])
+            .angvel(vector![wx, wy, wz])
+            .linear_damping(0.02)
+            .angular_damping(0.02)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.arena.dynamic.sim.rigid_bodies.insert(body);
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(hx, hy, hz)
+            .density(2.0)
+            .restitution(0.3)
+            .friction(0.6)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let _ = self.arena.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.arena.dynamic.sim.rigid_bodies,
+        );
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        if let Some(body_handle) = self.ragdoll_bodies.remove(&id) {
+            self.arena.dynamic.sim.rigid_bodies.remove(
+                body_handle,
+                &mut self.arena.dynamic.sim.island_manager,
+                &mut self.arena.dynamic.sim.colliders,
+                &mut self.arena.dynamic.impulse_joints,
+                &mut self.arena.dynamic.multibody_joints,
+                true,
+            );
+        }
+    }
+
+    /// Returns `[px, py, pz, qx, qy, qz, qw]` or empty on miss.
+    pub fn ragdoll_body_state(&self, id: u32) -> Option<[f32; 7]> {
+        let body_handle = *self.ragdoll_bodies.get(&id)?;
+        let rb = self.arena.dynamic.sim.rigid_bodies.get(body_handle)?;
+        let p = rb.translation();
+        let r = rb.rotation();
+        Some([p.x, p.y, p.z, r.i, r.j, r.k, r.w])
+    }
+
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
+            return;
+        };
+        if let Some(rb) = self.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![wx, wy, wz], true);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let joint = SphericalJointBuilder::new()
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let axis = Unit::new_normalize(vector![ax, ay, az]);
+        let joint = RevoluteJointBuilder::new(axis)
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .limits([limit_min, limit_max])
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        if let Some(handle) = self.ragdoll_joint_handles.remove(&joint_id) {
+            self.arena.dynamic.impulse_joints.remove(handle, false);
+        }
     }
 }
 
@@ -869,6 +1223,19 @@ fn decode_fire_cmd(buf: &mut &[u8]) -> Result<FireCmd, String> {
             snorm16_to_f32(buf.get_i16_le()),
             snorm16_to_f32(buf.get_i16_le()),
         ],
+    })
+}
+
+fn decode_melee_cmd(buf: &mut &[u8]) -> Result<MeleeCmd, String> {
+    if buf.remaining() < 18 {
+        return Err("short melee packet".to_string());
+    }
+    Ok(MeleeCmd {
+        seq: buf.get_u16_le(),
+        swing_id: buf.get_u32_le(),
+        client_time_us: buf.get_u64_le(),
+        yaw: i16_to_angle(buf.get_i16_le()),
+        pitch: i16_to_angle(buf.get_i16_le()),
     })
 }
 
@@ -1780,5 +2147,148 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    fn place_player_at(session: &mut LocalSession, id: u32, x: f64, y: f64, z: f64) {
+        let state = session.arena.players.get_mut(&id).expect("player exists");
+        state.position = crate::movement::Vec3d::new(x, y, z);
+        state.velocity = crate::movement::Vec3d::zeros();
+        let collider = state.collider;
+        let pos = state.position;
+        session
+            .arena
+            .dynamic
+            .sim
+            .sync_player_collider(collider, &pos);
+    }
+
+    #[test]
+    fn melee_hits_victim_in_cone_and_deals_damage() {
+        let mut session = isolated_energy_session();
+        let bot_id = 501;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100 - MELEE_DAMAGE);
+    }
+
+    #[test]
+    fn melee_cooldown_rejects_rapid_swings() {
+        let mut session = isolated_energy_session();
+        let bot_id = 502;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        // Second swing immediately — should be gated by cooldown.
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 2,
+            swing_id: 2,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(
+            victim_hp,
+            100 - MELEE_DAMAGE,
+            "cooldown should block the second swing"
+        );
+    }
+
+    #[test]
+    fn damage_staggers_victim_melee_cooldown() {
+        let mut session = isolated_energy_session();
+        let bot_id = 504;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+
+        let before = session.server_time_ms();
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let runtime = session.players.get(&bot_id).expect("bot exists");
+        assert!(
+            runtime.next_allowed_melee_ms >= before.saturating_add(MELEE_HIT_RECOVERY_MS),
+            "victim should be staggered for at least MELEE_HIT_RECOVERY_MS after a hit",
+        );
+    }
+
+    #[test]
+    fn melee_spares_victim_in_vehicle() {
+        let mut session = isolated_energy_session();
+        let bot_id = 503;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        // Fake the bot into a vehicle by injecting the mapping directly.
+        session.arena.vehicle_of_player.insert(bot_id, 9999);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100, "vehicle occupants are immune to melee");
+    }
+
+    #[test]
+    fn melee_misses_victim_outside_shortened_range() {
+        let mut session = isolated_energy_session();
+        let bot_id = 505;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100, "victim should be out of melee range");
     }
 }

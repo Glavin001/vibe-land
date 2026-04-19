@@ -24,6 +24,7 @@ import {
   type FireCmd,
   type InputCmd,
   type LocalPlayerEnergyPacket,
+  type MeleeCmd,
   type NetBatteryState,
   type NetPlayerState,
   type NetVehicleState,
@@ -258,6 +259,14 @@ export class NetcodeClient {
       this.wtClient.sendFire(cmd);
     } else {
       this.socket?.sendFire(cmd);
+    }
+  }
+
+  sendMelee(cmd: MeleeCmd): void {
+    if (this.wtClient) {
+      this.wtClient.sendMelee(cmd);
+    } else {
+      this.socket?.sendMelee(cmd);
     }
   }
 

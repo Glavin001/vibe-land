@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   encodeInputBundle,
   encodeFirePacket,
+  encodeMeleePacket,
   decodeServerPacket,
   decodeServerDatagramPacket,
   decodeServerReliablePacket,
@@ -17,6 +18,8 @@ import {
   type InputFrame,
   type NetPlayerState,
   type FireCmd,
+  type MeleeCmd,
+  PKT_MELEE,
   BTN_FORWARD,
   BTN_BACK,
   BTN_LEFT,
@@ -230,6 +233,35 @@ describe('encodeFirePacket', () => {
     expect(view.getUint8(7)).toBe(1);
     expect(view.getUint32(8, true)).toBe(9_876_543);
     expect(view.getUint16(16, true)).toBe(66);
+  });
+});
+
+describe('encodeMeleePacket', () => {
+  it('encodes swing id, timing, and yaw/pitch with round-trip precision', () => {
+    const cmd: MeleeCmd = {
+      seq: 0x1234,
+      swingId: 0xabcdef01,
+      clientTimeUs: 123_456_789,
+      yaw: 0.75,
+      pitch: -0.25,
+    };
+    const encoded = encodeMeleePacket(cmd);
+    const view = new DataView(encoded.buffer);
+    expect(encoded.length).toBe(1 + 2 + 4 + 8 + 2 + 2);
+    expect(view.getUint8(0)).toBe(PKT_MELEE);
+    expect(view.getUint16(1, true)).toBe(0x1234);
+    expect(view.getUint32(3, true)).toBe(0xabcdef01);
+    // clientTimeUs u64 LE
+    const lo = view.getUint32(7, true);
+    const hi = view.getUint32(11, true);
+    expect(lo + hi * 0x100000000).toBe(123_456_789);
+    // yaw / pitch round-trip via angleToI16 / i16ToAngle (yaw wraps to [0,2π))
+    const yawOut = i16ToAngle(view.getInt16(15, true));
+    expect(yawOut).toBeCloseTo(0.75, 2);
+    const pitchOut = i16ToAngle(view.getInt16(17, true));
+    // -0.25 wraps to 2π - 0.25 when roundtripped through angleToI16's unsigned form
+    const expected = pitchOut > Math.PI ? pitchOut - 2 * Math.PI : pitchOut;
+    expect(expected).toBeCloseTo(-0.25, 2);
   });
 });
 

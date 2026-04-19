@@ -413,6 +413,8 @@ type DebugMarkdownExtras = {
   renderStatsText?: string;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  fogEnabled?: boolean;
+  fogDensity?: number;
   deepCaptureEnabled?: boolean;
   deepCaptureReport?: string | null;
 };
@@ -456,6 +458,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- user-agent: ${extras.userAgent ?? (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown')}`,
     `- local_render_smoothing: ${extras.localRenderSmoothingEnabled == null ? 'unknown' : extras.localRenderSmoothingEnabled ? 'on' : 'off'}`,
     `- vehicle_smoothing: ${extras.vehicleSmoothingEnabled == null ? 'unknown' : extras.vehicleSmoothingEnabled ? 'on' : 'off'}`,
+    `- visual_fog: ${extras.fogEnabled == null ? 'unknown' : extras.fogEnabled ? `on (density ${extras.fogDensity?.toFixed?.(4) ?? '?'})` : 'off'}`,
     '',
     '## Rendering',
     `- fps: ${fmt(stats.fps, 0)}`,
@@ -694,6 +697,11 @@ export function DebugOverlay({
   onToggleLocalRenderSmoothing,
   vehicleSmoothingEnabled = false,
   onToggleVehicleSmoothing,
+  cosmeticDeathPhysicsEnabled = true,
+  onToggleCosmeticDeathPhysics,
+  fogEnabled = true,
+  fogDensity,
+  onToggleFog,
   rapierDebugLabel = 'off',
   onCycleRapierDebugPreset,
   deepCaptureEnabled = false,
@@ -705,6 +713,11 @@ export function DebugOverlay({
   onToggleLocalRenderSmoothing?: () => void;
   vehicleSmoothingEnabled?: boolean;
   onToggleVehicleSmoothing?: () => void;
+  cosmeticDeathPhysicsEnabled?: boolean;
+  onToggleCosmeticDeathPhysics?: () => void;
+  fogEnabled?: boolean;
+  fogDensity?: number;
+  onToggleFog?: () => void;
   rapierDebugLabel?: string;
   onCycleRapierDebugPreset?: () => void;
   deepCaptureEnabled?: boolean;
@@ -728,6 +741,23 @@ export function DebugOverlay({
   const vehicleSmoothingBorder = vehicleSmoothingEnabled
     ? 'rgba(118, 255, 170, 0.28)'
     : 'rgba(228, 234, 241, 0.18)';
+  const cosmeticDeathPhysicsAccent = cosmeticDeathPhysicsEnabled ? '#98ffbc' : '#d8dee6';
+  const cosmeticDeathPhysicsBackground = cosmeticDeathPhysicsEnabled
+    ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+    : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
+  const cosmeticDeathPhysicsBorder = cosmeticDeathPhysicsEnabled
+    ? 'rgba(118, 255, 170, 0.28)'
+    : 'rgba(228, 234, 241, 0.18)';
+  const fogAccent = fogEnabled ? '#98ffbc' : '#d8dee6';
+  const fogBackground = fogEnabled
+    ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+    : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
+  const fogBorder = fogEnabled
+    ? 'rgba(118, 255, 170, 0.28)'
+    : 'rgba(228, 234, 241, 0.18)';
+  const fogVisibilityM = fogDensity && fogDensity > 0
+    ? Math.round(Math.sqrt(-Math.log(1 - 0.99)) / fogDensity)
+    : null;
 
   return (
     <div
@@ -925,6 +955,129 @@ export function DebugOverlay({
             {vehicleSmoothingEnabled
               ? 'Renders the driven vehicle and chase camera from the filtered visual pose.'
               : 'Uses the raw local vehicle pose so you can verify whether the filter is causing the wobble.'}
+          </div>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: cosmeticDeathPhysicsBackground,
+            border: `1px solid ${cosmeticDeathPhysicsBorder}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Cosmetic Death Physics
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Toggle client-side ragdolls. Off falls back to the authored death animation.
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={cosmeticDeathPhysicsEnabled}
+              onClick={onToggleCosmeticDeathPhysics}
+              style={{
+                background: cosmeticDeathPhysicsEnabled ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${cosmeticDeathPhysicsEnabled ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: cosmeticDeathPhysicsAccent,
+                borderRadius: 999,
+                cursor: onToggleCosmeticDeathPhysics ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: cosmeticDeathPhysicsEnabled ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Death Physics ${cosmeticDeathPhysicsEnabled ? 'ON' : 'OFF'}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {cosmeticDeathPhysicsEnabled
+              ? 'Dead players spawn visual-only Rapier ragdolls against static world collision.'
+              : 'Dead players stay on the pre-ragdoll path and play the animation clip only.'}
+          </div>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: fogBackground,
+            border: `1px solid ${fogBorder}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Visual Fog
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Limits sight to the server streaming radius.
+                {fogVisibilityM != null && fogEnabled
+                  ? ` ~${fogVisibilityM}m visibility.`
+                  : ''}
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={fogEnabled}
+              onClick={onToggleFog}
+              style={{
+                background: fogEnabled ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${fogEnabled ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: fogAccent,
+                borderRadius: 999,
+                cursor: onToggleFog ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: fogEnabled ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Visual Fog ${fogEnabled ? 'ON' : 'OFF'}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {fogEnabled
+              ? 'Exponential-squared fog tuned to the server AOI so streamed entities fade smoothly into the sky.'
+              : 'Fog disabled: the entire 500m camera frustum is rendered (useful for debugging but exposes streaming boundaries).'}
           </div>
         </div>
         <div
