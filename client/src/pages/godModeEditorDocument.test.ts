@@ -1,34 +1,47 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  addBotToWorld,
   addDynamicEntityToWorld,
+  addSpawnAreaToWorld,
   addStaticCuboidToWorld,
   clonePlayWorldSnapshot,
+  getSelectedBot,
   getSelectedDynamic,
+  getSelectedSpawnArea,
   getSelectedStatic,
   removeSelectedTargetFromWorld,
   resolveSelectedTransformEntity,
   selectionExists,
+  updateSelectedBotBehavior,
+  updateSelectedBotMaxSpeed,
+  updateSelectedBotName,
+  updateSelectedBotSpawnArea,
   updateSelectedTargetHalfExtents,
   updateSelectedTargetPosition,
   updateSelectedTargetRadius,
   updateSelectedTargetRotation,
   updateSelectedTargetVehicleType,
+  updateSpawnAreaAllowedKind,
   type SelectedTarget,
 } from './godModeEditorDocument';
 import {
   DEFAULT_WORLD_DOCUMENT,
   identityQuaternion,
+  parseWorldDocument,
+  WORLD_DOCUMENT_VERSION,
   type WorldDocument,
 } from '../world/worldDocument';
 
 function emptyWorld(): WorldDocument {
   return {
-    version: 2,
+    version: WORLD_DOCUMENT_VERSION,
     meta: { name: 'Test', description: '' },
     terrain: DEFAULT_WORLD_DOCUMENT.terrain,
     staticProps: [],
     dynamicEntities: [],
+    spawnAreas: [],
+    bots: [],
   };
 }
 
@@ -115,5 +128,82 @@ describe('godModeEditorDocument', () => {
     expect(selectionExists(updated, selected)).toBe(false);
     expect(snapshot).not.toBe(start.world);
     expect(snapshot.staticProps).toHaveLength(1);
+  });
+
+  it('adds a spawn area with default allowed kinds for both humans and bots', () => {
+    const result = addSpawnAreaToWorld(emptyWorld());
+    expect(result.world.spawnAreas).toHaveLength(1);
+    expect(result.world.spawnAreas[0]?.allowedKinds).toEqual(['human', 'bot']);
+    expect(result.selected).toEqual({ kind: 'spawnArea', id: result.world.spawnAreas[0]?.id });
+  });
+
+  it('toggles allowed kinds on a spawn area while keeping at least one kind', () => {
+    let world = addSpawnAreaToWorld(emptyWorld()).world;
+    const area = world.spawnAreas[0]!;
+    const selected: SelectedTarget = { kind: 'spawnArea', id: area.id };
+
+    world = updateSpawnAreaAllowedKind(world, selected, 'bot', false);
+    expect(getSelectedSpawnArea(world, selected)?.allowedKinds).toEqual(['human']);
+
+    // Refusing to remove the last kind keeps the value unchanged.
+    world = updateSpawnAreaAllowedKind(world, selected, 'human', false);
+    expect(getSelectedSpawnArea(world, selected)?.allowedKinds).toEqual(['human']);
+
+    world = updateSpawnAreaAllowedKind(world, selected, 'bot', true);
+    expect(getSelectedSpawnArea(world, selected)?.allowedKinds).toEqual(['human', 'bot']);
+  });
+
+  it('adds and edits a preconfigured bot', () => {
+    let world = emptyWorld();
+    const added = addBotToWorld(world);
+    world = added.world;
+    expect(world.bots).toHaveLength(1);
+    const selected = added.selected as SelectedTarget;
+
+    world = updateSelectedBotName(world, selected, 'Harasser');
+    world = updateSelectedBotBehavior(world, selected, 'wander');
+    world = updateSelectedBotMaxSpeed(world, selected, 7);
+    world = updateSelectedBotSpawnArea(world, selected, 42);
+
+    const bot = getSelectedBot(world, selected);
+    expect(bot?.name).toBe('Harasser');
+    expect(bot?.behavior).toBe('wander');
+    expect(bot?.maxSpeed).toBe(7);
+    expect(bot?.spawnAreaId).toBe(42);
+
+    // Clearing fields works.
+    world = updateSelectedBotName(world, selected, '');
+    world = updateSelectedBotMaxSpeed(world, selected, null);
+    const cleared = getSelectedBot(world, selected);
+    expect(cleared?.name).toBeUndefined();
+    expect(cleared?.maxSpeed).toBeUndefined();
+  });
+
+  it('removing a spawn area unpins bots that referenced it', () => {
+    let world = addSpawnAreaToWorld(emptyWorld()).world;
+    const areaId = world.spawnAreas[0]!.id;
+    const botAdd = addBotToWorld(world);
+    world = botAdd.world;
+    const botSelected = botAdd.selected as SelectedTarget;
+    world = updateSelectedBotSpawnArea(world, botSelected, areaId);
+
+    world = removeSelectedTargetFromWorld(world, { kind: 'spawnArea', id: areaId });
+    const bot = world.bots[0];
+    expect(bot?.spawnAreaId).toBeNull();
+  });
+
+  it('parses world documents missing bots or allowedKinds with defaults', () => {
+    const raw = {
+      version: 1,
+      meta: { name: 'Legacy', description: '' },
+      terrain: DEFAULT_WORLD_DOCUMENT.terrain,
+      staticProps: [],
+      dynamicEntities: [],
+      spawnAreas: [{ id: 1, position: [0, 0, 0], radius: 10 }],
+      // intentionally missing `bots`
+    };
+    const parsed = parseWorldDocument(raw);
+    expect(parsed.bots).toEqual([]);
+    expect(parsed.spawnAreas[0]?.allowedKinds).toEqual(['human', 'bot']);
   });
 });

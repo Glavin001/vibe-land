@@ -33,4 +33,5 @@ export const CALIBRATION_WORLD_DOCUMENT: WorldDocument = {
   staticProps: [],
   dynamicEntities: [],
   spawnAreas: [],
+  bots: [],
 };

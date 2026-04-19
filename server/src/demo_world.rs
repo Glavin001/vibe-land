@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, SpawnArea, WorldDocument, WorldDocumentError, WorldMeta,
-    WorldTerrain, WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, PlayerKind, SpawnArea, WorldDocument, WorldDocumentError,
+    WorldMeta, WorldTerrain, WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -76,6 +76,7 @@ fn benchmark_vehicle_world(
             height: None,
         }],
         spawn_areas: vec![],
+        bots: vec![],
     }
 }
 
@@ -238,6 +239,7 @@ mod tests {
             id: 1,
             position: [30.0, 0.0, -20.0],
             radius: 12.0,
+            allowed_kinds: vec![PlayerKind::Human, PlayerKind::Bot],
         };
         let world = WorldDocument {
             version: vibe_land_shared::world_document::WORLD_DOCUMENT_VERSION,
@@ -259,6 +261,7 @@ mod tests {
             static_props: vec![],
             dynamic_entities: vec![],
             spawn_areas: vec![area],
+            bots: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -271,7 +274,7 @@ mod tests {
             "spawn area should be registered on arena"
         );
 
-        let spawn = arena.spawn_player(1);
+        let spawn = arena.spawn_player(1, PlayerKind::Human);
         let dx = spawn.x as f32 - 30.0;
         let dz = spawn.z as f32 - (-20.0);
         assert!(
@@ -291,7 +294,7 @@ mod tests {
             !arena.spawn_areas.is_empty(),
             "default world should load spawn areas from trail.world.json"
         );
-        let spawn = arena.spawn_player(42);
+        let spawn = arena.spawn_player(42, PlayerKind::Human);
         assert!(
             spawn.y > -1.0,
             "spawn should land above ground, got y={:.2}",

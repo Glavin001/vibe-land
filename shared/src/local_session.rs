@@ -13,7 +13,7 @@ use crate::{
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
-    world_document::WorldDocument,
+    world_document::{PlayerKind, WorldDocument},
 };
 use bytes::{Buf, BufMut, BytesMut};
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
@@ -89,7 +89,7 @@ impl LocalSession {
         self.connected = true;
         self.players
             .insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
-        self.arena.spawn_player(LOCAL_PLAYER_ID);
+        self.arena.spawn_player(LOCAL_PLAYER_ID, PlayerKind::Human);
 
         let server_time_us = self.server_time_us();
         self.outbound_packets
@@ -123,7 +123,7 @@ impl LocalSession {
         let mut runtime = PlayerRuntime::default();
         runtime.is_bot = true;
         self.players.insert(bot_id, runtime);
-        self.arena.spawn_player(bot_id);
+        self.arena.spawn_player(bot_id, PlayerKind::Bot);
         true
     }
 
@@ -305,7 +305,7 @@ impl LocalSession {
                 if runtime.is_bot && runtime.respawn_cooldown_ticks > 0 {
                     runtime.respawn_cooldown_ticks -= 1;
                     if runtime.respawn_cooldown_ticks == 0 {
-                        self.arena.respawn_player(id);
+                        self.arena.respawn_player(id, PlayerKind::Bot);
                     } else {
                         skip_sim = true;
                     }
@@ -387,7 +387,9 @@ impl LocalSession {
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
         }
-        let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
+        let _ = self
+            .arena
+            .respawn_player(LOCAL_PLAYER_ID, PlayerKind::Human);
     }
 
     fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
@@ -1093,6 +1095,7 @@ mod tests {
             static_props: vec![],
             dynamic_entities: vec![],
             spawn_areas: vec![],
+            bots: vec![],
         }
     }
 
@@ -1117,6 +1120,7 @@ mod tests {
             static_props: vec![],
             dynamic_entities: vec![],
             spawn_areas: vec![],
+            bots: vec![],
         }
     }
 
@@ -1683,7 +1687,7 @@ mod tests {
         world
             .instantiate(&mut arena)
             .expect("instantiate broken world");
-        arena.spawn_player(1);
+        arena.spawn_player(1, PlayerKind::Human);
 
         for _ in 0..360 {
             let _ = arena.simulate_player_tick(1, &InputCmd::default(), 1.0 / 60.0);

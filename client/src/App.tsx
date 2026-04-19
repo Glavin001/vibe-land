@@ -367,10 +367,11 @@ export function App({
           }
           runtime.setBehavior(desiredBehavior);
           runtime.setMaxSpeed(desiredMaxSpeed);
+          runtime.applyPreconfiguredRoster(effectiveWorldDocument.bots);
           if (preservedBots.length > 0) {
             runtime.restoreBotSnapshots(preservedBots);
           } else {
-            runtime.setBotCount(desiredCount);
+            runtime.setBotCount(Math.max(desiredCount, effectiveWorldDocument.bots.length));
           }
           const staleRuntime = practiceBotRuntimeRef.current;
           if (staleRuntime && staleRuntime !== runtime) {

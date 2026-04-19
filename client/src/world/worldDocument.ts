@@ -1,7 +1,12 @@
 import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
 import { getSharedVehicleDefinition } from '../wasm/sharedVehicleDefinitions';
 
-export const WORLD_DOCUMENT_VERSION = 2;
+export const WORLD_DOCUMENT_VERSION = 3;
+export const PLAYER_KINDS = ['human', 'bot'] as const;
+export type PlayerKind = typeof PLAYER_KINDS[number];
+export const PRECONFIGURED_BOT_BEHAVIORS = ['harass', 'wander', 'hold'] as const;
+export type PreconfiguredBotBehavior = typeof PRECONFIGURED_BOT_BEHAVIORS[number];
+export const DEFAULT_ALLOWED_KINDS: PlayerKind[] = ['human', 'bot'];
 export const DEFAULT_WORLD_HISTORY_LIMIT = 3;
 export const TERRAIN_MIN_HEIGHT = -10;
 export const TERRAIN_MAX_HEIGHT = 50;
@@ -45,6 +50,15 @@ export type SpawnArea = {
   id: number;
   position: Vec3;
   radius: number;
+  allowedKinds: PlayerKind[];
+};
+
+export type PreconfiguredBot = {
+  id: number;
+  name?: string;
+  behavior: PreconfiguredBotBehavior;
+  maxSpeed?: number;
+  spawnAreaId?: number | null;
 };
 
 export type TerrainMaterial = {
@@ -91,6 +105,7 @@ export type WorldDocument = {
   staticProps: StaticProp[];
   dynamicEntities: DynamicEntity[];
   spawnAreas: SpawnArea[];
+  bots: PreconfiguredBot[];
 };
 
 type LegacyTerrain = {
@@ -148,6 +163,7 @@ export function createEmptyWorldDocument(): WorldDocument {
     staticProps: [],
     dynamicEntities: [],
     spawnAreas: [],
+    bots: [],
   };
 }
 
@@ -165,6 +181,7 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
     staticProps?: unknown[];
     dynamicEntities?: unknown[];
     spawnAreas?: unknown[];
+    bots?: unknown[];
   };
   if (!candidate.terrain) {
     throw new Error('World document terrain is missing.');
@@ -192,18 +209,60 @@ export function parseWorldDocument(raw: unknown): WorldDocument {
     spawnAreas: Array.isArray(candidate.spawnAreas)
       ? candidate.spawnAreas.map((area) => parseSpawnArea(area))
       : [],
+    bots: Array.isArray(candidate.bots)
+      ? candidate.bots.map((bot) => parsePreconfiguredBot(bot)).filter((bot): bot is PreconfiguredBot => bot !== null)
+      : [],
   };
 }
 
+function parseAllowedKinds(raw: unknown): PlayerKind[] {
+  if (!Array.isArray(raw)) {
+    return [...DEFAULT_ALLOWED_KINDS];
+  }
+  const kinds = raw.filter((value): value is PlayerKind => (
+    typeof value === 'string' && (PLAYER_KINDS as readonly string[]).includes(value)
+  ));
+  const deduped = Array.from(new Set(kinds));
+  return deduped.length > 0 ? deduped : [...DEFAULT_ALLOWED_KINDS];
+}
+
 function parseSpawnArea(raw: unknown): SpawnArea {
-  const a = raw as Partial<SpawnArea>;
+  const a = raw as Partial<SpawnArea> & { allowedKinds?: unknown };
   return {
     id: typeof a.id === 'number' ? a.id : 0,
     position: Array.isArray(a.position) && a.position.length === 3
       ? [a.position[0] as number, a.position[1] as number, a.position[2] as number]
       : [0, 0, 0],
     radius: typeof a.radius === 'number' && a.radius > 0 ? a.radius : 10,
+    allowedKinds: parseAllowedKinds(a.allowedKinds),
   };
+}
+
+function parsePreconfiguredBot(raw: unknown): PreconfiguredBot | null {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const b = raw as Partial<PreconfiguredBot> & { behavior?: unknown };
+  const id = typeof b.id === 'number' && Number.isFinite(b.id) ? Math.floor(b.id) : null;
+  if (id === null) {
+    return null;
+  }
+  const behavior = typeof b.behavior === 'string' && (PRECONFIGURED_BOT_BEHAVIORS as readonly string[]).includes(b.behavior)
+    ? (b.behavior as PreconfiguredBotBehavior)
+    : 'harass';
+  const bot: PreconfiguredBot = { id, behavior };
+  if (typeof b.name === 'string' && b.name.length > 0) {
+    bot.name = b.name;
+  }
+  if (typeof b.maxSpeed === 'number' && Number.isFinite(b.maxSpeed)) {
+    bot.maxSpeed = Math.max(0.5, Math.min(12, b.maxSpeed));
+  }
+  if (typeof b.spawnAreaId === 'number' && Number.isFinite(b.spawnAreaId)) {
+    bot.spawnAreaId = Math.floor(b.spawnAreaId);
+  } else {
+    bot.spawnAreaId = null;
+  }
+  return bot;
 }
 
 export function serializeWorldDocument(world: WorldDocument): string {
@@ -269,6 +328,10 @@ export function getNextWorldEntityId(world: WorldDocument): number {
 
 export function getNextSpawnAreaId(world: WorldDocument): number {
   return world.spawnAreas.reduce((max, area) => Math.max(max, area.id), 0) + 1;
+}
+
+export function getNextBotId(world: WorldDocument): number {
+  return world.bots.reduce((max, bot) => Math.max(max, bot.id), 0) + 1;
 }
 
 export function quaternionFromYaw(yawRad: number): Quaternion {

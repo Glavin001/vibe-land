@@ -30,6 +30,10 @@ import {
   serializeWorldDocument,
   terrainTileSideLength,
   yawFromQuaternion,
+  PRECONFIGURED_BOT_BEHAVIORS,
+  type PlayerKind,
+  type PreconfiguredBot,
+  type PreconfiguredBotBehavior,
   type SpawnArea,
   type TerrainTileCoordinate,
   type DynamicEntity,
@@ -69,21 +73,28 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import {
+  addBotToWorld,
   addDynamicEntityToWorld,
   addSpawnAreaToWorld,
   addStaticCuboidToWorld,
   clonePlayWorldSnapshot,
+  getSelectedBot,
   getSelectedDynamic,
   getSelectedSpawnArea,
   getSelectedStatic,
   removeSelectedTargetFromWorld,
   resolveSelectedTransformEntity,
   selectionExists,
+  updateSelectedBotBehavior,
+  updateSelectedBotMaxSpeed,
+  updateSelectedBotName,
+  updateSelectedBotSpawnArea,
   updateSelectedTargetHalfExtents,
   updateSelectedTargetPosition,
   updateSelectedTargetRadius,
   updateSelectedTargetRotation,
   updateSelectedTargetVehicleType,
+  updateSpawnAreaAllowedKind,
   type SelectedTarget,
   type SelectedTransformEntity,
 } from './godModeEditorDocument';
@@ -430,6 +441,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
   const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
   const selectedSpawnArea = useMemo(() => getSelectedSpawnArea(world, selected), [selected, world]);
+  const selectedBot = useMemo(() => getSelectedBot(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
     return resolveSelectedTransformEntity(world, selected);
   }, [selected, world]);
@@ -740,6 +752,38 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       setSelected(nextSelected);
     }
   }, [applyCommittedWorldEdit]);
+
+  const addBot = useCallback(() => {
+    let nextSelected: SelectedTarget = null;
+    const changed = applyCommittedWorldEdit((current) => {
+      const result = addBotToWorld(current);
+      nextSelected = result.selected;
+      return result.world;
+    });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
+    }
+  }, [applyCommittedWorldEdit]);
+
+  const updateSelectedSpawnAreaAllowedKind = useCallback((kind: PlayerKind, enabled: boolean) => {
+    applyCommittedWorldEdit((current) => updateSpawnAreaAllowedKind(current, selected, kind, enabled));
+  }, [applyCommittedWorldEdit, selected]);
+
+  const updateSelectedBotBehaviorKind = useCallback((behavior: PreconfiguredBotBehavior) => {
+    applyCommittedWorldEdit((current) => updateSelectedBotBehavior(current, selected, behavior));
+  }, [applyCommittedWorldEdit, selected]);
+
+  const updateSelectedBotNameValue = useCallback((name: string) => {
+    applyCommittedWorldEdit((current) => updateSelectedBotName(current, selected, name));
+  }, [applyCommittedWorldEdit, selected]);
+
+  const updateSelectedBotMaxSpeedValue = useCallback((maxSpeed: number | null) => {
+    applyCommittedWorldEdit((current) => updateSelectedBotMaxSpeed(current, selected, maxSpeed));
+  }, [applyCommittedWorldEdit, selected]);
+
+  const updateSelectedBotSpawnAreaValue = useCallback((spawnAreaId: number | null) => {
+    applyCommittedWorldEdit((current) => updateSelectedBotSpawnArea(current, selected, spawnAreaId));
+  }, [applyCommittedWorldEdit, selected]);
 
   const removeSelected = useCallback(() => {
     if (!selected) {
@@ -1324,10 +1368,41 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <button type="button" onClick={addSpawnArea} style={secondaryButtonStyle}>Spawn Area</button>
               </div>
               {world.spawnAreas.length > 0 && (
-                <div style={mutedTextStyle}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
+                <div style={mutedTextStyle}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas by joining kind. Areas can restrict to humans, bots, or both.</div>
               )}
               {world.spawnAreas.length === 0 && (
                 <div style={mutedTextStyle}>No spawn areas — players use the default spawn lanes.</div>
+              )}
+            </div>
+
+            <div style={sectionStyle}>
+              <div style={sectionTitleStyle}>Bots</div>
+              <div style={buttonGridStyle}>
+                <button type="button" onClick={addBot} style={secondaryButtonStyle}>Add Bot</button>
+              </div>
+              {world.bots.length > 0 ? (
+                <div style={mutedTextStyle}>
+                  {world.bots.length} preconfigured bot{world.bots.length !== 1 ? 's' : ''}. Spawn in practice/world-builder play; ignored in multiplayer.
+                </div>
+              ) : (
+                <div style={mutedTextStyle}>No preconfigured bots — practice sliders still add ad-hoc bots.</div>
+              )}
+              {world.bots.length > 0 && (
+                <div style={fieldStackStyle}>
+                  {world.bots.map((bot) => {
+                    const isSelected = selected?.kind === 'bot' && selected.id === bot.id;
+                    return (
+                      <button
+                        key={bot.id}
+                        type="button"
+                        onClick={() => setSelected({ kind: 'bot', id: bot.id })}
+                        style={isSelected ? activeButtonStyle : secondaryButtonStyle}
+                      >
+                        {bot.name?.trim() || `Bot ${bot.id}`} · {bot.behavior}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
@@ -1411,6 +1486,18 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   area={selectedSpawnArea}
                   onPositionChange={updateSelectedPosition}
                   onRadiusChange={updateSelectedRadius}
+                  onAllowedKindChange={updateSelectedSpawnAreaAllowedKind}
+                  onDelete={removeSelected}
+                />
+              )}
+              {selectedBot && (
+                <BotEditorFields
+                  bot={selectedBot}
+                  spawnAreas={world.spawnAreas}
+                  onBehaviorChange={updateSelectedBotBehaviorKind}
+                  onNameChange={updateSelectedBotNameValue}
+                  onMaxSpeedChange={updateSelectedBotMaxSpeedValue}
+                  onSpawnAreaChange={updateSelectedBotSpawnAreaValue}
                   onDelete={removeSelected}
                 />
               )}
@@ -2517,13 +2604,17 @@ function SpawnAreaEditorFields({
   area,
   onPositionChange,
   onRadiusChange,
+  onAllowedKindChange,
   onDelete,
 }: {
   area: SpawnArea;
   onPositionChange: (axis: 0 | 1 | 2, value: number) => void;
   onRadiusChange: (value: number) => void;
+  onAllowedKindChange: (kind: PlayerKind, enabled: boolean) => void;
   onDelete: () => void;
 }) {
+  const allowsHuman = area.allowedKinds.includes('human');
+  const allowsBot = area.allowedKinds.includes('bot');
   return (
     <div style={fieldStackStyle}>
       <div style={{ fontWeight: 600 }}>Spawn Area {area.id}</div>
@@ -2546,7 +2637,117 @@ function SpawnAreaEditorFields({
         />
         <span>{area.radius.toFixed(1)}m</span>
       </label>
+      <div style={fieldLabelStyle}>
+        <span>Allowed</span>
+        <div style={{ display: 'flex', gap: 12 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={allowsHuman}
+              disabled={allowsHuman && !allowsBot}
+              onChange={(event) => onAllowedKindChange('human', event.target.checked)}
+            />
+            Humans
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={allowsBot}
+              disabled={allowsBot && !allowsHuman}
+              onChange={(event) => onAllowedKindChange('bot', event.target.checked)}
+            />
+            Bots
+          </label>
+        </div>
+      </div>
       <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete Spawn Area</button>
+    </div>
+  );
+}
+
+function BotEditorFields({
+  bot,
+  spawnAreas,
+  onBehaviorChange,
+  onNameChange,
+  onMaxSpeedChange,
+  onSpawnAreaChange,
+  onDelete,
+}: {
+  bot: PreconfiguredBot;
+  spawnAreas: SpawnArea[];
+  onBehaviorChange: (behavior: PreconfiguredBotBehavior) => void;
+  onNameChange: (name: string) => void;
+  onMaxSpeedChange: (value: number | null) => void;
+  onSpawnAreaChange: (areaId: number | null) => void;
+  onDelete: () => void;
+}) {
+  const currentSpawnAreaId = bot.spawnAreaId ?? null;
+  return (
+    <div style={fieldStackStyle}>
+      <div style={{ fontWeight: 600 }}>Bot {bot.id}</div>
+      <label style={fieldLabelStyle}>
+        Name
+        <input
+          type="text"
+          value={bot.name ?? ''}
+          placeholder={`Bot ${bot.id}`}
+          onChange={(event) => onNameChange(event.target.value)}
+        />
+      </label>
+      <label style={fieldLabelStyle}>
+        Behavior
+        <select
+          value={bot.behavior}
+          onChange={(event) => onBehaviorChange(event.target.value as PreconfiguredBotBehavior)}
+        >
+          {PRECONFIGURED_BOT_BEHAVIORS.map((kind) => (
+            <option key={kind} value={kind}>{kind}</option>
+          ))}
+        </select>
+      </label>
+      <label style={fieldLabelStyle}>
+        Max Speed
+        <input
+          type="number"
+          min="0.5"
+          max="12"
+          step="0.1"
+          value={bot.maxSpeed ?? ''}
+          placeholder="default"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw.trim().length === 0) {
+              onMaxSpeedChange(null);
+              return;
+            }
+            const parsed = Number(raw);
+            onMaxSpeedChange(Number.isFinite(parsed) ? parsed : null);
+          }}
+        />
+        <span>{bot.maxSpeed != null ? `${bot.maxSpeed.toFixed(1)} m/s` : 'runtime default'}</span>
+      </label>
+      <label style={fieldLabelStyle}>
+        Spawn Area
+        <select
+          value={currentSpawnAreaId === null ? '' : String(currentSpawnAreaId)}
+          onChange={(event) => {
+            const v = event.target.value;
+            onSpawnAreaChange(v === '' ? null : Number(v));
+          }}
+        >
+          <option value="">Any bot-allowed area</option>
+          {spawnAreas.map((area) => {
+            const allowsBot = area.allowedKinds.includes('bot');
+            return (
+              <option key={area.id} value={String(area.id)} disabled={!allowsBot}>
+                Area {area.id}{allowsBot ? '' : ' (humans only)'}
+              </option>
+            );
+          })}
+        </select>
+      </label>
+      <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete Bot</button>
     </div>
   );
 }
