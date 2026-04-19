@@ -323,12 +323,18 @@ mod tests {
 
         let mut backward_button = input();
         backward_button.buttons = BTN_BACK;
-        assert_eq!(pick_move_speed(&cfg, &backward_button), cfg.walk_speed * 0.9);
+        assert_eq!(
+            pick_move_speed(&cfg, &backward_button),
+            cfg.walk_speed * 0.9
+        );
 
         let mut sprint_backward = input();
         sprint_backward.buttons = BTN_SPRINT;
         sprint_backward.move_y = -127;
-        assert_eq!(pick_move_speed(&cfg, &sprint_backward), cfg.sprint_speed * 0.9);
+        assert_eq!(
+            pick_move_speed(&cfg, &sprint_backward),
+            cfg.sprint_speed * 0.9
+        );
     }
 
     #[test]
