@@ -2583,29 +2583,40 @@ export function GameWorld({
     const batGroup = batteryGroupRef.current;
     if (batGroup && client) {
       const BATTERY_MAX_ENERGY = 1000.0;
-      const PLAYER_HALF_H = 0.8; // capsule_half_segment(0.45) + capsule_radius(0.35)
       const t = now / 1000;
 
       const activeBatteryIds = new Set<number>();
       for (const [id, battery] of client.batteries) {
         activeBatteryIds.add(id);
         const energyFrac = Math.min(battery.energy / BATTERY_MAX_ENERGY, 1.0);
-        const visRadius = 0.12 + energyFrac * 0.25;     // 0.12m → 0.37m
-        const visHeight = 0.14 + energyFrac * 0.22;     // 0.14m → 0.36m
-        const baseIntensity = 0.9 + energyFrac * 2.1;   // 0.9 → 3.0
-        const pulseAmp = 0.4 + energyFrac * 0.7;        // 0.4 → 1.1
-        const glowOpacityBase = 0.2 + energyFrac * 0.3; // 0.2 → 0.5
+        const visRadius = 0.12 + energyFrac * 0.25;      // 0.12m → 0.37m
+        const visHeight = 0.14 + energyFrac * 0.22;      // 0.14m → 0.36m
+        const glowMaxOpacity = 0.4 + energyFrac * 0.5;   // 0.4 → 0.9
+        const glowMaxIntensity = 1.2 + energyFrac * 3.0; // 1.2 → 4.2
 
         let grp = batteryMeshes.current.get(id);
         if (!grp) {
           grp = new THREE.Group();
+
+          // Raycast straight down to find the actual terrain surface beneath this battery.
+          // Stored once in userData so we don't re-cast every frame.
+          const castOrigin: [number, number, number] = [
+            battery.position[0],
+            battery.position[1] + 20,
+            battery.position[2],
+          ];
+          const hit = client.raycastScene(castOrigin, [0, -1, 0], 40);
+          grp.userData.groundY =
+            hit != null
+              ? battery.position[1] + 20 - hit.toi
+              : battery.position[1] - battery.height * 0.5;
 
           const body = new THREE.Mesh(
             new THREE.CylinderGeometry(visRadius, visRadius, visHeight, 20),
             new THREE.MeshStandardMaterial({
               color: 0xffd700,
               emissive: 0xffcc00,
-              emissiveIntensity: baseIntensity,
+              emissiveIntensity: 1.0,
               roughness: 0.25,
               metalness: 0.65,
             }),
@@ -2618,10 +2629,10 @@ export function GameWorld({
             new THREE.MeshBasicMaterial({
               color: 0xffee00,
               transparent: true,
-              opacity: glowOpacityBase,
+              opacity: 0,
               depthWrite: false,
               blending: THREE.AdditiveBlending,
-              side: THREE.BackSide,
+              side: THREE.DoubleSide,
             }),
           );
           glowRing.name = 'glow';
@@ -2632,20 +2643,28 @@ export function GameWorld({
           batteryMeshes.current.set(id, grp);
         }
 
-        // Place bottom of cylinder at estimated ground level
+        // Sit the bottom of the visual cylinder on the terrain surface
         grp.position.set(
           battery.position[0],
-          battery.position[1] - PLAYER_HALF_H + visHeight / 2,
+          (grp.userData.groundY as number) + visHeight / 2,
           battery.position[2],
         );
 
-        // Pulsating glow animation
-        const pulse = Math.sin(t * 2.8) * pulseAmp + baseIntensity;
-        const glowOpacity = Math.sin(t * 2.8 + 0.8) * (glowOpacityBase * 0.5) + glowOpacityBase;
+        // Normalized 0→1→0 pulse so body and glow breathe fully in sync.
+        // Glow goes from completely transparent to peak opacity and back.
+        const pulseFrac = (Math.sin(t * 2.8) + 1) / 2;
         const bodyMesh = grp.getObjectByName('body') as THREE.Mesh | undefined;
         const glowMesh = grp.getObjectByName('glow') as THREE.Mesh | undefined;
-        if (bodyMesh) (bodyMesh.material as THREE.MeshStandardMaterial).emissiveIntensity = pulse;
-        if (glowMesh) (glowMesh.material as THREE.MeshBasicMaterial).opacity = glowOpacity;
+        if (bodyMesh) {
+          (bodyMesh.material as THREE.MeshStandardMaterial).emissiveIntensity =
+            0.3 + pulseFrac * glowMaxIntensity;
+        }
+        if (glowMesh) {
+          (glowMesh.material as THREE.MeshBasicMaterial).opacity =
+            pulseFrac * glowMaxOpacity;
+          // Ring also expands outward as it brightens for a more dramatic effect
+          glowMesh.scale.set(0.85 + pulseFrac * 0.3, 1, 0.85 + pulseFrac * 0.3);
+        }
       }
 
       for (const [id, grp] of batteryMeshes.current) {
