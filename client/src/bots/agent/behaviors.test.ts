@@ -40,7 +40,7 @@ describe('harassNearest', () => {
   });
 
   it('follows the nearest player when inside the acquire radius', () => {
-    const behavior = harassNearest({ acquireDistanceM: 40 });
+    const behavior = harassNearest({ acquireDistanceM: 40, fireDistanceM: 0 });
     const decision = behavior(makeContext());
 
     expect(decision.mode).toBe('follow_target');
@@ -48,8 +48,18 @@ describe('harassNearest', () => {
     expect(decision.target).toEqual([52, 1, -10]);
   });
 
+  it('stands to shoot once the player is inside the fire window', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, fireDistanceM: 18 });
+    const decision = behavior(makeContext());
+
+    expect(decision.mode).toBe('acquire_target');
+    expect(decision.target).toBeNull();
+    expect(decision.fireAim).toEqual([52, 1, -10]);
+    expect(decision.targetPlayerId).toBe(7);
+  });
+
   it('still follows on flat ground near y=0', () => {
-    const behavior = harassNearest({ acquireDistanceM: 40 });
+    const behavior = harassNearest({ acquireDistanceM: 40, fireDistanceM: 0 });
     const decision = behavior(makeContext({
       self: {
         position: [49, 0, -10],
@@ -72,7 +82,7 @@ describe('harassNearest', () => {
   });
 
   it('keeps following a locked target slightly beyond acquire distance', () => {
-    const behavior = harassNearest({ acquireDistanceM: 40, releaseDistanceM: 65 });
+    const behavior = harassNearest({ acquireDistanceM: 40, releaseDistanceM: 65, fireDistanceM: 0 });
 
     let decision = behavior(makeContext({
       tick: 1,
@@ -98,7 +108,7 @@ describe('harassNearest', () => {
   });
 
   it('keeps following the last known target through brief observation gaps', () => {
-    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 5 });
+    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 5, fireDistanceM: 0 });
 
     let decision = behavior(makeContext({
       tick: 1,
@@ -171,7 +181,7 @@ describe('harassNearest', () => {
   });
 
   it('returns to hold anchor after target memory expires', () => {
-    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 2 });
+    const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 2, fireDistanceM: 0 });
 
     let decision = behavior(makeContext({
       tick: 1,

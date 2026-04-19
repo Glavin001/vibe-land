@@ -38,15 +38,15 @@ use vibe_land_shared::constants::{
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS,
-    RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_AOI_RADIUS_M,
-    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, SPAWN_PROTECTION_MS,
+    VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena},
+    movement::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
@@ -129,6 +129,13 @@ fn parse_respawn_delay_ms(value: Option<&str>) -> u32 {
     value
         .and_then(|raw| raw.parse::<u32>().ok())
         .unwrap_or(RESPAWN_DELAY_MS)
+}
+
+fn spawn_protection_ticks() -> u32 {
+    SPAWN_PROTECTION_MS
+        .saturating_mul(SIM_HZ as u32)
+        .saturating_add(999)
+        / 1000
 }
 
 fn server_build_profile() -> &'static str {
@@ -628,6 +635,7 @@ struct PlayerRuntime {
     last_processed_swing_id: Option<u32>,
     next_allowed_melee_ms: u32,
     melee_flag_clear_tick: u32,
+    spawn_protection_ends_at_tick: u32,
     respawn_at_ms: Option<u32>,
     visible_dynamic_bodies: HashSet<u32>,
     visible_batteries: HashSet<u32>,
@@ -1430,6 +1438,7 @@ impl MatchState {
                         last_processed_swing_id: None,
                         next_allowed_melee_ms: 0,
                         melee_flag_clear_tick: 0,
+                        spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
                         visible_dynamic_bodies: HashSet::new(),
                         visible_batteries: HashSet::new(),
@@ -1440,6 +1449,7 @@ impl MatchState {
                         last_sent_dynamic_tick: HashMap::new(),
                     },
                 );
+                self.activate_spawn_protection(conn.player_id);
                 info!(
                     match_id = %self.id,
                     player_id = conn.player_id,
@@ -1562,12 +1572,16 @@ impl MatchState {
                         if is_dead {
                             return;
                         }
+                        runtime.spawn_protection_ends_at_tick = 0;
+                        let _ = self.arena.set_player_spawn_protected(player_id, false);
                         self.queued_shots.push(QueuedShot { player_id, cmd });
                     }
                     ClientPacket::Melee(cmd) => {
                         if is_dead {
                             return;
                         }
+                        runtime.spawn_protection_ends_at_tick = 0;
+                        let _ = self.arena.set_player_spawn_protected(player_id, false);
                         self.queued_melees.push(QueuedMelee { player_id, cmd });
                     }
                     ClientPacket::BlockEdit(cmd) => {
@@ -1650,6 +1664,7 @@ impl MatchState {
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
+        self.expire_spawn_protection();
 
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
@@ -2317,6 +2332,37 @@ impl MatchState {
                 runtime.last_sent_energy_centi = None;
             }
             let _ = self.arena.respawn_player(player_id);
+            self.activate_spawn_protection(player_id);
+        }
+    }
+
+    fn activate_spawn_protection(&mut self, player_id: u32) {
+        let until_tick = self.server_tick.saturating_add(spawn_protection_ticks());
+        let _ = self.arena.set_player_spawn_protected(player_id, true);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = until_tick;
+        }
+    }
+
+    fn clear_spawn_protection(&mut self, player_id: u32) {
+        let _ = self.arena.set_player_spawn_protected(player_id, false);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = 0;
+        }
+    }
+
+    fn expire_spawn_protection(&mut self) {
+        let expired_ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(&player_id, runtime)| {
+                (runtime.spawn_protection_ends_at_tick != 0
+                    && runtime.spawn_protection_ends_at_tick <= self.server_tick)
+                    .then_some(player_id)
+            })
+            .collect();
+        for player_id in expired_ids {
+            self.clear_spawn_protection(player_id);
         }
     }
 
@@ -2360,6 +2406,7 @@ impl MatchState {
             runtime.last_applied_input = InputCmd::default();
             runtime.last_sent_energy_centi = None;
         }
+        self.clear_spawn_protection(player_id);
     }
 
     fn maybe_send_local_player_energy_update(&mut self, player_id: u32) {
@@ -2637,13 +2684,16 @@ impl MatchState {
             };
 
             let result = if let Some(hit) = player_hit {
-                let mut victim_killed = false;
-                if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
-                    state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
-                    victim_killed = state.hp == 0 && !state.dead;
+                let damage_outcome = self
+                    .arena
+                    .apply_player_damage(hit.victim_id, rifle_damage(hit.zone));
+                if matches!(
+                    damage_outcome,
+                    PlayerDamageOutcome::Damaged | PlayerDamageOutcome::Killed
+                ) {
+                    self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
                 }
-                self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
-                if victim_killed {
+                if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
                 self.build_shot_result(
@@ -2868,9 +2918,14 @@ impl MatchState {
                 }
 
                 if let Some((victim_id, _)) = best {
-                    let killed = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
-                    self.stagger_melee_after_damage(victim_id, server_time_ms);
-                    if killed {
+                    let damage_outcome = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
+                    if matches!(
+                        damage_outcome,
+                        PlayerDamageOutcome::Damaged | PlayerDamageOutcome::Killed
+                    ) {
+                        self.stagger_melee_after_damage(victim_id, server_time_ms);
+                    }
+                    if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
                         self.kill_player(victim_id, server_time_ms);
                     }
                 }
@@ -3714,6 +3769,7 @@ mod tests {
             last_processed_swing_id: None,
             next_allowed_melee_ms: 0,
             melee_flag_clear_tick: 0,
+            spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
             visible_batteries: HashSet::new(),

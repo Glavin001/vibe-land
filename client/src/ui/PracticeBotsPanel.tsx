@@ -28,6 +28,7 @@ interface PracticeBotsPanelProps {
   onResetNavTuning: () => void;
   onToggleDebugOverlay: (value: boolean) => void;
   onToggleDebugLabels: (value: boolean) => void;
+  onSetEnableShooting: (value: boolean) => void;
   onSetUseVehicles: (value: boolean) => void;
 }
 
@@ -67,6 +68,7 @@ export function PracticeBotsPanel({
   onResetNavTuning,
   onToggleDebugOverlay,
   onToggleDebugLabels,
+  onSetEnableShooting,
   onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
@@ -80,6 +82,7 @@ export function PracticeBotsPanel({
   const behavior = stats?.behavior ?? 'harass';
   const maxSpeed = stats?.maxSpeed ?? PRACTICE_BOT_SPRINT_SPEED;
   const activeNav = navConfig;
+  const enableShooting = stats?.enableShooting ?? true;
   const useVehicles = stats?.useVehicles ?? false;
 
   useEffect(() => {
@@ -203,6 +206,18 @@ export function PracticeBotsPanel({
                 );
               })}
             </div>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {panelLabel('Combat')}
+            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
+              <input
+                type="checkbox"
+                checked={enableShooting}
+                onChange={(event) => onSetEnableShooting(event.target.checked)}
+                className="accent-sky-300"
+              />
+              <span>bots can fire their weapons</span>
+            </label>
           </div>
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Vehicles')}

@@ -131,6 +131,7 @@ impl PhysicsArena {
                 on_ground: false,
                 hp: 100,
                 dead: false,
+                spawn_protected: false,
                 last_input: InputCmd::default(),
                 max_speed_override: None,
                 energy: crate::constants::STARTING_ENERGY,
@@ -157,6 +158,7 @@ impl PhysicsArena {
         state.on_ground = false;
         state.hp = 100;
         state.dead = false;
+        state.spawn_protected = false;
         state.last_input = InputCmd::default();
         state.energy = crate::constants::STARTING_ENERGY;
         self.dynamic
