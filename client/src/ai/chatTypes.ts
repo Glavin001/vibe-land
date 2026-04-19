@@ -76,34 +76,15 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
           input: part.input ?? {},
         });
       } else if (part.type === 'tool-result') {
-        let output: ToolResultPart['output'];
-        if (part.isError) {
-          output = { type: 'error-text', value: stringifyForModel(part.output) };
-        } else if (part.images && part.images.length > 0) {
-          // Multi-modal tool result: text summary + captured image(s).
-          // AI SDK v6 requires type:'image-data' (not 'image'), field 'mediaType' (not 'mimeType'),
-          // and raw base64 data WITHOUT the 'data:image/png;base64,' prefix.
-          output = {
-            type: 'content',
-            value: [
-              { type: 'text', text: stringifyForModel(part.output) },
-              ...part.images.map((img) => ({
-                type: 'image-data' as const,
-                data: img.dataUrl.replace(/^data:[^;]+;base64,/, ''),
-                mediaType: img.mediaType,
-              })),
-            ],
-          } as ToolResultPart['output'];
-        } else {
-          output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
-        }
-        const resultPart: ToolResultPart = {
+        const output: ToolResultPart['output'] = part.isError
+          ? { type: 'error-text', value: stringifyForModel(part.output) }
+          : ({ type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output']);
+        toolResults.push({
           type: 'tool-result',
           toolCallId: part.toolCallId,
           toolName: part.toolName,
           output,
-        };
-        toolResults.push(resultPart);
+        });
       }
     }
 
@@ -112,6 +93,27 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
     }
     if (toolResults.length > 0) {
       out.push({ role: 'tool', content: toolResults });
+
+      // Inject captured screenshots as a follow-up user message. User-role
+      // messages with images are correctly transmitted to both OpenAI and
+      // Anthropic. Tool result content arrays are broken for OpenAI (SDK bug
+      // #8209/#10850 — they get JSON-stringified instead of sent as vision).
+      const screenshotImages = msg.parts
+        .filter((p): p is ChatToolResultPart => p.type === 'tool-result' && (p.images?.length ?? 0) > 0)
+        .flatMap((p) => p.images!);
+      if (screenshotImages.length > 0) {
+        out.push({
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Here are the screenshot(s) from the previous tool call:' },
+            ...screenshotImages.map((img) => ({
+              type: 'image' as const,
+              image: img.dataUrl,
+              mimeType: img.mediaType as 'image/png',
+            })),
+          ],
+        });
+      }
     }
   }
   return out;

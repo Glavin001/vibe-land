@@ -58,6 +58,11 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     captureScreenshotRef.current = captureScreenshot;
   }, [captureScreenshot]);
 
+  // Side-channel: capture_screenshot's execute() fires onCapture() with the
+  // dataUrl before returning, so it never enters the SDK's internal message
+  // history. We stash it here and pick it up in the tool-result stream handler.
+  const lastScreenshotRef = useRef<string | null>(null);
+
   const abortRef = useRef<AbortController | null>(null);
 
   const stop = useCallback(() => {
@@ -152,6 +157,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
             capture_screenshot: createCaptureScreenshotTool(
               () => captureScreenshotRef.current,
               accessorsRef.current,
+              (dataUrl) => { lastScreenshotRef.current = dataUrl; },
             ),
           },
           stopWhen: stepCountIs(MAX_TOOL_STEPS),
@@ -249,21 +255,12 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
               break;
             }
             case 'tool-result': {
-              // For capture_screenshot, strip the large dataUrl from the stored output
-              // and move it to images[] so it doesn't bloat the JSON history.
-              const rawOutput = part.output as Record<string, unknown> | null | undefined;
-              let storedOutput: unknown = rawOutput;
+              // For capture_screenshot the dataUrl arrives via the side-channel
+              // callback (lastScreenshotRef) so it's never in part.output.
               let images: Array<{ dataUrl: string; mediaType: string }> | undefined;
-              if (
-                part.toolName === 'capture_screenshot' &&
-                rawOutput &&
-                typeof rawOutput.capturedImageDataUrl === 'string'
-              ) {
-                const capturedImageDataUrl = rawOutput.capturedImageDataUrl; // narrowed to string
-                // eslint-disable-next-line @typescript-eslint/no-unused-vars
-                const { capturedImageDataUrl: _stripped, ...rest } = rawOutput;
-                storedOutput = rest;
-                images = [{ dataUrl: capturedImageDataUrl, mediaType: 'image/png' }];
+              if (part.toolName === 'capture_screenshot' && lastScreenshotRef.current) {
+                images = [{ dataUrl: lastScreenshotRef.current, mediaType: 'image/png' }];
+                lastScreenshotRef.current = null;
               }
               updateAssistant((parts) => [
                 ...parts,
@@ -271,7 +268,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
                   type: 'tool-result',
                   toolCallId: part.toolCallId,
                   toolName: part.toolName,
-                  output: storedOutput,
+                  output: part.output,
                   ...(images ? { images } : {}),
                 },
               ]);

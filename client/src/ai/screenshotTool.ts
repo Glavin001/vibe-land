@@ -139,17 +139,19 @@ export type ScreenshotToolResult = {
   message: string;
   width?: number;
   height?: number;
-  capturedImageDataUrl?: string; // stripped by useGodModeChat before storing in history
 };
 
 /**
  * Creates the capture_screenshot tool. Requires:
  * - getCapture: getter that returns the CaptureFunction from SceneCaptureController (via ref)
  * - accessors: WorldAccessors for tile resolution (getWorld())
+ * - onCapture: side-channel callback that receives the dataUrl BEFORE execute() returns,
+ *   so the image never enters the SDK's internal multi-step message history
  */
 export function createCaptureScreenshotTool(
   getCapture: () => CaptureFunction | null | undefined,
   accessors: WorldAccessors,
+  onCapture?: (dataUrl: string) => void,
 ) {
   return tool({
     description:
@@ -190,12 +192,15 @@ export function createCaptureScreenshotTool(
       try {
         const resolved = resolveConfig(input, target, tileWidth);
         const capturedImageDataUrl = await capture(resolved);
+        // Deliver the image via side-channel so it never appears in the JSON
+        // returned from execute() — that JSON goes into the SDK's internal
+        // multi-step message history and would cause token explosion.
+        onCapture?.(capturedImageDataUrl);
         return {
           ok: true,
           message: `Screenshot captured: ${resolved.width}×${resolved.height}px, ${resolved.type} camera, orthoWidth=${resolved.orthoWidth.toFixed(1)}m.`,
           width: resolved.width,
           height: resolved.height,
-          capturedImageDataUrl,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
