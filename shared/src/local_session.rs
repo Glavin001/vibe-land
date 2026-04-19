@@ -2328,6 +2328,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2350,6 +2351,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2386,6 +2388,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         let before = session.server_time_ms();
         session.queue_melee_cmd(MeleeCmd {
