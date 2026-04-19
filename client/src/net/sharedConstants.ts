@@ -80,7 +80,7 @@ export const PLAYER_EYE_HEIGHT_M = 0.8;
 // ── Melee combat ────────────────────────────────
 export const MELEE_DAMAGE = 35;
 export const MELEE_COOLDOWN_MS = 900;
-export const MELEE_RANGE_M = 2.0;
+export const MELEE_RANGE_M = 1.0;
 /// cos(60°) — any target within this dot-product of the aim direction is in the cone.
 export const MELEE_HALF_CONE_COS = 0.5;
 export const MELEE_ENERGY_COST = 2.0;

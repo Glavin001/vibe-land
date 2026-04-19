@@ -2158,7 +2158,7 @@ mod tests {
         assert!(session.connect_bot(bot_id));
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
-        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2180,7 +2180,7 @@ mod tests {
         assert!(session.connect_bot(bot_id));
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
-        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2216,7 +2216,7 @@ mod tests {
         assert!(session.connect_bot(bot_id));
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
-        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
 
         let before = session.server_time_ms();
         session.queue_melee_cmd(MeleeCmd {
@@ -2242,7 +2242,7 @@ mod tests {
         assert!(session.connect_bot(bot_id));
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
-        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
         // Fake the bot into a vehicle by injecting the mapping directly.
         session.arena.vehicle_of_player.insert(bot_id, 9999);
 
@@ -2257,5 +2257,27 @@ mod tests {
 
         let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100, "vehicle occupants are immune to melee");
+    }
+
+    #[test]
+    fn melee_misses_victim_outside_shortened_range() {
+        let mut session = isolated_energy_session();
+        let bot_id = 505;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100, "victim should be out of melee range");
     }
 }

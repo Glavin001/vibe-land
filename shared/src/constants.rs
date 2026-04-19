@@ -77,7 +77,7 @@ pub const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
 // ── Melee combat ────────────────────────────────
 pub const MELEE_DAMAGE: u8 = 35;
 pub const MELEE_COOLDOWN_MS: u32 = 900;
-pub const MELEE_RANGE_M: f32 = 2.0;
+pub const MELEE_RANGE_M: f32 = 1.0;
 /// cos(60°) — any target within this dot-product of the aim direction is in the cone.
 pub const MELEE_HALF_CONE_COS: f32 = 0.5;
 pub const MELEE_ENERGY_COST: f32 = 2.0;
