@@ -128,6 +128,7 @@ export class KeyboardMouseInputSource {
       blockPlacePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.blockPlace),
       materialSlot1Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot1),
       materialSlot2Pressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.materialSlot2),
+      meleePressed: context === 'onFoot' && this.justPressedKeys.has(keyboard.melee),
     };
 
     this.justPressedKeys.clear();

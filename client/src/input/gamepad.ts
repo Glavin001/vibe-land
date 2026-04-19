@@ -134,6 +134,7 @@ export class GamepadInputSource {
       blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockPlaceButton),
       materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot1Button),
       materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot2Button),
+      meleePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.meleeButton),
     };
 
     this.previous = {

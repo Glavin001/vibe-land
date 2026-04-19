@@ -49,6 +49,7 @@ const keyboardRows: Array<{ key: KeyboardKeyField; label: string }> = [
   { key: 'jump', label: 'Jump' },
   { key: 'sprint', label: 'Sprint' },
   { key: 'crouch', label: 'Crouch' },
+  { key: 'melee', label: 'Melee' },
   { key: 'interact', label: 'Interact / Enter / Exit Vehicle' },
   { key: 'resetVehicle', label: 'Reset Vehicle' },
   { key: 'blockRemove', label: 'Remove Block' },
@@ -65,6 +66,7 @@ const gamepadButtonRows: Array<{ key: Exclude<keyof GamepadBindings, 'moveXAxis'
   { key: 'sprintButton', label: 'Sprint' },
   { key: 'crouchButton', label: 'Crouch' },
   { key: 'firePrimaryButton', label: 'Fire Primary' },
+  { key: 'meleeButton', label: 'Melee' },
   { key: 'aimSecondaryButton', label: 'Aim / Scope' },
   { key: 'handbrakeButton', label: 'Vehicle Handbrake' },
   { key: 'interactButton', label: 'Interact / Enter / Exit Vehicle' },
@@ -73,6 +75,7 @@ const gamepadButtonRows: Array<{ key: Exclude<keyof GamepadBindings, 'moveXAxis'
   { key: 'blockPlaceButton', label: 'Place Block' },
   { key: 'materialSlot1Button', label: 'Material Slot 1' },
   { key: 'materialSlot2Button', label: 'Material Slot 2' },
+  { key: 'meleeButton', label: 'Melee' },
 ];
 
 const gamepadAxisRows: Array<{ key: 'moveXAxis' | 'moveYAxis' | 'lookXAxis' | 'lookYAxis'; label: string }> = [

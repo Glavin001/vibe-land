@@ -34,14 +34,19 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_MELEEING,
   FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
+  MELEE_COOLDOWN_MS,
+  MELEE_HALF_CONE_COS,
+  MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
+import { publishMeleeFeedback } from '../ui/meleeFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
@@ -939,6 +944,7 @@ function resolvedInputFromBotIntent(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -961,6 +967,7 @@ function makeIdleResolvedInput(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -1104,6 +1111,10 @@ export function GameWorld({
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  const nextLocalMeleeMsRef = useRef(0);
+  const nextSwingIdRef = useRef(1);
+  const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
+  const remoteHpBarsRef = useRef<Map<number, RemoteHpBarHandle>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -1987,6 +1998,53 @@ export function GameWorld({
         });
       }
 
+      if (
+        resolvedInput.meleePressed
+        && client
+        && now >= nextLocalMeleeMsRef.current
+      ) {
+        nextLocalMeleeMsRef.current = now + MELEE_COOLDOWN_MS;
+        const swingId = nextSwingIdRef.current++ >>> 0;
+        client.sendMelee({
+          seq: prediction.peekNextInputSeq(),
+          swingId,
+          clientTimeUs: client.serverClock.serverNowUs(),
+          yaw: yawRef.current,
+          pitch: pitchRef.current,
+        });
+
+        // Best-effort client-side prediction for the hitmarker: scan the last
+        // snapshot for a living remote player inside the melee cone.
+        const attackerPos = prediction.getPosition() ?? state.localPosition;
+        const cosP = Math.cos(pitchRef.current);
+        const aimX = Math.sin(yawRef.current) * cosP;
+        const aimZ = Math.cos(yawRef.current) * cosP;
+        const aimPlanar = Math.hypot(aimX, aimZ) || 1;
+        let predictedHit = false;
+        for (const remote of state.remotePlayers.values()) {
+          if (remote.hp <= 0) continue;
+          const dx = remote.position[0] - attackerPos[0];
+          const dy = remote.position[1] - attackerPos[1];
+          const dz = remote.position[2] - attackerPos[2];
+          if (Math.hypot(dx, dy, dz) > MELEE_RANGE_M + 0.5) continue;
+          const planar = Math.hypot(dx, dz);
+          if (planar <= 1e-4) {
+            predictedHit = true;
+            break;
+          }
+          const dot = (aimX * dx + aimZ * dz) / (aimPlanar * planar);
+          if (dot >= MELEE_HALF_CONE_COS) {
+            predictedHit = true;
+            break;
+          }
+        }
+        publishMeleeFeedback({
+          sentAtMs: now,
+          cooldownMs: MELEE_COOLDOWN_MS,
+          predictedHit,
+        });
+      }
+
       if (prediction.supportsBlockEditing() && (resolvedInput.blockRemovePressed || resolvedInput.blockPlacePressed)) {
         const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const hit = prediction.raycastBlocks(
@@ -2484,6 +2542,8 @@ export function GameWorld({
       if (!handle) {
         handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
+        attachPlayerIdLabel(handle.root, id);
+        remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
@@ -2500,6 +2560,12 @@ export function GameWorld({
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
       const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
+      const isMeleeing = (remoteFlags & FLAG_MELEEING) !== 0;
+      const wasMeleeing = remoteLastMeleeingRef.current.get(id) ?? false;
+      if (isMeleeing && !wasMeleeing && !isDead) {
+        handle.playOneShot('Melee_Hook');
+      }
+      remoteLastMeleeingRef.current.set(id, isMeleeing);
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2524,6 +2590,12 @@ export function GameWorld({
       handle.setVisible(!isInVehicle);
       const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
       if (debugHelper) debugHelper.visible = showDebugHelpers && !isInVehicle;
+
+      const hpBar = remoteHpBarsRef.current.get(id);
+      if (hpBar) {
+        hpBar.setHp(replicatedHp);
+        hpBar.setVisible(!isDead && !isInVehicle);
+      }
 
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
@@ -2557,10 +2629,16 @@ export function GameWorld({
     // Remove stale
     for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
+        const bar = remoteHpBarsRef.current.get(id);
+        if (bar) {
+          bar.dispose();
+          remoteHpBarsRef.current.delete(id);
+        }
         handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
+        remoteLastMeleeingRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
@@ -3348,4 +3426,96 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
+}
+
+function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 48;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 128, 48);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`P${id}`, 64, 34);
+  const texture = new THREE.CanvasTexture(canvas);
+  const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'idLabel';
+  sprite.scale.set(1.2, 0.45, 1);
+  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
+  // Place the label just above the head.
+  sprite.position.y = 1.0;
+  parent.add(sprite);
+}
+
+interface RemoteHpBarHandle {
+  setHp(hp: number): void;
+  setVisible(visible: boolean): void;
+  dispose(): void;
+}
+
+const REMOTE_HP_BAR_MAX = 100;
+const REMOTE_HP_BAR_W = 128;
+const REMOTE_HP_BAR_H = 18;
+
+function attachRemoteHpBar(parent: THREE.Object3D): RemoteHpBarHandle {
+  const canvas = document.createElement('canvas');
+  canvas.width = REMOTE_HP_BAR_W;
+  canvas.height = REMOTE_HP_BAR_H;
+  const ctx = canvas.getContext('2d')!;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = 'remoteHpBar';
+  sprite.scale.set(1.0, 0.16, 1);
+  sprite.position.y = 1.3;
+  // Render slightly on top so it isn't culled behind heads at extreme angles.
+  sprite.renderOrder = 999;
+  parent.add(sprite);
+
+  let lastDrawnHp = -1;
+  const draw = (hp: number): void => {
+    const clamped = Math.max(0, Math.min(REMOTE_HP_BAR_MAX, hp));
+    ctx.clearRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Frame
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Fill
+    const ratio = clamped / REMOTE_HP_BAR_MAX;
+    const fillW = Math.round((REMOTE_HP_BAR_W - 4) * ratio);
+    let color = '#3ddc84';
+    if (ratio < 0.25) color = '#ff4d4d';
+    else if (ratio < 0.5) color = '#ffd84d';
+    ctx.fillStyle = color;
+    ctx.fillRect(2, 2, fillW, REMOTE_HP_BAR_H - 4);
+    // Border
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, REMOTE_HP_BAR_W - 1, REMOTE_HP_BAR_H - 1);
+    texture.needsUpdate = true;
+  };
+
+  draw(REMOTE_HP_BAR_MAX);
+  lastDrawnHp = REMOTE_HP_BAR_MAX;
+
+  return {
+    setHp(hp: number): void {
+      const rounded = Math.round(hp);
+      if (rounded === lastDrawnHp) return;
+      lastDrawnHp = rounded;
+      draw(rounded);
+    },
+    setVisible(visible: boolean): void {
+      sprite.visible = visible;
+    },
+    dispose(): void {
+      parent.remove(sprite);
+      material.dispose();
+      texture.dispose();
+    },
+  };
 }

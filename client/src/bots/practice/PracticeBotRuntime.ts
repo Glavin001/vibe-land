@@ -5,7 +5,7 @@ import { vehicleAgentStateToIntent } from '../agent/vehicleSteering';
 
 import type { PracticeBotHost } from '../../net/localPracticeClient';
 import { FLAG_DEAD } from '../../net/protocol';
-import { FLAG_IN_VEHICLE } from '../../net/sharedConstants';
+import { FLAG_IN_VEHICLE, MELEE_COOLDOWN_MS } from '../../net/sharedConstants';
 import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
@@ -169,6 +169,8 @@ interface PracticeBot {
   brain: BotBrain;
   behaviorKind: PracticeBotBehaviorKind;
   seq: number;
+  swingSeq: number;
+  nextAllowedMeleeMs: number;
   lastIntent: BotIntent;
   /**
    * Current vehicle FSM stage. Driven by `tickVehicleFsm`; `on_foot` is
@@ -420,6 +422,8 @@ export class PracticeBotRuntime {
       brain,
       behaviorKind: this.behaviorKind,
       seq: 0,
+      swingSeq: 0,
+      nextAllowedMeleeMs: 0,
       lastIntent: makeIdleIntent(),
       vehicleStage: 'on_foot',
       reservedVehicleId: null,
@@ -668,6 +672,7 @@ export class PracticeBotRuntime {
     const localHp = host.localPlayerHp;
     const selfSnapshot = this.getSelf?.() ?? null;
     const localIsDead = selfSnapshot?.dead ?? ((localFlags & FLAG_DEAD) !== 0 || localHp <= 0);
+    const localIsInVehicle = (localFlags & FLAG_IN_VEHICLE) !== 0;
     const observed: ObservedPlayer[] = selfSnapshot
       ? [
           {
@@ -678,6 +683,7 @@ export class PracticeBotRuntime {
               selfSnapshot.position[2],
             ],
             isDead: localIsDead,
+            isInVehicle: localIsInVehicle,
           },
         ]
       : [];
@@ -767,6 +773,17 @@ export class PracticeBotRuntime {
         intent.pitch,
       );
       host.sendBotInputs(bot.id, [cmd]);
+      if (intent.meleePrimary && nowMs >= bot.nextAllowedMeleeMs) {
+        bot.nextAllowedMeleeMs = nowMs + MELEE_COOLDOWN_MS;
+        bot.swingSeq = (bot.swingSeq + 1) >>> 0;
+        host.sendBotMelee(bot.id, {
+          seq: bot.seq,
+          swingId: bot.swingSeq,
+          clientTimeUs: Math.round(performance.now() * 1000),
+          yaw: intent.yaw,
+          pitch: intent.pitch,
+        });
+      }
       if (intent.vehicleAction === 'enter' && intent.vehicleId != null) {
         host.sendBotVehicleEnter(bot.id, intent.vehicleId);
       } else if (intent.vehicleAction === 'exit' && intent.vehicleId != null) {
@@ -1090,6 +1107,7 @@ function makeIdleIntent(): BotIntent {
     yaw: 0,
     pitch: 0,
     firePrimary: false,
+    meleePrimary: false,
     mode: 'hold_anchor',
     targetPlayerId: null,
     vehicleAction: null,

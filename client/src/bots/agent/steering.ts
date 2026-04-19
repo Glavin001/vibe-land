@@ -19,6 +19,7 @@ export interface SteeringOptions {
   stuckSpeed?: number;
   stuckTicksBeforeJump?: number;
   jumpCooldownTicks?: number;
+  meleeDistanceM?: number;
 }
 
 export interface SteeringState {
@@ -37,6 +38,7 @@ const DEFAULT_OPTIONS = Object.freeze<Required<SteeringOptions>>({
   stuckSpeed: 0.15,
   stuckTicksBeforeJump: 18,
   jumpCooldownTicks: 30,
+  meleeDistanceM: 2.0,
 });
 
 export function agentStateToIntent(
@@ -46,6 +48,7 @@ export function agentStateToIntent(
   mode: BotMode,
   targetPlayerId: number | null,
   fireAim: Vec3Tuple | null,
+  meleeAim: Vec3Tuple | null = null,
   options: SteeringOptions = {},
 ): BotIntent {
   const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -53,7 +56,15 @@ export function agentStateToIntent(
   if (self.dead || mode === 'dead') {
     state.stuckTicks = 0;
     state.jumpCooldownTicks = Math.max(0, state.jumpCooldownTicks - 1);
-    return { buttons: 0, yaw: self.yaw, pitch: 0, firePrimary: false, mode: 'dead', targetPlayerId: null };
+    return {
+      buttons: 0,
+      yaw: self.yaw,
+      pitch: 0,
+      firePrimary: false,
+      meleePrimary: false,
+      mode: 'dead',
+      targetPlayerId: null,
+    };
   }
 
   let buttons = 0;
@@ -80,30 +91,43 @@ export function agentStateToIntent(
     state.stuckTicks = 0;
   }
 
+  // Clear any residual stuck-ticks while committing to a melee swing so the
+  // bot doesn't hop the instant it pulls back out of melee range.
+  if (meleeAim) {
+    state.stuckTicks = 0;
+  }
+
   state.jumpCooldownTicks = Math.max(0, state.jumpCooldownTicks - 1);
   if (
     self.onGround
     && state.jumpCooldownTicks === 0
     && state.stuckTicks >= opts.stuckTicksBeforeJump
+    && !meleeAim
   ) {
     buttons |= BTN_JUMP;
     state.jumpCooldownTicks = opts.jumpCooldownTicks;
     state.stuckTicks = 0;
   }
 
+  const aim = meleeAim ?? fireAim;
   let firePrimary = false;
-  if (fireAim) {
-    const fx = fireAim[0] - self.position[0];
-    const fy = fireAim[1] - self.position[1];
-    const fz = fireAim[2] - self.position[2];
+  let meleePrimary = false;
+  if (aim) {
+    const fx = aim[0] - self.position[0];
+    const fy = aim[1] - self.position[1];
+    const fz = aim[2] - self.position[2];
     const planar = Math.hypot(fx, fz);
     if (planar > 0.001 || Math.abs(fy) > 0.001) {
       yaw = planar > 0.001 ? Math.atan2(fx, fz) : yaw;
       pitch = Math.atan2(-fy, Math.max(planar, 0.0001));
-      firePrimary = true;
+      if (meleeAim && planar <= opts.meleeDistanceM) {
+        meleePrimary = true;
+      } else if (!meleeAim) {
+        firePrimary = true;
+      }
     }
   }
 
   state.lastYaw = yaw;
-  return { buttons, yaw, pitch, firePrimary, mode, targetPlayerId };
+  return { buttons, yaw, pitch, firePrimary, meleePrimary, mode, targetPlayerId };
 }
