@@ -25,6 +25,7 @@ export type ActionSnapshot = {
   blockPlacePressed: boolean;
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
+  meleePressed: boolean;
 };
 
 export type InputSample = {
@@ -49,4 +50,5 @@ export type ResolvedGameInput = SemanticInputState & {
   blockPlacePressed: boolean;
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
+  meleePressed: boolean;
 };

@@ -25,6 +25,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
     ...overrides,
   };
 }

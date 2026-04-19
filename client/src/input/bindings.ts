@@ -8,6 +8,7 @@ export type KeyboardCodeBinding =
   | 'KeyR'
   | 'KeyF'
   | 'KeyC'
+  | 'KeyV'
   | 'Space'
   | 'ShiftLeft'
   | 'ShiftRight'
@@ -46,6 +47,7 @@ export type KeyboardBindings = {
   materialSlot2: KeyboardCodeBinding;
   handbrake: KeyboardCodeBinding;
   firePrimaryMouseButton: MouseButtonBinding;
+  melee: KeyboardCodeBinding;
 };
 
 export type GamepadBindings = {
@@ -66,6 +68,7 @@ export type GamepadBindings = {
   blockPlaceButton: GamepadButtonBinding;
   materialSlot1Button: GamepadButtonBinding;
   materialSlot2Button: GamepadButtonBinding;
+  meleeButton: GamepadButtonBinding;
 };
 
 export type InputBindings = {
@@ -92,6 +95,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     materialSlot2: 'Digit2',
     handbrake: 'Space',
     firePrimaryMouseButton: 0,
+    melee: 'KeyV',
   },
   gamepad: {
     moveXAxis: 0,
@@ -111,6 +115,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     blockPlaceButton: 5,
     materialSlot1Button: 14,
     materialSlot2Button: 15,
+    meleeButton: 1,
   },
 };
 
@@ -124,6 +129,7 @@ export const KEYBOARD_CODE_OPTIONS: Array<{ value: KeyboardCodeBinding; label: s
   { value: 'KeyR', label: 'R' },
   { value: 'KeyF', label: 'F' },
   { value: 'KeyC', label: 'C' },
+  { value: 'KeyV', label: 'V' },
   { value: 'Space', label: 'Space' },
   { value: 'ShiftLeft', label: 'Left Shift' },
   { value: 'ShiftRight', label: 'Right Shift' },
@@ -195,7 +201,8 @@ function isKeyboardBinding(value: unknown): value is KeyboardBindings {
     && typeof binding.materialSlot1 === 'string'
     && typeof binding.materialSlot2 === 'string'
     && typeof binding.handbrake === 'string'
-    && typeof binding.firePrimaryMouseButton === 'number';
+    && typeof binding.firePrimaryMouseButton === 'number'
+    && typeof binding.melee === 'string';
 }
 
 function isGamepadBinding(value: unknown): value is GamepadBindings {
@@ -217,7 +224,8 @@ function isGamepadBinding(value: unknown): value is GamepadBindings {
     && typeof binding.blockRemoveButton === 'number'
     && typeof binding.blockPlaceButton === 'number'
     && typeof binding.materialSlot1Button === 'number'
-    && typeof binding.materialSlot2Button === 'number';
+    && typeof binding.materialSlot2Button === 'number'
+    && typeof binding.meleeButton === 'number';
 }
 
 export function loadInputBindings(): InputBindings {

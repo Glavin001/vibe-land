@@ -79,6 +79,7 @@ export function resolveOnFootInput(
     blockPlacePressed: action?.blockPlacePressed ?? false,
     materialSlot1Pressed: action?.materialSlot1Pressed ?? false,
     materialSlot2Pressed: action?.materialSlot2Pressed ?? false,
+    meleePressed: action?.meleePressed ?? false,
   };
 }
 
@@ -105,5 +106,6 @@ export function resolveVehicleInput(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }

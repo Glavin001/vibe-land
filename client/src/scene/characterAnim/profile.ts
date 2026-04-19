@@ -45,7 +45,7 @@ export const PLAYER_PROFILE: AnimationProfile = {
   deathClip: 'Death01',
   throwClip: 'OverhandThrow',
   spikeDamageClipCandidates: ['Hit_Chest', 'Hit_Head'],
-  additiveOneShots: ['OverhandThrow', 'Interact', 'Hit_Chest', 'Hit_Head'],
+  additiveOneShots: ['OverhandThrow', 'Interact', 'Hit_Chest', 'Hit_Head', 'Melee_Hook'],
   animationEvents: {
     OverhandThrow: [{ time: 0.35, event: 'release' }],
   },

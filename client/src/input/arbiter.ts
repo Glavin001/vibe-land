@@ -21,6 +21,7 @@ export function hasMeaningfulInput(snapshot: ActionSnapshot | null): boolean {
     || snapshot.blockPlacePressed
     || snapshot.materialSlot1Pressed
     || snapshot.materialSlot2Pressed
+    || snapshot.meleePressed
   );
 }
 

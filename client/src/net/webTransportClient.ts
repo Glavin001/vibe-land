@@ -7,6 +7,7 @@ import {
   encodeClientHello,
   encodeFirePacket,
   encodeInputBundle,
+  encodeMeleePacket,
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
@@ -15,6 +16,7 @@ import {
   type BlockEditCmd,
   type FireCmd,
   type InputFrame,
+  type MeleeCmd,
   type ServerDatagramPacket,
   type ServerReliablePacket,
   type WelcomePacket,
@@ -161,6 +163,13 @@ export class WebTransportGameClient {
       return;
     }
     void this.datagramWriter.write(encodeFirePacket(command)).catch((error) => this.handleClosed(error));
+  }
+
+  sendMelee(command: MeleeCmd): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(encodeMeleePacket(command)).catch((error) => this.handleClosed(error));
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {

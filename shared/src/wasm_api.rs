@@ -12,7 +12,7 @@ use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLin
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
-    FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+    FireCmd, InputCmd, MeleeCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
 };
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
@@ -1527,6 +1527,24 @@ impl WasmLocalSession {
             client_interp_ms,
             client_dynamic_interp_ms,
             dir: [dir_x, dir_y, dir_z],
+        });
+    }
+
+    #[wasm_bindgen(js_name = queueMelee)]
+    pub fn queue_melee(
+        &mut self,
+        seq: u16,
+        swing_id: u32,
+        client_time_us: f64,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        self.inner.queue_melee_cmd(MeleeCmd {
+            seq,
+            swing_id,
+            client_time_us: client_time_us.max(0.0).round() as u64,
+            yaw,
+            pitch,
         });
     }
 

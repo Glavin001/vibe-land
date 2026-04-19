@@ -33,9 +33,11 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_MELEEING,
   FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
+  MELEE_COOLDOWN_MS,
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
@@ -926,6 +928,7 @@ function resolvedInputFromBotIntent(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -947,6 +950,7 @@ function makeIdleResolvedInput(
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -1082,6 +1086,9 @@ export function GameWorld({
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  const nextLocalMeleeMsRef = useRef(0);
+  const nextSwingIdRef = useRef(1);
+  const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -1944,6 +1951,22 @@ export function GameWorld({
         });
       }
 
+      if (
+        resolvedInput.meleePressed
+        && client
+        && now >= nextLocalMeleeMsRef.current
+      ) {
+        nextLocalMeleeMsRef.current = now + MELEE_COOLDOWN_MS;
+        const swingId = nextSwingIdRef.current++ >>> 0;
+        client.sendMelee({
+          seq: prediction.peekNextInputSeq(),
+          swingId,
+          clientTimeUs: client.serverClock.serverNowUs(),
+          yaw: yawRef.current,
+          pitch: pitchRef.current,
+        });
+      }
+
       if (prediction.supportsBlockEditing() && (resolvedInput.blockRemovePressed || resolvedInput.blockPlacePressed)) {
         const direction = aimDirectionFromAngles(yawRef.current, pitchRef.current);
         const hit = prediction.raycastBlocks(
@@ -2458,6 +2481,12 @@ export function GameWorld({
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
       const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
+      const isMeleeing = (remoteFlags & FLAG_MELEEING) !== 0;
+      const wasMeleeing = remoteLastMeleeingRef.current.get(id) ?? false;
+      if (isMeleeing && !wasMeleeing && !isDead) {
+        handle.playOneShot('Melee_Hook');
+      }
+      remoteLastMeleeingRef.current.set(id, isMeleeing);
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2506,6 +2535,7 @@ export function GameWorld({
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
+        remoteLastMeleeingRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
