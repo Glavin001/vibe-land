@@ -42,6 +42,19 @@ pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
 // suspension near critically damped at the same ~300 kg chassis mass.
 pub const VEHICLE_CHASSIS_DENSITY: f32 = 211.0;
 
+// ── Vehicle-vs-player collision damage tuning ────
+/// Chassis speed at which a fully direct vehicle hit deals 100 HP
+/// (instant kill). Near the natural terminal velocity of the current
+/// chassis (4000 N rear engine force, ~600 kg, 0.1 linear damping).
+pub const VEHICLE_LETHAL_SPEED_M_S: f32 = 25.0;
+/// Below this chassis speed, vehicle-vs-player overlaps deal no damage.
+/// Prevents stationary-jitter and vehicle-enter overlaps from dealing
+/// spurious damage.
+pub const VEHICLE_DAMAGE_MIN_SPEED_M_S: f32 = 3.0;
+/// Floor on the directness multiplier so a glancing top-speed sideswipe
+/// still deals meaningful damage (~20 HP at top speed).
+pub const VEHICLE_DAMAGE_MIN_DIRECT_FACTOR: f32 = 0.2;
+
 /// Vehicle control inputs derived from a player `InputCmd`.
 pub struct VehicleInputCmd {
     pub throttle: f32,   // 0..1  (move_y > 0)
