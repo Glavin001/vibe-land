@@ -75,6 +75,8 @@ export const MELEE_HALF_CONE_COS = 0.5;
 export const MELEE_ENERGY_COST = 2.0;
 /// Sim ticks to hold FLAG_MELEEING in the snapshot after a successful swing.
 export const MELEE_FLAG_DURATION_TICKS = 12;
+/// How long (ms) a player is blocked from swinging melee after taking damage.
+export const MELEE_HIT_RECOVERY_MS = 400;
 export const HITSCAN_MAX_DISTANCE_M = 1000.0;
 export const DYNAMIC_BODY_IMPULSE = 6.0;
 export const OUT_OF_BOUNDS_Y_M = -12.0;

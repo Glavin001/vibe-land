@@ -38,11 +38,14 @@ import {
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   MELEE_COOLDOWN_MS,
+  MELEE_HALF_CONE_COS,
+  MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
+import { publishMeleeFeedback } from '../ui/meleeFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
@@ -1964,6 +1967,37 @@ export function GameWorld({
           clientTimeUs: client.serverClock.serverNowUs(),
           yaw: yawRef.current,
           pitch: pitchRef.current,
+        });
+
+        // Best-effort client-side prediction for the hitmarker: scan the last
+        // snapshot for a living remote player inside the melee cone.
+        const attackerPos = prediction.getPosition() ?? state.localPosition;
+        const cosP = Math.cos(pitchRef.current);
+        const aimX = Math.sin(yawRef.current) * cosP;
+        const aimZ = Math.cos(yawRef.current) * cosP;
+        const aimPlanar = Math.hypot(aimX, aimZ) || 1;
+        let predictedHit = false;
+        for (const remote of state.remotePlayers.values()) {
+          if (remote.hp <= 0) continue;
+          const dx = remote.position[0] - attackerPos[0];
+          const dy = remote.position[1] - attackerPos[1];
+          const dz = remote.position[2] - attackerPos[2];
+          if (Math.hypot(dx, dy, dz) > MELEE_RANGE_M + 0.5) continue;
+          const planar = Math.hypot(dx, dz);
+          if (planar <= 1e-4) {
+            predictedHit = true;
+            break;
+          }
+          const dot = (aimX * dx + aimZ * dz) / (aimPlanar * planar);
+          if (dot >= MELEE_HALF_CONE_COS) {
+            predictedHit = true;
+            break;
+          }
+        }
+        publishMeleeFeedback({
+          sentAtMs: now,
+          cooldownMs: MELEE_COOLDOWN_MS,
+          predictedHit,
         });
       }
 

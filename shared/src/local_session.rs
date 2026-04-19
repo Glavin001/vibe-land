@@ -4,9 +4,9 @@ use crate::{
     constants::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
         HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
-        MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_RANGE_M,
-        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING,
-        PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
+        MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
+        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MELEE,
+        PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
         PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena},
@@ -757,6 +757,13 @@ impl LocalSession {
             .map(|runtime| runtime.is_bot)
             .unwrap_or(false);
         let died = self.arena.apply_player_damage(victim_id, damage);
+        // Hit-stagger: block melee swings for a short window after taking damage.
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
+            if runtime.next_allowed_melee_ms < until {
+                runtime.next_allowed_melee_ms = until;
+            }
+        }
         if !died {
             return;
         }
@@ -2020,6 +2027,32 @@ mod tests {
             victim_hp,
             100 - MELEE_DAMAGE,
             "cooldown should block the second swing"
+        );
+    }
+
+    #[test]
+    fn damage_staggers_victim_melee_cooldown() {
+        let mut session = isolated_energy_session();
+        let bot_id = 504;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+
+        let before = session.server_time_ms();
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let runtime = session.players.get(&bot_id).expect("bot exists");
+        assert!(
+            runtime.next_allowed_melee_ms >= before.saturating_add(MELEE_HIT_RECOVERY_MS),
+            "victim should be staggered for at least MELEE_HIT_RECOVERY_MS after a hit",
         );
     }
 

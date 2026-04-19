@@ -35,8 +35,8 @@ use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING,
     HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
-    MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M,
-    PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ,
+    MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
+    OUT_OF_BOUNDS_Y_M, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ,
     SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
@@ -2599,6 +2599,7 @@ impl MatchState {
                     state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
                     victim_killed = state.hp == 0 && !state.dead;
                 }
+                self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
                 if victim_killed {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
@@ -2673,6 +2674,18 @@ impl MatchState {
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
                 let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
+            }
+        }
+    }
+
+    /// Block the victim from swinging melee for a short window after taking damage
+    /// (from any source — melee or hitscan). Keeps the later of the existing cooldown
+    /// or the stagger window.
+    fn stagger_melee_after_damage(&mut self, victim_id: u32, server_time_ms: u32) {
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
+            if runtime.next_allowed_melee_ms < until {
+                runtime.next_allowed_melee_ms = until;
             }
         }
     }
@@ -2794,6 +2807,7 @@ impl MatchState {
 
                 if let Some((victim_id, _)) = best {
                     let killed = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
+                    self.stagger_melee_after_damage(victim_id, server_time_ms);
                     if killed {
                         self.kill_player(victim_id, server_time_ms);
                     }

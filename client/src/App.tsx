@@ -19,6 +19,7 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -960,6 +961,7 @@ export function App({
         energy={displayStats.energy}
         visible={connected}
       />
+      <MeleeHUD visible={connected} />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
