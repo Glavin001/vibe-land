@@ -48,6 +48,18 @@ export const PRACTICE_BOT_SPRINT_DISTANCE_M = 10.0;
 
 export type PracticeBotBehaviorKind = 'harass' | 'wander' | 'hold';
 
+export interface PracticeBotSpacingTuning {
+  separationWeight: number;
+  collisionQueryRange: number;
+  chaseOffsetRadiusM: number;
+}
+
+export const DEFAULT_PRACTICE_BOT_SPACING_TUNING: PracticeBotSpacingTuning = Object.freeze({
+  separationWeight: 2.5,
+  collisionQueryRange: 4,
+  chaseOffsetRadiusM: 1.25,
+});
+
 export interface PracticeBotRuntimeOptions {
   maxAgentRadius?: number;
   snapHalfExtents?: Vec3Tuple;
@@ -63,6 +75,8 @@ export interface PracticeBotRuntimeOptions {
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
   vehicleProfile?: VehicleProfile;
+  /** Initial crowd-separation and chase-offset tuning. Defaults to DEFAULT_PRACTICE_BOT_SPACING_TUNING. */
+  spacingTuning?: PracticeBotSpacingTuning;
 }
 
 export interface PracticeBotRuntimeSyncOptions extends PracticeBotRuntimeOptions {
@@ -220,6 +234,8 @@ export class PracticeBotRuntime {
   private useVehicles: boolean;
   /** Static physical profile of the vehicle the bots would drive. */
   private readonly vehicleProfile: VehicleProfile;
+  /** Live crowd-separation and chase-offset tuning applied to all bots. */
+  private spacingTuning: PracticeBotSpacingTuning;
   /**
    * Lazy second crowd built on the first call to `setUseVehicles(true)`.
    * The underlying navmesh has a larger walkable radius so narrow
@@ -279,6 +295,7 @@ export class PracticeBotRuntime {
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
     this.useVehicles = options.useVehicles ?? false;
     this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
+    this.spacingTuning = options.spacingTuning ?? DEFAULT_PRACTICE_BOT_SPACING_TUNING;
   }
 
   attach(host: PracticeBotHost, getSelf: LocalSelfAccessor): void {
@@ -382,7 +399,7 @@ export class PracticeBotRuntime {
     if (kind === this.behaviorKind) return;
     this.behaviorKind = kind;
     for (const bot of this.bots.values()) {
-      bot.brain.setBehavior(makeBehavior(kind));
+      bot.brain.setBehavior(makeBehavior(kind, this.spacingTuning));
       bot.behaviorKind = kind;
     }
   }
@@ -394,6 +411,27 @@ export class PracticeBotRuntime {
       const agent = this.crowd.getAgent(bot.handle.id);
       if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
       this.host?.setBotMaxSpeed(bot.id, null);
+    }
+  }
+
+  /**
+   * Updates crowd-separation and chase-offset tuning for all live bots
+   * without requiring a navmesh rebuild or bot respawn.
+   *
+   * - `separationWeight` / `collisionQueryRange` are patched directly on each
+   *   existing crowd agent so navcat picks them up next `crowd.step()`.
+   * - `chaseOffsetRadiusM` takes effect immediately because each bot's
+   *   behavior closure is rebuilt with the new value.
+   */
+  setSpacingTuning(tuning: PracticeBotSpacingTuning): void {
+    this.spacingTuning = { ...tuning };
+    for (const bot of this.bots.values()) {
+      this.crowd.updateAgentSpacingParams(
+        bot.handle,
+        tuning.separationWeight,
+        tuning.collisionQueryRange,
+      );
+      bot.brain.setBehavior(makeBehavior(bot.behaviorKind, tuning));
     }
   }
 
@@ -412,13 +450,17 @@ export class PracticeBotRuntime {
 
   spawnBot(snapshot?: Partial<PracticeBotSnapshot>): number {
     const spawn = snapshot?.position ?? this.crowd.findRandomWalkable() ?? [0, 2, 0];
-    const handle = this.crowd.addBot(spawn);
+    const handle = this.crowd.addBot(spawn, {
+      separationWeight: this.spacingTuning.separationWeight,
+      collisionQueryRange: this.spacingTuning.collisionQueryRange,
+    });
     const agent = this.crowd.getAgent(handle.id);
     if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
+    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind, this.spacingTuning), {
       anchor: snapshot?.anchor ?? spawn,
+      botId: id,
     });
     this.bots.set(id, {
       id,
@@ -1124,7 +1166,7 @@ function makeIdleIntent(): BotIntent {
   };
 }
 
-function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
+function makeBehavior(kind: PracticeBotBehaviorKind, spacing: PracticeBotSpacingTuning): Behavior {
   switch (kind) {
     case 'wander':
       return wander({ radiusM: 18 });
@@ -1136,6 +1178,7 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
         acquireDistanceM: 80,
         releaseDistanceM: 120,
         fireDistanceM: 0,
+        chaseOffsetRadiusM: spacing.chaseOffsetRadiusM,
       });
   }
 }

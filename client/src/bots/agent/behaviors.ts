@@ -9,6 +9,7 @@ export interface BotBehaviorContext {
   remotePlayers: readonly ObservedPlayer[];
   anchor: Vec3Tuple;
   tick: number;
+  botId: number;
 }
 
 export interface BehaviorDecision {
@@ -63,6 +64,12 @@ export interface HarassNearestOptions {
   meleeDistanceM?: number;
   meleeAgainstVehicleDistanceM?: number;
   targetMemoryTicks?: number;
+  /**
+   * When > 0, the movement target is offset from the player center by this
+   * radius along a deterministic angle derived from (botId, targetPlayerId).
+   * fireAim / meleeAim always point at the real player position.
+   */
+  chaseOffsetRadiusM?: number;
 }
 
 export function harassNearest(options: HarassNearestOptions = {}): Behavior {
@@ -72,6 +79,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const meleeRange = options.meleeDistanceM ?? 2.0;
   const meleeVehicleRange = options.meleeAgainstVehicleDistanceM ?? 3.0;
   const targetMemoryTicks = options.targetMemoryTicks ?? 45;
+  const chaseOffsetRadiusM = options.chaseOffsetRadiusM ?? 0;
   const state = {
     lockedPlayerId: null as number | null,
     lastKnownTarget: null as Vec3Tuple | null,
@@ -107,12 +115,21 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
         nearest.player.position[2],
       ];
       state.lastSeenTick = ctx.tick;
+
+      // Offset the movement target so multiple bots don't all steer to the
+      // exact same player center. The angle is deterministic per (bot, target)
+      // pair so bots spread out predictably. Fire/melee aim always use the
+      // real position. Inside melee range no offset is applied so hits land.
+      let moveX = nearest.player.position[0];
+      let moveZ = nearest.player.position[2];
+      if (!inMelee && chaseOffsetRadiusM > 0) {
+        const angle = chaseAngle(ctx.botId, nearest.player.id);
+        moveX += Math.cos(angle) * chaseOffsetRadiusM;
+        moveZ += Math.sin(angle) * chaseOffsetRadiusM;
+      }
+
       return {
-        target: [
-          nearest.player.position[0],
-          nearest.player.position[1],
-          nearest.player.position[2],
-        ],
+        target: [moveX, nearest.player.position[1], moveZ],
         fireAim,
         meleeAim,
         targetPlayerId: nearest.player.id,
@@ -180,6 +197,12 @@ export function wander(options: WanderOptions = {}): Behavior {
       mode: 'hold_anchor',
     };
   };
+}
+
+/** Stable angle in [0, 2π) unique to each (botId, targetId) pair. */
+function chaseAngle(botId: number, targetId: number): number {
+  const hash = ((botId * 2654435761 + targetId * 1013904223) >>> 0);
+  return (hash / 4294967296) * Math.PI * 2;
 }
 
 function findNearest(
