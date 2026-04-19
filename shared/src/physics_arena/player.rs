@@ -140,7 +140,17 @@ impl PhysicsArena {
                 continue;
             }
 
-            let (player_x, player_z, max_speed_override, collider, position, velocity, yaw, pitch, on_ground) = {
+            let (
+                player_x,
+                player_z,
+                max_speed_override,
+                collider,
+                position,
+                velocity,
+                yaw,
+                pitch,
+                on_ground,
+            ) = {
                 let Some(state) = self.players.get_mut(&player_id) else {
                     results.push((player_id, None));
                     continue;
@@ -530,11 +540,7 @@ mod tests {
 
     fn arena_with_ground(player_count: u32) -> PhysicsArena {
         let mut arena = PhysicsArena::new(MoveConfig::default());
-        arena.add_static_cuboid(
-            vector![0.0, -0.5, 0.0],
-            vector![500.0, 0.5, 500.0],
-            0,
-        );
+        arena.add_static_cuboid(vector![0.0, -0.5, 0.0], vector![500.0, 0.5, 500.0], 0);
         arena.rebuild_broad_phase();
         for id in 1..=player_count {
             arena.spawn_player(id);
@@ -562,8 +568,16 @@ mod tests {
                 .wrapping_mul(1664525)
                 .wrapping_add(1013904223 ^ tick.wrapping_mul(2654435761) ^ id);
             let yaw = ((rng_state >> 16) as f32) * std::f32::consts::TAU / 65535.0;
-            let move_y = if (rng_state >> 8) & 1 == 0 { 127i8 } else { -127i8 };
-            let move_x = if (rng_state >> 9) & 1 == 0 { 40i8 } else { -40i8 };
+            let move_y = if (rng_state >> 8) & 1 == 0 {
+                127i8
+            } else {
+                -127i8
+            };
+            let move_x = if (rng_state >> 9) & 1 == 0 {
+                40i8
+            } else {
+                -40i8
+            };
             InputCmd {
                 seq: tick as u16,
                 buttons: 0,
