@@ -72,9 +72,12 @@ export function SplitScreenRenderer({
 
   useFrame(() => {
     const camerasMap = guestCamerasRef.current;
-    const pixelRatio = gl.getPixelRatio();
-    const fullW = Math.round(size.width * pixelRatio);
-    const fullH = Math.round(size.height * pixelRatio);
+    // `gl.setViewport` / `gl.setScissor` in Three.js internally multiply
+    // their arguments by the renderer's pixel ratio (see WebGLRenderer.
+    // setViewport), so we pass them in CSS pixels. `size.width/height`
+    // from r3f are already in CSS pixels.
+    const fullW = Math.max(1, Math.round(size.width));
+    const fullH = Math.max(1, Math.round(size.height));
     const playerCount = 1 + guestSlotIds.length;
     const viewports = computeSplitScreenViewports(playerCount, fullW, fullH);
 
