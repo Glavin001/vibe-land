@@ -309,6 +309,10 @@ export class PracticeBotRuntime {
     personality.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.personality = personality;
     this.behaviorKind = options.initialBehavior ?? personality.behaviorKind;
+    // Keep the personality's behaviorKind in sync with the runtime's so the
+    // shared `makeBehaviorFromPersonality` helper spawns the right Behavior
+    // when `initialBehavior` overrides what the personality specified.
+    this.personality.behaviorKind = this.behaviorKind;
     this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
     this.enableShooting = options.enableShooting ?? true;
