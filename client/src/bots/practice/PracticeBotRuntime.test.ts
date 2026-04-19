@@ -430,6 +430,57 @@ describe('PracticeBotRuntime.create', () => {
     runtime.detach();
   });
 
+  it('publishes a visible shot event when a bot fires', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+    expect(initialInfo?.id).toBe(botId);
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    host.castSceneRayResult = null;
+
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 8,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    const shots: Array<{ shooterId: number; origin: [number, number, number]; end: [number, number, number]; kind: string }> = [];
+    const unsubscribe = runtime.onShotVisual((shot) => {
+      shots.push(shot);
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(1000);
+
+    expect(shots.length).toBeGreaterThan(0);
+    expect(shots[0]?.shooterId).toBe(botId);
+    expect(shots[0]?.kind).toBe('body');
+    expect(shots[0]?.origin[0]).toBeCloseTo(initialInfo?.position[0] ?? 0, 1);
+    expect(shots[0]?.origin[2]).toBeCloseTo(initialInfo?.position[2] ?? 0, 1);
+    expect(shots[0]?.end[0]).toBeGreaterThan(shots[0]?.origin[0] ?? 0);
+
+    unsubscribe();
+    runtime.clear();
+    runtime.detach();
+  });
+
   it('suppresses FireCmd packets when castSceneRay reports a blocking wall in front of the bot', () => {
     vi.useFakeTimers();
 

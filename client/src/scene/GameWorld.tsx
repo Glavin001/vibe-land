@@ -57,7 +57,7 @@ import { netPlayerStateToMeters, shotFiredToWorldEndpoints } from '../net/protoc
 import { publishMeleeFeedback } from '../ui/meleeFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
-import type { PracticeBotRuntime } from '../bots';
+import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
@@ -1333,6 +1333,20 @@ export function GameWorld({
     return () => {
       practiceBots.detach({ preserveHostBots: true });
     };
+  }, [practiceBots, practiceMode, ready]);
+
+  useEffect(() => {
+    if (!practiceBots || !practiceMode || !ready) return;
+    return practiceBots.onShotVisual((shot: PracticeBotShotVisual) => {
+      pushActiveShotTrace(activeShotTracesRef.current, {
+        id: nextShotTraceIdRef.current++,
+        shooterId: shot.shooterId,
+        origin: shot.origin,
+        end: shot.end,
+        kind: shot.kind,
+        expiresAtMs: performance.now() + LOCAL_SHOT_TRACE_TTL_MS,
+      });
+    });
   }, [practiceBots, practiceMode, ready]);
 
   useEffect(() => {

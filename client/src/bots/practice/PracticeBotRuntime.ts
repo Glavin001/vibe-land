@@ -7,6 +7,7 @@ import type { PracticeBotHost } from '../../net/localPracticeClient';
 import { FLAG_DEAD, aimDirectionFromAngles } from '../../net/protocol';
 import {
   FLAG_IN_VEHICLE,
+  HITSCAN_MAX_DISTANCE_M,
   MELEE_COOLDOWN_MS,
   PLAYER_EYE_HEIGHT_M,
   RIFLE_FIRE_INTERVAL_MS,
@@ -176,6 +177,13 @@ export interface PracticeBotSnapshot {
   anchor: Vec3Tuple;
 }
 
+export interface PracticeBotShotVisual {
+  shooterId: number;
+  origin: Vec3Tuple;
+  end: Vec3Tuple;
+  kind: 'miss' | 'world' | 'body';
+}
+
 interface PracticeBot {
   id: number;
   handle: BotHandle;
@@ -233,6 +241,7 @@ const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
 export class PracticeBotRuntime {
   readonly crowd: BotCrowd;
   private readonly bots = new Map<number, PracticeBot>();
+  private readonly shotVisualListeners = new Set<(shot: PracticeBotShotVisual) => void>();
   private nextId = PRACTICE_BOT_ID_BASE;
   private behaviorKind: PracticeBotBehaviorKind;
   private maxSpeed: number;
@@ -515,6 +524,13 @@ export class PracticeBotRuntime {
       this.crowd.removeObstacleAgent(agentId);
     }
     this.vehicleObstacleAgents.clear();
+  }
+
+  onShotVisual(listener: (shot: PracticeBotShotVisual) => void): () => void {
+    this.shotVisualListeners.add(listener);
+    return () => {
+      this.shotVisualListeners.delete(listener);
+    };
   }
 
   captureBotSnapshots(): PracticeBotSnapshot[] {
@@ -906,6 +922,7 @@ export class PracticeBotRuntime {
       clientDynamicInterpMs: 0,
       dir,
     });
+    this.emitShotVisual(bot, origin, dir);
   }
 
   private targetDistanceForFire(bot: PracticeBot, origin: Vec3Tuple): number | null {
@@ -921,6 +938,39 @@ export class PracticeBotRuntime {
     const dy = position[1] + PLAYER_EYE_HEIGHT_M * 0.5 - origin[1];
     const dz = position[2] - origin[2];
     return Math.hypot(dx, dy, dz);
+  }
+
+  private emitShotVisual(
+    bot: PracticeBot,
+    origin: Vec3Tuple,
+    dir: Vec3Tuple,
+  ): void {
+    if (this.shotVisualListeners.size === 0) return;
+    const targetDistance = this.targetDistanceForFire(bot, origin);
+    const worldHit = this.host?.castSceneRay?.(origin, dir, HITSCAN_MAX_DISTANCE_M) ?? null;
+    const hitDistance = worldHit?.toi ?? null;
+    const distance = targetDistance != null
+      ? Math.min(targetDistance, hitDistance ?? Number.POSITIVE_INFINITY, HITSCAN_MAX_DISTANCE_M)
+      : Math.min(hitDistance ?? HITSCAN_MAX_DISTANCE_M, HITSCAN_MAX_DISTANCE_M);
+    const kind: PracticeBotShotVisual['kind'] = targetDistance != null && (hitDistance == null || targetDistance <= hitDistance + 0.25)
+      ? 'body'
+      : hitDistance != null
+        ? 'world'
+        : 'miss';
+    const end: Vec3Tuple = [
+      origin[0] + dir[0] * distance,
+      origin[1] + dir[1] * distance,
+      origin[2] + dir[2] * distance,
+    ];
+    const shot: PracticeBotShotVisual = {
+      shooterId: bot.id,
+      origin: [origin[0], origin[1], origin[2]],
+      end,
+      kind,
+    };
+    for (const listener of this.shotVisualListeners) {
+      listener(shot);
+    }
   }
 
   private sampleObservedVelocity(
