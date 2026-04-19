@@ -8,6 +8,7 @@ import { MAX_PRACTICE_BOTS, type BotDebugInfo, type BotObstacleDebugInfo, type P
 
 interface BotsDebugOverlayProps {
   runtime: PracticeBotRuntime;
+  showLabels?: boolean;
 }
 
 const MAX_BOTS = MAX_PRACTICE_BOTS;
@@ -65,7 +66,7 @@ interface ObstacleSlot {
   pillar: THREE.Mesh;
 }
 
-export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
+export function BotsDebugOverlay({ runtime, showLabels = false }: BotsDebugOverlayProps) {
   const rootRef = useRef<THREE.Group>(null);
   const pathLinesRef = useRef<THREE.LineSegments | null>(null);
   const slotsRef = useRef<Map<number, BotSlot>>(new Map());
@@ -75,11 +76,15 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
   const snapHalfExtents = runtime.crowd.debugSnapHalfExtents;
 
   useEffect(() => {
+    if (!showLabels) {
+      setLabelInfos([]);
+      return undefined;
+    }
     const interval = setInterval(() => {
       setLabelInfos(latestInfosRef.current.slice());
     }, 100);
     return () => clearInterval(interval);
-  }, []);
+  }, [showLabels]);
 
   const pathGeometry = useMemo(() => {
     const geom = new THREE.BufferGeometry();
@@ -282,7 +287,7 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
         material={pathMaterial}
         frustumCulled={false}
       />
-      {labelInfos.map((info) => (
+      {showLabels && labelInfos.map((info) => (
         <Html
           key={info.id}
           position={[info.position[0], info.position[1] + 2.4, info.position[2]]}

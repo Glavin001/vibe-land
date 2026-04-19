@@ -28,6 +28,7 @@ type GameSceneProps = {
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   cosmeticDeathPhysicsEnabled?: boolean;
@@ -58,6 +59,7 @@ export function GameScene({
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   cosmeticDeathPhysicsEnabled = true,
@@ -103,6 +105,7 @@ export function GameScene({
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
+          practiceBotsDebugLabels={practiceBotsDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}

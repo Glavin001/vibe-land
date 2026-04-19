@@ -261,6 +261,7 @@ export function App({
   const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
+  const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
   const refreshPracticeBotStats = useCallback(() => {
     const runtime = practiceBotRuntimeRef.current;
     setPracticeBotStats(runtime ? runtime.stats() : null);
@@ -305,6 +306,9 @@ export function App({
   const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
     setPracticeBotDebugOverlay(value);
   }, []);
+  const handleToggleBotDebugLabels = useCallback((value: boolean) => {
+    setPracticeBotDebugLabels(value);
+  }, []);
   const handleSetBotUseVehicles = useCallback((value: boolean) => {
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
@@ -325,6 +329,7 @@ export function App({
       setPracticeBotStats(null);
       setPracticeBotNavConfig(null);
       setPracticeBotDebugOverlay(false);
+      setPracticeBotDebugLabels(false);
     }
   }, [practiceMode]);
 
@@ -1021,12 +1026,14 @@ export function App({
         navConfig={practiceBotNavConfig}
         navTuning={practiceBotNavTuning}
         debugOverlay={practiceBotDebugOverlay}
+        debugLabels={practiceBotDebugLabels}
         onSetBotCount={handleSetBotCount}
         onClear={handleClearBots}
         onSetBehavior={handleSetBotBehavior}
         onUpdateNavTuning={handleUpdateBotNavTuning}
         onResetNavTuning={handleResetBotNavTuning}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
+        onToggleDebugLabels={handleToggleBotDebugLabels}
         onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar
@@ -1085,6 +1092,7 @@ export function App({
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceMode ? practiceBotRuntime : null}
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
+          practiceBotsDebugLabels={practiceMode && practiceBotDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}

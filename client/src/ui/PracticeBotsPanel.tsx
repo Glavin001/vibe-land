@@ -20,12 +20,14 @@ interface PracticeBotsPanelProps {
   navConfig: PracticeBotNavDebugConfig | null;
   navTuning: PracticeBotNavTuning | null;
   debugOverlay: boolean;
+  debugLabels: boolean;
   onSetBotCount: (count: number) => void;
   onClear: () => void;
   onSetBehavior: (kind: PracticeBotBehaviorKind) => void;
   onUpdateNavTuning: (patch: Partial<PracticeBotNavTuning>) => void;
   onResetNavTuning: () => void;
   onToggleDebugOverlay: (value: boolean) => void;
+  onToggleDebugLabels: (value: boolean) => void;
   onSetUseVehicles: (value: boolean) => void;
 }
 
@@ -57,12 +59,14 @@ export function PracticeBotsPanel({
   navConfig,
   navTuning,
   debugOverlay,
+  debugLabels,
   onSetBotCount,
   onClear,
   onSetBehavior,
   onUpdateNavTuning,
   onResetNavTuning,
   onToggleDebugOverlay,
+  onToggleDebugLabels,
   onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
@@ -214,15 +218,26 @@ export function PracticeBotsPanel({
           </div>
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Debug')}
-            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
-              <input
-                type="checkbox"
-                checked={debugOverlay}
-                onChange={(event) => onToggleDebugOverlay(event.target.checked)}
-                className="accent-sky-300"
-              />
-              <span>Show navmesh, raw and snapped targets, paths, and state labels in scene</span>
-            </label>
+            <div className="flex flex-1 flex-col gap-2">
+              <label className="flex cursor-pointer items-center gap-2 text-white/[0.85]">
+                <input
+                  type="checkbox"
+                  checked={debugOverlay}
+                  onChange={(event) => onToggleDebugOverlay(event.target.checked)}
+                  className="accent-sky-300"
+                />
+                <span>Show navmesh, raw and snapped targets, and paths in scene</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-white/[0.85]">
+                <input
+                  type="checkbox"
+                  checked={debugLabels}
+                  onChange={(event) => onToggleDebugLabels(event.target.checked)}
+                  className="accent-sky-300"
+                />
+                <span>Show floating bot detail cards above bots</span>
+              </label>
+            </div>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <button
