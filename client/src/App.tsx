@@ -21,6 +21,7 @@ import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugO
 import { EnergyBar } from './ui/EnergyBar';
 import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
+import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
 import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
@@ -1040,6 +1041,10 @@ export function App({
       <EnergyBar
         hp={displayStats.hp}
         energy={displayStats.energy}
+        visible={connected}
+      />
+      <SpawnProtectionHUD
+        protectedActive={displayStats.spawnProtected}
         visible={connected}
       />
       <MeleeHUD visible={connected} />
