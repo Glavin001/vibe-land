@@ -9,13 +9,17 @@
     "r2:down": "docker compose down",
     "r2:reset": "docker compose down -v && docker compose up -d",
     "r2:logs": "docker compose logs -f minio",
-    "r2:test": "client/node_modules/.bin/tsx scripts/test-r2-e2e.mts"
+    "r2:test": "client/node_modules/.bin/tsx scripts/test-r2-e2e.mts",
+    "api:dev": "tsx watch api/server.ts",
+    "api:start": "NODE_ENV=production tsx api/server.ts",
+    "build:client": "npm --prefix client install && npm --prefix client run build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.658.0",
     "@aws-sdk/s3-request-presigner": "^3.658.0"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0"
+    "@types/node": "^20.11.0",
+    "tsx": "^4.19.0"
   }
 }
