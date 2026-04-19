@@ -27,6 +27,7 @@ function applySnapshotV1(state: BotSnapshotState, packet: Extract<ServerReliable
         id: playerState.id,
         position: [meters.position[0], meters.position[1], meters.position[2]],
         isDead: (meters.flags & FLAG_DEAD) !== 0,
+        velocity: [meters.velocity[0], meters.velocity[1], meters.velocity[2]],
         isInVehicle: (meters.flags & FLAG_IN_VEHICLE) !== 0,
       });
     }
@@ -64,6 +65,11 @@ function applySnapshotV2(state: BotSnapshotState, packet: Extract<ServerDatagram
         anchorPos[2] + q2_5mmToMeters(player.dzQ2_5mm),
       ],
       isDead: (player.flags & FLAG_DEAD) !== 0,
+      velocity: [
+        player.vxCms / 100,
+        player.vyCms / 100,
+        player.vzCms / 100,
+      ],
       isInVehicle: (player.flags & FLAG_IN_VEHICLE) !== 0,
     });
   }

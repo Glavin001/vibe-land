@@ -29,6 +29,7 @@ interface PracticeBotsPanelProps {
   onToggleDebugOverlay: (value: boolean) => void;
   onToggleDebugLabels: (value: boolean) => void;
   onSetEnableShooting: (value: boolean) => void;
+  onSetEnableRecoveryLeash: (value: boolean) => void;
   onSetUseVehicles: (value: boolean) => void;
 }
 
@@ -69,6 +70,7 @@ export function PracticeBotsPanel({
   onToggleDebugOverlay,
   onToggleDebugLabels,
   onSetEnableShooting,
+  onSetEnableRecoveryLeash,
   onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
@@ -83,6 +85,7 @@ export function PracticeBotsPanel({
   const maxSpeed = stats?.maxSpeed ?? PRACTICE_BOT_SPRINT_SPEED;
   const activeNav = navConfig;
   const enableShooting = stats?.enableShooting ?? true;
+  const enableRecoveryLeash = stats?.enableRecoveryLeash ?? false;
   const useVehicles = stats?.useVehicles ?? false;
 
   useEffect(() => {
@@ -217,6 +220,18 @@ export function PracticeBotsPanel({
                 className="accent-sky-300"
               />
               <span>bots can fire their weapons</span>
+            </label>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            {panelLabel('Leash')}
+            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
+              <input
+                type="checkbox"
+                checked={enableRecoveryLeash}
+                onChange={(event) => onSetEnableRecoveryLeash(event.target.checked)}
+                className="accent-sky-300"
+              />
+              <span>return bots to their spawn anchor if they stray too far</span>
             </label>
           </div>
           <div className="flex items-center gap-2 text-xs">

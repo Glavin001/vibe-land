@@ -262,6 +262,7 @@ export function App({
   const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
   const [practiceBotShootingEnabled, setPracticeBotShootingEnabled] = useState(true);
+  const [practiceBotRecoveryLeashEnabled, setPracticeBotRecoveryLeashEnabled] = useState(false);
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
   const [playerIdLabelsEnabled, setPlayerIdLabelsEnabled] = useState(false);
@@ -319,6 +320,13 @@ export function App({
     runtime.setEnableShooting(value);
     refreshPracticeBotStats();
   }, [refreshPracticeBotStats]);
+  const handleSetBotEnableRecoveryLeash = useCallback((value: boolean) => {
+    setPracticeBotRecoveryLeashEnabled(value);
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setEnableRecoveryLeash(value);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
   const handleSetBotUseVehicles = useCallback((value: boolean) => {
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
@@ -374,6 +382,7 @@ export function App({
     const desiredCount = practiceBotDesiredCount;
     const desiredBehavior = practiceBotDesiredBehavior;
     const desiredShootingEnabled = practiceBotShootingEnabled;
+    const desiredRecoveryLeashEnabled = practiceBotRecoveryLeashEnabled;
     const navTuning = practiceBotNavTuning;
     const handle = window.setTimeout(() => {
       void (async () => {
@@ -382,6 +391,7 @@ export function App({
           const runtimeOptions = {
             maxAgentRadius: 0.6,
             enableShooting: desiredShootingEnabled,
+            enableRecoveryLeash: desiredRecoveryLeashEnabled,
             navigationProfile: {
               ...sharedProfile,
               walkableClimb: navTuning?.walkableClimb ?? sharedProfile.walkableClimb,
@@ -431,6 +441,7 @@ export function App({
     practiceMode,
     effectiveWorldDocument,
     practiceBotShootingEnabled,
+    practiceBotRecoveryLeashEnabled,
     practiceBotNavTuning,
   ]);
 
@@ -1048,6 +1059,7 @@ export function App({
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
         onToggleDebugLabels={handleToggleBotDebugLabels}
         onSetEnableShooting={handleSetBotEnableShooting}
+        onSetEnableRecoveryLeash={handleSetBotEnableRecoveryLeash}
         onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar

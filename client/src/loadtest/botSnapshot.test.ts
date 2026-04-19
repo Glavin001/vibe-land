@@ -66,6 +66,7 @@ describe('applyBotSnapshotState', () => {
     expect(state.localState?.position).toEqual([1, 2, 3]);
     expect(state.remotePlayers.size).toBe(1);
     expect(state.remotePlayers.get(8)?.position).toEqual([4, 1.5, 5]);
+    expect(state.remotePlayers.get(8)?.velocity).toEqual([0, 0, 0]);
     expect(state.remotePlayers.get(8)?.isDead).toBe(false);
   });
 
@@ -115,6 +116,7 @@ describe('applyBotSnapshotState', () => {
     expect(state.remotePlayers.has(99)).toBe(false);
     expect(state.remotePlayers.get(3)?.position[0]).toBeCloseTo(11);
     expect(state.remotePlayers.get(3)?.position[2]).toBeCloseTo(-4.5);
+    expect(state.remotePlayers.get(3)?.velocity).toEqual([0.1, 0, 0.2]);
   });
 
   it('ignores non-snapshot packets', () => {

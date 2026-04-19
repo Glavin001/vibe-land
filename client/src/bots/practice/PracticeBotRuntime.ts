@@ -67,6 +67,8 @@ export interface PracticeBotRuntimeOptions {
   tileSizeVoxels?: number;
   /** Whether bots are allowed to emit rifle fire. */
   enableShooting?: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  enableRecoveryLeash?: boolean;
   /** Whether bots start with vehicle mode enabled. */
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
@@ -96,6 +98,8 @@ export interface PracticeBotStats {
   running: boolean;
   /** Whether the bot runtime currently allows ranged fire. */
   enableShooting: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  enableRecoveryLeash: boolean;
   /** Whether the vehicle-aware planner is currently enabled. */
   useVehicles: boolean;
   /** Number of vehicle-sized tris in the lazy vehicle navmesh, 0 if unbuilt. */
@@ -240,6 +244,8 @@ export class PracticeBotRuntime {
   private useVehicles: boolean;
   /** Whether bots may emit FireCmd packets. */
   private enableShooting: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  private enableRecoveryLeash: boolean;
   /** Static physical profile of the vehicle the bots would drive. */
   private readonly vehicleProfile: VehicleProfile;
   /**
@@ -316,6 +322,7 @@ export class PracticeBotRuntime {
     this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
     this.enableShooting = options.enableShooting ?? true;
+    this.enableRecoveryLeash = options.enableRecoveryLeash ?? false;
     this.useVehicles = options.useVehicles ?? personality.useVehicles;
     this.vehicleProfile = options.vehicleProfile ?? personality.vehicleProfile;
   }
@@ -388,6 +395,7 @@ export class PracticeBotRuntime {
       navTriangles: this.crowd.nav.geometry.triangleCount,
       running: this.running,
       enableShooting: this.enableShooting,
+      enableRecoveryLeash: this.enableRecoveryLeash,
       useVehicles: this.useVehicles,
       vehicleNavTriangles: this.vehicleCrowd?.nav.geometry.triangleCount ?? 0,
     };
@@ -426,6 +434,14 @@ export class PracticeBotRuntime {
     this.enableShooting = value;
   }
 
+  setEnableRecoveryLeash(value: boolean): void {
+    if (value === this.enableRecoveryLeash) return;
+    this.enableRecoveryLeash = value;
+    for (const bot of this.bots.values()) {
+      bot.brain.setBehavior(this.makeCurrentBehavior());
+    }
+  }
+
   private ensureVehicleCrowd(): BotCrowd {
     if (this.vehicleCrowd) return this.vehicleCrowd;
     this.vehicleCrowd = createVehicleBotCrowd(this.world, this.vehicleProfile);
@@ -438,7 +454,7 @@ export class PracticeBotRuntime {
     this.behaviorKind = kind;
     this.personality.behaviorKind = kind;
     for (const bot of this.bots.values()) {
-      bot.brain.setBehavior(makeBehaviorFromPersonality(this.personality));
+      bot.brain.setBehavior(this.makeCurrentBehavior());
       bot.behaviorKind = kind;
     }
   }
@@ -474,11 +490,12 @@ export class PracticeBotRuntime {
     if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehaviorFromPersonality(this.personality), {
+    const brain = new BotBrain(this.crowd, handle, this.makeCurrentBehavior(), {
       anchor: snapshot?.anchor ?? spawn,
       jumpCooldownTicks: this.personality.jumpCooldownTicks,
       stuckTicksBeforeJump: this.personality.stuckTickThreshold,
       minMoveSpeed: this.personality.minMoveSpeedM,
+      sprintTargetDistanceM: this.personality.sprintDistanceM,
       meleeDistanceM: this.personality.meleeDistanceM,
       aimJitterRad: this.personality.aimJitterRad,
       aimLeadSec: this.personality.aimLeadSec,
@@ -514,6 +531,16 @@ export class PracticeBotRuntime {
       this.host.setBotMaxSpeed(id, null);
     }
     return id;
+  }
+
+  private makeCurrentBehavior() {
+    return makeBehaviorFromPersonality(this.personality, {
+      enableDistanceRecovery: this.enableRecoveryLeash,
+      recoveryFloorReference: 'anchor',
+      recoveryDropBelowAnchorM: 2.0,
+      recoveryReference: 'anchor',
+      recoveryTarget: 'anchor',
+    });
   }
 
   removeBot(id: number): boolean {

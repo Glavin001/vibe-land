@@ -178,6 +178,7 @@ export class LoadTestBotRuntime {
       jumpCooldownTicks: this.personality.jumpCooldownTicks,
       stuckTicksBeforeJump: this.personality.stuckTickThreshold,
       minMoveSpeed: this.personality.minMoveSpeedM,
+      sprintTargetDistanceM: this.personality.sprintDistanceM,
       meleeDistanceM: this.personality.meleeDistanceM,
       aimJitterRad: this.personality.aimJitterRad,
       aimLeadSec: this.personality.aimLeadSec,

@@ -62,6 +62,8 @@ export function holdAnchor(anchor?: Vec3Tuple): Behavior {
 export interface HarassNearestOptions {
   acquireDistanceM?: number;
   releaseDistanceM?: number;
+  stopDistanceM?: number;
+  orbitDistanceM?: number;
   fireDistanceM?: number;
   /**
    * Minimum planar distance below which a bot will not try to fire. Prevents
@@ -81,6 +83,8 @@ export interface HarassNearestOptions {
 export function harassNearest(options: HarassNearestOptions = {}): Behavior {
   const acquire = options.acquireDistanceM ?? 40;
   const release = options.releaseDistanceM ?? acquire * 1.5;
+  const stopDistance = options.stopDistanceM ?? 1.6;
+  const orbitDistance = Math.max(stopDistance, options.orbitDistanceM ?? 4.5);
   const fireRange = options.fireDistanceM ?? 18;
   const minFireRange = options.minFireDistanceM ?? 1.5;
   const meleeRange = options.meleeDistanceM ?? 2.0;
@@ -92,6 +96,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
     lastKnownTarget: null as Vec3Tuple | null,
     lastSeenTick: -Infinity,
     standUntilTick: -Infinity,
+    wasInFireWindow: false,
   };
 
   return (ctx) => {
@@ -126,6 +131,14 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
           ] as Vec3Tuple)
         : null;
       const meleeAim = inMelee ? nearest.player.position : null;
+      const moveTarget = inMelee
+        ? null
+        : computeHarassMoveTarget(
+            self.position,
+            nearest.player.position,
+            stopDistance,
+            orbitDistance,
+          );
       state.lockedPlayerId = nearest.player.id;
       state.lastKnownTarget = [
         nearest.player.position[0],
@@ -133,18 +146,13 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
         nearest.player.position[2],
       ];
       state.lastSeenTick = ctx.tick;
-      if (inFireWindow) {
+      if (inFireWindow && !state.wasInFireWindow) {
         state.standUntilTick = ctx.tick + standAndShootTicks;
       }
-      const standing = ctx.tick <= state.standUntilTick;
+      state.wasInFireWindow = inFireWindow;
+      const standing = inFireWindow && ctx.tick <= state.standUntilTick;
       return {
-        target: standing
-          ? null
-          : [
-              nearest.player.position[0],
-              nearest.player.position[1],
-              nearest.player.position[2],
-            ],
+        target: standing ? null : moveTarget,
         fireAim,
         fireAimVelocity,
         meleeAim,
@@ -158,6 +166,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
       && state.lastKnownTarget
       && ctx.tick - state.lastSeenTick <= targetMemoryTicks
     ) {
+      state.wasInFireWindow = false;
       return {
         target: [
           state.lastKnownTarget[0],
@@ -173,6 +182,7 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
 
     state.lockedPlayerId = null;
     state.lastKnownTarget = null;
+    state.wasInFireWindow = false;
 
     return {
       target: [anchor[0], self.position[1], anchor[2]],
@@ -187,8 +197,32 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
 export interface ArenaHarassOptions extends HarassNearestOptions {
   /** Distance from arena origin (XZ plane) above which the bot retreats to center. */
   recoveryDistanceM?: number;
+  /** Whether the planar distance leash is active at all. */
+  enableDistanceRecovery?: boolean;
   /** Y-coordinate below which the bot is considered "off the arena" and recovers. */
   recoveryFloorY?: number;
+  /**
+   * Which reference frame to use for the vertical recovery check.
+   * `absolute` preserves arena semantics; `anchor` treats "fell off" as
+   * dropping well below the bot's spawn/home plane.
+   */
+  recoveryFloorReference?: 'absolute' | 'anchor';
+  /**
+   * When `recoveryFloorReference === 'anchor'`, trigger vertical recovery
+   * once the bot has dropped this far below its anchor Y.
+   */
+  recoveryDropBelowAnchorM?: number;
+  /**
+   * Which XZ reference point the recovery-distance check is measured from.
+   * `origin` preserves the arena-loadtest semantics; `anchor` is better for
+   * freeform practice worlds where combat may not happen around (0, 0).
+   */
+  recoveryReference?: 'origin' | 'anchor';
+  /**
+   * Where the bot retreats once recovery triggers.
+   * `center` means arena center `[0, anchorY, 0]`; `anchor` means home spawn.
+   */
+  recoveryTarget?: 'center' | 'anchor';
   /** When true, the bot retreats to center if it has no acquired target (instead of holding anchor). */
   preferCenterWhenIdle?: boolean;
   /** Optional secondary fire intent: enables aiming at the arena center when no player is in fireRange. */
@@ -199,7 +233,8 @@ export interface ArenaHarassOptions extends HarassNearestOptions {
  * Like {@link harassNearest}, but adds the load-test arena semantics:
  *
  *  - If the bot has fallen off the arena (`y < recoveryFloorY`) or wandered
- *    too far from origin, it retreats to `(0, y, 0)` and emits no fire/melee.
+ *    too far from origin, it retreats to the arena center on its anchor plane
+ *    and emits no fire/melee.
  *  - When idle and `preferCenterWhenIdle` is set (clustered spawn pattern),
  *    the bot returns to center instead of holding anchor.
  *  - When `fireAtCenter` is set, the bot's fire intent falls back to the
@@ -210,7 +245,12 @@ export interface ArenaHarassOptions extends HarassNearestOptions {
  */
 export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
   const recoveryDistance = options.recoveryDistanceM ?? 32;
+  const enableDistanceRecovery = options.enableDistanceRecovery ?? true;
   const recoveryFloorY = options.recoveryFloorY ?? 0.5;
+  const recoveryFloorReference = options.recoveryFloorReference ?? 'absolute';
+  const recoveryDropBelowAnchorM = options.recoveryDropBelowAnchorM ?? 2.0;
+  const recoveryReference = options.recoveryReference ?? 'origin';
+  const recoveryTarget = options.recoveryTarget ?? 'center';
   const preferCenterWhenIdle = options.preferCenterWhenIdle ?? false;
   const fireAtCenter = options.fireAtCenter ?? false;
   const fireRange = options.fireDistanceM ?? 18;
@@ -218,13 +258,25 @@ export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
   const CENTER_AIM: Vec3Tuple = [0, 1.0, 0];
 
   return (ctx) => {
-    const { self } = ctx;
+    const { self, anchor } = ctx;
     if (self.dead) return DEAD_DECISION;
 
+    const recoveryDx = self.position[0] - (recoveryReference === 'anchor' ? anchor[0] : 0);
+    const recoveryDz = self.position[2] - (recoveryReference === 'anchor' ? anchor[2] : 0);
     const centerDistance = Math.hypot(self.position[0], self.position[2]);
-    if (self.position[1] < recoveryFloorY || centerDistance > recoveryDistance) {
+    const recoveryDistanceFromReference = Math.hypot(recoveryDx, recoveryDz);
+    const recoveryPoint: Vec3Tuple = recoveryTarget === 'anchor'
+      ? [anchor[0], anchor[1], anchor[2]]
+      : [0, anchor[1], 0];
+    const fellBelowRecoveryFloor = recoveryFloorReference === 'anchor'
+      ? self.position[1] < anchor[1] - recoveryDropBelowAnchorM
+      : self.position[1] < recoveryFloorY;
+    if (
+      fellBelowRecoveryFloor
+      || (enableDistanceRecovery && recoveryDistanceFromReference > recoveryDistance)
+    ) {
       return {
-        target: [0, self.position[1], 0],
+        target: recoveryPoint,
         fireAim: null,
         meleeAim: null,
         targetPlayerId: null,
@@ -237,7 +289,7 @@ export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
     if (decision.mode === 'hold_anchor' && preferCenterWhenIdle) {
       return {
         ...decision,
-        target: [0, self.position[1], 0],
+        target: recoveryPoint,
         mode: 'recover_center',
       };
     }
@@ -263,7 +315,15 @@ export function arenaHarass(options: ArenaHarassOptions = {}): Behavior {
  */
 export function makeBehaviorFromPersonality(
   personality: BotPersonality,
-  options: { fireAtCenter?: boolean; preferCenterWhenIdle?: boolean } = {},
+  options: {
+    fireAtCenter?: boolean;
+    preferCenterWhenIdle?: boolean;
+    enableDistanceRecovery?: boolean;
+    recoveryFloorReference?: 'absolute' | 'anchor';
+    recoveryDropBelowAnchorM?: number;
+    recoveryReference?: 'origin' | 'anchor';
+    recoveryTarget?: 'center' | 'anchor';
+  } = {},
 ): Behavior {
   switch (personality.behaviorKind) {
     case 'wander':
@@ -275,8 +335,15 @@ export function makeBehaviorFromPersonality(
       return arenaHarass({
         acquireDistanceM: personality.targetAcquireDistanceM,
         releaseDistanceM: personality.targetReleaseDistanceM,
+        stopDistanceM: personality.stopDistanceM,
+        orbitDistanceM: personality.orbitDistanceM,
         targetMemoryTicks: personality.targetMemoryTicks,
         recoveryDistanceM: personality.recoveryDistanceM,
+        enableDistanceRecovery: options.enableDistanceRecovery ?? true,
+        recoveryFloorReference: options.recoveryFloorReference ?? 'absolute',
+        recoveryDropBelowAnchorM: options.recoveryDropBelowAnchorM ?? 2.0,
+        recoveryReference: options.recoveryReference ?? 'origin',
+        recoveryTarget: options.recoveryTarget ?? 'center',
         fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
         minFireDistanceM: personality.minFireDistanceM,
         standAndShootTicks: personality.standAndShootTicks,
@@ -356,4 +423,44 @@ function findById(
     };
   }
   return null;
+}
+
+function computeHarassMoveTarget(
+  self: Vec3Tuple,
+  target: Vec3Tuple,
+  stopDistanceM: number,
+  orbitDistanceM: number,
+): Vec3Tuple | null {
+  const dx = target[0] - self[0];
+  const dz = target[2] - self[2];
+  const planarDistance = Math.hypot(dx, dz);
+  if (planarDistance <= stopDistanceM) {
+    return null;
+  }
+
+  const targetY = target[1];
+  if (planarDistance > orbitDistanceM) {
+    const scale = orbitDistanceM / Math.max(planarDistance, 0.0001);
+    return [
+      target[0] - dx * scale,
+      targetY,
+      target[2] - dz * scale,
+    ];
+  }
+
+  const orbitAdvance = Math.min(Math.max(orbitDistanceM * 0.35, 0.75), 2.0);
+  const invDistance = 1 / Math.max(planarDistance, 0.0001);
+  const radialX = -dx * invDistance;
+  const radialZ = -dz * invDistance;
+  const tangentX = -radialZ;
+  const tangentZ = radialX;
+  const orbitDirX = radialX * orbitDistanceM + tangentX * orbitAdvance;
+  const orbitDirZ = radialZ * orbitDistanceM + tangentZ * orbitAdvance;
+  const orbitDirLength = Math.hypot(orbitDirX, orbitDirZ);
+  const scale = orbitDistanceM / Math.max(orbitDirLength, 0.0001);
+  return [
+    target[0] + orbitDirX * scale,
+    targetY,
+    target[2] + orbitDirZ * scale,
+  ];
 }

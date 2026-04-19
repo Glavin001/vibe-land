@@ -1343,6 +1343,8 @@ export function GameWorld({
       const behavior = arenaHarass({
         acquireDistanceM: personality.targetAcquireDistanceM,
         releaseDistanceM: personality.targetReleaseDistanceM,
+        stopDistanceM: personality.stopDistanceM,
+        orbitDistanceM: personality.orbitDistanceM,
         targetMemoryTicks: personality.targetMemoryTicks,
         fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
         meleeDistanceM: personality.meleeDistanceM,
@@ -1357,6 +1359,7 @@ export function GameWorld({
         jumpCooldownTicks: personality.jumpCooldownTicks,
         stuckTicksBeforeJump: personality.stuckTickThreshold,
         minMoveSpeed: personality.minMoveSpeedM,
+        sprintTargetDistanceM: personality.sprintDistanceM,
         meleeDistanceM: personality.meleeDistanceM,
       });
       botCrowdRef.current = crowd;
