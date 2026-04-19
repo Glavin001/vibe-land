@@ -15,6 +15,15 @@ import { FixedInputBundler } from '../runtime/fixedInputBundler';
 import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstants';
 import { configureCameraLayersForLocalSlot } from './splitScreenLayers';
 import {
+  createLocalShotTrace,
+  updateLocalShotTraceVisuals,
+  LOCAL_SHOT_TRACE_BEAM_RADIUS,
+  LOCAL_SHOT_TRACE_IMPACT_RADIUS,
+  LOCAL_SHOT_TRACE_MAX_DISTANCE,
+  type LocalShotTrace,
+  type RemoteShotHit,
+} from './shotTrace';
+import {
   BTN_CROUCH,
   BTN_JUMP,
   BTN_SPRINT,
@@ -23,6 +32,7 @@ import {
   BTN_LEFT,
   BTN_RIGHT,
   FLAG_DEAD,
+  HIT_ZONE_HEAD,
   WEAPON_HITSCAN,
   RIFLE_FIRE_INTERVAL_MS,
 } from '../net/sharedConstants';
@@ -129,6 +139,9 @@ export function PracticeGuestPlayer({
   const seqRef = useRef(0);
   const nextShotIdRef = useRef((slotId + 1) * GUEST_SHOT_ID_SHARD + 1);
   const nextFireMsRef = useRef(0);
+  const shotTraceBeamRef = useRef<THREE.Mesh>(null);
+  const shotTraceImpactRef = useRef<THREE.Mesh>(null);
+  const shotTraceRef = useRef<LocalShotTrace | null>(null);
   const { camera: defaultCamera } = useThree();
   // Guests must bundle inputs at the sim tick rate (60 Hz). Sending one
   // InputCmd per render frame overfills the session's per-player input
@@ -299,9 +312,41 @@ export function PracticeGuestPlayer({
             clientDynamicInterpMs: 0,
             dir,
           });
+
+          const aimOrigin: [number, number, number] = [
+            camera.position.x,
+            camera.position.y,
+            camera.position.z,
+          ];
+          const sceneHit = host.castSceneRay(aimOrigin, dir, LOCAL_SHOT_TRACE_MAX_DISTANCE);
+          const blockerDistance = sceneHit?.toi ?? null;
+          const runtimeClient = runtime;
+          const remoteHits: RemoteShotHit[] = [];
+          if (runtimeClient) {
+            const renderTimeUs = host.serverClock.serverNowUs();
+            for (const [id, rp] of host.remotePlayers) {
+              if (id === humanId) continue;
+              const sample = host.interpolator.sample(id, renderTimeUs);
+              const position = sample?.position ?? rp.position;
+              const hit = runtimeClient.classifyHitscanPlayer(aimOrigin, dir, position, blockerDistance);
+              if (!hit) continue;
+              remoteHits.push({
+                distance: hit.distance,
+                kind: hit.kind === HIT_ZONE_HEAD ? 'head' : 'body',
+              });
+            }
+          }
+          shotTraceRef.current = createLocalShotTrace(camera, now, dir, remoteHits, blockerDistance);
         }
       }
     }
+
+    updateLocalShotTraceVisuals(
+      shotTraceRef.current,
+      performance.now(),
+      shotTraceBeamRef.current,
+      shotTraceImpactRef.current,
+    );
 
     // Camera tracking: first-person on foot; chase-cam when driving.
     if (isDriving && drivenVehicle) {
@@ -335,5 +380,16 @@ export function PracticeGuestPlayer({
     }
   });
 
-  return null;
+  return (
+    <>
+      <mesh ref={shotTraceBeamRef} visible={false}>
+        <cylinderGeometry args={[LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10]} />
+        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+      </mesh>
+      <mesh ref={shotTraceImpactRef} visible={false}>
+        <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
+        <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+      </mesh>
+    </>
+  );
 }

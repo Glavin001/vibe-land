@@ -379,9 +379,28 @@ impl LocalSession {
 
         self.process_respawn(server_time_ms);
 
-        let mut local_input = InputCmd::default();
-        let mut previous_local_input = InputCmd::default();
-        let mut local_was_on_ground = false;
+        // Humans (LOCAL_PLAYER_ID + split-screen guests) all share the same
+        // energy/battery/out-of-bounds/respawn systems. Snapshot per-human
+        // previous-input state before simulate_player_tick mutates it so
+        // apply_on_foot_energy_drain sees the correct prev→current edge.
+        let human_ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter(|(id, runtime)| **id == LOCAL_PLAYER_ID || runtime.is_human)
+            .map(|(id, _)| *id)
+            .collect();
+        let mut human_prev_state: HashMap<u32, (InputCmd, bool)> = HashMap::new();
+        for &id in &human_ids {
+            let prev = self
+                .arena
+                .players
+                .get(&id)
+                .map(|state| (state.last_input.clone(), state.on_ground))
+                .unwrap_or_default();
+            human_prev_state.insert(id, prev);
+        }
+
+        let mut human_current_inputs: HashMap<u32, InputCmd> = HashMap::new();
         let player_ids: Vec<u32> = self.players.keys().copied().collect();
         for id in player_ids {
             let mut skip_sim = false;
@@ -404,47 +423,56 @@ impl LocalSession {
                 };
                 take_input_for_tick(runtime)
             };
-            if id == LOCAL_PLAYER_ID {
-                let (previous_input, was_on_ground) = self
-                    .arena
-                    .players
-                    .get(&LOCAL_PLAYER_ID)
-                    .map(|state| (state.last_input.clone(), state.on_ground))
-                    .unwrap_or_default();
-                previous_local_input = previous_input;
-                local_was_on_ground = was_on_ground;
-                local_input = input.clone();
+            if human_prev_state.contains_key(&id) {
+                human_current_inputs.insert(id, input.clone());
             }
             self.arena.simulate_player_tick(id, &input, dt);
         }
         self.arena.step_vehicles_and_dynamics(dt);
 
-        let gained_energy: f32 = self
-            .arena
-            .collect_batteries_for_player(LOCAL_PLAYER_ID)
-            .into_iter()
-            .map(|(_, energy)| energy)
-            .sum();
-        if gained_energy > 0.0 {
-            if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
-                player.energy += gained_energy;
+        for &id in &human_ids {
+            let gained_energy: f32 = self
+                .arena
+                .collect_batteries_for_player(id)
+                .into_iter()
+                .map(|(_, energy)| energy)
+                .sum();
+            if gained_energy > 0.0 {
+                if let Some(player) = self.arena.players.get_mut(&id) {
+                    player.energy += gained_energy;
+                }
+            }
+            let Some((prev_input, was_on_ground)) = human_prev_state.get(&id) else {
+                continue;
+            };
+            let current_input = human_current_inputs
+                .get(&id)
+                .cloned()
+                .unwrap_or_default();
+            let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
+                id,
+                prev_input,
+                &current_input,
+                *was_on_ground,
+                dt,
+            );
+            if depleted_on_foot {
+                self.kill_human_player(id, server_time_ms, LocalDeathCause::EnergyDepletion);
             }
         }
-        let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
-            LOCAL_PLAYER_ID,
-            &previous_local_input,
-            &local_input,
-            local_was_on_ground,
-            dt,
-        );
-        let depleted = self.arena.apply_vehicle_energy_drain(dt);
-        if depleted_on_foot || depleted.contains(&LOCAL_PLAYER_ID) {
-            self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+
+        let vehicle_depleted = self.arena.apply_vehicle_energy_drain(dt);
+        for id in vehicle_depleted {
+            if human_prev_state.contains_key(&id) {
+                self.kill_human_player(id, server_time_ms, LocalDeathCause::EnergyDepletion);
+            }
         }
 
-        if let Some((position, _, _, _, hp, _)) = self.arena.snapshot_player(LOCAL_PLAYER_ID) {
-            if hp > 0 && position[1] < OUT_OF_BOUNDS_Y_M {
-                self.kill_local_player(server_time_ms, LocalDeathCause::OutOfBounds);
+        for &id in &human_ids {
+            if let Some((position, _, _, _, hp, _)) = self.arena.snapshot_player(id) {
+                if hp > 0 && position[1] < OUT_OF_BOUNDS_Y_M {
+                    self.kill_human_player(id, server_time_ms, LocalDeathCause::OutOfBounds);
+                }
             }
         }
 
@@ -456,27 +484,36 @@ impl LocalSession {
     }
 
     fn process_respawn(&mut self, server_time_ms: u32) {
-        let Some(deadline) = self
+        let ready: Vec<u32> = self
             .players
-            .get(&LOCAL_PLAYER_ID)
-            .and_then(|runtime| runtime.respawn_at_ms)
-        else {
-            return;
-        };
-        if deadline > server_time_ms {
-            return;
+            .iter()
+            .filter_map(|(id, runtime)| {
+                let deadline = runtime.respawn_at_ms?;
+                if deadline > server_time_ms {
+                    None
+                } else {
+                    Some(*id)
+                }
+            })
+            .collect();
+        for id in ready {
+            if let Some(runtime) = self.players.get_mut(&id) {
+                runtime.respawn_at_ms = None;
+                runtime.pending_inputs.clear();
+                runtime.last_applied_input = InputCmd::default();
+            }
+            let _ = self.arena.respawn_player(id);
         }
-        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
-            runtime.respawn_at_ms = None;
-            runtime.pending_inputs.clear();
-            runtime.last_applied_input = InputCmd::default();
-        }
-        let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
     }
 
-    fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
+    fn kill_human_player(
+        &mut self,
+        player_id: u32,
+        server_time_ms: u32,
+        cause: LocalDeathCause,
+    ) {
         let battery_drop = if matches!(cause, LocalDeathCause::HpDamage) {
-            self.arena.players.get(&LOCAL_PLAYER_ID).and_then(|player| {
+            self.arena.players.get(&player_id).and_then(|player| {
                 if player.energy > 0.0 {
                     Some((player.position, player.energy))
                 } else {
@@ -487,8 +524,8 @@ impl LocalSession {
             None
         };
 
-        self.arena.exit_vehicle(LOCAL_PLAYER_ID);
-        self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
+        self.arena.exit_vehicle(player_id);
+        self.arena.set_player_dead(player_id, true);
         if let Some((position, energy)) = battery_drop {
             let _ = self.arena.spawn_battery(
                 position,
@@ -497,10 +534,10 @@ impl LocalSession {
                 crate::constants::DEFAULT_BATTERY_HEIGHT_M,
             );
         }
-        if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+        if let Some(player) = self.arena.players.get_mut(&player_id) {
             player.energy = 0.0;
         }
-        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
+        if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
@@ -548,18 +585,29 @@ impl LocalSession {
                 continue;
             }
 
-            if shooter_id == LOCAL_PLAYER_ID {
+            let shooter_is_human = shooter_id == LOCAL_PLAYER_ID
+                || self
+                    .players
+                    .get(&shooter_id)
+                    .map(|runtime| runtime.is_human)
+                    .unwrap_or(false);
+            if shooter_is_human {
                 let mut depleted = false;
-                if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                let mut dead = false;
+                if let Some(player) = self.arena.players.get_mut(&shooter_id) {
                     if player.dead {
-                        continue;
+                        dead = true;
+                    } else {
+                        player.energy =
+                            (player.energy - crate::constants::RIFLE_SHOT_ENERGY_COST).max(0.0);
+                        depleted = player.energy <= 0.0;
                     }
-                    player.energy =
-                        (player.energy - crate::constants::RIFLE_SHOT_ENERGY_COST).max(0.0);
-                    depleted = player.energy <= 0.0;
+                }
+                if dead {
+                    continue;
                 }
                 if depleted {
-                    self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+                    self.kill_human_player(shooter_id, server_time_ms, LocalDeathCause::EnergyDepletion);
                     continue;
                 }
             }
@@ -684,17 +732,17 @@ impl LocalSession {
     }
 
     fn apply_damage(&mut self, victim_id: u32, damage: u8, server_time_ms: u32) {
-        let is_bot = self
+        let (is_bot, is_human) = self
             .players
             .get(&victim_id)
-            .map(|runtime| runtime.is_bot)
-            .unwrap_or(false);
+            .map(|runtime| (runtime.is_bot, runtime.is_human))
+            .unwrap_or((false, false));
         let died = self.arena.apply_player_damage(victim_id, damage);
         if !died {
             return;
         }
-        if victim_id == LOCAL_PLAYER_ID {
-            self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+        if victim_id == LOCAL_PLAYER_ID || is_human {
+            self.kill_human_player(victim_id, server_time_ms, LocalDeathCause::HpDamage);
             return;
         }
         if is_bot {
@@ -720,13 +768,18 @@ impl LocalSession {
                 energy,
             ));
         }
-        for (&id, _) in &self.players {
+        for (&id, runtime) in &self.players {
             if id == LOCAL_PLAYER_ID {
                 continue;
             }
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(id) {
+                let energy = if runtime.is_human {
+                    self.arena.player_energy(id).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
                 player_states.push(make_net_player_state(
-                    id, pos, vel, yaw, pitch, hp, flags, 0.0,
+                    id, pos, vel, yaw, pitch, hp, flags, energy,
                 ));
             }
         }
@@ -1672,7 +1725,7 @@ mod tests {
             .expect("local player exists")
             .energy = remaining_energy;
 
-        session.kill_local_player(session.server_time_ms(), LocalDeathCause::HpDamage);
+        session.kill_human_player(LOCAL_PLAYER_ID, session.server_time_ms(), LocalDeathCause::HpDamage);
 
         let batteries = session.battery_states();
         assert_eq!(
