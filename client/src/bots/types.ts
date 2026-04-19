@@ -21,6 +21,7 @@ export interface ObservedPlayer {
    * that can't cheaply estimate velocity may omit it.
    */
   velocity?: Vec3Tuple;
+  isInVehicle?: boolean;
 }
 
 /**
@@ -43,6 +44,7 @@ export interface BotIntent {
   yaw: number;
   pitch: number;
   firePrimary: boolean;
+  meleePrimary: boolean;
   mode: BotMode;
   targetPlayerId: number | null;
   /**

@@ -4,18 +4,14 @@
  */
 
 import { crowd } from 'navcat/blocks';
-import { BTN_FORWARD, BTN_JUMP } from '../../net/protocol';
+import { BTN_FORWARD, BTN_JUMP, BTN_SPRINT } from '../../net/protocol';
 import type { BotIntent, BotMode, BotSelfState, Vec3Tuple } from '../types';
 
 type Agent = crowd.Agent;
 
 export interface SteeringOptions {
   minMoveSpeed?: number;
-  /**
-   * @deprecated Bots no longer emit BTN_SPRINT. Speed is controlled by the
-   * practice-session speed override.
-   */
-  sprintSpeed?: number;
+  sprintTargetDistanceM?: number;
   stuckSpeed?: number;
   stuckTicksBeforeJump?: number;
   jumpCooldownTicks?: number;
@@ -40,6 +36,7 @@ export interface SteeringOptions {
    * set a per-bot seed so two bots don't share a jitter pattern.
    */
   seed?: number;
+  meleeDistanceM?: number;
 }
 
 export interface SteeringState {
@@ -62,7 +59,7 @@ export function createSteeringState(): SteeringState {
 
 const DEFAULT_OPTIONS = Object.freeze<Required<SteeringOptions>>({
   minMoveSpeed: 0.4,
-  sprintSpeed: 4.0,
+  sprintTargetDistanceM: 10.0,
   stuckSpeed: 0.15,
   stuckTicksBeforeJump: 18,
   jumpCooldownTicks: 30,
@@ -70,6 +67,7 @@ const DEFAULT_OPTIONS = Object.freeze<Required<SteeringOptions>>({
   aimLeadSec: 0,
   firePrepTicks: 0,
   seed: 0,
+  meleeDistanceM: 2.0,
 });
 
 export function agentStateToIntent(
@@ -78,7 +76,9 @@ export function agentStateToIntent(
   state: SteeringState,
   mode: BotMode,
   targetPlayerId: number | null,
+  targetDistanceM: number | null,
   fireAim: Vec3Tuple | null,
+  meleeAim: Vec3Tuple | null = null,
   options: SteeringOptions = {},
   fireAimVelocity: Vec3Tuple | null = null,
 ): BotIntent {
@@ -88,7 +88,15 @@ export function agentStateToIntent(
     state.stuckTicks = 0;
     state.jumpCooldownTicks = Math.max(0, state.jumpCooldownTicks - 1);
     state.fireAimTicks = 0;
-    return { buttons: 0, yaw: self.yaw, pitch: 0, firePrimary: false, mode: 'dead', targetPlayerId: null };
+    return {
+      buttons: 0,
+      yaw: self.yaw,
+      pitch: 0,
+      firePrimary: false,
+      meleePrimary: false,
+      mode: 'dead',
+      targetPlayerId: null,
+    };
   }
 
   let buttons = 0;
@@ -107,6 +115,13 @@ export function agentStateToIntent(
   if (desiredSpeedPlanar > opts.minMoveSpeed) {
     buttons |= BTN_FORWARD;
   }
+  if (
+    (buttons & BTN_FORWARD) !== 0
+    && targetDistanceM != null
+    && targetDistanceM > opts.sprintTargetDistanceM
+  ) {
+    buttons |= BTN_SPRINT;
+  }
 
   const actualSpeed = Math.hypot(self.velocity[0], self.velocity[2]);
   if (desiredSpeedPlanar > opts.minMoveSpeed && actualSpeed < opts.stuckSpeed) {
@@ -115,23 +130,32 @@ export function agentStateToIntent(
     state.stuckTicks = 0;
   }
 
+  // Clear any residual stuck-ticks while committing to a melee swing so the
+  // bot doesn't hop the instant it pulls back out of melee range.
+  if (meleeAim) {
+    state.stuckTicks = 0;
+  }
+
   state.jumpCooldownTicks = Math.max(0, state.jumpCooldownTicks - 1);
   if (
     self.onGround
     && state.jumpCooldownTicks === 0
     && state.stuckTicks >= opts.stuckTicksBeforeJump
+    && !meleeAim
   ) {
     buttons |= BTN_JUMP;
     state.jumpCooldownTicks = opts.jumpCooldownTicks;
     state.stuckTicks = 0;
   }
 
+  const aim = meleeAim ?? fireAim;
   let firePrimary = false;
-  if (fireAim) {
-    let aimX = fireAim[0];
-    let aimY = fireAim[1];
-    let aimZ = fireAim[2];
-    if (fireAimVelocity && opts.aimLeadSec > 0) {
+  let meleePrimary = false;
+  if (aim) {
+    let aimX = aim[0];
+    let aimY = aim[1];
+    let aimZ = aim[2];
+    if (!meleeAim && fireAimVelocity && opts.aimLeadSec > 0) {
       aimX += fireAimVelocity[0] * opts.aimLeadSec;
       aimY += fireAimVelocity[1] * opts.aimLeadSec;
       aimZ += fireAimVelocity[2] * opts.aimLeadSec;
@@ -143,7 +167,7 @@ export function agentStateToIntent(
     if (planar > 0.001 || Math.abs(fy) > 0.001) {
       let targetYaw = planar > 0.001 ? Math.atan2(fx, fz) : yaw;
       let targetPitch = Math.atan2(-fy, Math.max(planar, 0.0001));
-      if (opts.aimJitterRad > 0) {
+      if (!meleeAim && opts.aimJitterRad > 0) {
         const [jitterYaw, jitterPitch] = deterministicJitter(
           opts.seed,
           state.jitterCounter,
@@ -154,8 +178,15 @@ export function agentStateToIntent(
       }
       yaw = targetYaw;
       pitch = targetPitch;
-      state.fireAimTicks += 1;
-      firePrimary = state.fireAimTicks > opts.firePrepTicks;
+      if (meleeAim) {
+        if (planar <= opts.meleeDistanceM) {
+          meleePrimary = true;
+        }
+        state.fireAimTicks = 0;
+      } else {
+        state.fireAimTicks += 1;
+        firePrimary = state.fireAimTicks > opts.firePrepTicks;
+      }
     } else {
       state.fireAimTicks = 0;
     }
@@ -165,7 +196,7 @@ export function agentStateToIntent(
 
   state.jitterCounter = (state.jitterCounter + 1) >>> 0;
   state.lastYaw = yaw;
-  return { buttons, yaw, pitch, firePrimary, mode, targetPlayerId };
+  return { buttons, yaw, pitch, firePrimary, meleePrimary, mode, targetPlayerId };
 }
 
 /**

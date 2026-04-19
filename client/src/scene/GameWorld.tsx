@@ -21,6 +21,7 @@ import {
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
   BTN_CROUCH,
@@ -33,14 +34,19 @@ import {
   BLOCK_REMOVE,
   FLAG_DEAD,
   FLAG_IN_VEHICLE,
+  FLAG_MELEEING,
   FLAG_ON_GROUND,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
+  MELEE_COOLDOWN_MS,
+  MELEE_HALF_CONE_COS,
+  MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
+import { publishMeleeFeedback } from '../ui/meleeFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
@@ -68,11 +74,17 @@ import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } f
 import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
+import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+const HIPFIRE_FOV = 75;
+const SCOPE_FOV = 45;
+// Exponential damp rate: settles ~6–8 frames at 60 fps, matching typical ADS feel.
+const AIM_FOV_DAMP = 12;
+const AIM_LOOK_MULTIPLIER = 0.45;
 // Keep these in lockstep with `MoveConfig::default()` / hitscan constants in
 // the shared Rust physics code so the debug helper matches the authoritative
 // collision capsule and head zone.
@@ -306,6 +318,7 @@ type GameWorldProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
+  onScopeActiveChange?: (active: boolean) => void;
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
@@ -313,6 +326,7 @@ type GameWorldProps = {
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   benchmarkAutopilot?: {
     enabled: boolean;
     clientIndex: number;
@@ -320,8 +334,13 @@ type GameWorldProps = {
   };
   practiceBots?: PracticeBotRuntime | null;
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
+  fogEnabled?: boolean;
+  fogDensity?: number;
+  fogColor?: string;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -921,11 +940,13 @@ function resolvedInputFromBotIntent(
     pitch,
     buttons: buttons & (BTN_JUMP | BTN_SPRINT | BTN_CROUCH),
     firePrimary,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -942,11 +963,13 @@ function makeIdleResolvedInput(
     pitch,
     buttons: 0,
     firePrimary: false,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
   };
 }
 
@@ -1023,6 +1046,7 @@ export function GameWorld({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode = 'auto',
@@ -1030,11 +1054,17 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
+  fogEnabled = true,
+  fogDensity = DEFAULT_FOG_SETTINGS.density,
+  fogColor = DEFAULT_FOG_SETTINGS.color,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1050,6 +1080,9 @@ export function GameWorld({
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
   onAimStateChangeRef.current = onAimStateChange;
+  const onScopeActiveChangeRef = useRef(onScopeActiveChange);
+  onScopeActiveChangeRef.current = onScopeActiveChange;
+  const prevScopeActiveRef = useRef(false);
   const onInputFrameRef = useRef(onInputFrame);
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
@@ -1076,12 +1109,16 @@ export function GameWorld({
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const batteryGroupRef = useRef<THREE.Group>(null);
-  const batteryMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
+  const batteryMeshes = useRef<Map<number, THREE.Group>>(new Map());
   const logTimer = useRef(0);
   const lastFrameTime = useRef(performance.now());
   const selectedMaterialRef = useRef(2);
   const nextShotIdRef = useRef(1);
   const nextLocalFireMsRef = useRef(0);
+  const nextLocalMeleeMsRef = useRef(0);
+  const nextSwingIdRef = useRef(1);
+  const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
+  const remoteHpBarsRef = useRef<Map<number, RemoteHpBarHandle>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -1200,6 +1237,7 @@ export function GameWorld({
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
+    onScopeActiveChangeRef.current?.(false);
   }, []);
 
   useEffect(() => {
@@ -1648,9 +1686,26 @@ export function GameWorld({
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
+    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
+    const botAutopilotEnabled = Boolean(
+      benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
+      && botBrainRef.current
+      && !isDrivingNow,
+    );
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
+
+    const canUseAimControls = canUseScopedAim(
+      inputSample.activeFamily,
+      pointerLocked,
+      isDrivingNow,
+      localDead,
+      botAutopilotEnabled,
+    );
+    const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
     if (isDrivingNow) {
       const updatedCamera = advanceVehicleCamera(
@@ -1666,19 +1721,28 @@ export function GameWorld({
         lastVehicleLookAtMsRef.current = now;
       }
     } else {
-      const look = advanceLookAngles(yawRef.current, pitchRef.current, inputSample.action);
+      const look = advanceLookAngles(
+        yawRef.current,
+        pitchRef.current,
+        inputSample.action,
+        isAiming ? AIM_LOOK_MULTIPLIER : 1,
+      );
       yawRef.current = look.yaw;
       pitchRef.current = look.pitch;
     }
 
-    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
-    const botAutopilotEnabled = Boolean(
-      benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
-      && botBrainRef.current
-      && !isDrivingNow,
-    );
+    const targetFov = isAiming ? SCOPE_FOV : HIPFIRE_FOV;
+    if ('fov' in camera) {
+      const perspective = camera as THREE.PerspectiveCamera;
+      perspective.fov = THREE.MathUtils.damp(perspective.fov, targetFov, AIM_FOV_DAMP, frameDelta);
+      perspective.updateProjectionMatrix();
+    }
+
+    if (prevScopeActiveRef.current !== isAiming) {
+      prevScopeActiveRef.current = isAiming;
+      onScopeActiveChangeRef.current?.(isAiming);
+    }
+
     const autopilotInput = vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
@@ -1785,13 +1849,7 @@ export function GameWorld({
 
     prediction.submitInput(frameDelta, resolvedInput);
 
-    const canUseAimActions = !isDrivingNow && !localDead
-      && (
-        botAutopilotEnabled
-        || pointerLocked
-        || inputSample.activeFamily === 'gamepad'
-        || inputSample.activeFamily === 'touch'
-      );
+    const canUseAimActions = canUseAimControls;
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
@@ -1941,6 +1999,53 @@ export function GameWorld({
           clientInterpMs: Math.round(state.interpolationDelayMs),
           clientDynamicInterpMs: dynamicLagMsForShot,
           dir: fireDir,
+        });
+      }
+
+      if (
+        resolvedInput.meleePressed
+        && client
+        && now >= nextLocalMeleeMsRef.current
+      ) {
+        nextLocalMeleeMsRef.current = now + MELEE_COOLDOWN_MS;
+        const swingId = nextSwingIdRef.current++ >>> 0;
+        client.sendMelee({
+          seq: prediction.peekNextInputSeq(),
+          swingId,
+          clientTimeUs: client.serverClock.serverNowUs(),
+          yaw: yawRef.current,
+          pitch: pitchRef.current,
+        });
+
+        // Best-effort client-side prediction for the hitmarker: scan the last
+        // snapshot for a living remote player inside the melee cone.
+        const attackerPos = prediction.getPosition() ?? state.localPosition;
+        const cosP = Math.cos(pitchRef.current);
+        const aimX = Math.sin(yawRef.current) * cosP;
+        const aimZ = Math.cos(yawRef.current) * cosP;
+        const aimPlanar = Math.hypot(aimX, aimZ) || 1;
+        let predictedHit = false;
+        for (const remote of state.remotePlayers.values()) {
+          if (remote.hp <= 0) continue;
+          const dx = remote.position[0] - attackerPos[0];
+          const dy = remote.position[1] - attackerPos[1];
+          const dz = remote.position[2] - attackerPos[2];
+          if (Math.hypot(dx, dy, dz) > MELEE_RANGE_M + 0.5) continue;
+          const planar = Math.hypot(dx, dz);
+          if (planar <= 1e-4) {
+            predictedHit = true;
+            break;
+          }
+          const dot = (aimX * dx + aimZ * dz) / (aimPlanar * planar);
+          if (dot >= MELEE_HALF_CONE_COS) {
+            predictedHit = true;
+            break;
+          }
+        }
+        publishMeleeFeedback({
+          sentAtMs: now,
+          cooldownMs: MELEE_COOLDOWN_MS,
+          predictedHit,
         });
       }
 
@@ -2439,12 +2544,15 @@ export function GameWorld({
       activeIds.add(id);
       let handle = remoteMeshes.current.get(id);
       if (!handle) {
-        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
         attachPlayerIdLabel(handle.root, id);
+        remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
+      const idLabel = handle.root.getObjectByName('idLabel');
+      if (idLabel) idLabel.visible = showPlayerIdLabels;
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
@@ -2458,6 +2566,12 @@ export function GameWorld({
       const isDead = (remoteFlags & FLAG_DEAD) !== 0;
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
       const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
+      const isMeleeing = (remoteFlags & FLAG_MELEEING) !== 0;
+      const wasMeleeing = remoteLastMeleeingRef.current.get(id) ?? false;
+      if (isMeleeing && !wasMeleeing && !isDead) {
+        handle.playOneShot('Melee_Hook');
+      }
+      remoteLastMeleeingRef.current.set(id, isMeleeing);
       if (isInVehicle && client) {
         for (const [vehicleId, vehicleState] of client.vehicles) {
           if (vehicleState.driverId !== id) continue;
@@ -2483,10 +2597,29 @@ export function GameWorld({
       const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
       if (debugHelper) debugHelper.visible = showDebugHelpers && !isInVehicle;
 
+      const hpBar = remoteHpBarsRef.current.get(id);
+      if (hpBar) {
+        hpBar.setHp(replicatedHp);
+        hpBar.setVisible(!isDead && !isInVehicle);
+      }
+
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
       handle.setFlash(0xfff36b, flashAlpha);
-      handle.setOpacity(isDead ? 0.35 : 1);
+      // Ragdoll is the dead visual cue — keep opacity at 1 while physics-driven.
+      handle.setOpacity(1);
+
+      const shouldUseRagdoll = cosmeticDeathPhysicsEnabled && isDead;
+      if (shouldUseRagdoll) {
+        const sv = new THREE.Vector3(
+          sample?.velocity[0] ?? 0,
+          sample?.velocity[1] ?? 0,
+          sample?.velocity[2] ?? 0,
+        );
+        handle.setRagdoll(true, sv);
+      } else {
+        handle.setRagdoll(false);
+      }
 
       const vx = sample?.velocity[0] ?? 0;
       const vz = sample?.velocity[2] ?? 0;
@@ -2502,10 +2635,16 @@ export function GameWorld({
     // Remove stale
     for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
+        const bar = remoteHpBarsRef.current.get(id);
+        if (bar) {
+          bar.dispose();
+          remoteHpBarsRef.current.delete(id);
+        }
         handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
+        remoteLastMeleeingRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
@@ -2572,36 +2711,103 @@ export function GameWorld({
       }
     }
 
-    // --- Vehicle rendering ---
+    // --- Battery rendering ---
     const batGroup = batteryGroupRef.current;
     if (batGroup && client) {
+      const BATTERY_MAX_ENERGY = 1000.0;
+      const t = now / 1000;
+
       const activeBatteryIds = new Set<number>();
       for (const [id, battery] of client.batteries) {
         activeBatteryIds.add(id);
-        let mesh = batteryMeshes.current.get(id);
-        if (!mesh) {
-          mesh = new THREE.Mesh(
-            new THREE.CylinderGeometry(battery.radius, battery.radius, battery.height, 16),
+        const energyFrac = Math.min(battery.energy / BATTERY_MAX_ENERGY, 1.0);
+        const visRadius = 0.12 + energyFrac * 0.25;      // 0.12m → 0.37m
+        const visHeight = 0.14 + energyFrac * 0.22;      // 0.14m → 0.36m
+        const glowMaxOpacity = 0.4 + energyFrac * 0.5;   // 0.4 → 0.9
+        const glowMaxIntensity = 1.2 + energyFrac * 3.0; // 1.2 → 4.2
+
+        let grp = batteryMeshes.current.get(id);
+        if (!grp) {
+          grp = new THREE.Group();
+
+          // Raycast straight down to find the actual terrain surface beneath this battery.
+          // Stored once in userData so we don't re-cast every frame.
+          const castOrigin: [number, number, number] = [
+            battery.position[0],
+            battery.position[1] + 20,
+            battery.position[2],
+          ];
+          const hit = client.raycastScene(castOrigin, [0, -1, 0], 40);
+          grp.userData.groundY =
+            hit != null
+              ? battery.position[1] + 20 - hit.toi
+              : battery.position[1] - battery.height * 0.5;
+
+          const body = new THREE.Mesh(
+            new THREE.CylinderGeometry(visRadius, visRadius, visHeight, 20),
             new THREE.MeshStandardMaterial({
-              color: 0xffd24a,
-              emissive: 0x886400,
-              emissiveIntensity: 0.6,
-              roughness: 0.35,
-              metalness: 0.7,
+              color: 0xffd700,
+              emissive: 0xffcc00,
+              emissiveIntensity: 1.0,
+              roughness: 0.25,
+              metalness: 0.65,
             }),
           );
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
-          batGroup.add(mesh);
-          batteryMeshes.current.set(id, mesh);
+          body.castShadow = true;
+          body.name = 'body';
+
+          const glowRing = new THREE.Mesh(
+            new THREE.CylinderGeometry(visRadius * 2.2, visRadius * 2.2, visHeight * 1.5, 20),
+            new THREE.MeshBasicMaterial({
+              color: 0xffee00,
+              transparent: true,
+              opacity: 0,
+              depthWrite: false,
+              blending: THREE.AdditiveBlending,
+              side: THREE.DoubleSide,
+            }),
+          );
+          glowRing.name = 'glow';
+
+          grp.add(body);
+          grp.add(glowRing);
+          batGroup.add(grp);
+          batteryMeshes.current.set(id, grp);
         }
-        mesh.position.set(battery.position[0], battery.position[1], battery.position[2]);
+
+        // Sit the bottom of the visual cylinder on the terrain surface
+        grp.position.set(
+          battery.position[0],
+          (grp.userData.groundY as number) + visHeight / 2,
+          battery.position[2],
+        );
+
+        // Normalized 0→1→0 pulse so body and glow breathe fully in sync.
+        // Glow goes from completely transparent to peak opacity and back.
+        const pulseFrac = (Math.sin(t * 2.8) + 1) / 2;
+        const bodyMesh = grp.getObjectByName('body') as THREE.Mesh | undefined;
+        const glowMesh = grp.getObjectByName('glow') as THREE.Mesh | undefined;
+        if (bodyMesh) {
+          (bodyMesh.material as THREE.MeshStandardMaterial).emissiveIntensity =
+            0.3 + pulseFrac * glowMaxIntensity;
+        }
+        if (glowMesh) {
+          (glowMesh.material as THREE.MeshBasicMaterial).opacity =
+            pulseFrac * glowMaxOpacity;
+          // Ring also expands outward as it brightens for a more dramatic effect
+          glowMesh.scale.set(0.85 + pulseFrac * 0.3, 1, 0.85 + pulseFrac * 0.3);
+        }
       }
-      for (const [id, mesh] of batteryMeshes.current) {
+
+      for (const [id, grp] of batteryMeshes.current) {
         if (!activeBatteryIds.has(id)) {
-          batGroup.remove(mesh);
-          (mesh.geometry as THREE.BufferGeometry).dispose();
-          (mesh.material as THREE.Material).dispose();
+          batGroup.remove(grp);
+          grp.traverse((child: THREE.Object3D) => {
+            if (child instanceof THREE.Mesh) {
+              child.geometry.dispose();
+              (child.material as THREE.Material).dispose();
+            }
+          });
           batteryMeshes.current.delete(id);
         }
       }
@@ -2681,8 +2887,8 @@ export function GameWorld({
 
   return (
     <>
-      <color attach="background" args={['#d7e3f0']} />
-      <fog attach="fog" args={['#d7e3f0', 80, 220]} />
+      <color attach="background" args={[fogColor]} />
+      {fogEnabled && <fogExp2 attach="fog" args={[fogColor, fogDensity]} />}
       <Sky
         distance={450000}
         sunPosition={[120, 28, 40]}
@@ -2754,7 +2960,7 @@ export function GameWorld({
       <CrosshairHUD />
 
       {practiceMode && practiceBots && practiceBotsDebugOverlay && (
-        <BotsDebugOverlay runtime={practiceBots} />
+        <BotsDebugOverlay runtime={practiceBots} showLabels={Boolean(practiceBotsDebugLabels)} />
       )}
 
       {sceneExtras}
@@ -3310,9 +3516,80 @@ function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
   sprite.name = 'idLabel';
+  sprite.visible = false;
   sprite.scale.set(1.2, 0.45, 1);
   // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
   // Place the label just above the head.
   sprite.position.y = 1.0;
   parent.add(sprite);
+}
+
+interface RemoteHpBarHandle {
+  setHp(hp: number): void;
+  setVisible(visible: boolean): void;
+  dispose(): void;
+}
+
+const REMOTE_HP_BAR_MAX = 100;
+const REMOTE_HP_BAR_W = 128;
+const REMOTE_HP_BAR_H = 18;
+
+function attachRemoteHpBar(parent: THREE.Object3D): RemoteHpBarHandle {
+  const canvas = document.createElement('canvas');
+  canvas.width = REMOTE_HP_BAR_W;
+  canvas.height = REMOTE_HP_BAR_H;
+  const ctx = canvas.getContext('2d')!;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = 'remoteHpBar';
+  sprite.scale.set(1.0, 0.16, 1);
+  sprite.position.y = 1.3;
+  // Render slightly on top so it isn't culled behind heads at extreme angles.
+  sprite.renderOrder = 999;
+  parent.add(sprite);
+
+  let lastDrawnHp = -1;
+  const draw = (hp: number): void => {
+    const clamped = Math.max(0, Math.min(REMOTE_HP_BAR_MAX, hp));
+    ctx.clearRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Frame
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Fill
+    const ratio = clamped / REMOTE_HP_BAR_MAX;
+    const fillW = Math.round((REMOTE_HP_BAR_W - 4) * ratio);
+    let color = '#3ddc84';
+    if (ratio < 0.25) color = '#ff4d4d';
+    else if (ratio < 0.5) color = '#ffd84d';
+    ctx.fillStyle = color;
+    ctx.fillRect(2, 2, fillW, REMOTE_HP_BAR_H - 4);
+    // Border
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, REMOTE_HP_BAR_W - 1, REMOTE_HP_BAR_H - 1);
+    texture.needsUpdate = true;
+  };
+
+  draw(REMOTE_HP_BAR_MAX);
+  lastDrawnHp = REMOTE_HP_BAR_MAX;
+
+  return {
+    setHp(hp: number): void {
+      const rounded = Math.round(hp);
+      if (rounded === lastDrawnHp) return;
+      lastDrawnHp = rounded;
+      draw(rounded);
+    },
+    setVisible(visible: boolean): void {
+      sprite.visible = visible;
+    },
+    dispose(): void {
+      parent.remove(sprite);
+      material.dispose();
+      texture.dispose();
+    },
+  };
 }

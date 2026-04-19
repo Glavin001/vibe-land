@@ -13,6 +13,7 @@ type GameSceneProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
+  onScopeActiveChange?: React.ComponentProps<typeof GameWorld>['onScopeActiveChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
   onInputFrame?: (sample: InputSample) => void;
@@ -22,13 +23,19 @@ type GameSceneProps = {
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
+  fogEnabled?: boolean;
+  fogDensity?: number;
+  fogColor?: string;
   sceneExtras?: ReactNode;
 };
 
@@ -39,6 +46,7 @@ export function GameScene({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode,
@@ -47,13 +55,19 @@ export function GameScene({
   rapierDebugModeBits = 0,
   showRenderStats,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
+  fogEnabled,
+  fogDensity,
+  fogColor,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -61,7 +75,7 @@ export function GameScene({
     <Canvas
       style={{ width: '100%', height: '100%', touchAction: 'none' }}
       shadows
-      camera={{ fov: 75, near: 0.1, far: 500, position: [0, 5, 10] }}
+      camera={{ fov: 75, near: 0.1, far: 200, position: [0, 5, 10] }}
       data-testid="game-canvas"
       onPointerDown={(e) => {
         if (touchMode) return;
@@ -82,6 +96,7 @@ export function GameScene({
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}
+          onScopeActiveChange={onScopeActiveChange}
           onDebugFrame={onDebugFrame}
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
@@ -89,11 +104,17 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}
+          showPlayerIdLabels={showPlayerIdLabels}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
+          practiceBotsDebugLabels={practiceBotsDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
+          fogEnabled={fogEnabled}
+          fogDensity={fogDensity}
+          fogColor={fogColor}
           sceneExtras={sceneExtras}
         />
       </Suspense>

@@ -2,7 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { PracticeBotHost } from '../../net/localPracticeClient';
 import type { RemotePlayer } from '../../net/netcodeClient';
-import type { FireCmd, VehicleStateMeters } from '../../net/protocol';
+import type { FireCmd, InputCmd, VehicleStateMeters } from '../../net/protocol';
 import {
   getSharedPlayerNavigationProfile,
   hydrateSharedPlayerNavigationProfileFromLoadedWasm,
@@ -45,6 +45,8 @@ class FakePracticeBotHost implements PracticeBotHost {
   readonly spawnPositions = new Map<number, [number, number, number]>();
   readonly sentInputCounts = new Map<number, number>();
   readonly sentFires = new Map<number, FireCmd[]>();
+  readonly lastInputs = new Map<number, InputCmd[]>();
+  readonly maxSpeedOverrides = new Map<number, number | null>();
   /** Optional stubbed ray hit (toi in meters). Null means "no hit". */
   castSceneRayResult: { toi: number } | null = null;
   castSceneRayCalls = 0;
@@ -73,12 +75,26 @@ class FakePracticeBotHost implements PracticeBotHost {
     return this.remotePlayers.delete(botId);
   }
 
-  setBotMaxSpeed(): boolean {
+  setBotMaxSpeed(_botId: number, _maxSpeedMps: number | null): boolean {
+    this.maxSpeedOverrides.set(_botId, _maxSpeedMps);
     return true;
   }
 
-  sendBotInputs(botId: number, cmds: Array<{ seq: number }>): void {
+  sendBotInputs(botId: number, cmds: InputCmd[]): void {
     this.sentInputCounts.set(botId, (this.sentInputCounts.get(botId) ?? 0) + cmds.length);
+    this.lastInputs.set(botId, cmds);
+  }
+
+  sendBotMelee(): void {
+    /* noop */
+  }
+
+  sendBotVehicleEnter(): void {
+    /* noop */
+  }
+
+  sendBotVehicleExit(): void {
+    /* noop */
   }
 
   sendBotFire(botId: number, cmd: FireCmd): void {
@@ -86,10 +102,6 @@ class FakePracticeBotHost implements PracticeBotHost {
     list.push({ ...cmd, dir: [cmd.dir[0], cmd.dir[1], cmd.dir[2]] });
     this.sentFires.set(botId, list);
   }
-
-  sendBotVehicleEnter(): void {}
-
-  sendBotVehicleExit(): void {}
 
   castSceneRay(): { toi: number } | null {
     this.castSceneRayCalls += 1;
@@ -173,6 +185,38 @@ describe('PracticeBotRuntime.create', () => {
     expect(info?.mode).toBe('follow_target');
     expect(info?.rawTarget?.[0]).toBeCloseTo(localPosition[0], 5);
     expect(info?.rawTarget?.[2]).toBeCloseTo(localPosition[2], 5);
+
+    runtime.clear();
+    runtime.detach();
+  });
+
+  it('clears practice max-speed overrides so bots use shared human movement tuning', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+    expect(initialInfo?.id).toBe(botId);
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [0, playerCenterY(initialInfo?.position[1] ?? 0), 0] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+
+    expect(host.maxSpeedOverrides.get(botId)).toBeNull();
 
     runtime.clear();
     runtime.detach();
