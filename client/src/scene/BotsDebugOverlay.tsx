@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NavMesh } from 'navcat';
 import * as THREE from 'three';
 
-import type { BotDebugInfo, BotObstacleDebugInfo, PracticeBotRuntime } from '../bots';
+import { MAX_PRACTICE_BOTS, type BotDebugInfo, type BotObstacleDebugInfo, type PracticeBotRuntime } from '../bots';
 
 interface BotsDebugOverlayProps {
   runtime: PracticeBotRuntime;
+  showLabels?: boolean;
 }
 
-const MAX_BOTS = 32;
+const MAX_BOTS = MAX_PRACTICE_BOTS;
 const MAX_PATH_POINTS_PER_BOT = 9;
 const MAX_PATH_SEGMENTS = MAX_BOTS * (MAX_PATH_POINTS_PER_BOT - 1);
 const MAX_PATH_VERTICES = MAX_PATH_SEGMENTS * 2;
@@ -65,7 +66,7 @@ interface ObstacleSlot {
   pillar: THREE.Mesh;
 }
 
-export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
+export function BotsDebugOverlay({ runtime, showLabels = false }: BotsDebugOverlayProps) {
   const rootRef = useRef<THREE.Group>(null);
   const pathLinesRef = useRef<THREE.LineSegments | null>(null);
   const slotsRef = useRef<Map<number, BotSlot>>(new Map());
@@ -75,11 +76,15 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
   const snapHalfExtents = runtime.crowd.debugSnapHalfExtents;
 
   useEffect(() => {
+    if (!showLabels) {
+      setLabelInfos([]);
+      return undefined;
+    }
     const interval = setInterval(() => {
       setLabelInfos(latestInfosRef.current.slice());
     }, 100);
     return () => clearInterval(interval);
-  }, []);
+  }, [showLabels]);
 
   const pathGeometry = useMemo(() => {
     const geom = new THREE.BufferGeometry();
@@ -282,7 +287,7 @@ export function BotsDebugOverlay({ runtime }: BotsDebugOverlayProps) {
         material={pathMaterial}
         frustumCulled={false}
       />
-      {labelInfos.map((info) => (
+      {showLabels && labelInfos.map((info) => (
         <Html
           key={info.id}
           position={[info.position[0], info.position[1] + 2.4, info.position[2]]}

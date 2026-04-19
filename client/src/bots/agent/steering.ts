@@ -4,18 +4,14 @@
  */
 
 import { crowd } from 'navcat/blocks';
-import { BTN_FORWARD, BTN_JUMP } from '../../net/protocol';
+import { BTN_FORWARD, BTN_JUMP, BTN_SPRINT } from '../../net/protocol';
 import type { BotIntent, BotMode, BotSelfState, Vec3Tuple } from '../types';
 
 type Agent = crowd.Agent;
 
 export interface SteeringOptions {
   minMoveSpeed?: number;
-  /**
-   * @deprecated Bots no longer emit BTN_SPRINT. Speed is controlled by the
-   * practice-session speed override.
-   */
-  sprintSpeed?: number;
+  sprintTargetDistanceM?: number;
   stuckSpeed?: number;
   stuckTicksBeforeJump?: number;
   jumpCooldownTicks?: number;
@@ -34,7 +30,7 @@ export function createSteeringState(): SteeringState {
 
 const DEFAULT_OPTIONS = Object.freeze<Required<SteeringOptions>>({
   minMoveSpeed: 0.4,
-  sprintSpeed: 4.0,
+  sprintTargetDistanceM: 10.0,
   stuckSpeed: 0.15,
   stuckTicksBeforeJump: 18,
   jumpCooldownTicks: 30,
@@ -47,6 +43,7 @@ export function agentStateToIntent(
   state: SteeringState,
   mode: BotMode,
   targetPlayerId: number | null,
+  targetDistanceM: number | null,
   fireAim: Vec3Tuple | null,
   meleeAim: Vec3Tuple | null = null,
   options: SteeringOptions = {},
@@ -82,6 +79,13 @@ export function agentStateToIntent(
 
   if (desiredSpeedPlanar > opts.minMoveSpeed) {
     buttons |= BTN_FORWARD;
+  }
+  if (
+    (buttons & BTN_FORWARD) !== 0
+    && targetDistanceM != null
+    && targetDistanceM > opts.sprintTargetDistanceM
+  ) {
+    buttons |= BTN_SPRINT;
   }
 
   const actualSpeed = Math.hypot(self.velocity[0], self.velocity[2]);

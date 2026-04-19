@@ -956,6 +956,30 @@ impl LocalSession {
             .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
     }
 
+    pub fn classify_hitscan_player(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        body_pos: [f32; 3],
+        blocker_toi: Option<f32>,
+    ) -> Option<(f32, u8)> {
+        let hit = classify_player_hitscan(
+            origin,
+            dir,
+            body_pos,
+            self.arena.config().capsule_half_segment,
+            self.arena.config().capsule_radius,
+            blocker_toi,
+        )?;
+        Some((
+            hit.distance,
+            match hit.zone {
+                HitZone::Body => HIT_ZONE_BODY,
+                HitZone::Head => HIT_ZONE_HEAD,
+            },
+        ))
+    }
+
     pub fn vehicle_debug(&self, vehicle_id: u32) -> Option<VehicleDebugSnapshot> {
         let vehicle = self.arena.vehicles.get(&vehicle_id)?;
         read_vehicle_debug_snapshot(

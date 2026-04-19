@@ -69,6 +69,12 @@ export class BotBrain {
     };
     const decision = this.behavior(ctx);
     this.lastDecisionTarget = decision.target ? [...decision.target] : null;
+    const targetDistanceM = decision.target
+      ? Math.hypot(
+          decision.target[0] - self.position[0],
+          decision.target[2] - self.position[2],
+        )
+      : null;
 
     if (decision.target) {
       const shouldReplan = this.shouldReplan(decision.target);
@@ -99,6 +105,7 @@ export class BotBrain {
       this.steer,
       decision.mode,
       decision.targetPlayerId,
+      targetDistanceM,
       decision.fireAim,
       decision.meleeAim,
       this.options,

@@ -326,6 +326,7 @@ type GameWorldProps = {
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   benchmarkAutopilot?: {
     enabled: boolean;
     clientIndex: number;
@@ -333,6 +334,7 @@ type GameWorldProps = {
   };
   practiceBots?: PracticeBotRuntime | null;
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   cosmeticDeathPhysicsEnabled?: boolean;
@@ -1052,9 +1054,11 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   cosmeticDeathPhysicsEnabled = true,
@@ -2547,6 +2551,8 @@ export function GameWorld({
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
+      const idLabel = handle.root.getObjectByName('idLabel');
+      if (idLabel) idLabel.visible = showPlayerIdLabels;
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
@@ -2887,7 +2893,7 @@ export function GameWorld({
       <CrosshairHUD />
 
       {practiceMode && practiceBots && practiceBotsDebugOverlay && (
-        <BotsDebugOverlay runtime={practiceBots} />
+        <BotsDebugOverlay runtime={practiceBots} showLabels={Boolean(practiceBotsDebugLabels)} />
       )}
 
       {sceneExtras}
@@ -3443,6 +3449,7 @@ function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
   const sprite = new THREE.Sprite(labelMat);
   sprite.name = 'idLabel';
+  sprite.visible = false;
   sprite.scale.set(1.2, 0.45, 1);
   // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
   // Place the label just above the head.
