@@ -445,10 +445,7 @@ impl LocalSession {
             let Some((prev_input, was_on_ground)) = human_prev_state.get(&id) else {
                 continue;
             };
-            let current_input = human_current_inputs
-                .get(&id)
-                .cloned()
-                .unwrap_or_default();
+            let current_input = human_current_inputs.get(&id).cloned().unwrap_or_default();
             let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
                 id,
                 prev_input,
@@ -506,12 +503,7 @@ impl LocalSession {
         }
     }
 
-    fn kill_human_player(
-        &mut self,
-        player_id: u32,
-        server_time_ms: u32,
-        cause: LocalDeathCause,
-    ) {
+    fn kill_human_player(&mut self, player_id: u32, server_time_ms: u32, cause: LocalDeathCause) {
         let battery_drop = if matches!(cause, LocalDeathCause::HpDamage) {
             self.arena.players.get(&player_id).and_then(|player| {
                 if player.energy > 0.0 {
@@ -607,7 +599,11 @@ impl LocalSession {
                     continue;
                 }
                 if depleted {
-                    self.kill_human_player(shooter_id, server_time_ms, LocalDeathCause::EnergyDepletion);
+                    self.kill_human_player(
+                        shooter_id,
+                        server_time_ms,
+                        LocalDeathCause::EnergyDepletion,
+                    );
                     continue;
                 }
             }
@@ -1725,7 +1721,11 @@ mod tests {
             .expect("local player exists")
             .energy = remaining_energy;
 
-        session.kill_human_player(LOCAL_PLAYER_ID, session.server_time_ms(), LocalDeathCause::HpDamage);
+        session.kill_human_player(
+            LOCAL_PLAYER_ID,
+            session.server_time_ms(),
+            LocalDeathCause::HpDamage,
+        );
 
         let batteries = session.battery_states();
         assert_eq!(
