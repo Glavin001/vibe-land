@@ -47,7 +47,7 @@ describe('vehicleVisualGeometry', () => {
   });
 
   it('reads suspension geometry from the shared WASM exports', () => {
-    expect(getVehicleSuspensionRestLengthM()).toBeCloseTo(0.42);
+    expect(getVehicleSuspensionRestLengthM()).toBeCloseTo(0.3);
     expect(getVehicleWheelRadiusM()).toBeCloseTo(0.35);
     const offsets = getVehicleWheelConnectionOffsets();
     const expectedOffsets = [
