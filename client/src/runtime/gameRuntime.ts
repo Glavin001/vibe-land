@@ -28,6 +28,7 @@ import type { SemanticInputState } from '../input/types';
 import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionManager';
+import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
 import type { RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
@@ -220,6 +221,37 @@ export interface GameRuntimeClient {
     vz: number,
   ): void;
   syncBroadPhase(): void;
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  removeRagdollBody(id: number): void;
+  getRagdollBodyState(id: number): Float64Array | null;
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void;
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void;
+  removeRagdollJoint(jointId: number): void;
+
   enterVehicle(vehicleId: number, initState: NetVehicleState): void;
   exitVehicle(): void;
   updateVehicle(
@@ -444,6 +476,38 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     vz: number,
   ): void;
   abstract syncBroadPhase(): void;
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+  abstract spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  abstract removeRagdollBody(id: number): void;
+  /** Returns [px, py, pz, qx, qy, qz, qw] or null. */
+  abstract getRagdollBodyState(id: number): Float64Array | null;
+  abstract setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void;
+  abstract createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void;
+  abstract createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void;
+  abstract removeRagdollJoint(jointId: number): void;
+
   abstract enterVehicle(vehicleId: number, initState: NetVehicleState): void;
   abstract exitVehicle(): void;
   abstract updateVehicle(
@@ -461,6 +525,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
 
 export class LocalGameRuntime extends BaseGameRuntime {
   private client: LocalPracticeClient | null = null;
+  private cosmeticWorld: CosmeticPhysicsWorld | null = null;
   private readonly inputBundler = new FixedInputBundler(1 / 60, 4);
 
   constructor(
@@ -535,35 +600,44 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
-    const client = await LocalPracticeClient.connect({
-      worldJson: this.worldJson,
-      onDisconnect: (reason) => {
-        this.callbacks.onDisconnect(reason);
-      },
-      onLocalSnapshot: (ackInputSeq, state) => {
-        const meters = netPlayerStateToMeters(state);
-        this.setLocalPosition(meters.position);
-        this.syncState();
-        this.callbacks.onSnapshot?.();
-        void ackInputSeq;
-      },
-    });
-    this.client = client;
-    this.state.remoteInterpolator = client.interpolator;
-    this.state.serverClock = client.serverClock;
-    this.state.remotePlayers = client.remotePlayers;
-    this.state.dynamicBodies = client.dynamicBodies;
-    this.setLocalPosition(
-      client.currentLocalPlayerState ? netPlayerStateToMeters(client.currentLocalPlayerState).position : [0, 2, 0],
-    );
-    this.syncState();
-    this.callbacks.onWelcome(client.playerId);
-    client.emitCurrentState();
+    this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
+    try {
+      const client = await LocalPracticeClient.connect({
+        worldJson: this.worldJson,
+        onDisconnect: (reason) => {
+          this.callbacks.onDisconnect(reason);
+        },
+        onLocalSnapshot: (ackInputSeq, state) => {
+          const meters = netPlayerStateToMeters(state);
+          this.setLocalPosition(meters.position);
+          this.syncState();
+          this.callbacks.onSnapshot?.();
+          void ackInputSeq;
+        },
+      });
+      this.client = client;
+      this.state.remoteInterpolator = client.interpolator;
+      this.state.serverClock = client.serverClock;
+      this.state.remotePlayers = client.remotePlayers;
+      this.state.dynamicBodies = client.dynamicBodies;
+      this.setLocalPosition(
+        client.currentLocalPlayerState ? netPlayerStateToMeters(client.currentLocalPlayerState).position : [0, 2, 0],
+      );
+      this.syncState();
+      this.callbacks.onWelcome(client.playerId);
+      client.emitCurrentState();
+    } catch (error) {
+      this.cosmeticWorld?.dispose();
+      this.cosmeticWorld = null;
+      throw error;
+    }
   }
 
   disconnect(): void {
     this.client?.disconnect();
     this.client = null;
+    this.cosmeticWorld?.dispose();
+    this.cosmeticWorld = null;
     this.inputBundler.reset(1);
   }
 
@@ -710,7 +784,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   updateDynamicBodies(_bodies: DynamicBodyStateMeters[]): void {}
 
-  advanceDynamicBodies(_frameDeltaSec: number, _allowProxyStep: boolean): void {}
+  advanceDynamicBodies(frameDeltaSec: number, _allowProxyStep: boolean): void {
+    this.cosmeticWorld?.advance(frameDeltaSec);
+  }
 
   getDynamicBodyRenderState(id: number): DynamicBodyStateMeters | null {
     return this.dynamicBodies.get(id) ?? null;
@@ -781,6 +857,56 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   syncBroadPhase(): void {}
 
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.cosmeticWorld?.spawnRagdollBody(
+      id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+    );
+  }
+  removeRagdollBody(id: number): void {
+    this.cosmeticWorld?.removeRagdollBody(id);
+  }
+  getRagdollBodyState(id: number): Float64Array | null {
+    return this.cosmeticWorld?.getRagdollBodyState(id) ?? null;
+  }
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.cosmeticWorld?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.cosmeticWorld?.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+    );
+  }
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.cosmeticWorld?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+  removeRagdollJoint(jointId: number): void {
+    this.cosmeticWorld?.removeRagdollJoint(jointId);
+  }
+
   enterVehicle(_vehicleId: number, _initState: NetVehicleState): void {}
 
   exitVehicle(): void {}
@@ -828,6 +954,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
 export class MultiplayerGameRuntime extends BaseGameRuntime {
   private client: NetcodeClient | null = null;
   private sim: WasmSimWorldInstance | null = null;
+  private cosmeticWorld: CosmeticPhysicsWorld | null = null;
   private prediction: PredictionManager | null = null;
   private vehiclePrediction: VehiclePredictionManager | null = null;
   private dynamicBodiesPrediction: DynamicBodyPredictionManager | null = null;
@@ -921,60 +1048,77 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     sim.spawnPlayer(0, 2, 0);
     sim.rebuildBroadPhase();
     this.sim = sim;
-    this.prediction = new PredictionManager(sim);
-    this.prediction.enableTerrainWorld();
-    this.vehiclePrediction = new VehiclePredictionManager(sim);
-    this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
-    this.setRenderBlocks(this.prediction.getRenderBlocks());
+    this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
 
-    const client = new NetcodeClient({
-      onWelcome: (playerId) => {
-        this.syncState();
-        this.callbacks.onWelcome(playerId);
-      },
-      onDisconnect: (reason) => {
-        this.callbacks.onDisconnect(reason);
-      },
-      onLocalSnapshot: (ackInputSeq, state) => {
-        const meters = netPlayerStateToMeters(state);
-        this.setLocalPosition(meters.position);
-        this.syncState();
-        const bodies = Array.from(this.dynamicBodies.values());
-        this.dynamicBodiesPrediction?.syncAuthoritativeBodies(bodies);
-        if (!this.isInVehicle()) {
-          this.reconcile(ackInputSeq, state);
-        }
-      },
-      onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
-        this.reconcileVehicle(vehicleState, ackInputSeq);
-      },
-      onWorldPacket: (packet) => {
+    try {
+      this.prediction = new PredictionManager(sim);
+      this.prediction.enableTerrainWorld();
+      this.vehiclePrediction = new VehiclePredictionManager(sim);
+      this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
+      this.setRenderBlocks(this.prediction.getRenderBlocks());
+
+      const client = new NetcodeClient({
+        onWelcome: (playerId) => {
+          this.syncState();
+          this.callbacks.onWelcome(playerId);
+        },
+        onDisconnect: (reason) => {
+          this.callbacks.onDisconnect(reason);
+        },
+        onLocalSnapshot: (ackInputSeq, state) => {
+          const meters = netPlayerStateToMeters(state);
+          this.setLocalPosition(meters.position);
+          this.syncState();
+          const bodies = Array.from(this.dynamicBodies.values());
+          this.dynamicBodiesPrediction?.syncAuthoritativeBodies(bodies);
+          if (!this.isInVehicle()) {
+            this.reconcile(ackInputSeq, state);
+          }
+        },
+        onLocalVehicleSnapshot: (vehicleState, ackInputSeq) => {
+          this.reconcileVehicle(vehicleState, ackInputSeq);
+        },
+        onWorldPacket: (packet) => {
+          this.applyWorldPacket(packet);
+        },
+        onPacket: (packet) => {
+          this.syncState();
+          if (packet.type === 'snapshot') {
+            this.callbacks.onSnapshot?.();
+          }
+        },
+      });
+
+      this.client = client;
+      this.state.remoteInterpolator = client.interpolator;
+      this.state.serverClock = client.serverClock;
+      this.state.remotePlayers = client.remotePlayers;
+      this.state.dynamicBodies = client.dynamicBodies;
+      this.syncState();
+
+      const pendingPackets = this.pendingWorldPackets.splice(0);
+      for (const packet of pendingPackets) {
         this.applyWorldPacket(packet);
-      },
-      onPacket: (packet) => {
-        this.syncState();
-        if (packet.type === 'snapshot') {
-          this.callbacks.onSnapshot?.();
-        }
-      },
-    });
+      }
 
-    this.client = client;
-    this.state.remoteInterpolator = client.interpolator;
-    this.state.serverClock = client.serverClock;
-    this.state.remotePlayers = client.remotePlayers;
-    this.state.dynamicBodies = client.dynamicBodies;
-    this.syncState();
-
-    const pendingPackets = this.pendingWorldPackets.splice(0);
-    for (const packet of pendingPackets) {
-      this.applyWorldPacket(packet);
+      const identity = 'player-' + Math.random().toString(36).slice(2, 8);
+      const token = 'mvp-token';
+      const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
+      await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
+    } catch (error) {
+      this.client?.disconnect();
+      this.client = null;
+      this.prediction?.dispose();
+      this.prediction = null;
+      this.vehiclePrediction?.dispose();
+      this.vehiclePrediction = null;
+      this.dynamicBodiesPrediction?.clear();
+      this.dynamicBodiesPrediction = null;
+      this.cosmeticWorld?.dispose();
+      this.cosmeticWorld = null;
+      this.sim = null;
+      throw error;
     }
-
-    const identity = 'player-' + Math.random().toString(36).slice(2, 8);
-    const token = 'mvp-token';
-    const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
-    await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
   }
 
   disconnect(): void {
@@ -986,6 +1130,8 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.vehiclePrediction = null;
     this.dynamicBodiesPrediction?.clear();
     this.dynamicBodiesPrediction = null;
+    this.cosmeticWorld?.dispose();
+    this.cosmeticWorld = null;
     this.sim = null;
     this.knownVehicleIds.clear();
   }
@@ -1300,6 +1446,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   advanceDynamicBodies(frameDeltaSec: number, allowProxyStep: boolean): void {
     this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    this.cosmeticWorld?.advance(frameDeltaSec);
   }
 
   getDynamicBodyRenderState(id: number): DynamicBodyStateMeters | null {
@@ -1539,6 +1686,61 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   syncBroadPhase(): void {
     this.sim?.syncBroadPhase();
+  }
+
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.cosmeticWorld?.spawnRagdollBody(
+      id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+    );
+  }
+
+  removeRagdollBody(id: number): void {
+    this.cosmeticWorld?.removeRagdollBody(id);
+  }
+
+  getRagdollBodyState(id: number): Float64Array | null {
+    return this.cosmeticWorld?.getRagdollBodyState(id) ?? null;
+  }
+
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.cosmeticWorld?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.cosmeticWorld?.createRagdollSphericalJoint(jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z);
+  }
+
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.cosmeticWorld?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id,
+      a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+
+  removeRagdollJoint(jointId: number): void {
+    this.cosmeticWorld?.removeRagdollJoint(jointId);
   }
 
   enterVehicle(vehicleId: number, initState: NetVehicleState): void {

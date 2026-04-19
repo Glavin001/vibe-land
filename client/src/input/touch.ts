@@ -10,7 +10,7 @@ export const JOYSTICK_SPRINT_RADIUS_PX = 95;
 export const JOYSTICK_DEADZONE = 0.14;
 
 type EdgeButton = 'interact' | 'blockRemove' | 'blockPlace' | 'mat1' | 'mat2';
-type HoldButton = 'jump' | 'crouch' | 'firePrimary' | 'sprint';
+type HoldButton = 'jump' | 'crouch' | 'firePrimary' | 'sprint' | 'aim';
 
 export class TouchInputSource {
   private moveX = 0;
@@ -24,6 +24,7 @@ export class TouchInputSource {
   private holdCrouch = false;
   private holdFire = false;
   private holdSprint = false;
+  private holdAim = false;
 
   private interactPressed = false;
   private blockRemovePressed = false;
@@ -52,6 +53,7 @@ export class TouchInputSource {
     this.holdCrouch = false;
     this.holdFire = false;
     this.holdSprint = false;
+    this.holdAim = false;
     this.interactPressed = false;
     this.blockRemovePressed = false;
     this.blockPlacePressed = false;
@@ -98,6 +100,10 @@ export class TouchInputSource {
       case 'sprint':
         if (this.holdSprint !== pressed) this.activityId += 1;
         this.holdSprint = pressed;
+        break;
+      case 'aim':
+        if (this.holdAim !== pressed) this.activityId += 1;
+        this.holdAim = pressed;
         break;
     }
   }
@@ -150,6 +156,7 @@ export class TouchInputSource {
       crouch: context === 'onFoot' && this.holdCrouch,
       firePrimary: context === 'onFoot' && this.holdFire,
       firePrimaryValue: context === 'onFoot' && this.holdFire ? 1 : 0,
+      aimSecondary: context === 'onFoot' && this.holdAim,
       handbrake: context === 'vehicle' && this.holdJump,
       interactPressed: this.interactPressed,
       resetVehiclePressed: false,

@@ -251,6 +251,66 @@ export class LocalPracticeClient implements PracticeBotHost {
     return decodeVehicleDebugSnapshot(this.session?.getVehicleDebug(vehicleId >>> 0));
   }
 
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.session?.spawnRagdollBody(
+      id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+    );
+  }
+
+  removeRagdollBody(id: number): void {
+    this.session?.removeRagdollBody(id);
+  }
+
+  getRagdollBodyState(id: number): Float64Array | null {
+    const s = this.session?.getRagdollBodyState(id);
+    if (!s || s.length < 7) return null;
+    return s;
+  }
+
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.session?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.session?.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+    );
+  }
+
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.session?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+
+  removeRagdollJoint(jointId: number): void {
+    this.session?.removeRagdollJoint(jointId);
+  }
+
   sampleRemoteVehicle(id: number, _renderTimeUs?: number): VehicleSample | null {
     const vehicle = this.vehicles.get(id);
     if (!vehicle) return null;

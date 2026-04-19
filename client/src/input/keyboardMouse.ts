@@ -87,6 +87,7 @@ export class KeyboardMouseInputSource {
       + (this.keys.has(keyboard.moveLeft) ? -1 : 0);
     const moveY = (this.keys.has(keyboard.moveForward) ? 1 : 0)
       + (this.keys.has(keyboard.moveBackward) ? -1 : 0);
+    const aimingWithKeyboard = this.keys.has(keyboard.aimSecondaryKey);
     // Mouse look sensitivity and Y/X ratio come from the calibration settings
     // store, NOT the key bindings — those two systems are orthogonal.
     // Bindings control which key does what; calibration controls how the
@@ -117,6 +118,9 @@ export class KeyboardMouseInputSource {
       crouch: context === 'onFoot' && this.keys.has(keyboard.crouch),
       firePrimary: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton),
       firePrimaryValue: context === 'onFoot' && pointerLocked && this.mouseButtons.has(keyboard.firePrimaryMouseButton) ? 1 : 0,
+      aimSecondary: context === 'onFoot'
+        && pointerLocked
+        && (this.mouseButtons.has(keyboard.aimSecondaryMouseButton) || aimingWithKeyboard),
       handbrake: context === 'vehicle' && this.keys.has(keyboard.handbrake),
       interactPressed: this.justPressedKeys.has(keyboard.interact),
       resetVehiclePressed: context === 'vehicle' && this.justPressedKeys.has(keyboard.resetVehicle),

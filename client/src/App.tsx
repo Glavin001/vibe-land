@@ -49,6 +49,7 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
+import { updateFogSettings, useFogSettings } from './graphics/fogSettings';
 
 type AppProps = {
   mode: GameMode;
@@ -73,6 +74,7 @@ const DEFAULT_PRACTICE_BOT_NAV_TUNING: PracticeBotNavTuning = {
   walkableSlopeAngleDegrees: 45,
   cellHeight: 0.0275,
 };
+const COSMETIC_DEATH_PHYSICS_STORAGE_KEY = 'vibe-land/debug/cosmetic-death-physics-enabled';
 
 declare global {
   interface Window {
@@ -169,10 +171,18 @@ export function App({
   );
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
+  const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
+  const [cosmeticDeathPhysicsEnabled, setCosmeticDeathPhysicsEnabled] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    return window.localStorage.getItem(COSMETIC_DEATH_PHYSICS_STORAGE_KEY) !== '0';
+  });
+  const fogSettings = useFogSettings();
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -230,6 +240,16 @@ export function App({
       debugOverlayVisible: debugVisible,
     });
   }, [practiceMode, multiplayerMatchId, connected, status, playerId, debugVisible]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem(
+      COSMETIC_DEATH_PHYSICS_STORAGE_KEY,
+      cosmeticDeathPhysicsEnabled ? '1' : '0',
+    );
+  }, [cosmeticDeathPhysicsEnabled]);
 
   const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
   const practiceBotWorldDocumentRef = useRef<WorldDocument | null>(null);
@@ -726,6 +746,8 @@ export function App({
         renderStatsText: renderStatsParentRef.current?.innerText ?? '',
         localRenderSmoothingEnabled,
         vehicleSmoothingEnabled,
+        fogEnabled: fogSettings.enabled,
+        fogDensity: fogSettings.density,
         deepCaptureEnabled,
         deepCaptureReport: getDeepCaptureMarkdown(),
       });
@@ -867,7 +889,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && (
+      {connected && !scopeActive && (
         <div
           style={{
             position: 'absolute',
@@ -903,6 +925,66 @@ export function App({
               background: crosshairColor,
             }}
           />
+        </div>
+      )}
+      {connected && scopeActive && (
+        <div
+          data-testid="scope-overlay"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 6,
+            background: 'radial-gradient(circle at 50% 50%, transparent 18%, rgba(0,0,0,0.88) 30%)',
+            transition: 'opacity 80ms ease',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              width: 28,
+              height: 28,
+              transform: 'translate(-50%, -50%)',
+              filter: `drop-shadow(0 0 4px ${crosshairGlow})`,
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: 0,
+                width: 2,
+                height: '100%',
+                transform: 'translateX(-50%)',
+                background: crosshairColor,
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: 0,
+                width: '100%',
+                height: 2,
+                transform: 'translateY(-50%)',
+                background: crosshairColor,
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                width: 3,
+                height: 3,
+                transform: 'translate(-50%, -50%)',
+                background: crosshairColor,
+                borderRadius: '50%',
+              }}
+            />
+          </div>
         </div>
       )}
       <ControlHintsOverlay
@@ -969,6 +1051,11 @@ export function App({
         onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
         vehicleSmoothingEnabled={vehicleSmoothingEnabled}
         onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
+        onToggleCosmeticDeathPhysics={() => setCosmeticDeathPhysicsEnabled((enabled) => !enabled)}
+        fogEnabled={fogSettings.enabled}
+        fogDensity={fogSettings.density}
+        onToggleFog={() => updateFogSettings((s) => ({ ...s, enabled: !s.enabled }))}
         rapierDebugLabel={rapierDebugLabel}
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
@@ -993,6 +1080,7 @@ export function App({
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
+          onScopeActiveChange={setScopeActive}
           playerId={playerId}
           onDebugFrame={updateFrame}
           onInputFrame={handleInputFrame}
@@ -1008,6 +1096,10 @@ export function App({
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
+          fogEnabled={fogSettings.enabled}
+          fogDensity={fogSettings.density}
+          fogColor={fogSettings.color}
           sceneExtras={calibrationSceneExtras}
         />
       )}

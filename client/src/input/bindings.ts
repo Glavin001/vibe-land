@@ -14,6 +14,8 @@ export type KeyboardCodeBinding =
   | 'ShiftRight'
   | 'ControlLeft'
   | 'ControlRight'
+  | 'AltLeft'
+  | 'AltRight'
   | 'ArrowUp'
   | 'ArrowDown'
   | 'ArrowLeft'
@@ -48,6 +50,8 @@ export type KeyboardBindings = {
   handbrake: KeyboardCodeBinding;
   firePrimaryMouseButton: MouseButtonBinding;
   melee: KeyboardCodeBinding;
+  aimSecondaryMouseButton: MouseButtonBinding;
+  aimSecondaryKey: KeyboardCodeBinding;
 };
 
 export type GamepadBindings = {
@@ -61,6 +65,7 @@ export type GamepadBindings = {
   sprintButton: GamepadButtonBinding;
   crouchButton: GamepadButtonBinding;
   firePrimaryButton: GamepadButtonBinding;
+  aimSecondaryButton: GamepadButtonBinding;
   handbrakeButton: GamepadButtonBinding;
   interactButton: GamepadButtonBinding;
   resetVehicleButton: GamepadButtonBinding;
@@ -96,6 +101,8 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     handbrake: 'Space',
     firePrimaryMouseButton: 0,
     melee: 'KeyV',
+    aimSecondaryMouseButton: 2,
+    aimSecondaryKey: 'AltLeft',
   },
   gamepad: {
     moveXAxis: 0,
@@ -108,6 +115,7 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = {
     sprintButton: 10,
     crouchButton: 1,
     firePrimaryButton: 7,
+    aimSecondaryButton: 6,
     handbrakeButton: 0,
     interactButton: 2,
     resetVehicleButton: 3,
@@ -135,6 +143,8 @@ export const KEYBOARD_CODE_OPTIONS: Array<{ value: KeyboardCodeBinding; label: s
   { value: 'ShiftRight', label: 'Right Shift' },
   { value: 'ControlLeft', label: 'Left Ctrl' },
   { value: 'ControlRight', label: 'Right Ctrl' },
+  { value: 'AltLeft', label: 'Left Alt / Option' },
+  { value: 'AltRight', label: 'Right Alt / Option' },
   { value: 'ArrowUp', label: 'Arrow Up' },
   { value: 'ArrowDown', label: 'Arrow Down' },
   { value: 'ArrowLeft', label: 'Arrow Left' },
@@ -187,6 +197,9 @@ function cloneDefaultBindings(): InputBindings {
 function isKeyboardBinding(value: unknown): value is KeyboardBindings {
   if (!value || typeof value !== 'object') return false;
   const binding = value as Record<string, unknown>;
+  const hasMelee = binding.melee == null || typeof binding.melee === 'string';
+  const hasAimSecondaryMouseButton = binding.aimSecondaryMouseButton == null || typeof binding.aimSecondaryMouseButton === 'number';
+  const hasAimSecondaryKey = binding.aimSecondaryKey == null || typeof binding.aimSecondaryKey === 'string';
   return typeof binding.moveForward === 'string'
     && typeof binding.moveBackward === 'string'
     && typeof binding.moveLeft === 'string'
@@ -202,12 +215,15 @@ function isKeyboardBinding(value: unknown): value is KeyboardBindings {
     && typeof binding.materialSlot2 === 'string'
     && typeof binding.handbrake === 'string'
     && typeof binding.firePrimaryMouseButton === 'number'
-    && typeof binding.melee === 'string';
+    && hasMelee
+    && hasAimSecondaryMouseButton
+    && hasAimSecondaryKey;
 }
 
 function isGamepadBinding(value: unknown): value is GamepadBindings {
   if (!value || typeof value !== 'object') return false;
   const binding = value as Record<string, unknown>;
+  const hasAimSecondaryButton = binding.aimSecondaryButton == null || typeof binding.aimSecondaryButton === 'number';
   return typeof binding.moveXAxis === 'number'
     && typeof binding.moveYAxis === 'number'
     && typeof binding.lookXAxis === 'number'
@@ -218,6 +234,7 @@ function isGamepadBinding(value: unknown): value is GamepadBindings {
     && typeof binding.sprintButton === 'number'
     && typeof binding.crouchButton === 'number'
     && typeof binding.firePrimaryButton === 'number'
+    && hasAimSecondaryButton
     && typeof binding.handbrakeButton === 'number'
     && typeof binding.interactButton === 'number'
     && typeof binding.resetVehicleButton === 'number'

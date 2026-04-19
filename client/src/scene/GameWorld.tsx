@@ -21,6 +21,7 @@ import {
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
   BTN_CROUCH,
@@ -73,11 +74,17 @@ import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } f
 import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
+import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+const HIPFIRE_FOV = 75;
+const SCOPE_FOV = 45;
+// Exponential damp rate: settles ~6–8 frames at 60 fps, matching typical ADS feel.
+const AIM_FOV_DAMP = 12;
+const AIM_LOOK_MULTIPLIER = 0.45;
 // Keep these in lockstep with `MoveConfig::default()` / hitscan constants in
 // the shared Rust physics code so the debug helper matches the authoritative
 // collision capsule and head zone.
@@ -311,6 +318,7 @@ type GameWorldProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
+  onScopeActiveChange?: (active: boolean) => void;
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
@@ -327,6 +335,10 @@ type GameWorldProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
+  fogEnabled?: boolean;
+  fogDensity?: number;
+  fogColor?: string;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -926,6 +938,7 @@ function resolvedInputFromBotIntent(
     pitch,
     buttons: buttons & (BTN_JUMP | BTN_SPRINT | BTN_CROUCH),
     firePrimary,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
@@ -948,6 +961,7 @@ function makeIdleResolvedInput(
     pitch,
     buttons: 0,
     firePrimary: false,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
@@ -1030,6 +1044,7 @@ export function GameWorld({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode = 'auto',
@@ -1042,6 +1057,10 @@ export function GameWorld({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
+  fogEnabled = true,
+  fogDensity = DEFAULT_FOG_SETTINGS.density,
+  fogColor = DEFAULT_FOG_SETTINGS.color,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1057,6 +1076,9 @@ export function GameWorld({
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
   onAimStateChangeRef.current = onAimStateChange;
+  const onScopeActiveChangeRef = useRef(onScopeActiveChange);
+  onScopeActiveChangeRef.current = onScopeActiveChange;
+  const prevScopeActiveRef = useRef(false);
   const onInputFrameRef = useRef(onInputFrame);
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
@@ -1211,6 +1233,7 @@ export function GameWorld({
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
+    onScopeActiveChangeRef.current?.(false);
   }, []);
 
   useEffect(() => {
@@ -1659,9 +1682,26 @@ export function GameWorld({
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
+    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
+    const botAutopilotEnabled = Boolean(
+      benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
+      && botBrainRef.current
+      && !isDrivingNow,
+    );
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
+
+    const canUseAimControls = canUseScopedAim(
+      inputSample.activeFamily,
+      pointerLocked,
+      isDrivingNow,
+      localDead,
+      botAutopilotEnabled,
+    );
+    const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
     if (isDrivingNow) {
       const updatedCamera = advanceVehicleCamera(
@@ -1677,19 +1717,28 @@ export function GameWorld({
         lastVehicleLookAtMsRef.current = now;
       }
     } else {
-      const look = advanceLookAngles(yawRef.current, pitchRef.current, inputSample.action);
+      const look = advanceLookAngles(
+        yawRef.current,
+        pitchRef.current,
+        inputSample.action,
+        isAiming ? AIM_LOOK_MULTIPLIER : 1,
+      );
       yawRef.current = look.yaw;
       pitchRef.current = look.pitch;
     }
 
-    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
-    const botAutopilotEnabled = Boolean(
-      benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
-      && botBrainRef.current
-      && !isDrivingNow,
-    );
+    const targetFov = isAiming ? SCOPE_FOV : HIPFIRE_FOV;
+    if ('fov' in camera) {
+      const perspective = camera as THREE.PerspectiveCamera;
+      perspective.fov = THREE.MathUtils.damp(perspective.fov, targetFov, AIM_FOV_DAMP, frameDelta);
+      perspective.updateProjectionMatrix();
+    }
+
+    if (prevScopeActiveRef.current !== isAiming) {
+      prevScopeActiveRef.current = isAiming;
+      onScopeActiveChangeRef.current?.(isAiming);
+    }
+
     const autopilotInput = vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
@@ -1796,13 +1845,7 @@ export function GameWorld({
 
     prediction.submitInput(frameDelta, resolvedInput);
 
-    const canUseAimActions = !isDrivingNow && !localDead
-      && (
-        botAutopilotEnabled
-        || pointerLocked
-        || inputSample.activeFamily === 'gamepad'
-        || inputSample.activeFamily === 'touch'
-      );
+    const canUseAimActions = canUseAimControls;
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
@@ -2497,7 +2540,7 @@ export function GameWorld({
       activeIds.add(id);
       let handle = remoteMeshes.current.get(id);
       if (!handle) {
-        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
         attachPlayerIdLabel(handle.root, id);
         remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
@@ -2557,7 +2600,20 @@ export function GameWorld({
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
       handle.setFlash(0xfff36b, flashAlpha);
-      handle.setOpacity(isDead ? 0.35 : 1);
+      // Ragdoll is the dead visual cue — keep opacity at 1 while physics-driven.
+      handle.setOpacity(1);
+
+      const shouldUseRagdoll = cosmeticDeathPhysicsEnabled && isDead;
+      if (shouldUseRagdoll) {
+        const sv = new THREE.Vector3(
+          sample?.velocity[0] ?? 0,
+          sample?.velocity[1] ?? 0,
+          sample?.velocity[2] ?? 0,
+        );
+        handle.setRagdoll(true, sv);
+      } else {
+        handle.setRagdoll(false);
+      }
 
       const vx = sample?.velocity[0] ?? 0;
       const vz = sample?.velocity[2] ?? 0;
@@ -2758,8 +2814,8 @@ export function GameWorld({
 
   return (
     <>
-      <color attach="background" args={['#d7e3f0']} />
-      <fog attach="fog" args={['#d7e3f0', 80, 220]} />
+      <color attach="background" args={[fogColor]} />
+      {fogEnabled && <fogExp2 attach="fog" args={[fogColor, fogDensity]} />}
       <Sky
         distance={450000}
         sunPosition={[120, 28, 40]}
