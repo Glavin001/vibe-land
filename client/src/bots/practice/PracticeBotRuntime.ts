@@ -66,6 +66,8 @@ export interface PracticeBotRuntimeOptions {
   cellSize?: number;
   cellHeight?: number;
   tileSizeVoxels?: number;
+  /** Whether bots are allowed to emit rifle fire. */
+  enableShooting?: boolean;
   /** Whether bots start with vehicle mode enabled. */
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
@@ -104,6 +106,8 @@ export interface PracticeBotStats {
   maxSpeed: number;
   navTriangles: number;
   running: boolean;
+  /** Whether the bot runtime currently allows ranged fire. */
+  enableShooting: boolean;
   /** Whether the vehicle-aware planner is currently enabled. */
   useVehicles: boolean;
   /** Number of vehicle-sized tris in the lazy vehicle navmesh, 0 if unbuilt. */
@@ -256,6 +260,8 @@ export class PracticeBotRuntime {
   private readonly maxAgentRadius: number;
   /** Whether the walk-vs-drive planner is active. */
   private useVehicles: boolean;
+  /** Whether bots may emit FireCmd packets. */
+  private enableShooting: boolean;
   /** Static physical profile of the vehicle the bots would drive. */
   private readonly vehicleProfile: VehicleProfile;
   /**
@@ -324,6 +330,7 @@ export class PracticeBotRuntime {
     this.behaviorKind = options.initialBehavior ?? DEFAULT_BEHAVIOR;
     this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
+    this.enableShooting = options.enableShooting ?? true;
     this.useVehicles = options.useVehicles ?? false;
     this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
   }
@@ -385,6 +392,7 @@ export class PracticeBotRuntime {
       maxSpeed: this.maxSpeed,
       navTriangles: this.crowd.nav.geometry.triangleCount,
       running: this.running,
+      enableShooting: this.enableShooting,
       useVehicles: this.useVehicles,
       vehicleNavTriangles: this.vehicleCrowd?.nav.geometry.triangleCount ?? 0,
     };
@@ -416,6 +424,10 @@ export class PracticeBotRuntime {
       }
       this.reservedVehicles.clear();
     }
+  }
+
+  setEnableShooting(value: boolean): void {
+    this.enableShooting = value;
   }
 
   private ensureVehicleCrowd(): BotCrowd {
@@ -880,6 +892,7 @@ export class PracticeBotRuntime {
     isDead: boolean,
     nowMs: number,
   ): void {
+    if (!this.enableShooting) return;
     if (!intent.firePrimary) return;
     if (isDead) return;
     if (bot.vehicleStage !== 'on_foot') return;

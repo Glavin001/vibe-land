@@ -522,4 +522,45 @@ describe('PracticeBotRuntime.create', () => {
     runtime.clear();
     runtime.detach();
   });
+
+  it('suppresses FireCmd packets when shooting is disabled', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+      enableShooting: false,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    host.castSceneRayResult = null;
+
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 8,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(1000);
+
+    expect(runtime.stats().enableShooting).toBe(false);
+    expect(host.sentFires.get(botId) ?? []).toHaveLength(0);
+
+    runtime.clear();
+    runtime.detach();
+  });
 });
