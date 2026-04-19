@@ -2886,6 +2886,7 @@ function WorldBlock({
 }
 
 const DESTRUCTIBLE_BODY_GROUPS_MODE_BIT = 1 << 30;
+const FULL_RAPIER_DEBUG_MODE_BITS = 0b1111111;
 
 function rapierDebugModeLabel(modeBits: number): string {
   switch (modeBits) {
@@ -2911,35 +2912,41 @@ function RapierDebugLines({
   runtimeRef: RefObject<GameRuntimeClient | null>;
   modeBits: number;
 }) {
-  const geometryRef = useRef<THREE.BufferGeometry | null>(null);
-  const materialRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const baseGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const highlightGeometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const baseMaterialRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const highlightMaterialRef = useRef<THREE.LineBasicMaterial | null>(null);
+  const destructibleHighlightMode = modeBits === DESTRUCTIBLE_BODY_GROUPS_MODE_BIT || modeBits === FULL_RAPIER_DEBUG_MODE_BITS;
 
   useEffect(() => {
     return () => {
-      const geometry = geometryRef.current;
-      const material = materialRef.current;
-      if (geometry) {
-        geometry.dispose();
+      const geometries = [baseGeometryRef.current, highlightGeometryRef.current];
+      const materials = [baseMaterialRef.current, highlightMaterialRef.current];
+      for (const geometry of geometries) {
+        geometry?.dispose();
       }
-      if (material) {
-        material.dispose();
+      for (const material of materials) {
+        material?.dispose();
       }
     };
   }, []);
 
   useFrame(() => {
     const runtime = runtimeRef.current;
-    const geometry = geometryRef.current;
-    if (!geometry || !runtime) return;
+    const baseGeometry = baseGeometryRef.current;
+    const highlightGeometry = highlightGeometryRef.current;
+    if (!baseGeometry || !runtime) return;
 
     if (modeBits === 0) {
-      geometry.setDrawRange(0, 0);
+      baseGeometry.setDrawRange(0, 0);
+      highlightGeometry?.setDrawRange(0, 0);
       return;
     }
 
     const buffers = runtime.getDebugRenderBuffers(modeBits);
     if (!buffers) {
-      geometry.setDrawRange(0, 0);
+      baseGeometry.setDrawRange(0, 0);
+      highlightGeometry?.setDrawRange(0, 0);
       return;
     }
 
@@ -2954,21 +2961,63 @@ function RapierDebugLines({
 
     const positionAttribute = new THREE.Float32BufferAttribute(positionArray, 3);
     positionAttribute.setUsage(THREE.DynamicDrawUsage);
-    geometry.setAttribute('position', positionAttribute);
+    baseGeometry.setAttribute('position', positionAttribute);
 
     const colorAttribute = new THREE.Float32BufferAttribute(rgbArray, 3);
     colorAttribute.setUsage(THREE.DynamicDrawUsage);
-    geometry.setAttribute('color', colorAttribute);
+    baseGeometry.setAttribute('color', colorAttribute);
 
-    geometry.setDrawRange(0, positionArray.length / 3);
-    geometry.computeBoundingSphere();
+    baseGeometry.setDrawRange(0, positionArray.length / 3);
+    baseGeometry.computeBoundingSphere();
+
+    if (!highlightGeometry) {
+      return;
+    }
+    if (!destructibleHighlightMode) {
+      highlightGeometry.setDrawRange(0, 0);
+      return;
+    }
+
+    const highlightPositionAttribute = new THREE.Float32BufferAttribute(positionArray, 3);
+    highlightPositionAttribute.setUsage(THREE.DynamicDrawUsage);
+    highlightGeometry.setAttribute('position', highlightPositionAttribute);
+
+    const highlightColorAttribute = new THREE.Float32BufferAttribute(rgbArray, 3);
+    highlightColorAttribute.setUsage(THREE.DynamicDrawUsage);
+    highlightGeometry.setAttribute('color', highlightColorAttribute);
+
+    highlightGeometry.setDrawRange(0, positionArray.length / 3);
+    highlightGeometry.computeBoundingSphere();
   });
 
   return (
-    <lineSegments frustumCulled={false} renderOrder={999}>
-      <bufferGeometry ref={geometryRef} />
-      <lineBasicMaterial ref={materialRef} vertexColors transparent opacity={1} depthWrite={false} />
-    </lineSegments>
+    <>
+      <lineSegments frustumCulled={false} renderOrder={998}>
+        <bufferGeometry ref={baseGeometryRef} />
+        <lineBasicMaterial
+          ref={baseMaterialRef}
+          vertexColors
+          transparent
+          opacity={destructibleHighlightMode ? 0.52 : 1}
+          depthWrite={false}
+          depthTest={!destructibleHighlightMode}
+          toneMapped={false}
+        />
+      </lineSegments>
+      <lineSegments frustumCulled={false} renderOrder={999}>
+        <bufferGeometry ref={highlightGeometryRef} />
+        <lineBasicMaterial
+          ref={highlightMaterialRef}
+          vertexColors
+          transparent
+          opacity={destructibleHighlightMode ? 0.96 : 0}
+          depthWrite={false}
+          depthTest={false}
+          toneMapped={false}
+          blending={THREE.NormalBlending}
+        />
+      </lineSegments>
+    </>
   );
 }
 

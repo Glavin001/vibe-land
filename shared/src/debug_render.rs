@@ -21,14 +21,19 @@ struct BufferBackend<'a> {
     vertices: Vec<f32>,
     colors: Vec<f32>,
     destructible_body_handles: Option<&'a HashSet<RigidBodyHandle>>,
+    filter_to_destructible_body_groups: bool,
 }
 
 impl<'a> BufferBackend<'a> {
-    fn new(destructible_body_handles: Option<&'a HashSet<RigidBodyHandle>>) -> Self {
+    fn new(
+        destructible_body_handles: Option<&'a HashSet<RigidBodyHandle>>,
+        filter_to_destructible_body_groups: bool,
+    ) -> Self {
         Self {
             vertices: Vec::new(),
             colors: Vec::new(),
             destructible_body_handles,
+            filter_to_destructible_body_groups,
         }
     }
 
@@ -42,14 +47,17 @@ impl<'a> BufferBackend<'a> {
 
 impl DebugRenderBackend for BufferBackend<'_> {
     fn filter_object(&self, object: DebugRenderObject) -> bool {
+        if !self.filter_to_destructible_body_groups {
+            return true;
+        }
         let Some(body_handles) = self.destructible_body_handles else {
             return true;
         };
         match object {
             DebugRenderObject::Collider(_, collider)
-            | DebugRenderObject::ColliderAabb(_, collider, _) => {
-                collider.parent().is_some_and(|handle| body_handles.contains(&handle))
-            }
+            | DebugRenderObject::ColliderAabb(_, collider, _) => collider
+                .parent()
+                .is_some_and(|handle| body_handles.contains(&handle)),
             _ => false,
         }
     }
@@ -64,9 +72,12 @@ impl DebugRenderBackend for BufferBackend<'_> {
         self.vertices.extend_from_slice(&[
             a.x as f32, a.y as f32, a.z as f32, b.x as f32, b.y as f32, b.z as f32,
         ]);
-        let rgba = self
-            .destructible_body_handles
-            .and_then(|_| object_body_handle(object).map(debug_body_color_rgba))
+        let rgba = object_body_handle(object)
+            .filter(|handle| {
+                self.destructible_body_handles
+                    .is_some_and(|body_handles| body_handles.contains(handle))
+            })
+            .map(debug_body_color_rgba)
             .unwrap_or_else(|| debug_color_to_rgba(color));
         self.colors.extend_from_slice(&rgba);
         self.colors.extend_from_slice(&rgba);
@@ -93,11 +104,7 @@ pub fn render_debug_buffers(
     } else {
         debug_mode_from_bits(mode_bits)
     };
-    let mut backend = BufferBackend::new(if destructible_groups_only {
-        destructible_body_handles
-    } else {
-        None
-    });
+    let mut backend = BufferBackend::new(destructible_body_handles, destructible_groups_only);
     pipeline.render(
         &mut backend,
         bodies,
@@ -127,8 +134,21 @@ fn debug_body_color_rgba(handle: RigidBodyHandle) -> [f32; 4] {
     let mixed = index
         .wrapping_mul(0x9e37_79b1)
         .wrapping_add(generation.wrapping_mul(0x85eb_ca6b));
-    let hue = (mixed % 360) as f32;
-    debug_color_to_rgba([hue, 0.72, 0.56, 1.0])
+    const DEBUG_BODY_PALETTE: [[f32; 4]; 12] = [
+        [0.98, 0.25, 0.27, 1.0],
+        [0.10, 0.78, 0.98, 1.0],
+        [0.99, 0.82, 0.18, 1.0],
+        [0.34, 0.96, 0.38, 1.0],
+        [0.84, 0.36, 0.99, 1.0],
+        [1.00, 0.53, 0.13, 1.0],
+        [0.16, 0.96, 0.78, 1.0],
+        [0.99, 0.29, 0.68, 1.0],
+        [0.72, 0.98, 0.22, 1.0],
+        [0.31, 0.55, 1.00, 1.0],
+        [1.00, 0.18, 0.57, 1.0],
+        [0.65, 0.48, 1.00, 1.0],
+    ];
+    DEBUG_BODY_PALETTE[(mixed as usize) % DEBUG_BODY_PALETTE.len()]
 }
 
 fn debug_color_to_rgba(color: DebugColor) -> [f32; 4] {
@@ -299,7 +319,10 @@ mod tests {
             None,
         );
 
-        assert!(!filtered.vertices.is_empty(), "expected selected-body lines");
+        assert!(
+            !filtered.vertices.is_empty(),
+            "expected selected-body lines"
+        );
         assert!(filtered.vertices.len() < unfiltered.vertices.len());
         assert_eq!(filtered.colors.len(), (filtered.vertices.len() / 3) * 4);
 
@@ -310,5 +333,58 @@ mod tests {
             assert!((rgba[2] - expected[2]).abs() < 1.0e-6);
             assert!((rgba[3] - expected[3]).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn full_mode_keeps_destructible_body_colors_when_handles_are_supplied() {
+        let mut arena = DynamicArena::new(MoveConfig::default());
+        arena.spawn_dynamic_box(vector![0.0, 2.0, 0.0], vector![0.5, 0.5, 0.5]);
+        arena.spawn_dynamic_box(vector![3.0, 2.0, 0.0], vector![0.5, 0.5, 0.5]);
+        arena.rebuild_broad_phase();
+        arena.step_dynamics(1.0 / 60.0);
+
+        let mut body_handles = arena
+            .sim
+            .rigid_bodies
+            .iter()
+            .map(|(handle, _)| handle)
+            .collect::<Vec<_>>();
+        body_handles.sort_by_key(|handle| {
+            let (index, generation) = handle.into_raw_parts();
+            (index, generation)
+        });
+        let selected_body = *body_handles
+            .first()
+            .expect("expected at least one dynamic body");
+
+        let mut handles = HashSet::new();
+        handles.insert(selected_body);
+
+        let mut pipeline = default_debug_pipeline();
+        let buffers = render_debug_buffers(
+            &mut pipeline,
+            DebugRenderMode::all().bits(),
+            &arena.sim.rigid_bodies,
+            &arena.sim.colliders,
+            &arena.impulse_joints,
+            &arena.multibody_joints,
+            &arena.sim.narrow_phase,
+            Some(&handles),
+        );
+
+        assert!(
+            !buffers.vertices.is_empty(),
+            "expected full-mode debug output"
+        );
+        let expected = debug_body_color_rgba(selected_body);
+        assert!(
+            buffers.colors.chunks_exact(4).any(|rgba| {
+                (rgba[0] - expected[0]).abs() < 1.0e-6
+                    && (rgba[1] - expected[1]).abs() < 1.0e-6
+                    && (rgba[2] - expected[2]).abs() < 1.0e-6
+                    && (rgba[3] - expected[3]).abs() < 1.0e-6
+            }),
+            "expected highlighted destructible body color to appear in full mode",
+        );
     }
 }
