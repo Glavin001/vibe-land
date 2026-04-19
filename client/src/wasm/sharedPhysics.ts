@@ -145,7 +145,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   describeDestructibles(): string;
 };
 type WasmSimWorldCtor = {
-  new (): WasmSimWorldInstance;
+  new (wallMaterialScale?: number, towerMaterialScale?: number): WasmSimWorldInstance;
   prototype: WasmSimWorldInstance;
 };
 
@@ -199,7 +199,11 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
 };
 
 type WasmLocalSessionCtor = {
-  new (worldJson?: string): WasmLocalSessionInstance;
+  new (
+    worldJson?: string,
+    wallMaterialScale?: number,
+    towerMaterialScale?: number,
+  ): WasmLocalSessionInstance;
   prototype: WasmLocalSessionInstance;
 };
 

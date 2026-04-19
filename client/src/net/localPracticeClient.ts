@@ -32,12 +32,14 @@ import {
   type WasmLocalSessionInstance,
 } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
+import type { DestructibleTuning } from '../physics/destructibleTuning';
 
 export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   worldJson?: string;
+  destructibleTuning?: DestructibleTuning;
 };
 
 export interface PracticeBotHost {
@@ -93,7 +95,11 @@ export class LocalPracticeClient implements PracticeBotHost {
   static async connect(config: LocalPracticeClientConfig = {}): Promise<LocalPracticeClient> {
     await initSharedPhysics();
     const client = new LocalPracticeClient(config);
-    client.session = new WasmLocalSession(config.worldJson);
+    client.session = new WasmLocalSession(
+      config.worldJson,
+      config.destructibleTuning?.wallMaterialScale,
+      config.destructibleTuning?.towerMaterialScale,
+    );
     client.session.connect();
     client.syncFromSession(false);
     client.startTickLoop();

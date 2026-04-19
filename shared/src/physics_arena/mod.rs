@@ -16,7 +16,7 @@ use crate::{
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{
-    destructibles::{pose_from_world_doc, DestructibleRegistry},
+    destructibles::{pose_from_world_doc, DestructibleRegistry, DestructibleRuntimeConfig},
     world_document::DestructibleKind,
 };
 pub use vibe_netcode::physics_arena::DynamicArena;
@@ -106,6 +106,29 @@ pub struct PhysicsArena {
 impl PhysicsArena {
     pub fn new(config: MoveConfig) -> Self {
         #[cfg(target_arch = "wasm32")]
+        return Self::new_with_destructible_runtime_config(
+            config,
+            DestructibleRuntimeConfig::default(),
+        );
+
+        #[cfg(not(target_arch = "wasm32"))]
+        return Self::new_internal(config);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_with_destructible_runtime_config(
+        config: MoveConfig,
+        destructible_runtime_config: DestructibleRuntimeConfig,
+    ) -> Self {
+        Self::new_internal(config, destructible_runtime_config)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn new_internal(
+        config: MoveConfig,
+        destructible_runtime_config: DestructibleRuntimeConfig,
+    ) -> Self {
+        #[cfg(target_arch = "wasm32")]
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
         #[cfg(target_arch = "wasm32")]
         let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
@@ -119,7 +142,7 @@ impl PhysicsArena {
             batteries: HashMap::new(),
             next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
             #[cfg(target_arch = "wasm32")]
-            destructibles: DestructibleRegistry::new(),
+            destructibles: DestructibleRegistry::with_runtime_config(destructible_runtime_config),
             #[cfg(target_arch = "wasm32")]
             collision_tx,
             #[cfg(target_arch = "wasm32")]
@@ -128,6 +151,20 @@ impl PhysicsArena {
             contact_force_tx,
             #[cfg(target_arch = "wasm32")]
             contact_force_rx,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new_internal(config: MoveConfig) -> Self {
+        Self {
+            dynamic: DynamicArena::new(config),
+            players: HashMap::new(),
+            next_spawn_index: 0,
+            vehicles: HashMap::new(),
+            next_vehicle_id: 1,
+            vehicle_of_player: HashMap::new(),
+            batteries: HashMap::new(),
+            next_battery_id: crate::constants::BATTERY_ID_RANGE_START,
         }
     }
 
@@ -228,7 +265,8 @@ impl PhysicsArena {
                 self.collision_tx.clone(),
                 self.contact_force_tx.clone(),
             );
-            self.dynamic.step_dynamics_with_event_handler(dt, &collector);
+            self.dynamic
+                .step_dynamics_with_event_handler(dt, &collector);
             drop(collector);
             if !self.destructibles.is_empty() {
                 self.destructibles
@@ -313,9 +351,13 @@ impl PhysicsArena {
     ) -> bool {
         let pose = pose_from_world_doc(position, rotation);
         match kind {
-            DestructibleKind::Wall => self.destructibles.spawn_wall(&mut self.dynamic.sim, id, pose),
+            DestructibleKind::Wall => {
+                self.destructibles
+                    .spawn_wall(&mut self.dynamic.sim, id, pose)
+            }
             DestructibleKind::Tower => {
-                self.destructibles.spawn_tower(&mut self.dynamic.sim, id, pose)
+                self.destructibles
+                    .spawn_tower(&mut self.dynamic.sim, id, pose)
             }
         }
     }

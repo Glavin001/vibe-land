@@ -48,6 +48,11 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
+import {
+  clampDestructibleMaterialScale,
+  DEFAULT_DESTRUCTIBLE_TUNING,
+  type DestructibleTuning,
+} from './physics/destructibleTuning';
 
 type AppProps = {
   mode: GameMode;
@@ -172,6 +177,7 @@ export function App({
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
+  const [destructibleTuning, setDestructibleTuning] = useState<DestructibleTuning>(DEFAULT_DESTRUCTIBLE_TUNING);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -619,6 +625,47 @@ export function App({
     }
   }, [benchmarkConfig, finalizeBenchmark, modeLabel, practiceMode]);
 
+  const commitDestructibleTuning = useCallback((kind: 'wall' | 'tower', value: number) => {
+    if (!practiceMode) return;
+    setDestructibleTuning((current) => {
+      const next = {
+        ...current,
+        wallMaterialScale: kind === 'wall'
+          ? clampDestructibleMaterialScale(value)
+          : current.wallMaterialScale,
+        towerMaterialScale: kind === 'tower'
+          ? clampDestructibleMaterialScale(value)
+          : current.towerMaterialScale,
+      };
+      if (
+        next.wallMaterialScale === current.wallMaterialScale
+        && next.towerMaterialScale === current.towerMaterialScale
+      ) {
+        return current;
+      }
+      setStatus('Restarting firing range with updated destructible tuning...');
+      setPlayerId(0);
+      setCrosshairState('idle');
+      return next;
+    });
+  }, [practiceMode]);
+
+  const resetDestructibleTuning = useCallback(() => {
+    if (!practiceMode) return;
+    setDestructibleTuning((current) => {
+      if (
+        current.wallMaterialScale === DEFAULT_DESTRUCTIBLE_TUNING.wallMaterialScale
+        && current.towerMaterialScale === DEFAULT_DESTRUCTIBLE_TUNING.towerMaterialScale
+      ) {
+        return current;
+      }
+      setStatus('Restarting firing range with default destructible tuning...');
+      setPlayerId(0);
+      setCrosshairState('idle');
+      return DEFAULT_DESTRUCTIBLE_TUNING;
+    });
+  }, [practiceMode]);
+
   useEffect(() => {
     if (!effectiveAutoConnect || connected || autoConnectAttemptedRef.current) {
       return;
@@ -964,6 +1011,9 @@ export function App({
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
         deepCaptureSampleCount={deepCaptureSampleCount}
+        destructibleTuning={practiceMode ? destructibleTuning : undefined}
+        onCommitDestructibleTuning={commitDestructibleTuning}
+        onResetDestructibleTuning={resetDestructibleTuning}
       />
       {debugVisible && (
         <div
@@ -999,6 +1049,7 @@ export function App({
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          destructibleTuning={practiceMode ? destructibleTuning : undefined}
           sceneExtras={calibrationSceneExtras}
         />
       )}

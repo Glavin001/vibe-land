@@ -1,7 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::{
-    debug_render::{render_debug_buffers, DebugLineBuffers},
     constants::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD,
         HIT_ZONE_NONE, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE,
@@ -9,6 +8,7 @@ use crate::{
         PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
         SNAPSHOT_HZ_LOCAL,
     },
+    debug_render::{render_debug_buffers, DebugLineBuffers},
     physics_arena::{MoveConfig, PhysicsArena},
     protocol::*,
     seq::seq_is_newer,
@@ -24,6 +24,9 @@ const HITSCAN_BODY_DAMAGE: u8 = 25;
 const HITSCAN_HEAD_DAMAGE: u8 = 100;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
+
+#[cfg(target_arch = "wasm32")]
+use crate::destructibles::DestructibleRuntimeConfig;
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -56,17 +59,88 @@ pub struct LocalSession {
 
 impl LocalSession {
     pub fn new() -> Self {
-        Self::from_world_document(WorldDocument::demo()).expect("default world document is valid")
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self::from_world_document_with_destructible_runtime_config(
+                WorldDocument::demo(),
+                DestructibleRuntimeConfig::default(),
+            )
+            .expect("default world document is valid");
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::from_world_document(WorldDocument::demo())
+                .expect("default world document is valid")
+        }
     }
 
     pub fn from_world_json(world_json: &str) -> Result<Self, String> {
         let world: WorldDocument =
             serde_json::from_str(world_json).map_err(|error| error.to_string())?;
-        Self::from_world_document(world)
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self::from_world_document_with_destructible_runtime_config(
+                world,
+                DestructibleRuntimeConfig::default(),
+            );
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::from_world_document(world)
+        }
     }
 
     pub fn from_world_document(world: WorldDocument) -> Result<Self, String> {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self::from_world_document_with_destructible_runtime_config(
+                world,
+                DestructibleRuntimeConfig::default(),
+            );
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut arena = PhysicsArena::new(MoveConfig::default());
+            world
+                .instantiate(&mut arena)
+                .map_err(|error| error.to_string())?;
+
+            Ok(Self {
+                arena,
+                connected: false,
+                players: HashMap::new(),
+                queued_shots: Vec::new(),
+                outbound_packets: Vec::new(),
+                server_tick: 0,
+            })
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_world_json_with_destructible_runtime_config(
+        world_json: &str,
+        destructible_runtime_config: DestructibleRuntimeConfig,
+    ) -> Result<Self, String> {
+        let world: WorldDocument =
+            serde_json::from_str(world_json).map_err(|error| error.to_string())?;
+        Self::from_world_document_with_destructible_runtime_config(
+            world,
+            destructible_runtime_config,
+        )
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_world_document_with_destructible_runtime_config(
+        world: WorldDocument,
+        destructible_runtime_config: DestructibleRuntimeConfig,
+    ) -> Result<Self, String> {
+        let mut arena = PhysicsArena::new_with_destructible_runtime_config(
+            MoveConfig::default(),
+            destructible_runtime_config,
+        );
         world
             .instantiate(&mut arena)
             .map_err(|error| error.to_string())?;
@@ -1657,7 +1731,10 @@ mod tests {
             rapier3d::pipeline::DebugRenderMode::COLLIDER_SHAPES.bits(),
         );
 
-        assert!(!buffers.vertices.is_empty(), "expected debug-render vertices");
+        assert!(
+            !buffers.vertices.is_empty(),
+            "expected debug-render vertices"
+        );
         assert_eq!(buffers.vertices.len() % 3, 0);
         assert_eq!(buffers.colors.len(), (buffers.vertices.len() / 3) * 4);
     }

@@ -1,3 +1,12 @@
+import { useEffect, useState, type CSSProperties } from 'react';
+import {
+  clampDestructibleMaterialScale,
+  DESTRUCTIBLE_MATERIAL_SCALE_MAX,
+  DESTRUCTIBLE_MATERIAL_SCALE_MIN,
+  DESTRUCTIBLE_MATERIAL_SCALE_STEP,
+  type DestructibleTuning,
+} from '../physics/destructibleTuning';
+
 export type DebugStats = {
   // Rendering
   fps: number;
@@ -425,6 +434,12 @@ function fmtBits(bits: number): string {
   return `0b${bits.toString(2).padStart(4, '0')}`;
 }
 
+const destructibleSliderStyle: CSSProperties = {
+  width: '100%',
+  accentColor: '#ffbe6a',
+  cursor: 'ew-resize',
+};
+
 function fmtTuple(values: readonly number[], decimals = 3): string {
   return `[${values.map((value) => fmt(value, decimals)).join(', ')}]`;
 }
@@ -698,6 +713,9 @@ export function DebugOverlay({
   onCycleRapierDebugPreset,
   deepCaptureEnabled = false,
   deepCaptureSampleCount = 0,
+  destructibleTuning,
+  onCommitDestructibleTuning,
+  onResetDestructibleTuning,
 }: {
   stats: DebugStats;
   visible: boolean;
@@ -709,7 +727,25 @@ export function DebugOverlay({
   onCycleRapierDebugPreset?: () => void;
   deepCaptureEnabled?: boolean;
   deepCaptureSampleCount?: number;
+  destructibleTuning?: DestructibleTuning;
+  onCommitDestructibleTuning?: (kind: 'wall' | 'tower', value: number) => void;
+  onResetDestructibleTuning?: () => void;
 }) {
+  const [draftDestructibleTuning, setDraftDestructibleTuning] = useState<DestructibleTuning | null>(
+    destructibleTuning ?? null,
+  );
+
+  useEffect(() => {
+    setDraftDestructibleTuning(destructibleTuning ?? null);
+  }, [destructibleTuning]);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+  }, [visible]);
+
   if (!visible) return null;
 
   const p = stats.position;
@@ -728,6 +764,38 @@ export function DebugOverlay({
   const vehicleSmoothingBorder = vehicleSmoothingEnabled
     ? 'rgba(118, 255, 170, 0.28)'
     : 'rgba(228, 234, 241, 0.18)';
+  const sliderTuning = draftDestructibleTuning ?? destructibleTuning;
+
+  const setDraftMaterialScale = (kind: 'wall' | 'tower', value: number) => {
+    setDraftDestructibleTuning((current) => {
+      const base = current ?? destructibleTuning ?? {
+        wallMaterialScale: DESTRUCTIBLE_MATERIAL_SCALE_MIN,
+        towerMaterialScale: DESTRUCTIBLE_MATERIAL_SCALE_MIN,
+      };
+      const nextValue = clampDestructibleMaterialScale(value);
+      return {
+        ...base,
+        wallMaterialScale: kind === 'wall' ? nextValue : base.wallMaterialScale,
+        towerMaterialScale: kind === 'tower' ? nextValue : base.towerMaterialScale,
+      };
+    });
+  };
+
+  const commitMaterialScale = (kind: 'wall' | 'tower', value?: number) => {
+    const committedValue = value
+      ?? sliderTuning?.[kind === 'wall' ? 'wallMaterialScale' : 'towerMaterialScale'];
+    if (committedValue == null) return;
+    onCommitDestructibleTuning?.(kind, committedValue);
+  };
+
+  const beginOverlayInteraction = (event: {
+    stopPropagation: () => void;
+  }) => {
+    event.stopPropagation();
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+  };
 
   return (
     <div
@@ -987,6 +1055,131 @@ export function DebugOverlay({
             {'Click to cycle off -> shapes -> joints -> full. F6 toggles off/shapes, Shift+F6 cycles every mode.'}
           </div>
         </div>
+
+        {destructibleTuning && (
+          <div
+            style={{
+              display: 'grid',
+              gap: 8,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'linear-gradient(180deg, rgba(49, 34, 19, 0.78), rgba(23, 14, 7, 0.84))',
+              border: '1px solid rgba(255, 197, 118, 0.24)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    color: '#fff3da',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    marginBottom: 2,
+                  }}
+                >
+                  Destructible Tuning
+                </div>
+                <div style={{ color: '#d7bd9a', fontSize: 11 }}>
+                  Lower scale is more brittle. Scrub 1x-100x, then release to restart the local practice sim.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onResetDestructibleTuning}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(255, 219, 173, 0.22)',
+                  color: '#ffe4be',
+                  borderRadius: 999,
+                  cursor: onResetDestructibleTuning ? 'pointer' : 'default',
+                  font: 'inherit',
+                  fontWeight: 700,
+                  letterSpacing: '0.03em',
+                  padding: '6px 12px',
+                }}
+              >
+                Reset
+              </button>
+            </div>
+
+            {([
+              ['wall', 'Wall', sliderTuning?.wallMaterialScale ?? destructibleTuning.wallMaterialScale],
+              ['tower', 'Tower', sliderTuning?.towerMaterialScale ?? destructibleTuning.towerMaterialScale],
+            ] as const).map(([kind, label, value]) => (
+              <div
+                key={kind}
+                style={{
+                  display: 'grid',
+                  gap: 6,
+                  padding: '8px 10px',
+                  borderRadius: 9,
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  border: '1px solid rgba(255, 229, 195, 0.12)',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ color: '#fff7ea', fontSize: 12, fontWeight: 700 }}>
+                    {label}
+                  </div>
+                  <div style={{ color: '#ffd9ab', fontSize: 12 }}>
+                    {value.toFixed(2)}x
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                  }}
+                >
+                  <input
+                    type="range"
+                    min={DESTRUCTIBLE_MATERIAL_SCALE_MIN}
+                    max={DESTRUCTIBLE_MATERIAL_SCALE_MAX}
+                    step={DESTRUCTIBLE_MATERIAL_SCALE_STEP}
+                    value={value}
+                    onPointerDown={beginOverlayInteraction}
+                    onMouseDown={beginOverlayInteraction}
+                    onChange={(event) => setDraftMaterialScale(kind, Number(event.currentTarget.value))}
+                    onMouseUp={(event) => commitMaterialScale(kind, Number(event.currentTarget.value))}
+                    onTouchEnd={(event) => commitMaterialScale(kind, Number(event.currentTarget.value))}
+                    onKeyUp={(event) => commitMaterialScale(kind, Number(event.currentTarget.value))}
+                    onBlur={(event) => commitMaterialScale(kind, Number(event.currentTarget.value))}
+                    style={destructibleSliderStyle}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      color: '#d7bd9a',
+                      fontSize: 11,
+                    }}
+                  >
+                    <span>{`${DESTRUCTIBLE_MATERIAL_SCALE_MIN.toFixed(0)}x brittle`}</span>
+                    <span>{`${DESTRUCTIBLE_MATERIAL_SCALE_MAX.toFixed(0)}x tough`}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <Section title="Rendering">

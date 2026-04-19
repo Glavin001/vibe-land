@@ -30,6 +30,7 @@ import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionMa
 import type { RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import type { DestructibleTuning } from '../physics/destructibleTuning';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
 
@@ -522,6 +523,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
   constructor(
     callbacks: GameRuntimeCallbacks,
     private readonly worldJson?: string,
+    private readonly destructibleTuning?: DestructibleTuning,
   ) {
     super(callbacks);
   }
@@ -601,6 +603,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
   async connect(): Promise<void> {
     const client = await LocalPracticeClient.connect({
       worldJson: this.worldJson,
+      destructibleTuning: this.destructibleTuning,
       onDisconnect: (reason) => {
         this.callbacks.onDisconnect(reason);
       },

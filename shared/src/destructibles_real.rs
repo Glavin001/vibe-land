@@ -82,8 +82,8 @@ const BASE_SHEAR_FATAL: f32 = 0.0036;
 /// they are shot by very heavy projectiles. In vibe-land, copying that
 /// value made car impacts stop fracturing entirely, so keep the local
 /// practice tuning separate.
-const WALL_MATERIAL_SCALE: f32 = 1.0;
-const TOWER_MATERIAL_SCALE: f32 = 1.0;
+pub const DEFAULT_WALL_MATERIAL_SCALE: f32 = 10.0;
+pub const DEFAULT_TOWER_MATERIAL_SCALE: f32 = 10.0;
 const CONTACT_SPLASH_RADIUS: f32 = 2.0;
 const CONTACT_FORCE_SCALE: f32 = 1.0;
 const MIN_IMPACT_FORCE_N: f32 = 500.0;
@@ -93,6 +93,21 @@ const COLLISION_IMPACT_GRACE_SECS: f32 = 0.12;
 /// Stride of [`DestructibleRegistry::chunk_transforms`] in `f32`s:
 /// `[destructibleId, chunkIndex, px, py, pz, qx, qy, qz, qw, present, _pad]`.
 pub const CHUNK_TRANSFORM_STRIDE: usize = 11;
+
+#[derive(Clone, Copy, Debug)]
+pub struct DestructibleRuntimeConfig {
+    pub wall_material_scale: f32,
+    pub tower_material_scale: f32,
+}
+
+impl Default for DestructibleRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            wall_material_scale: DEFAULT_WALL_MATERIAL_SCALE,
+            tower_material_scale: DEFAULT_TOWER_MATERIAL_SCALE,
+        }
+    }
+}
 
 fn scaled_solver_settings(material_scale: f32) -> SolverSettings {
     SolverSettings {
@@ -170,6 +185,7 @@ impl DestructibleInstance {
 /// so that `Vec` iteration stays cache friendly while lookups are O(n) for
 /// the tiny populations we expect (<16 instances in practice).
 pub struct DestructibleRegistry {
+    runtime_config: DestructibleRuntimeConfig,
     instances: Vec<DestructibleInstance>,
     id_to_index: HashMap<u32, usize>,
     /// Aggregated chunk transforms across all instances.  Rebuilt every
@@ -235,7 +251,12 @@ pub struct DestructibleRegistry {
 
 impl DestructibleRegistry {
     pub fn new() -> Self {
+        Self::with_runtime_config(DestructibleRuntimeConfig::default())
+    }
+
+    pub fn with_runtime_config(runtime_config: DestructibleRuntimeConfig) -> Self {
         Self {
+            runtime_config,
             instances: Vec::new(),
             id_to_index: HashMap::new(),
             transforms: Vec::new(),
@@ -363,8 +384,8 @@ impl DestructibleRegistry {
             MIN_IMPACT_FORCE_N as f64,
             MIN_IMPACT_SPEED_M_S as f64,
             COLLISION_IMPACT_GRACE_SECS as f64,
-            WALL_MATERIAL_SCALE as f64,
-            TOWER_MATERIAL_SCALE as f64,
+            self.runtime_config.wall_material_scale as f64,
+            self.runtime_config.tower_material_scale as f64,
             policy.max_fractures_per_frame as f64,
             policy.max_new_bodies_per_frame as f64,
             if policy.apply_excess_forces { 1.0 } else { 0.0 },
@@ -509,7 +530,7 @@ impl DestructibleRegistry {
             DestructibleKind::Wall,
             pose,
             scenario,
-            WALL_MATERIAL_SCALE,
+            self.runtime_config.wall_material_scale,
         )
     }
 
@@ -522,7 +543,7 @@ impl DestructibleRegistry {
             DestructibleKind::Tower,
             pose,
             scenario,
-            TOWER_MATERIAL_SCALE,
+            self.runtime_config.tower_material_scale,
         )
     }
 

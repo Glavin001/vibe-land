@@ -11,6 +11,7 @@ use wasm_bindgen::prelude::*;
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
 use crate::destructibles::{
     pose_from_world_doc, set_destructibles_log_enabled, DestructibleRegistry,
+    DestructibleRuntimeConfig,
 };
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
@@ -184,10 +185,16 @@ pub struct WasmSimWorld {
 #[wasm_bindgen]
 impl WasmSimWorld {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
+    pub fn new(wall_material_scale: Option<f32>, tower_material_scale: Option<f32>) -> Self {
         install_panic_hook_once();
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
         let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
+        let destructible_runtime_config = DestructibleRuntimeConfig {
+            wall_material_scale: wall_material_scale
+                .unwrap_or(crate::destructibles::DEFAULT_WALL_MATERIAL_SCALE),
+            tower_material_scale: tower_material_scale
+                .unwrap_or(crate::destructibles::DEFAULT_TOWER_MATERIAL_SCALE),
+        };
         Self {
             sim: SimWorld::new(MoveConfig::default()),
             player_collider: None,
@@ -209,7 +216,7 @@ impl WasmSimWorld {
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
-            destructibles: DestructibleRegistry::new(),
+            destructibles: DestructibleRegistry::with_runtime_config(destructible_runtime_config),
             collision_tx,
             collision_rx,
             contact_force_tx,
@@ -1615,13 +1622,29 @@ const LOCAL_BATTERY_STATE_STRIDE: usize = 7;
 #[wasm_bindgen]
 impl WasmLocalSession {
     #[wasm_bindgen(constructor)]
-    pub fn new(world_json: Option<String>) -> Result<Self, JsValue> {
+    pub fn new(
+        world_json: Option<String>,
+        wall_material_scale: Option<f32>,
+        tower_material_scale: Option<f32>,
+    ) -> Result<Self, JsValue> {
         install_panic_hook_once();
+        let destructible_runtime_config = DestructibleRuntimeConfig {
+            wall_material_scale: wall_material_scale
+                .unwrap_or(crate::destructibles::DEFAULT_WALL_MATERIAL_SCALE),
+            tower_material_scale: tower_material_scale
+                .unwrap_or(crate::destructibles::DEFAULT_TOWER_MATERIAL_SCALE),
+        };
         let inner = match world_json {
-            Some(world_json) => {
-                LocalSession::from_world_json(&world_json).map_err(|err| JsValue::from_str(&err))?
-            }
-            None => LocalSession::new(),
+            Some(world_json) => LocalSession::from_world_json_with_destructible_runtime_config(
+                &world_json,
+                destructible_runtime_config,
+            )
+            .map_err(|err| JsValue::from_str(&err))?,
+            None => LocalSession::from_world_document_with_destructible_runtime_config(
+                WorldDocument::demo(),
+                destructible_runtime_config,
+            )
+            .map_err(|err| JsValue::from_str(&err))?,
         };
         Ok(Self {
             inner,

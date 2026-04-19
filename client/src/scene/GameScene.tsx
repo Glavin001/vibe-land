@@ -7,6 +7,7 @@ import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+import type { DestructibleTuning } from '../physics/destructibleTuning';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -29,6 +30,7 @@ type GameSceneProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  destructibleTuning?: DestructibleTuning;
   sceneExtras?: ReactNode;
 };
 
@@ -54,6 +56,7 @@ export function GameScene({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  destructibleTuning,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -94,6 +97,7 @@ export function GameScene({
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          destructibleTuning={destructibleTuning}
           sceneExtras={sceneExtras}
         />
       </Suspense>

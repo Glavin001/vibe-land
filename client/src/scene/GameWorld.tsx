@@ -12,6 +12,7 @@ import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
 import { parseDestructibleDebugConfig, parseDestructibleDebugState } from '../physics/destructibleDebug';
 import { computeDestructibleSpatialMetrics } from '../physics/destructibleSpatialMetrics';
+import type { DestructibleTuning } from '../physics/destructibleTuning';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -362,6 +363,7 @@ type GameWorldProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  destructibleTuning?: DestructibleTuning;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1075,6 +1077,7 @@ export function GameWorld({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  destructibleTuning,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1119,6 +1122,7 @@ export function GameWorld({
     mode,
     worldJson,
     predictionWorldJson,
+    destructibleTuning,
     onWelcome,
     onDisconnect,
     () => onSnapshotRef.current?.(),

@@ -3,6 +3,7 @@ import { isPracticeMode, type GameMode } from '../app/gameMode';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import type { RenderBlock } from '../world/voxelWorld';
+import type { DestructibleTuning } from '../physics/destructibleTuning';
 import {
   LocalGameRuntime,
   MultiplayerGameRuntime,
@@ -14,6 +15,7 @@ export function useGameRuntime(
   mode: GameMode,
   worldJson: string,
   predictionWorldJson: string,
+  destructibleTuning: DestructibleTuning | undefined,
   onWelcome: (id: number) => void,
   onDisconnect: (reason?: string) => void,
   onSnapshot?: () => void,
@@ -62,7 +64,7 @@ export function useGameRuntime(
     };
 
     const runtime = practiceMode
-      ? new LocalGameRuntime(callbacks, worldJson)
+      ? new LocalGameRuntime(callbacks, worldJson, destructibleTuning)
       : new MultiplayerGameRuntime(
           callbacks,
           multiplayerBackend,
@@ -96,6 +98,7 @@ export function useGameRuntime(
     multiplayerMatchId,
     practiceMode,
     predictionWorldJson,
+    destructibleTuning,
     worldJson,
   ]);
 
