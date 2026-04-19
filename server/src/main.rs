@@ -2340,8 +2340,11 @@ impl MatchState {
         self.arena.set_player_dead(player_id, true);
 
         if let Some((position, energy)) = battery_drop {
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + DEFAULT_BATTERY_HEIGHT_M as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 DEFAULT_BATTERY_RADIUS_M,
                 DEFAULT_BATTERY_HEIGHT_M,

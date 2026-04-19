@@ -452,11 +452,15 @@ impl LocalSession {
         self.arena.exit_vehicle(LOCAL_PLAYER_ID);
         self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
         if let Some((position, energy)) = battery_drop {
+            let height = crate::constants::DEFAULT_BATTERY_HEIGHT_M;
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + height as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 crate::constants::DEFAULT_BATTERY_RADIUS_M,
-                crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+                height,
             );
         }
         if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
