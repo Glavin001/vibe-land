@@ -138,9 +138,7 @@ impl PhysicsArena {
                     area.radius as f64,
                 )
             };
-            for (candidate_rank, (x, z)) in
-                spawn_area_candidates(cx, cz, radius).enumerate()
-            {
+            for (candidate_rank, (x, z)) in spawn_area_candidates(cx, cz, radius).enumerate() {
                 let score = self.min_player_distance_sq(x, z);
                 let clear = self.spawn_lane_is_clear(x, z);
                 let candidate_rank = candidate_rank as u32;
