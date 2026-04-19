@@ -31,6 +31,7 @@ import type { RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
 import type { DestructibleTuning } from '../physics/destructibleTuning';
+import type { VehicleTuning } from '../physics/vehicleTuning';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
 
@@ -83,6 +84,7 @@ type RuntimeWorldAccess = {
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
   setDestructiblesLogging?(enabled: boolean): void;
+  setVehicleTuning?(tuning: VehicleTuning): void;
 };
 
 export type RuntimeConnectionState = {
@@ -251,6 +253,7 @@ export interface GameRuntimeClient {
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
   setDestructiblesLogging(enabled: boolean): void;
+  setVehicleTuning(tuning: VehicleTuning): void;
   getPracticeBotHost(): PracticeBotHost | null;
 }
 
@@ -503,6 +506,9 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   setDestructiblesLogging(enabled: boolean): void {
     this.worldAccess?.setDestructiblesLogging?.(enabled);
   }
+  setVehicleTuning(tuning: VehicleTuning): void {
+    this.worldAccess?.setVehicleTuning?.(tuning);
+  }
   getPracticeBotHost(): PracticeBotHost | null {
     return this.practiceBotHost;
   }
@@ -524,6 +530,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
     getDestructibleDebugConfig: () => this.client?.getDestructibleDebugConfig() ?? [],
     drainDestructibleFractureEvents: () => this.client?.drainDestructibleFractureEvents() ?? new Uint32Array(0),
     setDestructiblesLogging: (enabled: boolean) => this.client?.setDestructiblesLogging(enabled),
+    setVehicleTuning: (tuning: VehicleTuning) => this.client?.setVehicleTuning(tuning),
   };
 
   constructor(

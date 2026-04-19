@@ -33,6 +33,7 @@ import {
 } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
 import type { DestructibleTuning } from '../physics/destructibleTuning';
+import { vehicleTuningFromArray, type VehicleTuning } from '../physics/vehicleTuning';
 
 export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
@@ -113,6 +114,45 @@ export class LocalPracticeClient implements PracticeBotHost {
       setDestructiblesLogging?: (enabled: boolean) => void;
     }) | null;
     session?.setDestructiblesLogging?.(enabled);
+  }
+
+  getVehicleTuning(): VehicleTuning | null {
+    const session = this.session as (WasmLocalSessionInstance & {
+      getVehicleTuning?: () => Float32Array | number[];
+    }) | null;
+    if (!session?.getVehicleTuning) return null;
+    return vehicleTuningFromArray(session.getVehicleTuning());
+  }
+
+  setVehicleTuning(tuning: VehicleTuning): void {
+    const session = this.session as (WasmLocalSessionInstance & {
+      setVehicleTuning?: (
+        maxSteerRad: number,
+        engineForce: number,
+        brakeForce: number,
+        chassisMassKg: number,
+        suspensionStiffness: number,
+        suspensionDamping: number,
+        suspensionMaxForce: number,
+        suspensionRestLength: number,
+        suspensionTravel: number,
+        wheelRadius: number,
+        frictionSlip: number,
+      ) => void;
+    }) | null;
+    session?.setVehicleTuning?.(
+      tuning.maxSteerRad,
+      tuning.engineForce,
+      tuning.brakeForce,
+      tuning.chassisMassKg,
+      tuning.suspensionStiffness,
+      tuning.suspensionDamping,
+      tuning.suspensionMaxForce,
+      tuning.suspensionRestLength,
+      tuning.suspensionTravel,
+      tuning.wheelRadius,
+      tuning.frictionSlip,
+    );
   }
 
   disconnect(): void {

@@ -12,6 +12,12 @@ import {
   type DestructibleDebugConfig,
   type DestructibleDebugState,
 } from '../physics/destructibleDebug';
+import {
+  clampVehicleTuningField,
+  VEHICLE_TUNING_FIELD_META,
+  type VehicleTuning,
+  type VehicleTuningField,
+} from '../physics/vehicleTuning';
 
 export type DebugStats = {
   // Rendering
@@ -734,6 +740,9 @@ export function DebugOverlay({
   destructibleTuning,
   onCommitDestructibleTuning,
   onResetDestructibleTuning,
+  vehicleTuning,
+  onUpdateVehicleTuning,
+  onResetVehicleTuning,
 }: {
   stats: DebugStats;
   visible: boolean;
@@ -748,6 +757,9 @@ export function DebugOverlay({
   destructibleTuning?: DestructibleTuning;
   onCommitDestructibleTuning?: (kind: 'wall' | 'tower', value: number) => void;
   onResetDestructibleTuning?: () => void;
+  vehicleTuning?: VehicleTuning;
+  onUpdateVehicleTuning?: (field: VehicleTuningField, value: number) => void;
+  onResetVehicleTuning?: () => void;
 }) {
   const [draftDestructibleTuning, setDraftDestructibleTuning] = useState<DestructibleTuning | null>(
     destructibleTuning ?? null,
@@ -814,6 +826,20 @@ export function DebugOverlay({
       document.exitPointerLock?.();
     }
   };
+
+  const vehicleFields: VehicleTuningField[] = [
+    'chassisMassKg',
+    'suspensionStiffness',
+    'suspensionDamping',
+    'suspensionMaxForce',
+    'suspensionRestLength',
+    'suspensionTravel',
+    'wheelRadius',
+    'engineForce',
+    'brakeForce',
+    'maxSteerRad',
+    'frictionSlip',
+  ];
 
   return (
     <div
@@ -890,6 +916,7 @@ export function DebugOverlay({
             <div>F6 Rapier debug</div>
             <div>F4 copy report</div>
             <div>F7 deep capture</div>
+            <div>F8 wheel rays</div>
           </div>
         </div>
 
@@ -1198,6 +1225,121 @@ export function DebugOverlay({
             ))}
           </div>
         )}
+
+        {vehicleTuning && (
+          <div
+            style={{
+              display: 'grid',
+              gap: 8,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'linear-gradient(180deg, rgba(27, 35, 52, 0.82), rgba(12, 18, 31, 0.88))',
+              border: '1px solid rgba(147, 189, 255, 0.22)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                justifyContent: 'space-between',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    color: '#eef5ff',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    marginBottom: 2,
+                  }}
+                >
+                  Vehicle Tuning
+                </div>
+                <div style={{ color: '#b8c9e5', fontSize: 11 }}>
+                  Local practice only. Sliders apply live to the current browser-side vehicle physics.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onResetVehicleTuning}
+                style={{
+                  background: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid rgba(194, 219, 255, 0.22)',
+                  color: '#dcecff',
+                  borderRadius: 999,
+                  cursor: onResetVehicleTuning ? 'pointer' : 'default',
+                  font: 'inherit',
+                  fontWeight: 700,
+                  letterSpacing: '0.03em',
+                  padding: '6px 12px',
+                }}
+              >
+                Reset
+              </button>
+            </div>
+
+            {vehicleFields.map((field) => {
+              const meta = VEHICLE_TUNING_FIELD_META[field];
+              const value = vehicleTuning[field];
+              return (
+                <div
+                  key={field}
+                  style={{
+                    display: 'grid',
+                    gap: 6,
+                    padding: '8px 10px',
+                    borderRadius: 9,
+                    background: 'rgba(255, 255, 255, 0.04)',
+                    border: '1px solid rgba(213, 228, 255, 0.12)',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div style={{ color: '#f4f8ff', fontSize: 12, fontWeight: 700 }}>
+                      {meta.label}
+                    </div>
+                    <div style={{ color: '#bdd8ff', fontSize: 12 }}>
+                      {`${value.toFixed(meta.step < 1 ? 2 : 0)}${meta.unit}`}
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={meta.min}
+                    max={meta.max}
+                    step={meta.step}
+                    value={value}
+                    onPointerDown={beginOverlayInteraction}
+                    onMouseDown={beginOverlayInteraction}
+                    onChange={(event) => onUpdateVehicleTuning?.(field, clampVehicleTuningField(field, Number(event.currentTarget.value)))}
+                    style={destructibleSliderStyle}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      color: '#b8c9e5',
+                      fontSize: 11,
+                    }}
+                  >
+                    <span>{`${meta.min}${meta.unit}`}</span>
+                    <span>{`${meta.max}${meta.unit}`}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <Section title="Rendering">
@@ -1284,6 +1426,7 @@ export function DebugOverlay({
 
       {(stats.vehicleDebugId !== 0 || stats.inVehicle) && (
         <Section title="Vehicle">
+          {'Suspension world debug: F8 shows wheel rays, hit points, normals, and per-wheel labels.'}
           {`ID: ${stats.vehicleDebugId || '—'}  confirmed: ${stats.vehicleDriverConfirmed ? 'yes' : 'no'}`}
           {`Local/server speed: ${fmt(stats.vehicleLocalSpeedMs, 2)} / ${fmt(stats.vehicleServerSpeedMs, 2)} m/s`}
           {`Pos delta: ${fmt(stats.vehiclePosDeltaM, 3)}m  wheels: ${stats.vehicleGroundedWheels}/4`}

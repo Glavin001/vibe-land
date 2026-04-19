@@ -13,6 +13,7 @@ use crate::{
     protocol::*,
     seq::seq_is_newer,
     unit_conv::{i16_to_angle, snorm16_to_f32},
+    vehicle::VehicleTuning,
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
@@ -828,6 +829,14 @@ impl LocalSession {
             vehicle.chassis_body,
             &vehicle.controller,
         )
+    }
+
+    pub fn vehicle_tuning(&self) -> VehicleTuning {
+        self.arena.vehicle_tuning
+    }
+
+    pub fn set_vehicle_tuning(&mut self, tuning: VehicleTuning) {
+        self.arena.set_vehicle_tuning(tuning);
     }
 
     pub fn destructible_chunk_transforms(&self) -> &[f32] {

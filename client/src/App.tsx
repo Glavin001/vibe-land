@@ -53,6 +53,13 @@ import {
   DEFAULT_DESTRUCTIBLE_TUNING,
   type DestructibleTuning,
 } from './physics/destructibleTuning';
+import {
+  clampVehicleTuning,
+  clampVehicleTuningField,
+  DEFAULT_VEHICLE_TUNING,
+  type VehicleTuning,
+  type VehicleTuningField,
+} from './physics/vehicleTuning';
 
 type AppProps = {
   mode: GameMode;
@@ -178,6 +185,7 @@ export function App({
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
   const [destructibleTuning, setDestructibleTuning] = useState<DestructibleTuning>(DEFAULT_DESTRUCTIBLE_TUNING);
+  const [vehicleTuning, setVehicleTuning] = useState<VehicleTuning>(DEFAULT_VEHICLE_TUNING);
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -666,6 +674,19 @@ export function App({
     });
   }, [practiceMode]);
 
+  const updateVehicleTuning = useCallback((field: VehicleTuningField, value: number) => {
+    if (!practiceMode) return;
+    setVehicleTuning((current) => clampVehicleTuning({
+      ...current,
+      [field]: clampVehicleTuningField(field, value),
+    }));
+  }, [practiceMode]);
+
+  const resetVehicleTuning = useCallback(() => {
+    if (!practiceMode) return;
+    setVehicleTuning(DEFAULT_VEHICLE_TUNING);
+  }, [practiceMode]);
+
   useEffect(() => {
     if (!effectiveAutoConnect || connected || autoConnectAttemptedRef.current) {
       return;
@@ -1014,6 +1035,9 @@ export function App({
         destructibleTuning={practiceMode ? destructibleTuning : undefined}
         onCommitDestructibleTuning={commitDestructibleTuning}
         onResetDestructibleTuning={resetDestructibleTuning}
+        vehicleTuning={practiceMode ? vehicleTuning : undefined}
+        onUpdateVehicleTuning={updateVehicleTuning}
+        onResetVehicleTuning={resetVehicleTuning}
       />
       {debugVisible && (
         <div
@@ -1050,6 +1074,7 @@ export function App({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           destructibleTuning={practiceMode ? destructibleTuning : undefined}
+          vehicleTuning={practiceMode ? vehicleTuning : undefined}
           sceneExtras={calibrationSceneExtras}
         />
       )}

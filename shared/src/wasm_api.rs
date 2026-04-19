@@ -23,9 +23,10 @@ use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
 use crate::terrain::{build_demo_heightfield, demo_ball_pit_wall_cuboids};
 use crate::vehicle::{
-    apply_vehicle_input_step, canonical_vehicle_type, create_vehicle_physics,
-    read_vehicle_chassis_state, read_vehicle_debug_snapshot, refresh_vehicle_contacts,
-    step_vehicle_dynamics, vehicle_definition, vehicle_definitions, vehicle_exit_position,
+    apply_vehicle_input_step_with_tuning, apply_vehicle_tuning_to_chassis, canonical_vehicle_type,
+    create_vehicle_physics_with_tuning, default_vehicle_tuning, read_vehicle_chassis_state,
+    read_vehicle_debug_snapshot, refresh_vehicle_contacts, step_vehicle_dynamics,
+    vehicle_definition, vehicle_definitions, vehicle_exit_position, VehicleTuning,
     DEFAULT_VEHICLE_TYPE, VEHICLE_CONTROLLER_SUBSTEPS,
 };
 use crate::world_document::{
@@ -74,6 +75,15 @@ pub fn vehicle_suspension_rest_length() -> f32 {
 #[wasm_bindgen]
 pub fn vehicle_wheel_radius() -> f32 {
     vehicle_definition(DEFAULT_VEHICLE_TYPE).wheel_radius_m
+}
+
+/// Returns the default shared vehicle tuning as
+/// [maxSteerRad, engineForce, brakeForce, chassisMassKg,
+///  suspensionStiffness, suspensionDamping, suspensionMaxForce,
+///  suspensionRestLength, suspensionTravel, wheelRadius, frictionSlip].
+#[wasm_bindgen(js_name = defaultVehicleTuning)]
+pub fn default_vehicle_tuning_values() -> Box<[f32]> {
+    vehicle_tuning_to_box(default_vehicle_tuning())
 }
 
 /// Returns the supported vehicle definitions as JSON.
@@ -163,6 +173,7 @@ pub struct WasmSimWorld {
     vehicles: HashMap<u32, WasmVehicle>,
     local_vehicle_id: Option<u32>,
     vehicle_pending_inputs: Vec<InputCmd>,
+    vehicle_tuning: VehicleTuning,
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
 
@@ -185,10 +196,8 @@ impl WasmSimWorld {
         install_panic_hook_once();
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
         let destructible_runtime_config = DestructibleRuntimeConfig {
-            wall_material_scale: wall_material_scale
-                .unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
-            tower_material_scale: tower_material_scale
-                .unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
+            wall_material_scale: wall_material_scale.unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
+            tower_material_scale: tower_material_scale.unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
         };
         Self {
             sim: SimWorld::new(MoveConfig::default()),
@@ -209,6 +218,7 @@ impl WasmSimWorld {
             vehicles: HashMap::new(),
             local_vehicle_id: None,
             vehicle_pending_inputs: Vec::new(),
+            vehicle_tuning: default_vehicle_tuning(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
             destructibles: DestructibleRegistry::with_runtime_config(destructible_runtime_config),
@@ -1179,8 +1189,12 @@ impl WasmSimWorld {
         let vehicle_type = canonical_vehicle_type(vehicle_type);
         let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
         let pose = nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(px, py, pz), iso);
-        let (chassis_body, chassis_collider, controller) =
-            create_vehicle_physics(&mut self.sim, vehicle_type, pose);
+        let (chassis_body, chassis_collider, controller) = create_vehicle_physics_with_tuning(
+            &mut self.sim,
+            vehicle_type,
+            pose,
+            &self.vehicle_tuning,
+        );
 
         self.vehicles.insert(
             id,
@@ -1190,6 +1204,59 @@ impl WasmSimWorld {
                 controller,
             },
         );
+    }
+
+    #[wasm_bindgen(js_name = getVehicleTuning)]
+    pub fn get_vehicle_tuning(&self) -> Box<[f32]> {
+        vehicle_tuning_to_box(self.vehicle_tuning)
+    }
+
+    #[wasm_bindgen(js_name = setVehicleTuning)]
+    pub fn set_vehicle_tuning(
+        &mut self,
+        max_steer_rad: f32,
+        engine_force: f32,
+        brake_force: f32,
+        chassis_mass_kg: f32,
+        suspension_stiffness: f32,
+        suspension_damping: f32,
+        suspension_max_force: f32,
+        suspension_rest_length: f32,
+        suspension_travel: f32,
+        wheel_radius: f32,
+        friction_slip: f32,
+    ) {
+        self.vehicle_tuning = VehicleTuning {
+            max_steer_rad,
+            engine_force,
+            brake_force,
+            chassis_mass_kg,
+            suspension_stiffness,
+            suspension_damping,
+            suspension_max_force,
+            suspension_rest_length,
+            suspension_travel,
+            wheel_radius,
+            friction_slip,
+        }
+        .sanitized();
+        for vehicle in self.vehicles.values_mut() {
+            crate::vehicle::apply_vehicle_tuning_to_controller(
+                &mut vehicle.controller,
+                &self.vehicle_tuning,
+            );
+            apply_vehicle_tuning_to_chassis(
+                &mut self.sim,
+                vehicle.chassis_body,
+                vehicle.chassis_collider,
+                &self.vehicle_tuning,
+            );
+            refresh_vehicle_contacts(
+                &mut self.sim,
+                vehicle.chassis_collider,
+                &mut vehicle.controller,
+            );
+        }
     }
 
     /// Remove a vehicle from the simulation.
@@ -1516,13 +1583,14 @@ impl WasmSimWorld {
         let Some(vehicle) = self.vehicles.get_mut(&vid) else {
             return;
         };
-        apply_vehicle_input_step(
+        apply_vehicle_input_step_with_tuning(
             &mut self.sim,
             vehicle.chassis_body,
             vehicle.chassis_collider,
             &mut vehicle.controller,
             input,
             dt,
+            &self.vehicle_tuning,
         );
     }
 
@@ -1538,8 +1606,7 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
-        let (contact_force_tx, _contact_force_rx) =
-            std::sync::mpsc::channel::<ContactForceEvent>();
+        let (contact_force_tx, _contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         if !self.destructibles.is_empty() {
             self.destructibles.begin_physics_step(&self.sim);
         }
@@ -1566,8 +1633,7 @@ impl WasmSimWorld {
         if !self.destructibles.is_empty() {
             self.destructibles
                 .drain_collision_events(&mut self.sim, &self.collision_rx);
-            self.destructibles
-                .drain_contact_impacts(&self.sim, dt);
+            self.destructibles.drain_contact_impacts(&self.sim, dt);
             self.destructibles.step(
                 &mut self.sim,
                 &mut self.vehicle_joints,
@@ -1621,10 +1687,8 @@ impl WasmLocalSession {
     ) -> Result<Self, JsValue> {
         install_panic_hook_once();
         let destructible_runtime_config = DestructibleRuntimeConfig {
-            wall_material_scale: wall_material_scale
-                .unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
-            tower_material_scale: tower_material_scale
-                .unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
+            wall_material_scale: wall_material_scale.unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
+            tower_material_scale: tower_material_scale.unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
         };
         let inner = match world_json {
             Some(world_json) => LocalSession::from_world_json_with_destructible_runtime_config(
@@ -1853,6 +1917,44 @@ impl WasmLocalSession {
         out.into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = getVehicleTuning)]
+    pub fn get_vehicle_tuning(&self) -> Box<[f32]> {
+        vehicle_tuning_to_box(self.inner.vehicle_tuning())
+    }
+
+    #[wasm_bindgen(js_name = setVehicleTuning)]
+    pub fn set_vehicle_tuning(
+        &mut self,
+        max_steer_rad: f32,
+        engine_force: f32,
+        brake_force: f32,
+        chassis_mass_kg: f32,
+        suspension_stiffness: f32,
+        suspension_damping: f32,
+        suspension_max_force: f32,
+        suspension_rest_length: f32,
+        suspension_travel: f32,
+        wheel_radius: f32,
+        friction_slip: f32,
+    ) {
+        self.inner.set_vehicle_tuning(
+            VehicleTuning {
+                max_steer_rad,
+                engine_force,
+                brake_force,
+                chassis_mass_kg,
+                suspension_stiffness,
+                suspension_damping,
+                suspension_max_force,
+                suspension_rest_length,
+                suspension_travel,
+                wheel_radius,
+                friction_slip,
+            }
+            .sanitized(),
+        );
+    }
+
     #[wasm_bindgen(js_name = debugRender)]
     pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
         DebugRenderBuffers::from_line_buffers(
@@ -1911,6 +2013,22 @@ fn flatten_player_state(state: Option<NetPlayerState>) -> Box<[f64]> {
         state.hp as f64,
         state.flags as f64,
         state.energy_centi as f64,
+    ])
+}
+
+fn vehicle_tuning_to_box(tuning: VehicleTuning) -> Box<[f32]> {
+    Box::new([
+        tuning.max_steer_rad,
+        tuning.engine_force,
+        tuning.brake_force,
+        tuning.chassis_mass_kg,
+        tuning.suspension_stiffness,
+        tuning.suspension_damping,
+        tuning.suspension_max_force,
+        tuning.suspension_rest_length,
+        tuning.suspension_travel,
+        tuning.wheel_radius,
+        tuning.friction_slip,
     ])
 }
 

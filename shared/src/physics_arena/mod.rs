@@ -13,6 +13,7 @@ use crate::{
         ON_FOOT_IDLE_DRAIN_PER_SEC, ON_FOOT_SPRINT_DRAIN_PER_SEC, ON_FOOT_WALK_DRAIN_PER_SEC,
     },
     movement::Vec3d,
+    vehicle::{default_vehicle_tuning, VehicleTuning},
 };
 #[cfg(target_arch = "wasm32")]
 use crate::{
@@ -87,6 +88,7 @@ pub struct PhysicsArena {
     pub players: HashMap<u32, PlayerMotorState>,
     next_spawn_index: u32,
     pub vehicles: HashMap<u32, Vehicle>,
+    pub vehicle_tuning: VehicleTuning,
     next_vehicle_id: u32,
     pub vehicle_of_player: HashMap<u32, u32>,
     pub batteries: HashMap<u32, Battery>,
@@ -131,6 +133,7 @@ impl PhysicsArena {
             players: HashMap::new(),
             next_spawn_index: 0,
             vehicles: HashMap::new(),
+            vehicle_tuning: default_vehicle_tuning(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
             batteries: HashMap::new(),
@@ -151,6 +154,7 @@ impl PhysicsArena {
             players: HashMap::new(),
             next_spawn_index: 0,
             vehicles: HashMap::new(),
+            vehicle_tuning: default_vehicle_tuning(),
             next_vehicle_id: 1,
             vehicle_of_player: HashMap::new(),
             batteries: HashMap::new(),
@@ -256,10 +260,7 @@ impl PhysicsArena {
             if !self.destructibles.is_empty() {
                 self.destructibles.begin_physics_step(&self.dynamic.sim);
             }
-            let collector = ChannelEventCollector::new(
-                self.collision_tx.clone(),
-                contact_force_tx,
-            );
+            let collector = ChannelEventCollector::new(self.collision_tx.clone(), contact_force_tx);
             self.dynamic
                 .step_dynamics_with_event_handler(dt, &collector);
             drop(collector);

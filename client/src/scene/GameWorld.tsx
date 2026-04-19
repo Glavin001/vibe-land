@@ -13,6 +13,7 @@ import { updateE2EBridgeFrameState } from '../e2eBridge';
 import { parseDestructibleDebugConfig, parseDestructibleDebugState } from '../physics/destructibleDebug';
 import { computeDestructibleSpatialMetrics } from '../physics/destructibleSpatialMetrics';
 import type { DestructibleTuning } from '../physics/destructibleTuning';
+import type { VehicleTuning } from '../physics/vehicleTuning';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -62,6 +63,7 @@ import {
   getVehicleWheelConnectionOffsets,
   getVehicleWheelRadiusM,
   getVehicleWheelVisualAnchors,
+  setVehicleVisualTuningOverride,
 } from './vehicleVisualGeometry';
 import {
   resetLocalVehicleMeshPose,
@@ -368,6 +370,7 @@ type GameWorldProps = {
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   destructibleTuning?: DestructibleTuning;
+  vehicleTuning?: VehicleTuning;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1082,6 +1085,7 @@ export function GameWorld({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   destructibleTuning,
+  vehicleTuning,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1132,6 +1136,13 @@ export function GameWorld({
     () => onSnapshotRef.current?.(),
     localRenderSmoothingEnabled,
   );
+  useEffect(() => {
+    if (!practiceMode || !vehicleTuning) {
+      return;
+    }
+    runtimeRef.current?.setVehicleTuning(vehicleTuning);
+  }, [practiceMode, ready, runtimeRef, vehicleTuning]);
+
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
@@ -1197,6 +1208,27 @@ export function GameWorld({
   const localVehicleResidualYawSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleResidualPitchSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleResidualRollSamplesRef = useRef<TimedScalar[]>([]);
+
+  useEffect(() => {
+    const override = practiceMode && vehicleTuning
+      ? {
+          suspensionRestLengthM: vehicleTuning.suspensionRestLength,
+          wheelRadiusM: vehicleTuning.wheelRadius,
+        }
+      : null;
+    setVehicleVisualTuningOverride(override);
+    const group = vehicleGroupRef.current;
+    if (group) {
+      for (const mesh of vehicleMeshes.current.values()) {
+        group.remove(mesh);
+        disposeVehicleMesh(mesh);
+      }
+    }
+    vehicleMeshes.current.clear();
+    return () => {
+      setVehicleVisualTuningOverride(null);
+    };
+  }, [practiceMode, vehicleTuning?.suspensionRestLength, vehicleTuning?.wheelRadius]);
   const localVehicleRawRestHeaveSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleRawStraightHeaveSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleWheelContactBitChangeSamplesRef = useRef<TimedScalar[]>([]);
@@ -3476,4 +3508,20 @@ function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   // Place the label just above the head.
   sprite.position.y = 1.0;
   parent.add(sprite);
+}
+
+function disposeVehicleMesh(group: THREE.Group): void {
+  group.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    const geometry = mesh.geometry as THREE.BufferGeometry | undefined;
+    const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+    geometry?.dispose();
+    if (Array.isArray(material)) {
+      for (const entry of material) {
+        entry.dispose();
+      }
+    } else {
+      material?.dispose();
+    }
+  });
 }

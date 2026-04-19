@@ -1,6 +1,8 @@
 import {
   getSharedVehicleDefinition,
+  setSharedVehicleVisualTuningOverride,
   type SharedVehicleDefinition,
+  type SharedVehicleVisualTuningOverride,
 } from '../wasm/sharedVehicleDefinitions';
 
 export function getVehicleDefinition(vehicleType?: number): SharedVehicleDefinition {
@@ -42,4 +44,10 @@ export function getVehicleWheelVisualAnchors(vehicleType?: number): [number, num
     y - suspensionRestLengthM,
     z,
   ]);
+}
+
+export function setVehicleVisualTuningOverride(
+  override: SharedVehicleVisualTuningOverride | null,
+): void {
+  setSharedVehicleVisualTuningOverride(override);
 }

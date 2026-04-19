@@ -15,22 +15,21 @@ use std::collections::{HashMap, HashSet};
 
 use nalgebra::{Isometry3, Point3, Quaternion, Translation3, UnitQuaternion, Vector3};
 use rapier3d::prelude::{
-    ActiveEvents, ActiveHooks, ColliderHandle, CollisionEvent, CollisionEventFlags,
-    ContactPair, ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType,
+    ActiveEvents, ActiveHooks, ColliderHandle, CollisionEvent, CollisionEventFlags, ContactPair,
+    ImpulseJointSet, MultibodyJointSet, RigidBodyHandle, RigidBodyType,
 };
 use wasm_bindgen::prelude::*;
 
+use blast_stress_solver::authoring::{build_scenario_from_pieces, BondingOptions, ScenarioPiece};
 use blast_stress_solver::rapier::{DebrisCollisionMode, DestructibleSet, FracturePolicy};
-use blast_stress_solver::scenarios::{
-    build_tower_scenario, build_wall_scenario, TowerOptions, WallOptions,
-};
+use blast_stress_solver::scenarios::{TowerOptions, WallOptions};
 use blast_stress_solver::types::{SolverSettings, Vec3 as BlastVec3};
+use blast_stress_solver::ScenarioNode;
 
 use crate::destructibles_math::{
     authored_position_to_solver_position, effective_solver_material_scale,
     relative_speed_along_force, DEFAULT_TOWER_MATERIAL_SCALE, DEFAULT_WALL_MATERIAL_SCALE,
-    SOLVER_MATERIAL_SCALE_REFERENCE, USER_MATERIAL_SCALE_REFERENCE,
-    USER_TO_SOLVER_SCALE_EXPONENT,
+    SOLVER_MATERIAL_SCALE_REFERENCE, USER_MATERIAL_SCALE_REFERENCE, USER_TO_SOLVER_SCALE_EXPONENT,
 };
 use crate::simulation::SimWorld;
 
@@ -81,6 +80,11 @@ const BASE_TENSION_ELASTIC: f32 = 0.0009;
 const BASE_TENSION_FATAL: f32 = 0.0027;
 const BASE_SHEAR_ELASTIC: f32 = 0.0012;
 const BASE_SHEAR_FATAL: f32 = 0.0036;
+// Approximate masonry / concrete-block bulk density. We use this to derive
+// per-piece masses from actual chunk volume so fractured debris has a more
+// physically coherent mass than the older arbitrary total-mass split.
+const WALL_MATERIAL_DENSITY_KG_M3: f32 = 1_800.0;
+const TOWER_MATERIAL_DENSITY_KG_M3: f32 = 1_600.0;
 
 /// Material softness used for vibe-land practice destructibles.
 ///
@@ -126,6 +130,157 @@ fn scaled_solver_settings(material_scale: f32) -> SolverSettings {
         shear_elastic_limit: BASE_SHEAR_ELASTIC * material_scale,
         shear_fatal_limit: BASE_SHEAR_FATAL * material_scale,
     }
+}
+
+fn cuboid_triangles(min: BlastVec3, max: BlastVec3) -> Vec<BlastVec3> {
+    let p000 = BlastVec3::new(min.x, min.y, min.z);
+    let p001 = BlastVec3::new(min.x, min.y, max.z);
+    let p010 = BlastVec3::new(min.x, max.y, min.z);
+    let p011 = BlastVec3::new(min.x, max.y, max.z);
+    let p100 = BlastVec3::new(max.x, min.y, min.z);
+    let p101 = BlastVec3::new(max.x, min.y, max.z);
+    let p110 = BlastVec3::new(max.x, max.y, min.z);
+    let p111 = BlastVec3::new(max.x, max.y, max.z);
+
+    vec![
+        p000, p101, p001, p000, p100, p101, p010, p011, p111, p010, p111, p110, p000, p001, p011,
+        p000, p011, p010, p100, p110, p111, p100, p111, p101, p000, p010, p110, p000, p110, p100,
+        p001, p101, p111, p001, p111, p011,
+    ]
+}
+
+fn authored_wall_pieces(opts: &WallOptions) -> Vec<ScenarioPiece> {
+    let cell_x = opts.span / (opts.span_segments.max(1) as f64);
+    let cell_y = opts.height / (opts.height_segments.max(1) as f64);
+    let cell_z = opts.thickness / (opts.layers.max(1) as f64);
+
+    let origin_x = -opts.span * 0.5 + 0.5 * cell_x;
+    let origin_y = 0.0 + 0.5 * cell_y;
+    let origin_z = 0.0;
+
+    let total_nodes = opts.span_segments * opts.height_segments * opts.layers;
+    let volume_per_node = cell_x * cell_y * cell_z;
+    let mass_per_node = volume_per_node * WALL_MATERIAL_DENSITY_KG_M3 as f64;
+
+    let half = BlastVec3::new(
+        (cell_x * 0.5) as f32,
+        (cell_y * 0.5) as f32,
+        (cell_z * 0.5) as f32,
+    );
+    let node_size = BlastVec3::new(cell_x as f32, cell_y as f32, cell_z as f32);
+
+    let mut pieces = Vec::with_capacity(total_nodes as usize);
+    for ix in 0..opts.span_segments {
+        for iy in 0..opts.height_segments {
+            for iz in 0..opts.layers {
+                let centroid = BlastVec3::new(
+                    (origin_x + ix as f64 * cell_x) as f32,
+                    (origin_y + iy as f64 * cell_y) as f32,
+                    (origin_z + (iz as f64 - (opts.layers - 1) as f64 * 0.5) * cell_z) as f32,
+                );
+                let min = BlastVec3::new(
+                    centroid.x - half.x,
+                    centroid.y - half.y,
+                    centroid.z - half.z,
+                );
+                let max = BlastVec3::new(
+                    centroid.x + half.x,
+                    centroid.y + half.y,
+                    centroid.z + half.z,
+                );
+                let is_support = iy == 0;
+                pieces.push(ScenarioPiece {
+                    node: ScenarioNode {
+                        centroid,
+                        mass: if is_support {
+                            0.0
+                        } else {
+                            mass_per_node as f32
+                        },
+                        volume: if is_support {
+                            0.0
+                        } else {
+                            volume_per_node as f32
+                        },
+                    },
+                    triangles: cuboid_triangles(min, max),
+                    bondable: true,
+                    node_size: Some(node_size),
+                    collider_shape: None,
+                });
+            }
+        }
+    }
+    pieces
+}
+
+fn build_authored_wall_scenario() -> Result<blast_stress_solver::types::ScenarioDesc, String> {
+    build_scenario_from_pieces(
+        &authored_wall_pieces(&WallOptions::default()),
+        &BondingOptions::default(),
+    )
+    .map_err(|error| format!("failed to auto-bond wall pieces: {error}"))
+}
+
+fn authored_tower_pieces(opts: &TowerOptions) -> Vec<ScenarioPiece> {
+    let total_rows = opts.stories + 1;
+    let volume = (opts.spacing_x * opts.spacing_y * opts.spacing_z) as f32;
+    let node_mass = volume as f64 * TOWER_MATERIAL_DENSITY_KG_M3 as f64;
+
+    let half = BlastVec3::new(
+        (opts.spacing_x * 0.5) as f32,
+        (opts.spacing_y * 0.5) as f32,
+        (opts.spacing_z * 0.5) as f32,
+    );
+    let node_size = BlastVec3::new(
+        opts.spacing_x as f32,
+        opts.spacing_y as f32,
+        opts.spacing_z as f32,
+    );
+
+    let mut pieces = Vec::with_capacity((opts.side * total_rows * opts.side) as usize);
+    for iz in 0..opts.side {
+        for iy in 0..total_rows {
+            for ix in 0..opts.side {
+                let centroid = BlastVec3::new(
+                    ((ix as f64 - (opts.side - 1) as f64 / 2.0) * opts.spacing_x) as f32,
+                    ((iy as f64 - 1.0) * opts.spacing_y) as f32,
+                    ((iz as f64 - (opts.side - 1) as f64 / 2.0) * opts.spacing_z) as f32,
+                );
+                let min = BlastVec3::new(
+                    centroid.x - half.x,
+                    centroid.y - half.y,
+                    centroid.z - half.z,
+                );
+                let max = BlastVec3::new(
+                    centroid.x + half.x,
+                    centroid.y + half.y,
+                    centroid.z + half.z,
+                );
+                let is_support = iy == 0;
+                pieces.push(ScenarioPiece {
+                    node: ScenarioNode {
+                        centroid,
+                        mass: if is_support { 0.0 } else { node_mass as f32 },
+                        volume: if is_support { 0.0 } else { volume },
+                    },
+                    triangles: cuboid_triangles(min, max),
+                    bondable: true,
+                    node_size: Some(node_size),
+                    collider_shape: None,
+                });
+            }
+        }
+    }
+    pieces
+}
+
+fn build_authored_tower_scenario() -> Result<blast_stress_solver::types::ScenarioDesc, String> {
+    build_scenario_from_pieces(
+        &authored_tower_pieces(&TowerOptions::default()),
+        &BondingOptions::default(),
+    )
+    .map_err(|error| format!("failed to auto-bond tower pieces: {error}"))
 }
 
 fn configured_fracture_policy() -> FracturePolicy {
@@ -579,16 +734,17 @@ impl DestructibleRegistry {
 
     pub fn begin_physics_step(&mut self, sim: &SimWorld) {
         self.pre_step_motion.clear();
-        self.pre_step_motion.extend(sim.rigid_bodies.iter().map(|(handle, body)| {
-            (
-                handle,
-                BodyMotionSnapshot {
-                    position: *body.position(),
-                    linvel: *body.linvel(),
-                    angvel: *body.angvel(),
-                },
-            )
-        }));
+        self.pre_step_motion
+            .extend(sim.rigid_bodies.iter().map(|(handle, body)| {
+                (
+                    handle,
+                    BodyMotionSnapshot {
+                        position: *body.position(),
+                        linvel: *body.linvel(),
+                        angvel: *body.angvel(),
+                    },
+                )
+            }));
     }
 
     fn motion_velocity_at_point(
@@ -668,7 +824,13 @@ impl DestructibleRegistry {
 
     /// Spawn a wall at the given pose.  Returns `true` on success.
     pub fn spawn_wall(&mut self, sim: &mut SimWorld, id: u32, pose: Isometry3<f32>) -> bool {
-        let scenario = build_wall_scenario(&WallOptions::default());
+        let scenario = match build_authored_wall_scenario() {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                dlog(&format!("[destructibles] {error}"));
+                return false;
+            }
+        };
         self.spawn_scenario(
             sim,
             id,
@@ -681,7 +843,13 @@ impl DestructibleRegistry {
 
     /// Spawn a tower at the given pose.  Returns `true` on success.
     pub fn spawn_tower(&mut self, sim: &mut SimWorld, id: u32, pose: Isometry3<f32>) -> bool {
-        let scenario = build_tower_scenario(&TowerOptions::default());
+        let scenario = match build_authored_tower_scenario() {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                dlog(&format!("[destructibles] {error}"));
+                return false;
+            }
+        };
         self.spawn_scenario(
             sim,
             id,
@@ -1309,7 +1477,8 @@ impl DestructibleRegistry {
                             pair: pair_key,
                             target_body: BodyKey::from(body1),
                         };
-                        if let Some(last_impact_at) = self.recent_external_impacts.get(&impact_key) {
+                        if let Some(last_impact_at) = self.recent_external_impacts.get(&impact_key)
+                        {
                             if self.sim_time_secs - *last_impact_at <= IMPACT_COOLDOWN_SECS {
                                 self.debug_contact_events_cooldown_skipped_total = self
                                     .debug_contact_events_cooldown_skipped_total
@@ -1347,11 +1516,8 @@ impl DestructibleRegistry {
                                 .saturating_add(1);
                             continue;
                         };
-                        let hit_local = BlastVec3::new(
-                            local_point_na.x,
-                            local_point_na.y,
-                            local_point_na.z,
-                        );
+                        let hit_local =
+                            BlastVec3::new(local_point_na.x, local_point_na.y, local_point_na.z);
                         let body_nodes: Vec<u32> = inst.set.body_nodes_slice(body_handle).to_vec();
                         let mut splash: Vec<(u32, BlastVec3, f32)> =
                             Vec::with_capacity(body_nodes.len());
@@ -1391,7 +1557,8 @@ impl DestructibleRegistry {
                         max_estimated_injected_force_n =
                             max_estimated_injected_force_n.max(estimated_injected_force_n);
                         impact_instance_id = inst.id;
-                        let local_force = BlastVec3::new(local_force.x, local_force.y, local_force.z);
+                        let local_force =
+                            BlastVec3::new(local_force.x, local_force.y, local_force.z);
                         for (other_node, other_local, falloff) in splash {
                             let f = BlastVec3::new(
                                 local_force.x * splash_scale * falloff,
@@ -1403,9 +1570,8 @@ impl DestructibleRegistry {
                         self.recent_external_impacts
                             .insert(impact_key, self.sim_time_secs);
                         processed += 1;
-                        self.debug_contact_events_accepted_total = self
-                            .debug_contact_events_accepted_total
-                            .saturating_add(1);
+                        self.debug_contact_events_accepted_total =
+                            self.debug_contact_events_accepted_total.saturating_add(1);
                     }
                 }
             }
@@ -1442,7 +1608,8 @@ impl DestructibleRegistry {
                             pair: pair_key,
                             target_body: BodyKey::from(body2),
                         };
-                        if let Some(last_impact_at) = self.recent_external_impacts.get(&impact_key) {
+                        if let Some(last_impact_at) = self.recent_external_impacts.get(&impact_key)
+                        {
                             if self.sim_time_secs - *last_impact_at <= IMPACT_COOLDOWN_SECS {
                                 self.debug_contact_events_cooldown_skipped_total = self
                                     .debug_contact_events_cooldown_skipped_total
@@ -1480,11 +1647,8 @@ impl DestructibleRegistry {
                                 .saturating_add(1);
                             continue;
                         };
-                        let hit_local = BlastVec3::new(
-                            local_point_na.x,
-                            local_point_na.y,
-                            local_point_na.z,
-                        );
+                        let hit_local =
+                            BlastVec3::new(local_point_na.x, local_point_na.y, local_point_na.z);
                         let body_nodes: Vec<u32> = inst.set.body_nodes_slice(body_handle).to_vec();
                         let mut splash: Vec<(u32, BlastVec3, f32)> =
                             Vec::with_capacity(body_nodes.len());
@@ -1524,7 +1688,8 @@ impl DestructibleRegistry {
                         max_estimated_injected_force_n =
                             max_estimated_injected_force_n.max(estimated_injected_force_n);
                         impact_instance_id = inst.id;
-                        let local_force = BlastVec3::new(local_force.x, local_force.y, local_force.z);
+                        let local_force =
+                            BlastVec3::new(local_force.x, local_force.y, local_force.z);
                         for (other_node, other_local, falloff) in splash {
                             let f = BlastVec3::new(
                                 local_force.x * splash_scale * falloff,
@@ -1536,9 +1701,8 @@ impl DestructibleRegistry {
                         self.recent_external_impacts
                             .insert(impact_key, self.sim_time_secs);
                         processed += 1;
-                        self.debug_contact_events_accepted_total = self
-                            .debug_contact_events_accepted_total
-                            .saturating_add(1);
+                        self.debug_contact_events_accepted_total =
+                            self.debug_contact_events_accepted_total.saturating_add(1);
                     }
                 }
             }

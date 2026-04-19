@@ -142,6 +142,20 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   getDestructibleDebugState(): number[];
   getDestructibleDebugConfig(): number[];
   setDestructiblesLogging(enabled: boolean): void;
+  getVehicleTuning(): Float32Array | number[];
+  setVehicleTuning(
+    maxSteerRad: number,
+    engineForce: number,
+    brakeForce: number,
+    chassisMassKg: number,
+    suspensionStiffness: number,
+    suspensionDamping: number,
+    suspensionMaxForce: number,
+    suspensionRestLength: number,
+    suspensionTravel: number,
+    wheelRadius: number,
+    frictionSlip: number,
+  ): void;
   describeDestructibles(): string;
 };
 type WasmSimWorldCtor = {
@@ -197,6 +211,20 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
   getDestructibleDebugConfig(): number[];
   drainDestructibleFractureEvents(): Uint32Array;
   setDestructiblesLogging(enabled: boolean): void;
+  getVehicleTuning(): Float32Array | number[];
+  setVehicleTuning(
+    maxSteerRad: number,
+    engineForce: number,
+    brakeForce: number,
+    chassisMassKg: number,
+    suspensionStiffness: number,
+    suspensionDamping: number,
+    suspensionMaxForce: number,
+    suspensionRestLength: number,
+    suspensionTravel: number,
+    wheelRadius: number,
+    frictionSlip: number,
+  ): void;
 };
 
 type WasmLocalSessionCtor = {

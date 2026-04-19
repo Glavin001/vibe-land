@@ -13,9 +13,10 @@ use vibe_netcode::sim_world::SimWorld;
 
 use crate::constants::BTN_RELOAD;
 use crate::movement::{
-    vehicle_wheel_params, Vec3d, VEHICLE_CHASSIS_DENSITY, VEHICLE_FRICTION_SLIP,
-    VEHICLE_MAX_STEER_RAD, VEHICLE_SUSPENSION_DAMPING, VEHICLE_SUSPENSION_REST_LENGTH,
-    VEHICLE_SUSPENSION_STIFFNESS, VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
+    vehicle_wheel_params, Vec3d, VEHICLE_BRAKE_FORCE, VEHICLE_CHASSIS_TARGET_MASS_KG,
+    VEHICLE_ENGINE_FORCE, VEHICLE_FRICTION_SLIP, VEHICLE_MAX_STEER_RAD, VEHICLE_SUSPENSION_DAMPING,
+    VEHICLE_SUSPENSION_MAX_FORCE, VEHICLE_SUSPENSION_REST_LENGTH, VEHICLE_SUSPENSION_STIFFNESS,
+    VEHICLE_SUSPENSION_TRAVEL, VEHICLE_WHEEL_RADIUS,
 };
 use crate::protocol::{make_net_vehicle_state, InputCmd, NetVehicleState};
 
@@ -26,10 +27,10 @@ pub const DEFAULT_VEHICLE_TYPE: u8 = VEHICLE_TYPE_DELOREAN;
 pub const DELOREAN_CHASSIS_HALF_EXTENTS: [f32; 3] = [0.9, 0.3, 1.8];
 pub const VEHICLE_CONTROLLER_SUBSTEPS: usize = 4;
 pub const DELOREAN_WHEEL_OFFSETS: [[f32; 3]; 4] = [
-    [-0.9, 0.0, 1.1],
-    [0.9, 0.0, 1.1],
-    [-0.9, 0.0, -1.1],
-    [0.9, 0.0, -1.1],
+    [-0.9, -0.22, 1.1],
+    [0.9, -0.22, 1.1],
+    [-0.9, -0.22, -1.1],
+    [0.9, -0.22, -1.1],
 ];
 
 // Legacy stainless-sports-car wedge kept as vehicle type 0 so existing worlds
@@ -84,6 +85,90 @@ pub const CYBERTRUCK_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = [
 pub const VEHICLE_CHASSIS_HALF_EXTENTS: [f32; 3] = DELOREAN_CHASSIS_HALF_EXTENTS;
 pub const VEHICLE_WHEEL_OFFSETS: [[f32; 3]; 4] = DELOREAN_WHEEL_OFFSETS;
 pub const VEHICLE_CHASSIS_HULL_VERTICES: [[f32; 3]; 16] = DELOREAN_CHASSIS_HULL_VERTICES;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VehicleTuning {
+    pub max_steer_rad: f32,
+    pub engine_force: f32,
+    pub brake_force: f32,
+    pub chassis_mass_kg: f32,
+    pub suspension_stiffness: f32,
+    pub suspension_damping: f32,
+    pub suspension_max_force: f32,
+    pub suspension_rest_length: f32,
+    pub suspension_travel: f32,
+    pub wheel_radius: f32,
+    pub friction_slip: f32,
+}
+
+impl Default for VehicleTuning {
+    fn default() -> Self {
+        Self {
+            max_steer_rad: VEHICLE_MAX_STEER_RAD,
+            engine_force: VEHICLE_ENGINE_FORCE,
+            brake_force: VEHICLE_BRAKE_FORCE,
+            chassis_mass_kg: VEHICLE_CHASSIS_TARGET_MASS_KG,
+            suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
+            suspension_damping: VEHICLE_SUSPENSION_DAMPING,
+            suspension_max_force: VEHICLE_SUSPENSION_MAX_FORCE,
+            suspension_rest_length: VEHICLE_SUSPENSION_REST_LENGTH,
+            suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
+            wheel_radius: VEHICLE_WHEEL_RADIUS,
+            friction_slip: VEHICLE_FRICTION_SLIP,
+        }
+    }
+}
+
+impl VehicleTuning {
+    pub fn sanitized(self) -> Self {
+        let defaults = Self::default();
+        Self {
+            max_steer_rad: sanitize_positive(self.max_steer_rad, defaults.max_steer_rad),
+            engine_force: sanitize_positive(self.engine_force, defaults.engine_force),
+            brake_force: sanitize_positive(self.brake_force, defaults.brake_force),
+            chassis_mass_kg: sanitize_positive(self.chassis_mass_kg, defaults.chassis_mass_kg),
+            suspension_stiffness: sanitize_non_negative(
+                self.suspension_stiffness,
+                defaults.suspension_stiffness,
+            ),
+            suspension_damping: sanitize_non_negative(
+                self.suspension_damping,
+                defaults.suspension_damping,
+            ),
+            suspension_max_force: sanitize_non_negative(
+                self.suspension_max_force,
+                defaults.suspension_max_force,
+            ),
+            suspension_rest_length: sanitize_positive(
+                self.suspension_rest_length,
+                defaults.suspension_rest_length,
+            ),
+            suspension_travel: sanitize_non_negative(
+                self.suspension_travel,
+                defaults.suspension_travel,
+            ),
+            wheel_radius: sanitize_positive(self.wheel_radius, defaults.wheel_radius),
+            friction_slip: sanitize_positive(self.friction_slip, defaults.friction_slip),
+        }
+    }
+}
+
+fn sanitize_positive(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn sanitize_non_negative(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() && value >= 0.0 {
+        value
+    } else {
+        fallback
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VehicleType {
@@ -159,6 +244,10 @@ pub fn vehicle_definitions() -> &'static [VehicleDefinition] {
     &VEHICLE_DEFINITIONS
 }
 
+pub fn default_vehicle_tuning() -> VehicleTuning {
+    VehicleTuning::default()
+}
+
 pub fn vehicle_definition(vehicle_type: u8) -> &'static VehicleDefinition {
     match VehicleType::from_u8(vehicle_type).unwrap_or(VehicleType::Delorean) {
         VehicleType::Delorean => &DELOREAN_VEHICLE_DEFINITION,
@@ -190,6 +279,20 @@ pub fn create_vehicle_physics(
     ColliderHandle,
     DynamicRayCastVehicleController,
 ) {
+    create_vehicle_physics_with_tuning(sim, vehicle_type, pose, &VehicleTuning::default())
+}
+
+pub fn create_vehicle_physics_with_tuning(
+    sim: &mut SimWorld,
+    vehicle_type: u8,
+    pose: Isometry3<f32>,
+    tuning: &VehicleTuning,
+) -> (
+    RigidBodyHandle,
+    ColliderHandle,
+    DynamicRayCastVehicleController,
+) {
+    let tuning = tuning.sanitized();
     let body = RigidBodyBuilder::dynamic()
         .pose(pose)
         .linear_damping(0.1)
@@ -213,7 +316,7 @@ pub fn create_vehicle_physics(
         .unwrap_or_else(|| panic!("{} chassis hull must be valid", definition.key))
         .friction(0.3)
         .restitution(0.1)
-        .density(VEHICLE_CHASSIS_DENSITY)
+        .mass(tuning.chassis_mass_kg)
         .collision_groups(chassis_groups)
         .build();
     let chassis_collider =
@@ -225,11 +328,13 @@ pub fn create_vehicle_physics(
     // suspension_dir = -Y (downward), axle_dir = +X (right)
     let mut controller = DynamicRayCastVehicleController::new(chassis_body);
     controller.index_forward_axis = 2;
-    let tuning = WheelTuning {
-        suspension_stiffness: VEHICLE_SUSPENSION_STIFFNESS,
-        suspension_damping: VEHICLE_SUSPENSION_DAMPING,
-        friction_slip: VEHICLE_FRICTION_SLIP,
-        max_suspension_travel: VEHICLE_SUSPENSION_TRAVEL,
+    let wheel_tuning = WheelTuning {
+        suspension_stiffness: tuning.suspension_stiffness,
+        suspension_compression: tuning.suspension_damping,
+        suspension_damping: tuning.suspension_damping,
+        max_suspension_force: tuning.suspension_max_force,
+        friction_slip: tuning.friction_slip,
+        max_suspension_travel: tuning.suspension_travel,
         ..WheelTuning::default()
     };
     for offset in definition.wheel_offsets {
@@ -237,15 +342,49 @@ pub fn create_vehicle_physics(
             point![offset[0], offset[1], offset[2]],
             -Vector3::y(),
             Vector3::x(),
-            VEHICLE_SUSPENSION_REST_LENGTH,
-            VEHICLE_WHEEL_RADIUS,
-            &tuning,
+            tuning.suspension_rest_length,
+            tuning.wheel_radius,
+            &wheel_tuning,
         );
     }
 
     sim.modified_colliders.push(chassis_collider);
 
     (chassis_body, chassis_collider, controller)
+}
+
+pub fn apply_vehicle_tuning_to_controller(
+    controller: &mut DynamicRayCastVehicleController,
+    tuning: &VehicleTuning,
+) {
+    let tuning = tuning.sanitized();
+    for wheel in controller.wheels_mut() {
+        wheel.suspension_stiffness = tuning.suspension_stiffness;
+        wheel.damping_compression = tuning.suspension_damping;
+        wheel.damping_relaxation = tuning.suspension_damping;
+        wheel.max_suspension_force = tuning.suspension_max_force;
+        wheel.friction_slip = tuning.friction_slip;
+        wheel.max_suspension_travel = tuning.suspension_travel;
+        wheel.suspension_rest_length = tuning.suspension_rest_length;
+        wheel.radius = tuning.wheel_radius;
+    }
+}
+
+pub fn apply_vehicle_tuning_to_chassis(
+    sim: &mut SimWorld,
+    chassis_body: RigidBodyHandle,
+    chassis_collider: ColliderHandle,
+    tuning: &VehicleTuning,
+) {
+    let tuning = tuning.sanitized();
+    if let Some(collider) = sim.colliders.get_mut(chassis_collider) {
+        collider.set_mass(tuning.chassis_mass_kg);
+    }
+    if let Some(rb) = sim.rigid_bodies.get_mut(chassis_body) {
+        rb.recompute_mass_properties_from_colliders(&sim.colliders);
+        rb.wake_up(true);
+    }
+    sim.modified_colliders.push(chassis_collider);
 }
 
 /// Build the suspension `QueryFilter` for a vehicle step.
@@ -353,8 +492,28 @@ pub fn apply_vehicle_input_step(
     input: &InputCmd,
     dt: f32,
 ) {
+    apply_vehicle_input_step_with_tuning(
+        sim,
+        chassis_body,
+        chassis_collider,
+        controller,
+        input,
+        dt,
+        &VehicleTuning::default(),
+    );
+}
+
+pub fn apply_vehicle_input_step_with_tuning(
+    sim: &mut SimWorld,
+    chassis_body: RigidBodyHandle,
+    chassis_collider: ColliderHandle,
+    controller: &mut DynamicRayCastVehicleController,
+    input: &InputCmd,
+    dt: f32,
+    tuning: &VehicleTuning,
+) {
     let reset_requested = input.buttons & BTN_RELOAD != 0;
-    let (steering, engine_force, brake) = vehicle_wheel_params(input);
+    let (steering, engine_force, brake) = vehicle_wheel_params_with_tuning(input, tuning);
 
     if reset_requested {
         if let Some(rb) = sim.rigid_bodies.get_mut(chassis_body) {
@@ -382,6 +541,20 @@ pub fn apply_vehicle_input_step(
         filter,
     );
     controller.update_vehicle(dt, queries);
+}
+
+pub fn vehicle_wheel_params_with_tuning(
+    input: &InputCmd,
+    tuning: &VehicleTuning,
+) -> (f32, f32, f32) {
+    let tuning = tuning.sanitized();
+    let (default_steering, default_engine_force, default_brake) = vehicle_wheel_params(input);
+    let defaults = VehicleTuning::default();
+    (
+        default_steering * (tuning.max_steer_rad / defaults.max_steer_rad),
+        default_engine_force * (tuning.engine_force / defaults.engine_force),
+        default_brake * (tuning.brake_force / defaults.brake_force),
+    )
 }
 
 /// Read the current chassis pose/velocity from the shared simulation world.
@@ -495,11 +668,18 @@ pub fn read_vehicle_debug_snapshot(
 
 /// Encode the wheel rotation/steering data used by the client vehicle visuals.
 pub fn encode_vehicle_wheel_data(controller: &DynamicRayCastVehicleController) -> [u16; 4] {
+    encode_vehicle_wheel_data_with_tuning(controller, &VehicleTuning::default())
+}
+
+pub fn encode_vehicle_wheel_data_with_tuning(
+    controller: &DynamicRayCastVehicleController,
+    tuning: &VehicleTuning,
+) -> [u16; 4] {
     let mut wheel_data = [0u16; 4];
+    let max_steer_rad = tuning.sanitized().max_steer_rad.max(0.0001);
     for (i, wheel) in controller.wheels().iter().enumerate().take(4) {
         let spin = ((wheel.rotation / std::f32::consts::TAU).fract().abs() * 255.0) as u8;
-        let steer =
-            (wheel.steering / VEHICLE_MAX_STEER_RAD * 127.0).clamp(-127.0, 127.0) as i8 as u8;
+        let steer = (wheel.steering / max_steer_rad * 127.0).clamp(-127.0, 127.0) as i8 as u8;
         wheel_data[i] = ((spin as u16) << 8) | (steer as u16);
     }
     wheel_data
@@ -514,6 +694,7 @@ pub fn make_vehicle_snapshot(
     driver_id: u32,
     chassis_body: RigidBodyHandle,
     controller: &DynamicRayCastVehicleController,
+    tuning: &VehicleTuning,
 ) -> Option<NetVehicleState> {
     let vehicle_type = canonical_vehicle_type(vehicle_type);
     let state = read_vehicle_chassis_state(sim, chassis_body)?;
@@ -526,7 +707,7 @@ pub fn make_vehicle_snapshot(
         state.quaternion,
         state.linear_velocity,
         state.angular_velocity,
-        encode_vehicle_wheel_data(controller),
+        encode_vehicle_wheel_data_with_tuning(controller, tuning),
     ))
 }
 
@@ -871,9 +1052,17 @@ mod tests {
         rig.apply_input(&input);
         rig.step_client_prediction();
 
-        let snapshot =
-            make_vehicle_snapshot(&rig.sim, 7, 0, 0, 1, rig.chassis_body, &rig.controller)
-                .expect("vehicle snapshot");
+        let snapshot = make_vehicle_snapshot(
+            &rig.sim,
+            7,
+            0,
+            0,
+            1,
+            rig.chassis_body,
+            &rig.controller,
+            &VehicleTuning::default(),
+        )
+        .expect("vehicle snapshot");
         let state =
             read_vehicle_chassis_state(&rig.sim, rig.chassis_body).expect("vehicle chassis state");
 
@@ -967,6 +1156,58 @@ mod tests {
         assert_eq!(defs[1].key, "cybertruck");
         assert_ne!(defs[0].chassis_hull_vertices, defs[1].chassis_hull_vertices);
         assert_eq!(vehicle_definition(255).key, "delorean");
+    }
+
+    #[test]
+    fn applying_vehicle_tuning_updates_live_controller_wheels() {
+        let mut rig = VehicleRig::new();
+        let tuning = VehicleTuning {
+            max_steer_rad: 0.42,
+            engine_force: 12_345.0,
+            brake_force: 6_789.0,
+            chassis_mass_kg: 3_210.0,
+            suspension_stiffness: 7_654.0,
+            suspension_damping: 432.0,
+            suspension_max_force: 9_876.0,
+            suspension_rest_length: 0.57,
+            suspension_travel: 0.29,
+            wheel_radius: 0.41,
+            friction_slip: 2.6,
+        };
+
+        apply_vehicle_tuning_to_controller(&mut rig.controller, &tuning);
+
+        for wheel in rig.controller.wheels() {
+            assert_eq!(wheel.suspension_stiffness, tuning.suspension_stiffness);
+            assert_eq!(wheel.damping_compression, tuning.suspension_damping);
+            assert_eq!(wheel.damping_relaxation, tuning.suspension_damping);
+            assert_eq!(wheel.max_suspension_force, tuning.suspension_max_force);
+            assert_eq!(wheel.friction_slip, tuning.friction_slip);
+            assert_eq!(wheel.max_suspension_travel, tuning.suspension_travel);
+            assert_eq!(wheel.suspension_rest_length, tuning.suspension_rest_length);
+            assert_eq!(wheel.radius, tuning.wheel_radius);
+        }
+    }
+
+    #[test]
+    fn applying_vehicle_tuning_updates_live_chassis_mass() {
+        let mut rig = VehicleRig::new();
+        let original_mass = rig.sim.rigid_bodies[rig.chassis_body].mass();
+        let tuning = VehicleTuning {
+            chassis_mass_kg: 4_400.0,
+            ..VehicleTuning::default()
+        };
+
+        apply_vehicle_tuning_to_chassis(
+            &mut rig.sim,
+            rig.chassis_body,
+            rig.chassis_collider,
+            &tuning,
+        );
+
+        let updated_mass = rig.sim.rigid_bodies[rig.chassis_body].mass();
+        assert!(updated_mass > original_mass * 1.5);
+        assert!((updated_mass - tuning.chassis_mass_kg).abs() < 25.0);
     }
 
     #[test]

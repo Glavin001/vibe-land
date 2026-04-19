@@ -1,8 +1,8 @@
 pub mod constants;
 pub mod debug_render;
-pub mod destructibles_math;
 #[cfg(target_arch = "wasm32")]
 pub mod destructibles;
+pub mod destructibles_math;
 #[cfg(target_arch = "wasm32")]
 pub mod destructibles_real;
 pub mod local_session;

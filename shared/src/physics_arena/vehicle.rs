@@ -3,9 +3,10 @@ use rapier3d::prelude::InteractionGroups;
 
 use super::{elapsed_ms, now_marker, PhysicsArena, Vec3, Vehicle};
 use crate::vehicle::{
-    apply_vehicle_input_step, canonical_vehicle_type, create_vehicle_physics,
-    make_vehicle_snapshot, read_vehicle_chassis_state, vehicle_exit_position,
-    VEHICLE_CONTROLLER_SUBSTEPS,
+    apply_vehicle_input_step_with_tuning, apply_vehicle_tuning_to_chassis,
+    apply_vehicle_tuning_to_controller, canonical_vehicle_type, create_vehicle_physics_with_tuning,
+    make_vehicle_snapshot, read_vehicle_chassis_state, refresh_vehicle_contacts,
+    vehicle_exit_position, VehicleTuning, VEHICLE_CONTROLLER_SUBSTEPS,
 };
 
 impl PhysicsArena {
@@ -33,8 +34,12 @@ impl PhysicsArena {
                 rotation[2],
             )),
         );
-        let (chassis_body, chassis_collider, controller) =
-            create_vehicle_physics(&mut self.dynamic.sim, vehicle_type, pose);
+        let (chassis_body, chassis_collider, controller) = create_vehicle_physics_with_tuning(
+            &mut self.dynamic.sim,
+            vehicle_type,
+            pose,
+            &self.vehicle_tuning,
+        );
 
         self.vehicles.insert(
             id,
@@ -87,13 +92,32 @@ impl PhysicsArena {
             };
 
             let vehicle = self.vehicles.get_mut(&vid).unwrap();
-            apply_vehicle_input_step(
+            apply_vehicle_input_step_with_tuning(
                 &mut self.dynamic.sim,
                 vehicle.chassis_body,
                 vehicle.chassis_collider,
                 &mut vehicle.controller,
                 &driver_input,
                 dt,
+                &self.vehicle_tuning,
+            );
+        }
+    }
+
+    pub fn set_vehicle_tuning(&mut self, tuning: VehicleTuning) {
+        self.vehicle_tuning = tuning.sanitized();
+        for vehicle in self.vehicles.values_mut() {
+            apply_vehicle_tuning_to_controller(&mut vehicle.controller, &self.vehicle_tuning);
+            apply_vehicle_tuning_to_chassis(
+                &mut self.dynamic.sim,
+                vehicle.chassis_body,
+                vehicle.chassis_collider,
+                &self.vehicle_tuning,
+            );
+            refresh_vehicle_contacts(
+                &mut self.dynamic.sim,
+                vehicle.chassis_collider,
+                &mut vehicle.controller,
             );
         }
     }
@@ -205,6 +229,7 @@ impl PhysicsArena {
                     vehicle.driver_id.unwrap_or(0),
                     vehicle.chassis_body,
                     &vehicle.controller,
+                    &self.vehicle_tuning,
                 )
             })
             .collect()

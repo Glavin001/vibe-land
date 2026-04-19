@@ -27,20 +27,17 @@ pub fn default_player_navigation_profile() -> PlayerNavigationProfile {
 
 // ── Vehicle tuning constants ─────────────────────
 pub const VEHICLE_MAX_STEER_RAD: f32 = 0.5;
-pub const VEHICLE_ENGINE_FORCE: f32 = 4000.0; // 2 rear wheels × 4000 N / ~600 kg ≈ 13 m/s² — sporty car
-pub const VEHICLE_BRAKE_FORCE: f32 = 2000.0;
+pub const VEHICLE_ENGINE_FORCE: f32 = 4_000.0; // sporty lightweight baseline
+pub const VEHICLE_BRAKE_FORCE: f32 = 2_000.0;
 pub const VEHICLE_SUSPENSION_STIFFNESS: f32 = 80.0;
-pub const VEHICLE_SUSPENSION_DAMPING: f32 = 20.0; // critically-damped at ~300kg chassis
+pub const VEHICLE_SUSPENSION_DAMPING: f32 = 20.0; // critically damped around the original ~600 kg chassis
+pub const VEHICLE_SUSPENSION_MAX_FORCE: f32 = 6_000.0; // Rapier default that matched the original feel
 pub const VEHICLE_SUSPENSION_REST_LENGTH: f32 = 0.3;
 pub const VEHICLE_SUSPENSION_TRAVEL: f32 = 0.2;
 pub const VEHICLE_WHEEL_RADIUS: f32 = 0.35;
 pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
-// Chassis collider density. The chassis is now a Cybertruck-style wedge
-// (`VEHICLE_CHASSIS_HULL_VERTICES`), whose convex-hull volume is ≈ 2.85 m³ —
-// roughly 73% of the previous cuboid's 3.888 m³. Density was 155 kg/m³ for
-// the cuboid; scaled by 3.888 / 2.85 ≈ 1.36 to preserve mass and keep the
-// suspension near critically damped at the same ~300 kg chassis mass.
-pub const VEHICLE_CHASSIS_DENSITY: f32 = 211.0;
+// Original lightweight chassis mass that produced the baseline handling feel.
+pub const VEHICLE_CHASSIS_TARGET_MASS_KG: f32 = 600.0;
 
 /// Vehicle control inputs derived from a player `InputCmd`.
 pub struct VehicleInputCmd {

@@ -8,6 +8,7 @@ import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
 import type { DestructibleTuning } from '../physics/destructibleTuning';
+import type { VehicleTuning } from '../physics/vehicleTuning';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -31,6 +32,7 @@ type GameSceneProps = {
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   destructibleTuning?: DestructibleTuning;
+  vehicleTuning?: VehicleTuning;
   sceneExtras?: ReactNode;
 };
 
@@ -57,6 +59,7 @@ export function GameScene({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   destructibleTuning,
+  vehicleTuning,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -98,6 +101,7 @@ export function GameScene({
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           destructibleTuning={destructibleTuning}
+          vehicleTuning={vehicleTuning}
           sceneExtras={sceneExtras}
         />
       </Suspense>

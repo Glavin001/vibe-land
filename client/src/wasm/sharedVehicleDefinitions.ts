@@ -10,6 +10,11 @@ export type SharedVehicleDefinition = {
   wheelRadiusM: number;
 };
 
+export type SharedVehicleVisualTuningOverride = {
+  suspensionRestLengthM: number;
+  wheelRadiusM: number;
+};
+
 type RawSharedVehicleDefinition = {
   vehicleType?: number;
   key?: string;
@@ -97,6 +102,7 @@ let sharedVehicleDefinitions: SharedVehicleDefinition[] = FALLBACK_SHARED_VEHICL
 let sharedVehicleDefinitionByType = new Map<number, SharedVehicleDefinition>(
   sharedVehicleDefinitions.map((definition) => [definition.vehicleType, definition]),
 );
+let sharedVehicleVisualTuningOverride: SharedVehicleVisualTuningOverride | null = null;
 
 function normalizeTriples(
   source: number[][] | undefined,
@@ -158,9 +164,17 @@ export function getSharedVehicleDefinitions(): SharedVehicleDefinition[] {
 
 export function getSharedVehicleDefinition(vehicleType?: number | null): SharedVehicleDefinition {
   const resolvedType = Math.trunc(vehicleType ?? DEFAULT_SHARED_VEHICLE_TYPE);
-  return sharedVehicleDefinitionByType.get(resolvedType)
+  const definition = sharedVehicleDefinitionByType.get(resolvedType)
     ?? sharedVehicleDefinitionByType.get(DEFAULT_SHARED_VEHICLE_TYPE)
     ?? FALLBACK_SHARED_VEHICLE_DEFINITIONS[0];
+  if (!sharedVehicleVisualTuningOverride) {
+    return definition;
+  }
+  return {
+    ...definition,
+    suspensionRestLengthM: sharedVehicleVisualTuningOverride.suspensionRestLengthM,
+    wheelRadiusM: sharedVehicleVisualTuningOverride.wheelRadiusM,
+  };
 }
 
 export function getSharedVehicleTypeByKey(key: string): number | null {
@@ -174,4 +188,10 @@ export function getSharedVehicleDefaultType(): number {
 
 export function getSharedVehicleGeometry(): SharedVehicleDefinition {
   return getSharedVehicleDefinition(DEFAULT_SHARED_VEHICLE_TYPE);
+}
+
+export function setSharedVehicleVisualTuningOverride(
+  override: SharedVehicleVisualTuningOverride | null,
+): void {
+  sharedVehicleVisualTuningOverride = override;
 }
