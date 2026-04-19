@@ -1092,6 +1092,7 @@ export function GameWorld({
   const nextLocalMeleeMsRef = useRef(0);
   const nextSwingIdRef = useRef(1);
   const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
+  const remoteHpBarsRef = useRef<Map<number, RemoteHpBarHandle>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrainState | null>(
@@ -2499,6 +2500,7 @@ export function GameWorld({
         handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
         attachPlayerIdLabel(handle.root, id);
+        remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
@@ -2546,6 +2548,12 @@ export function GameWorld({
       const debugHelper = handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
       if (debugHelper) debugHelper.visible = showDebugHelpers && !isInVehicle;
 
+      const hpBar = remoteHpBarsRef.current.get(id);
+      if (hpBar) {
+        hpBar.setHp(replicatedHp);
+        hpBar.setVisible(!isDead && !isInVehicle);
+      }
+
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
       handle.setFlash(0xfff36b, flashAlpha);
@@ -2565,6 +2573,11 @@ export function GameWorld({
     // Remove stale
     for (const [id, handle] of remoteMeshes.current) {
       if (!activeIds.has(id)) {
+        const bar = remoteHpBarsRef.current.get(id);
+        if (bar) {
+          bar.dispose();
+          remoteHpBarsRef.current.delete(id);
+        }
         handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
@@ -3379,4 +3392,74 @@ function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
   // Place the label just above the head.
   sprite.position.y = 1.0;
   parent.add(sprite);
+}
+
+interface RemoteHpBarHandle {
+  setHp(hp: number): void;
+  setVisible(visible: boolean): void;
+  dispose(): void;
+}
+
+const REMOTE_HP_BAR_MAX = 100;
+const REMOTE_HP_BAR_W = 128;
+const REMOTE_HP_BAR_H = 18;
+
+function attachRemoteHpBar(parent: THREE.Object3D): RemoteHpBarHandle {
+  const canvas = document.createElement('canvas');
+  canvas.width = REMOTE_HP_BAR_W;
+  canvas.height = REMOTE_HP_BAR_H;
+  const ctx = canvas.getContext('2d')!;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.name = 'remoteHpBar';
+  sprite.scale.set(1.0, 0.16, 1);
+  sprite.position.y = 1.3;
+  // Render slightly on top so it isn't culled behind heads at extreme angles.
+  sprite.renderOrder = 999;
+  parent.add(sprite);
+
+  let lastDrawnHp = -1;
+  const draw = (hp: number): void => {
+    const clamped = Math.max(0, Math.min(REMOTE_HP_BAR_MAX, hp));
+    ctx.clearRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Frame
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(0, 0, REMOTE_HP_BAR_W, REMOTE_HP_BAR_H);
+    // Fill
+    const ratio = clamped / REMOTE_HP_BAR_MAX;
+    const fillW = Math.round((REMOTE_HP_BAR_W - 4) * ratio);
+    let color = '#3ddc84';
+    if (ratio < 0.25) color = '#ff4d4d';
+    else if (ratio < 0.5) color = '#ffd84d';
+    ctx.fillStyle = color;
+    ctx.fillRect(2, 2, fillW, REMOTE_HP_BAR_H - 4);
+    // Border
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, REMOTE_HP_BAR_W - 1, REMOTE_HP_BAR_H - 1);
+    texture.needsUpdate = true;
+  };
+
+  draw(REMOTE_HP_BAR_MAX);
+  lastDrawnHp = REMOTE_HP_BAR_MAX;
+
+  return {
+    setHp(hp: number): void {
+      const rounded = Math.round(hp);
+      if (rounded === lastDrawnHp) return;
+      lastDrawnHp = rounded;
+      draw(rounded);
+    },
+    setVisible(visible: boolean): void {
+      sprite.visible = visible;
+    },
+    dispose(): void {
+      parent.remove(sprite);
+      material.dispose();
+      texture.dispose();
+    },
+  };
 }
