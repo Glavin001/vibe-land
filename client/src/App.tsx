@@ -21,6 +21,8 @@ import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugO
 import { EnergyBar } from './ui/EnergyBar';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
+import { useDamageFeedback } from './ui/useDamageFeedback';
+import { DamageOverlay } from './ui/DamageOverlay';
 import { useDebugStats } from './ui/useDebugStats';
 import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
 import {
@@ -196,6 +198,7 @@ export function App({
     cycleRapierDebugPreset,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
+  const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
@@ -981,6 +984,7 @@ export function App({
         energy={displayStats.energy}
         visible={connected}
       />
+      <DamageOverlay {...damageOverlayState} visible={connected} />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -1036,6 +1040,7 @@ export function App({
           fogEnabled={fogSettings.enabled}
           fogDensity={fogSettings.density}
           fogColor={fogSettings.color}
+          damageFeedback={damageFeedbackController}
           sceneExtras={calibrationSceneExtras}
         />
       )}

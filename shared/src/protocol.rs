@@ -167,6 +167,17 @@ pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;
 pub const SHOT_RESOLUTION_BLOCKED_BY_WORLD: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Default)]
+pub struct DamageEventPacket {
+    pub attacker_player_id: u32,
+    pub damage_amount: u8,
+    pub hit_zone: u8,
+    pub attacker_px_mm: i32,
+    pub attacker_py_mm: i32,
+    pub attacker_pz_mm: i32,
+    pub server_time_ms: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct NetVehicleState {
     pub id: u32,
     pub vehicle_type: u8,

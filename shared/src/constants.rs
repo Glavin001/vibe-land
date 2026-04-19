@@ -35,6 +35,7 @@ pub const PKT_PLAYER_ROSTER: u8 = 113;
 pub const PKT_DYNAMIC_BODY_META: u8 = 114;
 pub const PKT_LOCAL_PLAYER_ENERGY: u8 = 115;
 pub const PKT_BATTERY_SYNC: u8 = 116;
+pub const PKT_DAMAGE_EVENT: u8 = 117;
 
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;

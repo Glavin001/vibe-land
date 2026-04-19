@@ -48,12 +48,13 @@ use crate::{
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
-        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, mm_to_meters,
-        BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket,
-        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
-        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY,
-        PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, meters_to_mm,
+        mm_to_meters, BatterySyncPacket, ClientPacket, DamageEventPacket, FireCmd, InputCmd,
+        LocalPlayerEnergyPacket, NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket,
+        WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC,
+        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -2571,21 +2572,48 @@ impl MatchState {
 
             let result = if let Some(hit) = player_hit {
                 let mut victim_killed = false;
+                let mut applied_damage: u8 = 0;
                 if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
+                    let prev_hp = state.hp;
                     state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
+                    applied_damage = prev_hp.saturating_sub(state.hp);
                     victim_killed = state.hp == 0 && !state.dead;
                 }
                 if victim_killed {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
+                let hit_zone_byte = match hit.zone {
+                    HitZone::Body => HIT_ZONE_BODY,
+                    HitZone::Head => HIT_ZONE_HEAD,
+                };
+                if applied_damage > 0 {
+                    if let Some(victim_conn) = self.players.get(&hit.victim_id) {
+                        let attacker_pos = self
+                            .arena
+                            .snapshot_player(queued.player_id)
+                            .map(|(pos, _, _, _, _, _)| pos)
+                            .unwrap_or([origin[0], origin[1] - PLAYER_EYE_HEIGHT_M, origin[2]]);
+                        let damage_packet = ServerPacket::DamageEvent(DamageEventPacket {
+                            attacker_player_id: queued.player_id,
+                            damage_amount: applied_damage,
+                            hit_zone: hit_zone_byte,
+                            attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                            attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                            attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                            server_time_ms,
+                        });
+                        let _ = try_queue_packet(
+                            &victim_conn.tx,
+                            encode_server_packet(&damage_packet),
+                            &self.io,
+                        );
+                    }
+                }
                 self.build_shot_result(
                     queued.cmd.shot_id,
                     queued.cmd.weapon,
                     Some(hit.victim_id),
-                    match hit.zone {
-                        HitZone::Body => HIT_ZONE_BODY,
-                        HitZone::Head => HIT_ZONE_HEAD,
-                    },
+                    hit_zone_byte,
                     SHOT_RESOLUTION_PLAYER,
                     0,
                     0.0,

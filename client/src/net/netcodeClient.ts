@@ -13,6 +13,7 @@ import {
 import {
   type BatteryStateMeters,
   type BatterySyncPacket,
+  type DamageEventPacket,
   encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
   netStateToMeters,
@@ -52,6 +53,7 @@ export type NetcodeClientConfig = {
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -812,6 +814,9 @@ export class NetcodeClient {
           packet.serverDynamicImpulseCenti,
         );
         this.config.onShotResult?.(packet);
+        break;
+      case 'damageEvent':
+        this.config.onDamageEvent?.(packet);
         break;
       default:
         break;

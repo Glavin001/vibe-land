@@ -198,6 +198,7 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     maxToi: number,
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
+  drainPackets(): Uint8Array;
 
   // ── Client-local ragdoll bodies ──────────────────────────────────────────
   spawnRagdollBody(

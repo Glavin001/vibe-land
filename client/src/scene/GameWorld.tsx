@@ -39,8 +39,12 @@ import {
   RIFLE_FIRE_INTERVAL_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState, VehicleStateMeters } from '../net/protocol';
+import type { DamageEventPacket, NetVehicleState, VehicleStateMeters } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
+import {
+  computeBodyLocalDirectionWeights,
+  type DamageFeedbackController,
+} from '../ui/useDamageFeedback';
 import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
@@ -327,6 +331,7 @@ type GameWorldProps = {
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
+  damageFeedback?: DamageFeedbackController | null;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1044,6 +1049,7 @@ export function GameWorld({
   fogEnabled = true,
   fogDensity = DEFAULT_FOG_SETTINGS.density,
   fogColor = DEFAULT_FOG_SETTINGS.color,
+  damageFeedback,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1063,6 +1069,10 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
+  const damageFeedbackRef = useRef<DamageFeedbackController | null>(damageFeedback ?? null);
+  damageFeedbackRef.current = damageFeedback ?? null;
+  const lastLocalDeadRef = useRef(false);
+  const damageEventHandlerRef = useRef<(packet: DamageEventPacket) => void>(() => {});
   const { ready, renderBlocks, runtimeRef } = useGameRuntime(
     mode,
     worldJson,
@@ -1071,12 +1081,31 @@ export function GameWorld({
     onDisconnect,
     () => onSnapshotRef.current?.(),
     localRenderSmoothingEnabled,
+    (packet) => damageEventHandlerRef.current(packet),
   );
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
+  damageEventHandlerRef.current = (packet: DamageEventPacket) => {
+    const controller = damageFeedbackRef.current;
+    if (!controller) return;
+    const localPos = runtimeRef.current?.getPosition() ?? null;
+    if (!localPos) {
+      controller.pushEvent({
+        amount: packet.damageAmount,
+        weights: { front: 1, back: 0, left: 0, right: 0 },
+      });
+      return;
+    }
+    const weights = computeBodyLocalDirectionWeights(
+      packet.attackerPosition,
+      localPos,
+      yawRef.current ?? 0,
+    );
+    controller.pushEvent({ amount: packet.damageAmount, weights });
+  };
   const remoteGroupRef = useRef<THREE.Group>(null);
   const localPlayerDebugRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
@@ -1278,6 +1307,10 @@ export function GameWorld({
         }
       : null;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
+    if (localDead !== lastLocalDeadRef.current) {
+      lastLocalDeadRef.current = localDead;
+      damageFeedbackRef.current?.setDead(localDead);
+    }
     const drivenVehicleId = client?.getDrivenVehicleId() ?? null;
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
     const localVehicleRenderTimeUs = client?.serverClock.renderTimeUs((client?.interpolationDelayMs ?? 0) * 1000) ?? 0;
