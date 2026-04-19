@@ -99,6 +99,19 @@ pub struct RemotePlayerStateV2 {
     pub flags: u8,
 }
 
+/// Compact remote-player record for far, slow-moving peers. Clients reuse the
+/// last known hp, pitch, and velocity from the previous hot record for this
+/// handle; hp/pitch are refreshed at least once per `COLD_PLAYER_REFRESH_TICKS`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RemotePlayerColdStateV2 {
+    pub handle: u8,
+    pub dx_q2_5mm: i16,
+    pub dy_q2_5mm: i16,
+    pub dz_q2_5mm: i16,
+    pub yaw_i16: i16,
+    pub flags: u8,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DynamicSphereStateV2 {
     pub handle: u16,
@@ -161,6 +174,7 @@ pub struct SnapshotV2Packet {
     pub anchor_pz_mm: i32,
     pub self_state: SelfPlayerStateV2,
     pub remote_players: Vec<RemotePlayerStateV2>,
+    pub cold_remote_players: Vec<RemotePlayerColdStateV2>,
     pub sphere_states: Vec<DynamicSphereStateV2>,
     pub box_states: Vec<DynamicBoxStateV2>,
     pub vehicle_states: Vec<VehicleStateV2>,
@@ -510,6 +524,7 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_i32_le(pkt.anchor_py_mm);
             out.put_i32_le(pkt.anchor_pz_mm);
             out.put_u8(pkt.remote_players.len() as u8);
+            out.put_u8(pkt.cold_remote_players.len() as u8);
             out.put_u8(pkt.sphere_states.len() as u8);
             out.put_u8(pkt.box_states.len() as u8);
             out.put_u8(pkt.vehicle_states.len() as u8);
@@ -534,6 +549,15 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
                 out.put_i16_le(player.yaw_i16);
                 out.put_i16_le(player.pitch_i16);
                 out.put_u8(player.hp);
+                out.put_u8(player.flags);
+            }
+
+            for player in &pkt.cold_remote_players {
+                out.put_u8(player.handle);
+                out.put_i16_le(player.dx_q2_5mm);
+                out.put_i16_le(player.dy_q2_5mm);
+                out.put_i16_le(player.dz_q2_5mm);
+                out.put_i16_le(player.yaw_i16);
                 out.put_u8(player.flags);
             }
 

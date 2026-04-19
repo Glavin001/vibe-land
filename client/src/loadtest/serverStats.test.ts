@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   describeBottleneck,
   describeTransport,
+  jitterThresholds,
+  strictDropFailures,
   tickHeadroomMs,
+  zeroToleranceFailures,
   type MatchStatsSnapshot,
+  type PlayerStatsSnapshot,
 } from './serverStats';
 
 function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnapshot {
@@ -111,6 +115,7 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
         in_vehicle: false,
         dead: false,
         input_jitter_ms: 2,
+        input_period_ms: 16.7,
         avg_bundle_size: 1,
         correction_m: 0,
         physics_ms: 0,
@@ -160,6 +165,104 @@ describe('serverStats heuristics', () => {
       },
     });
     expect(describeBottleneck(match, 60)).toContain('CPU-limited');
+  });
+
+  it('ignores connection-closed drops when computing failure counts', () => {
+    const match = makeMatch({
+      network: {
+        ...makeMatch().network,
+        strict_snapshot_drops: 5,
+        strict_snapshot_drop_connection_closed: 5,
+      },
+    });
+    expect(strictDropFailures(match)).toBe(0);
+    expect(zeroToleranceFailures(match)).toBe(0);
+    expect(describeBottleneck(match, 60)).not.toContain('WT strict drops');
+  });
+
+  it('flags oversize strict drops as real failures', () => {
+    const match = makeMatch({
+      timings: {
+        ...makeMatch().timings,
+        total_ms: { avg: 6, p95: 7, max: 9 },
+      },
+      network: {
+        ...makeMatch().network,
+        strict_snapshot_drops: 3,
+        strict_snapshot_drop_oversize: 3,
+      },
+    });
+    expect(strictDropFailures(match)).toBe(3);
+    expect(zeroToleranceFailures(match)).toBe(3);
+    expect(describeBottleneck(match, 60)).toContain('WT strict drops');
+    expect(describeBottleneck(match, 60)).toContain('oversize 3');
+  });
+
+  it('counts dropped outbound snapshots and malformed packets as failures even if strict drops are purely closed', () => {
+    const match = makeMatch({
+      network: {
+        ...makeMatch().network,
+        strict_snapshot_drops: 2,
+        strict_snapshot_drop_connection_closed: 2,
+        dropped_outbound_snapshots: 1,
+        malformed_packets: 4,
+      },
+    });
+    expect(strictDropFailures(match)).toBe(0);
+    expect(zeroToleranceFailures(match)).toBe(5);
+  });
+
+  it('keeps tight jitter bounds for clients sampling at sim rate', () => {
+    const player: PlayerStatsSnapshot = {
+      id: 1,
+      identity: 'p1',
+      transport: 'webtransport',
+      one_way_ms: 12,
+      pending_inputs: 0,
+      hp: 100,
+      pos_m: [0, 0, 0],
+      vel_ms: [0, 0, 0],
+      on_ground: true,
+      in_vehicle: false,
+      dead: false,
+      input_jitter_ms: 0,
+      input_period_ms: 16.7,
+      avg_bundle_size: 1,
+      correction_m: 0,
+      physics_ms: 0,
+      has_debug_stats: true,
+    };
+    const thresholds = jitterThresholds(player, 60);
+    expect(thresholds.celebrateMax).toBe(4);
+    expect(thresholds.goodMax).toBe(10);
+    expect(thresholds.watchMax).toBe(20);
+  });
+
+  it('widens jitter bounds for bots sampling slower than sim rate', () => {
+    const bot: PlayerStatsSnapshot = {
+      id: 2,
+      identity: 'bot2',
+      transport: 'webtransport',
+      one_way_ms: 17,
+      pending_inputs: 0,
+      hp: 100,
+      pos_m: [0, 0, 0],
+      vel_ms: [0, 0, 0],
+      on_ground: true,
+      in_vehicle: false,
+      dead: false,
+      input_jitter_ms: 128,
+      input_period_ms: 66.7,
+      avg_bundle_size: 1,
+      correction_m: 0,
+      physics_ms: 0,
+      has_debug_stats: false,
+    };
+    const thresholds = jitterThresholds(bot, 60);
+    // 15 Hz client has a ~50 ms sampling headroom at 60 Hz sim, so 128 ms
+    // stddev should stay below the watch ceiling (baseline * 3 = 150 ms).
+    expect(bot.input_jitter_ms).toBeLessThan(thresholds.watchMax);
+    expect(thresholds.watchMax).toBeGreaterThan(100);
   });
 
   it('does not claim WT overflow on websocket-only matches', () => {

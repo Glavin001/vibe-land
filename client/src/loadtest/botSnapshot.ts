@@ -46,7 +46,8 @@ function applySnapshotV2(state: BotSnapshotState, packet: Extract<ServerDatagram
     flags: packet.selfState.flags,
   };
 
-  state.remotePlayers.clear();
+  const prior = state.remotePlayers;
+  state.remotePlayers = new Map();
   for (const player of packet.remotePlayers) {
     const id = player.handle;
     state.remotePlayers.set(id, {
@@ -66,6 +67,25 @@ function applySnapshotV2(state: BotSnapshotState, packet: Extract<ServerDatagram
         pitch: i16ToAngle(player.pitchI16),
         hp: player.hp,
         flags: player.flags,
+      },
+    });
+  }
+  for (const cold of packet.coldRemotePlayers) {
+    const id = cold.handle;
+    const priorEntry = prior.get(id);
+    state.remotePlayers.set(id, {
+      id,
+      state: {
+        position: [
+          anchorPos[0] + q2_5mmToMeters(cold.dxQ2_5mm),
+          anchorPos[1] + q2_5mmToMeters(cold.dyQ2_5mm),
+          anchorPos[2] + q2_5mmToMeters(cold.dzQ2_5mm),
+        ],
+        velocity: priorEntry?.state.velocity ?? [0, 0, 0],
+        yaw: i16ToAngle(cold.yawI16),
+        pitch: priorEntry?.state.pitch ?? 0,
+        hp: priorEntry?.state.hp ?? 100,
+        flags: cold.flags,
       },
     });
   }
