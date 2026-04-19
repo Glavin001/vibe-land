@@ -50874,7 +50874,7 @@
       "kind": "battery",
       "position": [
         4,
-        2.5,
+        0,
         6
       ],
       "rotation": [
@@ -50892,7 +50892,7 @@
       "kind": "battery",
       "position": [
         -6,
-        2.5,
+        0,
         -2
       ],
       "rotation": [
@@ -50910,7 +50910,7 @@
       "kind": "battery",
       "position": [
         10,
-        2.5,
+        0,
         -8
       ],
       "rotation": [
@@ -50928,7 +50928,7 @@
       "kind": "battery",
       "position": [
         -10,
-        2.5,
+        0,
         8
       ],
       "rotation": [
