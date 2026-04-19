@@ -11,7 +11,8 @@ import {
   advanceVehicleCamera,
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
-import { buildInputFromState } from './inputBuilder';
+import { FixedInputBundler } from '../runtime/fixedInputBundler';
+import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstants';
 import { configureCameraLayersForLocalSlot } from './splitScreenLayers';
 import {
   BTN_CROUCH,
@@ -129,6 +130,15 @@ export function PracticeGuestPlayer({
   const nextShotIdRef = useRef((slotId + 1) * GUEST_SHOT_ID_SHARD + 1);
   const nextFireMsRef = useRef(0);
   const { camera: defaultCamera } = useThree();
+  // Guests must bundle inputs at the sim tick rate (60 Hz). Sending one
+  // InputCmd per render frame overfills the session's per-player input
+  // queue (drained at 60 Hz, capped at MAX_PENDING_INPUTS=120), producing
+  // up to ~2 s of movement lag on high-refresh displays. Look is unaffected
+  // because it's applied locally.
+  const bundler = useMemo(
+    () => new FixedInputBundler(FIXED_DT, CLIENT_MAX_CATCHUP_STEPS),
+    [],
+  );
   const camera = useMemo(() => {
     const cam = new THREE.PerspectiveCamera(
       (defaultCamera as THREE.PerspectiveCamera).fov ?? 75,
@@ -246,15 +256,17 @@ export function PracticeGuestPlayer({
         sendYaw = yawRef.current;
         sendPitch = pitchRef.current;
       }
-      seqRef.current = (seqRef.current + 1) & 0xffff;
-      const cmd = buildInputFromState(seqRef.current, 0, {
+      const cmds = bundler.produce(delta, {
         moveX,
         moveY,
         yaw: sendYaw,
         pitch: sendPitch,
         buttons,
       });
-      handle.sendInputs([cmd]);
+      if (cmds.length > 0) {
+        seqRef.current = cmds[cmds.length - 1].seq & 0xffff;
+        handle.sendInputs(cmds);
+      }
 
       if (action.interactPressed) {
         if (isDriving && drivenVehicle) {
