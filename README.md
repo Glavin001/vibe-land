@@ -13,11 +13,31 @@ See `NETCODE_NOTES.md` for netcode design and current caveats.
 ## Quick start
 
 ```bash
-make setup   # copy .env, build WASM, install client deps (once)
-make dev     # start server + client in parallel
+make setup   # copy .env, build WASM, install client + root deps (once)
+make dev     # start Rust server + Vite client + Node API in parallel
 ```
 
 Open `https://localhost:5555` and click to join.
+
+## Production (one command to build, one to start)
+
+```bash
+make build   # WASM + SPA bundle (client/dist) + Rust release binary
+make start   # Rust game server + Node API serving client/dist
+```
+
+`make build` produces three artifacts: the shared physics WASM, the SPA
+bundle in `client/dist/`, and `target/release/server`. `make start` boots
+the Rust server and the Node API server; the API server also serves the
+static SPA on the same port (`API_PORT`, default `3000`), so a single
+HTTP port carries the entire web surface. WebTransport still binds its
+own UDP port (`WT_BIND_ADDR`, default `:4002`) — that traffic goes
+directly to the Rust process because nginx cannot proxy QUIC/HTTP3.
+
+For a TLS-terminating nginx front, systemd units, and the full self-host
+runbook see [docs/SELF_HOSTING.md](./docs/SELF_HOSTING.md). Infra
+templates live in [infra/nginx/](./infra/nginx) and
+[infra/systemd/](./infra/systemd).
 
 ## Unified Web App
 
