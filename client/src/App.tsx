@@ -72,6 +72,7 @@ const DEFAULT_PRACTICE_BOT_NAV_TUNING: PracticeBotNavTuning = {
   walkableSlopeAngleDegrees: 45,
   cellHeight: 0.0275,
 };
+const COSMETIC_DEATH_PHYSICS_STORAGE_KEY = 'vibe-land/debug/cosmetic-death-physics-enabled';
 
 declare global {
   interface Window {
@@ -172,6 +173,12 @@ export function App({
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
+  const [cosmeticDeathPhysicsEnabled, setCosmeticDeathPhysicsEnabled] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    return window.localStorage.getItem(COSMETIC_DEATH_PHYSICS_STORAGE_KEY) !== '0';
+  });
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -229,6 +236,16 @@ export function App({
       debugOverlayVisible: debugVisible,
     });
   }, [practiceMode, multiplayerMatchId, connected, status, playerId, debugVisible]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.localStorage.setItem(
+      COSMETIC_DEATH_PHYSICS_STORAGE_KEY,
+      cosmeticDeathPhysicsEnabled ? '1' : '0',
+    );
+  }, [cosmeticDeathPhysicsEnabled]);
 
   const practiceBotRuntimeRef = useRef<PracticeBotRuntime | null>(null);
   const practiceBotWorldDocumentRef = useRef<WorldDocument | null>(null);
@@ -967,6 +984,8 @@ export function App({
         onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
         vehicleSmoothingEnabled={vehicleSmoothingEnabled}
         onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
+        onToggleCosmeticDeathPhysics={() => setCosmeticDeathPhysicsEnabled((enabled) => !enabled)}
         rapierDebugLabel={rapierDebugLabel}
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
@@ -1006,6 +1025,7 @@ export function App({
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
           sceneExtras={calibrationSceneExtras}
         />
       )}

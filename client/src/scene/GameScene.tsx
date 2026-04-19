@@ -29,6 +29,7 @@ type GameSceneProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
   sceneExtras?: ReactNode;
 };
 
@@ -54,6 +55,7 @@ export function GameScene({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -94,6 +96,7 @@ export function GameScene({
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
           sceneExtras={sceneExtras}
         />
       </Suspense>

@@ -322,6 +322,7 @@ type GameWorldProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1035,6 +1036,7 @@ export function GameWorld({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1073,7 +1075,6 @@ export function GameWorld({
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
-  const remoteDeadPrevRef = useRef<Map<number, boolean>>(new Map());
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const batteryGroupRef = useRef<THREE.Group>(null);
@@ -2490,19 +2491,17 @@ export function GameWorld({
       // Ragdoll is the dead visual cue — keep opacity at 1 while physics-driven.
       handle.setOpacity(1);
 
-      // Edge-detect isDead transitions to activate/deactivate ragdoll.
-      const wasDead = remoteDeadPrevRef.current.get(id) ?? false;
-      if (isDead && !wasDead) {
+      const shouldUseRagdoll = cosmeticDeathPhysicsEnabled && isDead;
+      if (shouldUseRagdoll) {
         const sv = new THREE.Vector3(
           sample?.velocity[0] ?? 0,
           sample?.velocity[1] ?? 0,
           sample?.velocity[2] ?? 0,
         );
         handle.setRagdoll(true, sv);
-      } else if (!isDead && wasDead) {
+      } else {
         handle.setRagdoll(false);
       }
-      remoteDeadPrevRef.current.set(id, isDead);
 
       const vx = sample?.velocity[0] ?? 0;
       const vz = sample?.velocity[2] ?? 0;
@@ -2522,7 +2521,6 @@ export function GameWorld({
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
         remoteHitFlashUntilRef.current.delete(id);
-        remoteDeadPrevRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
     }
