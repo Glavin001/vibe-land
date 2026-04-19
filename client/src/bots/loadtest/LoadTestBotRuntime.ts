@@ -28,6 +28,7 @@ import {
   createBotCrowdFromSharedProfile,
   type BotHandle,
 } from '../crowd/BotCrowd';
+import { PRACTICE_BOT_SPRINT_SPEED } from '../practice/PracticeBotRuntime';
 import type {
   BotIntent,
   BotSelfState,
@@ -171,7 +172,12 @@ export class LoadTestBotRuntime {
     }
     const crowdHandle = this.crowd.addBot(options.anchor);
     const agent = this.crowd.getAgent(crowdHandle.id);
-    if (agent) agent.maxSpeed = this.personality.maxSpeed;
+    // The server moves the real player at ~6–8.5 m/s. Pinning the crowd
+    // agent's maxSpeed to the server sprint cap keeps the navcat planner
+    // from interpreting post-sync position updates as overshoots, which
+    // would otherwise flip `desiredVelocity` backward and make the bot
+    // wobble between two points.
+    if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const brain = new BotBrain(this.crowd, crowdHandle, makeBehavior(this.personality), {
       anchor: options.anchor,
       jumpCooldownTicks: this.personality.jumpCooldownTicks,
