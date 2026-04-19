@@ -50,6 +50,8 @@ import {
 } from './bots';
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
+import { KillDeathHUD } from './ui/KillDeathHUD';
+import { LeaderboardOverlay } from './ui/LeaderboardOverlay';
 import { updateE2EBridgeAppState } from './e2eBridge';
 import { updateFogSettings, useFogSettings } from './graphics/fogSettings';
 
@@ -165,6 +167,7 @@ export function App({
       : '/practice'
   );
   const [connected, setConnected] = useState(effectiveAutoConnect);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [playerId, setPlayerId] = useState(0);
   const [status, setStatus] = useState(
     effectiveAutoConnect
@@ -769,6 +772,19 @@ export function App({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'Escape' && connected) {
+        const target = event.target as HTMLElement | null;
+        const isEditable =
+          !!target
+          && (target.tagName === 'INPUT'
+            || target.tagName === 'TEXTAREA'
+            || target.isContentEditable);
+        if (!isEditable) {
+          event.preventDefault();
+          setLeaderboardOpen((prev) => !prev);
+          return;
+        }
+      }
       const isMac = navigator.platform.includes('Mac');
       const modPressed = isMac ? event.metaKey : event.ctrlKey;
       const wantsCopyDebug =
@@ -787,6 +803,34 @@ export function App({
       }
     };
   }, [connected, deepCaptureEnabled, getDeepCaptureMarkdown, getStatsSnapshot, localRenderSmoothingEnabled, status, vehicleSmoothingEnabled]);
+
+  // Gamepad Menu/Start (button index 9) toggles the leaderboard overlay.
+  // Polls via requestAnimationFrame and rising-edge detection so holding the
+  // button doesn't flicker.
+  useEffect(() => {
+    if (!connected || typeof navigator === 'undefined' || !navigator.getGamepads) return;
+    let frame = 0;
+    let prevPressed = false;
+    const poll = () => {
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      let pressed = false;
+      for (const pad of pads) {
+        if (pad && pad.buttons[9]?.pressed) {
+          pressed = true;
+          break;
+        }
+      }
+      if (pressed && !prevPressed) {
+        setLeaderboardOpen((prev) => !prev);
+      }
+      prevPressed = pressed;
+      frame = window.requestAnimationFrame(poll);
+    };
+    frame = window.requestAnimationFrame(poll);
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [connected]);
 
   const crosshairColor =
     crosshairState === 'head'
@@ -834,6 +878,8 @@ export function App({
           </div>
         </div>
       )}
+      {connected && <KillDeathHUD />}
+      <LeaderboardOverlay open={leaderboardOpen && connected} onClose={() => setLeaderboardOpen(false)} />
       <div
         data-testid="status-banner"
         style={{

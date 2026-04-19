@@ -44,6 +44,11 @@ struct PlayerRuntime {
     is_bot: bool,
     respawn_cooldown_ticks: u32,
     respawn_at_ms: Option<u32>,
+    /// Human-readable display name. Local player is seeded from the client;
+    /// bots are `Bot <n>`.
+    display_name: String,
+    kills: u32,
+    deaths: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +123,8 @@ impl LocalSession {
                 snapshot_hz: SNAPSHOT_HZ_LOCAL,
                 server_time_us,
                 interpolation_delay_ms: 0,
+                kills: 0,
+                deaths: 0,
             }));
     }
 
@@ -142,6 +149,7 @@ impl LocalSession {
         }
         let mut runtime = PlayerRuntime::default();
         runtime.is_bot = true;
+        runtime.display_name = format!("Bot {}", bot_id);
         self.players.insert(bot_id, runtime);
         self.arena.spawn_player(bot_id);
         self.activate_spawn_protection(bot_id);
@@ -161,6 +169,67 @@ impl LocalSession {
             return false;
         }
         self.arena.set_player_max_speed_override(bot_id, max_speed)
+    }
+
+    pub fn set_local_display_name(&mut self, name: &str) {
+        let sanitized = sanitize_local_username(name);
+        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
+            runtime.display_name = sanitized;
+        }
+    }
+
+    pub fn local_player_kills(&self) -> u32 {
+        self.players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|runtime| runtime.kills)
+            .unwrap_or(0)
+    }
+
+    pub fn local_player_deaths(&self) -> u32 {
+        self.players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|runtime| runtime.deaths)
+            .unwrap_or(0)
+    }
+
+    pub fn leaderboard_json(&self) -> String {
+        let mut entries: Vec<_> = self
+            .players
+            .iter()
+            .map(|(id, runtime)| {
+                let name = if !runtime.display_name.is_empty() {
+                    runtime.display_name.clone()
+                } else if *id == LOCAL_PLAYER_ID {
+                    "You".to_string()
+                } else {
+                    format!("Player {}", id)
+                };
+                (*id, name, runtime.kills, runtime.deaths, runtime.is_bot)
+            })
+            .collect();
+        entries.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| a.3.cmp(&b.3))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let mut out = String::from("[");
+        for (i, (id, name, kills, deaths, is_bot)) in entries.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            let escaped = escape_json_str(name);
+            out.push_str(&format!(
+                "{{\"id\":{},\"name\":\"{}\",\"kills\":{},\"deaths\":{},\"isBot\":{},\"isLocal\":{}}}",
+                id,
+                escaped,
+                kills,
+                deaths,
+                is_bot,
+                *id == LOCAL_PLAYER_ID
+            ));
+        }
+        out.push(']');
+        out
     }
 
     pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
@@ -517,6 +586,7 @@ impl LocalSession {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
+            runtime.deaths = runtime.deaths.saturating_add(1);
         }
         self.clear_spawn_protection(LOCAL_PLAYER_ID);
     }
@@ -618,7 +688,7 @@ impl LocalSession {
                         HitZone::Head => HITSCAN_HEAD_DAMAGE,
                         HitZone::Body => HITSCAN_BODY_DAMAGE,
                     };
-                    self.apply_damage(victim_id, damage, server_time_ms);
+                    self.apply_damage(victim_id, damage, server_time_ms, Some(shooter_id));
                 }
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world >= dynamic_toi).unwrap_or(true) {
@@ -775,7 +845,7 @@ impl LocalSession {
             }
 
             if let Some((victim_id, _dist)) = best {
-                self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+                self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms, Some(attacker_id));
             }
 
             if let Some(runtime) = self.players.get_mut(&attacker_id) {
@@ -824,7 +894,13 @@ impl LocalSession {
         best
     }
 
-    fn apply_damage(&mut self, victim_id: u32, damage: u8, server_time_ms: u32) {
+    fn apply_damage(
+        &mut self,
+        victim_id: u32,
+        damage: u8,
+        server_time_ms: u32,
+        attacker_id: Option<u32>,
+    ) {
         let is_bot = self
             .players
             .get(&victim_id)
@@ -844,9 +920,23 @@ impl LocalSession {
         if !matches!(damage_outcome, PlayerDamageOutcome::Killed) {
             return;
         }
+        // Credit the kill to the attacker (ignoring self-kills).
+        if let Some(attacker_id) = attacker_id {
+            if attacker_id != victim_id {
+                if let Some(attacker) = self.players.get_mut(&attacker_id) {
+                    attacker.kills = attacker.kills.saturating_add(1);
+                }
+            }
+        }
+        // Count the death for non-local victims here; the local player's
+        // deaths are counted inside `kill_local_player` so every death path
+        // (HP, energy, out-of-bounds, vehicle) is handled in one place.
         if victim_id == LOCAL_PLAYER_ID {
             self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
             return;
+        }
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            runtime.deaths = runtime.deaths.saturating_add(1);
         }
         if is_bot {
             if let Some(runtime) = self.players.get_mut(&victim_id) {
@@ -1334,14 +1424,47 @@ fn decode_vehicle_exit(buf: &mut &[u8]) -> Result<u32, String> {
     Ok(buf.get_u32_le())
 }
 
+pub const LOCAL_USERNAME_MAX_LEN: usize = 20;
+
+fn sanitize_local_username(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().min(LOCAL_USERNAME_MAX_LEN));
+    for ch in input.chars() {
+        if out.len() >= LOCAL_USERNAME_MAX_LEN {
+            break;
+        }
+        if (0x20u32..=0x7E).contains(&(ch as u32)) {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
+fn escape_json_str(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn encode_welcome_packet(pkt: &WelcomePacket) -> Vec<u8> {
-    let mut out = BytesMut::with_capacity(19);
+    let mut out = BytesMut::with_capacity(23);
     out.put_u8(PKT_WELCOME);
     out.put_u32_le(pkt.player_id);
     out.put_u16_le(pkt.sim_hz);
     out.put_u16_le(pkt.snapshot_hz);
     out.put_u64_le(pkt.server_time_us);
     out.put_u16_le(pkt.interpolation_delay_ms);
+    out.put_u16_le(pkt.kills);
+    out.put_u16_le(pkt.deaths);
     out.to_vec()
 }
 

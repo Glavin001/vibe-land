@@ -447,14 +447,20 @@ describe('snapshot V2 decode', () => {
 });
 
 function buildPlayerRosterBinary(): Uint8Array {
-  const size = 1 + 1 + 5;
+  const username = 'alice';
+  const nameBytes = new TextEncoder().encode(username);
+  const size = 1 + 1 + 1 + 4 + 1 + nameBytes.length + 2 + 2;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
   view.setUint8(o++, PKT_PLAYER_ROSTER);
   view.setUint8(o++, 1);
   view.setUint8(o++, 7);
-  view.setUint32(o, 44, true);
+  view.setUint32(o, 44, true); o += 4;
+  view.setUint8(o++, nameBytes.length);
+  buf.set(nameBytes, o); o += nameBytes.length;
+  view.setUint16(o, 3, true); o += 2;
+  view.setUint16(o, 1, true); o += 2;
   return buf;
 }
 
@@ -478,7 +484,9 @@ describe('V2 metadata decode', () => {
   it('decodes player roster packets', () => {
     const packet = decodeServerReliablePacket(buildPlayerRosterBinary());
     expect(packet.type).toBe('playerRoster');
-    expect(packet.entries).toEqual([{ handle: 7, playerId: 44 }]);
+    expect(packet.entries).toEqual([
+      { handle: 7, playerId: 44, username: 'alice', kills: 3, deaths: 1 },
+    ]);
   });
 
   it('decodes dynamic body metadata with canonical body ids', () => {
@@ -559,8 +567,10 @@ function buildWelcomeBinary(opts: {
   snapshotHz?: number;
   serverTimeUs?: number;
   interpolationDelayMs?: number;
+  kills?: number;
+  deaths?: number;
 }): Uint8Array {
-  const size = 1 + 4 + 2 + 2 + 8 + 2;
+  const size = 1 + 4 + 2 + 2 + 8 + 2 + 2 + 2;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -573,7 +583,9 @@ function buildWelcomeBinary(opts: {
   view.setUint32(o, timeUs & 0xffffffff, true);
   view.setUint32(o + 4, Math.floor(timeUs / 0x100000000), true);
   o += 8;
-  view.setUint16(o, opts.interpolationDelayMs ?? 66, true);
+  view.setUint16(o, opts.interpolationDelayMs ?? 66, true); o += 2;
+  view.setUint16(o, opts.kills ?? 0, true); o += 2;
+  view.setUint16(o, opts.deaths ?? 0, true);
 
   return buf;
 }

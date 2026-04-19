@@ -18,6 +18,7 @@ import {
   PKT_CHUNK_FULL,
   PKT_CHUNK_DIFF,
   PKT_PLAYER_ROSTER,
+  PKT_PLAYER_STATS_UPDATE,
   PKT_DYNAMIC_BODY_META,
   PKT_LOCAL_PLAYER_ENERGY,
   PKT_BATTERY_SYNC,
@@ -29,8 +30,11 @@ import {
   BTN_RIGHT,
 } from './sharedConstants';
 
+export const MAX_USERNAME_LEN = 20;
+
 export type ClientHello = {
   matchId: string;
+  username: string;
 };
 
 export type InputFrame = {
@@ -144,6 +148,8 @@ export type WelcomePacket = {
   snapshotHz: number;
   serverTimeUs: number;
   interpolationDelayMs: number;
+  kills: number;
+  deaths: number;
 };
 
 export type NetVehicleState = {
@@ -193,11 +199,25 @@ export type SnapshotPacket = {
 export type PlayerRosterEntry = {
   handle: number;
   playerId: number;
+  username: string;
+  kills: number;
+  deaths: number;
 };
 
 export type PlayerRosterPacket = {
   type: 'playerRoster';
   entries: PlayerRosterEntry[];
+};
+
+export type PlayerStatsEntry = {
+  playerId: number;
+  kills: number;
+  deaths: number;
+};
+
+export type PlayerStatsUpdatePacket = {
+  type: 'playerStatsUpdate';
+  entries: PlayerStatsEntry[];
 };
 
 export type DynamicBodyMetaEntry = {
@@ -352,6 +372,7 @@ export type ServerReliablePacket =
   | ChunkDiffPacket
   | SnapshotPacket
   | PlayerRosterPacket
+  | PlayerStatsUpdatePacket
   | DynamicBodyMetaPacket
   | ServerPingPacket
   | PongPacket;
@@ -371,6 +392,7 @@ export type ServerPacket =
   | ChunkFullPacket
   | ChunkDiffPacket
   | PlayerRosterPacket
+  | PlayerStatsUpdatePacket
   | DynamicBodyMetaPacket
   | ServerPingPacket
   | PongPacket;
@@ -434,15 +456,34 @@ export type ProjectileStateMeters = {
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
+export function sanitizeUsername(name: string): string {
+  const trimmed = (name ?? '').trim();
+  let out = '';
+  for (const ch of trimmed) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0x20 && code <= 0x7e) {
+      out += ch;
+      if (out.length >= MAX_USERNAME_LEN) break;
+    }
+  }
+  return out;
+}
+
 export function encodeClientHello(packet: ClientHello): Uint8Array {
   const encodedMatchId = TEXT_ENCODER.encode(packet.matchId);
-  const out = new Uint8Array(1 + 2 + encodedMatchId.length);
+  const sanitized = sanitizeUsername(packet.username ?? '');
+  const encodedUsername = TEXT_ENCODER.encode(sanitized);
+  const out = new Uint8Array(1 + 2 + encodedMatchId.length + 2 + encodedUsername.length);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_CLIENT_HELLO);
   view.setUint16(o, encodedMatchId.length, true);
   o += 2;
   out.set(encodedMatchId, o);
+  o += encodedMatchId.length;
+  view.setUint16(o, encodedUsername.length, true);
+  o += 2;
+  out.set(encodedUsername, o);
   return out;
 }
 
@@ -519,7 +560,9 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       const simHz = view.getUint16(o, true); o += 2;
       const snapshotHz = view.getUint16(o, true); o += 2;
       const serverTimeUs = getUint64(view, o); o += 8;
-      const interpolationDelayMs = view.getUint16(o, true);
+      const interpolationDelayMs = view.getUint16(o, true); o += 2;
+      const kills = view.getUint16(o, true); o += 2;
+      const deaths = view.getUint16(o, true);
       return {
         type: 'welcome',
         playerId,
@@ -527,6 +570,8 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         snapshotHz,
         serverTimeUs,
         interpolationDelayMs,
+        kills,
+        deaths,
       };
     }
     case PKT_SHOT_RESULT: {
@@ -587,6 +632,8 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return decodeChunkDiffPacket(data);
     case PKT_PLAYER_ROSTER:
       return decodePlayerRosterPacket(view, o);
+    case PKT_PLAYER_STATS_UPDATE:
+      return decodePlayerStatsUpdatePacket(view, o);
     case PKT_DYNAMIC_BODY_META:
       return decodeDynamicBodyMetaPacket(view, o);
     case PKT_LOCAL_PLAYER_ENERGY:
@@ -839,14 +886,30 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
 function decodePlayerRosterPacket(view: DataView, o: number): PlayerRosterPacket {
   const count = view.getUint8(o++);
   const entries: PlayerRosterEntry[] = [];
+  const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   for (let i = 0; i < count; i += 1) {
-    entries.push({
-      handle: view.getUint8(o),
-      playerId: view.getUint32(o + 1, true),
-    });
-    o += 5;
+    const handle = view.getUint8(o); o += 1;
+    const playerId = view.getUint32(o, true); o += 4;
+    const nameLen = view.getUint8(o); o += 1;
+    const username = TEXT_DECODER.decode(bytes.subarray(o, o + nameLen));
+    o += nameLen;
+    const kills = view.getUint16(o, true); o += 2;
+    const deaths = view.getUint16(o, true); o += 2;
+    entries.push({ handle, playerId, username, kills, deaths });
   }
   return { type: 'playerRoster', entries };
+}
+
+function decodePlayerStatsUpdatePacket(view: DataView, o: number): PlayerStatsUpdatePacket {
+  const count = view.getUint8(o++);
+  const entries: PlayerStatsEntry[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const playerId = view.getUint32(o, true); o += 4;
+    const kills = view.getUint16(o, true); o += 2;
+    const deaths = view.getUint16(o, true); o += 2;
+    entries.push({ playerId, kills, deaths });
+  }
+  return { type: 'playerStatsUpdate', entries };
 }
 
 function decodeDynamicBodyMetaPacket(view: DataView, o: number): DynamicBodyMetaPacket {
@@ -1237,6 +1300,8 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return decodeChunkDiffPacket(data);
     case PKT_PLAYER_ROSTER:
       return decodePlayerRosterPacket(view, 1);
+    case PKT_PLAYER_STATS_UPDATE:
+      return decodePlayerStatsUpdatePacket(view, 1);
     case PKT_DYNAMIC_BODY_META:
       return decodeDynamicBodyMetaPacket(view, 1);
     case PKT_LOCAL_PLAYER_ENERGY:

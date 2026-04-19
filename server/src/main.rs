@@ -51,8 +51,9 @@ use crate::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
-        make_net_shot_fired, mm_to_meters, BatterySyncPacket, ClientPacket, FireCmd, InputCmd,
-        LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState, ServerPacket, ShotResultPacket,
+        make_net_shot_fired, mm_to_meters, sanitize_username, BatterySyncPacket, ClientPacket,
+        FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
+        PlayerStatsEntry, PlayerStatsUpdatePacket, ServerPacket, ShotResultPacket,
         SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE,
         PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
@@ -577,6 +578,8 @@ struct SpacetimeVerifier {
 struct WsQuery {
     identity: String,
     token: String,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -599,6 +602,7 @@ struct PlayerConnection {
     identity: String,
     transport: ClientTransport,
     tx: mpsc::Sender<Vec<u8>>,
+    username: String,
 }
 
 enum MatchEvent {
@@ -614,6 +618,9 @@ enum MatchEvent {
 
 struct PlayerRuntime {
     identity: String,
+    username: String,
+    kills: u16,
+    deaths: u16,
     transport: ClientTransport,
     tx: mpsc::Sender<Vec<u8>>,
     pending_inputs: VecDeque<InputCmd>,
@@ -918,6 +925,7 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         identity: format!("wt-player-{player_id}"),
         transport: ClientTransport::WebTransport,
         tx: out_tx,
+        username: hello.username.clone(),
     }))?;
 
     // Writer: prefer datagrams for snapshots/pings; fall back to reliable stream
@@ -1070,6 +1078,7 @@ async fn handle_socket(
         identity: query.identity.clone(),
         transport: ClientTransport::WebSocket,
         tx: out_tx.clone(),
+        username: sanitize_username(query.username.as_deref().unwrap_or("")),
     }))?;
 
     let telemetry = handle.telemetry.clone();
@@ -1361,9 +1370,18 @@ impl MatchState {
         let mut entries: Vec<_> = self
             .player_handles
             .iter()
-            .map(|(player_id, handle)| protocol::PlayerRosterEntry {
-                handle: *handle,
-                player_id: *player_id,
+            .map(|(player_id, handle)| {
+                let (username, kills, deaths) = match self.players.get(player_id) {
+                    Some(runtime) => (runtime.username.clone(), runtime.kills, runtime.deaths),
+                    None => (String::new(), 0, 0),
+                };
+                protocol::PlayerRosterEntry {
+                    handle: *handle,
+                    player_id: *player_id,
+                    username,
+                    kills,
+                    deaths,
+                }
             })
             .collect();
         entries.sort_by_key(|entry| entry.handle);
@@ -1419,6 +1437,9 @@ impl MatchState {
                     conn.player_id,
                     PlayerRuntime {
                         identity: conn.identity,
+                        username: conn.username.clone(),
+                        kills: 0,
+                        deaths: 0,
                         transport: conn.transport,
                         tx: conn.tx.clone(),
                         pending_inputs: VecDeque::new(),
@@ -1466,6 +1487,8 @@ impl MatchState {
                     snapshot_hz: SNAPSHOT_HZ,
                     server_time_us,
                     interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+                    kills: 0,
+                    deaths: 0,
                 });
                 let _ = try_queue_packet(&conn.tx, encode_server_packet(&welcome), &self.io);
                 self.send_initial_metadata(&conn.tx);
@@ -1763,7 +1786,12 @@ impl MatchState {
             {
                 player_centers.push(pos);
                 if hp > 0 && pos[1] < OUT_OF_BOUNDS_Y_M {
-                    self.kill_player_with_cause(player_id, server_time_ms, DeathCause::OutOfBounds);
+                    self.kill_player_with_cause(
+                        player_id,
+                        server_time_ms,
+                        DeathCause::OutOfBounds,
+                        None,
+                    );
                     self.void_kills += 1;
                 }
                 let alive = hp > 0 && (flags & 0x4) == 0;
@@ -1855,7 +1883,12 @@ impl MatchState {
 
         let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
         for player_id in self.arena.apply_vehicle_player_collisions() {
-            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
+            self.kill_player_with_cause(
+                player_id,
+                server_time_ms,
+                DeathCause::VehicleCollision,
+                None,
+            );
         }
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
@@ -1911,11 +1944,21 @@ impl MatchState {
                 was_on_ground,
                 dt,
             ) {
-                self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
+                self.kill_player_with_cause(
+                    player_id,
+                    server_time_ms,
+                    DeathCause::EnergyDepletion,
+                    None,
+                );
             }
         }
         for player_id in self.arena.apply_vehicle_energy_drain(dt) {
-            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
+            self.kill_player_with_cause(
+                player_id,
+                server_time_ms,
+                DeathCause::EnergyDepletion,
+                None,
+            );
         }
 
         let hitscan_started = Instant::now();
@@ -2366,11 +2409,17 @@ impl MatchState {
         }
     }
 
-    fn kill_player(&mut self, player_id: u32, server_time_ms: u32) {
-        self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage);
+    fn kill_player(&mut self, player_id: u32, server_time_ms: u32, attacker_id: Option<u32>) {
+        self.kill_player_with_cause(player_id, server_time_ms, DeathCause::HpDamage, attacker_id);
     }
 
-    fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
+    fn kill_player_with_cause(
+        &mut self,
+        player_id: u32,
+        server_time_ms: u32,
+        cause: DeathCause,
+        attacker_id: Option<u32>,
+    ) {
         let battery_drop = if matches!(cause, DeathCause::HpDamage | DeathCause::VehicleCollision) {
             self.arena.players.get(&player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
@@ -2400,13 +2449,49 @@ impl MatchState {
         if let Some(state) = self.arena.players.get_mut(&player_id) {
             state.energy = 0.0;
         }
+        let mut stats_changed: Vec<u32> = Vec::new();
         if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
             runtime.last_sent_energy_centi = None;
+            runtime.deaths = runtime.deaths.saturating_add(1);
+            stats_changed.push(player_id);
+        }
+        if let Some(attacker_id) = attacker_id {
+            if attacker_id != player_id {
+                if let Some(attacker) = self.players.get_mut(&attacker_id) {
+                    attacker.kills = attacker.kills.saturating_add(1);
+                    stats_changed.push(attacker_id);
+                }
+            }
         }
         self.clear_spawn_protection(player_id);
+        if !stats_changed.is_empty() {
+            self.broadcast_player_stats_update(&stats_changed);
+        }
+    }
+
+    fn broadcast_player_stats_update(&self, player_ids: &[u32]) {
+        let entries: Vec<PlayerStatsEntry> = player_ids
+            .iter()
+            .filter_map(|pid| {
+                self.players.get(pid).map(|runtime| PlayerStatsEntry {
+                    player_id: *pid,
+                    kills: runtime.kills,
+                    deaths: runtime.deaths,
+                })
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        let packet = encode_server_packet(&ServerPacket::PlayerStatsUpdate(
+            PlayerStatsUpdatePacket { entries },
+        ));
+        for runtime in self.players.values() {
+            let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+        }
     }
 
     fn maybe_send_local_player_energy_update(&mut self, player_id: u32) {
@@ -2593,6 +2678,7 @@ impl MatchState {
                     queued.player_id,
                     server_time_ms,
                     DeathCause::EnergyDepletion,
+                    None,
                 );
                 continue;
             }
@@ -2694,7 +2780,7 @@ impl MatchState {
                     self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
                 }
                 if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
-                    self.kill_player(hit.victim_id, server_time_ms);
+                    self.kill_player(hit.victim_id, server_time_ms, Some(queued.player_id));
                 }
                 self.build_shot_result(
                     queued.cmd.shot_id,
@@ -2852,6 +2938,7 @@ impl MatchState {
                     queued.player_id,
                     server_time_ms,
                     DeathCause::EnergyDepletion,
+                    None,
                 );
                 continue;
             }
@@ -2926,7 +3013,7 @@ impl MatchState {
                         self.stagger_melee_after_damage(victim_id, server_time_ms);
                     }
                     if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
-                        self.kill_player(victim_id, server_time_ms);
+                        self.kill_player(victim_id, server_time_ms, Some(queued.player_id));
                     }
                 }
             }
@@ -3750,6 +3837,9 @@ mod tests {
         let (tx, _rx) = mpsc::channel(PLAYER_OUTBOUND_QUEUE_CAPACITY);
         PlayerRuntime {
             identity: "test-player".to_string(),
+            username: String::new(),
+            kills: 0,
+            deaths: 0,
             transport: super::ClientTransport::WebSocket,
             tx,
             pending_inputs: VecDeque::new(),

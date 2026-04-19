@@ -1895,6 +1895,26 @@ impl WasmLocalSession {
         self.inner.drain_packet_blob().into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = setLocalDisplayName)]
+    pub fn set_local_display_name(&mut self, name: &str) {
+        self.inner.set_local_display_name(name);
+    }
+
+    #[wasm_bindgen(js_name = localPlayerKills)]
+    pub fn local_player_kills(&self) -> u32 {
+        self.inner.local_player_kills()
+    }
+
+    #[wasm_bindgen(js_name = localPlayerDeaths)]
+    pub fn local_player_deaths(&self) -> u32 {
+        self.inner.local_player_deaths()
+    }
+
+    #[wasm_bindgen(js_name = leaderboardJson)]
+    pub fn leaderboard_json(&self) -> String {
+        self.inner.leaderboard_json()
+    }
+
     // ── Client-local ragdoll bodies ──────────────────────────────────────────
 
     #[wasm_bindgen(js_name = spawnRagdollBody)]

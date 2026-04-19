@@ -111,6 +111,14 @@ export class LocalPracticeClient implements PracticeBotHost {
 
   ping(): void {}
 
+  setLocalDisplayName(name: string): void {
+    this.session?.setLocalDisplayName(name);
+  }
+
+  getLeaderboardJson(): string | null {
+    return this.session?.leaderboardJson() ?? null;
+  }
+
   disconnect(): void {
     this.closedByClient = true;
     if (this.frameHandle != null) {

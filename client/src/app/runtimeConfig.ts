@@ -10,7 +10,12 @@ export type MultiplayerBackend = {
   httpOrigin: string;
   sessionConfigEndpoint: string;
   statsWebSocketUrl: string;
-  createMatchWebSocketUrl: (matchId: string, identity: string, token: string) => string;
+  createMatchWebSocketUrl: (
+    matchId: string,
+    identity: string,
+    token: string,
+    options?: { username?: string },
+  ) => string;
 };
 
 function normalizeOrigin(rawValue: string | undefined, fallbackOrigin: string): string {
@@ -37,10 +42,19 @@ export function resolveMultiplayerBackend(
     httpOrigin,
     sessionConfigEndpoint: withPath(httpOrigin, '/session-config'),
     statsWebSocketUrl: withPath(wsOrigin, '/ws/stats'),
-    createMatchWebSocketUrl: (matchId: string, identity: string, token: string) => {
+    createMatchWebSocketUrl: (
+      matchId: string,
+      identity: string,
+      token: string,
+      options?: { username?: string },
+    ) => {
       const url = new URL(`/ws/${encodeURIComponent(matchId)}`, `${wsOrigin}/`);
       url.searchParams.set('identity', identity);
       url.searchParams.set('token', token);
+      const username = options?.username?.trim();
+      if (username) {
+        url.searchParams.set('username', username);
+      }
       return url.toString();
     },
   };

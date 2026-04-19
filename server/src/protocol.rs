@@ -11,6 +11,7 @@ pub use vibe_land_shared::unit_conv::*;
 #[derive(Clone, Debug)]
 pub struct ClientHello {
     pub match_id: String,
+    pub username: String,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +39,7 @@ pub enum ServerPacket {
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
     DynamicBodyMeta(DynamicBodyMetaPacket),
+    PlayerStatsUpdate(PlayerStatsUpdatePacket),
     Ping(u32),
     Pong(u32),
 }
@@ -65,6 +67,7 @@ pub enum ServerReliablePacket {
     ChunkDiff(ChunkDiffPacket),
     PlayerRoster(PlayerRosterPacket),
     DynamicBodyMeta(DynamicBodyMetaPacket),
+    PlayerStatsUpdate(PlayerStatsUpdatePacket),
 }
 
 #[derive(Clone, Debug)]
@@ -166,10 +169,13 @@ pub struct SnapshotV2Packet {
     pub vehicle_states: Vec<VehicleStateV2>,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PlayerRosterEntry {
     pub handle: u8,
     pub player_id: u32,
+    pub username: String,
+    pub kills: u16,
+    pub deaths: u16,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -215,7 +221,37 @@ pub fn decode_client_hello(bytes: &[u8]) -> Result<ClientHello> {
     let match_len = buf.get_u16_le() as usize;
     ensure!(buf.remaining() >= match_len, "truncated match id");
     let match_id = std::str::from_utf8(&buf[..match_len])?.to_string();
-    Ok(ClientHello { match_id })
+    buf.advance(match_len);
+
+    // Username is optional for backwards compatibility with older clients.
+    let username = if buf.remaining() >= 2 {
+        let name_len = buf.get_u16_le() as usize;
+        ensure!(
+            name_len <= MAX_USERNAME_LEN,
+            "username too long ({name_len} > {MAX_USERNAME_LEN})"
+        );
+        ensure!(buf.remaining() >= name_len, "truncated username");
+        let raw = std::str::from_utf8(&buf[..name_len])?;
+        sanitize_username(raw)
+    } else {
+        String::new()
+    };
+
+    Ok(ClientHello { match_id, username })
+}
+
+pub fn sanitize_username(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().min(MAX_USERNAME_LEN));
+    for ch in input.chars() {
+        if out.len() >= MAX_USERNAME_LEN {
+            break;
+        }
+        // Keep printable ASCII (0x20..=0x7E) only.
+        if (0x20u32..=0x7E).contains(&(ch as u32)) {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
 }
 
 pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
@@ -340,6 +376,8 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
             out.put_u16_le(pkt.interpolation_delay_ms);
+            out.put_u16_le(pkt.kills);
+            out.put_u16_le(pkt.deaths);
         }
         ServerReliablePacket::ShotResult(pkt) => {
             out.put_u8(PKT_SHOT_RESULT);
@@ -425,6 +463,12 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             for entry in &pkt.entries {
                 out.put_u8(entry.handle);
                 out.put_u32_le(entry.player_id);
+                let name_bytes = entry.username.as_bytes();
+                let name_len = name_bytes.len().min(MAX_USERNAME_LEN);
+                out.put_u8(name_len as u8);
+                out.put_slice(&name_bytes[..name_len]);
+                out.put_u16_le(entry.kills);
+                out.put_u16_le(entry.deaths);
             }
         }
         ServerReliablePacket::DynamicBodyMeta(pkt) => {
@@ -437,6 +481,16 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
                 out.put_u16_le(entry.hx_cm);
                 out.put_u16_le(entry.hy_cm);
                 out.put_u16_le(entry.hz_cm);
+            }
+        }
+        ServerReliablePacket::PlayerStatsUpdate(pkt) => {
+            out.put_u8(PKT_PLAYER_STATS_UPDATE);
+            let count = pkt.entries.len().min(u8::MAX as usize);
+            out.put_u8(count as u8);
+            for entry in pkt.entries.iter().take(count) {
+                out.put_u32_le(entry.player_id);
+                out.put_u16_le(entry.kills);
+                out.put_u16_le(entry.deaths);
             }
         }
     }
@@ -734,6 +788,8 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
             out.put_u16_le(pkt.interpolation_delay_ms);
+            out.put_u16_le(pkt.kills);
+            out.put_u16_le(pkt.deaths);
         }
         ServerPacket::Snapshot(pkt) => {
             out.put_u8(PKT_SNAPSHOT);
@@ -850,6 +906,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         ServerPacket::DynamicBodyMeta(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::DynamicBodyMeta(pkt.clone()))
         }
+        ServerPacket::PlayerStatsUpdate(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::PlayerStatsUpdate(pkt.clone()))
+        }
         ServerPacket::Ping(v) => {
             out.put_u8(PKT_PING);
             out.put_u32_le(*v);
@@ -916,12 +975,106 @@ mod tests {
             snapshot_hz: 30,
             server_time_us: 5_000_000,
             interpolation_delay_ms: 100,
+            kills: 7,
+            deaths: 3,
         });
         let encoded = encode_server_packet(&packet);
         assert_eq!(encoded[0], PKT_WELCOME);
         let view = &encoded[1..];
         assert_eq!(u32::from_le_bytes([view[0], view[1], view[2], view[3]]), 42);
         assert_eq!(u16::from_le_bytes([view[4], view[5]]), 60);
+        // Offsets: 4 (player_id) + 2 (sim_hz) + 2 (snapshot_hz) + 8 (time) + 2 (interp) = 18
+        assert_eq!(u16::from_le_bytes([view[18], view[19]]), 7);
+        assert_eq!(u16::from_le_bytes([view[20], view[21]]), 3);
+    }
+
+    #[test]
+    fn client_hello_accepts_username() {
+        let match_id = b"match-1";
+        let name = b"Alpha";
+        let mut bytes = vec![PKT_CLIENT_HELLO];
+        bytes.extend_from_slice(&(match_id.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(match_id);
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name);
+        let hello = decode_client_hello(&bytes).expect("hello decodes");
+        assert_eq!(hello.match_id, "match-1");
+        assert_eq!(hello.username, "Alpha");
+    }
+
+    #[test]
+    fn client_hello_without_username_is_ok() {
+        let match_id = b"match-1";
+        let mut bytes = vec![PKT_CLIENT_HELLO];
+        bytes.extend_from_slice(&(match_id.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(match_id);
+        let hello = decode_client_hello(&bytes).expect("legacy hello decodes");
+        assert_eq!(hello.username, "");
+    }
+
+    #[test]
+    fn client_hello_strips_non_printable() {
+        let match_id = b"m";
+        let name = b"Hi\x01there";
+        let mut bytes = vec![PKT_CLIENT_HELLO];
+        bytes.extend_from_slice(&(match_id.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(match_id);
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name);
+        let hello = decode_client_hello(&bytes).expect("hello decodes");
+        assert_eq!(hello.username, "Hithere");
+    }
+
+    #[test]
+    fn player_stats_update_round_trip() {
+        let packet = ServerReliablePacket::PlayerStatsUpdate(PlayerStatsUpdatePacket {
+            entries: vec![
+                PlayerStatsEntry {
+                    player_id: 42,
+                    kills: 7,
+                    deaths: 2,
+                },
+                PlayerStatsEntry {
+                    player_id: 9,
+                    kills: 0,
+                    deaths: 5,
+                },
+            ],
+        });
+        let encoded = encode_server_reliable(&packet);
+        assert_eq!(encoded[0], PKT_PLAYER_STATS_UPDATE);
+        assert_eq!(encoded[1], 2);
+        assert_eq!(
+            u32::from_le_bytes([encoded[2], encoded[3], encoded[4], encoded[5]]),
+            42
+        );
+        assert_eq!(u16::from_le_bytes([encoded[6], encoded[7]]), 7);
+        assert_eq!(u16::from_le_bytes([encoded[8], encoded[9]]), 2);
+    }
+
+    #[test]
+    fn player_roster_includes_username_and_stats() {
+        let packet = ServerReliablePacket::PlayerRoster(PlayerRosterPacket {
+            entries: vec![PlayerRosterEntry {
+                handle: 3,
+                player_id: 1001,
+                username: "Alpha".to_string(),
+                kills: 4,
+                deaths: 1,
+            }],
+        });
+        let encoded = encode_server_reliable(&packet);
+        assert_eq!(encoded[0], PKT_PLAYER_ROSTER);
+        assert_eq!(encoded[1], 1);
+        assert_eq!(encoded[2], 3);
+        assert_eq!(
+            u32::from_le_bytes([encoded[3], encoded[4], encoded[5], encoded[6]]),
+            1001
+        );
+        assert_eq!(encoded[7], 5);
+        assert_eq!(&encoded[8..13], b"Alpha");
+        assert_eq!(u16::from_le_bytes([encoded[13], encoded[14]]), 4);
+        assert_eq!(u16::from_le_bytes([encoded[15], encoded[16]]), 1);
     }
 
     #[test]

@@ -1,4 +1,12 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { getUsername } from '../app/username';
+import {
+  applyPracticeSnapshot,
+  applyRoster as applyScoreboardRoster,
+  applyStatsDelta as applyScoreboardStatsDelta,
+  resetScoreboard,
+  upsertLocalPlayer as upsertLocalScoreboardPlayer,
+} from '../ui/scoreboardStore';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
@@ -626,6 +634,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
         client.currentLocalPlayerState ? netPlayerStateToMeters(client.currentLocalPlayerState).position : [0, 2, 0],
       );
       this.syncState();
+      client.setLocalDisplayName(getUsername());
+      resetScoreboard();
+      this.startScoreboardPolling();
       this.callbacks.onWelcome(client.playerId);
       client.emitCurrentState();
     } catch (error) {
@@ -635,7 +646,45 @@ export class LocalGameRuntime extends BaseGameRuntime {
     }
   }
 
+  private scoreboardTimer: number | null = null;
+
+  private startScoreboardPolling(): void {
+    if (this.scoreboardTimer != null) return;
+    const tick = () => {
+      const json = this.client?.getLeaderboardJson();
+      if (json) {
+        try {
+          const raw = JSON.parse(json) as Array<{
+            id: number;
+            username: string;
+            kills: number;
+            deaths: number;
+            isBot: boolean;
+            isLocal: boolean;
+          }>;
+          applyPracticeSnapshot({
+            localPlayerId: this.client?.playerId ?? 0,
+            entries: raw,
+          });
+        } catch (err) {
+          console.warn('Failed to parse practice leaderboard JSON', err);
+        }
+      }
+    };
+    tick();
+    this.scoreboardTimer = window.setInterval(tick, 500);
+  }
+
+  private stopScoreboardPolling(): void {
+    if (this.scoreboardTimer != null) {
+      window.clearInterval(this.scoreboardTimer);
+      this.scoreboardTimer = null;
+    }
+  }
+
   disconnect(): void {
+    this.stopScoreboardPolling();
+    resetScoreboard();
     this.client?.disconnect();
     this.client = null;
     this.cosmeticWorld?.dispose();
@@ -1056,6 +1105,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     sim.rebuildBroadPhase();
     this.sim = sim;
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
+    resetScoreboard();
 
     try {
       this.prediction = new PredictionManager(sim);
@@ -1068,6 +1118,24 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         onWelcome: (playerId) => {
           this.syncState();
           this.callbacks.onWelcome(playerId);
+        },
+        onWelcomePacket: (packet) => {
+          upsertLocalScoreboardPlayer(packet.playerId, getUsername(), packet.kills, packet.deaths);
+        },
+        onRoster: (packet) => {
+          applyScoreboardRoster(packet.entries.map((entry) => ({
+            playerId: entry.playerId,
+            username: entry.username,
+            kills: entry.kills,
+            deaths: entry.deaths,
+          })));
+        },
+        onStatsUpdate: (packet) => {
+          applyScoreboardStatsDelta(packet.entries.map((entry) => ({
+            playerId: entry.playerId,
+            kills: entry.kills,
+            deaths: entry.deaths,
+          })));
         },
         onDisconnect: (reason) => {
           this.callbacks.onDisconnect(reason);
@@ -1113,7 +1181,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
-      const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
+      const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token, {
+        username: getUsername(),
+      });
       await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
     } catch (error) {
       this.client?.disconnect();
@@ -1132,6 +1202,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   disconnect(): void {
+    resetScoreboard();
     this.client?.disconnect();
     this.client = null;
     this.prediction?.dispose();

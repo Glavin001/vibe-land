@@ -1,3 +1,54 @@
+import { useCallback, useState } from 'react';
+import { MAX_USERNAME_LEN, setUsername, useUsername } from '../app/username';
+
+function UsernameField() {
+  const stored = useUsername();
+  const [draft, setDraft] = useState(stored);
+  const [saved, setSaved] = useState(false);
+
+  if (draft === '' && stored !== '') {
+    setDraft(stored);
+  }
+
+  const commit = useCallback(() => {
+    const next = setUsername(draft);
+    setDraft(next);
+    setSaved(true);
+    window.setTimeout(() => setSaved(false), 1500);
+  }, [draft]);
+
+  return (
+    <div className="mb-6 sm:mb-8 flex items-center gap-3 flex-wrap">
+      <label className="font-mono text-[10px] uppercase tracking-[0.25em] text-sky-500/60">
+        Your name
+      </label>
+      <input
+        type="text"
+        value={draft}
+        maxLength={MAX_USERNAME_LEN}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.currentTarget.blur();
+          }
+        }}
+        spellCheck={false}
+        autoComplete="off"
+        className={[
+          'bg-white/[0.04] border border-white/[0.12] rounded-md',
+          'px-3 py-1.5 text-sm text-white/90 font-mono',
+          'focus:outline-none focus:border-sky-400/60 focus:bg-white/[0.07]',
+          'transition-colors duration-200 min-w-[180px]',
+        ].join(' ')}
+      />
+      {saved ? (
+        <span className="text-emerald-300/75 text-xs font-mono">saved</span>
+      ) : null}
+    </div>
+  );
+}
+
 interface CardProps {
   href: string;
   tag: string;
@@ -72,6 +123,8 @@ export function HomePage() {
             a world from scratch and share it. No install. No login. Just play.
           </p>
         </div>
+
+        <UsernameField />
 
         {/* Mode cards — 3 columns */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 mb-3.5">

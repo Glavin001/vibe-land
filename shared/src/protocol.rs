@@ -144,7 +144,25 @@ pub struct WelcomePacket {
     pub snapshot_hz: u16,
     pub server_time_us: u64,
     pub interpolation_delay_ms: u16,
+    pub kills: u16,
+    pub deaths: u16,
 }
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PlayerStatsEntry {
+    pub player_id: u32,
+    pub kills: u16,
+    pub deaths: u16,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PlayerStatsUpdatePacket {
+    pub entries: Vec<PlayerStatsEntry>,
+}
+
+/// Maximum bytes accepted for a username on the wire.
+/// Server clamps/sanitises; we reject anything longer.
+pub const MAX_USERNAME_LEN: usize = 20;
 
 #[derive(Clone, Debug)]
 pub struct SnapshotPacket {

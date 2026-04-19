@@ -29,11 +29,13 @@ import {
   type NetPlayerState,
   type NetVehicleState,
   type PlayerRosterPacket,
+  type PlayerStatsUpdatePacket,
   type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
   type ShotFiredPacket,
   type VehicleStateMeters,
+  type WelcomePacket,
   FLAG_IN_VEHICLE,
 } from './protocol';
 
@@ -49,12 +51,15 @@ export type RemotePlayer = {
 
 export type NetcodeClientConfig = {
   onWelcome?: (playerId: number) => void;
+  onWelcomePacket?: (packet: WelcomePacket) => void;
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
+  onRoster?: (packet: PlayerRosterPacket) => void;
+  onStatsUpdate?: (packet: PlayerStatsUpdatePacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -662,9 +667,14 @@ export class NetcodeClient {
         // The first snapshot will initialize the estimator instead.
         console.info('[netcode] Welcome — playerId:', packet.playerId, { transport: this.transport, simHz: packet.simHz, interpolationDelayMs: packet.interpolationDelayMs });
         this.config.onWelcome?.(packet.playerId);
+        this.config.onWelcomePacket?.(packet);
         break;
       case 'playerRoster':
         this.applyPlayerRoster(packet);
+        this.config.onRoster?.(packet);
+        break;
+      case 'playerStatsUpdate':
+        this.config.onStatsUpdate?.(packet);
         break;
       case 'dynamicBodyMeta':
         this.applyDynamicBodyMeta(packet);

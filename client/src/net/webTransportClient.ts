@@ -21,6 +21,7 @@ import {
   type ServerReliablePacket,
   type WelcomePacket,
 } from './protocol';
+import { getUsername } from '../app/username';
 
 type WebTransportHash = {
   algorithm: string;
@@ -140,7 +141,10 @@ export class WebTransportGameClient {
 
     const control = await transport.createBidirectionalStream();
     const controlWriter = control.writable.getWriter();
-    await controlWriter.write(frameReliablePacket(encodeClientHello({ matchId: this.options.matchId })));
+    await controlWriter.write(frameReliablePacket(encodeClientHello({
+      matchId: this.options.matchId,
+      username: getUsername(),
+    })));
     await controlWriter.close();
     console.info('[webtransport] ClientHello sent, waiting for Welcome...');
 

@@ -248,6 +248,11 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     limitMin: number, limitMax: number,
   ): void;
   removeRagdollJoint(jointId: number): void;
+
+  setLocalDisplayName(name: string): void;
+  localPlayerKills(): number;
+  localPlayerDeaths(): number;
+  leaderboardJson(): string;
 };
 
 type WasmLocalSessionCtor = {
