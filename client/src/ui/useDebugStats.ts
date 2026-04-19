@@ -679,6 +679,7 @@ export function useDebugStats() {
     s.onGround = (player.localFlags & 0x1) !== 0;  // FLAG_ON_GROUND
     s.inVehicle = (player.localFlags & 0x2) !== 0; // FLAG_IN_VEHICLE
     s.dead = (player.localFlags & 0x4) !== 0;      // FLAG_DEAD
+    s.spawnProtected = (player.localFlags & 0x10) !== 0;
     s.heapUsedMb = heapUsedMb;
     s.heapTotalMb = heapTotalMb;
 

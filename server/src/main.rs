@@ -38,25 +38,25 @@ use vibe_land_shared::constants::{
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS,
-    RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_AOI_RADIUS_M,
-    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, SPAWN_PROTECTION_MS,
+    VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
     demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
-    movement::{MoveConfig, PhysicsArena},
+    movement::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
-        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, meters_to_mm,
-        mm_to_meters, BatterySyncPacket, ClientPacket, DamageEventPacket, FireCmd, InputCmd,
-        LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState, ServerPacket, ShotResultPacket,
-        SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE,
-        PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
-        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
-        SHOT_RESOLUTION_PLAYER,
+        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
+        make_net_shot_fired, meters_to_mm, mm_to_meters, BatterySyncPacket, ClientPacket,
+        DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
+        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING,
+        PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC,
+        SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -129,6 +129,13 @@ fn parse_respawn_delay_ms(value: Option<&str>) -> u32 {
     value
         .and_then(|raw| raw.parse::<u32>().ok())
         .unwrap_or(RESPAWN_DELAY_MS)
+}
+
+fn spawn_protection_ticks() -> u32 {
+    SPAWN_PROTECTION_MS
+        .saturating_mul(SIM_HZ as u32)
+        .saturating_add(999)
+        / 1000
 }
 
 fn server_build_profile() -> &'static str {
@@ -628,6 +635,7 @@ struct PlayerRuntime {
     last_processed_swing_id: Option<u32>,
     next_allowed_melee_ms: u32,
     melee_flag_clear_tick: u32,
+    spawn_protection_ends_at_tick: u32,
     respawn_at_ms: Option<u32>,
     visible_dynamic_bodies: HashSet<u32>,
     visible_batteries: HashSet<u32>,
@@ -1430,6 +1438,7 @@ impl MatchState {
                         last_processed_swing_id: None,
                         next_allowed_melee_ms: 0,
                         melee_flag_clear_tick: 0,
+                        spawn_protection_ends_at_tick: 0,
                         respawn_at_ms: None,
                         visible_dynamic_bodies: HashSet::new(),
                         visible_batteries: HashSet::new(),
@@ -1440,6 +1449,7 @@ impl MatchState {
                         last_sent_dynamic_tick: HashMap::new(),
                     },
                 );
+                self.activate_spawn_protection(conn.player_id);
                 info!(
                     match_id = %self.id,
                     player_id = conn.player_id,
@@ -1562,12 +1572,16 @@ impl MatchState {
                         if is_dead {
                             return;
                         }
+                        runtime.spawn_protection_ends_at_tick = 0;
+                        let _ = self.arena.set_player_spawn_protected(player_id, false);
                         self.queued_shots.push(QueuedShot { player_id, cmd });
                     }
                     ClientPacket::Melee(cmd) => {
                         if is_dead {
                             return;
                         }
+                        runtime.spawn_protection_ends_at_tick = 0;
+                        let _ = self.arena.set_player_spawn_protected(player_id, false);
                         self.queued_melees.push(QueuedMelee { player_id, cmd });
                     }
                     ClientPacket::BlockEdit(cmd) => {
@@ -1650,6 +1664,7 @@ impl MatchState {
         let server_time_ms = self.server_tick * (1000 / SIM_HZ as u32);
 
         self.process_respawns(server_time_ms);
+        self.expire_spawn_protection();
 
         let ids: Vec<u32> = self.players.keys().copied().collect();
         let player_sim_started = Instant::now();
@@ -2317,6 +2332,37 @@ impl MatchState {
                 runtime.last_sent_energy_centi = None;
             }
             let _ = self.arena.respawn_player(player_id);
+            self.activate_spawn_protection(player_id);
+        }
+    }
+
+    fn activate_spawn_protection(&mut self, player_id: u32) {
+        let until_tick = self.server_tick.saturating_add(spawn_protection_ticks());
+        let _ = self.arena.set_player_spawn_protected(player_id, true);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = until_tick;
+        }
+    }
+
+    fn clear_spawn_protection(&mut self, player_id: u32) {
+        let _ = self.arena.set_player_spawn_protected(player_id, false);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = 0;
+        }
+    }
+
+    fn expire_spawn_protection(&mut self) {
+        let expired_ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(&player_id, runtime)| {
+                (runtime.spawn_protection_ends_at_tick != 0
+                    && runtime.spawn_protection_ends_at_tick <= self.server_tick)
+                    .then_some(player_id)
+            })
+            .collect();
+        for player_id in expired_ids {
+            self.clear_spawn_protection(player_id);
         }
     }
 
@@ -2360,6 +2406,7 @@ impl MatchState {
             runtime.last_applied_input = InputCmd::default();
             runtime.last_sent_energy_centi = None;
         }
+        self.clear_spawn_protection(player_id);
     }
 
     fn maybe_send_local_player_energy_update(&mut self, player_id: u32) {
@@ -2599,17 +2646,67 @@ impl MatchState {
                 blocker_toi,
             );
 
-            let result = if let Some(hit) = player_hit {
-                let mut victim_killed = false;
-                let mut applied_damage: u8 = 0;
-                if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
-                    let prev_hp = state.hp;
-                    state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
-                    applied_damage = prev_hp.saturating_sub(state.hp);
-                    victim_killed = state.hp == 0 && !state.dead;
+            // Pre-compute the authoritative trace endpoint + classification for the
+            // shot-fired broadcast. This is used purely for visual trace rendering
+            // on all clients, independent of the ShotResult payload sent only to
+            // the shooter (which retains its original semantics).
+            let (shot_fired_end, shot_fired_kind, shot_fired_zone): ([f32; 3], u8, u8) = {
+                let project = |toi: f32| -> [f32; 3] {
+                    [
+                        origin[0] + queued.cmd.dir[0] * toi,
+                        origin[1] + queued.cmd.dir[1] * toi,
+                        origin[2] + queued.cmd.dir[2] * toi,
+                    ]
+                };
+                if let Some(hit) = player_hit.as_ref() {
+                    let zone_code = match hit.zone {
+                        HitZone::Body => HIT_ZONE_BODY,
+                        HitZone::Head => HIT_ZONE_HEAD,
+                    };
+                    (project(hit.distance), SHOT_RESOLUTION_PLAYER, zone_code)
+                } else {
+                    let dynamic_toi_only = dynamic_hit.map(|(_, toi, _)| toi);
+                    match (world_toi, dynamic_toi_only) {
+                        (Some(w), Some(d)) if w < d => {
+                            (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
+                        }
+                        (_, Some(d)) => (project(d), SHOT_RESOLUTION_DYNAMIC, HIT_ZONE_NONE),
+                        (Some(w), None) => {
+                            (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
+                        }
+                        (None, None) => (
+                            project(HITSCAN_MAX_DISTANCE_M),
+                            SHOT_RESOLUTION_MISS,
+                            HIT_ZONE_NONE,
+                        ),
+                    }
                 }
-                self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
-                if victim_killed {
+            };
+
+            let result = if let Some(hit) = player_hit {
+                let prev_hp = self
+                    .arena
+                    .players
+                    .get(&hit.victim_id)
+                    .map(|s| s.hp)
+                    .unwrap_or(0);
+                let damage_outcome = self
+                    .arena
+                    .apply_player_damage(hit.victim_id, rifle_damage(hit.zone));
+                let new_hp = self
+                    .arena
+                    .players
+                    .get(&hit.victim_id)
+                    .map(|s| s.hp)
+                    .unwrap_or(0);
+                let applied_damage = prev_hp.saturating_sub(new_hp);
+                if matches!(
+                    damage_outcome,
+                    PlayerDamageOutcome::Damaged | PlayerDamageOutcome::Killed
+                ) {
+                    self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
+                }
+                if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
                 let hit_zone_byte = match hit.zone {
@@ -2707,6 +2804,25 @@ impl MatchState {
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
                 let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
+            }
+
+            // Broadcast the shot-fired trace to every connected player so remote
+            // observers see the bullet. Stamped with the current server tick so
+            // clients can suppress packets whose render window has already expired.
+            let server_fire_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
+            let shot_fired = ServerPacket::ShotFired(make_net_shot_fired(
+                queued.player_id,
+                queued.cmd.shot_id,
+                queued.cmd.weapon,
+                shot_fired_kind,
+                shot_fired_zone,
+                server_fire_time_us,
+                origin,
+                shot_fired_end,
+            ));
+            let encoded = encode_server_packet(&shot_fired);
+            for player in self.players.values() {
+                let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
             }
         }
     }
@@ -2845,7 +2961,7 @@ impl MatchState {
                         .get(&victim_id)
                         .map(|s| s.hp)
                         .unwrap_or(0);
-                    let killed = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
+                    let damage_outcome = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
                     let new_hp = self
                         .arena
                         .players
@@ -2853,8 +2969,13 @@ impl MatchState {
                         .map(|s| s.hp)
                         .unwrap_or(0);
                     let applied_damage = prev_hp.saturating_sub(new_hp);
-                    self.stagger_melee_after_damage(victim_id, server_time_ms);
-                    if killed {
+                    if matches!(
+                        damage_outcome,
+                        PlayerDamageOutcome::Damaged | PlayerDamageOutcome::Killed
+                    ) {
+                        self.stagger_melee_after_damage(victim_id, server_time_ms);
+                    }
+                    if matches!(damage_outcome, PlayerDamageOutcome::Killed) {
                         self.kill_player(victim_id, server_time_ms);
                     }
                     if applied_damage > 0 {
@@ -3716,6 +3837,7 @@ mod tests {
             last_processed_swing_id: None,
             next_allowed_melee_ms: 0,
             melee_flag_clear_tick: 0,
+            spawn_protection_ends_at_tick: 0,
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
             visible_batteries: HashSet::new(),

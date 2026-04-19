@@ -33,6 +33,7 @@ import {
   type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
 } from './protocol';
@@ -55,6 +56,7 @@ export type NetcodeClientConfig = {
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -826,6 +828,9 @@ export class NetcodeClient {
         break;
       case 'damageEvent':
         this.config.onDamageEvent?.(packet);
+        break;
+      case 'shotFired':
+        this.config.onShotFired?.(packet);
         break;
       default:
         break;

@@ -109,6 +109,7 @@ export class BotBrain {
       decision.fireAim,
       decision.meleeAim,
       this.options,
+      decision.fireAimVelocity ?? null,
     );
   }
 

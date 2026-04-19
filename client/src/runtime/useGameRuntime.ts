@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { isPracticeMode, type GameMode } from '../app/gameMode';
 import { resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
-import type { DamageEventPacket } from '../net/protocol';
+import type { DamageEventPacket, ShotFiredPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
 import {
   LocalGameRuntime,
@@ -20,6 +20,7 @@ export function useGameRuntime(
   onSnapshot?: () => void,
   localRenderSmoothingEnabled = true,
   onDamageEvent?: (packet: DamageEventPacket) => void,
+  onShotFired?: (packet: ShotFiredPacket) => void,
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
@@ -29,6 +30,7 @@ export function useGameRuntime(
   const onDisconnectRef = useRef(onDisconnect);
   const onSnapshotRef = useRef(onSnapshot);
   const onDamageEventRef = useRef(onDamageEvent);
+  const onShotFiredRef = useRef(onShotFired);
   const [ready, setReady] = useState(false);
   const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
 
@@ -36,6 +38,7 @@ export function useGameRuntime(
   onDisconnectRef.current = onDisconnect;
   onSnapshotRef.current = onSnapshot;
   onDamageEventRef.current = onDamageEvent;
+  onShotFiredRef.current = onShotFired;
 
   useEffect(() => {
     let disposed = false;
@@ -63,6 +66,12 @@ export function useGameRuntime(
           return;
         }
         setRenderBlocks(blocks);
+      },
+      onShotFired: (packet) => {
+        if (disposed) {
+          return;
+        }
+        onShotFiredRef.current?.(packet);
       },
     };
 

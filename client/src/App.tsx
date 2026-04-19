@@ -19,8 +19,10 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { LowEnergyWarning } from './ui/LowEnergyWarning';
 import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
+import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDamageFeedback } from './ui/useDamageFeedback';
 import { DamageOverlay } from './ui/DamageOverlay';
@@ -263,6 +265,7 @@ export function App({
   const [practiceBotNavTuning, setPracticeBotNavTuning] = useState<PracticeBotNavTuning | null>(DEFAULT_PRACTICE_BOT_NAV_TUNING);
   const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
+  const [practiceBotShootingEnabled, setPracticeBotShootingEnabled] = useState(true);
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
   const [playerIdLabelsEnabled, setPlayerIdLabelsEnabled] = useState(false);
@@ -313,6 +316,13 @@ export function App({
   const handleToggleBotDebugLabels = useCallback((value: boolean) => {
     setPracticeBotDebugLabels(value);
   }, []);
+  const handleSetBotEnableShooting = useCallback((value: boolean) => {
+    setPracticeBotShootingEnabled(value);
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setEnableShooting(value);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
   const handleSetBotUseVehicles = useCallback((value: boolean) => {
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
@@ -367,6 +377,7 @@ export function App({
     }
     const desiredCount = practiceBotDesiredCount;
     const desiredBehavior = practiceBotDesiredBehavior;
+    const desiredShootingEnabled = practiceBotShootingEnabled;
     const navTuning = practiceBotNavTuning;
     const handle = window.setTimeout(() => {
       void (async () => {
@@ -374,6 +385,7 @@ export function App({
           const sharedProfile = await getSharedPlayerNavigationProfileAsync();
           const runtimeOptions = {
             maxAgentRadius: 0.6,
+            enableShooting: desiredShootingEnabled,
             navigationProfile: {
               ...sharedProfile,
               walkableClimb: navTuning?.walkableClimb ?? sharedProfile.walkableClimb,
@@ -422,6 +434,7 @@ export function App({
   }, [
     practiceMode,
     effectiveWorldDocument,
+    practiceBotShootingEnabled,
     practiceBotNavTuning,
   ]);
 
@@ -1038,6 +1051,7 @@ export function App({
         onResetNavTuning={handleResetBotNavTuning}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
         onToggleDebugLabels={handleToggleBotDebugLabels}
+        onSetEnableShooting={handleSetBotEnableShooting}
         onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar
@@ -1046,6 +1060,14 @@ export function App({
         visible={connected}
       />
       <DamageOverlay {...damageOverlayState} visible={connected} />
+      <LowEnergyWarning
+        energy={displayStats.energy}
+        visible={connected}
+      />
+      <SpawnProtectionHUD
+        protectedActive={displayStats.spawnProtected}
+        visible={connected}
+      />
       <MeleeHUD visible={connected} />
       <DebugOverlay
         stats={displayStats}

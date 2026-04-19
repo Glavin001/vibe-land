@@ -17,6 +17,7 @@ export const FLAG_ON_GROUND = 1 << 0;
 export const FLAG_IN_VEHICLE = 1 << 1;
 export const FLAG_DEAD = 1 << 2;
 export const FLAG_MELEEING = 1 << 3;
+export const FLAG_SPAWN_PROTECTED = 1 << 4;
 
 // ── Packet type IDs ─────────────────────────────
 export const PKT_CLIENT_HELLO = 1;
@@ -40,7 +41,8 @@ export const PKT_PLAYER_ROSTER = 113;
 export const PKT_DYNAMIC_BODY_META = 114;
 export const PKT_LOCAL_PLAYER_ENERGY = 115;
 export const PKT_BATTERY_SYNC = 116;
-export const PKT_DAMAGE_EVENT = 117;
+export const PKT_SHOT_FIRED = 117;
+export const PKT_DAMAGE_EVENT = 118;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
@@ -78,6 +80,7 @@ export const MAX_PENDING_INPUTS = 120;
 export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
 export const RIFLE_FIRE_INTERVAL_MS = 100;
 export const PLAYER_EYE_HEIGHT_M = 0.8;
+export const SPAWN_PROTECTION_MS = 3000;
 // ── Melee combat ────────────────────────────────
 export const MELEE_DAMAGE = 35;
 export const MELEE_COOLDOWN_MS = 900;

@@ -1,7 +1,7 @@
 use nalgebra as na;
 
-use super::{elapsed_ms, now_marker, PhysicsArena};
-use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND};
+use super::{elapsed_ms, now_marker, PhysicsArena, PlayerDamageOutcome};
+use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND, FLAG_SPAWN_PROTECTED};
 use crate::protocol::InputCmd;
 
 impl PhysicsArena {
@@ -90,6 +90,9 @@ impl PhysicsArena {
         }
         if state.dead {
             flags |= FLAG_DEAD;
+        }
+        if state.spawn_protected {
+            flags |= FLAG_SPAWN_PROTECTED;
         }
 
         if let Some(&vehicle_id) = self.vehicle_of_player.get(&player_id) {
@@ -214,12 +217,28 @@ impl PhysicsArena {
     pub fn set_player_dead(&mut self, player_id: u32, dead: bool) {
         if let Some(state) = self.players.get_mut(&player_id) {
             state.dead = dead;
+            state.spawn_protected = false;
             if dead {
                 state.hp = 0;
                 state.velocity = super::Vec3d::zeros();
                 state.on_ground = false;
             }
         }
+    }
+
+    pub fn set_player_spawn_protected(&mut self, player_id: u32, spawn_protected: bool) -> bool {
+        let Some(state) = self.players.get_mut(&player_id) else {
+            return false;
+        };
+        state.spawn_protected = spawn_protected;
+        true
+    }
+
+    pub fn is_player_spawn_protected(&self, player_id: u32) -> bool {
+        self.players
+            .get(&player_id)
+            .map(|state| state.spawn_protected && !state.dead)
+            .unwrap_or(false)
     }
 
     pub fn set_player_max_speed_override(
@@ -235,19 +254,58 @@ impl PhysicsArena {
         }
     }
 
-    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> bool {
+    pub fn apply_player_damage(&mut self, player_id: u32, damage: u8) -> PlayerDamageOutcome {
         let Some(state) = self.players.get_mut(&player_id) else {
-            return false;
+            return PlayerDamageOutcome::Ignored;
         };
-        if state.dead || state.hp == 0 {
-            return false;
+        if state.dead || state.hp == 0 || state.spawn_protected {
+            return PlayerDamageOutcome::Ignored;
         }
         state.hp = state.hp.saturating_sub(damage);
         if state.hp == 0 {
             state.dead = true;
+            state.spawn_protected = false;
             state.velocity = super::Vec3d::zeros();
-            return true;
+            return PlayerDamageOutcome::Killed;
         }
-        false
+        PlayerDamageOutcome::Damaged
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        constants::FLAG_SPAWN_PROTECTED,
+        physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
+    };
+
+    #[test]
+    fn spawn_protection_blocks_damage_until_cleared() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(1);
+        assert!(arena.set_player_spawn_protected(1, true));
+
+        assert_eq!(
+            arena.apply_player_damage(1, 25),
+            PlayerDamageOutcome::Ignored
+        );
+        assert_eq!(arena.players.get(&1).map(|state| state.hp), Some(100));
+
+        assert!(arena.set_player_spawn_protected(1, false));
+        assert_eq!(
+            arena.apply_player_damage(1, 25),
+            PlayerDamageOutcome::Damaged
+        );
+        assert_eq!(arena.players.get(&1).map(|state| state.hp), Some(75));
+    }
+
+    #[test]
+    fn snapshot_player_sets_spawn_protected_flag() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(7);
+        assert!(arena.set_player_spawn_protected(7, true));
+
+        let (_, _, _, _, _, flags) = arena.snapshot_player(7).expect("player should exist");
+        assert_ne!(flags & FLAG_SPAWN_PROTECTED, 0);
     }
 }

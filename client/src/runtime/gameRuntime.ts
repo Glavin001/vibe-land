@@ -22,6 +22,7 @@ import {
   type NetVehicleState,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
 } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
@@ -91,6 +92,7 @@ export type GameRuntimeCallbacks = {
   onSnapshot?: () => void;
   onRenderBlocksChanged?: (blocks: RenderBlock[]) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
 };
 
 export interface GameRuntimeClient {
@@ -1093,6 +1095,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         },
         onDamageEvent: (packet) => {
           this.callbacks.onDamageEvent?.(packet);
+        },
+        onShotFired: (packet) => {
+          this.callbacks.onShotFired?.(packet);
         },
         onPacket: (packet) => {
           this.syncState();

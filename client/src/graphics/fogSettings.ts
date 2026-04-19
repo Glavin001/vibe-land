@@ -34,7 +34,7 @@ export type FogSettings = {
 export const DEFAULT_FOG_SETTINGS: FogSettings = {
   enabled: true,
   density: fogDensityForAoi(),
-  color: '#d7e3f0',
+  color: '#b7c7d8',
 };
 
 let current: FogSettings = { ...DEFAULT_FOG_SETTINGS };
