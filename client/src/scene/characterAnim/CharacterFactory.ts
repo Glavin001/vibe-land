@@ -76,6 +76,7 @@ export function createRemotePlayer(
   let controller: AnimationController | null = null;
   let ragdoll: Ragdoll | null = null;
   let ragdollActive = false;
+  let lastDeathPlayed = false;
   let pendingSeedVelocity: THREE.Vector3 | null = null;
   let pendingTint: THREE.Color | number | null = options.tint ?? null;
   let pendingVisible = true;
@@ -129,16 +130,22 @@ export function createRemotePlayer(
       if (!controller) return;
 
       if (state === 'dead') {
-        // Ragdoll should have been activated by setRagdoll — if somehow we get
-        // here without it, fall back to the canned death clip.
-        if (profile.deathClip) {
+        // When cosmetic ragdolls are disabled, fall back to the authored death
+        // clip and only trigger it once for the current death.
+        if (profile.deathClip && !lastDeathPlayed) {
           controller.playOneShot(profile.deathClip);
+          lastDeathPlayed = true;
         }
         controller.update(dt);
         return;
       }
 
       // Leaving dead state — ragdoll cleanup is handled in setRagdoll(false).
+      if (lastDeathPlayed) {
+        controller.resetOneShot();
+        lastDeathPlayed = false;
+        jumpPhase = 'grounded';
+      }
       switch (jumpPhase) {
         case 'grounded':
           if (!onGround) {
@@ -222,6 +229,7 @@ export function createRemotePlayer(
       } else {
         ragdoll?.dispose();
         ragdoll = null;
+        lastDeathPlayed = false;
         jumpPhase = 'grounded';
         // Force the FSM to fade back into an animation next frame.
         controller?.resumeFromRagdoll();
