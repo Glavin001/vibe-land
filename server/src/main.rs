@@ -1694,6 +1694,7 @@ impl MatchState {
         let mut dead_players_skipped = 0.0f32;
         let mut player_centers = Vec::with_capacity(ids.len());
         let mut on_foot_energy_drains = Vec::with_capacity(ids.len());
+        let mut batch_inputs: Vec<(u32, InputCmd)> = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
             if self.arena.vehicle_of_player.contains_key(&player_id) {
                 players_in_vehicles += 1.0;
@@ -1727,7 +1728,12 @@ impl MatchState {
                 })
                 .unwrap_or_default();
             on_foot_energy_drains.push((player_id, previous_input, input.clone(), was_on_ground));
-            if let Some(result) = self.arena.simulate_player_tick(player_id, &input, dt) {
+            batch_inputs.push((player_id, input));
+        }
+
+        let batch_results = self.arena.simulate_players_tick(&batch_inputs, dt);
+        for (player_id, result_opt) in batch_results {
+            if let Some(result) = result_opt {
                 player_move_math_ms += result.timings.move_math_ms;
                 player_query_ctx_ms += result.timings.query_ctx_ms;
                 player_kcc_ms += result.timings.kcc_query_ms;
