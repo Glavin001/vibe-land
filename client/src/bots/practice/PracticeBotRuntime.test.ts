@@ -75,6 +75,18 @@ class FakePracticeBotHost implements PracticeBotHost {
   sendBotInputs(botId: number, cmds: Array<{ seq: number }>): void {
     this.sentInputCounts.set(botId, (this.sentInputCounts.get(botId) ?? 0) + cmds.length);
   }
+
+  sendBotMelee(): void {
+    /* noop */
+  }
+
+  sendBotVehicleEnter(): void {
+    /* noop */
+  }
+
+  sendBotVehicleExit(): void {
+    /* noop */
+  }
 }
 
 function playerCenterY(groundY: number): number {

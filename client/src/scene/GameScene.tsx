@@ -13,6 +13,7 @@ type GameSceneProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
+  onScopeActiveChange?: React.ComponentProps<typeof GameWorld>['onScopeActiveChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
   onInputFrame?: (sample: InputSample) => void;
@@ -43,6 +44,7 @@ export function GameScene({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode,
@@ -90,6 +92,7 @@ export function GameScene({
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}
+          onScopeActiveChange={onScopeActiveChange}
           onDebugFrame={onDebugFrame}
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}

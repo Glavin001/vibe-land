@@ -16,6 +16,7 @@ import {
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
+  type MeleeCmd,
   type NetPlayerState,
   type NetVehicleState,
   type ServerPacket,
@@ -120,6 +121,7 @@ export interface GameRuntimeClient {
   syncVehicleAuthority(): void;
   sendInputs(cmds: InputCmd[]): void;
   sendFire(cmd: FireCmd): void;
+  sendMelee(cmd: MeleeCmd): void;
   sendBlockEdit(cmd: BlockEditCmd): void;
   sendVehicleEnter(vehicleId: number, seat?: number): void;
   sendVehicleExit(vehicleId: number): void;
@@ -375,6 +377,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
   abstract syncVehicleAuthority(): void;
   abstract sendInputs(cmds: InputCmd[]): void;
   abstract sendFire(cmd: FireCmd): void;
+  abstract sendMelee(cmd: MeleeCmd): void;
   abstract sendBlockEdit(cmd: BlockEditCmd): void;
   abstract sendVehicleEnter(vehicleId: number, seat?: number): void;
   abstract sendVehicleExit(vehicleId: number): void;
@@ -670,6 +673,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
   sendFire(cmd: FireCmd): void {
     this.client?.sendFire(cmd);
+  }
+
+  sendMelee(cmd: MeleeCmd): void {
+    this.client?.sendMelee(cmd);
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {
@@ -1218,6 +1225,10 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   sendFire(cmd: FireCmd): void {
     this.client?.sendFire(cmd);
+  }
+
+  sendMelee(cmd: MeleeCmd): void {
+    this.client?.sendMelee(cmd);
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {

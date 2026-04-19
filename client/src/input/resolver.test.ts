@@ -25,6 +25,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     crouch: false,
     firePrimary: false,
     firePrimaryValue: 0,
+    aimSecondary: false,
     handbrake: false,
     interactPressed: false,
     resetVehiclePressed: false,
@@ -32,6 +33,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
     ...overrides,
   };
 }
@@ -41,6 +43,19 @@ describe('advanceLookAngles', () => {
     const next = advanceLookAngles(1, 0.5, snapshot({ lookX: 0.25, lookY: -0.2 }));
     expect(next.yaw).toBeCloseTo(1.25);
     expect(next.pitch).toBeCloseTo(0.3);
+  });
+
+  it('scales look deltas by lookMultiplier', () => {
+    const next = advanceLookAngles(1, 0.5, snapshot({ lookX: 0.25, lookY: -0.2 }), 0.4);
+    expect(next.yaw).toBeCloseTo(1.1);
+    expect(next.pitch).toBeCloseTo(0.42);
+  });
+
+  it('defaults lookMultiplier to 1 when omitted', () => {
+    const withDefault = advanceLookAngles(0, 0, snapshot({ lookX: 0.3, lookY: 0.1 }));
+    const explicitOne = advanceLookAngles(0, 0, snapshot({ lookX: 0.3, lookY: 0.1 }), 1);
+    expect(withDefault.yaw).toBeCloseTo(explicitOne.yaw);
+    expect(withDefault.pitch).toBeCloseTo(explicitOne.pitch);
   });
 });
 
@@ -61,6 +76,15 @@ describe('resolveOnFootInput', () => {
     expect(resolved.buttons & BTN_JUMP).toBeTruthy();
     expect(resolved.buttons & BTN_SPRINT).toBeTruthy();
   });
+
+  it('passes aimSecondary through from the action', () => {
+    const aimed = resolveOnFootInput(snapshot({ aimSecondary: true }), 0, 0, 'keyboardMouse');
+    expect(aimed.aimSecondary).toBe(true);
+    const idle = resolveOnFootInput(snapshot({ aimSecondary: false }), 0, 0, 'keyboardMouse');
+    expect(idle.aimSecondary).toBe(false);
+    const missing = resolveOnFootInput(null, 0, 0, 'keyboardMouse');
+    expect(missing.aimSecondary).toBe(false);
+  });
 });
 
 describe('resolveVehicleInput', () => {
@@ -69,5 +93,10 @@ describe('resolveVehicleInput', () => {
     expect(resolved.moveX).toBeCloseTo(-0.75);
     expect(resolved.moveY).toBeCloseTo(0.75);
     expect(resolved.buttons & BTN_JUMP).toBeTruthy();
+  });
+
+  it('never exposes aimSecondary while driving', () => {
+    const resolved = resolveVehicleInput(snapshot({ aimSecondary: true }), 0, 0, 'gamepad');
+    expect(resolved.aimSecondary).toBe(false);
   });
 });
