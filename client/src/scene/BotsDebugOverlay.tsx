@@ -4,13 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { NavMesh } from 'navcat';
 import * as THREE from 'three';
 
-import type { BotDebugInfo, BotObstacleDebugInfo, PracticeBotRuntime } from '../bots';
+import { MAX_PRACTICE_BOTS, type BotDebugInfo, type BotObstacleDebugInfo, type PracticeBotRuntime } from '../bots';
 
 interface BotsDebugOverlayProps {
   runtime: PracticeBotRuntime;
 }
 
-const MAX_BOTS = 32;
+const MAX_BOTS = MAX_PRACTICE_BOTS;
 const MAX_PATH_POINTS_PER_BOT = 9;
 const MAX_PATH_SEGMENTS = MAX_BOTS * (MAX_PATH_POINTS_PER_BOT - 1);
 const MAX_PATH_VERTICES = MAX_PATH_SEGMENTS * 2;

@@ -41,6 +41,10 @@ export interface LocalSelfSnapshot {
 }
 
 export const PRACTICE_BOT_ID_BASE = 1_000_000;
+export const MAX_PRACTICE_BOTS = 200;
+export const PRACTICE_BOT_WALK_SPEED = 6.0;
+export const PRACTICE_BOT_SPRINT_SPEED = 8.5;
+export const PRACTICE_BOT_SPRINT_DISTANCE_M = 10.0;
 
 export type PracticeBotBehaviorKind = 'harass' | 'wander' | 'hold';
 
@@ -48,6 +52,7 @@ export interface PracticeBotRuntimeOptions {
   maxAgentRadius?: number;
   snapHalfExtents?: Vec3Tuple;
   initialBehavior?: PracticeBotBehaviorKind;
+  /** @deprecated Practice bots always use the shared human walk/sprint speeds. */
   maxSpeed?: number;
   tickHz?: number;
   navigationProfile?: SharedPlayerNavigationProfile;
@@ -190,7 +195,6 @@ interface PracticeBot {
 }
 
 const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
-const DEFAULT_MAX_SPEED = 3.0;
 const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
@@ -269,7 +273,7 @@ export class PracticeBotRuntime {
     this.maxAgentRadius = options.maxAgentRadius ?? 0.6;
     this.crowd = crowd;
     this.behaviorKind = options.initialBehavior ?? DEFAULT_BEHAVIOR;
-    this.maxSpeed = options.maxSpeed ?? DEFAULT_MAX_SPEED;
+    this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
     this.useVehicles = options.useVehicles ?? false;
     this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
@@ -288,7 +292,7 @@ export class PracticeBotRuntime {
       this.syncBotToAuthoritativeSpawn(bot, this.host, {
         preserveAnchor: alreadyConnected,
       });
-      this.host.setBotMaxSpeed(bot.id, this.maxSpeed);
+      this.host.setBotMaxSpeed(bot.id, null);
     }
     this.running = true;
     this.lastTickMs = performance.now();
@@ -382,17 +386,17 @@ export class PracticeBotRuntime {
   }
 
   setMaxSpeed(speed: number): void {
-    const clamped = Math.max(0.5, Math.min(12, speed));
-    this.maxSpeed = clamped;
+    void speed;
+    this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     for (const bot of this.bots.values()) {
       const agent = this.crowd.getAgent(bot.handle.id);
-      if (agent) agent.maxSpeed = clamped;
-      this.host?.setBotMaxSpeed(bot.id, clamped);
+      if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
+      this.host?.setBotMaxSpeed(bot.id, null);
     }
   }
 
   setBotCount(target: number): void {
-    const clamped = Math.max(0, Math.min(32, Math.floor(target)));
+    const clamped = Math.max(0, Math.min(MAX_PRACTICE_BOTS, Math.floor(target)));
     while (this.bots.size < clamped) {
       this.spawnBot();
     }
@@ -408,7 +412,7 @@ export class PracticeBotRuntime {
     const spawn = snapshot?.position ?? this.crowd.findRandomWalkable() ?? [0, 2, 0];
     const handle = this.crowd.addBot(spawn);
     const agent = this.crowd.getAgent(handle.id);
-    if (agent) agent.maxSpeed = this.maxSpeed;
+    if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
     const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
@@ -435,7 +439,7 @@ export class PracticeBotRuntime {
       this.syncBotToAuthoritativeSpawn(this.bots.get(id) ?? null, this.host, {
         preserveAnchor: alreadyConnected,
       });
-      this.host.setBotMaxSpeed(id, this.maxSpeed);
+      this.host.setBotMaxSpeed(id, null);
     }
     return id;
   }
@@ -1027,8 +1031,7 @@ export class PracticeBotRuntime {
       DEFAULT_QUERY_FILTER,
     );
     if (walkLength === null) return null;
-    const walkSpeed = Math.max(1, this.maxSpeed);
-    const walkTimeSec = walkLength / walkSpeed;
+    const walkTimeSec = this.estimateFootTravelTimeSec(walkLength);
 
     const vehicleCrowd = this.ensureVehicleCrowd();
     const vehicleFilter = this.vehicleQueryFilter ?? DEFAULT_QUERY_FILTER;
@@ -1058,7 +1061,7 @@ export class PracticeBotRuntime {
         vehicleFilter,
       );
       if (driveLength === null) continue;
-      const driveTime = walkToLength / walkSpeed
+      const driveTime = this.estimateFootTravelTimeSec(walkToLength)
         + driveLength / profile.cruiseSpeed
         + profile.enterExitOverheadSec;
       if (!best || driveTime < best.travelTime) {
@@ -1070,6 +1073,12 @@ export class PracticeBotRuntime {
     // Otherwise the bot would thrash at the walk/drive boundary.
     if (best.travelTime > walkTimeSec * 0.75) return null;
     return { vehicleId: best.vehicleId, vehiclePosition: best.vehiclePosition };
+  }
+
+  private estimateFootTravelTimeSec(pathLengthM: number): number {
+    const walkDistance = Math.min(pathLengthM, PRACTICE_BOT_SPRINT_DISTANCE_M);
+    const sprintDistance = Math.max(0, pathLengthM - walkDistance);
+    return (walkDistance / PRACTICE_BOT_WALK_SPEED) + (sprintDistance / PRACTICE_BOT_SPRINT_SPEED);
   }
 
   /**
