@@ -25,7 +25,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check
       - run: cargo fmt --all --check
-      - run: cargo test
+      - name: cargo test
+        run: |
+          cargo test --no-fail-fast 2>&1 | tee /tmp/cargo-test.log
+          exit ${PIPESTATUS[0]}
+      - name: Dump cargo test output on failure
+        if: failure()
+        run: |
+          echo "::group::Full cargo test output"
+          cat /tmp/cargo-test.log 2>/dev/null || echo "(no test log)"
+          echo "::endgroup::"
+          if [ -f /tmp/cargo-test.log ]; then
+            FAILS=$(grep -E "FAIL|panicked|thread .* panicked|error\[|error:" /tmp/cargo-test.log | head -30)
+            if [ -n "$FAILS" ]; then
+              echo "::error::Cargo test failures:%0A${FAILS//$'\n'/%0A}"
+            fi
+          fi
 
   # ── Client lint & unit tests ───────────────────────────────────────────────
   client-check:

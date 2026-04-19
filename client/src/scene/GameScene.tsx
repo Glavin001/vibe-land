@@ -29,6 +29,7 @@ type GameSceneProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
@@ -57,6 +58,7 @@ export function GameScene({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
   fogEnabled,
   fogDensity,
   fogColor,
@@ -100,6 +102,7 @@ export function GameScene({
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
           fogEnabled={fogEnabled}
           fogDensity={fogDensity}
           fogColor={fogColor}

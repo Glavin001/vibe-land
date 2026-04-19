@@ -323,6 +323,7 @@ type GameWorldProps = {
   practiceBotsDebugOverlay?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
+  cosmeticDeathPhysicsEnabled?: boolean;
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
@@ -1039,6 +1040,7 @@ export function GameWorld({
   practiceBotsDebugOverlay,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
+  cosmeticDeathPhysicsEnabled = true,
   fogEnabled = true,
   fogDensity = DEFAULT_FOG_SETTINGS.density,
   fogColor = DEFAULT_FOG_SETTINGS.color,
@@ -2446,9 +2448,8 @@ export function GameWorld({
       activeIds.add(id);
       let handle = remoteMeshes.current.get(id);
       if (!handle) {
-        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length] });
+        handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
-        attachPlayerIdLabel(handle.root, id);
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
@@ -2493,7 +2494,20 @@ export function GameWorld({
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
       const flashAlpha = flashUntil > now ? (flashUntil - now) / REMOTE_HIT_FLASH_MS : 0;
       handle.setFlash(0xfff36b, flashAlpha);
-      handle.setOpacity(isDead ? 0.35 : 1);
+      // Ragdoll is the dead visual cue — keep opacity at 1 while physics-driven.
+      handle.setOpacity(1);
+
+      const shouldUseRagdoll = cosmeticDeathPhysicsEnabled && isDead;
+      if (shouldUseRagdoll) {
+        const sv = new THREE.Vector3(
+          sample?.velocity[0] ?? 0,
+          sample?.velocity[1] ?? 0,
+          sample?.velocity[2] ?? 0,
+        );
+        handle.setRagdoll(true, sv);
+      } else {
+        handle.setRagdoll(false);
+      }
 
       const vx = sample?.velocity[0] ?? 0;
       const vz = sample?.velocity[2] ?? 0;
@@ -3300,26 +3314,4 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
-}
-
-function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
-  const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 48;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, 128, 48);
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 28px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(`P${id}`, 64, 34);
-  const texture = new THREE.CanvasTexture(canvas);
-  const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-  const sprite = new THREE.Sprite(labelMat);
-  sprite.name = 'idLabel';
-  sprite.scale.set(1.2, 0.45, 1);
-  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
-  // Place the label just above the head.
-  sprite.position.y = 1.0;
-  parent.add(sprite);
 }
