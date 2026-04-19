@@ -56,6 +56,10 @@ export type {
 export {
   PracticeBotRuntime,
   PRACTICE_BOT_ID_BASE,
+  MAX_PRACTICE_BOTS,
+  PRACTICE_BOT_WALK_SPEED,
+  PRACTICE_BOT_SPRINT_SPEED,
+  PRACTICE_BOT_SPRINT_DISTANCE_M,
   DEFAULT_VEHICLE_PROFILE,
   type BotDebugInfo,
   type BotObstacleDebugInfo,
@@ -63,6 +67,7 @@ export {
   type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,
   type PracticeBotNavDebugConfig,
+  type PracticeBotShotVisual,
   type PracticeBotNavTuning,
   type PracticeBotRuntimeOptions,
   type PracticeBotRuntimeSyncOptions,

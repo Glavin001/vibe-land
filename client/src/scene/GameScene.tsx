@@ -23,11 +23,13 @@ type GameSceneProps = {
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   cosmeticDeathPhysicsEnabled?: boolean;
@@ -53,11 +55,13 @@ export function GameScene({
   rapierDebugModeBits = 0,
   showRenderStats,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   cosmeticDeathPhysicsEnabled = true,
@@ -100,9 +104,11 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}
+          showPlayerIdLabels={showPlayerIdLabels}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
+          practiceBotsDebugLabels={practiceBotsDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}

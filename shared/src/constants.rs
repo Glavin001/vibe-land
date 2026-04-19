@@ -14,6 +14,7 @@ pub const FLAG_ON_GROUND: u16 = 1 << 0;
 pub const FLAG_IN_VEHICLE: u16 = 1 << 1;
 pub const FLAG_DEAD: u16 = 1 << 2;
 pub const FLAG_MELEEING: u16 = 1 << 3;
+pub const FLAG_SPAWN_PROTECTED: u16 = 1 << 4;
 
 // ── Packet type IDs ─────────────────────────────
 pub const PKT_CLIENT_HELLO: u8 = 1;
@@ -37,6 +38,7 @@ pub const PKT_PLAYER_ROSTER: u8 = 113;
 pub const PKT_DYNAMIC_BODY_META: u8 = 114;
 pub const PKT_LOCAL_PLAYER_ENERGY: u8 = 115;
 pub const PKT_BATTERY_SYNC: u8 = 116;
+pub const PKT_SHOT_FIRED: u8 = 117;
 
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
@@ -74,6 +76,7 @@ pub const MAX_PENDING_INPUTS: usize = 120;
 pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
+pub const SPAWN_PROTECTION_MS: u32 = 3_000;
 // ── Melee combat ────────────────────────────────
 pub const MELEE_DAMAGE: u8 = 35;
 pub const MELEE_COOLDOWN_MS: u32 = 900;

@@ -1821,6 +1821,36 @@ impl WasmLocalSession {
         }
     }
 
+    #[wasm_bindgen(js_name = classifyHitscanPlayer)]
+    pub fn classify_hitscan_player(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        body_x: f32,
+        body_y: f32,
+        body_z: f32,
+        blocker_toi: f32,
+    ) -> Box<[f32]> {
+        let blocker = if blocker_toi.is_finite() {
+            Some(blocker_toi)
+        } else {
+            None
+        };
+        match self.inner.classify_hitscan_player(
+            [ox, oy, oz],
+            [dx, dy, dz],
+            [body_x, body_y, body_z],
+            blocker,
+        ) {
+            Some((distance, kind)) => Box::new([distance, kind as f32]),
+            None => Box::new([]),
+        }
+    }
+
     #[wasm_bindgen(js_name = getVehicleDebug)]
     pub fn get_vehicle_debug(&self, vehicle_id: u32) -> Box<[f64]> {
         let Some(debug) = self.inner.vehicle_debug(vehicle_id) else {

@@ -14,7 +14,7 @@
 
 use rapier3d::parry::query;
 
-use super::PhysicsArena;
+use super::{PhysicsArena, PlayerDamageOutcome};
 use crate::movement::{
     VEHICLE_DAMAGE_MIN_DIRECT_FACTOR, VEHICLE_DAMAGE_MIN_SPEED_M_S, VEHICLE_LETHAL_SPEED_M_S,
 };
@@ -128,7 +128,10 @@ impl PhysicsArena {
                     continue;
                 }
 
-                if self.apply_player_damage(pid, damage) {
+                if matches!(
+                    self.apply_player_damage(pid, damage),
+                    PlayerDamageOutcome::Killed
+                ) {
                     killed.push(pid);
                 }
             }

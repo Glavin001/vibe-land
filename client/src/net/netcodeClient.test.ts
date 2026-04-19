@@ -7,6 +7,7 @@ import {
   type PlayerRosterPacket,
   type SnapshotPacket,
   type SnapshotV2Packet,
+  type ShotFiredPacket,
   type ShotResultPacket,
   type WelcomePacket,
   type NetPlayerState,
@@ -773,6 +774,39 @@ describe('NetcodeClient', () => {
 
       expect(received).not.toBeNull();
       expect(received?.hitZone).toBe(2);
+    });
+
+    it('routes broadcast shot-fired packets to onShotFired callback', () => {
+      let received: ShotFiredPacket | null = null;
+      const client = new NetcodeClient({
+        onShotFired: (packet) => {
+          received = packet;
+        },
+      });
+
+      client.handlePacket({
+        type: 'shotFired',
+        shooterPlayerId: 42,
+        shotId: 99,
+        weapon: 1,
+        hitKind: 1,
+        hitZone: 2,
+        serverFireTimeUs: 1_234_567,
+        originPxMm: 100,
+        originPyMm: 2_000,
+        originPzMm: -3_000,
+        endPxMm: 4_500,
+        endPyMm: 2_100,
+        endPzMm: -3_050,
+      });
+
+      expect(received).not.toBeNull();
+      expect(received?.shooterPlayerId).toBe(42);
+      expect(received?.shotId).toBe(99);
+      expect(received?.hitKind).toBe(1);
+      expect(received?.hitZone).toBe(2);
+      expect(received?.serverFireTimeUs).toBe(1_234_567);
+      expect(received?.endPxMm).toBe(4_500);
     });
   });
 

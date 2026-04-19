@@ -1,27 +1,34 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
-import type {
-  BotDebugInfo,
-  PracticeBotBehaviorKind,
-  PracticeBotNavDebugConfig,
-  PracticeBotNavTuning,
-  PracticeBotRuntime,
-  PracticeBotStats,
+import { useEffect, useState } from 'react';
+import {
+  MAX_PRACTICE_BOTS,
+  PRACTICE_BOT_SPRINT_DISTANCE_M,
+  PRACTICE_BOT_SPRINT_SPEED,
+  PRACTICE_BOT_WALK_SPEED,
+  type BotDebugInfo,
+  type PracticeBotBehaviorKind,
+  type PracticeBotNavDebugConfig,
+  type PracticeBotNavTuning,
+  type PracticeBotRuntime,
+  type PracticeBotStats,
 } from '../bots';
 
 interface PracticeBotsPanelProps {
   visible: boolean;
+  desiredCount: number;
   stats: PracticeBotStats | null;
   runtime: PracticeBotRuntime | null;
   navConfig: PracticeBotNavDebugConfig | null;
   navTuning: PracticeBotNavTuning | null;
   debugOverlay: boolean;
+  debugLabels: boolean;
   onSetBotCount: (count: number) => void;
   onClear: () => void;
   onSetBehavior: (kind: PracticeBotBehaviorKind) => void;
-  onSetMaxSpeed: (speed: number) => void;
   onUpdateNavTuning: (patch: Partial<PracticeBotNavTuning>) => void;
   onResetNavTuning: () => void;
   onToggleDebugOverlay: (value: boolean) => void;
+  onToggleDebugLabels: (value: boolean) => void;
+  onSetEnableShooting: (value: boolean) => void;
   onSetUseVehicles: (value: boolean) => void;
 }
 
@@ -37,31 +44,6 @@ const BEHAVIORS: Array<{ value: PracticeBotBehaviorKind; label: string; desc: st
   { value: 'hold', label: 'Hold anchor', desc: 'Bots stay near their spawn anchor' },
 ];
 
-function useDraggableInputSync(
-  externalValue: number,
-): readonly [
-  RefObject<HTMLInputElement>,
-  () => void,
-  () => void,
-] {
-  const ref = useRef<HTMLInputElement>(null);
-  const draggingRef = useRef(false);
-  useEffect(() => {
-    if (draggingRef.current || !ref.current) return;
-    const next = String(externalValue);
-    if (ref.current.value !== next) {
-      ref.current.value = next;
-    }
-  }, [externalValue]);
-  const onPointerDown = () => {
-    draggingRef.current = true;
-  };
-  const onPointerUp = () => {
-    draggingRef.current = false;
-  };
-  return [ref, onPointerDown, onPointerUp];
-}
-
 function panelLabel(text: string) {
   return (
     <span className="w-16 shrink-0 text-[11px] uppercase tracking-[0.12em] text-white/60">
@@ -72,35 +54,36 @@ function panelLabel(text: string) {
 
 export function PracticeBotsPanel({
   visible,
+  desiredCount,
   stats,
   runtime,
   navConfig,
   navTuning,
   debugOverlay,
+  debugLabels,
   onSetBotCount,
   onClear,
   onSetBehavior,
-  onSetMaxSpeed,
   onUpdateNavTuning,
   onResetNavTuning,
   onToggleDebugOverlay,
+  onToggleDebugLabels,
+  onSetEnableShooting,
   onSetUseVehicles,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
   const [botInfos, setBotInfos] = useState<BotDebugInfo[]>([]);
   const [navDraft, setNavDraft] = useState<NavTuningDraft | null>(null);
   const [navDraftDirty, setNavDraftDirty] = useState(false);
+  const [countDraft, setCountDraft] = useState(() => String(desiredCount));
 
-  const count = stats?.bots ?? 0;
+  const actualCount = stats?.bots ?? 0;
+  const count = desiredCount;
   const behavior = stats?.behavior ?? 'harass';
-  const maxSpeed = stats?.maxSpeed ?? 3.0;
+  const maxSpeed = stats?.maxSpeed ?? PRACTICE_BOT_SPRINT_SPEED;
   const activeNav = navConfig;
+  const enableShooting = stats?.enableShooting ?? true;
   const useVehicles = stats?.useVehicles ?? false;
-
-  const [countSliderRef, countDragStart, countDragEnd] = useDraggableInputSync(count);
-  const [countNumberRef] = useDraggableInputSync(count);
-  const [speedSliderRef, speedDragStart, speedDragEnd] = useDraggableInputSync(maxSpeed);
-  const [speedNumberRef] = useDraggableInputSync(maxSpeed);
 
   useEffect(() => {
     if (!visible || !open || !runtime) {
@@ -118,6 +101,10 @@ export function PracticeBotsPanel({
     const interval = setInterval(sync, 100);
     return () => clearInterval(interval);
   }, [open, runtime, visible]);
+
+  useEffect(() => {
+    setCountDraft(String(desiredCount));
+  }, [desiredCount]);
 
   useEffect(() => {
     if (!navConfig) {
@@ -149,68 +136,44 @@ export function PracticeBotsPanel({
         className="min-w-28 rounded-md border border-white/[0.12] bg-black/60 px-3 py-1.5 text-left text-xs text-white shadow-[0_8px_18px_rgba(0,0,0,0.3)] backdrop-blur-sm transition-colors hover:bg-black/[0.72]"
         onClick={() => setOpen((value) => !value)}
       >
-        {open ? '▼ Bots' : '▶ Bots'} · {count}
+        {open ? '▼ Bots' : '▶ Bots'} · {actualCount}
       </button>
       {open && (
         <div className="flex min-w-[22.5rem] max-w-[34rem] flex-col gap-3 rounded-xl border border-white/[0.12] bg-black/70 px-3 py-3 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Count')}
             <input
-              ref={countSliderRef}
               type="range"
               min={0}
-              max={16}
+              max={MAX_PRACTICE_BOTS}
               step={1}
-              defaultValue={count}
+              value={count}
               className="h-2 flex-1 cursor-pointer accent-sky-300"
               onInput={(event) => onSetBotCount(Number((event.target as HTMLInputElement).value))}
-              onPointerDown={countDragStart}
-              onPointerUp={countDragEnd}
-              onPointerCancel={countDragEnd}
+              onChange={(event) => onSetBotCount(Number(event.target.value))}
             />
             <input
-              ref={countNumberRef}
               type="number"
               min={0}
-              max={32}
+              max={MAX_PRACTICE_BOTS}
               step={1}
-              defaultValue={count}
+              value={countDraft}
               className="w-14 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-right text-xs text-white outline-none transition focus:border-sky-300/60 focus:bg-white/12"
-              onChange={(event) => {
-                const next = Number.parseInt(event.target.value, 10);
+              onInput={(event) => {
+                const nextRaw = (event.target as HTMLInputElement).value;
+                setCountDraft(nextRaw);
+                const next = Number.parseInt(nextRaw, 10);
                 if (Number.isFinite(next)) onSetBotCount(next);
               }}
+              onBlur={() => setCountDraft(String(desiredCount))}
             />
           </div>
           <div className="flex items-center gap-2 text-xs">
-            {panelLabel('Speed')}
-            <input
-              ref={speedSliderRef}
-              type="range"
-              min={0.5}
-              max={8}
-              step={0.25}
-              defaultValue={maxSpeed}
-              className="h-2 flex-1 cursor-pointer accent-sky-300"
-              onInput={(event) => onSetMaxSpeed(Number((event.target as HTMLInputElement).value))}
-              onPointerDown={speedDragStart}
-              onPointerUp={speedDragEnd}
-              onPointerCancel={speedDragEnd}
-            />
-            <input
-              ref={speedNumberRef}
-              type="number"
-              min={0.5}
-              max={12}
-              step={0.25}
-              defaultValue={maxSpeed}
-              className="w-14 rounded border border-white/20 bg-white/10 px-1.5 py-0.5 text-right text-xs text-white outline-none transition focus:border-sky-300/60 focus:bg-white/12"
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next) && next > 0) onSetMaxSpeed(next);
-              }}
-            />
-            <span className="w-8 text-[11px] text-white/55">m/s</span>
+            {panelLabel('Move')}
+            <div className="flex-1 rounded-lg border border-white/[0.08] bg-white/[0.03] px-2 py-2 text-white/[0.82]">
+              Human speeds: walk {PRACTICE_BOT_WALK_SPEED.toFixed(1)} m/s, sprint {PRACTICE_BOT_SPRINT_SPEED.toFixed(1)} m/s.
+              Sprint engages when the target is more than {PRACTICE_BOT_SPRINT_DISTANCE_M.toFixed(0)} m away.
+            </div>
           </div>
           <div className="flex items-start gap-2 text-xs">
             {panelLabel('Behavior')}
@@ -245,6 +208,18 @@ export function PracticeBotsPanel({
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs">
+            {panelLabel('Combat')}
+            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
+              <input
+                type="checkbox"
+                checked={enableShooting}
+                onChange={(event) => onSetEnableShooting(event.target.checked)}
+                className="accent-sky-300"
+              />
+              <span>bots can fire their weapons</span>
+            </label>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
             {panelLabel('Vehicles')}
             <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
               <input
@@ -258,21 +233,33 @@ export function PracticeBotsPanel({
           </div>
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Debug')}
-            <label className="flex flex-1 cursor-pointer items-center gap-2 text-white/[0.85]">
-              <input
-                type="checkbox"
-                checked={debugOverlay}
-                onChange={(event) => onToggleDebugOverlay(event.target.checked)}
-                className="accent-sky-300"
-              />
-              <span>Show navmesh, raw and snapped targets, paths, and state labels in scene</span>
-            </label>
+            <div className="flex flex-1 flex-col gap-2">
+              <label className="flex cursor-pointer items-center gap-2 text-white/[0.85]">
+                <input
+                  type="checkbox"
+                  checked={debugOverlay}
+                  onChange={(event) => onToggleDebugOverlay(event.target.checked)}
+                  className="accent-sky-300"
+                />
+                <span>Show navmesh, raw and snapped targets, and paths in scene</span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-white/[0.85]">
+                <input
+                  type="checkbox"
+                  checked={debugLabels}
+                  onChange={(event) => onToggleDebugLabels(event.target.checked)}
+                  className="accent-sky-300"
+                />
+                <span>Show floating bot detail cards above bots</span>
+              </label>
+            </div>
           </div>
           <div className="flex items-center gap-2 text-xs">
             <button
               type="button"
               className="flex-1 rounded-md border border-sky-300/[0.45] bg-sky-300/[0.18] px-3 py-1.5 font-medium text-sky-50 transition-colors hover:bg-sky-300/[0.26]"
               onClick={() => onSetBotCount(count + 1)}
+              disabled={count >= MAX_PRACTICE_BOTS}
             >
               + Add bot
             </button>
@@ -280,15 +267,15 @@ export function PracticeBotsPanel({
               type="button"
               className="flex-1 rounded-md border border-red-300/[0.4] bg-red-300/[0.16] px-3 py-1.5 font-medium text-red-50 transition-colors enabled:hover:bg-red-300/[0.24] disabled:cursor-not-allowed disabled:opacity-45"
               onClick={onClear}
-              disabled={count === 0}
+              disabled={actualCount === 0}
             >
               Clear
             </button>
           </div>
           <div className="flex items-center gap-2 border-t border-dashed border-white/10 pt-2 font-mono text-[11px] text-white/[0.68]">
-            <span>{count} bots</span>
+            <span>{actualCount} live / {desiredCount} target</span>
             <span>·</span>
-            <span>{maxSpeed.toFixed(2)} m/s</span>
+            <span>{PRACTICE_BOT_WALK_SPEED.toFixed(1)} / {maxSpeed.toFixed(1)} m/s</span>
             <span>·</span>
             <span>{behavior}</span>
           </div>
