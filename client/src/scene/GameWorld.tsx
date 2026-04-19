@@ -20,7 +20,16 @@ import {
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
-import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import {
+  CAMERA_PSEUDO_MUZZLE_OFFSET,
+  LOCAL_SHOT_TRACE_BEAM_RADIUS,
+  LOCAL_SHOT_TRACE_IMPACT_RADIUS,
+  LOCAL_SHOT_TRACE_MAX_DISTANCE,
+  createLocalShotTrace,
+  updateLocalShotTraceVisuals,
+  type LocalShotTrace,
+  type RemoteShotHit,
+} from './shotTrace';
 import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
@@ -51,6 +60,14 @@ import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPla
 import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
+import { PracticeGuestPlayer, type GuestCameraMap, type GuestHudMap } from './PracticeGuestPlayer';
+import { SplitScreenRenderer } from './SplitScreenRenderer';
+import {
+  configureCameraLayersForLocalSlot,
+  layerForLocalSlot,
+  setObjectLayerRecursive,
+} from './splitScreenLayers';
+import { LOCAL_HUMAN_ID_BASE, MAX_LOCAL_PLAYERS } from '../app/localPlayers';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -93,11 +110,6 @@ const PLAYER_CAPSULE_HALF_SEGMENT = 0.45;
 const PLAYER_CAPSULE_BODY_LENGTH = PLAYER_CAPSULE_HALF_SEGMENT * 2;
 const PLAYER_HEAD_RADIUS = 0.22;
 const PLAYER_HEAD_CENTER_OFFSET_Y = 0.75;
-const LOCAL_SHOT_TRACE_TTL_MS = 90;
-const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
-const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
-const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
-const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const PLAYER_DEBUG_HELPER_NAME = 'playerPhysicsDebugHelper';
 
@@ -346,6 +358,20 @@ type GameWorldProps = {
   // firing-range scene, so the player's feel during drills is identical to
   // normal play.
   sceneExtras?: ReactNode;
+  /** Additional local-human split-screen slots (slotId >= 1). Each entry
+   * spawns a `PracticeGuestPlayer` that owns its own input device and
+   * drives a dedicated sim-side player id via `LocalPracticeClient.connectHuman`. */
+  practiceGuests?: Array<{ slotId: number; humanId: number; device: import('../input/types').LocalDeviceAssignment }>;
+  /** Optional external ref that receives per-guest HUD state (hp/energy/etc).
+   * When provided, `PracticeGuestPlayer` populates this ref; the DOM HUD
+   * overlay outside the Canvas reads from it to render per-viewport stats. */
+  guestHudRef?: RefObject<GuestHudMap>;
+  /** Concrete input device for slot 0 when split-screen is active. When
+   * `null`/undefined, slot 0 uses the legacy single-player manager that
+   * samples every source and arbitrates by `inputFamilyMode`. In split
+   * screen we need to pin slot 0 to one device so guest pads don't bleed
+   * into P1's input. */
+  localSlotZeroDevice?: import('../input/types').LocalDeviceAssignment | null;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -1066,6 +1092,9 @@ export function GameWorld({
   fogDensity = DEFAULT_FOG_SETTINGS.density,
   fogColor = DEFAULT_FOG_SETTINGS.color,
   sceneExtras,
+  practiceGuests,
+  guestHudRef: guestHudRefProp,
+  localSlotZeroDevice,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -1099,6 +1128,9 @@ export function GameWorld({
   const { camera, gl } = useThree();
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
+  const guestCamerasRef = useRef<GuestCameraMap>(new Map());
+  const guestHudFallbackRef = useRef<GuestHudMap>(new Map());
+  const guestHudRef = guestHudRefProp ?? guestHudFallbackRef;
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const remoteGroupRef = useRef<THREE.Group>(null);
@@ -1106,6 +1138,10 @@ export function GameWorld({
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
+  /** Humanoid mesh rendered for slot 0 when split-screen is active. Slot 0's
+   * own camera has its layer disabled, so it's hidden from P1 but visible
+   * to every guest camera. Null in single-player. */
+  const localSlot0MeshRef = useRef<RemotePlayerHandle | null>(null);
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const batteryGroupRef = useRef<THREE.Group>(null);
@@ -1226,18 +1262,31 @@ export function GameWorld({
   });
 
   useEffect(() => {
-    const manager = new GameInputManager();
+    const manager = new GameInputManager(localSlotZeroDevice ?? null);
     manager.attach();
     inputManagerRef.current = manager;
     return () => {
       manager.detach();
       inputManagerRef.current = null;
     };
-  }, []);
+  }, [localSlotZeroDevice]);
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
     onScopeActiveChangeRef.current?.(false);
+  }, []);
+
+  // Split-screen layer mask for slot 0's default camera: see the world and
+  // every *other* local-human slot's mesh layer, but not its own (layer 1).
+  useEffect(() => {
+    configureCameraLayersForLocalSlot(camera, 0);
+  }, [camera]);
+
+  useEffect(() => () => {
+    if (localSlot0MeshRef.current) {
+      localSlot0MeshRef.current.dispose();
+      localSlot0MeshRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -1263,25 +1312,40 @@ export function GameWorld({
     if (!practiceBots || !practiceMode || !ready) return;
     const host = runtimeRef.current?.getPracticeBotHost();
     if (!host) return;
-    const getSelf = () => {
+    const getSelves = () => {
       const client = runtimeRef.current;
       const state = client?.state;
-      if (!client || !state) return null;
+      if (!client || !state) return [];
+      const selves: Array<{ id: number; position: [number, number, number]; dead: boolean }> = [];
       const inVehicle = (host.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
       const position = inVehicle
         ? state.localPosition
         : client.getPosition() ?? state.localPosition;
-      return {
+      selves.push({
         id: host.playerId,
-        position: [position[0], position[1], position[2]] as [number, number, number],
+        position: [position[0], position[1], position[2]],
         dead: (host.localPlayerFlags & FLAG_DEAD) !== 0 || host.localPlayerHp <= 0,
-      };
+      });
+      // Include every local-human guest so bots targeting "nearest" can pick
+      // any split-screen player, not just slot 0.
+      if (practiceGuests) {
+        for (const guest of practiceGuests) {
+          const remote = host.remotePlayers.get(guest.humanId);
+          if (!remote) continue;
+          selves.push({
+            id: guest.humanId,
+            position: [remote.position[0], remote.position[1], remote.position[2]],
+            dead: (remote.flags & FLAG_DEAD) !== 0 || remote.hp <= 0,
+          });
+        }
+      }
+      return selves;
     };
-    practiceBots.attach(host, getSelf);
+    practiceBots.attach(host, getSelves);
     return () => {
       practiceBots.detach({ preserveHostBots: true });
     };
-  }, [practiceBots, practiceMode, ready]);
+  }, [practiceBots, practiceMode, ready, practiceGuests]);
 
   useEffect(() => {
     preloadCharacterAssets(PLAYER_PROFILE.modelUrl).catch(() => {
@@ -2630,6 +2694,15 @@ export function GameWorld({
           ? STATE.move
           : STATE.idle;
       handle.update(frameDelta, renderState, horizontalSpeed, isOnGround);
+
+      // If this remote is a local-human guest (sim id in LOCAL_HUMAN_ID_BASE
+      // range), stamp its mesh onto that slot's layer so the guest's own
+      // camera doesn't render its own body. The traverse catches async
+      // skinned-mesh children added by CharacterModel.load.
+      const localSlotId = id - LOCAL_HUMAN_ID_BASE;
+      if (localSlotId >= 0 && localSlotId < MAX_LOCAL_PLAYERS) {
+        setObjectLayerRecursive(handle.root, layerForLocalSlot(localSlotId));
+      }
     }
 
     // Remove stale
@@ -2647,6 +2720,42 @@ export function GameWorld({
         remoteLastMeleeingRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
+    }
+
+    // Slot-0 (primary local player) humanoid mesh. Only rendered in
+    // split-screen — in single-player nothing else needs to see P1's body.
+    // Guest cameras enable layer 1; slot 0's own camera keeps it disabled,
+    // so this mesh is hidden from P1 but visible to every other local view.
+    const splitScreenActive = (practiceGuests?.length ?? 0) > 0;
+    if (splitScreenActive) {
+      let slot0Handle = localSlot0MeshRef.current;
+      if (!slot0Handle) {
+        slot0Handle = createRemotePlayer(group, { tint: PLAYER_COLORS[0] });
+        slot0Handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[0]));
+        attachPlayerIdLabel(slot0Handle.root, 0);
+        localSlot0MeshRef.current = slot0Handle;
+      }
+      const hidden = localDead || isDrivingNow;
+      slot0Handle.root.position.set(pos[0], pos[1], pos[2]);
+      slot0Handle.root.rotation.y = yaw;
+      slot0Handle.setVisible(!hidden);
+      const slot0DebugHelper = slot0Handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
+      if (slot0DebugHelper) slot0DebugHelper.visible = showDebugHelpers && !hidden;
+      slot0Handle.setOpacity(localDead ? 0.35 : 1);
+      const vx0 = physStats.velocity[0];
+      const vz0 = physStats.velocity[2];
+      const hSpeed0 = Math.hypot(vx0, vz0);
+      const slot0RenderState: RemoteRenderState = localDead
+        ? 'dead'
+        : hSpeed0 > 0.1
+          ? STATE.move
+          : STATE.idle;
+      const slot0OnGround = (localFlags & FLAG_ON_GROUND) !== 0;
+      slot0Handle.update(frameDelta, slot0RenderState, hSpeed0, slot0OnGround);
+      setObjectLayerRecursive(slot0Handle.root, layerForLocalSlot(0));
+    } else if (localSlot0MeshRef.current) {
+      localSlot0MeshRef.current.dispose();
+      localSlot0MeshRef.current = null;
     }
 
     // Update dynamic body meshes
@@ -2964,6 +3073,27 @@ export function GameWorld({
       )}
 
       {sceneExtras}
+
+      {practiceMode && practiceGuests?.map((guest) => (
+        <PracticeGuestPlayer
+          key={guest.slotId}
+          slotId={guest.slotId}
+          humanId={guest.humanId}
+          device={guest.device}
+          inputBindings={inputBindings}
+          runtimeRef={runtimeRef}
+          guestCamerasRef={guestCamerasRef}
+          guestHudRef={guestHudRef}
+        />
+      ))}
+
+      {practiceMode && practiceGuests && practiceGuests.length > 0 && (
+        <SplitScreenRenderer
+          guestSlotIds={practiceGuests.map((g) => g.slotId)}
+          guestHumanIds={practiceGuests.map((g) => g.humanId)}
+          guestCamerasRef={guestCamerasRef}
+        />
+      )}
     </>
   );
 }
@@ -3068,75 +3198,6 @@ function RapierDebugLines({
 
 function CrosshairHUD() {
   return null;
-}
-
-function createLocalShotTrace(
-  camera: THREE.Camera,
-  nowMs: number,
-  aimDirection: [number, number, number],
-  remoteHits: RemoteShotHit[],
-  blockerDistance: number | null,
-): LocalShotTrace {
-  const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
-  const intercept = pickShotTraceIntercept(blockerDistance, remoteHits, LOCAL_SHOT_TRACE_MAX_DISTANCE);
-  const pseudoMuzzleOrigin = camera.position.clone().add(CAMERA_PSEUDO_MUZZLE_OFFSET.clone().applyQuaternion(camera.quaternion));
-  const end = [
-    aimOrigin[0] + aimDirection[0] * intercept.distance,
-    aimOrigin[1] + aimDirection[1] * intercept.distance,
-    aimOrigin[2] + aimDirection[2] * intercept.distance,
-  ] as [number, number, number];
-
-  return {
-    origin: [pseudoMuzzleOrigin.x, pseudoMuzzleOrigin.y, pseudoMuzzleOrigin.z],
-    end,
-    kind: intercept.kind,
-    expiresAtMs: nowMs + LOCAL_SHOT_TRACE_TTL_MS,
-  };
-}
-
-function updateLocalShotTraceVisuals(
-  trace: LocalShotTrace | null,
-  nowMs: number,
-  beam: THREE.Mesh | null,
-  impact: THREE.Mesh | null,
-) {
-  if (!beam || !impact) return;
-  if (!isShotTraceActive(trace, nowMs)) {
-    beam.visible = false;
-    impact.visible = false;
-    return;
-  }
-  if (!trace) {
-    beam.visible = false;
-    impact.visible = false;
-    return;
-  }
-
-  const alpha = Math.max(0, (trace.expiresAtMs - nowMs) / LOCAL_SHOT_TRACE_TTL_MS);
-  const color = shotTraceColor(trace.kind);
-  const origin = new THREE.Vector3(...trace.origin);
-  const end = new THREE.Vector3(...trace.end);
-  const delta = new THREE.Vector3().subVectors(end, origin);
-  const length = Math.max(delta.length(), 0.001);
-  const mid = new THREE.Vector3().addVectors(origin, end).multiplyScalar(0.5);
-  const direction = delta.normalize();
-
-  beam.visible = true;
-  beam.position.copy(mid);
-  beam.scale.set(1, length, 1);
-  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
-  if (beam.material instanceof THREE.MeshBasicMaterial) {
-    beam.material.color.setHex(color);
-    beam.material.opacity = alpha * 0.9;
-  }
-
-  impact.visible = true;
-  impact.position.copy(end);
-  impact.scale.setScalar(0.85 + alpha * 0.55);
-  if (impact.material instanceof THREE.MeshBasicMaterial) {
-    impact.material.color.setHex(color);
-    impact.material.opacity = alpha;
-  }
 }
 
 type VehicleSurfaceSegment = { z0: number; y0: number; z1: number; y1: number };

@@ -44,6 +44,9 @@ export type RemotePlayer = {
   hp: number;
   /** Latest player state flags (FLAG_DEAD, FLAG_IN_VEHICLE, ...). */
   flags: number;
+  /** Energy reserve in centi-units (0..100*100). Only decoded from the
+   * local-session snapshot; the online netcodeClient leaves this as 0. */
+  energyCenti?: number;
 };
 
 export type NetcodeClientConfig = {

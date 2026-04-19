@@ -3,6 +3,7 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  encodeFirePacket,
   encodeInputBundle,
   encodeMeleePacket,
   encodeVehicleEnterPacket,
@@ -53,6 +54,21 @@ export interface PracticeBotHost {
   sendBotMelee(botId: number, cmd: MeleeCmd): void;
   sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
   sendBotVehicleExit(botId: number, vehicleId: number): void;
+}
+
+/**
+ * Handle returned by `LocalPracticeClient.connectHuman` for driving a
+ * secondary local human split-screen slot. All mutations forward through
+ * the session's `handleHumanPacket` pipe so the sim sees the same packet
+ * shape whether the player is local-slot-0 or a guest.
+ */
+export interface LocalHumanSlotHandle {
+  readonly humanId: number;
+  sendInputs(cmds: InputCmd[]): void;
+  sendFire(cmd: FireCmd): void;
+  enterVehicle(vehicleId: number, seat?: number): void;
+  exitVehicle(vehicleId: number): void;
+  disconnect(): void;
 }
 
 export class LocalPracticeClient implements PracticeBotHost {
@@ -220,6 +236,70 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleBotPacket(botId >>> 0, encodeVehicleExitPacket(vehicleId >>> 0));
     } catch (error) {
       console.warn('[local-practice] bot vehicle exit rejected', error);
+    }
+  }
+
+  connectHuman(humanId: number): LocalHumanSlotHandle | null {
+    const session = this.session;
+    if (!session) return null;
+    const added = session.connectHuman(humanId >>> 0);
+    if (!added) return null;
+    this.syncFromSession(true);
+    return {
+      humanId: humanId >>> 0,
+      sendInputs: (cmds) => this.sendHumanInputs(humanId, cmds),
+      sendFire: (cmd) => this.sendHumanFire(humanId, cmd),
+      enterVehicle: (vehicleId, seat = 0) => this.sendHumanVehicleEnter(humanId, vehicleId, seat),
+      exitVehicle: (vehicleId) => this.sendHumanVehicleExit(humanId, vehicleId),
+      disconnect: () => this.disconnectHuman(humanId),
+    };
+  }
+
+  disconnectHuman(humanId: number): boolean {
+    const removed = this.session?.disconnectHuman(humanId >>> 0) ?? false;
+    if (removed) {
+      this.syncFromSession(true);
+    }
+    return removed;
+  }
+
+  sendHumanInputs(humanId: number, cmds: InputCmd[]): void {
+    const session = this.session;
+    if (!session || cmds.length === 0) return;
+    try {
+      session.handleHumanPacket(humanId >>> 0, encodeInputBundle(cmds));
+    } catch (error) {
+      console.warn('[local-practice] human input rejected', error);
+    }
+  }
+
+  sendHumanFire(humanId: number, cmd: FireCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleHumanPacket(humanId >>> 0, encodeFirePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] human fire rejected', error);
+    }
+  }
+
+  sendHumanVehicleEnter(humanId: number, vehicleId: number, _seat = 0): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleHumanPacket(humanId >>> 0, encodeVehicleEnterPacket(vehicleId >>> 0, 0));
+    } catch (error) {
+      console.warn('[local-practice] human vehicle enter rejected', error);
+    }
+  }
+
+  sendHumanVehicleExit(humanId: number, vehicleId: number): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleHumanPacket(humanId >>> 0, encodeVehicleExitPacket(vehicleId >>> 0));
+    } catch (error) {
+      console.warn('[local-practice] human vehicle exit rejected', error);
     }
   }
 
@@ -504,6 +584,7 @@ export class LocalPracticeClient implements PracticeBotHost {
         pitch: meters.pitch,
         hp: meters.hp,
         flags: state.flags,
+        energyCenti: state.energyCenti,
       });
     }
 

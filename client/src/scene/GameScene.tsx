@@ -1,12 +1,19 @@
 import { StatsGl } from '@react-three/drei';
 import { Canvas } from '@react-three/fiber';
-import { Suspense, type ReactNode } from 'react';
+import { Suspense, type ReactNode, type RefObject } from 'react';
 import type { GameMode } from '../app/gameMode';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
-import type { InputFamilyMode, InputSample } from '../input/types';
+import type { GuestHudMap } from './PracticeGuestPlayer';
+import type { InputFamilyMode, InputSample, LocalDeviceAssignment } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+
+export interface PracticeGuestSpec {
+  slotId: number;
+  humanId: number;
+  device: LocalDeviceAssignment;
+}
 
 type GameSceneProps = {
   mode: GameMode;
@@ -37,6 +44,9 @@ type GameSceneProps = {
   fogDensity?: number;
   fogColor?: string;
   sceneExtras?: ReactNode;
+  practiceGuests?: PracticeGuestSpec[];
+  guestHudRef?: RefObject<GuestHudMap>;
+  localSlotZeroDevice?: LocalDeviceAssignment | null;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -69,6 +79,9 @@ export function GameScene({
   fogDensity,
   fogColor,
   sceneExtras,
+  practiceGuests,
+  guestHudRef,
+  localSlotZeroDevice,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -116,6 +129,9 @@ export function GameScene({
           fogDensity={fogDensity}
           fogColor={fogColor}
           sceneExtras={sceneExtras}
+          practiceGuests={practiceGuests}
+          guestHudRef={guestHudRef}
+          localSlotZeroDevice={localSlotZeroDevice}
         />
       </Suspense>
     </Canvas>

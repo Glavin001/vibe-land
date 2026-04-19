@@ -33,11 +33,19 @@ import type {
 } from '../types';
 
 export type LocalSelfAccessor = () => LocalSelfSnapshot | null;
+/**
+ * Returns the full set of local-human "selves" the bots should observe as
+ * targets. Used for split-screen `/practice` where 2-4 humans share the same
+ * WASM session. Returning an empty array disables local targeting the same
+ * way `LocalSelfAccessor` returning `null` does.
+ */
+export type LocalSelvesAccessor = () => LocalSelfSnapshot[];
 
 export interface LocalSelfSnapshot {
   id: number;
   position: [number, number, number];
   dead: boolean;
+  isInVehicle?: boolean;
 }
 
 export const PRACTICE_BOT_ID_BASE = 1_000_000;
@@ -209,7 +217,7 @@ export class PracticeBotRuntime {
   private maxSpeed: number;
   private readonly tickHz: number;
   private host: PracticeBotHost | null = null;
-  private getSelf: LocalSelfAccessor | null = null;
+  private getSelves: LocalSelvesAccessor | null = null;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private lastTickMs = 0;
   private running = false;
@@ -281,11 +289,17 @@ export class PracticeBotRuntime {
     this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
   }
 
-  attach(host: PracticeBotHost, getSelf: LocalSelfAccessor): void {
-    if (this.host === host && this.getSelf === getSelf) return;
+  attach(host: PracticeBotHost, accessor: LocalSelvesAccessor | LocalSelfAccessor): void {
+    const getSelves: LocalSelvesAccessor = () => {
+      const result = accessor();
+      if (result == null) return [];
+      if (Array.isArray(result)) return result;
+      return [result];
+    };
+    if (this.host === host && this.getSelves === getSelves) return;
     this.detach({ preserveHostBots: true });
     this.host = host;
-    this.getSelf = getSelf;
+    this.getSelves = getSelves;
     for (const bot of this.bots.values()) {
       const alreadyConnected = this.host.remotePlayers.has(bot.id);
       if (!alreadyConnected) {
@@ -324,7 +338,7 @@ export class PracticeBotRuntime {
     }
     this.reservedVehicles.clear();
     this.host = null;
-    this.getSelf = null;
+    this.getSelves = null;
   }
 
   get count(): number {
@@ -674,23 +688,23 @@ export class PracticeBotRuntime {
     const host = this.host;
     const localFlags = host.localPlayerFlags;
     const localHp = host.localPlayerHp;
-    const selfSnapshot = this.getSelf?.() ?? null;
-    const localIsDead = selfSnapshot?.dead ?? ((localFlags & FLAG_DEAD) !== 0 || localHp <= 0);
+    const selves = this.getSelves?.() ?? [];
     const localIsInVehicle = (localFlags & FLAG_IN_VEHICLE) !== 0;
-    const observed: ObservedPlayer[] = selfSnapshot
-      ? [
-          {
-            id: selfSnapshot.id,
-            position: [
-              selfSnapshot.position[0],
-              selfSnapshot.position[1],
-              selfSnapshot.position[2],
-            ],
-            isDead: localIsDead,
-            isInVehicle: localIsInVehicle,
-          },
-        ]
-      : [];
+    // For split-screen, we surface every local human as an `ObservedPlayer`
+    // so the existing `harassNearest` behavior picks the nearest live target.
+    // For the single-player path we fall back to the host-level HP/flags when
+    // no explicit dead-flag is provided in the snapshot.
+    const observed: ObservedPlayer[] = selves.map((snap, index) => {
+      const isDead = snap.dead
+        || (index === 0 ? ((localFlags & FLAG_DEAD) !== 0 || localHp <= 0) : false);
+      const isInVehicle = snap.isInVehicle ?? (index === 0 ? localIsInVehicle : false);
+      return {
+        id: snap.id,
+        position: [snap.position[0], snap.position[1], snap.position[2]],
+        isDead,
+        isInVehicle,
+      };
+    });
 
     for (const bot of this.bots.values()) {
       const remote = host.remotePlayers.get(bot.id);

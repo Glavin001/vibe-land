@@ -1,6 +1,16 @@
 export type DeviceFamily = 'keyboardMouse' | 'gamepad' | 'touch';
 export type InputFamilyMode = DeviceFamily | 'auto';
 
+/**
+ * Concrete per-player device assignment used by local split-screen. Each
+ * slot either owns the keyboard/mouse or a specific pad index
+ * (0..navigator.getGamepads().length). Distinct from `InputFamilyMode`,
+ * which is the single-player auto/keyboard/gamepad toggle.
+ */
+export type LocalDeviceAssignment =
+  | { family: 'keyboardMouse' }
+  | { family: 'gamepad'; index: number };
+
 export type InputContext = 'onFoot' | 'vehicle';
 
 export type ActionSnapshot = {

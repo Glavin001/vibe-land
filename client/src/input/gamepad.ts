@@ -65,6 +65,14 @@ export class GamepadInputSource {
   private previous: GamepadState = emptyState();
   private activityId = 0;
 
+  /**
+   * @param padIndex  If `null`, behaves the original way: pick the first
+   *   connected standard-mapping pad (or fall back to the first connected
+   *   pad). If a number, sample `navigator.getGamepads()[padIndex]`
+   *   specifically — used by split-screen so each slot owns its pad.
+   */
+  constructor(private readonly padIndex: number | null = null) {}
+
   private noteActivityIfChanged(gamepad: Gamepad, previous: GamepadState) {
     const axisChanged = gamepad.axes.some((value, index) => Math.abs(value - (previous.axes[index] ?? 0)) > 0.08);
     const buttonChanged = gamepad.buttons.some((button, index) => Math.abs(button.value - (previous.buttons[index] ?? 0)) > 0.15);
@@ -75,9 +83,11 @@ export class GamepadInputSource {
 
   sample(deltaSec: number, context: InputContext, bindings: InputBindings): ActionSnapshot | null {
     const pads = navigator.getGamepads?.() ?? [];
-    const gamepad = pads.find((pad) => Boolean(pad && pad.connected && pad.mapping === 'standard'))
-      ?? pads.find((pad) => Boolean(pad && pad.connected))
-      ?? null;
+    const gamepad = this.padIndex != null
+      ? (pads[this.padIndex] && pads[this.padIndex]!.connected ? pads[this.padIndex]! : null)
+      : (pads.find((pad) => Boolean(pad && pad.connected && pad.mapping === 'standard'))
+        ?? pads.find((pad) => Boolean(pad && pad.connected))
+        ?? null);
     if (!gamepad) return null;
 
     const gamepadBindings = bindings.gamepad;

@@ -14,6 +14,8 @@ import {
 } from './input/bindings';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
+import type { GuestHudMap } from './scene/PracticeGuestPlayer';
+import { SplitScreenHud, type SplitScreenHudPlayer } from './scene/SplitScreenHud';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
 import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
@@ -49,6 +51,15 @@ import {
 } from './bots';
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
+import { LocalPlayersPanel } from './ui/LocalPlayersPanel';
+import {
+  LOCAL_HUMAN_ID_BASE,
+  defaultSlotZero,
+  nextAvailableSlotId,
+  pickDefaultDeviceForNewSlot,
+  type LocalPlayerSlot,
+} from './app/localPlayers';
+import type { LocalDeviceAssignment } from './input/types';
 import { updateE2EBridgeAppState } from './e2eBridge';
 import { updateFogSettings, useFogSettings } from './graphics/fogSettings';
 
@@ -174,6 +185,35 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [localPlayers, setLocalPlayers] = useState<LocalPlayerSlot[]>(() => [defaultSlotZero()]);
+  const splitScreen = practiceMode && localPlayers.length > 1;
+  const practiceGuests = useMemo(
+    () => (practiceMode
+      ? localPlayers
+          .filter((slot) => slot.slotId !== 0)
+          .map((slot) => ({
+            slotId: slot.slotId,
+            humanId: LOCAL_HUMAN_ID_BASE + slot.slotId,
+            device: slot.device,
+          }))
+      : []),
+    [practiceMode, localPlayers],
+  );
+  const handleAddLocalPlayer = useCallback(() => {
+    setLocalPlayers((slots) => {
+      if (slots.length >= 4) return slots;
+      const nextId = nextAvailableSlotId(slots);
+      if (nextId == null) return slots;
+      const device = pickDefaultDeviceForNewSlot(slots);
+      return [...slots, { slotId: nextId, simPlayerId: null, device }];
+    });
+  }, []);
+  const handleRemoveLocalPlayer = useCallback((slotId: number) => {
+    setLocalPlayers((slots) => slots.filter((slot) => slot.slotId !== slotId));
+  }, []);
+  const handleChangeLocalDevice = useCallback((slotId: number, device: LocalDeviceAssignment) => {
+    setLocalPlayers((slots) => slots.map((slot) => (slot.slotId === slotId ? { ...slot, device } : slot)));
+  }, []);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
@@ -207,6 +247,7 @@ export function App({
   const benchmarkResultRef = useRef<PlayWorkerResult | null>(null);
   const vehicleBenchmarkAccumulatorRef = useRef<VehicleBenchmarkAccumulator>(createVehicleBenchmarkAccumulator());
   const autoConnectAttemptedRef = useRef(false);
+  const guestHudRef = useRef<GuestHudMap>(new Map());
 
   // Calibration wizard state (firing range only).
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -857,7 +898,7 @@ export function App({
         <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
           Controls
         </button>
-        {practiceMode && connected && (
+        {practiceMode && connected && !splitScreen && (
           <button
             type="button"
             onClick={openCalibration}
@@ -886,7 +927,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && !scopeActive && (
+      {connected && !splitScreen && !scopeActive && (
         <div
           style={{
             position: 'absolute',
@@ -987,7 +1028,7 @@ export function App({
       <ControlHintsOverlay
         bindings={inputBindings}
         state={controlHintsState}
-        visible={connected && isDesktop && !touchMode}
+        visible={connected && isDesktop && !touchMode && !splitScreen}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
@@ -996,6 +1037,7 @@ export function App({
         open={controlsOpen}
         bindings={inputBindings}
         inputFamilyMode={inputFamilyMode}
+        hideFamilyToggle={splitScreen}
         onClose={() => setControlsOpen(false)}
         onInputFamilyModeChange={setInputFamilyMode}
         onKeyboardBindingChange={updateKeyboardBinding}
@@ -1019,6 +1061,13 @@ export function App({
           onRenderSceneExtras={setCalibrationSceneExtras}
         />
       )}
+      <LocalPlayersPanel
+        visible={practiceMode && connected && !calibrationOpen}
+        slots={localPlayers}
+        onAddSlot={handleAddLocalPlayer}
+        onRemoveSlot={handleRemoveLocalPlayer}
+        onChangeDevice={handleChangeLocalDevice}
+      />
       <PracticeBotsPanel
         visible={practiceMode && connected && !calibrationOpen}
         desiredCount={practiceBotDesiredCount}
@@ -1040,9 +1089,30 @@ export function App({
       <EnergyBar
         hp={displayStats.hp}
         energy={displayStats.energy}
-        visible={connected}
+        visible={connected && !splitScreen}
       />
-      <MeleeHUD visible={connected} />
+      {splitScreen && (() => {
+        const hudPlayers: SplitScreenHudPlayer[] = localPlayers.map((slot) => (
+          slot.slotId === 0
+            ? { slotId: 0, humanId: null, label: 'P1' }
+            : {
+                slotId: slot.slotId,
+                humanId: LOCAL_HUMAN_ID_BASE + slot.slotId,
+                label: `P${slot.slotId + 1}`,
+              }
+        ));
+        return (
+          <SplitScreenHud
+            players={hudPlayers}
+            primaryHp={displayStats.hp}
+            primaryEnergy={displayStats.energy}
+            primaryVisible={connected}
+            crosshairState={crosshairState}
+            guestHudRef={guestHudRef}
+          />
+        );
+      })()}
+      <MeleeHUD visible={connected && !splitScreen} />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -1104,6 +1174,9 @@ export function App({
           fogDensity={fogSettings.density}
           fogColor={fogSettings.color}
           sceneExtras={calibrationSceneExtras}
+          practiceGuests={practiceGuests}
+          guestHudRef={guestHudRef}
+          localSlotZeroDevice={splitScreen ? localPlayers[0].device : null}
         />
       )}
     </div>
