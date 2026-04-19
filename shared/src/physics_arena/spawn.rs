@@ -50,7 +50,7 @@ impl PhysicsArena {
         true
     }
 
-    fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
+    pub fn terrain_y_at(&self, x: f64, z: f64) -> f64 {
         self.cast_static_world_ray([x as f32, 40.0, z as f32], [0.0, -1.0, 0.0], 100.0, None)
             .map(|toi| 40.0 - toi as f64)
             .unwrap_or(0.0)
