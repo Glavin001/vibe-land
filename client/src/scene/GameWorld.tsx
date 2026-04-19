@@ -44,12 +44,14 @@ import {
   FLAG_IN_VEHICLE,
   FLAG_MELEEING,
   FLAG_ON_GROUND,
+  FLAG_SPAWN_PROTECTED,
   HIT_ZONE_BODY,
   HIT_ZONE_HEAD,
   MELEE_COOLDOWN_MS,
   MELEE_HALF_CONE_COS,
   MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
+  SPAWN_PROTECTION_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type { NetVehicleState, ShotFiredPacket, VehicleStateMeters } from '../net/protocol';
@@ -68,7 +70,7 @@ import {
 } from '../bots/crowd/BotCrowd';
 import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
 import { anchorForBot, type LoadTestScenario, type PlayBenchmarkDriverProfile } from '../loadtest/scenario';
-import type { PracticeBotRuntime } from '../bots';
+import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
@@ -118,6 +120,8 @@ const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.034;
 const LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS = 0.012;
 const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.11;
 const LOCAL_SHOT_TRACE_CORE_IMPACT_RADIUS = 0.045;
+const REMOTE_SPAWN_SHIELD_RADIUS = PLAYER_CAPSULE_RADIUS + 0.08;
+const REMOTE_SPAWN_SHIELD_BODY_LENGTH = PLAYER_CAPSULE_BODY_LENGTH + 0.12;
 const SHOT_TRACE_POOL_SIZE = 16;
 const SHOT_TRACE_MAX_ACTIVE = 32;
 const SHOT_RESOLUTION_MISS_VALUE = 0;
@@ -1177,6 +1181,8 @@ export function GameWorld({
   const nextSwingIdRef = useRef(1);
   const remoteLastMeleeingRef = useRef<Map<number, boolean>>(new Map());
   const remoteHpBarsRef = useRef<Map<number, RemoteHpBarHandle>>(new Map());
+  const remoteSpawnShieldsRef = useRef<Map<number, RemoteSpawnShieldHandle>>(new Map());
+  const remoteSpawnShieldUntilRef = useRef<Map<number, number>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
   const localShotTraceRef = useRef<LocalShotTrace | null>(null);
   const botBrainRef = useRef<BotBrain | null>(null);
@@ -1388,6 +1394,20 @@ export function GameWorld({
     return () => {
       practiceBots.detach({ preserveHostBots: true });
     };
+  }, [practiceBots, practiceMode, ready]);
+
+  useEffect(() => {
+    if (!practiceBots || !practiceMode || !ready) return;
+    return practiceBots.onShotVisual((shot: PracticeBotShotVisual) => {
+      pushActiveShotTrace(activeShotTracesRef.current, {
+        id: nextShotTraceIdRef.current++,
+        shooterId: shot.shooterId,
+        origin: shot.origin,
+        end: shot.end,
+        kind: shot.kind,
+        expiresAtMs: performance.now() + LOCAL_SHOT_TRACE_TTL_MS,
+      });
+    });
   }, [practiceBots, practiceMode, ready]);
 
   useEffect(() => {
@@ -2648,6 +2668,7 @@ export function GameWorld({
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
         attachPlayerIdLabel(handle.root, id);
         remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
+        remoteSpawnShieldsRef.current.set(id, attachRemoteSpawnShield(handle.root));
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
@@ -2667,6 +2688,7 @@ export function GameWorld({
       const isInVehicle = (remoteFlags & FLAG_IN_VEHICLE) !== 0;
       const isOnGround = (remoteFlags & FLAG_ON_GROUND) !== 0;
       const isMeleeing = (remoteFlags & FLAG_MELEEING) !== 0;
+      const hasSpawnProtection = (remoteFlags & FLAG_SPAWN_PROTECTED) !== 0;
       const wasMeleeing = remoteLastMeleeingRef.current.get(id) ?? false;
       if (isMeleeing && !wasMeleeing && !isDead) {
         handle.playOneShot('Melee_Hook');
@@ -2701,6 +2723,21 @@ export function GameWorld({
       if (hpBar) {
         hpBar.setHp(replicatedHp);
         hpBar.setVisible(!isDead && !isInVehicle);
+      }
+
+      const spawnShield = remoteSpawnShieldsRef.current.get(id);
+      if (spawnShield) {
+        if (hasSpawnProtection) {
+          if (!remoteSpawnShieldUntilRef.current.has(id)) {
+            remoteSpawnShieldUntilRef.current.set(id, now + SPAWN_PROTECTION_MS);
+          }
+        } else {
+          remoteSpawnShieldUntilRef.current.delete(id);
+        }
+        const shieldUntil = remoteSpawnShieldUntilRef.current.get(id) ?? 0;
+        const fadeProgress = Math.max(0, Math.min(1, (shieldUntil - now) / SPAWN_PROTECTION_MS));
+        spawnShield.setFadeProgress(fadeProgress);
+        spawnShield.setVisible(hasSpawnProtection && !isDead && !isInVehicle && fadeProgress > 0);
       }
 
       const flashUntil = remoteHitFlashUntilRef.current.get(id) ?? 0;
@@ -2740,6 +2777,12 @@ export function GameWorld({
           bar.dispose();
           remoteHpBarsRef.current.delete(id);
         }
+        const shield = remoteSpawnShieldsRef.current.get(id);
+        if (shield) {
+          shield.dispose();
+          remoteSpawnShieldsRef.current.delete(id);
+        }
+        remoteSpawnShieldUntilRef.current.delete(id);
         handle.dispose();
         remoteMeshes.current.delete(id);
         remoteLastHpRef.current.delete(id);
@@ -3745,6 +3788,12 @@ interface RemoteHpBarHandle {
   dispose(): void;
 }
 
+interface RemoteSpawnShieldHandle {
+  setFadeProgress(progress: number): void;
+  setVisible(visible: boolean): void;
+  dispose(): void;
+}
+
 const REMOTE_HP_BAR_MAX = 100;
 const REMOTE_HP_BAR_W = 128;
 const REMOTE_HP_BAR_H = 18;
@@ -3805,6 +3854,46 @@ function attachRemoteHpBar(parent: THREE.Object3D): RemoteHpBarHandle {
       parent.remove(sprite);
       material.dispose();
       texture.dispose();
+    },
+  };
+}
+
+function attachRemoteSpawnShield(parent: THREE.Object3D): RemoteSpawnShieldHandle {
+  const geometry = new THREE.CapsuleGeometry(
+    REMOTE_SPAWN_SHIELD_RADIUS,
+    REMOTE_SPAWN_SHIELD_BODY_LENGTH,
+    8,
+    16,
+  );
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x52b8ff,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = 'remoteSpawnShield';
+  mesh.visible = false;
+  mesh.renderOrder = 998;
+  parent.add(mesh);
+
+  return {
+    setFadeProgress(progress: number): void {
+      if (progress <= 0) {
+        material.opacity = 0;
+        return;
+      }
+      const clamped = THREE.MathUtils.clamp(progress, 0, 1);
+      material.opacity = 0.05 + 0.27 * clamped * clamped;
+    },
+    setVisible(visible: boolean): void {
+      mesh.visible = visible;
+    },
+    dispose(): void {
+      parent.remove(mesh);
+      geometry.dispose();
+      material.dispose();
     },
   };
 }

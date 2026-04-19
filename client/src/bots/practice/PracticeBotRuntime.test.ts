@@ -2,10 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { PracticeBotHost } from '../../net/localPracticeClient';
 import type { RemotePlayer } from '../../net/netcodeClient';
-import {
-  type InputCmd,
-  type VehicleStateMeters,
-} from '../../net/protocol';
+import type { FireCmd, InputCmd, VehicleStateMeters } from '../../net/protocol';
 import {
   getSharedPlayerNavigationProfile,
   hydrateSharedPlayerNavigationProfileFromLoadedWasm,
@@ -47,8 +44,12 @@ class FakePracticeBotHost implements PracticeBotHost {
   readonly vehicles = new Map<number, VehicleStateMeters>();
   readonly spawnPositions = new Map<number, [number, number, number]>();
   readonly sentInputCounts = new Map<number, number>();
+  readonly sentFires = new Map<number, FireCmd[]>();
   readonly lastInputs = new Map<number, InputCmd[]>();
   readonly maxSpeedOverrides = new Map<number, number | null>();
+  /** Optional stubbed ray hit (toi in meters). Null means "no hit". */
+  castSceneRayResult: { toi: number } | null = null;
+  castSceneRayCalls = 0;
   connectCalls = 0;
   disconnectCalls = 0;
   playerId = 1;
@@ -64,6 +65,7 @@ class FakePracticeBotHost implements PracticeBotHost {
       yaw: 0,
       pitch: 0,
       hp: 100,
+      flags: 0,
     });
     return true;
   }
@@ -93,6 +95,17 @@ class FakePracticeBotHost implements PracticeBotHost {
 
   sendBotVehicleExit(): void {
     /* noop */
+  }
+
+  sendBotFire(botId: number, cmd: FireCmd): void {
+    const list = this.sentFires.get(botId) ?? [];
+    list.push({ ...cmd, dir: [cmd.dir[0], cmd.dir[1], cmd.dir[2]] });
+    this.sentFires.set(botId, list);
+  }
+
+  castSceneRay(): { toi: number } | null {
+    this.castSceneRayCalls += 1;
+    return this.castSceneRayResult;
   }
 }
 
@@ -358,5 +371,196 @@ describe('PracticeBotRuntime.create', () => {
     rebuilt.clear();
     rebuilt.detach();
     expect(host.disconnectCalls).toBe(1);
+  });
+
+  it('emits FireCmd packets through the host while the local player is in range and not occluded', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+    expect(initialInfo?.id).toBe(botId);
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    // Clear line of sight (no wall between bot and player).
+    host.castSceneRayResult = null;
+
+    // Place the local player ~8 m away so we're outside the min-range
+    // guard but well inside the harass fire window.
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 8,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+
+    // Run ~1 second of simulated ticks. At 60 Hz the brain needs ~12
+    // ticks to finish its aim prep, then fires are rate-limited to
+    // roughly every 108 ms (server cooldown + local slack).
+    vi.advanceTimersByTime(1000);
+
+    const fires = host.sentFires.get(botId) ?? [];
+    expect(fires.length).toBeGreaterThan(0);
+    expect(fires.length).toBeLessThanOrEqual(10);
+    for (const fire of fires) {
+      expect(fire.weapon).toBe(1);
+      const magnitude = Math.hypot(fire.dir[0], fire.dir[1], fire.dir[2]);
+      expect(magnitude).toBeCloseTo(1, 1);
+    }
+
+    const debugInfo = runtime.getBotDebugInfos()[0];
+    expect(debugInfo?.shotsFired).toBe(fires.length);
+
+    runtime.clear();
+    runtime.detach();
+  });
+
+  it('publishes a visible shot event when a bot fires', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+    expect(initialInfo?.id).toBe(botId);
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    host.castSceneRayResult = null;
+
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 8,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    const shots: Array<{ shooterId: number; origin: [number, number, number]; end: [number, number, number]; kind: string }> = [];
+    const unsubscribe = runtime.onShotVisual((shot) => {
+      shots.push(shot);
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(1000);
+
+    expect(shots.length).toBeGreaterThan(0);
+    expect(shots[0]?.shooterId).toBe(botId);
+    expect(shots[0]?.kind).toBe('body');
+    expect(shots[0]?.origin[0]).toBeCloseTo(initialInfo?.position[0] ?? 0, 1);
+    expect(shots[0]?.origin[2]).toBeCloseTo(initialInfo?.position[2] ?? 0, 1);
+    expect(shots[0]?.end[0]).toBeGreaterThan(shots[0]?.origin[0] ?? 0);
+
+    unsubscribe();
+    runtime.clear();
+    runtime.detach();
+  });
+
+  it('suppresses FireCmd packets when castSceneRay reports a blocking wall in front of the bot', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    // Fake wall at 2 m in front of the bot.
+    host.castSceneRayResult = { toi: 2 };
+
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 12,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(1000);
+
+    const fires = host.sentFires.get(botId) ?? [];
+    expect(fires.length).toBe(0);
+    expect(host.castSceneRayCalls).toBeGreaterThan(0);
+
+    runtime.clear();
+    runtime.detach();
+  });
+
+  it('suppresses FireCmd packets when shooting is disabled', () => {
+    vi.useFakeTimers();
+
+    const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      maxAgentRadius: 0.6,
+      enableShooting: false,
+    });
+
+    const botId = runtime.spawnBot();
+    const initialInfo = runtime.getBotDebugInfos()[0];
+
+    const host = new FakePracticeBotHost();
+    host.spawnPositions.set(botId, [
+      initialInfo?.position[0] ?? 0,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ]);
+    host.castSceneRayResult = null;
+
+    const localPosition: [number, number, number] = [
+      (initialInfo?.position[0] ?? 0) + 8,
+      playerCenterY(initialInfo?.position[1] ?? 0),
+      initialInfo?.position[2] ?? 0,
+    ];
+    const getSelf = () => ({
+      id: host.playerId,
+      position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
+      dead: false,
+    });
+
+    runtime.attach(host, getSelf);
+    vi.advanceTimersByTime(1000);
+
+    expect(runtime.stats().enableShooting).toBe(false);
+    expect(host.sentFires.get(botId) ?? []).toHaveLength(0);
+
+    runtime.clear();
+    runtime.detach();
   });
 });

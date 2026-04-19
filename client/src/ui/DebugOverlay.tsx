@@ -201,6 +201,7 @@ export type DebugStats = {
   onGround: boolean;
   inVehicle: boolean;
   dead: boolean;
+  spawnProtected: boolean;
 
   // System
   heapUsedMb: number;
@@ -401,6 +402,7 @@ export const DEFAULT_STATS: DebugStats = {
   onGround: false,
   inVehicle: false,
   dead: false,
+  spawnProtected: false,
   heapUsedMb: -1,
   heapTotalMb: -1,
 };
