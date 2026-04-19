@@ -40,6 +40,7 @@ import {
   updateInputSettings,
 } from './input/inputSettingsStore';
 import {
+  MAX_PRACTICE_BOTS,
   PracticeBotRuntime,
   type PracticeBotBehaviorKind,
   type PracticeBotNavDebugConfig,
@@ -259,14 +260,15 @@ export function App({
   const [practiceBotNavTuning, setPracticeBotNavTuning] = useState<PracticeBotNavTuning | null>(DEFAULT_PRACTICE_BOT_NAV_TUNING);
   const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
-  const [practiceBotDesiredMaxSpeed, setPracticeBotDesiredMaxSpeed] = useState(3.0);
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
+  const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
+  const [playerIdLabelsEnabled, setPlayerIdLabelsEnabled] = useState(false);
   const refreshPracticeBotStats = useCallback(() => {
     const runtime = practiceBotRuntimeRef.current;
     setPracticeBotStats(runtime ? runtime.stats() : null);
   }, []);
   const handleSetBotCount = useCallback((count: number) => {
-    setPracticeBotDesiredCount(Math.max(0, Math.min(32, Math.floor(count))));
+    setPracticeBotDesiredCount(Math.max(0, Math.min(MAX_PRACTICE_BOTS, Math.floor(count))));
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
     runtime.setBotCount(count);
@@ -282,13 +284,6 @@ export function App({
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
     runtime.setBehavior(kind);
-    refreshPracticeBotStats();
-  }, [refreshPracticeBotStats]);
-  const handleSetBotMaxSpeed = useCallback((speed: number) => {
-    setPracticeBotDesiredMaxSpeed(Math.max(0.5, Math.min(12, speed)));
-    const runtime = practiceBotRuntimeRef.current;
-    if (!runtime) return;
-    runtime.setMaxSpeed(speed);
     refreshPracticeBotStats();
   }, [refreshPracticeBotStats]);
   const handleUpdateBotNavTuning = useCallback((patch: Partial<PracticeBotNavTuning>) => {
@@ -312,6 +307,9 @@ export function App({
   const handleToggleBotDebugOverlay = useCallback((value: boolean) => {
     setPracticeBotDebugOverlay(value);
   }, []);
+  const handleToggleBotDebugLabels = useCallback((value: boolean) => {
+    setPracticeBotDebugLabels(value);
+  }, []);
   const handleSetBotUseVehicles = useCallback((value: boolean) => {
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
@@ -332,6 +330,7 @@ export function App({
       setPracticeBotStats(null);
       setPracticeBotNavConfig(null);
       setPracticeBotDebugOverlay(false);
+      setPracticeBotDebugLabels(false);
     }
   }, [practiceMode]);
 
@@ -365,7 +364,6 @@ export function App({
     }
     const desiredCount = practiceBotDesiredCount;
     const desiredBehavior = practiceBotDesiredBehavior;
-    const desiredMaxSpeed = practiceBotDesiredMaxSpeed;
     const navTuning = practiceBotNavTuning;
     const handle = window.setTimeout(() => {
       void (async () => {
@@ -387,7 +385,6 @@ export function App({
             return;
           }
           runtime.setBehavior(desiredBehavior);
-          runtime.setMaxSpeed(desiredMaxSpeed);
           if (preservedBots.length > 0) {
             runtime.restoreBotSnapshots(preservedBots);
           } else {
@@ -1024,18 +1021,20 @@ export function App({
       )}
       <PracticeBotsPanel
         visible={practiceMode && connected && !calibrationOpen}
+        desiredCount={practiceBotDesiredCount}
         stats={practiceBotStats}
         runtime={practiceBotRuntime}
         navConfig={practiceBotNavConfig}
         navTuning={practiceBotNavTuning}
         debugOverlay={practiceBotDebugOverlay}
+        debugLabels={practiceBotDebugLabels}
         onSetBotCount={handleSetBotCount}
         onClear={handleClearBots}
         onSetBehavior={handleSetBotBehavior}
-        onSetMaxSpeed={handleSetBotMaxSpeed}
         onUpdateNavTuning={handleUpdateBotNavTuning}
         onResetNavTuning={handleResetBotNavTuning}
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
+        onToggleDebugLabels={handleToggleBotDebugLabels}
         onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar
@@ -1056,6 +1055,8 @@ export function App({
         fogEnabled={fogSettings.enabled}
         fogDensity={fogSettings.density}
         onToggleFog={() => updateFogSettings((s) => ({ ...s, enabled: !s.enabled }))}
+        playerIdLabelsEnabled={playerIdLabelsEnabled}
+        onTogglePlayerIdLabels={() => setPlayerIdLabelsEnabled((enabled) => !enabled)}
         rapierDebugLabel={rapierDebugLabel}
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
@@ -1091,9 +1092,11 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           showDebugHelpers={debugVisible}
+          showPlayerIdLabels={playerIdLabelsEnabled}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceMode ? practiceBotRuntime : null}
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
+          practiceBotsDebugLabels={practiceMode && practiceBotDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}

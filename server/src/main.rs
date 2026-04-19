@@ -50,12 +50,13 @@ use crate::{
     protocol::{
         client_datagram_to_packet, cms_to_mps, decode_client_datagram, decode_client_hello,
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
-        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state, mm_to_meters,
-        BatterySyncPacket, ClientPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd,
-        NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD,
-        HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY,
-        PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-        SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
+        make_net_shot_fired, mm_to_meters, BatterySyncPacket, ClientPacket, FireCmd, InputCmd,
+        LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState, ServerPacket, ShotResultPacket,
+        SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE,
+        PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -2340,8 +2341,11 @@ impl MatchState {
         self.arena.set_player_dead(player_id, true);
 
         if let Some((position, energy)) = battery_drop {
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + DEFAULT_BATTERY_HEIGHT_M as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 DEFAULT_BATTERY_RADIUS_M,
                 DEFAULT_BATTERY_HEIGHT_M,
@@ -2595,6 +2599,43 @@ impl MatchState {
                 blocker_toi,
             );
 
+            // Pre-compute the authoritative trace endpoint + classification for the
+            // shot-fired broadcast. This is used purely for visual trace rendering
+            // on all clients, independent of the ShotResult payload sent only to
+            // the shooter (which retains its original semantics).
+            let (shot_fired_end, shot_fired_kind, shot_fired_zone): ([f32; 3], u8, u8) = {
+                let project = |toi: f32| -> [f32; 3] {
+                    [
+                        origin[0] + queued.cmd.dir[0] * toi,
+                        origin[1] + queued.cmd.dir[1] * toi,
+                        origin[2] + queued.cmd.dir[2] * toi,
+                    ]
+                };
+                if let Some(hit) = player_hit.as_ref() {
+                    let zone_code = match hit.zone {
+                        HitZone::Body => HIT_ZONE_BODY,
+                        HitZone::Head => HIT_ZONE_HEAD,
+                    };
+                    (project(hit.distance), SHOT_RESOLUTION_PLAYER, zone_code)
+                } else {
+                    let dynamic_toi_only = dynamic_hit.map(|(_, toi, _)| toi);
+                    match (world_toi, dynamic_toi_only) {
+                        (Some(w), Some(d)) if w < d => {
+                            (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
+                        }
+                        (_, Some(d)) => (project(d), SHOT_RESOLUTION_DYNAMIC, HIT_ZONE_NONE),
+                        (Some(w), None) => {
+                            (project(w), SHOT_RESOLUTION_BLOCKED_BY_WORLD, HIT_ZONE_NONE)
+                        }
+                        (None, None) => (
+                            project(HITSCAN_MAX_DISTANCE_M),
+                            SHOT_RESOLUTION_MISS,
+                            HIT_ZONE_NONE,
+                        ),
+                    }
+                }
+            };
+
             let result = if let Some(hit) = player_hit {
                 let mut victim_killed = false;
                 if let Some(state) = self.arena.players.get_mut(&hit.victim_id) {
@@ -2676,6 +2717,25 @@ impl MatchState {
 
             if let Some(shooter) = self.players.get(&queued.player_id) {
                 let _ = try_queue_packet(&shooter.tx, encode_server_packet(&result), &self.io);
+            }
+
+            // Broadcast the shot-fired trace to every connected player so remote
+            // observers see the bullet. Stamped with the current server tick so
+            // clients can suppress packets whose render window has already expired.
+            let server_fire_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
+            let shot_fired = ServerPacket::ShotFired(make_net_shot_fired(
+                queued.player_id,
+                queued.cmd.shot_id,
+                queued.cmd.weapon,
+                shot_fired_kind,
+                shot_fired_zone,
+                server_fire_time_us,
+                origin,
+                shot_fired_end,
+            ));
+            let encoded = encode_server_packet(&shot_fired);
+            for player in self.players.values() {
+                let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
             }
         }
     }

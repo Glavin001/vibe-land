@@ -452,11 +452,15 @@ impl LocalSession {
         self.arena.exit_vehicle(LOCAL_PLAYER_ID);
         self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
         if let Some((position, energy)) = battery_drop {
+            let height = crate::constants::DEFAULT_BATTERY_HEIGHT_M;
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + height as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 crate::constants::DEFAULT_BATTERY_RADIUS_M,
-                crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+                height,
             );
         }
         if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
@@ -954,6 +958,30 @@ impl LocalSession {
     pub fn cast_scene_ray(&self, origin: [f32; 3], dir: [f32; 3], max_toi: f32) -> Option<f32> {
         self.arena
             .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
+    }
+
+    pub fn classify_hitscan_player(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        body_pos: [f32; 3],
+        blocker_toi: Option<f32>,
+    ) -> Option<(f32, u8)> {
+        let hit = classify_player_hitscan(
+            origin,
+            dir,
+            body_pos,
+            self.arena.config().capsule_half_segment,
+            self.arena.config().capsule_radius,
+            blocker_toi,
+        )?;
+        Some((
+            hit.distance,
+            match hit.zone {
+                HitZone::Body => HIT_ZONE_BODY,
+                HitZone::Head => HIT_ZONE_HEAD,
+            },
+        ))
     }
 
     pub fn vehicle_debug(&self, vehicle_id: u32) -> Option<VehicleDebugSnapshot> {

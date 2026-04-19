@@ -21,6 +21,7 @@ import {
   type NetVehicleState,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
 } from '../net/protocol';
 import { netPlayerStateToMeters } from '../net/protocol';
@@ -89,6 +90,7 @@ export type GameRuntimeCallbacks = {
   onDisconnect: (reason?: string) => void;
   onSnapshot?: () => void;
   onRenderBlocksChanged?: (blocks: RenderBlock[]) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
 };
 
 export interface GameRuntimeClient {
@@ -661,7 +663,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 
   supportsRemotePlayerHitscan(): boolean {
-    return false;
+    return true;
   }
 
   syncVehicleAuthority(): void {
@@ -768,8 +770,13 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return this.client?.castSceneRay(origin, direction, maxDistance) ?? null;
   }
 
-  classifyHitscanPlayer(): { distance: number; kind: number } | null {
-    return null;
+  classifyHitscanPlayer(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): { distance: number; kind: number } | null {
+    return this.client?.classifyHitscanPlayer(origin, direction, bodyCenter, blockerDistance) ?? null;
   }
 
   buildBlockEdit(): BlockEditCmd | null {
@@ -1080,6 +1087,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         },
         onWorldPacket: (packet) => {
           this.applyWorldPacket(packet);
+        },
+        onShotFired: (packet) => {
+          this.callbacks.onShotFired?.(packet);
         },
         onPacket: (packet) => {
           this.syncState();
