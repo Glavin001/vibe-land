@@ -754,7 +754,30 @@ impl LocalSession {
             }
 
             if let Some((victim_id, _dist)) = best {
+                let prev_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
                 self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+                let post_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
+                let applied = prev_hp.saturating_sub(post_hp);
+                if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                    self.outbound_packets
+                        .push(encode_damage_event_packet(&DamageEventPacket {
+                            attacker_player_id: attacker_id,
+                            damage_amount: applied,
+                            hit_zone: HIT_ZONE_BODY,
+                            attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                            attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                            attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                            server_time_ms,
+                        }));
+                }
             }
 
             if let Some(runtime) = self.players.get_mut(&attacker_id) {

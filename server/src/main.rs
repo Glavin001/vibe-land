@@ -2839,10 +2839,41 @@ impl MatchState {
                 }
 
                 if let Some((victim_id, _)) = best {
+                    let prev_hp = self
+                        .arena
+                        .players
+                        .get(&victim_id)
+                        .map(|s| s.hp)
+                        .unwrap_or(0);
                     let killed = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
+                    let new_hp = self
+                        .arena
+                        .players
+                        .get(&victim_id)
+                        .map(|s| s.hp)
+                        .unwrap_or(0);
+                    let applied_damage = prev_hp.saturating_sub(new_hp);
                     self.stagger_melee_after_damage(victim_id, server_time_ms);
                     if killed {
                         self.kill_player(victim_id, server_time_ms);
+                    }
+                    if applied_damage > 0 {
+                        if let Some(victim_conn) = self.players.get(&victim_id) {
+                            let damage_packet = ServerPacket::DamageEvent(DamageEventPacket {
+                                attacker_player_id: queued.player_id,
+                                damage_amount: applied_damage,
+                                hit_zone: HIT_ZONE_BODY,
+                                attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                                attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                                attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                                server_time_ms,
+                            });
+                            let _ = try_queue_packet(
+                                &victim_conn.tx,
+                                encode_server_packet(&damage_packet),
+                                &self.io,
+                            );
+                        }
                     }
                 }
             }
