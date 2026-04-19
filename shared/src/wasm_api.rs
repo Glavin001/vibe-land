@@ -12,7 +12,8 @@ use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLin
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
-    FireCmd, InputCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState, NetVehicleState,
+    FireCmd, InputCmd, MeleeCmd, NetBatteryState, NetDynamicBodyState, NetPlayerState,
+    NetVehicleState,
 };
 use crate::seq::seq_is_newer;
 use crate::simulation::{simulate_player_tick, SimWorld};
@@ -148,6 +149,10 @@ pub struct WasmSimWorld {
     // Dynamic body rigid bodies (server ID → Rapier RigidBodyHandle)
     dynamic_colliders: HashMap<u32, RigidBodyHandle>,
 
+    // Client-local ragdoll bodies (not server-reconciled)
+    ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
+    ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
+
     // Vehicle simulation (driver-side prediction)
     vehicle_pipeline: Option<PhysicsPipeline>,
     vehicle_joints: ImpulseJointSet,
@@ -178,6 +183,8 @@ impl WasmSimWorld {
             next_collider_id: 1,
             collider_ids: HashMap::new(),
             dynamic_colliders: HashMap::new(),
+            ragdoll_bodies: HashMap::new(),
+            ragdoll_joint_handles: HashMap::new(),
             vehicle_pipeline: Some(PhysicsPipeline::new()),
             vehicle_joints: ImpulseJointSet::new(),
             vehicle_multibody_joints: MultibodyJointSet::new(),
@@ -771,6 +778,188 @@ impl WasmSimWorld {
             av.y as f64,
             av.z as f64,
         ])
+    }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    /// Spawn a client-local ragdoll cuboid body.  Not server-reconciled.
+    /// Uses GROUP_2 collision so it interacts with terrain and vehicles.
+    #[wasm_bindgen(js_name = spawnRagdollBody)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let body = RigidBodyBuilder::dynamic()
+            .position(nalgebra::Isometry3::from_parts(
+                nalgebra::Translation3::new(px, py, pz),
+                iso,
+            ))
+            .linvel(vector![vx, vy, vz])
+            .angvel(vector![wx, wy, wz])
+            .linear_damping(0.02)
+            .angular_damping(0.02)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.sim.rigid_bodies.insert(body);
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(hx, hy, hz)
+            .density(2.0)
+            .restitution(0.3)
+            .friction(0.6)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let col_handle = self.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.sim.rigid_bodies,
+        );
+        self.sim.modified_colliders.push(col_handle);
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    /// Remove a client-local ragdoll body (cascades to joints + colliders).
+    #[wasm_bindgen(js_name = removeRagdollBody)]
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        if let Some(body_handle) = self.ragdoll_bodies.remove(&id) {
+            self.sim.rigid_bodies.remove(
+                body_handle,
+                &mut self.sim.island_manager,
+                &mut self.sim.colliders,
+                &mut self.vehicle_joints,
+                &mut self.vehicle_multibody_joints,
+                true,
+            );
+        }
+    }
+
+    /// Read a ragdoll body's current world transform.
+    /// Returns [px, py, pz, qx, qy, qz, qw] or empty on miss.
+    #[wasm_bindgen(js_name = getRagdollBodyState)]
+    pub fn get_ragdoll_body_state(&self, id: u32) -> Box<[f64]> {
+        let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
+            return Box::new([]);
+        };
+        let Some(rb) = self.sim.rigid_bodies.get(body_handle) else {
+            return Box::new([]);
+        };
+        let p = rb.translation();
+        let r = rb.rotation();
+        Box::new([
+            p.x as f64, p.y as f64, p.z as f64, r.i as f64, r.j as f64, r.k as f64, r.w as f64,
+        ])
+    }
+
+    /// Directly set linvel + angvel on a ragdoll body (used to seed velocity at death).
+    #[wasm_bindgen(js_name = setRagdollBodyVelocity)]
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
+            return;
+        };
+        if let Some(rb) = self.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![wx, wy, wz], true);
+        }
+    }
+
+    /// Create a spherical impulse joint between two ragdoll bodies.
+    #[wasm_bindgen(js_name = createRagdollSphericalJoint)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let joint = SphericalJointBuilder::new()
+            .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
+            .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
+            .build();
+        let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    /// Create a revolute impulse joint between two ragdoll bodies, with angular limits.
+    #[wasm_bindgen(js_name = createRagdollRevoluteJoint)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let axis = nalgebra::Unit::new_normalize(vector![ax, ay, az]);
+        let joint = RevoluteJointBuilder::new(axis)
+            .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
+            .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
+            .limits([limit_min, limit_max])
+            .build();
+        let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    /// Remove a ragdoll joint by its ID.
+    #[wasm_bindgen(js_name = removeRagdollJoint)]
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        if let Some(handle) = self.ragdoll_joint_handles.remove(&joint_id) {
+            self.vehicle_joints.remove(handle, false);
+        }
     }
 
     #[wasm_bindgen(js_name = reconcileDynamicBody)]
@@ -1547,6 +1736,24 @@ impl WasmLocalSession {
         });
     }
 
+    #[wasm_bindgen(js_name = queueMelee)]
+    pub fn queue_melee(
+        &mut self,
+        seq: u16,
+        swing_id: u32,
+        client_time_us: f64,
+        yaw: f32,
+        pitch: f32,
+    ) {
+        self.inner.queue_melee_cmd(MeleeCmd {
+            seq,
+            swing_id,
+            client_time_us: client_time_us.max(0.0).round() as u64,
+            yaw,
+            pitch,
+        });
+    }
+
     #[wasm_bindgen(js_name = enterVehicle)]
     pub fn enter_vehicle(&mut self, vehicle_id: u32) {
         self.inner.enter_vehicle(vehicle_id);
@@ -1631,6 +1838,36 @@ impl WasmLocalSession {
         }
     }
 
+    #[wasm_bindgen(js_name = classifyHitscanPlayer)]
+    pub fn classify_hitscan_player(
+        &self,
+        ox: f32,
+        oy: f32,
+        oz: f32,
+        dx: f32,
+        dy: f32,
+        dz: f32,
+        body_x: f32,
+        body_y: f32,
+        body_z: f32,
+        blocker_toi: f32,
+    ) -> Box<[f32]> {
+        let blocker = if blocker_toi.is_finite() {
+            Some(blocker_toi)
+        } else {
+            None
+        };
+        match self.inner.classify_hitscan_player(
+            [ox, oy, oz],
+            [dx, dy, dz],
+            [body_x, body_y, body_z],
+            blocker,
+        ) {
+            Some((distance, kind)) => Box::new([distance, kind as f32]),
+            None => Box::new([]),
+        }
+    }
+
     #[wasm_bindgen(js_name = getVehicleDebug)]
     pub fn get_vehicle_debug(&self, vehicle_id: u32) -> Box<[f64]> {
         let Some(debug) = self.inner.vehicle_debug(vehicle_id) else {
@@ -1673,6 +1910,118 @@ impl WasmLocalSession {
     #[wasm_bindgen(js_name = drainPackets)]
     pub fn drain_packets(&mut self) -> Box<[u8]> {
         self.inner.drain_packet_blob().into_boxed_slice()
+    }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    #[wasm_bindgen(js_name = spawnRagdollBody)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        self.inner.spawn_ragdoll_body(
+            id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+        );
+    }
+
+    #[wasm_bindgen(js_name = removeRagdollBody)]
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        self.inner.remove_ragdoll_body(id);
+    }
+
+    #[wasm_bindgen(js_name = getRagdollBodyState)]
+    pub fn get_ragdoll_body_state(&self, id: u32) -> Box<[f64]> {
+        match self.inner.ragdoll_body_state(id) {
+            Some(s) => Box::new([
+                s[0] as f64,
+                s[1] as f64,
+                s[2] as f64,
+                s[3] as f64,
+                s[4] as f64,
+                s[5] as f64,
+                s[6] as f64,
+            ]),
+            None => Box::new([]),
+        }
+    }
+
+    #[wasm_bindgen(js_name = setRagdollBodyVelocity)]
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        self.inner
+            .set_ragdoll_body_velocity(id, vx, vy, vz, wx, wy, wz);
+    }
+
+    #[wasm_bindgen(js_name = createRagdollSphericalJoint)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        self.inner
+            .create_ragdoll_spherical_joint(joint_id, b1_id, b2_id, a1x, a1y, a1z, a2x, a2y, a2z);
+    }
+
+    #[wasm_bindgen(js_name = createRagdollRevoluteJoint)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        self.inner.create_ragdoll_revolute_joint(
+            joint_id, b1_id, b2_id, a1x, a1y, a1z, a2x, a2y, a2z, ax, ay, az, limit_min, limit_max,
+        );
+    }
+
+    #[wasm_bindgen(js_name = removeRagdollJoint)]
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        self.inner.remove_ragdoll_joint(joint_id);
     }
 }
 

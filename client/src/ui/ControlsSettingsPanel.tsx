@@ -31,7 +31,7 @@ type ControlsSettingsPanelProps = {
   onResetAll: () => void;
 };
 
-type KeyboardKeyField = Exclude<keyof KeyboardBindings, 'firePrimaryMouseButton'>;
+type KeyboardKeyField = Exclude<keyof KeyboardBindings, 'firePrimaryMouseButton' | 'aimSecondaryMouseButton'>;
 
 type BindingSectionProps = {
   title: string;
@@ -53,6 +53,7 @@ const keyboardRows: Array<{ key: KeyboardKeyField; label: string }> = [
   { key: 'jump', label: 'Jump' },
   { key: 'sprint', label: 'Sprint' },
   { key: 'crouch', label: 'Crouch' },
+  { key: 'melee', label: 'Melee' },
   { key: 'interact', label: 'Interact / Enter / Exit Vehicle' },
   { key: 'resetVehicle', label: 'Reset Vehicle' },
   { key: 'blockRemove', label: 'Remove Block' },
@@ -69,6 +70,8 @@ const gamepadButtonRows: Array<{ key: Exclude<keyof GamepadBindings, 'moveXAxis'
   { key: 'sprintButton', label: 'Sprint' },
   { key: 'crouchButton', label: 'Crouch' },
   { key: 'firePrimaryButton', label: 'Fire Primary' },
+  { key: 'meleeButton', label: 'Melee' },
+  { key: 'aimSecondaryButton', label: 'Aim / Scope' },
   { key: 'handbrakeButton', label: 'Vehicle Handbrake' },
   { key: 'interactButton', label: 'Interact / Enter / Exit Vehicle' },
   { key: 'resetVehicleButton', label: 'Reset Vehicle' },
@@ -76,6 +79,7 @@ const gamepadButtonRows: Array<{ key: Exclude<keyof GamepadBindings, 'moveXAxis'
   { key: 'blockPlaceButton', label: 'Place Block' },
   { key: 'materialSlot1Button', label: 'Material Slot 1' },
   { key: 'materialSlot2Button', label: 'Material Slot 2' },
+  { key: 'meleeButton', label: 'Melee' },
 ];
 
 const gamepadAxisRows: Array<{ key: 'moveXAxis' | 'moveYAxis' | 'lookXAxis' | 'lookYAxis'; label: string }> = [
@@ -149,7 +153,7 @@ export function ControlsSettingsPanel({
         </div>
 
         <div style={bodyStyle}>
-          <BindingSection title="Keyboard + Mouse" subtitle="Mouse look stays on pointer lock movement.">
+          <BindingSection title="Keyboard + Mouse" subtitle="Mouse look stays on pointer lock movement. Aim / Scope can use either the mouse binding or the keyboard key.">
             <div style={tableStyle}>
               {keyboardRows.map((row) => (
                 <BindingRow
@@ -185,6 +189,38 @@ export function ControlsSettingsPanel({
                   </select>
                 )}
                 onReset={() => onKeyboardBindingReset('firePrimaryMouseButton')}
+              />
+              <BindingRow
+                label="Aim / Scope Mouse"
+                currentLabel={mouseButtonLabel(bindings.keyboard.aimSecondaryMouseButton)}
+                editor={(
+                  <select
+                    value={bindings.keyboard.aimSecondaryMouseButton}
+                    onChange={(event) => onKeyboardBindingChange('aimSecondaryMouseButton', Number(event.target.value) as KeyboardBindings['aimSecondaryMouseButton'])}
+                    style={selectStyle}
+                  >
+                    {MOUSE_BUTTON_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                )}
+                onReset={() => onKeyboardBindingReset('aimSecondaryMouseButton')}
+              />
+              <BindingRow
+                label="Aim / Scope Key"
+                currentLabel={keyboardCodeLabel(bindings.keyboard.aimSecondaryKey)}
+                editor={(
+                  <select
+                    value={bindings.keyboard.aimSecondaryKey}
+                    onChange={(event) => onKeyboardBindingChange('aimSecondaryKey', event.target.value as KeyboardBindings['aimSecondaryKey'])}
+                    style={selectStyle}
+                  >
+                    {KEYBOARD_CODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                )}
+                onReset={() => onKeyboardBindingReset('aimSecondaryKey')}
               />
             </div>
           </BindingSection>

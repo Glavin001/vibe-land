@@ -136,6 +136,7 @@ export class GamepadInputSource {
       crouch: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.crouchButton),
       firePrimary: context === 'onFoot' && buttonValue(gamepad, gamepadBindings.firePrimaryButton) > PRESSED_EPSILON,
       firePrimaryValue: context === 'onFoot' ? buttonValue(gamepad, gamepadBindings.firePrimaryButton) : 0,
+      aimSecondary: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.aimSecondaryButton),
       handbrake: context === 'vehicle' && buttonPressed(gamepad, gamepadBindings.handbrakeButton),
       interactPressed: buttonJustPressed(gamepad, previous, gamepadBindings.interactButton),
       resetVehiclePressed: context === 'vehicle' && buttonJustPressed(gamepad, previous, gamepadBindings.resetVehicleButton),
@@ -143,6 +144,7 @@ export class GamepadInputSource {
       blockPlacePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.blockPlaceButton),
       materialSlot1Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot1Button),
       materialSlot2Pressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.materialSlot2Button),
+      meleePressed: context === 'onFoot' && buttonJustPressed(gamepad, previous, gamepadBindings.meleeButton),
     };
 
     this.previous = {

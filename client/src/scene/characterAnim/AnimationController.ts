@@ -328,6 +328,20 @@ export class AnimationController {
     this.oneShotActive = false;
   }
 
+  /**
+   * Called after a ragdoll deactivates (respawn). The mixer was never stopped
+   * (that would T-pose the bones via PropertyBinding.restoreOriginalState);
+   * instead the FSM was simply paused via skipped update() calls while
+   * Ragdoll.update() drove the bones directly. We clear currentState so the
+   * next setState() call from the caller always triggers a fresh fade-in
+   * rather than being treated as a no-op.
+   */
+  resumeFromRagdoll(): void {
+    this.currentState = null;
+    this.oneShotActive = false;
+    this.clipFinished = false;
+  }
+
   update(dt: number): void {
     if (!Number.isFinite(dt) || dt <= 0) return;
 
