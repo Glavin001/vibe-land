@@ -127,4 +127,20 @@ describe('BotCrowd', () => {
     expect(handle.targetPosition?.[0] ?? 1).toBeLessThan(0);
     expect(handle.targetPosition?.[1] ?? 1).toBeLessThan(0.2);
   });
+
+  it('updateAgentSpacingParams patches separationWeight and collisionQueryRange on a live agent', () => {
+    const crowd = createBotCrowd(makeGapWorld(), {
+      navigationProfile: getSharedPlayerNavigationProfile(),
+      mode: 'solo',
+    });
+
+    const handle = crowd.addBot([-3, 0, 0]);
+    const agent = crowd.getAgent(handle.id);
+    expect(agent).toBeTruthy();
+
+    const ok = crowd.updateAgentSpacingParams(handle, 4.0, 7.5);
+    expect(ok).toBe(true);
+    expect(agent?.separationWeight).toBeCloseTo(4.0, 5);
+    expect(agent?.collisionQueryRange).toBeCloseTo(7.5, 5);
+  });
 });

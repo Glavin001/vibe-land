@@ -11,6 +11,7 @@ export interface BotBrainOptions extends SteeringOptions {
   anchor?: Vec3Tuple;
   retargetDistanceSqM?: number;
   maxTicksBetweenReplans?: number;
+  botId?: number;
 }
 
 export class BotBrain {
@@ -19,6 +20,7 @@ export class BotBrain {
   private behavior: Behavior;
   private readonly steer: SteeringState;
   private readonly options: BotBrainOptions;
+  private readonly botId: number;
   private anchor: Vec3Tuple;
   private tick = 0;
   private lastTarget: Vec3Tuple | null = null;
@@ -36,6 +38,7 @@ export class BotBrain {
     this.handle = handle;
     this.behavior = behavior;
     this.options = options;
+    this.botId = options.botId ?? 0;
     this.steer = createSteeringState();
     const agent = crowd.getAgent(handle.id);
     this.anchor = options.anchor ?? (agent
@@ -66,6 +69,7 @@ export class BotBrain {
       remotePlayers,
       anchor: this.anchor,
       tick: this.tick,
+      botId: this.botId,
     };
     const decision = this.behavior(ctx);
     this.lastDecisionTarget = decision.target ? [...decision.target] : null;

@@ -40,11 +40,13 @@ import {
   updateInputSettings,
 } from './input/inputSettingsStore';
 import {
+  DEFAULT_PRACTICE_BOT_SPACING_TUNING,
   MAX_PRACTICE_BOTS,
   PracticeBotRuntime,
   type PracticeBotBehaviorKind,
   type PracticeBotNavDebugConfig,
   type PracticeBotNavTuning,
+  type PracticeBotSpacingTuning,
   type PracticeBotStats,
 } from './bots';
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
@@ -316,6 +318,13 @@ export function App({
     runtime.setUseVehicles(value);
     refreshPracticeBotStats();
   }, [refreshPracticeBotStats]);
+  const [practiceBotSpacingTuning, setPracticeBotSpacingTuning] = useState<PracticeBotSpacingTuning>(
+    DEFAULT_PRACTICE_BOT_SPACING_TUNING,
+  );
+  const handleSetSpacingTuning = useCallback((tuning: PracticeBotSpacingTuning) => {
+    setPracticeBotSpacingTuning(tuning);
+    practiceBotRuntimeRef.current?.setSpacingTuning(tuning);
+  }, []);
 
   useEffect(() => {
     if (!practiceMode) {
@@ -1026,6 +1035,7 @@ export function App({
         runtime={practiceBotRuntime}
         navConfig={practiceBotNavConfig}
         navTuning={practiceBotNavTuning}
+        spacingTuning={practiceBotSpacingTuning}
         debugOverlay={practiceBotDebugOverlay}
         debugLabels={practiceBotDebugLabels}
         onSetBotCount={handleSetBotCount}
@@ -1036,6 +1046,7 @@ export function App({
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
         onToggleDebugLabels={handleToggleBotDebugLabels}
         onSetUseVehicles={handleSetBotUseVehicles}
+        onSetSpacingTuning={handleSetSpacingTuning}
       />
       <EnergyBar
         hp={displayStats.hp}

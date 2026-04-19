@@ -56,7 +56,7 @@ function defaultAgentParams(nav: BotNavMesh): Omit<AgentParams, 'queryFilter'> {
     maxAcceleration: 25.0,
     maxSpeed: 7.0,
     collisionQueryRange: 4,
-    separationWeight: 1.0,
+    separationWeight: 2.5,
     updateFlags:
       crowd.CrowdUpdateFlags.ANTICIPATE_TURNS
       | crowd.CrowdUpdateFlags.OBSTACLE_AVOIDANCE
@@ -277,6 +277,26 @@ export class BotCrowd {
     const result = findRandomPoint(this.nav.navMesh, DEFAULT_QUERY_FILTER, rand);
     if (!result.success) return null;
     return [result.position[0], result.position[1], result.position[2]];
+  }
+
+  /**
+   * Updates `separationWeight` and `collisionQueryRange` on a live crowd
+   * agent without removing and re-adding it. Safe to call every frame but
+   * intended for the runtime spacing-tuning setter.
+   *
+   * Returns false if the agent is unknown.
+   */
+  updateAgentSpacingParams(
+    agentOrHandleId: string | BotHandle,
+    separationWeight: number,
+    collisionQueryRange: number,
+  ): boolean {
+    const id = typeof agentOrHandleId === 'string' ? agentOrHandleId : agentOrHandleId.id;
+    const agent = this.crowd.agents[id];
+    if (!agent) return false;
+    agent.separationWeight = separationWeight;
+    agent.collisionQueryRange = collisionQueryRange;
+    return true;
   }
 
   /**

@@ -61,6 +61,7 @@ export {
   PRACTICE_BOT_SPRINT_SPEED,
   PRACTICE_BOT_SPRINT_DISTANCE_M,
   DEFAULT_VEHICLE_PROFILE,
+  DEFAULT_PRACTICE_BOT_SPACING_TUNING,
   type BotDebugInfo,
   type BotObstacleDebugInfo,
   type LocalSelfAccessor,
@@ -70,5 +71,6 @@ export {
   type PracticeBotNavTuning,
   type PracticeBotRuntimeOptions,
   type PracticeBotRuntimeSyncOptions,
+  type PracticeBotSpacingTuning,
   type PracticeBotStats,
 } from './practice/PracticeBotRuntime';

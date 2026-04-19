@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  DEFAULT_PRACTICE_BOT_SPACING_TUNING,
   MAX_PRACTICE_BOTS,
   PRACTICE_BOT_SPRINT_DISTANCE_M,
   PRACTICE_BOT_SPRINT_SPEED,
@@ -9,6 +10,7 @@ import {
   type PracticeBotNavDebugConfig,
   type PracticeBotNavTuning,
   type PracticeBotRuntime,
+  type PracticeBotSpacingTuning,
   type PracticeBotStats,
 } from '../bots';
 
@@ -19,6 +21,7 @@ interface PracticeBotsPanelProps {
   runtime: PracticeBotRuntime | null;
   navConfig: PracticeBotNavDebugConfig | null;
   navTuning: PracticeBotNavTuning | null;
+  spacingTuning: PracticeBotSpacingTuning;
   debugOverlay: boolean;
   debugLabels: boolean;
   onSetBotCount: (count: number) => void;
@@ -29,6 +32,7 @@ interface PracticeBotsPanelProps {
   onToggleDebugOverlay: (value: boolean) => void;
   onToggleDebugLabels: (value: boolean) => void;
   onSetUseVehicles: (value: boolean) => void;
+  onSetSpacingTuning: (tuning: PracticeBotSpacingTuning) => void;
 }
 
 interface NavTuningDraft {
@@ -58,6 +62,7 @@ export function PracticeBotsPanel({
   runtime,
   navConfig,
   navTuning,
+  spacingTuning,
   debugOverlay,
   debugLabels,
   onSetBotCount,
@@ -68,6 +73,7 @@ export function PracticeBotsPanel({
   onToggleDebugOverlay,
   onToggleDebugLabels,
   onSetUseVehicles,
+  onSetSpacingTuning,
 }: PracticeBotsPanelProps) {
   const [open, setOpen] = useState(false);
   const [botInfos, setBotInfos] = useState<BotDebugInfo[]>([]);
@@ -215,6 +221,41 @@ export function PracticeBotsPanel({
               />
               <span>bots can drive vehicles to reach targets</span>
             </label>
+          </div>
+          <div className="flex items-start gap-2 text-xs">
+            {panelLabel('Spacing')}
+            <div className="flex flex-1 flex-col gap-2">
+              <SpacingSlider
+                label="Separation"
+                value={spacingTuning.separationWeight}
+                min={0}
+                max={6}
+                step={0.1}
+                format={(v) => v.toFixed(1)}
+                defaultValue={DEFAULT_PRACTICE_BOT_SPACING_TUNING.separationWeight}
+                onChange={(v) => onSetSpacingTuning({ ...spacingTuning, separationWeight: v })}
+              />
+              <SpacingSlider
+                label="Coll range"
+                value={spacingTuning.collisionQueryRange}
+                min={1}
+                max={12}
+                step={0.5}
+                format={(v) => `${v.toFixed(1)} m`}
+                defaultValue={DEFAULT_PRACTICE_BOT_SPACING_TUNING.collisionQueryRange}
+                onChange={(v) => onSetSpacingTuning({ ...spacingTuning, collisionQueryRange: v })}
+              />
+              <SpacingSlider
+                label="Chase offset"
+                value={spacingTuning.chaseOffsetRadiusM}
+                min={0}
+                max={4}
+                step={0.25}
+                format={(v) => `${v.toFixed(2)} m`}
+                defaultValue={DEFAULT_PRACTICE_BOT_SPACING_TUNING.chaseOffsetRadiusM}
+                onChange={(v) => onSetSpacingTuning({ ...spacingTuning, chaseOffsetRadiusM: v })}
+              />
+            </div>
           </div>
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Debug')}
@@ -458,6 +499,45 @@ function isValidNavDraft(draft: NavTuningDraft | null): boolean {
     && slope > 0
     && slope < 90
     && cellHeight > 0;
+}
+
+function SpacingSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  format,
+  defaultValue,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  format: (v: number) => string;
+  defaultValue: number;
+  onChange: (v: number) => void;
+}) {
+  const isDefault = Math.abs(value - defaultValue) < step * 0.01;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-20 shrink-0 text-[10px] uppercase tracking-[0.1em] text-white/55">{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        className="h-1.5 flex-1 cursor-pointer accent-emerald-300"
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <span className={['w-14 text-right text-[11px] font-mono', isDefault ? 'text-white/50' : 'text-emerald-200'].join(' ')}>
+        {format(value)}
+      </span>
+    </div>
+  );
 }
 
 function BotDebugCard({ info }: { info: BotDebugInfo }) {

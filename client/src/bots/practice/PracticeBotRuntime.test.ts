@@ -10,7 +10,7 @@ import {
   getSharedPlayerNavigationProfile,
   hydrateSharedPlayerNavigationProfileFromLoadedWasm,
 } from '../../wasm/sharedPhysics';
-import { PracticeBotRuntime } from './PracticeBotRuntime';
+import { DEFAULT_PRACTICE_BOT_SPACING_TUNING, PracticeBotRuntime } from './PracticeBotRuntime';
 import { initWasmForTests } from '../../wasm/testInit';
 import { identityQuaternion, type WorldDocument } from '../../world/worldDocument';
 
@@ -156,9 +156,14 @@ describe('PracticeBotRuntime.create', () => {
     expect(info?.mode).toBe('follow_target');
     expect(info?.targetPlayerId).toBe(host.playerId);
     expect(info?.lastMoveAccepted).toBe(true);
-    expect(info?.rawTarget?.[0]).toBeCloseTo(localPosition[0], 5);
-    expect(info?.rawTarget?.[2]).toBeCloseTo(localPosition[2], 5);
-    expect(info?.targetSnapDistanceM ?? Number.POSITIVE_INFINITY).toBeLessThan(2);
+    // rawTarget is the chase-offset movement target, which may be up to
+    // chaseOffsetRadiusM away from the real player position.
+    const offsetRadius = DEFAULT_PRACTICE_BOT_SPACING_TUNING.chaseOffsetRadiusM + 0.01;
+    expect(Math.hypot(
+      (info?.rawTarget?.[0] ?? Infinity) - localPosition[0],
+      (info?.rawTarget?.[2] ?? Infinity) - localPosition[2],
+    )).toBeLessThanOrEqual(offsetRadius);
+    expect(info?.targetSnapDistanceM ?? Number.POSITIVE_INFINITY).toBeLessThan(2 + offsetRadius);
     expect(host.sentInputCounts.get(botId) ?? 0).toBeGreaterThan(0);
 
     localPosition = [
@@ -170,8 +175,10 @@ describe('PracticeBotRuntime.create', () => {
 
     info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
-    expect(info?.rawTarget?.[0]).toBeCloseTo(localPosition[0], 5);
-    expect(info?.rawTarget?.[2]).toBeCloseTo(localPosition[2], 5);
+    expect(Math.hypot(
+      (info?.rawTarget?.[0] ?? Infinity) - localPosition[0],
+      (info?.rawTarget?.[2] ?? Infinity) - localPosition[2],
+    )).toBeLessThanOrEqual(offsetRadius);
 
     runtime.clear();
     runtime.detach();
@@ -358,5 +365,91 @@ describe('PracticeBotRuntime.create', () => {
     rebuilt.clear();
     rebuilt.detach();
     expect(host.disconnectCalls).toBe(1);
+  });
+
+  describe('setSpacingTuning', () => {
+    it('two bots chasing the same player report distinct rawTargets after a tick', () => {
+      vi.useFakeTimers();
+
+      const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+        navigationProfile: getSharedPlayerNavigationProfile(),
+        maxAgentRadius: 0.6,
+      });
+
+      const bot1Id = runtime.spawnBot();
+      const bot2Id = runtime.spawnBot();
+
+      const host = new FakePracticeBotHost();
+      const centerY = playerCenterY(0);
+      host.spawnPositions.set(bot1Id, [0, centerY, 0]);
+      host.spawnPositions.set(bot2Id, [0.5, centerY, 0.5]);
+
+      const getSelf = () => ({
+        id: host.playerId,
+        position: [1, centerY, 1] as [number, number, number],
+        dead: false,
+      });
+
+      runtime.setSpacingTuning({
+        separationWeight: 2.5,
+        collisionQueryRange: 4,
+        chaseOffsetRadiusM: 1.25,
+      });
+
+      runtime.attach(host, getSelf);
+      vi.advanceTimersByTime(200);
+
+      const infos = runtime.getBotDebugInfos();
+      const info1 = infos.find((i) => i.id === bot1Id);
+      const info2 = infos.find((i) => i.id === bot2Id);
+
+      expect(info1?.mode).toBe('follow_target');
+      expect(info2?.mode).toBe('follow_target');
+      // Different bots should have different movement targets
+      expect(info1?.rawTarget).not.toEqual(info2?.rawTarget);
+
+      runtime.clear();
+      runtime.detach();
+    });
+
+    it('applying setSpacingTuning with zero chaseOffset makes bots target the exact player center', () => {
+      vi.useFakeTimers();
+
+      const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
+        navigationProfile: getSharedPlayerNavigationProfile(),
+        maxAgentRadius: 0.6,
+      });
+
+      const botId = runtime.spawnBot();
+      const initialInfo = runtime.getBotDebugInfos()[0];
+
+      const host = new FakePracticeBotHost();
+      const centerY = playerCenterY(initialInfo?.position[1] ?? 0);
+      host.spawnPositions.set(botId, [
+        initialInfo?.position[0] ?? 0,
+        centerY,
+        initialInfo?.position[2] ?? 0,
+      ]);
+
+      const playerPos: [number, number, number] = [
+        (initialInfo?.position[0] ?? 0) + 1,
+        centerY,
+        (initialInfo?.position[2] ?? 0) + 1,
+      ];
+      const getSelf = () => ({ id: host.playerId, position: playerPos, dead: false });
+
+      // Disable chase offset so rawTarget must match the exact player position
+      runtime.setSpacingTuning({ ...DEFAULT_PRACTICE_BOT_SPACING_TUNING, chaseOffsetRadiusM: 0 });
+      runtime.attach(host, getSelf);
+      vi.advanceTimersByTime(100);
+
+      const info = runtime.getBotDebugInfos()[0];
+      expect(info?.mode).toBe('follow_target');
+      expect(info?.rawTarget?.[0]).toBeCloseTo(playerPos[0], 5);
+      expect(info?.rawTarget?.[2]).toBeCloseTo(playerPos[2], 5);
+
+      runtime.clear();
+      runtime.detach();
+    });
   });
 });
