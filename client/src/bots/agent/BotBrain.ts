@@ -107,6 +107,7 @@ export class BotBrain {
       decision.targetPlayerId,
       targetDistanceM,
       decision.fireAim,
+      decision.meleeAim,
       this.options,
     );
   }

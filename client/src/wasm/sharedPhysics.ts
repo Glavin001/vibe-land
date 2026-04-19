@@ -180,6 +180,13 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     dirY: number,
     dirZ: number,
   ): void;
+  queueMelee(
+    seq: number,
+    swingId: number,
+    clientTimeUs: number,
+    yaw: number,
+    pitch: number,
+  ): void;
   enterVehicle(vehicleId: number): void;
   exitVehicle(vehicleId: number): void;
   getSnapshotMeta(): number[];

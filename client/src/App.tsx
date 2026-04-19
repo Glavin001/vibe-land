@@ -19,6 +19,7 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { useControlHints } from './ui/useControlHints';
 import { useDebugStats } from './ui/useDebugStats';
@@ -171,6 +172,7 @@ export function App({
   );
   const [copyNotice, setCopyNotice] = useState('');
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
+  const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
@@ -878,7 +880,7 @@ export function App({
           {copyNotice}
         </div>
       )}
-      {connected && (
+      {connected && !scopeActive && (
         <div
           style={{
             position: 'absolute',
@@ -914,6 +916,66 @@ export function App({
               background: crosshairColor,
             }}
           />
+        </div>
+      )}
+      {connected && scopeActive && (
+        <div
+          data-testid="scope-overlay"
+          style={{
+            position: 'absolute',
+            inset: 0,
+            pointerEvents: 'none',
+            zIndex: 6,
+            background: 'radial-gradient(circle at 50% 50%, transparent 18%, rgba(0,0,0,0.88) 30%)',
+            transition: 'opacity 80ms ease',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              width: 28,
+              height: 28,
+              transform: 'translate(-50%, -50%)',
+              filter: `drop-shadow(0 0 4px ${crosshairGlow})`,
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: 0,
+                width: 2,
+                height: '100%',
+                transform: 'translateX(-50%)',
+                background: crosshairColor,
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: '50%',
+                left: 0,
+                width: '100%',
+                height: 2,
+                transform: 'translateY(-50%)',
+                background: crosshairColor,
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: '50%',
+                top: '50%',
+                width: 3,
+                height: 3,
+                transform: 'translate(-50%, -50%)',
+                background: crosshairColor,
+                borderRadius: '50%',
+              }}
+            />
+          </div>
         </div>
       )}
       <ControlHintsOverlay
@@ -972,6 +1034,7 @@ export function App({
         energy={displayStats.energy}
         visible={connected}
       />
+      <MeleeHUD visible={connected} />
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}
@@ -1008,6 +1071,7 @@ export function App({
           onWelcome={handleWelcome}
           onDisconnect={handleDisconnect}
           onAimStateChange={setCrosshairState}
+          onScopeActiveChange={setScopeActive}
           playerId={playerId}
           onDebugFrame={updateFrame}
           onInputFrame={handleInputFrame}

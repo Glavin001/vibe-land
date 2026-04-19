@@ -29,6 +29,7 @@ export function useControlHints() {
     blockPlacePressed: 0,
     materialSlot1Pressed: 0,
     materialSlot2Pressed: 0,
+    meleePressed: 0,
   });
   const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 1024);
 
@@ -47,6 +48,7 @@ export function useControlHints() {
     if (action?.blockPlacePressed) flashUntilRef.current.blockPlacePressed = now + FLASH_MS;
     if (action?.materialSlot1Pressed) flashUntilRef.current.materialSlot1Pressed = now + FLASH_MS;
     if (action?.materialSlot2Pressed) flashUntilRef.current.materialSlot2Pressed = now + FLASH_MS;
+    if (action?.meleePressed) flashUntilRef.current.meleePressed = now + FLASH_MS;
 
     stateRef.current = sample;
 
@@ -67,6 +69,7 @@ export function useControlHints() {
             blockPlacePressed: action.blockPlacePressed || flashUntilRef.current.blockPlacePressed > now,
             materialSlot1Pressed: action.materialSlot1Pressed || flashUntilRef.current.materialSlot1Pressed > now,
             materialSlot2Pressed: action.materialSlot2Pressed || flashUntilRef.current.materialSlot2Pressed > now,
+            meleePressed: action.meleePressed || flashUntilRef.current.meleePressed > now,
           }
         : null,
     });

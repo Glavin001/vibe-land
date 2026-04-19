@@ -419,10 +419,7 @@ impl SimWorld {
         .active_collision_types(
             ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_FIXED,
         )
-        .collision_groups(InteractionGroups::new(
-            PLAYER_GROUP,
-            STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP | PLAYER_GROUP,
-        ))
+        .collision_groups(Self::player_capsule_groups())
         .user_data(player_id as u128)
         .build();
         self.colliders.insert(collider)
@@ -609,6 +606,16 @@ impl SimWorld {
 
     pub fn player_dynamic_groups() -> InteractionGroups {
         InteractionGroups::new(PUSHABLE_DYNAMIC_GROUP, PUSHABLE_DYNAMIC_GROUP)
+    }
+
+    /// Collision groups the player capsule is created with. Must match the
+    /// value applied in `create_player_collider` so vehicle exit can restore
+    /// the player to its original groups without widening membership.
+    pub fn player_capsule_groups() -> InteractionGroups {
+        InteractionGroups::new(
+            PLAYER_GROUP,
+            STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP | PLAYER_GROUP,
+        )
     }
 
     pub fn intersect_pushable_dynamic_bodies(
