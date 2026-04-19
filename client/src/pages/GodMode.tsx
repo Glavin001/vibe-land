@@ -840,6 +840,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
 
   const canUndo = editHistory.undoStack.length > 0;
   const canRedo = editHistory.redoStack.length > 0;
+  const authoredObjectCount = world.staticProps.length + world.dynamicEntities.length + world.spawnAreas.length;
+  const activeToolLabel = mode === 'play'
+    ? 'Simulation'
+    : tool === 'select'
+      ? 'Select'
+      : tool === 'terrain'
+        ? 'Terrain'
+        : 'Paint';
 
   const terrainMaterials = useMemo(() => getTerrainMaterials(world), [world]);
 
@@ -993,9 +1001,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       }
     : pageStyle;
 
-  const sidebarStyleDynamic: CSSProperties = isMobile
+  const sidebarStyleDynamic: CSSProperties | undefined = isMobile
     ? {
-        ...sidebarStyle,
         position: 'fixed',
         top: 0,
         left: 0,
@@ -1005,9 +1012,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
         transition: 'transform 0.22s ease',
         boxShadow: leftDrawerOpen ? '0 0 30px rgba(0, 0, 0, 0.55)' : 'none',
-        padding: 16,
       }
-    : sidebarStyle;
+    : undefined;
 
   const viewportStyleDynamic: CSSProperties = isMobile
     ? { ...viewportStyle, height: '100%', gridRow: '2 / 3' }
@@ -1067,58 +1073,79 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           aria-hidden="true"
         />
       )}
-      <aside style={sidebarStyleDynamic}>
+      <aside style={sidebarStyleDynamic} className={builderSidebarClassName}>
         {isMobile && (
           <button
             type="button"
             onClick={() => setLeftDrawerOpen(false)}
-            style={drawerCloseButtonStyle}
+            className={drawerCloseButtonClassName}
             aria-label="Close world builder tools"
           >
             ✕
           </button>
         )}
-        <div>
-          <div style={eyebrowStyle}>vibe-land</div>
-          <h1 style={titleStyle}>World Builder</h1>
-          <p style={bodyStyle}>
-            Edit the authored world document locally, autosave drafts in your browser, and launch a fresh single-player simulation from the current authored state.
+        <div className={builderHeroClassName}>
+          <div className={builderHeroHeaderClassName}>
+            <div className={builderEyebrowClassName}>vibe-land</div>
+            <div className={builderModeBadgeClassName}>{mode === 'edit' ? 'Editing' : 'Playtest'}</div>
+          </div>
+          <h1 className={builderTitleClassName}>World Builder</h1>
+          <p className={builderBodyClassName}>
+            Author the world locally, autosave drafts in-browser, and relaunch clean playtests from the current authored state.
           </p>
+          <div className={builderStatsGridClassName}>
+            <div className={builderStatCardClassName}>
+              <span className={builderStatLabelClassName}>Tool</span>
+              <strong className={builderStatValueClassName}>{activeToolLabel}</strong>
+            </div>
+            <div className={builderStatCardClassName}>
+              <span className={builderStatLabelClassName}>Tiles</span>
+              <strong className={builderStatValueClassName}>{world.terrain.tiles.length}</strong>
+            </div>
+            <div className={builderStatCardClassName}>
+              <span className={builderStatLabelClassName}>Objects</span>
+              <strong className={builderStatValueClassName}>{authoredObjectCount}</strong>
+            </div>
+            <div className={builderStatCardClassName}>
+              <span className={builderStatLabelClassName}>Undo</span>
+              <strong className={builderStatValueClassName}>{editHistory.undoStack.length}</strong>
+            </div>
+          </div>
         </div>
 
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Mode</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={() => setMode('edit')} style={mode === 'edit' ? activeButtonStyle : secondaryButtonStyle}>Edit</button>
-            <button type="button" onClick={handleStartPlay} style={mode === 'play' ? activeButtonStyle : secondaryButtonStyle}>Play</button>
+        <div className={builderSectionClassName}>
+          <div className={builderSectionTitleClassName}>Mode</div>
+          <div className={builderButtonGridClassName}>
+            <button type="button" onClick={() => setMode('edit')} className={builderButtonClassName(mode === 'edit' ? 'active' : 'secondary')}>Edit</button>
+            <button type="button" onClick={handleStartPlay} className={builderButtonClassName(mode === 'play' ? 'active' : 'secondary')}>Play</button>
           </div>
-          <div style={mutedTextStyle}>
-            Leaving Play always returns to the authored document. Runtime drift is discarded.
+          <div className={builderMutedTextClassName}>
+            Play always forks from the authored draft. Runtime drift is discarded when you return.
           </div>
         </div>
 
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Draft</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={handleExport} style={primaryButtonStyle}>Export JSON</button>
-            <button type="button" onClick={handleImportButton} style={secondaryButtonStyle}>Import JSON</button>
-            <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
-            <button type="button" onClick={handleClearAll} style={dangerButtonStyle}>Clear All</button>
+        <div className={builderSectionClassName}>
+          <div className={builderSectionTitleClassName}>Draft</div>
+          <div className={builderButtonGridClassName}>
+            <button type="button" onClick={handleExport} className={builderButtonClassName('primary')}>Export JSON</button>
+            <button type="button" onClick={handleImportButton} className={builderButtonClassName('secondary')}>Import JSON</button>
+            <button type="button" onClick={handleResetToDefault} className={builderButtonClassName('secondary')}>Reset To Default</button>
+            <button type="button" onClick={handleClearAll} className={builderButtonClassName('danger')}>Clear All</button>
           </div>
-          <div style={mutedTextStyle}>
-            Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
+          <div className={builderMutedTextClassName}>
+            Autosaves live in IndexedDB. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
           </div>
         </div>
 
         {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
-          <div style={sectionStyle}>
-            <div style={sectionTitleStyle}>Cloud</div>
-            <div style={buttonRowStyle}>
+          <div className={builderSectionClassName}>
+            <div className={builderSectionTitleClassName}>Cloud</div>
+            <div className={builderButtonRowClassName}>
               {cloudEnabled && (
                 <button
                   type="button"
                   onClick={() => void handleStartPublish()}
-                  style={primaryButtonStyle}
+                  className={builderButtonClassName('primary')}
                   disabled={
                     publishStatus.kind === 'capturing'
                     || publishStatus.kind === 'preview'
@@ -1129,97 +1156,90 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   {publishStatus.kind === 'capturing' ? 'Capturing…' : 'Publish to Cloud'}
                 </button>
               )}
-              <button type="button" onClick={handleOpenGallery} style={secondaryButtonStyle}>
+              <button type="button" onClick={handleOpenGallery} className={builderButtonClassName('secondary')}>
                 Browse Gallery
               </button>
             </div>
             {cloudLoadStatus.kind === 'loading' && (
-              <div style={mutedTextStyle}>Loading published world {cloudLoadStatus.id}…</div>
+              <div className={builderMutedTextClassName}>Loading published world {cloudLoadStatus.id}…</div>
             )}
             {cloudLoadStatus.kind === 'loaded' && (
-              <div style={mutedTextStyle}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
+              <div className={builderMutedTextClassName}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
             )}
             {cloudLoadStatus.kind === 'error' && (
-              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+              <div className={builderErrorTextClassName}>
                 Failed to load published world: {cloudLoadStatus.message}
               </div>
             )}
             {publishStatus.kind === 'idle' && cloudEnabled && (
-              <div style={mutedTextStyle}>
+              <div className={builderMutedTextClassName}>
                 Publishing captures a screenshot and saves your world to the cloud. Published worlds appear in the gallery.
               </div>
             )}
             {publishStatus.kind === 'success' && (
-              <div style={mutedTextStyle}>
+              <div className={builderMutedTextClassName}>
                 Published as <code>{publishStatus.id}</code>.{' '}
                 {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
-                <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
+                <div className="mt-1 break-all text-[#9cd4ff]">{publishStatus.shareUrl}</div>
               </div>
             )}
             {publishStatus.kind === 'error' && (
-              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
+              <div className={builderErrorTextClassName}>
                 Publish failed: {publishStatus.message}
               </div>
             )}
           </div>
         )}
 
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Undo / Redo</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
-            <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
+        <div className={builderSectionClassName}>
+          <div className={builderSectionTitleClassName}>Undo / Redo</div>
+          <div className={builderButtonGridClassName}>
+            <button type="button" onClick={handleUndo} className={builderButtonClassName('secondary')} disabled={!canUndo}>Undo</button>
+            <button type="button" onClick={handleRedo} className={builderButtonClassName('secondary')} disabled={!canRedo}>Redo</button>
           </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div className="flex items-center gap-1.5">
             <input
               type="text"
               value={commitMessageDraft}
               onChange={(e) => setCommitMessageDraft(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
               placeholder="Commit message..."
-              style={{ flex: 1, padding: '5px 8px', fontSize: 12, background: 'rgba(20, 34, 48, 0.96)', color: '#eef7ff', border: '1px solid rgba(167, 208, 237, 0.18)', borderRadius: 8, fontFamily: 'inherit' }}
+              className="min-w-0 flex-1 rounded-[9px] border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.96)] px-2.5 py-2 text-xs text-[#eef7ff] placeholder:text-[rgba(238,247,255,0.38)]"
             />
-            <button type="button" onClick={handleHumanCommit} style={secondaryButtonStyle} disabled={!commitMessageDraft.trim()}>Commit</button>
+            <button type="button" onClick={handleHumanCommit} className={builderButtonClassName('secondary')} disabled={!commitMessageDraft.trim()}>Commit</button>
           </div>
           {editHistory.undoStack.length > 0 && (
-            <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+            <div className="flex max-h-44 flex-col gap-1 overflow-y-auto text-[11px]">
               {editHistory.undoStack.map((entry) => (
-                <div key={entry.commitId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', borderRadius: 6, background: 'rgba(0,0,0,0.18)' }}>
-                  <code style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(134,214,245,0.7)', flexShrink: 0 }}>{entry.commitId}</code>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(238,247,255,0.82)' }}>{entry.commitMessage}</span>
-                  <span style={{
-                    fontSize: 9,
-                    padding: '1px 5px',
-                    borderRadius: 4,
-                    flexShrink: 0,
-                    background: entry.source === 'ai' ? 'rgba(116,212,255,0.2)' : entry.source === 'rollback' ? 'rgba(255,200,100,0.2)' : 'rgba(255,255,255,0.08)',
-                    color: entry.source === 'ai' ? '#bae8ff' : entry.source === 'rollback' ? '#ffe0a0' : 'rgba(238,247,255,0.5)',
-                  }}>{entry.source}</span>
+                <div key={entry.commitId} className="flex items-center gap-1.5 rounded-lg bg-[rgba(0,0,0,0.18)] px-1.5 py-1.5">
+                  <code className="shrink-0 font-mono text-[10px] text-[rgba(134,214,245,0.7)]">{entry.commitId}</code>
+                  <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[rgba(238,247,255,0.82)]">{entry.commitMessage}</span>
+                  <span className={builderHistorySourceBadgeClassName(entry.source)}>{entry.source}</span>
                 </div>
               ))}
             </div>
           )}
-          <div style={mutedTextStyle}>
+          <div className={builderMutedTextClassName}>
             Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>
         </div>
 
         {mode === 'edit' && (
           <>
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Tools</div>
-              <div style={buttonRowStyle}>
-                <button type="button" onClick={() => setTool('select')} style={tool === 'select' ? activeButtonStyle : secondaryButtonStyle}>Select</button>
-                <button type="button" onClick={() => setTool('terrain')} style={tool === 'terrain' ? activeButtonStyle : secondaryButtonStyle}>Terrain</button>
-                <button type="button" onClick={() => setTool('paint')} style={tool === 'paint' ? activeButtonStyle : secondaryButtonStyle}>Paint</button>
+            <div className={builderSectionClassName}>
+              <div className={builderSectionTitleClassName}>Tools</div>
+              <div className={builderButtonRowClassName}>
+                <button type="button" onClick={() => setTool('select')} className={builderButtonClassName(tool === 'select' ? 'active' : 'secondary')}>Select</button>
+                <button type="button" onClick={() => setTool('terrain')} className={builderButtonClassName(tool === 'terrain' ? 'active' : 'secondary')}>Terrain</button>
+                <button type="button" onClick={() => setTool('paint')} className={builderButtonClassName(tool === 'paint' ? 'active' : 'secondary')}>Paint</button>
               </div>
               {tool === 'terrain' && (
-                <div style={fieldStackStyle}>
-                  <div style={buttonRowStyle}>
-                    <button type="button" onClick={() => setTerrainToolMode('sculpt')} style={terrainToolMode === 'sculpt' ? activeButtonStyle : secondaryButtonStyle}>Sculpt</button>
-                    <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
-                    <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
-                    <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
+                <div className={builderFieldStackClassName}>
+                  <div className={builderButtonRowClassName}>
+                    <button type="button" onClick={() => setTerrainToolMode('sculpt')} className={builderButtonClassName(terrainToolMode === 'sculpt' ? 'active' : 'secondary')}>Sculpt</button>
+                    <button type="button" onClick={() => setTerrainToolMode('ramp')} className={builderButtonClassName(terrainToolMode === 'ramp' ? 'active' : 'secondary')}>Ramp</button>
+                    <button type="button" onClick={() => setTerrainToolMode('add-tile')} className={builderButtonClassName(terrainToolMode === 'add-tile' ? 'active' : 'secondary')}>Add Tile</button>
+                    <button type="button" onClick={() => setTerrainToolMode('delete-tile')} className={builderButtonClassName(terrainToolMode === 'delete-tile' ? 'active' : 'secondary')}>Delete Tile</button>
                     {customStencils.map((s) => (
                       <button
                         key={s.id}
@@ -1230,7 +1250,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                             setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
                           }
                         }}
-                        style={terrainToolMode === `custom:${s.id}` ? activeButtonStyle : secondaryButtonStyle}
+                        className={builderButtonClassName(terrainToolMode === `custom:${s.id}` ? 'active' : 'secondary')}
                         title={s.description}
                       >
                         {s.name}
@@ -1239,17 +1259,17 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   </div>
                   {terrainToolMode === 'sculpt' ? (
                     <>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Radius
                         <input type="range" min="2" max="20" step="0.5" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
                         <span>{brushRadius.toFixed(1)}m</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Strength
                         <input type="range" min="0.02" max="0.35" step="0.01" value={brushStrength} onChange={(event) => setBrushStrength(Number(event.target.value))} />
                         <span>{brushStrength.toFixed(2)}</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Lower Plateau
                         <input
                           type="number"
@@ -1261,7 +1281,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                         />
                         <span>Terrain under this height stops lowering.</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Upper Plateau
                         <input
                           type="number"
@@ -1273,11 +1293,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                         />
                         <span>Terrain above this height stops raising.</span>
                       </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setBrushMode('raise')} style={brushMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise</button>
-                        <button type="button" onClick={() => setBrushMode('lower')} style={brushMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Lower</button>
+                      <div className={builderButtonRowClassName}>
+                        <button type="button" onClick={() => setBrushMode('raise')} className={builderButtonClassName(brushMode === 'raise' ? 'active' : 'secondary')}>Raise</button>
+                        <button type="button" onClick={() => setBrushMode('lower')} className={builderButtonClassName(brushMode === 'lower' ? 'active' : 'secondary')}>Lower</button>
                       </div>
-                      <div style={mutedTextStyle}>
+                      <div className={builderMutedTextClassName}>
                         {brushMode === 'lower'
                           ? `Lowering plateaus at ${brushMinHeight.toFixed(1)}m.`
                           : `Raising plateaus at ${brushMaxHeight.toFixed(1)}m.`}
@@ -1285,27 +1305,27 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                     </>
                   ) : terrainToolMode === 'ramp' ? (
                     <>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Strength
                         <input type="range" min="0.02" max="1" step="0.02" value={rampStrength} onChange={(event) => setRampStrength(Number(event.target.value))} />
                         <span>{rampStrength.toFixed(2)}</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Width
                         <input type="range" min="2" max="30" step="0.5" value={rampWidth} onChange={(event) => setRampWidth(Number(event.target.value))} />
                         <span>{rampWidth.toFixed(1)}m</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Length
                         <input type="range" min="4" max="40" step="0.5" value={rampLength} onChange={(event) => setRampLength(Number(event.target.value))} />
                         <span>{rampLength.toFixed(1)}m</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Grade
                         <input type="range" min="1" max="100" step="1" value={rampGradePct} onChange={(event) => setRampGradePct(Number(event.target.value))} />
                         <span>{rampGradePct.toFixed(0)}%</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Direction
                         <input
                           type="range"
@@ -1317,15 +1337,15 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                         />
                         <span>{`${rampYawDegrees.toFixed(0)}deg start -> end`}</span>
                       </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampTargetEdge('start')} style={rampTargetEdge === 'start' ? activeButtonStyle : secondaryButtonStyle}>Target Start</button>
-                        <button type="button" onClick={() => setRampTargetEdge('end')} style={rampTargetEdge === 'end' ? activeButtonStyle : secondaryButtonStyle}>Target End</button>
+                      <div className={builderButtonRowClassName}>
+                        <button type="button" onClick={() => setRampTargetEdge('start')} className={builderButtonClassName(rampTargetEdge === 'start' ? 'active' : 'secondary')}>Target Start</button>
+                        <button type="button" onClick={() => setRampTargetEdge('end')} className={builderButtonClassName(rampTargetEdge === 'end' ? 'active' : 'secondary')}>Target End</button>
                       </div>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampTargetKind('min')} style={rampTargetKind === 'min' ? activeButtonStyle : secondaryButtonStyle}>Target Min</button>
-                        <button type="button" onClick={() => setRampTargetKind('max')} style={rampTargetKind === 'max' ? activeButtonStyle : secondaryButtonStyle}>Target Max</button>
+                      <div className={builderButtonRowClassName}>
+                        <button type="button" onClick={() => setRampTargetKind('min')} className={builderButtonClassName(rampTargetKind === 'min' ? 'active' : 'secondary')}>Target Min</button>
+                        <button type="button" onClick={() => setRampTargetKind('max')} className={builderButtonClassName(rampTargetKind === 'max' ? 'active' : 'secondary')}>Target Max</button>
                       </div>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Target Height
                         <input
                           type="number"
@@ -1337,38 +1357,38 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                         />
                         <span>{rampTargetEdge === 'start' ? 'Start edge' : 'End edge'} uses this {rampTargetKind} height.</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Side Shoulder
                         <input type="range" min="0" max="20" step="0.5" value={rampSideFalloff} onChange={(event) => setRampSideFalloff(Number(event.target.value))} />
                         <span>{rampSideFalloff.toFixed(1)}m</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         Start Falloff
                         <input type="range" min="0" max="20" step="0.5" value={rampStartFalloff} onChange={(event) => setRampStartFalloff(Number(event.target.value))} />
                         <span>{rampStartFalloff.toFixed(1)}m</span>
                       </label>
-                      <label style={fieldLabelStyle}>
+                      <label className={builderFieldLabelClassName}>
                         End Falloff
                         <input type="range" min="0" max="20" step="0.5" value={rampEndFalloff} onChange={(event) => setRampEndFalloff(Number(event.target.value))} />
                         <span>{rampEndFalloff.toFixed(1)}m</span>
                       </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampMode('raise')} style={rampMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise Ramp</button>
-                        <button type="button" onClick={() => setRampMode('lower')} style={rampMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Cut Ramp</button>
+                      <div className={builderButtonRowClassName}>
+                        <button type="button" onClick={() => setRampMode('raise')} className={builderButtonClassName(rampMode === 'raise' ? 'active' : 'secondary')}>Raise Ramp</button>
+                        <button type="button" onClick={() => setRampMode('lower')} className={builderButtonClassName(rampMode === 'lower' ? 'active' : 'secondary')}>Cut Ramp</button>
                       </div>
-                      <div style={mutedTextStyle}>
+                      <div className={builderMutedTextClassName}>
                         Hold and drag to morph terrain toward the target ramp. Repeated passes converge instead of stacking.
                       </div>
-                      <div style={mutedTextStyle}>
+                      <div className={builderMutedTextClassName}>
                         {describeRampTool(rampLength, rampGradePct, rampTargetHeight, rampTargetEdge, rampTargetKind, rampMode)}
                       </div>
                     </>
                   ) : terrainToolMode === 'add-tile' ? (
-                    <div style={mutedTextStyle}>
+                    <div className={builderMutedTextClassName}>
                       Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
                     </div>
                   ) : terrainToolMode === 'delete-tile' ? (
-                    <div style={mutedTextStyle}>
+                    <div className={builderMutedTextClassName}>
                       Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
                     </div>
                   ) : activeCustomStencil ? (
@@ -1384,35 +1404,32 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 </div>
               )}
               {tool === 'paint' && (
-                <div style={fieldStackStyle}>
-                  <div style={mutedTextStyle}>Material</div>
-                  <div style={buttonRowStyle}>
+                <div className={builderFieldStackClassName}>
+                  <div className={builderMutedTextClassName}>Material</div>
+                  <div className={builderButtonRowClassName}>
                     {terrainMaterials.map((mat, index) => (
                       <button
                         key={mat.name}
                         type="button"
                         onClick={() => setPaintMaterial(index)}
+                        className={builderMaterialButtonClassName}
                         style={{
-                          ...baseButtonStyle,
                           background: paintMaterial === index ? mat.color : 'rgba(20, 34, 48, 0.96)',
                           color: paintMaterial === index ? '#000' : '#eef7ff',
                           borderColor: paintMaterial === index ? mat.color : 'rgba(167, 208, 237, 0.16)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
                         }}
                       >
-                        <span style={{ width: 12, height: 12, borderRadius: 3, background: mat.color, display: 'inline-block', border: '1px solid rgba(255,255,255,0.2)' }} />
+                        <span className="inline-block h-3 w-3 rounded-[3px] border border-[rgba(255,255,255,0.2)]" style={{ background: mat.color }} />
                         {mat.name}
                       </button>
                     ))}
                   </div>
-                  <label style={fieldLabelStyle}>
+                  <label className={builderFieldLabelClassName}>
                     Radius
                     <input type="range" min="2" max="20" step="0.5" value={paintRadius} onChange={(event) => setPaintRadius(Number(event.target.value))} />
                     <span>{paintRadius.toFixed(1)}m</span>
                   </label>
-                  <label style={fieldLabelStyle}>
+                  <label className={builderFieldLabelClassName}>
                     Strength
                     <input type="range" min="0.05" max="1.0" step="0.05" value={paintStrength} onChange={(event) => setPaintStrength(Number(event.target.value))} />
                     <span>{paintStrength.toFixed(2)}</span>
@@ -1421,44 +1438,44 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
               )}
             </div>
 
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Add Objects</div>
-              <div style={buttonGridStyle}>
-                <button type="button" onClick={addStaticCuboid} style={secondaryButtonStyle}>Static Cuboid</button>
-                <button type="button" onClick={() => addDynamicEntity('box')} style={secondaryButtonStyle}>Dynamic Box</button>
-                <button type="button" onClick={() => addDynamicEntity('ball')} style={secondaryButtonStyle}>Ball</button>
-                <button type="button" onClick={() => addDynamicEntity('vehicle')} style={secondaryButtonStyle}>Vehicle</button>
-                <button type="button" onClick={addSpawnArea} style={secondaryButtonStyle}>Spawn Area</button>
+            <div className={builderSectionClassName}>
+              <div className={builderSectionTitleClassName}>Add Objects</div>
+              <div className={builderButtonGridClassName}>
+                <button type="button" onClick={addStaticCuboid} className={builderButtonClassName('secondary')}>Static Cuboid</button>
+                <button type="button" onClick={() => addDynamicEntity('box')} className={builderButtonClassName('secondary')}>Dynamic Box</button>
+                <button type="button" onClick={() => addDynamicEntity('ball')} className={builderButtonClassName('secondary')}>Ball</button>
+                <button type="button" onClick={() => addDynamicEntity('vehicle')} className={builderButtonClassName('secondary')}>Vehicle</button>
+                <button type="button" onClick={addSpawnArea} className={builderButtonClassName('secondary')}>Spawn Area</button>
               </div>
               {world.spawnAreas.length > 0 && (
-                <div style={mutedTextStyle}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
+                <div className={builderMutedTextClassName}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
               )}
               {world.spawnAreas.length === 0 && (
-                <div style={mutedTextStyle}>No spawn areas — players use the default spawn lanes.</div>
+                <div className={builderMutedTextClassName}>No spawn areas — players use the default spawn lanes.</div>
               )}
             </div>
 
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Terrain Grid</div>
-              <div style={mutedTextStyle}>
+            <div className={builderSectionClassName}>
+              <div className={builderSectionTitleClassName}>Terrain Grid</div>
+              <div className={builderMutedTextClassName}>
                 {world.terrain.tiles.length} tiles · {world.terrain.tileGridSize} x {world.terrain.tileGridSize} samples per tile
               </div>
-              <div style={mutedTextStyle}>
+              <div className={builderMutedTextClassName}>
                 Terrain now grows from exposed edges directly in the 3D viewport, so you can build sparse connected layouts like corridors, U-shapes, or C-shapes without filling a full rectangle.
               </div>
             </div>
 
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Selection</div>
-              {!selected && <div style={mutedTextStyle}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
+            <div className={builderSectionClassName}>
+              <div className={builderSectionTitleClassName}>Selection</div>
+              {!selected && <div className={builderMutedTextClassName}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
               {selectedTransformEntity && (
                 <>
-                  <div style={buttonRowStyle}>
-                    <button type="button" onClick={() => setTransformMode('translate')} style={transformMode === 'translate' ? activeButtonStyle : secondaryButtonStyle}>Move (W)</button>
+                  <div className={builderButtonRowClassName}>
+                    <button type="button" onClick={() => setTransformMode('translate')} className={builderButtonClassName(transformMode === 'translate' ? 'active' : 'secondary')}>Move (W)</button>
                     <button
                       type="button"
                       onClick={() => setTransformMode('rotate')}
-                      style={transformMode === 'rotate' ? activeButtonStyle : secondaryButtonStyle}
+                      className={builderButtonClassName(transformMode === 'rotate' ? 'active' : 'secondary')}
                       disabled={!selectedTransformEntity.canRotate}
                     >
                       Rotate (E)
@@ -1466,13 +1483,13 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                     <button
                       type="button"
                       onClick={() => setTransformMode('scale')}
-                      style={transformMode === 'scale' ? activeButtonStyle : secondaryButtonStyle}
+                      className={builderButtonClassName(transformMode === 'scale' ? 'active' : 'secondary')}
                       disabled={!selectedTransformEntity.canResize}
                     >
                       Resize (R)
                     </button>
                   </div>
-                  <div style={mutedTextStyle}>
+                  <div className={builderMutedTextClassName}>
                     Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
                   </div>
                 </>
@@ -1525,21 +1542,21 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           </>
         )}
 
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Recent Backups</div>
-          <div style={historyListStyle}>
+        <div className={builderSectionClassName}>
+          <div className={builderSectionTitleClassName}>Recent Backups</div>
+          <div className={builderHistoryListClassName}>
             {history.slice(0, 6).map((revision) => (
               <button
                 key={revision.id}
                 type="button"
                 onClick={() => handleRestoreRevision(revision)}
-                style={historyButtonStyle}
+                className={builderHistoryButtonClassName}
               >
                 <span>{revision.summary}</span>
-                <span style={mutedTextStyle}>{new Date(revision.savedAt).toLocaleString()}</span>
+                <span className={builderMutedTextClassName}>{new Date(revision.savedAt).toLocaleString()}</span>
               </button>
             ))}
-            {history.length === 0 && <div style={mutedTextStyle}>No backups yet.</div>}
+            {history.length === 0 && <div className={builderMutedTextClassName}>No backups yet.</div>}
           </div>
         </div>
       </aside>
@@ -2702,22 +2719,11 @@ function slugify(value: string): string {
 
 const pageStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '340px minmax(0, 1fr) 380px',
+  gridTemplateColumns: '300px minmax(0, 1fr) 380px',
   height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
   overflow: 'hidden',
-};
-
-const sidebarStyle: CSSProperties = {
-  borderRight: '1px solid rgba(141, 186, 221, 0.14)',
-  padding: 24,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 18,
-  minHeight: 0,
-  overflowY: 'auto',
-  background: 'rgba(3, 8, 14, 0.92)',
 };
 
 const drawerBackdropStyle: CSSProperties = {
@@ -2725,22 +2731,6 @@ const drawerBackdropStyle: CSSProperties = {
   inset: 0,
   background: 'rgba(0, 0, 0, 0.5)',
   zIndex: 50,
-};
-
-const drawerCloseButtonStyle: CSSProperties = {
-  position: 'absolute',
-  top: 10,
-  right: 10,
-  width: 32,
-  height: 32,
-  borderRadius: 8,
-  border: '1px solid rgba(167, 208, 237, 0.18)',
-  background: 'rgba(20, 34, 48, 0.9)',
-  color: '#eef7ff',
-  cursor: 'pointer',
-  fontSize: 14,
-  lineHeight: 1,
-  zIndex: 2,
 };
 
 const chatDrawerStyle: CSSProperties = {
@@ -2762,78 +2752,29 @@ const viewportStyle: CSSProperties = {
   height: '100vh',
 };
 
-const sectionStyle: CSSProperties = {
-  border: '1px solid rgba(141, 186, 221, 0.14)',
-  borderRadius: 16,
-  padding: 16,
-  background: 'rgba(14, 26, 38, 0.84)',
-};
-
-const sectionTitleStyle: CSSProperties = {
-  fontSize: 13,
-  letterSpacing: '0.16em',
-  textTransform: 'uppercase',
-  color: '#86d6f5',
-  marginBottom: 10,
-};
-
-const eyebrowStyle: CSSProperties = {
-  fontSize: 12,
-  letterSpacing: '0.24em',
-  textTransform: 'uppercase',
-  color: '#86d6f5',
-};
-
-const titleStyle: CSSProperties = {
-  margin: '10px 0 8px',
-  fontSize: 42,
-  lineHeight: 1,
-  fontWeight: 700,
-};
-
-const bodyStyle: CSSProperties = {
-  color: 'rgba(238, 247, 255, 0.72)',
-  lineHeight: 1.55,
-  margin: 0,
-};
-
-const mutedTextStyle: CSSProperties = {
-  fontSize: 13,
-  color: 'rgba(238, 247, 255, 0.6)',
-};
-
-const buttonRowStyle: CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  flexWrap: 'wrap',
-};
-
-const buttonGridStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 8,
-};
-
 const fieldStackStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 10,
+  gap: 8,
 };
 
 const fieldLabelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 6,
-  fontSize: 13,
+  gap: 5,
+  fontSize: 12,
   color: 'rgba(238, 247, 255, 0.82)',
 };
 
 const baseButtonStyle: CSSProperties = {
-  borderRadius: 10,
-  padding: '10px 12px',
+  borderRadius: 9,
+  padding: '8px 10px',
   border: '1px solid rgba(167, 208, 237, 0.16)',
   cursor: 'pointer',
   fontWeight: 600,
+  fontSize: 12,
+  lineHeight: 1.2,
+  fontFamily: 'inherit',
 };
 
 const primaryButtonStyle: CSSProperties = {
@@ -2860,19 +2801,55 @@ const dangerButtonStyle: CSSProperties = {
   color: '#38130e',
 };
 
-const historyListStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-};
+const builderSidebarClassName = 'flex min-h-0 flex-col gap-2.5 overflow-y-auto border-r border-[rgba(141,186,221,0.14)] bg-[rgba(3,8,14,0.92)] p-3.5 max-md:p-4';
+const drawerCloseButtonClassName = 'absolute right-2.5 top-2.5 z-[2] h-8 w-8 rounded-lg border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.9)] text-sm leading-none text-[#eef7ff]';
+const builderHeroClassName = 'flex flex-col gap-2.5 rounded-2xl border border-[rgba(141,186,221,0.12)] bg-[linear-gradient(180deg,rgba(14,26,38,0.96)_0%,rgba(10,18,28,0.92)_100%)] p-3.5';
+const builderHeroHeaderClassName = 'flex items-center justify-between gap-2';
+const builderEyebrowClassName = 'text-[11px] uppercase tracking-[0.2em] text-[#86d6f5]';
+const builderModeBadgeClassName = 'rounded-full border border-[rgba(116,212,255,0.18)] bg-[rgba(116,212,255,0.12)] px-2 py-1 text-[11px] font-bold uppercase tracking-[0.08em] text-[#bdeaff]';
+const builderTitleClassName = 'm-0 text-[30px] font-bold leading-none';
+const builderBodyClassName = 'm-0 text-[13px] leading-[1.45] text-[rgba(238,247,255,0.72)]';
+const builderStatsGridClassName = 'grid grid-cols-2 gap-2';
+const builderStatCardClassName = 'flex flex-col gap-0.5 rounded-xl border border-[rgba(141,186,221,0.1)] bg-[rgba(5,13,20,0.54)] px-2.5 py-2.5';
+const builderStatLabelClassName = 'text-[10px] uppercase tracking-[0.12em] text-[rgba(190,226,244,0.58)]';
+const builderStatValueClassName = 'text-base leading-[1.1] text-[#eef7ff]';
+const builderSectionClassName = 'flex flex-col gap-2 rounded-[14px] border border-[rgba(141,186,221,0.14)] bg-[rgba(14,26,38,0.84)] p-3';
+const builderSectionTitleClassName = 'mb-0 text-[11px] uppercase tracking-[0.18em] text-[#86d6f5]';
+const builderMutedTextClassName = 'text-xs leading-[1.45] text-[rgba(238,247,255,0.6)]';
+const builderErrorTextClassName = 'text-xs leading-[1.45] text-[#ffb4a6]';
+const builderButtonRowClassName = 'flex flex-wrap gap-1.5';
+const builderButtonGridClassName = 'grid grid-cols-2 gap-1.5';
+const builderFieldStackClassName = 'flex flex-col gap-2';
+const builderFieldLabelClassName = 'flex flex-col gap-[5px] text-xs text-[rgba(238,247,255,0.82)]';
+const builderMaterialButtonClassName = 'flex items-center gap-1.5 rounded-[9px] border px-2.5 py-2 text-xs font-semibold leading-[1.2] text-[#eef7ff]';
+const builderHistoryListClassName = 'flex flex-col gap-1.5';
+const builderHistoryButtonClassName = `${builderButtonClassName('secondary')} flex items-center justify-between text-left`;
 
-const historyButtonStyle: CSSProperties = {
-  ...secondaryButtonStyle,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  textAlign: 'left',
-};
+function builderButtonClassName(variant: 'primary' | 'secondary' | 'active' | 'danger'): string {
+  const base = 'rounded-[9px] border px-2.5 py-2 text-xs font-semibold leading-[1.2] font-[inherit] transition-colors disabled:cursor-not-allowed disabled:opacity-50';
+  switch (variant) {
+    case 'primary':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#9ed86f] text-[#10210d]`;
+    case 'active':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#74d4ff] text-[#102434]`;
+    case 'danger':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#ff8573] text-[#38130e]`;
+    case 'secondary':
+    default:
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.96)] text-[#eef7ff]`;
+  }
+}
+
+function builderHistorySourceBadgeClassName(source: CommitEntry['source']): string {
+  const base = 'shrink-0 rounded px-1.5 py-px text-[9px]';
+  if (source === 'ai') {
+    return `${base} bg-[rgba(116,212,255,0.2)] text-[#bae8ff]`;
+  }
+  if (source === 'rollback') {
+    return `${base} bg-[rgba(255,200,100,0.2)] text-[#ffe0a0]`;
+  }
+  return `${base} bg-[rgba(255,255,255,0.08)] text-[rgba(238,247,255,0.5)]`;
+}
 
 const godModePlayOverlayStyle: CSSProperties = {
   position: 'absolute',
