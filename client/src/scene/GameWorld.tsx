@@ -47,6 +47,12 @@ import type { PracticeBotRuntime } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { PracticeGuestPlayer, type GuestCameraMap, type GuestHudMap } from './PracticeGuestPlayer';
 import { SplitScreenRenderer } from './SplitScreenRenderer';
+import {
+  configureCameraLayersForLocalSlot,
+  layerForLocalSlot,
+  setObjectLayerRecursive,
+} from './splitScreenLayers';
+import { LOCAL_HUMAN_ID_BASE, MAX_LOCAL_PLAYERS } from '../app/localPlayers';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -337,6 +343,12 @@ type GameWorldProps = {
    * When provided, `PracticeGuestPlayer` populates this ref; the DOM HUD
    * overlay outside the Canvas reads from it to render per-viewport stats. */
   guestHudRef?: RefObject<GuestHudMap>;
+  /** Concrete input device for slot 0 when split-screen is active. When
+   * `null`/undefined, slot 0 uses the legacy single-player manager that
+   * samples every source and arbitrates by `inputFamilyMode`. In split
+   * screen we need to pin slot 0 to one device so guest pads don't bleed
+   * into P1's input. */
+  localSlotZeroDevice?: import('../input/types').LocalDeviceAssignment | null;
 };
 
 const PLAYER_COLORS = [0x00ff88, 0xff4444, 0x4488ff, 0xffaa00, 0xff44ff, 0x44ffff, 0xaaff44, 0xff8844];
@@ -1048,6 +1060,7 @@ export function GameWorld({
   sceneExtras,
   practiceGuests,
   guestHudRef: guestHudRefProp,
+  localSlotZeroDevice,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -1088,6 +1101,10 @@ export function GameWorld({
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
   const remoteLastHpRef = useRef<Map<number, number>>(new Map());
   const remoteHitFlashUntilRef = useRef<Map<number, number>>(new Map());
+  /** Humanoid mesh rendered for slot 0 when split-screen is active. Slot 0's
+   * own camera has its layer disabled, so it's hidden from P1 but visible
+   * to every guest camera. Null in single-player. */
+  const localSlot0MeshRef = useRef<RemotePlayerHandle | null>(null);
   const dynamicBodyGroupRef = useRef<THREE.Group>(null);
   const dynamicBodyMeshes = useRef<Map<number, THREE.Mesh>>(new Map());
   const batteryGroupRef = useRef<THREE.Group>(null);
@@ -1204,17 +1221,30 @@ export function GameWorld({
   });
 
   useEffect(() => {
-    const manager = new GameInputManager();
+    const manager = new GameInputManager(localSlotZeroDevice ?? null);
     manager.attach();
     inputManagerRef.current = manager;
     return () => {
       manager.detach();
       inputManagerRef.current = null;
     };
-  }, []);
+  }, [localSlotZeroDevice]);
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
+  }, []);
+
+  // Split-screen layer mask for slot 0's default camera: see the world and
+  // every *other* local-human slot's mesh layer, but not its own (layer 1).
+  useEffect(() => {
+    configureCameraLayersForLocalSlot(camera, 0);
+  }, [camera]);
+
+  useEffect(() => () => {
+    if (localSlot0MeshRef.current) {
+      localSlot0MeshRef.current.dispose();
+      localSlot0MeshRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -2527,6 +2557,15 @@ export function GameWorld({
           ? STATE.move
           : STATE.idle;
       handle.update(frameDelta, renderState, horizontalSpeed, isOnGround);
+
+      // If this remote is a local-human guest (sim id in LOCAL_HUMAN_ID_BASE
+      // range), stamp its mesh onto that slot's layer so the guest's own
+      // camera doesn't render its own body. The traverse catches async
+      // skinned-mesh children added by CharacterModel.load.
+      const localSlotId = id - LOCAL_HUMAN_ID_BASE;
+      if (localSlotId >= 0 && localSlotId < MAX_LOCAL_PLAYERS) {
+        setObjectLayerRecursive(handle.root, layerForLocalSlot(localSlotId));
+      }
     }
 
     // Remove stale
@@ -2538,6 +2577,42 @@ export function GameWorld({
         remoteHitFlashUntilRef.current.delete(id);
         console.log('[game] Removed mesh for remote player', id);
       }
+    }
+
+    // Slot-0 (primary local player) humanoid mesh. Only rendered in
+    // split-screen — in single-player nothing else needs to see P1's body.
+    // Guest cameras enable layer 1; slot 0's own camera keeps it disabled,
+    // so this mesh is hidden from P1 but visible to every other local view.
+    const splitScreenActive = (practiceGuests?.length ?? 0) > 0;
+    if (splitScreenActive) {
+      let slot0Handle = localSlot0MeshRef.current;
+      if (!slot0Handle) {
+        slot0Handle = createRemotePlayer(group, { tint: PLAYER_COLORS[0] });
+        slot0Handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[0]));
+        attachPlayerIdLabel(slot0Handle.root, 0);
+        localSlot0MeshRef.current = slot0Handle;
+      }
+      const hidden = localDead || isDrivingNow;
+      slot0Handle.root.position.set(pos[0], pos[1], pos[2]);
+      slot0Handle.root.rotation.y = yaw;
+      slot0Handle.setVisible(!hidden);
+      const slot0DebugHelper = slot0Handle.root.getObjectByName(PLAYER_DEBUG_HELPER_NAME);
+      if (slot0DebugHelper) slot0DebugHelper.visible = showDebugHelpers && !hidden;
+      slot0Handle.setOpacity(localDead ? 0.35 : 1);
+      const vx0 = physStats.velocity[0];
+      const vz0 = physStats.velocity[2];
+      const hSpeed0 = Math.hypot(vx0, vz0);
+      const slot0RenderState: RemoteRenderState = localDead
+        ? 'dead'
+        : hSpeed0 > 0.1
+          ? STATE.move
+          : STATE.idle;
+      const slot0OnGround = (localFlags & FLAG_ON_GROUND) !== 0;
+      slot0Handle.update(frameDelta, slot0RenderState, hSpeed0, slot0OnGround);
+      setObjectLayerRecursive(slot0Handle.root, layerForLocalSlot(0));
+    } else if (localSlot0MeshRef.current) {
+      localSlot0MeshRef.current.dispose();
+      localSlot0MeshRef.current = null;
     }
 
     // Update dynamic body meshes

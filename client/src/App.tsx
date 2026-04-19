@@ -1079,6 +1079,7 @@ export function App({
           sceneExtras={calibrationSceneExtras}
           practiceGuests={practiceGuests}
           guestHudRef={guestHudRef}
+          localSlotZeroDevice={splitScreen ? localPlayers[0].device : null}
         />
       )}
     </div>

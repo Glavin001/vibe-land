@@ -39,6 +39,7 @@ type GameSceneProps = {
   sceneExtras?: ReactNode;
   practiceGuests?: PracticeGuestSpec[];
   guestHudRef?: RefObject<GuestHudMap>;
+  localSlotZeroDevice?: LocalDeviceAssignment | null;
 };
 
 type GameWorldDebugFrame = React.ComponentProps<typeof GameWorld>['onDebugFrame'];
@@ -66,6 +67,7 @@ export function GameScene({
   sceneExtras,
   practiceGuests,
   guestHudRef,
+  localSlotZeroDevice,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
   return (
@@ -108,6 +110,7 @@ export function GameScene({
           sceneExtras={sceneExtras}
           practiceGuests={practiceGuests}
           guestHudRef={guestHudRef}
+          localSlotZeroDevice={localSlotZeroDevice}
         />
       </Suspense>
     </Canvas>

@@ -12,6 +12,7 @@ import {
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
 import { buildInputFromState } from './inputBuilder';
+import { configureCameraLayersForLocalSlot } from './splitScreenLayers';
 import {
   BTN_CROUCH,
   BTN_JUMP,
@@ -136,8 +137,9 @@ export function PracticeGuestPlayer({
       (defaultCamera as THREE.PerspectiveCamera).far ?? 500,
     );
     cam.position.set(0, 2, 10);
+    configureCameraLayersForLocalSlot(cam, slotId);
     return cam;
-  }, [defaultCamera]);
+  }, [defaultCamera, slotId]);
 
   useEffect(() => {
     const manager = new GameInputManager(device);
