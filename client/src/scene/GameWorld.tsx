@@ -21,6 +21,7 @@ import {
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
   BTN_CROUCH,
@@ -74,6 +75,11 @@ const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
+const HIPFIRE_FOV = 75;
+const SCOPE_FOV = 45;
+// Exponential damp rate: settles ~6–8 frames at 60 fps, matching typical ADS feel.
+const AIM_FOV_DAMP = 12;
+const AIM_LOOK_MULTIPLIER = 0.45;
 // Keep these in lockstep with `MoveConfig::default()` / hitscan constants in
 // the shared Rust physics code so the debug helper matches the authoritative
 // collision capsule and head zone.
@@ -307,6 +313,7 @@ type GameWorldProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: (state: CrosshairAimState) => void;
+  onScopeActiveChange?: (active: boolean) => void;
   onDebugFrame?: FrameDebugCallback;
   onInputFrame?: (sample: InputSample) => void;
   inputFamilyMode?: InputFamilyMode;
@@ -926,6 +933,7 @@ function resolvedInputFromBotIntent(
     pitch,
     buttons: buttons & (BTN_JUMP | BTN_SPRINT | BTN_CROUCH),
     firePrimary,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
@@ -947,6 +955,7 @@ function makeIdleResolvedInput(
     pitch,
     buttons: 0,
     firePrimary: false,
+    aimSecondary: false,
     interactPressed: false,
     blockRemovePressed: false,
     blockPlacePressed: false,
@@ -1028,6 +1037,7 @@ export function GameWorld({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode = 'auto',
@@ -1059,6 +1069,9 @@ export function GameWorld({
   onDebugFrameRef.current = onDebugFrame;
   const onAimStateChangeRef = useRef(onAimStateChange);
   onAimStateChangeRef.current = onAimStateChange;
+  const onScopeActiveChangeRef = useRef(onScopeActiveChange);
+  onScopeActiveChangeRef.current = onScopeActiveChange;
+  const prevScopeActiveRef = useRef(false);
   const onInputFrameRef = useRef(onInputFrame);
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
@@ -1209,6 +1222,7 @@ export function GameWorld({
 
   useEffect(() => () => {
     onAimStateChangeRef.current?.('idle');
+    onScopeActiveChangeRef.current?.(false);
   }, []);
 
   useEffect(() => {
@@ -1657,9 +1671,26 @@ export function GameWorld({
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
+    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
+    const botAutopilotEnabled = Boolean(
+      benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
+      && botBrainRef.current
+      && !isDrivingNow,
+    );
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
+
+    const canUseAimControls = canUseScopedAim(
+      inputSample.activeFamily,
+      pointerLocked,
+      isDrivingNow,
+      localDead,
+      botAutopilotEnabled,
+    );
+    const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
     if (isDrivingNow) {
       const updatedCamera = advanceVehicleCamera(
@@ -1675,19 +1706,28 @@ export function GameWorld({
         lastVehicleLookAtMsRef.current = now;
       }
     } else {
-      const look = advanceLookAngles(yawRef.current, pitchRef.current, inputSample.action);
+      const look = advanceLookAngles(
+        yawRef.current,
+        pitchRef.current,
+        inputSample.action,
+        isAiming ? AIM_LOOK_MULTIPLIER : 1,
+      );
       yawRef.current = look.yaw;
       pitchRef.current = look.pitch;
     }
 
-    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
-    const botAutopilotEnabled = Boolean(
-      benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
-      && botBrainRef.current
-      && !isDrivingNow,
-    );
+    const targetFov = isAiming ? SCOPE_FOV : HIPFIRE_FOV;
+    if ('fov' in camera) {
+      const perspective = camera as THREE.PerspectiveCamera;
+      perspective.fov = THREE.MathUtils.damp(perspective.fov, targetFov, AIM_FOV_DAMP, frameDelta);
+      perspective.updateProjectionMatrix();
+    }
+
+    if (prevScopeActiveRef.current !== isAiming) {
+      prevScopeActiveRef.current = isAiming;
+      onScopeActiveChangeRef.current?.(isAiming);
+    }
+
     const autopilotInput = vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
@@ -1794,13 +1834,7 @@ export function GameWorld({
 
     prediction.submitInput(frameDelta, resolvedInput);
 
-    const canUseAimActions = !isDrivingNow && !localDead
-      && (
-        botAutopilotEnabled
-        || pointerLocked
-        || inputSample.activeFamily === 'gamepad'
-        || inputSample.activeFamily === 'touch'
-      );
+    const canUseAimActions = canUseAimControls;
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {

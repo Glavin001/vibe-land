@@ -126,6 +126,7 @@ export class GamepadInputSource {
       crouch: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.crouchButton),
       firePrimary: context === 'onFoot' && buttonValue(gamepad, gamepadBindings.firePrimaryButton) > PRESSED_EPSILON,
       firePrimaryValue: context === 'onFoot' ? buttonValue(gamepad, gamepadBindings.firePrimaryButton) : 0,
+      aimSecondary: context === 'onFoot' && buttonPressed(gamepad, gamepadBindings.aimSecondaryButton),
       handbrake: context === 'vehicle' && buttonPressed(gamepad, gamepadBindings.handbrakeButton),
       interactPressed: buttonJustPressed(gamepad, previous, gamepadBindings.interactButton),
       resetVehiclePressed: context === 'vehicle' && buttonJustPressed(gamepad, previous, gamepadBindings.resetVehicleButton),
