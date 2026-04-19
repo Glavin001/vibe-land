@@ -1028,33 +1028,35 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         onChange={(event) => void handleImportFile(event)}
       />
       {isMobile && (
-        <div style={mobileTopbarStyle}>
+        <div className="relative z-40 col-span-full row-start-1 grid h-12 w-screen max-w-none grid-cols-[40px_minmax(0,1fr)_40px] items-center gap-2 border-b border-[rgba(141,186,221,0.14)] bg-[rgba(3,8,14,0.96)] px-2.5 text-[#eef7ff]">
           <button
             type="button"
             onClick={() => {
               setRightDrawerOpen(false);
               setLeftDrawerOpen((v) => !v);
             }}
-            style={mobileIconButtonStyle}
+            className="flex h-9 w-10 items-center justify-center rounded-[10px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.7)] p-0 text-[#eef7ff]"
             aria-label="Toggle world builder tools"
           >
-            <span style={hamburgerIconStyle}>
-              <span style={hamburgerBarStyle} />
-              <span style={hamburgerBarStyle} />
-              <span style={hamburgerBarStyle} />
+            <span className="inline-flex h-3 w-4 flex-col justify-between">
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
             </span>
           </button>
-          <div style={mobileTopbarTitleStyle}>World Builder</div>
+          <div className="pointer-events-none min-w-0 truncate px-2 text-center text-xs font-semibold uppercase tracking-[0.12em] text-[#86d6f5]">
+            World Builder
+          </div>
           <button
             type="button"
             onClick={() => {
               setLeftDrawerOpen(false);
               setRightDrawerOpen((v) => !v);
             }}
-            style={mobileIconButtonStyle}
+            className="flex h-9 w-10 items-center justify-center rounded-[10px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.7)] p-0 text-[#eef7ff]"
             aria-label="Toggle AI chat"
           >
-            <span style={chatBubbleIconStyle}>💬</span>
+            <span className="text-base leading-none">💬</span>
           </button>
         </div>
       )}
@@ -2716,69 +2718,6 @@ const sidebarStyle: CSSProperties = {
   minHeight: 0,
   overflowY: 'auto',
   background: 'rgba(3, 8, 14, 0.92)',
-};
-
-const mobileTopbarStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: 8,
-  padding: '0 10px',
-  height: 48,
-  background: 'rgba(3, 8, 14, 0.96)',
-  borderBottom: '1px solid rgba(141, 186, 221, 0.14)',
-  color: '#eef7ff',
-  zIndex: 40,
-  gridRow: '1 / 2',
-};
-
-const mobileTopbarTitleStyle: CSSProperties = {
-  flex: 1,
-  minWidth: 0,
-  textAlign: 'center',
-  fontSize: 12,
-  letterSpacing: '0.12em',
-  textTransform: 'uppercase',
-  color: '#86d6f5',
-  fontWeight: 600,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-
-const mobileIconButtonStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  flex: '0 0 auto',
-  width: 40,
-  height: 36,
-  padding: 0,
-  background: 'rgba(20, 34, 48, 0.7)',
-  border: '1px solid rgba(167, 208, 237, 0.16)',
-  borderRadius: 10,
-  color: '#eef7ff',
-  cursor: 'pointer',
-};
-
-const hamburgerIconStyle: CSSProperties = {
-  display: 'inline-flex',
-  flexDirection: 'column',
-  justifyContent: 'space-between',
-  width: 16,
-  height: 12,
-};
-
-const hamburgerBarStyle: CSSProperties = {
-  display: 'block',
-  height: 2,
-  background: '#86d6f5',
-  borderRadius: 1,
-};
-
-const chatBubbleIconStyle: CSSProperties = {
-  fontSize: 16,
-  lineHeight: 1,
 };
 
 const drawerBackdropStyle: CSSProperties = {
