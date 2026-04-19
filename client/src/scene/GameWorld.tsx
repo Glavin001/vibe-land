@@ -68,6 +68,7 @@ import { createRemotePlayer, type RemotePlayerHandle, type RemoteRenderState } f
 import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
+import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -323,6 +324,9 @@ type GameWorldProps = {
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   cosmeticDeathPhysicsEnabled?: boolean;
+  fogEnabled?: boolean;
+  fogDensity?: number;
+  fogColor?: string;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1037,6 +1041,9 @@ export function GameWorld({
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   cosmeticDeathPhysicsEnabled = true,
+  fogEnabled = true,
+  fogDensity = DEFAULT_FOG_SETTINGS.density,
+  fogColor = DEFAULT_FOG_SETTINGS.color,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -2696,8 +2703,8 @@ export function GameWorld({
 
   return (
     <>
-      <color attach="background" args={['#d7e3f0']} />
-      <fog attach="fog" args={['#d7e3f0', 80, 220]} />
+      <color attach="background" args={[fogColor]} />
+      {fogEnabled && <fogExp2 attach="fog" args={[fogColor, fogDensity]} />}
       <Sky
         distance={450000}
         sunPosition={[120, 28, 40]}
