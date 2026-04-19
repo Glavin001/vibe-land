@@ -30,7 +30,7 @@ export type SharedPlayerNavigationProfile = {
 let sharedPlayerNavigationProfile: SharedPlayerNavigationProfile | null = null;
 type WasmDebugRenderBuffers = {
   vertices: Float32Array;
-  colors: Float32Array;
+  colors: Float32Array; // RGB, 3 floats per endpoint
 };
 
 type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
@@ -105,7 +105,9 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
   getVehicleDebug(id: number): number[];
   getVehiclePendingCount(): number;
   pruneVehiclePendingInputsThrough(ackSeq: number): void;
-  debugRender(modeBits: number): WasmDebugRenderBuffers;
+  debugRender(modeBits: number): number; // returns vertex (endpoint) count
+  debugRenderPositions(): Float32Array; // zero-copy view, valid until next debugRender call
+  debugRenderColors(): Float32Array; // zero-copy RGB view, valid until next debugRender call
   syncRemoteVehicle(
     id: number,
     px: number,

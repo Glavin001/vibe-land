@@ -255,7 +255,7 @@ export function useDebugStats() {
       transport: string;
       playerId: number;
     },
-    debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
+    debug: { rapierDebugLabel: string; rapierDebugModeBits: number; rapierDebugSampleHz: number; rapierDebugVertexCount: number; rapierDebugLastCostMs: number },
     physics: {
       pendingInputs: number;
       predictionTicks: number;
@@ -513,6 +513,9 @@ export function useDebugStats() {
     s.playerId = network.playerId;
     s.rapierDebugLabel = debug.rapierDebugLabel;
     s.rapierDebugModeBits = debug.rapierDebugModeBits;
+    s.rapierDebugSampleHz = debug.rapierDebugSampleHz;
+    s.rapierDebugVertexCount = debug.rapierDebugVertexCount;
+    s.rapierDebugLastCostMs = debug.rapierDebugLastCostMs;
     s.pendingInputs = physics.pendingInputs;
     s.predictionTicks = physics.predictionTicks;
     s.playerCorrectionMagnitude = physics.playerCorrectionMagnitude;

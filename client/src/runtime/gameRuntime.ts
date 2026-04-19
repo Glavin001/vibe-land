@@ -1612,7 +1612,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (!this.sim || modeBits === 0) {
       return null;
     }
-    return this.sim.debugRender(modeBits);
+    this.sim.debugRender(modeBits);
+    return {
+      vertices: this.sim.debugRenderPositions(),
+      colors: this.sim.debugRenderColors(),
+    };
   }
 
   getDebugStats(): RuntimeDebugStats {
