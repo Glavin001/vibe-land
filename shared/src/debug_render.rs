@@ -1,10 +1,15 @@
+use std::collections::HashSet;
+
 use rapier3d::pipeline::{
     DebugColor, DebugRenderBackend, DebugRenderMode, DebugRenderObject, DebugRenderPipeline,
     DebugRenderStyle,
 };
 use rapier3d::prelude::{
-    ColliderSet, ImpulseJointSet, MultibodyJointSet, NarrowPhase, Point, Real, RigidBodySet,
+    ColliderSet, ImpulseJointSet, MultibodyJointSet, NarrowPhase, Point, Real, RigidBodyHandle,
+    RigidBodySet,
 };
+
+pub const DESTRUCTIBLE_BODY_GROUPS_MODE_BIT: u32 = 1 << 30;
 
 #[derive(Clone, Debug, Default)]
 pub struct DebugLineBuffers {
@@ -12,16 +17,18 @@ pub struct DebugLineBuffers {
     pub colors: Vec<f32>,
 }
 
-struct BufferBackend {
+struct BufferBackend<'a> {
     vertices: Vec<f32>,
     colors: Vec<f32>,
+    destructible_body_handles: Option<&'a HashSet<RigidBodyHandle>>,
 }
 
-impl BufferBackend {
-    fn new() -> Self {
+impl<'a> BufferBackend<'a> {
+    fn new(destructible_body_handles: Option<&'a HashSet<RigidBodyHandle>>) -> Self {
         Self {
             vertices: Vec::new(),
             colors: Vec::new(),
+            destructible_body_handles,
         }
     }
 
@@ -33,10 +40,23 @@ impl BufferBackend {
     }
 }
 
-impl DebugRenderBackend for BufferBackend {
+impl DebugRenderBackend for BufferBackend<'_> {
+    fn filter_object(&self, object: DebugRenderObject) -> bool {
+        let Some(body_handles) = self.destructible_body_handles else {
+            return true;
+        };
+        match object {
+            DebugRenderObject::Collider(_, collider)
+            | DebugRenderObject::ColliderAabb(_, collider, _) => {
+                collider.parent().is_some_and(|handle| body_handles.contains(&handle))
+            }
+            _ => false,
+        }
+    }
+
     fn draw_line(
         &mut self,
-        _object: DebugRenderObject,
+        object: DebugRenderObject,
         a: Point<Real>,
         b: Point<Real>,
         color: DebugColor,
@@ -44,14 +64,17 @@ impl DebugRenderBackend for BufferBackend {
         self.vertices.extend_from_slice(&[
             a.x as f32, a.y as f32, a.z as f32, b.x as f32, b.y as f32, b.z as f32,
         ]);
-        let rgba = debug_color_to_rgba(color);
+        let rgba = self
+            .destructible_body_handles
+            .and_then(|_| object_body_handle(object).map(debug_body_color_rgba))
+            .unwrap_or_else(|| debug_color_to_rgba(color));
         self.colors.extend_from_slice(&rgba);
         self.colors.extend_from_slice(&rgba);
     }
 }
 
 pub fn debug_mode_from_bits(mode_bits: u32) -> DebugRenderMode {
-    DebugRenderMode::from_bits_truncate(mode_bits)
+    DebugRenderMode::from_bits_truncate(mode_bits & !DESTRUCTIBLE_BODY_GROUPS_MODE_BIT)
 }
 
 pub fn render_debug_buffers(
@@ -62,9 +85,19 @@ pub fn render_debug_buffers(
     impulse_joints: &ImpulseJointSet,
     multibody_joints: &MultibodyJointSet,
     narrow_phase: &NarrowPhase,
+    destructible_body_handles: Option<&HashSet<RigidBodyHandle>>,
 ) -> DebugLineBuffers {
-    pipeline.mode = debug_mode_from_bits(mode_bits);
-    let mut backend = BufferBackend::new();
+    let destructible_groups_only = (mode_bits & DESTRUCTIBLE_BODY_GROUPS_MODE_BIT) != 0;
+    pipeline.mode = if destructible_groups_only {
+        DebugRenderMode::COLLIDER_SHAPES
+    } else {
+        debug_mode_from_bits(mode_bits)
+    };
+    let mut backend = BufferBackend::new(if destructible_groups_only {
+        destructible_body_handles
+    } else {
+        None
+    });
     pipeline.render(
         &mut backend,
         bodies,
@@ -78,6 +111,24 @@ pub fn render_debug_buffers(
 
 pub fn default_debug_pipeline() -> DebugRenderPipeline {
     DebugRenderPipeline::new(DebugRenderStyle::default(), DebugRenderMode::default())
+}
+
+fn object_body_handle(object: DebugRenderObject<'_>) -> Option<RigidBodyHandle> {
+    match object {
+        DebugRenderObject::RigidBody(handle, _) => Some(handle),
+        DebugRenderObject::Collider(_, collider)
+        | DebugRenderObject::ColliderAabb(_, collider, _) => collider.parent(),
+        _ => None,
+    }
+}
+
+fn debug_body_color_rgba(handle: RigidBodyHandle) -> [f32; 4] {
+    let (index, generation) = handle.into_raw_parts();
+    let mixed = index
+        .wrapping_mul(0x9e37_79b1)
+        .wrapping_add(generation.wrapping_mul(0x85eb_ca6b));
+    let hue = (mixed % 360) as f32;
+    debug_color_to_rgba([hue, 0.72, 0.56, 1.0])
 }
 
 fn debug_color_to_rgba(color: DebugColor) -> [f32; 4] {
@@ -159,6 +210,7 @@ mod tests {
             &arena.impulse_joints,
             &arena.multibody_joints,
             &arena.sim.narrow_phase,
+            None,
         );
 
         assert!(
@@ -190,10 +242,73 @@ mod tests {
             &arena.impulse_joints,
             &arena.multibody_joints,
             &arena.sim.narrow_phase,
+            None,
         );
 
         assert!(!buffers.vertices.is_empty(), "expected some debug output");
         assert!(buffers.vertices.iter().all(|v| v.is_finite()));
         assert!(buffers.colors.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn destructible_groups_mode_filters_to_selected_body_and_uses_stable_color() {
+        let mut arena = DynamicArena::new(MoveConfig::default());
+        arena.spawn_dynamic_box(vector![0.0, 2.0, 0.0], vector![0.5, 0.5, 0.5]);
+        arena.spawn_dynamic_box(vector![3.0, 2.0, 0.0], vector![0.5, 0.5, 0.5]);
+        arena.rebuild_broad_phase();
+        arena.step_dynamics(1.0 / 60.0);
+
+        let mut body_handles = arena
+            .sim
+            .rigid_bodies
+            .iter()
+            .map(|(handle, _)| handle)
+            .collect::<Vec<_>>();
+        body_handles.sort_by_key(|handle| {
+            let (index, generation) = handle.into_raw_parts();
+            (index, generation)
+        });
+        let selected_body = *body_handles
+            .first()
+            .expect("expected at least one dynamic body");
+
+        let mut handles = HashSet::new();
+        handles.insert(selected_body);
+
+        let mut pipeline = default_debug_pipeline();
+        let filtered = render_debug_buffers(
+            &mut pipeline,
+            DESTRUCTIBLE_BODY_GROUPS_MODE_BIT,
+            &arena.sim.rigid_bodies,
+            &arena.sim.colliders,
+            &arena.impulse_joints,
+            &arena.multibody_joints,
+            &arena.sim.narrow_phase,
+            Some(&handles),
+        );
+
+        let mut full_pipeline = default_debug_pipeline();
+        let unfiltered = render_debug_buffers(
+            &mut full_pipeline,
+            DebugRenderMode::COLLIDER_SHAPES.bits(),
+            &arena.sim.rigid_bodies,
+            &arena.sim.colliders,
+            &arena.impulse_joints,
+            &arena.multibody_joints,
+            &arena.sim.narrow_phase,
+            None,
+        );
+
+        assert!(!filtered.vertices.is_empty(), "expected selected-body lines");
+        assert!(filtered.vertices.len() < unfiltered.vertices.len());
+        assert_eq!(filtered.colors.len(), (filtered.vertices.len() / 3) * 4);
+
+        let expected = debug_body_color_rgba(selected_body);
+        for rgba in filtered.colors.chunks_exact(4) {
+            assert!((rgba[0] - expected[0]).abs() < 1.0e-6);
+            assert!((rgba[1] - expected[1]).abs() < 1.0e-6);
+            assert!((rgba[2] - expected[2]).abs() < 1.0e-6);
+            assert!((rgba[3] - expected[3]).abs() < 1.0e-6);
+        }
     }
 }

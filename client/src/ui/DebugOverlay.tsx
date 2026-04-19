@@ -1046,7 +1046,7 @@ export function DebugOverlay({
                 Rapier Physics Debug
               </div>
               <div style={{ color: '#94b69f', fontSize: 11 }}>
-                Toggle the collider wireframe overlay for physics inspection.
+                Toggle collider wireframes, or isolate destructible rigid-body groups with per-body colors.
               </div>
             </div>
             <button
@@ -1070,7 +1070,7 @@ export function DebugOverlay({
             </button>
           </div>
           <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
-            {'Click to cycle off -> shapes -> joints -> full. F6 toggles off/shapes, Shift+F6 cycles every mode.'}
+            {'Click to cycle off -> shapes -> destructibles -> joints -> full. F6 toggles off/shapes, Shift+F6 cycles every mode.'}
           </div>
         </div>
 
@@ -1312,11 +1312,11 @@ export function DebugOverlay({
           {`Chunks/fracture events: ${stats.destructibleChunkCount} / ${stats.destructibleFractureEventsTotal}`}
           {`Logging: ${stats.destructibleLoggingEnabled ? 'verbose ON' : 'off'}  wall/tower scale: ${fmt(stats.destructibleDebugConfig.wallMaterialScale, 0)}x / ${fmt(stats.destructibleDebugConfig.towerMaterialScale, 0)}x`}
           {`Impact seq/accepted: ${fmt(stats.destructibleDebugState.impactSeq, 0)} / ${fmt(stats.destructibleDebugState.impactProcessed, 0)}  inst: ${stats.destructibleDebugState.impactInstanceId || '—'}`}
-          {`Impact raw/injected: ${fmt(stats.destructibleDebugState.impactMaxForceN, 0)} / ${fmt(stats.destructibleDebugState.impactMaxEstimatedInjectedForceN, 0)} N`}
+          {`Impact impulse/injected: ${fmt(stats.destructibleDebugState.impactMaxImpulseNs, 0)} Ns / ${fmt(stats.destructibleDebugState.impactMaxEstimatedInjectedForceN, 0)} N`}
           {`Impact speed/splash/bodyNodes: ${fmt(stats.destructibleDebugState.impactMaxSpeedMs, 2)} m/s  ${fmt(stats.destructibleDebugState.impactMaxSplashNodes, 0)} / ${fmt(stats.destructibleDebugState.impactMaxBodyNodeCount, 0)}`}
           {`Contacts seen/matching/accepted: ${fmt(stats.destructibleDebugState.contactEventsSeenTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsMatchingTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsAcceptedTotal, 0)}`}
-          {`Skipped force/speed/cooldown/other/missing: ${fmt(stats.destructibleDebugState.contactEventsBelowForceSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsBelowSpeedSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsCooldownSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsOtherDestructibleSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsMissingBodyOrNodeSkippedTotal + stats.destructibleDebugState.contactEventsMissingPartnerBodySkippedTotal, 0)}`}
-          {`Contact raw/speed/capped: ${fmt(stats.destructibleDebugState.contactEventsMaxRawForceN, 0)} N / ${fmt(stats.destructibleDebugState.contactEventsMaxPartnerSpeedMs, 2)} m/s / ${fmt(stats.destructibleDebugState.contactEventsForceCappedTotal, 0)}  cooldown ${fmt(stats.destructibleDebugConfig.impactCooldownSecs, 2)}s max ${fmt(stats.destructibleDebugConfig.maxInjectedImpactForceN, 0)} N`}
+          {`Skipped impulse/speed/cooldown/other/missing: ${fmt(stats.destructibleDebugState.contactEventsBelowImpulseSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsBelowSpeedSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsCooldownSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsOtherDestructibleSkippedTotal, 0)} / ${fmt(stats.destructibleDebugState.contactEventsMissingBodyOrNodeSkippedTotal + stats.destructibleDebugState.contactEventsMissingPartnerBodySkippedTotal, 0)}`}
+          {`Contact impulse/speed/capped: ${fmt(stats.destructibleDebugState.contactEventsMaxRawImpulseNs, 0)} Ns / ${fmt(stats.destructibleDebugState.contactEventsMaxPartnerSpeedMs, 2)} m/s / ${fmt(stats.destructibleDebugState.contactEventsForceCappedTotal, 0)}  cooldown ${fmt(stats.destructibleDebugConfig.impactCooldownSecs, 2)}s max ${fmt(stats.destructibleDebugConfig.maxInjectedImpactForceN, 0)} N`}
           {`Fracture seq/count: ${fmt(stats.destructibleDebugState.fractureSeq, 0)} / ${fmt(stats.destructibleDebugState.fractures, 0)}  splits/newBodies/active: ${fmt(stats.destructibleDebugState.splitEvents, 0)} / ${fmt(stats.destructibleDebugState.newBodies, 0)} / ${fmt(stats.destructibleDebugState.activeBodies, 0)}`}
           {`Post-fracture max/fast: ${fmt(stats.destructibleDebugState.postFractureMaxBodySpeedMs, 2)} m/s / ${fmt(stats.destructibleDebugState.postFractureFastBodyCount, 0)}  current max: ${fmt(stats.destructibleDebugState.currentMaxBodySpeedMs, 2)} m/s`}
         </Section>

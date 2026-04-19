@@ -803,6 +803,7 @@ impl LocalSession {
         debug_pipeline: &mut rapier3d::pipeline::DebugRenderPipeline,
         mode_bits: u32,
     ) -> DebugLineBuffers {
+        let destructible_body_handles = self.arena.destructible_debug_body_handles();
         render_debug_buffers(
             debug_pipeline,
             mode_bits,
@@ -811,6 +812,7 @@ impl LocalSession {
             &self.arena.dynamic.impulse_joints,
             &self.arena.dynamic.multibody_joints,
             &self.arena.dynamic.sim.narrow_phase,
+            Some(&destructible_body_handles),
         )
     }
 

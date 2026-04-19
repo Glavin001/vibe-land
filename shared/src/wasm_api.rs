@@ -13,6 +13,7 @@ use crate::destructibles::{
     pose_from_world_doc, set_destructibles_log_enabled, DestructibleRegistry,
     DestructibleRuntimeConfig,
 };
+use crate::destructibles_math::{DEFAULT_TOWER_MATERIAL_SCALE, DEFAULT_WALL_MATERIAL_SCALE};
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
@@ -169,17 +170,12 @@ pub struct WasmSimWorld {
     // see `destructibles.rs` and `docs/BLAST_INTEGRATION.md`.
     destructibles: DestructibleRegistry,
 
-    // Rapier event channels.  The vehicle pipeline passes a
-    // `ChannelEventCollector` wrapping these senders as its event
-    // handler; `step_vehicle_pipeline` drains them into the destructible
-    // stress solver before stepping it.  Present even when
-    // destructibles are stubbed out so the pipeline can always use the
-    // same event handler path — the stub `drain_*` methods just
-    // discard the events.
+    // Rapier collision-start event channel. The vehicle pipeline pairs
+    // this with a per-step throwaway force-event sink so impact
+    // analysis can read narrow-phase contact pairs directly without
+    // accumulating unused force events.
     collision_tx: std::sync::mpsc::Sender<CollisionEvent>,
     collision_rx: std::sync::mpsc::Receiver<CollisionEvent>,
-    contact_force_tx: std::sync::mpsc::Sender<ContactForceEvent>,
-    contact_force_rx: std::sync::mpsc::Receiver<ContactForceEvent>,
 }
 
 #[wasm_bindgen]
@@ -188,12 +184,11 @@ impl WasmSimWorld {
     pub fn new(wall_material_scale: Option<f32>, tower_material_scale: Option<f32>) -> Self {
         install_panic_hook_once();
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
-        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         let destructible_runtime_config = DestructibleRuntimeConfig {
             wall_material_scale: wall_material_scale
-                .unwrap_or(crate::destructibles::DEFAULT_WALL_MATERIAL_SCALE),
+                .unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
             tower_material_scale: tower_material_scale
-                .unwrap_or(crate::destructibles::DEFAULT_TOWER_MATERIAL_SCALE),
+                .unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
         };
         Self {
             sim: SimWorld::new(MoveConfig::default()),
@@ -219,8 +214,6 @@ impl WasmSimWorld {
             destructibles: DestructibleRegistry::with_runtime_config(destructible_runtime_config),
             collision_tx,
             collision_rx,
-            contact_force_tx,
-            contact_force_rx,
         }
     }
 
@@ -862,18 +855,12 @@ impl WasmSimWorld {
             // feel immediate for both walking and driving.
             let dyn_groups =
                 InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
-            // Enable contact-force events so dynamic balls hitting
-            // destructibles are routed through the Blast stress solver.
-            // Threshold 0.0 = fire for every contact; the solver
-            // weights forces with its own falloff kernel.
             let collider = if shape_type == 1 {
                 ColliderBuilder::ball(hx)
                     .density(1.0)
                     .restitution(0.6)
                     .friction(0.2)
                     .collision_groups(dyn_groups)
-                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
-                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             } else {
@@ -882,8 +869,6 @@ impl WasmSimWorld {
                     .restitution(0.3)
                     .friction(0.6)
                     .collision_groups(dyn_groups)
-                    .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
-                    .contact_force_event_threshold(0.0)
                     .user_data(id as u128)
                     .build()
             };
@@ -1156,6 +1141,7 @@ impl WasmSimWorld {
         // advancing local physics. Flush those pending collider changes so the
         // debug draw reflects current proxy positions rather than stale AABBs.
         self.sim.sync_broad_phase();
+        let destructible_body_handles = self.destructibles.debug_body_handles();
         let buffers = render_debug_buffers(
             &mut self.debug_pipeline,
             mode_bits,
@@ -1164,6 +1150,7 @@ impl WasmSimWorld {
             &self.vehicle_joints,
             &self.vehicle_multibody_joints,
             &self.sim.narrow_phase,
+            Some(&destructible_body_handles),
         );
         DebugRenderBuffers::from_line_buffers(buffers)
     }
@@ -1551,12 +1538,16 @@ impl WasmSimWorld {
         let Some(pipeline) = &mut self.vehicle_pipeline else {
             return;
         };
+        let (contact_force_tx, _contact_force_rx) =
+            std::sync::mpsc::channel::<ContactForceEvent>();
+        if !self.destructibles.is_empty() {
+            self.destructibles.begin_physics_step(&self.sim);
+        }
         // Rapier expects the event handler by shared reference.  A new
         // `ChannelEventCollector` is cheap (two `Sender` clones) and
         // avoids holding a mutable borrow of `self` while the body
         // fields below are mutably borrowed.
-        let collector =
-            ChannelEventCollector::new(self.collision_tx.clone(), self.contact_force_tx.clone());
+        let collector = ChannelEventCollector::new(self.collision_tx.clone(), contact_force_tx);
         step_vehicle_dynamics(
             &mut self.sim,
             &self.gravity,
@@ -1569,26 +1560,20 @@ impl WasmSimWorld {
         );
         drop(collector);
         // After the rigid-body pipeline has resolved contacts for this
-        // frame, route the contact-force / collision events into the
-        // destructible stress solvers *before* stepping them so
-        // fractures happen in the same frame as the collision.  Drain
-        // order matters: `drain_contact_forces` reads collider→node
-        // mappings that can be invalidated by splits inside
-        // `destructibles.step`.
+        // frame, route collision starts and narrow-phase contact pairs
+        // into the destructible stress solvers before stepping them so
+        // fractures happen in the same frame as the impact.
         if !self.destructibles.is_empty() {
             self.destructibles
                 .drain_collision_events(&mut self.sim, &self.collision_rx);
             self.destructibles
-                .drain_contact_forces(&self.sim, &self.contact_force_rx);
+                .drain_contact_impacts(&self.sim, dt);
             self.destructibles.step(
                 &mut self.sim,
                 &mut self.vehicle_joints,
                 &mut self.vehicle_multibody_joints,
             );
         } else {
-            // Drain-and-drop so the unbounded channels don't grow
-            // without bound in worlds without destructibles.
-            while self.contact_force_rx.try_recv().is_ok() {}
             while self.collision_rx.try_recv().is_ok() {}
         }
     }
@@ -1637,9 +1622,9 @@ impl WasmLocalSession {
         install_panic_hook_once();
         let destructible_runtime_config = DestructibleRuntimeConfig {
             wall_material_scale: wall_material_scale
-                .unwrap_or(crate::destructibles::DEFAULT_WALL_MATERIAL_SCALE),
+                .unwrap_or(DEFAULT_WALL_MATERIAL_SCALE),
             tower_material_scale: tower_material_scale
-                .unwrap_or(crate::destructibles::DEFAULT_TOWER_MATERIAL_SCALE),
+                .unwrap_or(DEFAULT_TOWER_MATERIAL_SCALE),
         };
         let inner = match world_json {
             Some(world_json) => LocalSession::from_world_json_with_destructible_runtime_config(

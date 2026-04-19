@@ -1,7 +1,7 @@
 export type DestructibleDebugState = {
   impactSeq: number;
   impactProcessed: number;
-  impactMaxForceN: number;
+  impactMaxImpulseNs: number;
   impactMaxSpeedMs: number;
   impactMaxSplashNodes: number;
   impactMaxBodyNodeCount: number;
@@ -37,12 +37,12 @@ export type DestructibleDebugState = {
   contactEventsSeenTotal: number;
   contactEventsMatchingTotal: number;
   contactEventsOtherDestructibleSkippedTotal: number;
-  contactEventsBelowForceSkippedTotal: number;
+  contactEventsBelowImpulseSkippedTotal: number;
   contactEventsMissingPartnerBodySkippedTotal: number;
   contactEventsBelowSpeedSkippedTotal: number;
   contactEventsMissingBodyOrNodeSkippedTotal: number;
   contactEventsAcceptedTotal: number;
-  contactEventsMaxRawForceN: number;
+  contactEventsMaxRawImpulseNs: number;
   contactEventsMaxPartnerSpeedMs: number;
   contactEventsCollisionGraceOverridesTotal: number;
   contactEventsCooldownSkippedTotal: number;
@@ -52,7 +52,7 @@ export type DestructibleDebugState = {
 export type DestructibleDebugConfig = {
   contactSplashRadiusM: number;
   contactForceScale: number;
-  minImpactForceN: number;
+  minImpactImpulseNs: number;
   minImpactSpeedMs: number;
   collisionImpactGraceSecs: number;
   wallMaterialScale: number;
@@ -68,7 +68,7 @@ export type DestructibleDebugConfig = {
 export const EMPTY_DESTRUCTIBLE_DEBUG_STATE: DestructibleDebugState = Object.freeze({
   impactSeq: 0,
   impactProcessed: 0,
-  impactMaxForceN: 0,
+  impactMaxImpulseNs: 0,
   impactMaxSpeedMs: 0,
   impactMaxSplashNodes: 0,
   impactMaxBodyNodeCount: 0,
@@ -104,12 +104,12 @@ export const EMPTY_DESTRUCTIBLE_DEBUG_STATE: DestructibleDebugState = Object.fre
   contactEventsSeenTotal: 0,
   contactEventsMatchingTotal: 0,
   contactEventsOtherDestructibleSkippedTotal: 0,
-  contactEventsBelowForceSkippedTotal: 0,
+  contactEventsBelowImpulseSkippedTotal: 0,
   contactEventsMissingPartnerBodySkippedTotal: 0,
   contactEventsBelowSpeedSkippedTotal: 0,
   contactEventsMissingBodyOrNodeSkippedTotal: 0,
   contactEventsAcceptedTotal: 0,
-  contactEventsMaxRawForceN: 0,
+  contactEventsMaxRawImpulseNs: 0,
   contactEventsMaxPartnerSpeedMs: 0,
   contactEventsCollisionGraceOverridesTotal: 0,
   contactEventsCooldownSkippedTotal: 0,
@@ -119,7 +119,7 @@ export const EMPTY_DESTRUCTIBLE_DEBUG_STATE: DestructibleDebugState = Object.fre
 export const EMPTY_DESTRUCTIBLE_DEBUG_CONFIG: DestructibleDebugConfig = Object.freeze({
   contactSplashRadiusM: 0,
   contactForceScale: 0,
-  minImpactForceN: 0,
+  minImpactImpulseNs: 0,
   minImpactSpeedMs: 0,
   collisionImpactGraceSecs: 0,
   wallMaterialScale: 0,
@@ -138,7 +138,7 @@ export function parseDestructibleDebugState(raw: ArrayLike<number> | null | unde
   return {
     impactSeq: num(0),
     impactProcessed: num(1),
-    impactMaxForceN: num(2),
+    impactMaxImpulseNs: num(2),
     impactMaxSpeedMs: num(3),
     impactMaxSplashNodes: num(4),
     impactMaxBodyNodeCount: num(5),
@@ -174,12 +174,12 @@ export function parseDestructibleDebugState(raw: ArrayLike<number> | null | unde
     contactEventsSeenTotal: num(35),
     contactEventsMatchingTotal: num(36),
     contactEventsOtherDestructibleSkippedTotal: num(37),
-    contactEventsBelowForceSkippedTotal: num(38),
+    contactEventsBelowImpulseSkippedTotal: num(38),
     contactEventsMissingPartnerBodySkippedTotal: num(39),
     contactEventsBelowSpeedSkippedTotal: num(40),
     contactEventsMissingBodyOrNodeSkippedTotal: num(41),
     contactEventsAcceptedTotal: num(42),
-    contactEventsMaxRawForceN: num(43),
+    contactEventsMaxRawImpulseNs: num(43),
     contactEventsMaxPartnerSpeedMs: num(44),
     contactEventsCollisionGraceOverridesTotal: num(45),
     contactEventsCooldownSkippedTotal: num(46),
@@ -194,7 +194,7 @@ export function parseDestructibleDebugConfig(raw: ArrayLike<number> | null | und
   return {
     contactSplashRadiusM: num(0),
     contactForceScale: num(1),
-    minImpactForceN: num(2),
+    minImpactImpulseNs: num(2),
     minImpactSpeedMs: num(3),
     collisionImpactGraceSecs: num(4),
     wallMaterialScale: num(5),

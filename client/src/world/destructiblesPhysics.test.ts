@@ -126,7 +126,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const parsed = parseDestructibleDebugConfig(config);
 
     expect(parsed.debrisCollisionMode).toBe('all');
-    expect(parsed.collisionImpactGraceSecs).toBeCloseTo(0.05, 5);
+    expect(parsed.minImpactImpulseNs).toBeCloseTo(8, 5);
+    expect(parsed.collisionImpactGraceSecs).toBe(0);
     expect(parsed.impactCooldownSecs).toBeCloseTo(0.5, 5);
     expect(parsed.maxInjectedImpactForceN).toBe(250);
 
@@ -203,8 +204,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     //
     // Originally this test asserted "vehicle stopped before Z=9.0 wall
     // face" as the collision signal.  That was the right check for an
-    // indestructible wall, but once impact-driven fracturing was wired
-    // in (see `destructibles_real::drain_contact_forces`) the car
+    // indestructible wall, but once impulse-driven fracturing was wired
+    // in (see `destructibles_real::drain_contact_impacts`) the car
     // legitimately crashes *through* the wall — it's a destructible
     // after all.  We now verify collision by checking that either a
     // fracture event fired or chunks were visibly displaced during the
@@ -351,11 +352,11 @@ describe('Destructible scenarios (Blast stress solver)', () => {
     const travelDelta = control.finalZ - impact.finalZ;
     expect(travelDelta).toBeGreaterThan(1.0);
 
-    // 2. The destructible path must have seen and accepted contact
-    //    force events. Visible chunk displacement in the first 4
-    //    seconds is helpful but not guaranteed; accepted contact-force
-    //    telemetry is the stronger signal that we hit the wall instead
-    //    of phasing through it.
+    // 2. The destructible path must have seen and accepted impact
+    //    telemetry. Visible chunk displacement in the first 4 seconds
+    //    is helpful but not guaranteed; accepted impact telemetry is
+    //    the stronger signal that we hit the wall instead of phasing
+    //    through it.
     const sawImpactTelemetry =
       debugState.contactEventsMatchingTotal > 0
       && (debugState.contactEventsAcceptedTotal > 0 || fractureCount > 0);
@@ -679,7 +680,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
 
     expect(debugState.contactEventsAcceptedTotal).toBeGreaterThan(0);
     expect(debugState.contactEventsForceCappedTotal).toBeGreaterThan(0);
-    expect(debugState.impactMaxForceN).toBeGreaterThan(debugState.impactMaxEstimatedInjectedForceN);
+    expect(debugState.impactMaxImpulseNs).toBeGreaterThan(debugState.impactMaxEstimatedInjectedForceN);
     expect(debugState.impactMaxEstimatedInjectedForceN).toBeLessThanOrEqual(debugConfig.maxInjectedImpactForceN);
   });
 

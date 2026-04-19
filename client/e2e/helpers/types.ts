@@ -57,7 +57,7 @@ export interface GameE2ESnapshot {
     debugState: {
       impactSeq: number;
       impactProcessed: number;
-      impactMaxForceN: number;
+      impactMaxImpulseNs: number;
       impactMaxSpeedMs: number;
       impactMaxSplashNodes: number;
       impactMaxBodyNodeCount: number;
@@ -93,19 +93,21 @@ export interface GameE2ESnapshot {
       contactEventsSeenTotal: number;
       contactEventsMatchingTotal: number;
       contactEventsOtherDestructibleSkippedTotal: number;
-      contactEventsBelowForceSkippedTotal: number;
+      contactEventsBelowImpulseSkippedTotal: number;
       contactEventsMissingPartnerBodySkippedTotal: number;
       contactEventsBelowSpeedSkippedTotal: number;
       contactEventsMissingBodyOrNodeSkippedTotal: number;
       contactEventsAcceptedTotal: number;
-      contactEventsMaxRawForceN: number;
+      contactEventsMaxRawImpulseNs: number;
       contactEventsMaxPartnerSpeedMs: number;
       contactEventsCollisionGraceOverridesTotal: number;
+      contactEventsCooldownSkippedTotal: number;
+      contactEventsForceCappedTotal: number;
     };
     debugConfig: {
       contactSplashRadiusM: number;
       contactForceScale: number;
-      minImpactForceN: number;
+      minImpactImpulseNs: number;
       minImpactSpeedMs: number;
       collisionImpactGraceSecs: number;
       wallMaterialScale: number;
@@ -114,6 +116,8 @@ export interface GameE2ESnapshot {
       maxNewBodiesPerFrame: number;
       applyExcessForces: boolean;
       debrisCollisionMode: 'all' | 'noDebrisPairs' | 'debrisGroundOnly' | 'debrisNone';
+      impactCooldownSecs: number;
+      maxInjectedImpactForceN: number;
     };
     spatialMetrics: {
       overlapPairCount: number;

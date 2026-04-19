@@ -7,9 +7,12 @@ const OVERLAY_UPDATE_INTERVAL_MS = 100; // 10Hz UI refresh
 const JITTER_SAMPLE_COUNT = 30; // rolling window of snapshot intervals
 const DEEP_CAPTURE_WINDOW_MS = 10_000;
 const DEEP_CAPTURE_EXPORT_MAX_SAMPLES = 120;
+// Must match `shared/src/debug_render.rs`.
+const DESTRUCTIBLE_BODY_GROUPS_MODE_BIT = 1 << 30;
 const RAPIER_DEBUG_MODES = [
   { bits: 0, label: 'off' },
   { bits: 0b11, label: 'shapes' },
+  { bits: DESTRUCTIBLE_BODY_GROUPS_MODE_BIT, label: 'destructibles' },
   { bits: 0b1111, label: 'joints' },
   { bits: 0b1111111, label: 'full' },
 ] as const;

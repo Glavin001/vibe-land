@@ -215,12 +215,6 @@ pub fn create_vehicle_physics(
         .restitution(0.1)
         .density(VEHICLE_CHASSIS_DENSITY)
         .collision_groups(chassis_groups)
-        // Enable contact-force events so the WASM client can route vehicle
-        // impacts into the Blast destructibles stress solver. Threshold 0.0
-        // = fire for every contact. On non-wasm builds (no destructibles
-        // feature) the event handler is `&()` so this is a zero-cost flag.
-        .active_events(ActiveEvents::CONTACT_FORCE_EVENTS)
-        .contact_force_event_threshold(0.0)
         .build();
     let chassis_collider =
         sim.colliders
@@ -284,9 +278,10 @@ pub fn refresh_vehicle_contacts(
 /// Step the vehicle rigid-body pipeline for one client prediction tick.
 ///
 /// `event_handler` is the `EventHandler` passed to `pipeline.step`.  The WASM
-/// client passes a `ChannelEventCollector` so contact-force events can be
-/// routed into the Blast destructibles stress solver; server-side callers
-/// (and the `#[cfg(test)]` rig below) pass `&()` which is a zero-cost no-op.
+/// client passes a `ChannelEventCollector` so collision starts can be buffered
+/// while destructible impact analysis reads Rapier's narrow-phase contact pairs
+/// directly after the step; server-side callers (and the `#[cfg(test)]` rig
+/// below) pass `&()` which is a zero-cost no-op.
 pub fn step_vehicle_dynamics(
     sim: &mut SimWorld,
     gravity: &Vector3<f32>,

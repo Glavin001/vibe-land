@@ -190,9 +190,9 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
 name = "blast-stress-solver"
-version = "0.1.1"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "312a0c63d5f6b7807a70fc407d46fb1033de8e5e159d279470e40f39402b1d2c"
+checksum = "ba1cc67e3230195e1f14b924d9623483f144ab37876ab28980bf2288c68530c0"
 dependencies = [
  "cc",
  "rapier3d",

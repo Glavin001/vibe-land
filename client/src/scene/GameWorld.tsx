@@ -2885,12 +2885,16 @@ function WorldBlock({
   );
 }
 
+const DESTRUCTIBLE_BODY_GROUPS_MODE_BIT = 1 << 30;
+
 function rapierDebugModeLabel(modeBits: number): string {
   switch (modeBits) {
     case 0:
       return 'off';
     case 0b11:
       return 'shapes';
+    case DESTRUCTIBLE_BODY_GROUPS_MODE_BIT:
+      return 'destructibles';
     case 0b1111:
       return 'joints';
     case 0b1111111:

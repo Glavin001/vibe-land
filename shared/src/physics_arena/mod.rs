@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nalgebra::{Point3, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
@@ -97,10 +97,6 @@ pub struct PhysicsArena {
     collision_tx: std::sync::mpsc::Sender<CollisionEvent>,
     #[cfg(target_arch = "wasm32")]
     collision_rx: std::sync::mpsc::Receiver<CollisionEvent>,
-    #[cfg(target_arch = "wasm32")]
-    contact_force_tx: std::sync::mpsc::Sender<ContactForceEvent>,
-    #[cfg(target_arch = "wasm32")]
-    contact_force_rx: std::sync::mpsc::Receiver<ContactForceEvent>,
 }
 
 impl PhysicsArena {
@@ -130,8 +126,6 @@ impl PhysicsArena {
     ) -> Self {
         #[cfg(target_arch = "wasm32")]
         let (collision_tx, collision_rx) = std::sync::mpsc::channel::<CollisionEvent>();
-        #[cfg(target_arch = "wasm32")]
-        let (contact_force_tx, contact_force_rx) = std::sync::mpsc::channel::<ContactForceEvent>();
         Self {
             dynamic: DynamicArena::new(config),
             players: HashMap::new(),
@@ -147,10 +141,6 @@ impl PhysicsArena {
             collision_tx,
             #[cfg(target_arch = "wasm32")]
             collision_rx,
-            #[cfg(target_arch = "wasm32")]
-            contact_force_tx,
-            #[cfg(target_arch = "wasm32")]
-            contact_force_rx,
         }
     }
 
@@ -261,9 +251,14 @@ impl PhysicsArena {
     pub fn step_dynamics(&mut self, dt: f32) {
         #[cfg(target_arch = "wasm32")]
         {
+            let (contact_force_tx, _contact_force_rx) =
+                std::sync::mpsc::channel::<ContactForceEvent>();
+            if !self.destructibles.is_empty() {
+                self.destructibles.begin_physics_step(&self.dynamic.sim);
+            }
             let collector = ChannelEventCollector::new(
                 self.collision_tx.clone(),
-                self.contact_force_tx.clone(),
+                contact_force_tx,
             );
             self.dynamic
                 .step_dynamics_with_event_handler(dt, &collector);
@@ -272,14 +267,13 @@ impl PhysicsArena {
                 self.destructibles
                     .drain_collision_events(&mut self.dynamic.sim, &self.collision_rx);
                 self.destructibles
-                    .drain_contact_forces(&self.dynamic.sim, &self.contact_force_rx);
+                    .drain_contact_impacts(&self.dynamic.sim, dt);
                 self.destructibles.step(
                     &mut self.dynamic.sim,
                     &mut self.dynamic.impulse_joints,
                     &mut self.dynamic.multibody_joints,
                 );
             } else {
-                while self.contact_force_rx.try_recv().is_ok() {}
                 while self.collision_rx.try_recv().is_ok() {}
             }
             return;
@@ -412,6 +406,16 @@ impl PhysicsArena {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn destructible_debug_config(&self) -> Box<[f64]> {
         Box::new([])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn destructible_debug_body_handles(&self) -> HashSet<RigidBodyHandle> {
+        self.destructibles.debug_body_handles()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn destructible_debug_body_handles(&self) -> HashSet<RigidBodyHandle> {
+        HashSet::new()
     }
 
     #[cfg(target_arch = "wasm32")]
