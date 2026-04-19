@@ -19,6 +19,10 @@ type WeatherParticlesProps = {
   windDirectionDeg: number;
   fogColor: string;
   fogDensity: number;
+  // Storm thickness multiplier (1.0 = preset default). Scales particle sprite
+  // size so higher intensity visually thickens the storm on top of the
+  // fog-density boost applied upstream.
+  intensity: number;
 };
 
 const VERTEX_SHADER = /* glsl */ `
@@ -107,6 +111,7 @@ export function WeatherParticles({
   windDirectionDeg,
   fogColor,
   fogDensity,
+  intensity,
 }: WeatherParticlesProps) {
   const pointsRef = useRef<THREE.Points>(null);
   const timeRef = useRef(0);
@@ -153,10 +158,14 @@ export function WeatherParticles({
     u.uFallSpeed.value = preset.fallSpeedMps;
     u.uTumbleHz.value = preset.tumbleHz;
     u.uTumbleAmp.value = preset.tumbleAmplitudeM;
-    u.uSize.value = preset.particleSizePx;
+    // Intensity scales sprite size by sqrt(i) so visual area grows linearly —
+    // paired with the density bump upstream this lets a full-tilt blizzard
+    // swallow the horizon without rebuilding particle geometry on every
+    // slider tick.
+    u.uSize.value = preset.particleSizePx * Math.sqrt(Math.max(0.01, intensity));
     u.uBoxSize.value = preset.boxSizeM;
     (u.uColor.value as THREE.Color).set(preset.particleColor);
-  }, [material, preset]);
+  }, [material, preset, intensity]);
 
   useEffect(() => {
     (material.uniforms.uFogColor.value as THREE.Color).set(fogColor);

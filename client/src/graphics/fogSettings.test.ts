@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_FOG_SETTINGS,
   FOG_OPACITY_AT_AOI,
+  MAX_FOG_INTENSITY,
+  MIN_FOG_INTENSITY,
   __resetFogSettingsForTest,
   fogDensityForAoi,
   parseFogSettings,
@@ -39,7 +41,17 @@ describe('parseFogSettings', () => {
       weather: DEFAULT_FOG_SETTINGS.weather,
       windStrengthMps: DEFAULT_FOG_SETTINGS.windStrengthMps,
       windDirectionDeg: DEFAULT_FOG_SETTINGS.windDirectionDeg,
+      intensity: DEFAULT_FOG_SETTINGS.intensity,
     });
+  });
+
+  it('clamps intensity to its documented range', () => {
+    expect(parseFogSettings({ intensity: 2.5 })?.intensity).toBe(2.5);
+    expect(parseFogSettings({ intensity: MIN_FOG_INTENSITY })?.intensity).toBe(MIN_FOG_INTENSITY);
+    expect(parseFogSettings({ intensity: MAX_FOG_INTENSITY })?.intensity).toBe(MAX_FOG_INTENSITY);
+    expect(parseFogSettings({ intensity: 0 })?.intensity).toBe(DEFAULT_FOG_SETTINGS.intensity);
+    expect(parseFogSettings({ intensity: 100 })?.intensity).toBe(DEFAULT_FOG_SETTINGS.intensity);
+    expect(parseFogSettings({ intensity: Number.NaN })?.intensity).toBe(DEFAULT_FOG_SETTINGS.intensity);
   });
 
   it('preserves a persisted null color', () => {

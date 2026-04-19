@@ -51,7 +51,12 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
-import { updateFogSettings, useFogSettings } from './graphics/fogSettings';
+import {
+  MAX_FOG_INTENSITY,
+  MIN_FOG_INTENSITY,
+  updateFogSettings,
+  useFogSettings,
+} from './graphics/fogSettings';
 
 type AppProps = {
   mode: GameMode;
@@ -1095,6 +1100,13 @@ export function App({
           ...s,
           windDirectionDeg: Number.isFinite(next) ? next : s.windDirectionDeg,
         }))}
+        weatherIntensity={fogSettings.intensity}
+        onChangeWeatherIntensity={(next) => updateFogSettings((s) => ({
+          ...s,
+          intensity: Number.isFinite(next)
+            ? Math.max(MIN_FOG_INTENSITY, Math.min(MAX_FOG_INTENSITY, next))
+            : s.intensity,
+        }))}
         playerIdLabelsEnabled={playerIdLabelsEnabled}
         onTogglePlayerIdLabels={() => setPlayerIdLabelsEnabled((enabled) => !enabled)}
         rapierDebugLabel={rapierDebugLabel}
@@ -1146,6 +1158,7 @@ export function App({
           weather={fogSettings.weather}
           windStrengthMps={fogSettings.windStrengthMps}
           windDirectionDeg={fogSettings.windDirectionDeg}
+          intensity={fogSettings.intensity}
           sceneExtras={calibrationSceneExtras}
         />
       )}

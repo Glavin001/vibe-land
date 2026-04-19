@@ -42,7 +42,14 @@ export type FogSettings = {
   windStrengthMps: number;
   // Compass degrees (0 = +Z, 90 = +X), so "wind is blowing toward" direction.
   windDirectionDeg: number;
+  // Thickness multiplier over the AOI-tied base density. 1.0 = AOI-matched
+  // (default behaviour). >1 closes visibility in faster and fattens particle
+  // sprites for a true "blizzard swallowed the horizon" feel; <1 airs it out.
+  intensity: number;
 };
+
+export const MIN_FOG_INTENSITY = 0.25;
+export const MAX_FOG_INTENSITY = 5;
 
 export const DEFAULT_FOG_SETTINGS: FogSettings = {
   enabled: true,
@@ -51,6 +58,7 @@ export const DEFAULT_FOG_SETTINGS: FogSettings = {
   weather: 'clear',
   windStrengthMps: 8,
   windDirectionDeg: 45,
+  intensity: 1,
 };
 
 /**
@@ -113,7 +121,13 @@ export function parseFogSettings(raw: unknown): FogSettings | null {
   const weather = parseWeather(candidate.weather);
   const windStrengthMps = parseFiniteNumber(candidate.windStrengthMps, DEFAULT_FOG_SETTINGS.windStrengthMps, 0, 200);
   const windDirectionDeg = parseFiniteNumber(candidate.windDirectionDeg, DEFAULT_FOG_SETTINGS.windDirectionDeg);
-  return { enabled, density, color, weather, windStrengthMps, windDirectionDeg };
+  const intensity = parseFiniteNumber(
+    candidate.intensity,
+    DEFAULT_FOG_SETTINGS.intensity,
+    MIN_FOG_INTENSITY,
+    MAX_FOG_INTENSITY,
+  );
+  return { enabled, density, color, weather, windStrengthMps, windDirectionDeg, intensity };
 }
 
 export function loadFogSettings(): FogSettings {

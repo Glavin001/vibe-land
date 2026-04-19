@@ -40,6 +40,7 @@ type GameSceneProps = {
   weather?: WeatherPreset;
   windStrengthMps?: number;
   windDirectionDeg?: number;
+  intensity?: number;
   sceneExtras?: ReactNode;
 };
 
@@ -75,6 +76,7 @@ export function GameScene({
   weather,
   windStrengthMps,
   windDirectionDeg,
+  intensity,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -125,6 +127,7 @@ export function GameScene({
           weather={weather}
           windStrengthMps={windStrengthMps}
           windDirectionDeg={windDirectionDeg}
+          intensity={intensity}
           sceneExtras={sceneExtras}
         />
       </Suspense>

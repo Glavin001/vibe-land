@@ -374,6 +374,7 @@ type GameWorldProps = {
   weather?: WeatherPreset;
   windStrengthMps?: number;
   windDirectionDeg?: number;
+  intensity?: number;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1101,9 +1102,11 @@ export function GameWorld({
   weather = DEFAULT_FOG_SETTINGS.weather,
   windStrengthMps = DEFAULT_FOG_SETTINGS.windStrengthMps,
   windDirectionDeg = DEFAULT_FOG_SETTINGS.windDirectionDeg,
+  intensity = DEFAULT_FOG_SETTINGS.intensity,
   sceneExtras,
 }: GameWorldProps) {
   const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
+  const effectiveFogDensity = fogDensity * intensity;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -2994,14 +2997,15 @@ export function GameWorld({
   return (
     <>
       <color attach="background" args={[resolvedFogColor]} />
-      {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, fogDensity]} />}
+      {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, effectiveFogDensity]} />}
       {fogEnabled && (
         <WeatherParticles
           weather={weather}
           windStrengthMps={windStrengthMps}
           windDirectionDeg={windDirectionDeg}
           fogColor={resolvedFogColor}
-          fogDensity={fogDensity}
+          fogDensity={effectiveFogDensity}
+          intensity={intensity}
         />
       )}
       <Sky

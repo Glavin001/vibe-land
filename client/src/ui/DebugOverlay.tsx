@@ -722,6 +722,8 @@ export function DebugOverlay({
   windDirectionDeg,
   onChangeWindStrength,
   onChangeWindDirection,
+  weatherIntensity,
+  onChangeWeatherIntensity,
   playerIdLabelsEnabled = false,
   onTogglePlayerIdLabels,
   rapierDebugLabel = 'off',
@@ -746,6 +748,8 @@ export function DebugOverlay({
   windDirectionDeg?: number;
   onChangeWindStrength?: (next: number) => void;
   onChangeWindDirection?: (next: number) => void;
+  weatherIntensity?: number;
+  onChangeWeatherIntensity?: (next: number) => void;
   playerIdLabelsEnabled?: boolean;
   onTogglePlayerIdLabels?: () => void;
   rapierDebugLabel?: string;
@@ -1152,7 +1156,14 @@ export function DebugOverlay({
                   max={60}
                   step={1}
                   value={windStrengthMps ?? 0}
-                  onChange={(e) => onChangeWindStrength?.(Number(e.currentTarget.value))}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const raw = e.currentTarget.value;
+                    if (raw === '') return;
+                    const parsed = Number(raw);
+                    if (Number.isFinite(parsed)) onChangeWindStrength?.(parsed);
+                  }}
                   style={{
                     width: 52,
                     background: 'rgba(0, 0, 0, 0.35)',
@@ -1174,7 +1185,14 @@ export function DebugOverlay({
                   max={359}
                   step={5}
                   value={windDirectionDeg ?? 0}
-                  onChange={(e) => onChangeWindDirection?.(Number(e.currentTarget.value))}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const raw = e.currentTarget.value;
+                    if (raw === '') return;
+                    const parsed = Number(raw);
+                    if (Number.isFinite(parsed)) onChangeWindDirection?.(parsed);
+                  }}
                   style={{
                     width: 56,
                     background: 'rgba(0, 0, 0, 0.35)',
@@ -1187,6 +1205,36 @@ export function DebugOverlay({
                   }}
                 />
                 °
+              </label>
+              <label
+                style={{
+                  color: '#a9cab2',
+                  fontSize: 11,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  flex: '1 1 140px',
+                  minWidth: 140,
+                }}
+              >
+                Thick
+                <input
+                  type="range"
+                  min={0.25}
+                  max={5}
+                  step={0.05}
+                  value={weatherIntensity ?? 1}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  onChange={(e) => {
+                    const parsed = Number(e.currentTarget.value);
+                    if (Number.isFinite(parsed)) onChangeWeatherIntensity?.(parsed);
+                  }}
+                  style={{ flex: 1, accentColor: '#98ffbc' }}
+                />
+                <span style={{ fontVariantNumeric: 'tabular-nums', minWidth: 28, textAlign: 'right' }}>
+                  {(weatherIntensity ?? 1).toFixed(2)}×
+                </span>
               </label>
             </div>
           )}
