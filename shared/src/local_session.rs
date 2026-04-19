@@ -387,7 +387,9 @@ impl LocalSession {
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
         }
-        let _ = self.arena.respawn_player(LOCAL_PLAYER_ID, PlayerKind::Human);
+        let _ = self
+            .arena
+            .respawn_player(LOCAL_PLAYER_ID, PlayerKind::Human);
     }
 
     fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {

@@ -390,8 +390,7 @@ mod tests {
         let human_spawn = arena.spawn_player(1, PlayerKind::Human);
         // Must be near either (0,0) or (100,100); never at a default (0,0,0)-like lane
         let near_a = ((human_spawn.x.powi(2) + human_spawn.z.powi(2)) as f32).sqrt() < 3.5;
-        let near_b = (((human_spawn.x - 100.0).powi(2)
-            + (human_spawn.z - 100.0).powi(2)) as f32)
+        let near_b = (((human_spawn.x - 100.0).powi(2) + (human_spawn.z - 100.0).powi(2)) as f32)
             .sqrt()
             < 3.5;
         assert!(
