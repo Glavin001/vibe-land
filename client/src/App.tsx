@@ -48,6 +48,7 @@ import {
 import { getSharedPlayerNavigationProfileAsync } from './wasm/sharedPhysics';
 import { PracticeBotsPanel } from './ui/PracticeBotsPanel';
 import { updateE2EBridgeAppState } from './e2eBridge';
+import { updateFogSettings, useFogSettings } from './graphics/fogSettings';
 
 type AppProps = {
   mode: GameMode;
@@ -172,6 +173,7 @@ export function App({
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
+  const fogSettings = useFogSettings();
   const [inputBindings, setInputBindings] = useState<InputBindings>(() => loadInputBindings());
   const {
     visible: debugVisible,
@@ -725,6 +727,8 @@ export function App({
         renderStatsText: renderStatsParentRef.current?.innerText ?? '',
         localRenderSmoothingEnabled,
         vehicleSmoothingEnabled,
+        fogEnabled: fogSettings.enabled,
+        fogDensity: fogSettings.density,
         deepCaptureEnabled,
         deepCaptureReport: getDeepCaptureMarkdown(),
       });
@@ -967,6 +971,9 @@ export function App({
         onToggleLocalRenderSmoothing={() => setLocalRenderSmoothingEnabled((enabled) => !enabled)}
         vehicleSmoothingEnabled={vehicleSmoothingEnabled}
         onToggleVehicleSmoothing={() => setVehicleSmoothingEnabled((enabled) => !enabled)}
+        fogEnabled={fogSettings.enabled}
+        fogDensity={fogSettings.density}
+        onToggleFog={() => updateFogSettings((s) => ({ ...s, enabled: !s.enabled }))}
         rapierDebugLabel={rapierDebugLabel}
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
@@ -1006,6 +1013,9 @@ export function App({
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
+          fogEnabled={fogSettings.enabled}
+          fogDensity={fogSettings.density}
+          fogColor={fogSettings.color}
           sceneExtras={calibrationSceneExtras}
         />
       )}
