@@ -1110,26 +1110,40 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <div style={fieldStackStyle}>
                   <div style={buttonRowStyle}>
                     <button type="button" onClick={() => setTerrainToolMode('sculpt')} style={terrainToolMode === 'sculpt' ? activeButtonStyle : secondaryButtonStyle}>Sculpt</button>
-                    <button type="button" onClick={() => setTerrainToolMode('ramp')} style={terrainToolMode === 'ramp' ? activeButtonStyle : secondaryButtonStyle}>Ramp</button>
                     <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
                     <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
-                    {customStencils.map((s) => (
-                      <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => {
-                          setTerrainToolMode(`custom:${s.id}`);
-                          if (!customStencilParams[s.id]) {
-                            setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
-                          }
-                        }}
-                        style={terrainToolMode === `custom:${s.id}` ? activeButtonStyle : secondaryButtonStyle}
-                        title={s.description}
-                      >
-                        {s.name}
-                      </button>
-                    ))}
                   </div>
+                  <label style={fieldLabelStyle}>
+                    Stencil
+                    <select
+                      value={terrainToolMode === 'ramp' || terrainToolMode.startsWith('custom:') ? terrainToolMode : ''}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        if (value === '') return;
+                        if (value === 'ramp') {
+                          setTerrainToolMode('ramp');
+                          return;
+                        }
+                        if (value.startsWith('custom:')) {
+                          const id = value.slice(7);
+                          const stencil = customStencils.find((s) => s.id === id);
+                          setTerrainToolMode(`custom:${id}`);
+                          if (stencil && !customStencilParams[id]) {
+                            setCustomStencilParams((prev) => ({ ...prev, [id]: stencil.defaultParams ?? {} }));
+                          }
+                        }
+                      }}
+                      style={stencilSelectStyle}
+                    >
+                      <option value="" disabled>Select stencil…</option>
+                      <option value="ramp">Ramp</option>
+                      {customStencils.map((s) => (
+                        <option key={s.id} value={`custom:${s.id}`} title={s.description}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   {terrainToolMode === 'sculpt' ? (
                     <>
                       <label style={fieldLabelStyle}>
@@ -2699,6 +2713,14 @@ const dangerButtonStyle: CSSProperties = {
   ...baseButtonStyle,
   background: '#ff8573',
   color: '#38130e',
+};
+
+const stencilSelectStyle: CSSProperties = {
+  ...baseButtonStyle,
+  background: 'rgba(20, 34, 48, 0.96)',
+  color: '#eef7ff',
+  padding: '8px 10px',
+  appearance: 'auto',
 };
 
 const historyListStyle: CSSProperties = {
