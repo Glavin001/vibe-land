@@ -23,6 +23,7 @@ type GameSceneProps = {
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
@@ -54,6 +55,7 @@ export function GameScene({
   rapierDebugModeBits = 0,
   showRenderStats,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
@@ -102,6 +104,7 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}
+          showPlayerIdLabels={showPlayerIdLabels}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}

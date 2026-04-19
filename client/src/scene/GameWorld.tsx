@@ -326,6 +326,7 @@ type GameWorldProps = {
   onSnapshot?: () => void;
   rapierDebugModeBits?: number;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   benchmarkAutopilot?: {
     enabled: boolean;
     clientIndex: number;
@@ -1053,6 +1054,7 @@ export function GameWorld({
   onSnapshot,
   rapierDebugModeBits = 0,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
@@ -2544,10 +2546,13 @@ export function GameWorld({
       if (!handle) {
         handle = createRemotePlayer(group, { tint: PLAYER_COLORS[id % PLAYER_COLORS.length], playerId: id, runtime: client ?? undefined });
         handle.root.add(createPlayerDebugHelper(PLAYER_COLORS[id % PLAYER_COLORS.length]));
+        attachPlayerIdLabel(handle.root, id);
         remoteHpBarsRef.current.set(id, attachRemoteHpBar(handle.root));
         remoteMeshes.current.set(id, handle);
         console.log('[game] Created mesh for remote player', id);
       }
+      const idLabel = handle.root.getObjectByName('idLabel');
+      if (idLabel) idLabel.visible = showPlayerIdLabels;
       const sample = state.remoteInterpolator.sample(id, renderTimeUs);
       const remoteFlags = sample?.flags ?? (rp.hp <= 0 ? FLAG_DEAD : 0);
       let position = sample?.position ?? rp.position;
@@ -3427,6 +3432,29 @@ function estimateVehicleForwardSpeed(
     (position[2] - lastPosition[2]) / frameDeltaSec,
   );
   return velocity.dot(forward);
+}
+
+function attachPlayerIdLabel(parent: THREE.Object3D, id: number): void {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 48;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, 128, 48);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 28px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`P${id}`, 64, 34);
+  const texture = new THREE.CanvasTexture(canvas);
+  const labelMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(labelMat);
+  sprite.name = 'idLabel';
+  sprite.visible = false;
+  sprite.scale.set(1.2, 0.45, 1);
+  // Quaternius rig: root origin sits at body center, model spans ~[-0.6 .. +0.7].
+  // Place the label just above the head.
+  sprite.position.y = 1.0;
+  parent.add(sprite);
 }
 
 interface RemoteHpBarHandle {

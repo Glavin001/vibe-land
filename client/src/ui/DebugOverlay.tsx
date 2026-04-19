@@ -702,6 +702,8 @@ export function DebugOverlay({
   fogEnabled = true,
   fogDensity,
   onToggleFog,
+  playerIdLabelsEnabled = false,
+  onTogglePlayerIdLabels,
   rapierDebugLabel = 'off',
   onCycleRapierDebugPreset,
   deepCaptureEnabled = false,
@@ -718,6 +720,8 @@ export function DebugOverlay({
   fogEnabled?: boolean;
   fogDensity?: number;
   onToggleFog?: () => void;
+  playerIdLabelsEnabled?: boolean;
+  onTogglePlayerIdLabels?: () => void;
   rapierDebugLabel?: string;
   onCycleRapierDebugPreset?: () => void;
   deepCaptureEnabled?: boolean;
@@ -753,6 +757,13 @@ export function DebugOverlay({
     ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
     : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
   const fogBorder = fogEnabled
+    ? 'rgba(118, 255, 170, 0.28)'
+    : 'rgba(228, 234, 241, 0.18)';
+  const playerIdLabelsAccent = playerIdLabelsEnabled ? '#98ffbc' : '#d8dee6';
+  const playerIdLabelsBackground = playerIdLabelsEnabled
+    ? 'linear-gradient(180deg, rgba(18, 54, 31, 0.72), rgba(9, 28, 17, 0.78))'
+    : 'linear-gradient(180deg, rgba(36, 40, 46, 0.72), rgba(18, 21, 26, 0.78))';
+  const playerIdLabelsBorder = playerIdLabelsEnabled
     ? 'rgba(118, 255, 170, 0.28)'
     : 'rgba(228, 234, 241, 0.18)';
   const fogVisibilityM = fogDensity && fogDensity > 0
@@ -1078,6 +1089,66 @@ export function DebugOverlay({
             {fogEnabled
               ? 'Exponential-squared fog tuned to the server AOI so streamed entities fade smoothly into the sky.'
               : 'Fog disabled: the entire 500m camera frustum is rendered (useful for debugging but exposes streaming boundaries).'}
+          </div>
+        </div>
+        <div
+          style={{
+            display: 'grid',
+            gap: 8,
+            padding: '10px 12px',
+            borderRadius: 10,
+            background: playerIdLabelsBackground,
+            border: `1px solid ${playerIdLabelsBorder}`,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              flexWrap: 'wrap',
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: '#f0fff4',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  marginBottom: 2,
+                }}
+              >
+                Player ID Labels
+              </div>
+              <div style={{ color: '#94b69f', fontSize: 11 }}>
+                Toggle the black player ID badges above remote players.
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-pressed={playerIdLabelsEnabled}
+              onClick={onTogglePlayerIdLabels}
+              style={{
+                background: playerIdLabelsEnabled ? 'rgba(137, 255, 186, 0.18)' : 'rgba(255, 255, 255, 0.08)',
+                border: `1px solid ${playerIdLabelsEnabled ? 'rgba(137, 255, 186, 0.48)' : 'rgba(255, 255, 255, 0.2)'}`,
+                color: playerIdLabelsAccent,
+                borderRadius: 999,
+                cursor: onTogglePlayerIdLabels ? 'pointer' : 'default',
+                font: 'inherit',
+                fontWeight: 700,
+                letterSpacing: '0.03em',
+                padding: '6px 12px',
+                boxShadow: playerIdLabelsEnabled ? 'inset 0 0 0 1px rgba(137, 255, 186, 0.08)' : 'none',
+              }}
+            >
+              {`Player IDs ${playerIdLabelsEnabled ? 'ON' : 'OFF'}`}
+            </button>
+          </div>
+          <div style={{ color: '#a9cab2', fontSize: 11, lineHeight: 1.35 }}>
+            {playerIdLabelsEnabled
+              ? 'Remote players render their ID badges above the character root.'
+              : 'Player ID badges stay hidden unless you explicitly enable them for debugging.'}
           </div>
         </div>
         <div

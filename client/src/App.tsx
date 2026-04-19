@@ -262,6 +262,7 @@ export function App({
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
+  const [playerIdLabelsEnabled, setPlayerIdLabelsEnabled] = useState(false);
   const refreshPracticeBotStats = useCallback(() => {
     const runtime = practiceBotRuntimeRef.current;
     setPracticeBotStats(runtime ? runtime.stats() : null);
@@ -1054,6 +1055,8 @@ export function App({
         fogEnabled={fogSettings.enabled}
         fogDensity={fogSettings.density}
         onToggleFog={() => updateFogSettings((s) => ({ ...s, enabled: !s.enabled }))}
+        playerIdLabelsEnabled={playerIdLabelsEnabled}
+        onTogglePlayerIdLabels={() => setPlayerIdLabelsEnabled((enabled) => !enabled)}
         rapierDebugLabel={rapierDebugLabel}
         onCycleRapierDebugPreset={() => cycleRapierDebugPreset(false)}
         deepCaptureEnabled={deepCaptureEnabled}
@@ -1089,6 +1092,7 @@ export function App({
           renderStatsParent={renderStatsParentRef}
           showRenderStats={debugVisible}
           showDebugHelpers={debugVisible}
+          showPlayerIdLabels={playerIdLabelsEnabled}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceMode ? practiceBotRuntime : null}
           practiceBotsDebugOverlay={practiceMode && practiceBotDebugOverlay}
