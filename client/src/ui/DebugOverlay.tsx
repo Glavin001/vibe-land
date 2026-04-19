@@ -438,6 +438,18 @@ function fmtVec3Tuple(values: Array<[number, number, number]>, decimals = 2): st
   return `[${values.map((value) => fmtTuple(value, decimals)).join(', ')}]`;
 }
 
+function weatherLabel(weather: 'clear' | 'dust_storm' | 'snow_storm'): string {
+  switch (weather) {
+    case 'dust_storm':
+      return 'Dust Storm';
+    case 'snow_storm':
+      return 'Snow Storm';
+    case 'clear':
+    default:
+      return 'Clear';
+  }
+}
+
 function fmtFlags(onGround: boolean, inVehicle: boolean, dead: boolean): string {
   const parts: string[] = [];
   if (onGround) parts.push('ground');
@@ -704,6 +716,12 @@ export function DebugOverlay({
   fogEnabled = true,
   fogDensity,
   onToggleFog,
+  weather,
+  onCycleWeather,
+  windStrengthMps,
+  windDirectionDeg,
+  onChangeWindStrength,
+  onChangeWindDirection,
   playerIdLabelsEnabled = false,
   onTogglePlayerIdLabels,
   rapierDebugLabel = 'off',
@@ -722,6 +740,12 @@ export function DebugOverlay({
   fogEnabled?: boolean;
   fogDensity?: number;
   onToggleFog?: () => void;
+  weather?: 'clear' | 'dust_storm' | 'snow_storm';
+  onCycleWeather?: () => void;
+  windStrengthMps?: number;
+  windDirectionDeg?: number;
+  onChangeWindStrength?: (next: number) => void;
+  onChangeWindDirection?: (next: number) => void;
   playerIdLabelsEnabled?: boolean;
   onTogglePlayerIdLabels?: () => void;
   rapierDebugLabel?: string;
@@ -1092,6 +1116,80 @@ export function DebugOverlay({
               ? 'Exponential-squared fog tuned to the server AOI so streamed entities fade smoothly into the sky.'
               : 'Fog disabled: the entire 500m camera frustum is rendered (useful for debugging but exposes streaming boundaries).'}
           </div>
+          {weather != null && (
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 8,
+                paddingTop: 6,
+                borderTop: '1px dashed rgba(137, 255, 186, 0.18)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={onCycleWeather}
+                style={{
+                  background: 'rgba(137, 255, 186, 0.12)',
+                  border: '1px solid rgba(137, 255, 186, 0.36)',
+                  color: '#dff8e4',
+                  borderRadius: 999,
+                  cursor: onCycleWeather ? 'pointer' : 'default',
+                  font: 'inherit',
+                  fontWeight: 700,
+                  letterSpacing: '0.03em',
+                  padding: '5px 10px',
+                }}
+              >
+                {`Weather: ${weatherLabel(weather)}`}
+              </button>
+              <label style={{ color: '#a9cab2', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                Wind
+                <input
+                  type="number"
+                  min={0}
+                  max={60}
+                  step={1}
+                  value={windStrengthMps ?? 0}
+                  onChange={(e) => onChangeWindStrength?.(Number(e.currentTarget.value))}
+                  style={{
+                    width: 52,
+                    background: 'rgba(0, 0, 0, 0.35)',
+                    color: '#dff8e4',
+                    border: '1px solid rgba(137, 255, 186, 0.25)',
+                    borderRadius: 6,
+                    padding: '2px 6px',
+                    font: 'inherit',
+                    fontSize: 11,
+                  }}
+                />
+                m/s
+              </label>
+              <label style={{ color: '#a9cab2', fontSize: 11, display: 'flex', alignItems: 'center', gap: 4 }}>
+                Dir
+                <input
+                  type="number"
+                  min={0}
+                  max={359}
+                  step={5}
+                  value={windDirectionDeg ?? 0}
+                  onChange={(e) => onChangeWindDirection?.(Number(e.currentTarget.value))}
+                  style={{
+                    width: 56,
+                    background: 'rgba(0, 0, 0, 0.35)',
+                    color: '#dff8e4',
+                    border: '1px solid rgba(137, 255, 186, 0.25)',
+                    borderRadius: 6,
+                    padding: '2px 6px',
+                    font: 'inherit',
+                    fontSize: 11,
+                  }}
+                />
+                °
+              </label>
+            </div>
+          )}
         </div>
         <div
           style={{

@@ -1072,6 +1072,29 @@ export function App({
         fogEnabled={fogSettings.enabled}
         fogDensity={fogSettings.density}
         onToggleFog={() => updateFogSettings((s) => ({ ...s, enabled: !s.enabled }))}
+        weather={fogSettings.weather}
+        onCycleWeather={() => updateFogSettings((s) => ({
+          ...s,
+          weather:
+            s.weather === 'clear'
+              ? 'dust_storm'
+              : s.weather === 'dust_storm'
+                ? 'snow_storm'
+                : 'clear',
+          // Clear any custom color override when switching so the preset
+          // shows its intended tint.
+          color: null,
+        }))}
+        windStrengthMps={fogSettings.windStrengthMps}
+        windDirectionDeg={fogSettings.windDirectionDeg}
+        onChangeWindStrength={(next) => updateFogSettings((s) => ({
+          ...s,
+          windStrengthMps: Number.isFinite(next) ? Math.max(0, Math.min(200, next)) : s.windStrengthMps,
+        }))}
+        onChangeWindDirection={(next) => updateFogSettings((s) => ({
+          ...s,
+          windDirectionDeg: Number.isFinite(next) ? next : s.windDirectionDeg,
+        }))}
         playerIdLabelsEnabled={playerIdLabelsEnabled}
         onTogglePlayerIdLabels={() => setPlayerIdLabelsEnabled((enabled) => !enabled)}
         rapierDebugLabel={rapierDebugLabel}
@@ -1119,7 +1142,10 @@ export function App({
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}
           fogEnabled={fogSettings.enabled}
           fogDensity={fogSettings.density}
-          fogColor={fogSettings.color}
+          fogColor={fogSettings.color ?? undefined}
+          weather={fogSettings.weather}
+          windStrengthMps={fogSettings.windStrengthMps}
+          windDirectionDeg={fogSettings.windDirectionDeg}
           sceneExtras={calibrationSceneExtras}
         />
       )}
