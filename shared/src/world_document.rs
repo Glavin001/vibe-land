@@ -2095,6 +2095,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -2120,6 +2121,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
