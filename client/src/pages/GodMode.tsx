@@ -4,6 +4,7 @@ import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
+import { DestructibleAuthoringPreview } from '../scene/DestructibleAuthoringPreview';
 import {
   DEFAULT_WORLD_DOCUMENT,
   DEFAULT_TERRAIN_MATERIALS,
@@ -2016,6 +2017,12 @@ function GodModeEditorScene({
           centerZ={terrainPointerPoint[2]}
         />
       )}
+      <DestructibleAuthoringPreview
+        world={world}
+        selected={selected}
+        onSelect={onSelect}
+        registerSelectableObject={registerSelectableObject}
+      />
       <group>
         {world.staticProps.map((entity) => (
           <mesh
