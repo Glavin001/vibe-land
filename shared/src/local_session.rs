@@ -502,9 +502,6 @@ impl LocalSession {
                     server_time_ms.saturating_add(RIFLE_FIRE_INTERVAL_MS);
             }
 
-            if self.arena.vehicle_of_player.contains_key(&shooter_id) {
-                continue;
-            }
             let Some((pos, _vel, _yaw, _pitch, hp, _flags)) =
                 self.arena.snapshot_player(shooter_id)
             else {
@@ -2296,6 +2293,43 @@ mod tests {
 
         let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100, "vehicle occupants are immune to melee");
+    }
+
+    #[test]
+    fn hitscan_from_vehicle_damages_on_foot_victim() {
+        let mut session = isolated_energy_session();
+        let bot_id = 504;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 3.0, 1.0, 0.0);
+        // Put the shooter in a vehicle (fake mapping — no real vehicle needed;
+        // snapshot_player falls back to the player's position in that case).
+        session
+            .arena
+            .vehicle_of_player
+            .insert(LOCAL_PLAYER_ID, 9999);
+
+        // Eye origin is at y=1.8; aim slightly downward so the ray passes
+        // through the body of the target capsule at x=3 rather than skimming
+        // the top cap.
+        let dir_len = (1.0f32 * 1.0 + 0.3 * 0.3).sqrt();
+        session.queue_fire_cmd(FireCmd {
+            seq: 1,
+            shot_id: 11,
+            weapon: 1,
+            client_fire_time_us: session.server_time_us(),
+            client_interp_ms: 0,
+            client_dynamic_interp_ms: 0,
+            dir: [1.0 / dir_len, -0.3 / dir_len, 0.0],
+        });
+        session.process_hitscan(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert!(
+            victim_hp < 100,
+            "vehicle occupants should still deal damage with the rifle (hp={victim_hp})"
+        );
     }
 
     #[test]

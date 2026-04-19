@@ -1701,7 +1701,6 @@ export function GameWorld({
     const canUseAimControls = canUseScopedAim(
       inputSample.activeFamily,
       pointerLocked,
-      isDrivingNow,
       localDead,
       botAutopilotEnabled,
     );
@@ -1854,8 +1853,24 @@ export function GameWorld({
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
         nextLocalFireMsRef.current = now + RIFLE_FIRE_INTERVAL_MS;
-        const fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
-        const aimOrigin: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
+        let fireDir: [number, number, number];
+        let aimOrigin: [number, number, number];
+        if (isDrivingNow && localVehicleVisualPose) {
+          // Fire from the vehicle using the orbit camera's world-space look direction.
+          // The orbit places the camera above/behind the focus with pitch>0 looking down,
+          // which inverts aimDirectionFromAngles' pitch convention — hence the negated pitch.
+          const vq = localVehicleVisualPose.quaternion;
+          const vehicleQuat = new THREE.Quaternion(vq[0], vq[1], vq[2], vq[3]);
+          const vehicleEuler = new THREE.Euler().setFromQuaternion(vehicleQuat, 'YXZ');
+          const worldAimYaw = vehicleEuler.y + vehicleCameraYawOffsetRef.current;
+          const worldAimPitch = -vehicleCameraPitchRef.current;
+          fireDir = aimDirectionFromAngles(worldAimYaw, worldAimPitch);
+          const vp = localVehicleVisualPose.position;
+          aimOrigin = [vp[0], vp[1] + PLAYER_EYE_HEIGHT, vp[2]];
+        } else {
+          fireDir = aimDirectionFromAngles(yawRef.current, pitchRef.current);
+          aimOrigin = [camera.position.x, camera.position.y, camera.position.z];
+        }
         const sceneHit = prediction.raycastScene(
           aimOrigin,
           fireDir,

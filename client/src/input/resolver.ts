@@ -106,7 +106,7 @@ export function resolveVehicleInput(
     yaw,
     pitch,
     buttons,
-    firePrimary: false,
+    firePrimary: action?.firePrimary ?? false,
     aimSecondary: false,
     interactPressed: action?.interactPressed ?? false,
     blockRemovePressed: false,
