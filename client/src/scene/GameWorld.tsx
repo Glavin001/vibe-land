@@ -21,6 +21,7 @@ import {
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import { isShotTraceActive, pickShotTraceIntercept, shotTraceColor, type LocalShotTrace, type RemoteShotHit } from './shotTrace';
+import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
   BTN_CROUCH,
@@ -1661,14 +1662,26 @@ export function GameWorld({
     onInputFrameRef.current?.(inputSample);
     prediction.advanceDynamicBodies(frameDelta, !prediction.isInVehicle());
     const physStats = prediction.getDebugStats();
+    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
+    const botAutopilotEnabled = Boolean(
+      benchmarkAutopilot?.enabled
+      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
+      && botBrainRef.current
+      && !isDrivingNow,
+    );
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
 
-    const isAiming = !!inputSample.action?.aimSecondary
-      && !isDrivingNow
-      && !localDead
-      && pointerLocked;
+    const canUseAimControls = canUseScopedAim(
+      inputSample.activeFamily,
+      pointerLocked,
+      isDrivingNow,
+      localDead,
+      botAutopilotEnabled,
+    );
+    const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
     if (isDrivingNow) {
       const updatedCamera = advanceVehicleCamera(
@@ -1706,14 +1719,6 @@ export function GameWorld({
       onScopeActiveChangeRef.current?.(isAiming);
     }
 
-    const vehicleBenchmarkEnabled = benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode === 'vehicle_driver';
-    const botAutopilotEnabled = Boolean(
-      benchmarkAutopilot?.enabled
-      && benchmarkAutopilot.scenario.playBenchmark?.mode !== 'vehicle_driver'
-      && botBrainRef.current
-      && !isDrivingNow,
-    );
     const autopilotInput = vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
@@ -1820,13 +1825,7 @@ export function GameWorld({
 
     prediction.submitInput(frameDelta, resolvedInput);
 
-    const canUseAimActions = !isDrivingNow && !localDead
-      && (
-        botAutopilotEnabled
-        || pointerLocked
-        || inputSample.activeFamily === 'gamepad'
-        || inputSample.activeFamily === 'touch'
-      );
+    const canUseAimActions = canUseAimControls;
 
     if (canUseAimActions) {
       if (resolvedInput.firePrimary && client && now >= nextLocalFireMsRef.current) {
