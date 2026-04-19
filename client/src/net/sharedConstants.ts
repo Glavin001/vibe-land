@@ -56,6 +56,17 @@ export const BLOCK_REMOVE = 2;
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
 
+// ── Area-of-interest (AOI) radii ────────────────
+// The server uses these to decide which players, dynamic bodies, and vehicles
+// get streamed to each recipient. Clients mirror the same value to size the
+// visual fog so sight ends where replication ends (no pop-in at the
+// streaming boundary). Keep all four in lockstep unless there's a specific
+// reason to differ.
+export const PLAYER_AOI_RADIUS_M = 80.0;
+export const DYNAMIC_BODY_AOI_RADIUS_M = 80.0;
+export const DYNAMIC_BODY_AOI_EXIT_RADIUS_M = 80.0;
+export const VEHICLE_AOI_RADIUS_M = 80.0;
+
 // ── Shared gameplay/runtime constants ───────────
 export const SIM_HZ = 60;
 export const SNAPSHOT_HZ_MULTIPLAYER = 30;
