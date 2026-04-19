@@ -180,6 +180,13 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     dirY: number,
     dirZ: number,
   ): void;
+  queueMelee(
+    seq: number,
+    swingId: number,
+    clientTimeUs: number,
+    yaw: number,
+    pitch: number,
+  ): void;
   enterVehicle(vehicleId: number): void;
   exitVehicle(vehicleId: number): void;
   getSnapshotMeta(): number[];
@@ -196,6 +203,18 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     dy: number,
     dz: number,
     maxToi: number,
+  ): number[];
+  classifyHitscanPlayer(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    bodyX: number,
+    bodyY: number,
+    bodyZ: number,
+    blockerToi: number,
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
   drainPackets(): Uint8Array;

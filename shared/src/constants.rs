@@ -13,6 +13,7 @@ pub const BTN_RELOAD: u16 = 1 << 8;
 pub const FLAG_ON_GROUND: u16 = 1 << 0;
 pub const FLAG_IN_VEHICLE: u16 = 1 << 1;
 pub const FLAG_DEAD: u16 = 1 << 2;
+pub const FLAG_MELEEING: u16 = 1 << 3;
 
 // ── Packet type IDs ─────────────────────────────
 pub const PKT_CLIENT_HELLO: u8 = 1;
@@ -22,6 +23,7 @@ pub const PKT_BLOCK_EDIT: u8 = 4;
 pub const PKT_VEHICLE_ENTER: u8 = 5;
 pub const PKT_VEHICLE_EXIT: u8 = 6;
 pub const PKT_DEBUG_STATS: u8 = 7;
+pub const PKT_MELEE: u8 = 8;
 
 pub const PKT_WELCOME: u8 = 101;
 pub const PKT_SNAPSHOT: u8 = 102;
@@ -73,6 +75,17 @@ pub const MAX_PENDING_INPUTS: usize = 120;
 pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
 pub const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
+// ── Melee combat ────────────────────────────────
+pub const MELEE_DAMAGE: u8 = 35;
+pub const MELEE_COOLDOWN_MS: u32 = 900;
+pub const MELEE_RANGE_M: f32 = 1.0;
+/// cos(60°) — any target within this dot-product of the aim direction is in the cone.
+pub const MELEE_HALF_CONE_COS: f32 = 0.5;
+pub const MELEE_ENERGY_COST: f32 = 2.0;
+/// Sim ticks to hold FLAG_MELEEING in the snapshot after a successful swing.
+pub const MELEE_FLAG_DURATION_TICKS: u32 = 12;
+/// How long (ms) a player is blocked from swinging melee after taking damage.
+pub const MELEE_HIT_RECOVERY_MS: u32 = 400;
 pub const HITSCAN_MAX_DISTANCE_M: f32 = 1000.0;
 pub const DYNAMIC_BODY_IMPULSE: f32 = 6.0;
 pub const OUT_OF_BOUNDS_Y_M: f32 = -12.0;

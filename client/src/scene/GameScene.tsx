@@ -13,6 +13,7 @@ type GameSceneProps = {
   onWelcome: (id: number) => void;
   onDisconnect: (reason?: string) => void;
   onAimStateChange?: React.ComponentProps<typeof GameWorld>['onAimStateChange'];
+  onScopeActiveChange?: React.ComponentProps<typeof GameWorld>['onScopeActiveChange'];
   playerId: number;
   onDebugFrame?: GameWorldDebugFrame;
   onInputFrame?: (sample: InputSample) => void;
@@ -22,11 +23,13 @@ type GameSceneProps = {
   rapierDebugModeBits?: number;
   showRenderStats?: boolean;
   showDebugHelpers?: boolean;
+  showPlayerIdLabels?: boolean;
   renderStatsParent?: React.RefObject<HTMLElement>;
   worldDocument?: WorldDocument;
   benchmarkAutopilot?: React.ComponentProps<typeof GameWorld>['benchmarkAutopilot'];
   practiceBots?: React.ComponentProps<typeof GameWorld>['practiceBots'];
   practiceBotsDebugOverlay?: boolean;
+  practiceBotsDebugLabels?: boolean;
   localRenderSmoothingEnabled?: boolean;
   vehicleSmoothingEnabled?: boolean;
   cosmeticDeathPhysicsEnabled?: boolean;
@@ -44,6 +47,7 @@ export function GameScene({
   onWelcome,
   onDisconnect,
   onAimStateChange,
+  onScopeActiveChange,
   onDebugFrame,
   onInputFrame,
   inputFamilyMode,
@@ -52,11 +56,13 @@ export function GameScene({
   rapierDebugModeBits = 0,
   showRenderStats,
   showDebugHelpers = false,
+  showPlayerIdLabels = false,
   renderStatsParent,
   worldDocument,
   benchmarkAutopilot,
   practiceBots,
   practiceBotsDebugOverlay,
+  practiceBotsDebugLabels,
   localRenderSmoothingEnabled = true,
   vehicleSmoothingEnabled = false,
   cosmeticDeathPhysicsEnabled = true,
@@ -92,6 +98,7 @@ export function GameScene({
           onWelcome={onWelcome}
           onDisconnect={onDisconnect}
           onAimStateChange={onAimStateChange}
+          onScopeActiveChange={onScopeActiveChange}
           onDebugFrame={onDebugFrame}
           onInputFrame={onInputFrame}
           inputFamilyMode={inputFamilyMode}
@@ -99,9 +106,11 @@ export function GameScene({
           onSnapshot={onSnapshot}
           rapierDebugModeBits={rapierDebugModeBits}
           showDebugHelpers={showDebugHelpers}
+          showPlayerIdLabels={showPlayerIdLabels}
           benchmarkAutopilot={benchmarkAutopilot}
           practiceBots={practiceBots}
           practiceBotsDebugOverlay={practiceBotsDebugOverlay}
+          practiceBotsDebugLabels={practiceBotsDebugLabels}
           localRenderSmoothingEnabled={localRenderSmoothingEnabled}
           vehicleSmoothingEnabled={vehicleSmoothingEnabled}
           cosmeticDeathPhysicsEnabled={cosmeticDeathPhysicsEnabled}

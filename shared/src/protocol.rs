@@ -89,6 +89,15 @@ pub struct FireCmd {
 }
 
 #[derive(Clone, Debug)]
+pub struct MeleeCmd {
+    pub seq: u16,
+    pub swing_id: u32,
+    pub client_time_us: u64,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+#[derive(Clone, Debug)]
 pub struct BlockCell {
     pub x: u8,
     pub y: u8,

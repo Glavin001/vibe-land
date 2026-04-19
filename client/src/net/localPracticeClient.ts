@@ -5,6 +5,7 @@ import {
   SIM_HZ,
   decodeServerPacket,
   encodeInputBundle,
+  encodeMeleePacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
   netPlayerStateToMeters,
@@ -14,6 +15,7 @@ import {
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
+  type MeleeCmd,
   type NetPlayerState,
   type NetVehicleState,
   type VehicleStateMeters,
@@ -51,6 +53,7 @@ export interface PracticeBotHost {
   disconnectBot(botId: number): boolean;
   setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
   sendBotInputs(botId: number, cmds: InputCmd[]): void;
+  sendBotMelee(botId: number, cmd: MeleeCmd): void;
   sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
   sendBotVehicleExit(botId: number, vehicleId: number): void;
 }
@@ -146,6 +149,16 @@ export class LocalPracticeClient implements PracticeBotHost {
     );
   }
 
+  sendMelee(cmd: MeleeCmd): void {
+    this.session?.queueMelee(
+      cmd.seq & 0xffff,
+      cmd.swingId >>> 0,
+      cmd.clientTimeUs,
+      cmd.yaw,
+      cmd.pitch,
+    );
+  }
+
   sendBlockEdit(_cmd: BlockEditCmd): void {
     // Practice mode does not currently expose direct block-edit authority.
   }
@@ -180,6 +193,16 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
     } catch (error) {
       console.warn('[local-practice] bot input rejected', error);
+    }
+  }
+
+  sendBotMelee(botId: number, cmd: MeleeCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeMeleePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] bot melee rejected', error);
     }
   }
 
@@ -225,6 +248,22 @@ export class LocalPracticeClient implements PracticeBotHost {
     );
     if (!result || result.length === 0) return null;
     return { toi: result[0] };
+  }
+
+  classifyHitscanPlayer(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): { distance: number; kind: number } | null {
+    const result = this.session?.classifyHitscanPlayer(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      bodyCenter[0], bodyCenter[1], bodyCenter[2],
+      blockerDistance ?? Number.POSITIVE_INFINITY,
+    );
+    if (!result || result.length === 0) return null;
+    return { distance: result[0], kind: result[1] };
   }
 
   getVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {

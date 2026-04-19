@@ -17,6 +17,7 @@ pub struct ClientHello {
 pub enum ClientPacket {
     InputBundle(Vec<InputCmd>),
     Fire(FireCmd),
+    Melee(MeleeCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
@@ -45,6 +46,7 @@ pub enum ServerPacket {
 pub enum ClientDatagram {
     InputBundle(Vec<InputFrame>),
     Fire(FireCmd),
+    Melee(MeleeCmd),
     BlockEdit(BlockEditCmd),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
@@ -248,6 +250,21 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 dir,
             })
         }
+        PKT_MELEE => {
+            ensure!(buf.remaining() >= 18, "short melee datagram");
+            let seq = buf.get_u16_le();
+            let swing_id = buf.get_u32_le();
+            let client_time_us = buf.get_u64_le();
+            let yaw = i16_to_angle(buf.get_i16_le());
+            let pitch = i16_to_angle(buf.get_i16_le());
+            ClientDatagram::Melee(MeleeCmd {
+                seq,
+                swing_id,
+                client_time_us,
+                yaw,
+                pitch,
+            })
+        }
         PKT_BLOCK_EDIT => {
             ensure!(buf.remaining() >= 14, "short block edit datagram");
             let chunk = [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()];
@@ -298,6 +315,7 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
     match d {
         ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
         ClientDatagram::Fire(cmd) => ClientPacket::Fire(cmd),
+        ClientDatagram::Melee(cmd) => ClientPacket::Melee(cmd),
         ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
@@ -595,6 +613,21 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 client_interp_ms,
                 client_dynamic_interp_ms,
                 dir,
+            })
+        }
+        PKT_MELEE => {
+            ensure!(buf.remaining() >= 18, "short melee packet");
+            let seq = buf.get_u16_le();
+            let swing_id = buf.get_u32_le();
+            let client_time_us = buf.get_u64_le();
+            let yaw = i16_to_angle(buf.get_i16_le());
+            let pitch = i16_to_angle(buf.get_i16_le());
+            ClientPacket::Melee(MeleeCmd {
+                seq,
+                swing_id,
+                client_time_us,
+                yaw,
+                pitch,
             })
         }
         PKT_BLOCK_EDIT => {
