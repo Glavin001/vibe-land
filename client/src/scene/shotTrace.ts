@@ -51,10 +51,24 @@ export function shotTraceColor(kind: ShotTraceKind): number {
     case 'body':
       return 0xff9a5c;
     case 'world':
-      return 0xffefb0;
+      return 0xff8a2b;
     case 'miss':
     default:
-      return 0x9df6ff;
+      return 0x4fdcff;
+  }
+}
+
+export function shotTraceCoreColor(kind: ShotTraceKind): number {
+  switch (kind) {
+    case 'head':
+      return 0xfff0f0;
+    case 'body':
+      return 0xfff4e8;
+    case 'world':
+      return 0xfff7ec;
+    case 'miss':
+    default:
+      return 0xf2fbff;
   }
 }
 

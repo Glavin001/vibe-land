@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isShotTraceActive,
   pickShotTraceIntercept,
+  shotTraceCoreColor,
   pruneExpiredTraces,
   shotTraceColor,
   type LocalShotTrace,
@@ -38,10 +39,19 @@ describe('pickShotTraceIntercept', () => {
 
 describe('shotTraceColor', () => {
   it('maps kinds to stable colors', () => {
-    expect(shotTraceColor('miss')).toBe(0x9df6ff);
-    expect(shotTraceColor('world')).toBe(0xffefb0);
+    expect(shotTraceColor('miss')).toBe(0x4fdcff);
+    expect(shotTraceColor('world')).toBe(0xff8a2b);
     expect(shotTraceColor('body')).toBe(0xff9a5c);
     expect(shotTraceColor('head')).toBe(0xff4b4b);
+  });
+});
+
+describe('shotTraceCoreColor', () => {
+  it('keeps bright inner cores for layered readability', () => {
+    expect(shotTraceCoreColor('miss')).toBe(0xf2fbff);
+    expect(shotTraceCoreColor('world')).toBe(0xfff7ec);
+    expect(shotTraceCoreColor('body')).toBe(0xfff4e8);
+    expect(shotTraceCoreColor('head')).toBe(0xfff0f0);
   });
 });
 

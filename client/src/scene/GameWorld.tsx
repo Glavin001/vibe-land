@@ -20,7 +20,15 @@ import {
   VEHICLE_CAMERA_DEFAULT_PITCH,
 } from '../input/resolver';
 import type { InputFamilyMode, InputSample } from '../input/types';
-import { pickShotTraceIntercept, pruneExpiredTraces, shotTraceColor, type LocalShotTrace, type RemoteShotHit, type ShotTraceKind } from './shotTrace';
+import {
+  pickShotTraceIntercept,
+  pruneExpiredTraces,
+  shotTraceColor,
+  shotTraceCoreColor,
+  type LocalShotTrace,
+  type RemoteShotHit,
+  type ShotTraceKind,
+} from './shotTrace';
 import { canUseScopedAim } from './aimControls';
 import {
   aimDirectionFromAngles,
@@ -93,10 +101,12 @@ const PLAYER_CAPSULE_HALF_SEGMENT = 0.45;
 const PLAYER_CAPSULE_BODY_LENGTH = PLAYER_CAPSULE_HALF_SEGMENT * 2;
 const PLAYER_HEAD_RADIUS = 0.22;
 const PLAYER_HEAD_CENTER_OFFSET_Y = 0.75;
-const LOCAL_SHOT_TRACE_TTL_MS = 90;
+const LOCAL_SHOT_TRACE_TTL_MS = 140;
 const LOCAL_SHOT_TRACE_MAX_DISTANCE = 80;
-const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.015;
-const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.07;
+const LOCAL_SHOT_TRACE_BEAM_RADIUS = 0.034;
+const LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS = 0.012;
+const LOCAL_SHOT_TRACE_IMPACT_RADIUS = 0.11;
+const LOCAL_SHOT_TRACE_CORE_IMPACT_RADIUS = 0.045;
 const SHOT_TRACE_POOL_SIZE = 16;
 const SHOT_TRACE_MAX_ACTIVE = 32;
 const SHOT_RESOLUTION_MISS_VALUE = 0;
@@ -106,6 +116,13 @@ const SHOT_RESOLUTION_BLOCKED_BY_WORLD_VALUE = 3;
 const CAMERA_PSEUDO_MUZZLE_OFFSET = new THREE.Vector3(0.18, -0.12, -0.35);
 const VEHICLE_WHEEL_VISUAL_STEER_RATE = 18.0;
 const PLAYER_DEBUG_HELPER_NAME = 'playerPhysicsDebugHelper';
+
+type ShotTraceVisualSlot = {
+  beamOuter: THREE.Mesh | null;
+  beamCore: THREE.Mesh | null;
+  impactOuter: THREE.Mesh | null;
+  impactCore: THREE.Mesh | null;
+};
 
 type FrameDebugCallback = (
   frameTimeMs: number,
@@ -1176,8 +1193,13 @@ export function GameWorld({
   const vehicleCameraYawOffsetRef = useRef(0);
   const vehicleCameraPitchRef = useRef(VEHICLE_CAMERA_DEFAULT_PITCH);
   const lastVehicleLookAtMsRef = useRef(performance.now());
-  const shotTracePoolRef = useRef<Array<{ beam: THREE.Mesh | null; impact: THREE.Mesh | null }>>(
-    Array.from({ length: SHOT_TRACE_POOL_SIZE }, () => ({ beam: null, impact: null })),
+  const shotTracePoolRef = useRef<ShotTraceVisualSlot[]>(
+    Array.from({ length: SHOT_TRACE_POOL_SIZE }, () => ({
+      beamOuter: null,
+      beamCore: null,
+      impactOuter: null,
+      impactCore: null,
+    })),
   );
   const localVehicleMeshDeltaSamplesRef = useRef<TimedScalar[]>([]);
   const localVehicleRestJitterSamplesRef = useRef<TimedScalar[]>([]);
@@ -2981,21 +3003,65 @@ export function GameWorld({
         <group key={`shot-trace-${i}`}>
           <mesh
             ref={(mesh) => {
-              shotTracePoolRef.current[i].beam = mesh;
+              shotTracePoolRef.current[i].beamOuter = mesh;
             }}
             visible={false}
           >
             <cylinderGeometry args={[LOCAL_SHOT_TRACE_BEAM_RADIUS, LOCAL_SHOT_TRACE_BEAM_RADIUS, 1, 10]} />
-            <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+              blending={THREE.AdditiveBlending}
+            />
           </mesh>
           <mesh
             ref={(mesh) => {
-              shotTracePoolRef.current[i].impact = mesh;
+              shotTracePoolRef.current[i].beamCore = mesh;
+            }}
+            visible={false}
+          >
+            <cylinderGeometry args={[LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS, LOCAL_SHOT_TRACE_CORE_BEAM_RADIUS, 1, 10]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+            />
+          </mesh>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].impactOuter = mesh;
             }}
             visible={false}
           >
             <sphereGeometry args={[LOCAL_SHOT_TRACE_IMPACT_RADIUS, 12, 10]} />
-            <meshBasicMaterial transparent depthWrite={false} opacity={0} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+              blending={THREE.AdditiveBlending}
+            />
+          </mesh>
+          <mesh
+            ref={(mesh) => {
+              shotTracePoolRef.current[i].impactCore = mesh;
+            }}
+            visible={false}
+          >
+            <sphereGeometry args={[LOCAL_SHOT_TRACE_CORE_IMPACT_RADIUS, 10, 8]} />
+            <meshBasicMaterial
+              transparent
+              depthWrite={false}
+              opacity={0}
+              fog={false}
+              toneMapped={false}
+            />
           </mesh>
         </group>
       ))}
@@ -3170,11 +3236,13 @@ const _shotTraceBeamUp = new THREE.Vector3(0, 1, 0);
 function updateShotTraceMeshPair(
   trace: LocalShotTrace,
   nowMs: number,
-  beam: THREE.Mesh,
-  impact: THREE.Mesh,
+  slot: ShotTraceVisualSlot,
 ): void {
+  const { beamOuter, beamCore, impactOuter, impactCore } = slot;
+  if (!beamOuter || !beamCore || !impactOuter || !impactCore) return;
   const alpha = Math.max(0, (trace.expiresAtMs - nowMs) / LOCAL_SHOT_TRACE_TTL_MS);
-  const color = shotTraceColor(trace.kind);
+  const outerColor = shotTraceColor(trace.kind);
+  const coreColor = shotTraceCoreColor(trace.kind);
   _shotTraceBeamDelta.set(
     trace.end[0] - trace.origin[0],
     trace.end[1] - trace.origin[1],
@@ -3188,42 +3256,53 @@ function updateShotTraceMeshPair(
   );
   _shotTraceBeamDirection.copy(_shotTraceBeamDelta).normalize();
 
-  beam.visible = true;
-  beam.position.copy(_shotTraceBeamMid);
-  beam.scale.set(1, length, 1);
-  beam.quaternion.setFromUnitVectors(_shotTraceBeamUp, _shotTraceBeamDirection);
-  if (beam.material instanceof THREE.MeshBasicMaterial) {
-    beam.material.color.setHex(color);
-    beam.material.opacity = alpha * 0.9;
+  for (const beam of [beamOuter, beamCore]) {
+    beam.visible = true;
+    beam.position.copy(_shotTraceBeamMid);
+    beam.scale.set(1, length, 1);
+    beam.quaternion.setFromUnitVectors(_shotTraceBeamUp, _shotTraceBeamDirection);
+  }
+  if (beamOuter.material instanceof THREE.MeshBasicMaterial) {
+    beamOuter.material.color.setHex(outerColor);
+    beamOuter.material.opacity = alpha * 0.62;
+  }
+  if (beamCore.material instanceof THREE.MeshBasicMaterial) {
+    beamCore.material.color.setHex(coreColor);
+    beamCore.material.opacity = Math.min(1, alpha * 0.98);
   }
 
-  impact.visible = true;
-  impact.position.set(trace.end[0], trace.end[1], trace.end[2]);
-  impact.scale.setScalar(0.85 + alpha * 0.55);
-  if (impact.material instanceof THREE.MeshBasicMaterial) {
-    impact.material.color.setHex(color);
-    impact.material.opacity = alpha;
+  for (const impact of [impactOuter, impactCore]) {
+    impact.visible = true;
+    impact.position.set(trace.end[0], trace.end[1], trace.end[2]);
+  }
+  impactOuter.scale.setScalar(0.95 + alpha * 0.75);
+  impactCore.scale.setScalar(0.85 + alpha * 0.45);
+  if (impactOuter.material instanceof THREE.MeshBasicMaterial) {
+    impactOuter.material.color.setHex(outerColor);
+    impactOuter.material.opacity = alpha * 0.78;
+  }
+  if (impactCore.material instanceof THREE.MeshBasicMaterial) {
+    impactCore.material.color.setHex(coreColor);
+    impactCore.material.opacity = Math.min(1, alpha * 0.96);
   }
 }
 
 function updatePooledShotTraceVisuals(
   traces: LocalShotTrace[],
   nowMs: number,
-  pool: Array<{ beam: THREE.Mesh | null; impact: THREE.Mesh | null }>,
+  pool: ShotTraceVisualSlot[],
 ): void {
   pruneExpiredTraces(traces, nowMs);
   const rendered = Math.min(traces.length, pool.length);
   for (let i = 0; i < rendered; i += 1) {
-    const slot = pool[i];
-    const beam = slot.beam;
-    const impact = slot.impact;
-    if (!beam || !impact) continue;
-    updateShotTraceMeshPair(traces[i], nowMs, beam, impact);
+    updateShotTraceMeshPair(traces[i], nowMs, pool[i]);
   }
   for (let i = rendered; i < pool.length; i += 1) {
     const slot = pool[i];
-    if (slot.beam) slot.beam.visible = false;
-    if (slot.impact) slot.impact.visible = false;
+    if (slot.beamOuter) slot.beamOuter.visible = false;
+    if (slot.beamCore) slot.beamCore.visible = false;
+    if (slot.impactOuter) slot.impactOuter.visible = false;
+    if (slot.impactCore) slot.impactCore.visible = false;
   }
 }
 
