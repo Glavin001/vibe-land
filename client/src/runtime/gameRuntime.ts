@@ -658,7 +658,7 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 
   supportsRemotePlayerHitscan(): boolean {
-    return false;
+    return true;
   }
 
   syncVehicleAuthority(): void {
@@ -761,8 +761,13 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return this.client?.castSceneRay(origin, direction, maxDistance) ?? null;
   }
 
-  classifyHitscanPlayer(): { distance: number; kind: number } | null {
-    return null;
+  classifyHitscanPlayer(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): { distance: number; kind: number } | null {
+    return this.client?.classifyHitscanPlayer(origin, direction, bodyCenter, blockerDistance) ?? null;
   }
 
   buildBlockEdit(): BlockEditCmd | null {

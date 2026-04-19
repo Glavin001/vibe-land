@@ -224,6 +224,22 @@ export class LocalPracticeClient implements PracticeBotHost {
     return { toi: result[0] };
   }
 
+  classifyHitscanPlayer(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): { distance: number; kind: number } | null {
+    const result = this.session?.classifyHitscanPlayer(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      bodyCenter[0], bodyCenter[1], bodyCenter[2],
+      blockerDistance ?? Number.POSITIVE_INFINITY,
+    );
+    if (!result || result.length === 0) return null;
+    return { distance: result[0], kind: result[1] };
+  }
+
   getVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
     return decodeVehicleDebugSnapshot(this.session?.getVehicleDebug(vehicleId >>> 0));
   }

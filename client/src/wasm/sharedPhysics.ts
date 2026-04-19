@@ -197,6 +197,18 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     dz: number,
     maxToi: number,
   ): number[];
+  classifyHitscanPlayer(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    bodyX: number,
+    bodyY: number,
+    bodyZ: number,
+    blockerToi: number,
+  ): number[];
   getVehicleDebug(vehicleId: number): number[];
 
   // ── Client-local ragdoll bodies ──────────────────────────────────────────
