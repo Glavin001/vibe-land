@@ -33,9 +33,12 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
-    DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_IMPULSE,
-    HITSCAN_MAX_DISTANCE_M, MAX_PENDING_INPUTS, OUT_OF_BOUNDS_Y_M, PLAYER_EYE_HEIGHT_M,
-    RIFLE_FIRE_INTERVAL_MS, RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER,
+    DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
+    DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
+    MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
+    MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
+    OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS,
+    RIFLE_SHOT_ENERGY_COST, SIM_HZ, SNAPSHOT_HZ_MULTIPLAYER, VEHICLE_AOI_RADIUS_M,
     VEHICLE_INPUT_CATCHUP_THRESHOLD,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
@@ -49,9 +52,9 @@ use crate::{
         decode_client_packet, encode_server_packet, energy_to_centi, f32_to_snorm16,
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
         make_net_shot_fired, mm_to_meters, BatterySyncPacket, ClientPacket, FireCmd, InputCmd,
-        LocalPlayerEnergyPacket, NetBatteryState, ServerPacket, ShotResultPacket, SnapshotPacket,
-        WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC,
-        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState, ServerPacket, ShotResultPacket,
+        SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE,
+        PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
         SHOT_RESOLUTION_PLAYER,
     },
@@ -67,10 +70,6 @@ const RIFLE_BODY_DAMAGE: u8 = 25;
 const RIFLE_HEAD_DAMAGE: u8 = 50;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
-const PLAYER_AOI_RADIUS_M: f32 = 80.0;
-const DYNAMIC_BODY_AOI_RADIUS_M: f32 = 80.0;
-const DYNAMIC_BODY_AOI_EXIT_RADIUS_M: f32 = 80.0;
-const VEHICLE_AOI_RADIUS_M: f32 = 80.0;
 const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 64;
 const PLAYER_HANDLE_REUSE_COOLDOWN_TICKS: u32 = SIM_HZ as u32 * 10;
 const PLAYER_ROSTER_SYNC_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 2;
@@ -105,6 +104,7 @@ enum DeathCause {
     HpDamage,
     EnergyDepletion,
     OutOfBounds,
+    VehicleCollision,
 }
 
 // ── Server stats (broadcast to /ws-stats clients) ────────────────────────────
@@ -625,6 +625,9 @@ struct PlayerRuntime {
     client_debug_seen: bool,
     last_processed_shot_id: Option<u32>,
     next_allowed_fire_ms: u32,
+    last_processed_swing_id: Option<u32>,
+    next_allowed_melee_ms: u32,
+    melee_flag_clear_tick: u32,
     respawn_at_ms: Option<u32>,
     visible_dynamic_bodies: HashSet<u32>,
     visible_batteries: HashSet<u32>,
@@ -660,6 +663,11 @@ struct QueuedShot {
     cmd: FireCmd,
 }
 
+struct QueuedMelee {
+    player_id: u32,
+    cmd: MeleeCmd,
+}
+
 struct MatchState {
     id: String,
     arena: PhysicsArena,
@@ -667,6 +675,7 @@ struct MatchState {
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
+    queued_melees: Vec<QueuedMelee>,
     server_tick: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     io: Arc<MatchIoTelemetry>,
@@ -1186,6 +1195,7 @@ async fn run_match_loop(
         history: LagCompHistory::new(1000),
         players: HashMap::new(),
         queued_shots: Vec::new(),
+        queued_melees: Vec::new(),
         server_tick: 0,
         stats_tx,
         io: telemetry,
@@ -1417,6 +1427,9 @@ impl MatchState {
                         client_debug_seen: false,
                         last_processed_shot_id: None,
                         next_allowed_fire_ms: 0,
+                        last_processed_swing_id: None,
+                        next_allowed_melee_ms: 0,
+                        melee_flag_clear_tick: 0,
                         respawn_at_ms: None,
                         visible_dynamic_bodies: HashSet::new(),
                         visible_batteries: HashSet::new(),
@@ -1550,6 +1563,12 @@ impl MatchState {
                             return;
                         }
                         self.queued_shots.push(QueuedShot { player_id, cmd });
+                    }
+                    ClientPacket::Melee(cmd) => {
+                        if is_dead {
+                            return;
+                        }
+                        self.queued_melees.push(QueuedMelee { player_id, cmd });
                     }
                     ClientPacket::BlockEdit(cmd) => {
                         if is_dead {
@@ -1820,6 +1839,9 @@ impl MatchState {
             .record(dead_players_skipped);
 
         let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        for player_id in self.arena.apply_vehicle_player_collisions() {
+            self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
+        }
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -1886,6 +1908,7 @@ impl MatchState {
         self.timings
             .hitscan_ms
             .record(hitscan_started.elapsed().as_secs_f32() * 1000.0);
+        self.process_melee(server_time_ms);
 
         self.sync_reliable_world_state();
 
@@ -2302,7 +2325,7 @@ impl MatchState {
     }
 
     fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
-        let battery_drop = if matches!(cause, DeathCause::HpDamage) {
+        let battery_drop = if matches!(cause, DeathCause::HpDamage | DeathCause::VehicleCollision) {
             self.arena.players.get(&player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
                     Some((state.position, state.energy))
@@ -2318,8 +2341,11 @@ impl MatchState {
         self.arena.set_player_dead(player_id, true);
 
         if let Some((position, energy)) = battery_drop {
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + DEFAULT_BATTERY_HEIGHT_M as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 DEFAULT_BATTERY_RADIUS_M,
                 DEFAULT_BATTERY_HEIGHT_M,
@@ -2616,6 +2642,7 @@ impl MatchState {
                     state.hp = state.hp.saturating_sub(rifle_damage(hit.zone));
                     victim_killed = state.hp == 0 && !state.dead;
                 }
+                self.stagger_melee_after_damage(hit.victim_id, server_time_ms);
                 if victim_killed {
                     self.kill_player(hit.victim_id, server_time_ms);
                 }
@@ -2713,6 +2740,148 @@ impl MatchState {
         }
     }
 
+    /// Block the victim from swinging melee for a short window after taking damage
+    /// (from any source — melee or hitscan). Keeps the later of the existing cooldown
+    /// or the stagger window.
+    fn stagger_melee_after_damage(&mut self, victim_id: u32, server_time_ms: u32) {
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
+            if runtime.next_allowed_melee_ms < until {
+                runtime.next_allowed_melee_ms = until;
+            }
+        }
+    }
+
+    // TODO: lag-compensate melee
+    fn process_melee(&mut self, server_time_ms: u32) {
+        let swings = std::mem::take(&mut self.queued_melees);
+        for queued in swings {
+            let can_process = {
+                let Some(runtime) = self.players.get_mut(&queued.player_id) else {
+                    continue;
+                };
+                let duplicate = runtime
+                    .last_processed_swing_id
+                    .map(|prev| prev == queued.cmd.swing_id)
+                    .unwrap_or(false);
+                if duplicate || runtime.next_allowed_melee_ms > server_time_ms {
+                    false
+                } else {
+                    runtime.last_processed_swing_id = Some(queued.cmd.swing_id);
+                    runtime.next_allowed_melee_ms =
+                        server_time_ms.saturating_add(MELEE_COOLDOWN_MS);
+                    true
+                }
+            };
+
+            if !can_process {
+                continue;
+            }
+
+            if self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+                continue;
+            }
+            let Some((attacker_pos, _, _, _, attacker_hp, attacker_flags)) =
+                self.arena.snapshot_player(queued.player_id)
+            else {
+                continue;
+            };
+            if attacker_hp == 0 || (attacker_flags & vibe_land_shared::constants::FLAG_DEAD) != 0 {
+                continue;
+            }
+
+            let mut depleted = false;
+            if let Some(attacker_state) = self.arena.players.get_mut(&queued.player_id) {
+                attacker_state.energy = (attacker_state.energy - MELEE_ENERGY_COST).max(0.0);
+                if attacker_state.energy <= 0.0 {
+                    depleted = true;
+                }
+            }
+            if depleted {
+                self.kill_player_with_cause(
+                    queued.player_id,
+                    server_time_ms,
+                    DeathCause::EnergyDepletion,
+                );
+                continue;
+            }
+
+            let eye = [
+                attacker_pos[0],
+                attacker_pos[1] + PLAYER_EYE_HEIGHT_M,
+                attacker_pos[2],
+            ];
+            let cos_p = queued.cmd.pitch.cos();
+            let aim = [
+                queued.cmd.yaw.sin() * cos_p,
+                queued.cmd.pitch.sin(),
+                queued.cmd.yaw.cos() * cos_p,
+            ];
+            let aim_xz_len = (aim[0] * aim[0] + aim[2] * aim[2]).sqrt();
+            if aim_xz_len > 1e-4 {
+                let aim_xz = [aim[0] / aim_xz_len, aim[2] / aim_xz_len];
+                let capsule_radius = self.arena.config().capsule_radius;
+                let max_reach = MELEE_RANGE_M + capsule_radius;
+                let max_reach_sq = max_reach * max_reach;
+
+                let mut best: Option<(u32, f32)> = None;
+                let victim_ids: Vec<u32> = self
+                    .arena
+                    .players
+                    .keys()
+                    .copied()
+                    .filter(|id| *id != queued.player_id)
+                    .collect();
+                for victim_id in victim_ids {
+                    if self.arena.vehicle_of_player.contains_key(&victim_id) {
+                        continue;
+                    }
+                    let Some((victim_pos, _, _, _, victim_hp, victim_flags)) =
+                        self.arena.snapshot_player(victim_id)
+                    else {
+                        continue;
+                    };
+                    if victim_hp == 0
+                        || (victim_flags & vibe_land_shared::constants::FLAG_DEAD) != 0
+                    {
+                        continue;
+                    }
+                    let dx = victim_pos[0] - eye[0];
+                    let dy = victim_pos[1] - attacker_pos[1];
+                    let dz = victim_pos[2] - eye[2];
+                    let dist_sq = dx * dx + dy * dy + dz * dz;
+                    if dist_sq > max_reach_sq {
+                        continue;
+                    }
+                    let planar_len = (dx * dx + dz * dz).sqrt();
+                    if planar_len > 1e-4 {
+                        let to_victim_xz = [dx / planar_len, dz / planar_len];
+                        let dot = aim_xz[0] * to_victim_xz[0] + aim_xz[1] * to_victim_xz[1];
+                        if dot < MELEE_HALF_CONE_COS {
+                            continue;
+                        }
+                    }
+                    let dist = dist_sq.sqrt();
+                    if best.map(|(_, d)| dist < d).unwrap_or(true) {
+                        best = Some((victim_id, dist));
+                    }
+                }
+
+                if let Some((victim_id, _)) = best {
+                    let killed = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
+                    self.stagger_melee_after_damage(victim_id, server_time_ms);
+                    if killed {
+                        self.kill_player(victim_id, server_time_ms);
+                    }
+                }
+            }
+
+            if let Some(runtime) = self.players.get_mut(&queued.player_id) {
+                runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
+            }
+        }
+    }
+
     fn broadcast_snapshot(&mut self) {
         let snapshot_started = Instant::now();
         let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
@@ -2720,6 +2889,16 @@ impl MatchState {
         for &player_id in self.players.keys() {
             if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(player_id) {
                 let energy = self.arena.player_energy(player_id).unwrap_or(0.0);
+                let meleeing = self
+                    .players
+                    .get(&player_id)
+                    .map(|runtime| self.server_tick < runtime.melee_flag_clear_tick)
+                    .unwrap_or(false);
+                let flags = if meleeing {
+                    flags | FLAG_MELEEING
+                } else {
+                    flags
+                };
                 player_states.push((
                     player_id,
                     pos,
@@ -3532,6 +3711,9 @@ mod tests {
             client_debug_seen: false,
             last_processed_shot_id: None,
             next_allowed_fire_ms: 0,
+            last_processed_swing_id: None,
+            next_allowed_melee_ms: 0,
+            melee_flag_clear_tick: 0,
             respawn_at_ms: None,
             visible_dynamic_bodies: HashSet::new(),
             visible_batteries: HashSet::new(),

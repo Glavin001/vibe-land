@@ -217,13 +217,14 @@ type ButtonDef = {
   bottom: number;
   right: number;
   kind: 'hold' | 'edge';
-  holdName?: 'jump' | 'crouch' | 'firePrimary' | 'sprint';
+  holdName?: 'jump' | 'crouch' | 'firePrimary' | 'sprint' | 'aim';
   edgeName?: 'interact' | 'blockRemove' | 'blockPlace' | 'mat1' | 'mat2';
   tint?: string;
 };
 
 const PRIMARY_BUTTONS: ButtonDef[] = [
   { key: 'fire', label: 'FIRE', size: 96, bottom: 24, right: 24, kind: 'hold', holdName: 'firePrimary', tint: 'rgba(255, 92, 92, 0.88)' },
+  { key: 'aim', label: 'AIM', size: 64, bottom: 48, right: 220, kind: 'hold', holdName: 'aim', tint: 'rgba(255, 220, 120, 0.85)' },
   { key: 'jump', label: 'JUMP', size: 76, bottom: 138, right: 28, kind: 'hold', holdName: 'jump', tint: 'rgba(120, 200, 255, 0.82)' },
   { key: 'sprint', label: 'RUN', size: 64, bottom: 218, right: 36, kind: 'hold', holdName: 'sprint', tint: 'rgba(255, 196, 96, 0.82)' },
   { key: 'crouch', label: 'CRCH', size: 64, bottom: 36, right: 140, kind: 'hold', holdName: 'crouch', tint: 'rgba(180, 220, 255, 0.82)' },

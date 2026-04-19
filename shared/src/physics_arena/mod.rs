@@ -21,6 +21,7 @@ mod player;
 mod spawn;
 mod terrain_material_hook;
 mod vehicle;
+mod vehicle_collision;
 
 pub use terrain_material_hook::{
     is_terrain_material_collider, tag_terrain_user_data, TerrainMaterialHook,

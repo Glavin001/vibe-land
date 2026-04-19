@@ -5,6 +5,7 @@ import {
   PKT_CLIENT_HELLO,
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
+  PKT_MELEE,
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
@@ -49,6 +50,14 @@ export type FireCmd = {
   clientInterpMs: number;
   clientDynamicInterpMs: number;
   dir: [number, number, number];
+};
+
+export type MeleeCmd = {
+  seq: number;
+  swingId: number;
+  clientTimeUs: number;
+  yaw: number;
+  pitch: number;
 };
 
 export type NetPlayerState = {
@@ -474,6 +483,19 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
   view.setInt16(o, f32ToSnorm16(packet.dir[0]), true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[1]), true); o += 2;
   view.setInt16(o, f32ToSnorm16(packet.dir[2]), true); o += 2;
+  return out;
+}
+
+export function encodeMeleePacket(packet: MeleeCmd): Uint8Array {
+  const out = new Uint8Array(1 + 2 + 4 + 8 + 2 + 2);
+  const view = new DataView(out.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_MELEE);
+  view.setUint16(o, packet.seq & 0xffff, true); o += 2;
+  view.setUint32(o, packet.swingId >>> 0, true); o += 4;
+  setUint64(view, o, packet.clientTimeUs); o += 8;
+  view.setInt16(o, angleToI16(packet.yaw), true); o += 2;
+  view.setInt16(o, angleToI16(packet.pitch), true); o += 2;
   return out;
 }
 

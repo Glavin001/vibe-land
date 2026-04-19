@@ -98,7 +98,7 @@ fn update_player_motion(
     *pitch = (input.pitch as f64).clamp(-1.55, 1.55);
 
     let wish = build_wish_dir(input, *yaw);
-    let max_speed = max_speed_override.unwrap_or_else(|| pick_move_speed(cfg, input.buttons));
+    let max_speed = max_speed_override.unwrap_or_else(|| pick_move_speed(cfg, input));
 
     // Scale both the decelerating ground friction and the on-ground
     // acceleration by the material under the player so ice feels slippery

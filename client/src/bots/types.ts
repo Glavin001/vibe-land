@@ -15,6 +15,7 @@ export interface ObservedPlayer {
   id: number;
   position: Vec3Tuple;
   isDead: boolean;
+  isInVehicle?: boolean;
 }
 
 /**
@@ -37,6 +38,7 @@ export interface BotIntent {
   yaw: number;
   pitch: number;
   firePrimary: boolean;
+  meleePrimary: boolean;
   mode: BotMode;
   targetPlayerId: number | null;
   /**

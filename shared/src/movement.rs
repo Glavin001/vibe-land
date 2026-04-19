@@ -42,6 +42,19 @@ pub const VEHICLE_FRICTION_SLIP: f32 = 1.8;
 // suspension near critically damped at the same ~300 kg chassis mass.
 pub const VEHICLE_CHASSIS_DENSITY: f32 = 211.0;
 
+// ── Vehicle-vs-player collision damage tuning ────
+/// Chassis speed at which a fully direct vehicle hit deals 100 HP
+/// (instant kill). Near the natural terminal velocity of the current
+/// chassis (4000 N rear engine force, ~600 kg, 0.1 linear damping).
+pub const VEHICLE_LETHAL_SPEED_M_S: f32 = 25.0;
+/// Below this chassis speed, vehicle-vs-player overlaps deal no damage.
+/// Prevents stationary-jitter and vehicle-enter overlaps from dealing
+/// spurious damage.
+pub const VEHICLE_DAMAGE_MIN_SPEED_M_S: f32 = 3.0;
+/// Floor on the directness multiplier so a glancing top-speed sideswipe
+/// still deals meaningful damage (~20 HP at top speed).
+pub const VEHICLE_DAMAGE_MIN_DIRECT_FACTOR: f32 = 0.2;
+
 /// Vehicle control inputs derived from a player `InputCmd`.
 pub struct VehicleInputCmd {
     pub throttle: f32,   // 0..1  (move_y > 0)
@@ -142,14 +155,38 @@ pub fn build_wish_dir(input: &InputCmd, yaw: f64) -> Vec3d {
     wish
 }
 
-/// Pick movement speed based on button state.
-pub fn pick_move_speed(config: &MoveConfig, buttons: u16) -> f64 {
-    if buttons & BTN_CROUCH != 0 {
+const BACKWARD_SPEED_MULTIPLIER: f64 = 0.9;
+
+fn input_move_y(input: &InputCmd) -> f64 {
+    if input.move_x == 0 && input.move_y == 0 {
+        (if input.buttons & BTN_FORWARD != 0 {
+            1.0
+        } else {
+            0.0
+        }) + (if input.buttons & BTN_BACK != 0 {
+            -1.0
+        } else {
+            0.0
+        })
+    } else {
+        input.move_y as f64 / 127.0
+    }
+}
+
+/// Pick movement speed based on stance and forward/backward input.
+pub fn pick_move_speed(config: &MoveConfig, input: &InputCmd) -> f64 {
+    let base_speed = if input.buttons & BTN_CROUCH != 0 {
         config.crouch_speed
-    } else if buttons & BTN_SPRINT != 0 {
+    } else if input.buttons & BTN_SPRINT != 0 {
         config.sprint_speed
     } else {
         config.walk_speed
+    };
+
+    if input_move_y(input) < 0.0 {
+        base_speed * BACKWARD_SPEED_MULTIPLIER
+    } else {
+        base_speed
     }
 }
 
@@ -265,9 +302,39 @@ mod tests {
     #[test]
     fn pick_speed_variants() {
         let cfg = MoveConfig::default();
-        assert_eq!(pick_move_speed(&cfg, 0), 6.0);
-        assert_eq!(pick_move_speed(&cfg, BTN_SPRINT), 8.5);
-        assert_eq!(pick_move_speed(&cfg, BTN_CROUCH), 3.5);
+        assert_eq!(pick_move_speed(&cfg, &input()), 6.0);
+
+        let mut sprint = input();
+        sprint.buttons = BTN_SPRINT;
+        assert_eq!(pick_move_speed(&cfg, &sprint), 8.5);
+
+        let mut crouch = input();
+        crouch.buttons = BTN_CROUCH;
+        assert_eq!(pick_move_speed(&cfg, &crouch), 3.5);
+    }
+
+    #[test]
+    fn backward_speed_is_reduced_for_axes_and_buttons() {
+        let cfg = MoveConfig::default();
+
+        let mut backward_axis = input();
+        backward_axis.move_y = -127;
+        assert_eq!(pick_move_speed(&cfg, &backward_axis), cfg.walk_speed * 0.9);
+
+        let mut backward_button = input();
+        backward_button.buttons = BTN_BACK;
+        assert_eq!(
+            pick_move_speed(&cfg, &backward_button),
+            cfg.walk_speed * 0.9
+        );
+
+        let mut sprint_backward = input();
+        sprint_backward.buttons = BTN_SPRINT;
+        sprint_backward.move_y = -127;
+        assert_eq!(
+            pick_move_speed(&cfg, &sprint_backward),
+            cfg.sprint_speed * 0.9
+        );
     }
 
     #[test]

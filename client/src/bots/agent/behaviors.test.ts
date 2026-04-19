@@ -119,6 +119,57 @@ describe('harassNearest', () => {
     expect(decision.target).toEqual([52, 1, -10]);
   });
 
+  it('emits meleeAim and clears fireAim when target is within melee range', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, fireDistanceM: 18, meleeDistanceM: 2.0 });
+    const decision = behavior(makeContext({
+      self: {
+        position: [50, 1, -10],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [{
+        id: 7,
+        position: [51.5, 1, -10],
+        isDead: false,
+      }],
+    }));
+
+    expect(decision.meleeAim).not.toBeNull();
+    expect(decision.fireAim).toBeNull();
+    expect(decision.targetPlayerId).toBe(7);
+  });
+
+  it('emits meleeAim against a vehicle target within the extended range', () => {
+    const behavior = harassNearest({
+      acquireDistanceM: 40,
+      fireDistanceM: 18,
+      meleeDistanceM: 2.0,
+      meleeAgainstVehicleDistanceM: 3.0,
+    });
+    const decision = behavior(makeContext({
+      self: {
+        position: [50, 1, -10],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [{
+        id: 7,
+        position: [52.5, 1, -10],
+        isDead: false,
+        isInVehicle: true,
+      }],
+    }));
+
+    expect(decision.meleeAim).not.toBeNull();
+    expect(decision.fireAim).toBeNull();
+  });
+
   it('returns to hold anchor after target memory expires', () => {
     const behavior = harassNearest({ acquireDistanceM: 40, targetMemoryTicks: 2 });
 
