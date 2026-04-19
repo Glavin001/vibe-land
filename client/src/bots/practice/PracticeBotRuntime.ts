@@ -236,8 +236,9 @@ const DEFAULT_AIM_LEAD_SEC = 0.08;
 // ~200 ms reaction delay at 60 Hz before the first shot lands.
 const DEFAULT_FIRE_PREP_TICKS = 12;
 // Engagement range for the harass behavior's fire intent. Rifle hitscan
-// reaches farther than this but accuracy falls off quickly past 30 m.
-const DEFAULT_HARASS_FIRE_RANGE_M = 28;
+// reaches farther than this but practice bots now hold to a shorter,
+// fairer combat distance in foggy arenas.
+const DEFAULT_HARASS_FIRE_RANGE_M = 20;
 // Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
 // racing the server and getting shots silently dropped.
 const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
@@ -1368,8 +1369,11 @@ function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
       return holdAnchor();
     case 'harass':
     default:
+      // Practice mode deliberately uses plain harass behavior instead of the
+      // arena-specific recovery wrapper, so bots do not leash back to center
+      // or spawn by default while chasing the local player.
       return harassNearest({
-        acquireDistanceM: 80,
+        acquireDistanceM: 40,
         releaseDistanceM: 120,
         fireDistanceM: DEFAULT_HARASS_FIRE_RANGE_M,
         minFireDistanceM: 2,

@@ -102,7 +102,7 @@ export function stepBotBrain(
   const nearest = findNearestTarget(localState.position, remotePlayers);
   const wantsRecovery =
     localState.position[1] < 0.5
-    || centerDistance > scenario.behavior.recoveryDistanceM
+    || (scenario.enableRecoveryLeash && centerDistance > scenario.behavior.recoveryDistanceM)
     || state.airborneTicks > 40;
 
   let desired: [number, number, number];
