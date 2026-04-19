@@ -1043,7 +1043,6 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
               <span style={hamburgerBarStyle} />
               <span style={hamburgerBarStyle} />
             </span>
-            <span style={mobileTopbarLabelStyle}>Builder</span>
           </button>
           <div style={mobileTopbarTitleStyle}>World Builder</div>
           <button
@@ -1055,8 +1054,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             style={mobileIconButtonStyle}
             aria-label="Toggle AI chat"
           >
-            <span style={mobileTopbarLabelStyle}>Chat</span>
-            <span style={chatBubbleIconStyle}>◨</span>
+            <span style={chatBubbleIconStyle}>💬</span>
           </button>
         </div>
       )}
@@ -2724,7 +2722,8 @@ const mobileTopbarStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '0 12px',
+  gap: 8,
+  padding: '0 10px',
   height: 48,
   background: 'rgba(3, 8, 14, 0.96)',
   borderBottom: '1px solid rgba(141, 186, 221, 0.14)',
@@ -2734,25 +2733,27 @@ const mobileTopbarStyle: CSSProperties = {
 };
 
 const mobileTopbarTitleStyle: CSSProperties = {
-  fontSize: 13,
-  letterSpacing: '0.2em',
+  flex: 1,
+  minWidth: 0,
+  textAlign: 'center',
+  fontSize: 12,
+  letterSpacing: '0.12em',
   textTransform: 'uppercase',
   color: '#86d6f5',
   fontWeight: 600,
-};
-
-const mobileTopbarLabelStyle: CSSProperties = {
-  fontSize: 12,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: 'rgba(238, 247, 255, 0.82)',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
 };
 
 const mobileIconButtonStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 8,
-  padding: '6px 10px',
+  justifyContent: 'center',
+  flex: '0 0 auto',
+  width: 40,
+  height: 36,
+  padding: 0,
   background: 'rgba(20, 34, 48, 0.7)',
   border: '1px solid rgba(167, 208, 237, 0.16)',
   borderRadius: 10,
@@ -2776,9 +2777,8 @@ const hamburgerBarStyle: CSSProperties = {
 };
 
 const chatBubbleIconStyle: CSSProperties = {
-  fontSize: 18,
+  fontSize: 16,
   lineHeight: 1,
-  color: '#86d6f5',
 };
 
 const drawerBackdropStyle: CSSProperties = {
