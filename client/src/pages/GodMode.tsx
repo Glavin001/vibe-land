@@ -106,6 +106,21 @@ type EditorTool = 'select' | 'terrain' | 'paint';
 type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
 
+const MOBILE_BREAKPOINT = 900;
+
+function useIsMobile(breakpoint: number = MOBILE_BREAKPOINT): boolean {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
+
 type PublishStatus =
   | { kind: 'idle' }
   | { kind: 'capturing' }
@@ -168,6 +183,15 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     | { kind: 'loaded'; id: string; name: string }
     | { kind: 'error'; id: string; message: string }
   >(publishedId ? { kind: 'loading', id: publishedId } : { kind: 'idle' });
+  const isMobile = useIsMobile();
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+  useEffect(() => {
+    if (!isMobile) {
+      setLeftDrawerOpen(false);
+      setRightDrawerOpen(false);
+    }
+  }, [isMobile]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
@@ -961,8 +985,41 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     );
   }
 
+  const pageStyleDynamic: CSSProperties = isMobile
+    ? {
+        ...pageStyle,
+        gridTemplateColumns: '1fr',
+        gridTemplateRows: '48px 1fr',
+      }
+    : pageStyle;
+
+  const sidebarStyleDynamic: CSSProperties = isMobile
+    ? {
+        ...sidebarStyle,
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        bottom: 0,
+        width: 'min(86vw, 360px)',
+        zIndex: 60,
+        transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.22s ease',
+        boxShadow: leftDrawerOpen ? '0 0 30px rgba(0, 0, 0, 0.55)' : 'none',
+        padding: 16,
+      }
+    : sidebarStyle;
+
+  const viewportStyleDynamic: CSSProperties = isMobile
+    ? { ...viewportStyle, height: '100%', gridRow: '2 / 3' }
+    : viewportStyle;
+
+  const closeDrawers = () => {
+    setLeftDrawerOpen(false);
+    setRightDrawerOpen(false);
+  };
+
   return (
-    <div style={pageStyle}>
+    <div style={pageStyleDynamic}>
       <input
         ref={fileInputRef}
         type="file"
@@ -970,7 +1027,57 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         style={{ display: 'none' }}
         onChange={(event) => void handleImportFile(event)}
       />
-      <aside style={sidebarStyle}>
+      {isMobile && (
+        <div style={mobileTopbarStyle}>
+          <button
+            type="button"
+            onClick={() => {
+              setRightDrawerOpen(false);
+              setLeftDrawerOpen((v) => !v);
+            }}
+            style={mobileIconButtonStyle}
+            aria-label="Toggle world builder tools"
+          >
+            <span style={hamburgerIconStyle}>
+              <span style={hamburgerBarStyle} />
+              <span style={hamburgerBarStyle} />
+              <span style={hamburgerBarStyle} />
+            </span>
+            <span style={mobileTopbarLabelStyle}>Builder</span>
+          </button>
+          <div style={mobileTopbarTitleStyle}>World Builder</div>
+          <button
+            type="button"
+            onClick={() => {
+              setLeftDrawerOpen(false);
+              setRightDrawerOpen((v) => !v);
+            }}
+            style={mobileIconButtonStyle}
+            aria-label="Toggle AI chat"
+          >
+            <span style={mobileTopbarLabelStyle}>Chat</span>
+            <span style={chatBubbleIconStyle}>◨</span>
+          </button>
+        </div>
+      )}
+      {isMobile && (leftDrawerOpen || rightDrawerOpen) && (
+        <div
+          onClick={closeDrawers}
+          style={drawerBackdropStyle}
+          aria-hidden="true"
+        />
+      )}
+      <aside style={sidebarStyleDynamic}>
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setLeftDrawerOpen(false)}
+            style={drawerCloseButtonStyle}
+            aria-label="Close world builder tools"
+          >
+            ✕
+          </button>
+        )}
         <div>
           <div style={eyebrowStyle}>vibe-land</div>
           <h1 style={titleStyle}>World Builder</h1>
@@ -1437,7 +1544,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         </div>
       </aside>
 
-      <main style={viewportStyle}>
+      <main style={viewportStyleDynamic}>
         {mode === 'edit' && tool === 'select' && (
           <div style={editorViewportOverlayStyle}>
             <span>{selectedTransformEntity ? `Selected ${selectedTransformEntity.kind} ${selectedTransformEntity.id}` : 'Select an object'}</span>
@@ -1463,7 +1570,23 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         )}
       </main>
 
-      <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+      {isMobile ? (
+        <div
+          style={{
+            ...chatDrawerStyle,
+            transform: rightDrawerOpen ? 'translateX(0)' : 'translateX(100%)',
+            boxShadow: rightDrawerOpen ? '0 0 30px rgba(0, 0, 0, 0.55)' : 'none',
+          }}
+        >
+          <AiChatPanel
+            ref={aiChatRef}
+            accessors={aiAccessors}
+            onClose={() => setRightDrawerOpen(false)}
+          />
+        </div>
+      ) : (
+        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+      )}
     </div>
   );
 }
@@ -2595,6 +2718,103 @@ const sidebarStyle: CSSProperties = {
   minHeight: 0,
   overflowY: 'auto',
   background: 'rgba(3, 8, 14, 0.92)',
+};
+
+const mobileTopbarStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  padding: '0 12px',
+  height: 48,
+  background: 'rgba(3, 8, 14, 0.96)',
+  borderBottom: '1px solid rgba(141, 186, 221, 0.14)',
+  color: '#eef7ff',
+  zIndex: 40,
+  gridRow: '1 / 2',
+};
+
+const mobileTopbarTitleStyle: CSSProperties = {
+  fontSize: 13,
+  letterSpacing: '0.2em',
+  textTransform: 'uppercase',
+  color: '#86d6f5',
+  fontWeight: 600,
+};
+
+const mobileTopbarLabelStyle: CSSProperties = {
+  fontSize: 12,
+  letterSpacing: '0.14em',
+  textTransform: 'uppercase',
+  color: 'rgba(238, 247, 255, 0.82)',
+};
+
+const mobileIconButtonStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 10px',
+  background: 'rgba(20, 34, 48, 0.7)',
+  border: '1px solid rgba(167, 208, 237, 0.16)',
+  borderRadius: 10,
+  color: '#eef7ff',
+  cursor: 'pointer',
+};
+
+const hamburgerIconStyle: CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  justifyContent: 'space-between',
+  width: 16,
+  height: 12,
+};
+
+const hamburgerBarStyle: CSSProperties = {
+  display: 'block',
+  height: 2,
+  background: '#86d6f5',
+  borderRadius: 1,
+};
+
+const chatBubbleIconStyle: CSSProperties = {
+  fontSize: 18,
+  lineHeight: 1,
+  color: '#86d6f5',
+};
+
+const drawerBackdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.5)',
+  zIndex: 50,
+};
+
+const drawerCloseButtonStyle: CSSProperties = {
+  position: 'absolute',
+  top: 10,
+  right: 10,
+  width: 32,
+  height: 32,
+  borderRadius: 8,
+  border: '1px solid rgba(167, 208, 237, 0.18)',
+  background: 'rgba(20, 34, 48, 0.9)',
+  color: '#eef7ff',
+  cursor: 'pointer',
+  fontSize: 14,
+  lineHeight: 1,
+  zIndex: 2,
+};
+
+const chatDrawerStyle: CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  right: 0,
+  bottom: 0,
+  width: 'min(92vw, 420px)',
+  zIndex: 60,
+  transition: 'transform 0.22s ease',
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
 };
 
 const viewportStyle: CSSProperties = {
