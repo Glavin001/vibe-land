@@ -142,7 +142,7 @@ export function PracticeBotsPanel({
         {open ? '▼ Bots' : '▶ Bots'} · {actualCount}
       </button>
       {open && (
-        <div className="flex min-w-[22.5rem] max-w-[34rem] flex-col gap-3 rounded-xl border border-white/[0.12] bg-black/70 px-3 py-3 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
+        <div className="flex max-h-[calc(100vh-4.5rem)] min-w-[22.5rem] max-w-[34rem] flex-col gap-3 overflow-y-auto rounded-xl border border-white/[0.12] bg-black/70 px-3 py-3 shadow-[0_14px_36px_rgba(0,0,0,0.42)] backdrop-blur-md">
           <div className="flex items-center gap-2 text-xs">
             {panelLabel('Count')}
             <input
