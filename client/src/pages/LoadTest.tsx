@@ -130,7 +130,7 @@ function createScenarioPresets(matchId: string): ScenarioPreset[] {
       id: 'practice-quality-10',
       label: 'Practice Quality 10',
       description:
-        '10 WT bots tuned to match the practice-page brain: aggressive acquisition (80 m), hitscan fire at 28 m with aim jitter + lead, melee, target memory, and vehicles.',
+        '10 WT bots tuned to match the practice bot defaults: 80 m acquire, 28 m hitscan fire, aim jitter + lead, melee, target memory, and no recovery leash.',
       scenario: () => createScenario(matchId, {
         name: 'arena-practice-quality-10',
         botCount: 10,
@@ -138,6 +138,7 @@ function createScenarioPresets(matchId: string): ScenarioPreset[] {
         inputHz: 60,
         transportMix: { websocket: 0, webtransport: 10 },
         spawnPattern: 'spread',
+        enableRecoveryLeash: false,
         networkProfiles: [buildLanProfile()],
         behavior: {
           ...DEFAULT_SCENARIO.behavior,

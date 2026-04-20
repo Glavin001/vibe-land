@@ -218,7 +218,6 @@ const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
 const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
-
 // Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
 // racing the server and getting shots silently dropped.
 const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
@@ -1388,5 +1387,4 @@ function makeIdleIntent(): BotIntent {
     vehicleId: null,
   };
 }
-
 void FLAG_DEAD;

@@ -19,6 +19,7 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { LowEnergyWarning } from './ui/LowEnergyWarning';
 import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
@@ -60,6 +61,8 @@ type AppProps = {
   routeLabel?: string;
   autoConnect?: boolean;
   sessionKey?: number;
+  hideTopNav?: boolean;
+  hideStatusBanner?: boolean;
 };
 
 type BenchmarkConfig = {
@@ -126,6 +129,8 @@ export function App({
   routeLabel,
   autoConnect = false,
   sessionKey = 0,
+  hideTopNav = false,
+  hideStatusBanner = false,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
@@ -845,51 +850,36 @@ export function App({
           </div>
         </div>
       )}
-      <div
-        data-testid="status-banner"
-        style={{
-          position: 'absolute',
-          top: 8,
-          left: 8,
-          zIndex: 5,
-          background: 'rgba(0,0,0,0.6)',
-          padding: '4px 12px',
-          borderRadius: 4,
-          fontSize: 14,
-          pointerEvents: 'none',
-        }}
-      >
-        {status}
-      </div>
-      <div
-        style={{
-          position: 'absolute',
-          top: 8,
-          right: 8,
-          zIndex: 12,
-          display: 'flex',
-          gap: 8,
-        }}
-      >
-        <a href="/" style={navLinkStyle}>
-          Home
-        </a>
-        <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
-          {practiceMode ? 'Multiplayer' : 'Firing range'}
-        </a>
-        <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
-          Controls
-        </button>
-        {practiceMode && connected && (
-          <button
-            type="button"
-            onClick={openCalibration}
-            style={calibrateButtonStyle}
-          >
-            Calibrate
+      {!hideStatusBanner && (
+        <div
+          data-testid="status-banner"
+          className="pointer-events-none absolute left-2 top-2 z-5 rounded bg-[rgba(0,0,0,0.6)] px-3 py-1 text-sm"
+        >
+          {status}
+        </div>
+      )}
+      {!hideTopNav && (
+        <div className="absolute right-2 top-2 z-12 flex gap-2">
+          <a href="/" style={navLinkStyle}>
+            Home
+          </a>
+          <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
+            {practiceMode ? 'Multiplayer' : 'Firing range'}
+          </a>
+          <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
+            Controls
           </button>
-        )}
-      </div>
+          {practiceMode && connected && (
+            <button
+              type="button"
+              onClick={openCalibration}
+              style={calibrateButtonStyle}
+            >
+              Calibrate
+            </button>
+          )}
+        </div>
+      )}
       {overlay}
       {copyNotice && (
         <div
@@ -1064,6 +1054,10 @@ export function App({
       />
       <EnergyBar
         hp={displayStats.hp}
+        energy={displayStats.energy}
+        visible={connected}
+      />
+      <LowEnergyWarning
         energy={displayStats.energy}
         visible={connected}
       />

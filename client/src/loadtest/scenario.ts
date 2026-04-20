@@ -52,6 +52,8 @@ export interface LoadTestScenario {
     webtransport: number;
   };
   spawnPattern: SpawnPattern;
+  /** Whether bots leash back toward the arena center when they stray too far. */
+  enableRecoveryLeash: boolean;
   behavior: BehaviorConfig;
   /**
    * Optional bot-personality overrides applied on top of {@link behavior}.
@@ -97,6 +99,7 @@ export const DEFAULT_SCENARIO: LoadTestScenario = {
     webtransport: 0,
   },
   spawnPattern: 'mixed',
+  enableRecoveryLeash: true,
   behavior: {
     stopDistanceM: 1.6,
     orbitDistanceM: 4.5,
