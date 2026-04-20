@@ -647,8 +647,8 @@ export function App({
     setPlayerId(id);
     hasEverConnectedRef.current = true;
     const touchHint = 'Touch: left thumb moves (push past ring to sprint), right thumb swipes look, tap FIRE/JUMP/RUN';
-    const desktopHint = 'controls are configurable from the Controls panel';
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — ${touchMode ? touchHint : desktopHint}`);
+    const statusLabel = practiceMode ? modeLabel : `Player #${id}`;
+    setStatus(touchMode ? `${statusLabel} — ${touchHint}` : statusLabel);
     if (benchmarkConfig && benchmarkStartedAtRef.current == null) {
       benchmarkStartedAtRef.current = new Date().toISOString();
       publishBenchmarkState('running');
@@ -1155,12 +1155,5 @@ const navButtonStyle: CSSProperties = {
 };
 
 const calibrateButtonStyle: CSSProperties = {
-  background: 'rgba(149, 233, 255, 0.22)',
-  border: '1px solid rgba(149, 233, 255, 0.45)',
-  color: '#edf6ff',
-  padding: '6px 12px',
-  borderRadius: 999,
-  fontSize: 13,
-  cursor: 'pointer',
-  fontWeight: 600,
+  ...navButtonStyle,
 };
