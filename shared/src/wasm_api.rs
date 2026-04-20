@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Once;
 
+use js_sys;
 use nalgebra::{vector, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
-use js_sys;
 use wasm_bindgen::prelude::*;
 
 use crate::debug_render::{default_debug_pipeline, render_debug_buffers};

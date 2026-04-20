@@ -191,7 +191,10 @@ mod tests {
             &mut colors_none,
         );
 
-        assert!(!vertices_shapes.is_empty(), "shapes mode should produce lines");
+        assert!(
+            !vertices_shapes.is_empty(),
+            "shapes mode should produce lines"
+        );
         assert!(vertices_none.is_empty(), "mode=0 should produce no lines");
     }
 
