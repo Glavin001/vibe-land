@@ -36,6 +36,7 @@ type GameSceneProps = {
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
+  damageFeedback?: React.ComponentProps<typeof GameWorld>['damageFeedback'];
   sceneExtras?: ReactNode;
 };
 
@@ -68,6 +69,7 @@ export function GameScene({
   fogEnabled,
   fogDensity,
   fogColor,
+  damageFeedback,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -115,6 +117,7 @@ export function GameScene({
           fogEnabled={fogEnabled}
           fogDensity={fogDensity}
           fogColor={fogColor}
+          damageFeedback={damageFeedback}
           sceneExtras={sceneExtras}
         />
       </Suspense>
