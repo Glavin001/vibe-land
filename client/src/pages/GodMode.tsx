@@ -1015,11 +1015,15 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         routeLabel="/godmode"
         autoConnect
         sessionKey={playSessionKey}
+        hideTopNav
+        hideStatusBanner
         overlay={(
-          <div style={godModePlayOverlayStyle}>
-            <span>Godmode Play uses the same local-practice runtime with the current authored world.</span>
-            <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World</button>
-            <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>Back To Edit</button>
+          <div className={godModePlayOverlayClassName}>
+            <div className={godModePlayBadgeClassName}>World Builder</div>
+            <div className={godModePlayActionsClassName}>
+              <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World</button>
+              <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>To Edit</button>
+            </div>
           </div>
         )}
       />
@@ -1107,28 +1111,22 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         />
       )}
       <aside style={sidebarStyleDynamic} className={builderSidebarClassName}>
-        {isMobile && (
-          <button
-            type="button"
-            onClick={() => setLeftDrawerOpen(false)}
-            className={drawerCloseButtonClassName}
-            aria-label="Close world builder tools"
-          >
-            ✕
-          </button>
-        )}
         <div className={builderHeaderClassName}>
           <div className="flex items-center justify-between gap-2">
             <h1 className={builderCompactTitleClassName}>World Builder</h1>
-            <div className={builderModePillClassName}>Editing</div>
-          </div>
-        </div>
-
-        <div className={builderSectionClassName}>
-          <div className={builderSectionTitleClassName}>Mode</div>
-          <div className={builderButtonGridClassName}>
-            <button type="button" onClick={() => setMode('edit')} className={builderButtonClassName(mode === 'edit' ? 'active' : 'secondary')}>Edit</button>
-            <button type="button" onClick={handleStartPlay} className={builderButtonClassName(mode === 'play' ? 'active' : 'secondary')}>Play</button>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={handleStartPlay} className={builderHeaderPlayButtonClassName}>Play</button>
+              {isMobile && (
+                <button
+                  type="button"
+                  onClick={() => setLeftDrawerOpen(false)}
+                  className={drawerCloseButtonClassName}
+                  aria-label="Close world builder tools"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1319,8 +1317,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
               </div>
               <div className={builderButtonRowClassName}>
                 <button type="button" onClick={() => handleSelectSidebarTab('select')} className={builderButtonClassName(sidebarTab === 'select' ? 'active' : 'secondary')}>Select</button>
+                <button type="button" onClick={() => handleSelectSidebarTab('objects')} className={builderButtonClassName(sidebarTab === 'objects' ? 'active' : 'secondary')}>Place</button>
                 <button type="button" onClick={() => handleSelectSidebarTab('terrain')} className={builderButtonClassName(sidebarTab === 'terrain' ? 'active' : 'secondary')}>Terrain</button>
-                <button type="button" onClick={() => handleSelectSidebarTab('objects')} className={builderButtonClassName(sidebarTab === 'objects' ? 'active' : 'secondary')}>Objects</button>
               </div>
 
               {sidebarTab === 'select' && (
@@ -1637,7 +1635,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
               {sidebarTab === 'objects' && (
                 <div className={builderNestedPanelClassName}>
                   <div className={builderNestedPanelHeaderClassName}>
-                    <div className={builderNestedPanelTitleClassName}>Objects</div>
+                    <div className={builderNestedPanelTitleClassName}>Place</div>
                     <div className={builderNestedPanelHintClassName}>Placement tools</div>
                   </div>
                   <div className={builderFieldStackClassName}>
@@ -2903,10 +2901,10 @@ const dangerButtonStyle: CSSProperties = {
 };
 
 const builderSidebarClassName = 'flex min-h-0 flex-col gap-2.5 overflow-y-auto border-r border-[rgba(141,186,221,0.14)] bg-[rgba(3,8,14,0.92)] p-3.5 max-md:p-4';
-const drawerCloseButtonClassName = 'absolute right-2.5 top-2.5 z-[2] h-8 w-8 rounded-lg border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.9)] text-sm leading-none text-[#eef7ff]';
+const drawerCloseButtonClassName = 'flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.9)] text-sm leading-none text-[#eef7ff]';
 const builderHeaderClassName = 'rounded-2xl border border-[rgba(141,186,221,0.12)] bg-[linear-gradient(180deg,rgba(14,26,38,0.96)_0%,rgba(10,18,28,0.92)_100%)] px-3.5 py-3';
 const builderCompactTitleClassName = 'm-0 text-[15px] font-bold uppercase tracking-[0.12em] text-[#eef7ff]';
-const builderModePillClassName = 'rounded-full border border-[rgba(116,212,255,0.18)] bg-[rgba(116,212,255,0.12)] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.12em] text-[#bdeaff]';
+const builderHeaderPlayButtonClassName = 'rounded-[9px] border border-[rgba(116,212,255,0.24)] bg-[rgba(116,212,255,0.14)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#bdeaff] transition-colors hover:bg-[rgba(116,212,255,0.22)]';
 const builderStatsGridClassName = 'grid grid-cols-2 gap-2';
 const builderStatCardClassName = 'flex flex-col gap-0.5 rounded-xl border border-[rgba(141,186,221,0.1)] bg-[rgba(5,13,20,0.54)] px-2.5 py-2.5';
 const builderStatLabelClassName = 'text-[10px] uppercase tracking-[0.12em] text-[rgba(190,226,244,0.58)]';
@@ -2961,21 +2959,9 @@ function builderHistorySourceBadgeClassName(source: CommitEntry['source']): stri
   return `${base} bg-[rgba(255,255,255,0.08)] text-[rgba(238,247,255,0.5)]`;
 }
 
-const godModePlayOverlayStyle: CSSProperties = {
-  position: 'absolute',
-  top: 44,
-  left: 8,
-  right: 8,
-  zIndex: 12,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 12,
-  background: 'rgba(5, 9, 16, 0.64)',
-  padding: '8px 12px',
-  borderRadius: 12,
-  color: '#eef7ff',
-};
+const godModePlayOverlayClassName = 'absolute left-2 top-2 z-[12] flex max-w-[min(calc(100vw-16px),360px)] items-center gap-2 rounded-xl border border-[rgba(141,186,221,0.14)] bg-[rgba(5,9,16,0.64)] px-3 py-2 text-[#eef7ff] backdrop-blur-[10px]';
+const godModePlayBadgeClassName = 'whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.16em] text-[#86d6f5]';
+const godModePlayActionsClassName = 'flex flex-wrap justify-start gap-2';
 
 const editorViewportOverlayStyle: CSSProperties = {
   position: 'absolute',
