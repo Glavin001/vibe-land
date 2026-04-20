@@ -7,8 +7,8 @@ use crate::{
         MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
         MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE,
         PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
-        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ,
-        SNAPSHOT_HZ_LOCAL,
+        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
+        RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
@@ -26,8 +26,6 @@ use rapier3d::prelude::{
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
-const HITSCAN_BODY_DAMAGE: u8 = 25;
-const HITSCAN_HEAD_DAMAGE: u8 = 100;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
 
@@ -617,8 +615,8 @@ impl LocalSession {
                     result.hit_zone = hit_zone_byte;
                     result.server_resolution = SHOT_RESOLUTION_PLAYER;
                     let damage = match zone {
-                        HitZone::Head => HITSCAN_HEAD_DAMAGE,
-                        HitZone::Body => HITSCAN_BODY_DAMAGE,
+                        HitZone::Head => RIFLE_HEAD_DAMAGE,
+                        HitZone::Body => RIFLE_BODY_DAMAGE,
                     };
                     let prev_hp = self
                         .arena

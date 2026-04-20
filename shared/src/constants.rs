@@ -76,6 +76,8 @@ pub const SNAPSHOT_HZ_LOCAL: u16 = SIM_HZ;
 pub const MAX_PENDING_INPUTS: usize = 120;
 pub const VEHICLE_INPUT_CATCHUP_THRESHOLD: usize = 4;
 pub const RIFLE_FIRE_INTERVAL_MS: u32 = 100;
+pub const RIFLE_BODY_DAMAGE: u8 = 14;
+pub const RIFLE_HEAD_DAMAGE: u8 = 16;
 pub const PLAYER_EYE_HEIGHT_M: f32 = 0.8;
 pub const SPAWN_PROTECTION_MS: u32 = 3_000;
 // ── Melee combat ────────────────────────────────

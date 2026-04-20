@@ -79,6 +79,8 @@ export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
 export const MAX_PENDING_INPUTS = 120;
 export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
 export const RIFLE_FIRE_INTERVAL_MS = 100;
+export const RIFLE_BODY_DAMAGE = 14;
+export const RIFLE_HEAD_DAMAGE = 16;
 export const PLAYER_EYE_HEIGHT_M = 0.8;
 export const SPAWN_PROTECTION_MS = 3000;
 // ── Melee combat ────────────────────────────────
