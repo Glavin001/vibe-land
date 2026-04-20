@@ -182,6 +182,7 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
@@ -1004,6 +1005,8 @@ export function App({
         bindings={inputBindings}
         state={controlHintsState}
         visible={connected && isDesktop && !touchMode}
+        expanded={controlsOverlayExpanded}
+        onToggleExpanded={() => setControlsOverlayExpanded((value) => !value)}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
