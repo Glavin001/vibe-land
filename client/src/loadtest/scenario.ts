@@ -1,3 +1,5 @@
+import type { BotPersonality } from '../bots/config/botPersonality';
+
 export type TransportKind = 'websocket' | 'webtransport';
 export type SpawnPattern = 'spread' | 'clustered' | 'mixed';
 export type PlayBenchmarkMode = 'on_foot' | 'vehicle_driver';
@@ -53,6 +55,16 @@ export interface LoadTestScenario {
   /** Whether bots leash back toward the arena center when they stray too far. */
   enableRecoveryLeash: boolean;
   behavior: BehaviorConfig;
+  /**
+   * Optional bot-personality overrides applied on top of {@link behavior}.
+   *
+   * `behavior` only exposes a fixed subset of the unified personality — the
+   * fields that load-test JSON has historically used. New scenarios can set
+   * `personality` to reach extra knobs (e.g. `meleeDistanceM`,
+   * `targetMemoryTicks`, `useVehicles`) without growing `BehaviorConfig`.
+   * When both are supplied, fields in `personality` win.
+   */
+  personality?: Partial<BotPersonality>;
   networkProfiles: NetworkProfile[];
   playBenchmark?: PlayBenchmarkConfig;
 }
@@ -153,6 +165,7 @@ export function normalizeScenario(input: Partial<LoadTestScenario>): LoadTestSce
       ...DEFAULT_SCENARIO.behavior,
       ...(input.behavior ?? {}),
     },
+    personality: input.personality ? { ...input.personality } : undefined,
     playBenchmark: input.playBenchmark == null
       ? { ...DEFAULT_SCENARIO.playBenchmark! }
       : {
