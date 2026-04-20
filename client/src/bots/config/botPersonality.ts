@@ -65,6 +65,21 @@ export interface BotPersonality {
   /** Minimum desired planar speed before the steering layer presses forward. */
   minMoveSpeedM: number;
 
+  // ---------- Perception ----------
+  /** Max planar distance at which the bot can perceive another player (beyond this, invisible). */
+  perceptionRangeM: number;
+  /** Half-angle of the forward FOV cone in radians. PI/2 => 180° cone. */
+  fovHalfAngleRad: number;
+  /** Ticks a per-player last-known position is retained after losing sight. */
+  memoryDurationTicks: number;
+  /** Ticks the bot stays in "curious" (scan behind/around) state after taking damage with no target. */
+  curiousDurationTicks: number;
+  /**
+   * How often (in ticks) the LOS raycast runs per visible candidate. 1 = every
+   * tick; raise to 2-3 to amortize cost under heavy bot counts.
+   */
+  perceptionRaycastCadenceTicks: number;
+
   // ---------- Vehicles ----------
   useVehicles: boolean;
   vehicleProfile: VehicleProfile;
@@ -110,6 +125,12 @@ export const DEFAULT_BOT_PERSONALITY: BotPersonality = Object.freeze({
   stuckTickThreshold: 18,
   jumpCooldownTicks: 30,
   minMoveSpeedM: 0.4,
+
+  perceptionRangeM: 60,
+  fovHalfAngleRad: Math.PI / 2,
+  memoryDurationTicks: 300,
+  curiousDurationTicks: 120,
+  perceptionRaycastCadenceTicks: 1,
 
   useVehicles: false,
   vehicleProfile: DEFAULT_VEHICLE_PROFILE,

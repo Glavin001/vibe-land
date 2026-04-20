@@ -501,6 +501,15 @@ export class PracticeBotRuntime {
       aimLeadSec: this.personality.aimLeadSec,
       firePrepTicks: this.personality.firePrepTicks,
       seed: id >>> 0,
+      raycast: (origin, direction, maxDistance) =>
+        this.host?.castSceneRay?.(origin, direction, maxDistance) ?? null,
+      perception: {
+        perceptionRangeM: this.personality.perceptionRangeM,
+        fovHalfAngleRad: this.personality.fovHalfAngleRad,
+        memoryDurationTicks: this.personality.memoryDurationTicks,
+        curiousDurationTicks: this.personality.curiousDurationTicks,
+        perceptionRaycastCadenceTicks: this.personality.perceptionRaycastCadenceTicks,
+      },
     });
     this.bots.set(id, {
       id,
@@ -858,6 +867,15 @@ export class PracticeBotRuntime {
       selfTemplate.pitch = remote.pitch;
       selfTemplate.onGround = true;
       selfTemplate.dead = remote.hp <= 0;
+
+      // Feed HP into perception so it can detect damage and enter curious
+      // scan mode when hit without an acquired target. Uses last tick's
+      // intent to decide whether the bot had a target at hit-time.
+      bot.brain.notePerceptionTick(
+        remote.hp,
+        bot.lastIntent.targetPlayerId != null,
+        remote.yaw,
+      );
 
       // Foot brain always runs — it tells us the "natural" destination
       // the behavior wants right now. The vehicle FSM may override the

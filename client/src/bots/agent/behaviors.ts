@@ -4,12 +4,24 @@
 
 import type { BotPersonality } from '../config/botPersonality';
 import type { BotSelfState, ObservedPlayer, Vec3Tuple } from '../types';
+import type { BotPerception } from './perception';
 
 export interface BotBehaviorContext {
   self: BotSelfState;
+  /**
+   * Currently-visible players after perception filtering (FOV + LOS). When
+   * perception is disabled (e.g. in unit tests), this is the raw list.
+   */
   remotePlayers: readonly ObservedPlayer[];
   anchor: Vec3Tuple;
   tick: number;
+  /** Optional perception layer — gives behaviors access to last-known memory. */
+  perception?: BotPerception | null;
+  /**
+   * True while the bot is in its post-damage curious window. Behaviors may
+   * return a `lookYaw` to drive scanning or ignore it and act normally.
+   */
+  isCurious?: boolean;
 }
 
 export interface BehaviorDecision {
@@ -20,6 +32,12 @@ export interface BehaviorDecision {
   meleeAim: Vec3Tuple | null;
   targetPlayerId: number | null;
   mode: 'acquire_target' | 'follow_target' | 'recover_center' | 'hold_anchor' | 'dead';
+  /**
+   * Optional yaw override (radians, atan2(x,z) convention). When set and no
+   * fire/melee aim is active, the steering layer points the bot toward this
+   * yaw instead of deriving it from velocity. Used for curious scanning.
+   */
+  lookYaw?: number | null;
 }
 
 export type Behavior = (ctx: BotBehaviorContext) => BehaviorDecision;
@@ -183,6 +201,23 @@ export function harassNearest(options: HarassNearestOptions = {}): Behavior {
     state.lockedPlayerId = null;
     state.lastKnownTarget = null;
     state.wasInFireWindow = false;
+
+    // No visible target, no lingering lock — if the perception layer says
+    // the bot was just shot, hold position and scan (snap 180° then sweep)
+    // so it has a chance to spot the attacker.
+    if (ctx.isCurious && ctx.perception) {
+      const lookYaw = ctx.perception.getCuriousLookYaw(ctx.tick);
+      if (lookYaw != null) {
+        return {
+          target: null,
+          fireAim: null,
+          meleeAim: null,
+          targetPlayerId: null,
+          mode: 'hold_anchor',
+          lookYaw,
+        };
+      }
+    }
 
     return {
       target: [anchor[0], self.position[1], anchor[2]],

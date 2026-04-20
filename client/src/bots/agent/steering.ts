@@ -81,6 +81,7 @@ export function agentStateToIntent(
   meleeAim: Vec3Tuple | null = null,
   options: SteeringOptions = {},
   fireAimVelocity: Vec3Tuple | null = null,
+  lookYaw: number | null = null,
 ): BotIntent {
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
@@ -192,6 +193,14 @@ export function agentStateToIntent(
     }
   } else {
     state.fireAimTicks = 0;
+    // With no fire or melee aim and no velocity-driven yaw change, allow the
+    // behavior to drive yaw (e.g. curious scanning). We only override when
+    // the bot isn't actively pathing forward, so this doesn't fight
+    // velocity-based turning during normal movement.
+    if (lookYaw != null && desiredSpeedPlanar <= 0.01) {
+      yaw = lookYaw;
+      pitch = 0;
+    }
   }
 
   state.jitterCounter = (state.jitterCounter + 1) >>> 0;

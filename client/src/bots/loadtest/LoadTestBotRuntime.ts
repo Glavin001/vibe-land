@@ -14,6 +14,7 @@
  */
 import { BotBrain } from '../agent/BotBrain';
 import { makeBehaviorFromPersonality } from '../agent/behaviors';
+import type { RaycastFn } from '../agent/perception';
 import {
   resolvePersonality,
   type BotPersonality,
@@ -42,6 +43,13 @@ export interface LoadTestBotInputs {
   self: BotSelfState | null;
   /** Currently observed remote players (snapshot decoded by the caller). */
   remotePlayers: Iterable<ObservedPlayer>;
+  /**
+   * Optional current HP for the bot. When provided, perception uses it to
+   * detect damage and enter curious-scan mode after a hit. Callers that
+   * don't track HP can omit it; the bot will still behave correctly,
+   * just without the curious-on-damage reflex.
+   */
+  hp?: number;
 }
 
 export interface AddLoadTestBotOptions {
@@ -72,6 +80,13 @@ export interface CreateLoadTestBotRuntimeOptions {
   matchId?: string;
   /** Override `BotCrowd` agent radius (mostly for tests). */
   maxAgentRadius?: number;
+  /**
+   * Optional raycast function used by perception for line-of-sight checks.
+   * Callers with access to a physics session can wire this up; when absent
+   * perception falls back to FOV-only filtering (still blocks back-camping
+   * but won't be occluded by geometry).
+   */
+  raycast?: RaycastFn | null;
 }
 
 interface InternalBot {
@@ -81,6 +96,7 @@ interface InternalBot {
   anchor: Vec3Tuple;
   getInputs: () => LoadTestBotInputs;
   onIntent: (intent: BotIntent) => void;
+  lastIntent: BotIntent;
 }
 
 const IDLE_SELF: BotSelfState = Object.freeze({
@@ -108,6 +124,7 @@ export class LoadTestBotRuntime {
   readonly crowd: BotCrowd;
   readonly personality: BotPersonality;
   private readonly tickHz: number;
+  private readonly raycast: RaycastFn | null;
   private readonly bots = new Map<number, InternalBot>();
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   private lastTickMs = 0;
@@ -132,6 +149,7 @@ export class LoadTestBotRuntime {
     this.crowd = crowd;
     this.personality = resolvePersonality(options.personality);
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
+    this.raycast = options.raycast ?? null;
   }
 
   start(): void {
@@ -184,6 +202,14 @@ export class LoadTestBotRuntime {
       aimLeadSec: this.personality.aimLeadSec,
       firePrepTicks: this.personality.firePrepTicks,
       seed: options.id >>> 0,
+      raycast: this.raycast,
+      perception: {
+        perceptionRangeM: this.personality.perceptionRangeM,
+        fovHalfAngleRad: this.personality.fovHalfAngleRad,
+        memoryDurationTicks: this.personality.memoryDurationTicks,
+        curiousDurationTicks: this.personality.curiousDurationTicks,
+        perceptionRaycastCadenceTicks: this.personality.perceptionRaycastCadenceTicks,
+      },
     });
     const bot: InternalBot = {
       id: options.id,
@@ -192,6 +218,7 @@ export class LoadTestBotRuntime {
       anchor: [options.anchor[0], options.anchor[1], options.anchor[2]],
       getInputs: options.getInputs,
       onIntent: options.onIntent,
+      lastIntent: IDLE_INTENT,
     };
     this.bots.set(options.id, bot);
     return { id: options.id, brain, crowdHandle };
@@ -243,7 +270,15 @@ export class LoadTestBotRuntime {
       const remotePlayers = inputs.remotePlayers instanceof Array
         ? inputs.remotePlayers
         : Array.from(inputs.remotePlayers);
+      if (typeof inputs.hp === 'number') {
+        bot.brain.notePerceptionTick(
+          inputs.hp,
+          bot.lastIntent.targetPlayerId != null,
+          inputs.self.yaw,
+        );
+      }
       const intent = bot.brain.think(inputs.self, remotePlayers);
+      bot.lastIntent = intent;
       bot.onIntent(intent);
     }
   }

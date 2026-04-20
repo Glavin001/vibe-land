@@ -5,26 +5,38 @@
 import type { BotCrowd, BotHandle } from '../crowd/BotCrowd';
 import { agentStateToIntent, createSteeringState, type SteeringOptions, type SteeringState } from './steering';
 import type { Behavior, BotBehaviorContext } from './behaviors';
+import { BotPerception, DEFAULT_PERCEPTION_CONFIG, type PerceptionConfig, type RaycastFn } from './perception';
 import type { BotIntent, BotSelfState, ObservedPlayer, Vec3Tuple } from '../types';
 
 export interface BotBrainOptions extends SteeringOptions {
   anchor?: Vec3Tuple;
   retargetDistanceSqM?: number;
   maxTicksBetweenReplans?: number;
+  /**
+   * Optional raycast callback used for line-of-sight checks in perception.
+   * If null/undefined, perception falls back to FOV-only filtering.
+   */
+  raycast?: RaycastFn | null;
+  /** Optional perception tuning — falls back to {@link DEFAULT_PERCEPTION_CONFIG}. */
+  perception?: Partial<PerceptionConfig>;
 }
 
 export class BotBrain {
   readonly handle: BotHandle;
   readonly crowd: BotCrowd;
+  readonly perception: BotPerception;
   private behavior: Behavior;
   private readonly steer: SteeringState;
   private readonly options: BotBrainOptions;
+  private readonly perceptionConfig: PerceptionConfig;
+  private readonly raycast: RaycastFn | null;
   private anchor: Vec3Tuple;
   private tick = 0;
   private lastTarget: Vec3Tuple | null = null;
   private ticksSinceReplan = 0;
   private lastDecisionTarget: Vec3Tuple | null = null;
   private lastMoveAccepted: boolean | null = null;
+  private lastLookYaw: number | null = null;
 
   constructor(
     crowd: BotCrowd,
@@ -37,6 +49,9 @@ export class BotBrain {
     this.behavior = behavior;
     this.options = options;
     this.steer = createSteeringState();
+    this.perception = new BotPerception();
+    this.perceptionConfig = { ...DEFAULT_PERCEPTION_CONFIG, ...(options.perception ?? {}) };
+    this.raycast = options.raycast ?? null;
     const agent = crowd.getAgent(handle.id);
     this.anchor = options.anchor ?? (agent
       ? [agent.position[0], agent.position[1], agent.position[2]] as Vec3Tuple
@@ -61,14 +76,26 @@ export class BotBrain {
     this.tick += 1;
     this.crowd.syncBotPosition(this.handle, self.position);
 
-    const ctx: BotBehaviorContext = {
+    // Filter raw observations through perception (FOV + LOS). Behaviors
+    // treat the filtered list as their "currently visible" input.
+    const visible = this.perception.observe(
       self,
       remotePlayers,
+      this.raycast,
+      this.tick,
+      this.perceptionConfig,
+    );
+    const ctx: BotBehaviorContext = {
+      self,
+      remotePlayers: visible,
       anchor: this.anchor,
       tick: this.tick,
+      perception: this.perception,
+      isCurious: this.perception.isCurious(this.tick),
     };
     const decision = this.behavior(ctx);
     this.lastDecisionTarget = decision.target ? [...decision.target] : null;
+    this.lastLookYaw = decision.lookYaw ?? null;
     const targetDistanceM = decision.target
       ? Math.hypot(
           decision.target[0] - self.position[0],
@@ -110,18 +137,40 @@ export class BotBrain {
       decision.meleeAim,
       this.options,
       decision.fireAimVelocity ?? null,
+      decision.lookYaw ?? null,
     );
+  }
+
+  /**
+   * Forward the bot's current HP and target-acquisition state into the
+   * perception layer so it can detect damage and enter curious mode.
+   * Called once per tick by the runtime after it knows whether the bot has
+   * a visible target (derived from the previously emitted intent).
+   */
+  notePerceptionTick(
+    currentHp: number,
+    hasTarget: boolean,
+    yaw: number,
+  ): void {
+    this.perception.noteHp(currentHp, this.tick, hasTarget, yaw, this.perceptionConfig);
   }
 
   getDebugState(): {
     rawTarget: Vec3Tuple | null;
     lastMoveAccepted: boolean | null;
     ticksSinceReplan: number;
+    memorySize: number;
+    curious: boolean;
+    lookYaw: number | null;
   } {
+    const p = this.perception.getDebugState(this.tick);
     return {
       rawTarget: this.lastDecisionTarget ? [...this.lastDecisionTarget] : null,
       lastMoveAccepted: this.lastMoveAccepted,
       ticksSinceReplan: this.ticksSinceReplan,
+      memorySize: p.memorySize,
+      curious: p.curious,
+      lookYaw: this.lastLookYaw,
     };
   }
 

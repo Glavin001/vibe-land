@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { arenaHarass, harassNearest } from './behaviors';
 import type { BotBehaviorContext } from './behaviors';
+import { BotPerception, DEFAULT_PERCEPTION_CONFIG } from './perception';
 
 function makeContext(overrides: Partial<BotBehaviorContext> = {}): BotBehaviorContext {
   return {
@@ -530,5 +531,64 @@ describe('arenaHarass', () => {
 
     expect(decision.mode).toBe('recover_center');
     expect(decision.target).toEqual([50, 0.1, 10]);
+  });
+});
+
+describe('harassNearest curious scanning', () => {
+  it('returns a lookYaw when isCurious and no visible players', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40 });
+    const perception = new BotPerception();
+    // Simulate damage: bot was facing +Z (yaw=0), got hit with no target.
+    perception.noteHp(100, 1, false, 0, DEFAULT_PERCEPTION_CONFIG);
+    perception.noteHp(80, 2, false, 0, DEFAULT_PERCEPTION_CONFIG);
+
+    const decision = behavior({
+      self: {
+        position: [0, 1, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [],
+      anchor: [0, 1, 0],
+      tick: 2,
+      perception,
+      isCurious: true,
+    });
+
+    expect(decision.mode).toBe('hold_anchor');
+    expect(decision.target).toBeNull();
+    expect(decision.lookYaw).not.toBeNull();
+    // Snap-behind: with yaw=0 at hit time, look should be ≈ ±π.
+    expect(Math.abs(Math.abs(decision.lookYaw!) - Math.PI)).toBeLessThan(0.01);
+  });
+
+  it('prefers visible target over curious scanning', () => {
+    const behavior = harassNearest({ acquireDistanceM: 40, fireDistanceM: 0 });
+    const perception = new BotPerception();
+    perception.noteHp(100, 1, false, 0, DEFAULT_PERCEPTION_CONFIG);
+    perception.noteHp(80, 2, false, 0, DEFAULT_PERCEPTION_CONFIG);
+
+    const decision = behavior({
+      self: {
+        position: [0, 1, 0],
+        velocity: [0, 0, 0],
+        yaw: 0,
+        pitch: 0,
+        onGround: true,
+        dead: false,
+      },
+      remotePlayers: [{ id: 7, position: [5, 1, 0], isDead: false }],
+      anchor: [0, 1, 0],
+      tick: 2,
+      perception,
+      isCurious: true,
+    });
+
+    // Visible player wins — behavior locks on and ignores curious state.
+    expect(decision.targetPlayerId).toBe(7);
+    expect(decision.mode).not.toBe('hold_anchor');
   });
 });
