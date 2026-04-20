@@ -3,6 +3,8 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  decodeServerPacket,
+  encodeFirePacket,
   encodeInputBundle,
   encodeMeleePacket,
   encodeVehicleEnterPacket,
@@ -10,6 +12,7 @@ import {
   netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
+  type DamageEventPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
@@ -36,6 +39,7 @@ export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
   worldJson?: string;
 };
 
@@ -50,9 +54,15 @@ export interface PracticeBotHost {
   disconnectBot(botId: number): boolean;
   setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
   sendBotInputs(botId: number, cmds: InputCmd[]): void;
+  sendBotFire(botId: number, cmd: FireCmd): void;
   sendBotMelee(botId: number, cmd: MeleeCmd): void;
   sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
   sendBotVehicleExit(botId: number, vehicleId: number): void;
+  castSceneRay?(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance?: number,
+  ): { toi: number } | null;
 }
 
 export class LocalPracticeClient implements PracticeBotHost {
@@ -190,6 +200,16 @@ export class LocalPracticeClient implements PracticeBotHost {
       session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
     } catch (error) {
       console.warn('[local-practice] bot input rejected', error);
+    }
+  }
+
+  sendBotFire(botId: number, cmd: FireCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeFirePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] bot fire rejected', error);
     }
   }
 
@@ -481,6 +501,35 @@ export class LocalPracticeClient implements PracticeBotHost {
       (playerState ? 1 : 0) + this.remotePlayers.size,
       this.dynamicBodies.size,
     );
+
+    if (emitCallbacks) {
+      this.drainSessionPackets();
+    }
+  }
+
+  private drainSessionPackets(): void {
+    const session = this.session;
+    if (!session) return;
+    const blob = session.drainPackets();
+    if (!blob || blob.length === 0) return;
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    let offset = 0;
+    while (offset + 4 <= blob.length) {
+      const packetLen = view.getUint32(offset, true);
+      offset += 4;
+      if (packetLen === 0 || offset + packetLen > blob.length) break;
+      const packetBytes = blob.subarray(offset, offset + packetLen);
+      offset += packetLen;
+      let decoded;
+      try {
+        decoded = decodeServerPacket(packetBytes);
+      } catch {
+        continue;
+      }
+      if (decoded.type === 'damageEvent') {
+        this.config.onDamageEvent?.(decoded);
+      }
+    }
   }
 
   private syncRemotePlayers(serverTimeUs: number, raw: ArrayLike<number>): void {

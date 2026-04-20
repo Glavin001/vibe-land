@@ -5,14 +5,15 @@ use crate::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
         HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
         MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
-        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MELEE,
-        PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
-        PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
+        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
+        RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
-    physics_arena::{MoveConfig, PhysicsArena},
+    physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
-    unit_conv::{i16_to_angle, snorm16_to_f32},
+    unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
@@ -25,8 +26,6 @@ use rapier3d::prelude::{
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
-const HITSCAN_BODY_DAMAGE: u8 = 25;
-const HITSCAN_HEAD_DAMAGE: u8 = 100;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
 
@@ -40,6 +39,7 @@ struct PlayerRuntime {
     next_allowed_melee_ms: u32,
     last_processed_swing_id: Option<u32>,
     melee_flag_clear_tick: u32,
+    spawn_protection_ends_at_tick: u32,
     is_bot: bool,
     respawn_cooldown_ticks: u32,
     respawn_at_ms: Option<u32>,
@@ -107,6 +107,7 @@ impl LocalSession {
         self.players
             .insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
         self.arena.spawn_player(LOCAL_PLAYER_ID);
+        self.activate_spawn_protection(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
         self.outbound_packets
@@ -142,6 +143,7 @@ impl LocalSession {
         runtime.is_bot = true;
         self.players.insert(bot_id, runtime);
         self.arena.spawn_player(bot_id);
+        self.activate_spawn_protection(bot_id);
         true
     }
 
@@ -208,11 +210,13 @@ impl LocalSession {
             }
             PKT_FIRE => {
                 let shot = decode_fire_cmd(&mut buf)?;
+                self.clear_spawn_protection(bot_id);
                 self.queued_shots.push((bot_id, shot));
                 Ok(())
             }
             PKT_MELEE => {
                 let cmd = decode_melee_cmd(&mut buf)?;
+                self.clear_spawn_protection(bot_id);
                 self.queued_melees.push((bot_id, cmd));
                 Ok(())
             }
@@ -253,10 +257,12 @@ impl LocalSession {
                 enqueue_inputs(runtime, frames);
             }
             PKT_FIRE => {
+                self.clear_spawn_protection(LOCAL_PLAYER_ID);
                 self.queued_shots
                     .push((LOCAL_PLAYER_ID, decode_fire_cmd(&mut buf)?));
             }
             PKT_MELEE => {
+                self.clear_spawn_protection(LOCAL_PLAYER_ID);
                 self.queued_melees
                     .push((LOCAL_PLAYER_ID, decode_melee_cmd(&mut buf)?));
             }
@@ -291,6 +297,7 @@ impl LocalSession {
         if !self.connected {
             return;
         }
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
         self.queued_shots.push((LOCAL_PLAYER_ID, cmd));
     }
 
@@ -298,6 +305,7 @@ impl LocalSession {
         if !self.connected {
             return;
         }
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
         self.queued_melees.push((LOCAL_PLAYER_ID, cmd));
     }
 
@@ -328,6 +336,7 @@ impl LocalSession {
         let server_time_ms = self.server_time_ms();
 
         self.process_respawn(server_time_ms);
+        self.expire_spawn_protection();
 
         let mut local_input = InputCmd::default();
         let mut previous_local_input = InputCmd::default();
@@ -340,6 +349,7 @@ impl LocalSession {
                     runtime.respawn_cooldown_ticks -= 1;
                     if runtime.respawn_cooldown_ticks == 0 {
                         self.arena.respawn_player(id);
+                        self.activate_spawn_protection(id);
                     } else {
                         skip_sim = true;
                     }
@@ -434,6 +444,42 @@ impl LocalSession {
             runtime.last_applied_input = InputCmd::default();
         }
         let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
+        self.activate_spawn_protection(LOCAL_PLAYER_ID);
+    }
+
+    fn activate_spawn_protection(&mut self, player_id: u32) {
+        let until_tick = self.server_tick.saturating_add(
+            crate::constants::SPAWN_PROTECTION_MS
+                .saturating_mul(SIM_HZ as u32)
+                .saturating_add(999)
+                / 1000,
+        );
+        let _ = self.arena.set_player_spawn_protected(player_id, true);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = until_tick;
+        }
+    }
+
+    fn clear_spawn_protection(&mut self, player_id: u32) {
+        let _ = self.arena.set_player_spawn_protected(player_id, false);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = 0;
+        }
+    }
+
+    fn expire_spawn_protection(&mut self) {
+        let expired_ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(&player_id, runtime)| {
+                (runtime.spawn_protection_ends_at_tick != 0
+                    && runtime.spawn_protection_ends_at_tick <= self.server_tick)
+                    .then_some(player_id)
+            })
+            .collect();
+        for player_id in expired_ids {
+            self.clear_spawn_protection(player_id);
+        }
     }
 
     fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
@@ -471,6 +517,7 @@ impl LocalSession {
             runtime.pending_inputs.clear();
             runtime.last_applied_input = InputCmd::default();
         }
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
     }
 
     pub fn drain_packets(&mut self) -> Vec<Vec<u8>> {
@@ -561,16 +608,42 @@ impl LocalSession {
                 if toi <= nearest_toi + 1e-3 {
                     result.confirmed = true;
                     result.hit_player_id = victim_id;
-                    result.hit_zone = match zone {
+                    let hit_zone_byte = match zone {
                         HitZone::Head => HIT_ZONE_HEAD,
                         HitZone::Body => HIT_ZONE_BODY,
                     };
+                    result.hit_zone = hit_zone_byte;
                     result.server_resolution = SHOT_RESOLUTION_PLAYER;
                     let damage = match zone {
-                        HitZone::Head => HITSCAN_HEAD_DAMAGE,
-                        HitZone::Body => HITSCAN_BODY_DAMAGE,
+                        HitZone::Head => RIFLE_HEAD_DAMAGE,
+                        HitZone::Body => RIFLE_BODY_DAMAGE,
                     };
+                    let prev_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
                     self.apply_damage(victim_id, damage, server_time_ms);
+                    let post_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
+                    let applied = prev_hp.saturating_sub(post_hp);
+                    if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                        let attacker_pos = pos;
+                        self.outbound_packets.push(encode_damage_event_packet(
+                            &DamageEventPacket {
+                                attacker_player_id: shooter_id,
+                                damage_amount: applied,
+                                hit_zone: hit_zone_byte,
+                                attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                                attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                                attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                                server_time_ms,
+                            },
+                        ));
+                    }
                 }
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world >= dynamic_toi).unwrap_or(true) {
@@ -727,7 +800,30 @@ impl LocalSession {
             }
 
             if let Some((victim_id, _dist)) = best {
+                let prev_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
                 self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+                let post_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
+                let applied = prev_hp.saturating_sub(post_hp);
+                if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                    self.outbound_packets
+                        .push(encode_damage_event_packet(&DamageEventPacket {
+                            attacker_player_id: attacker_id,
+                            damage_amount: applied,
+                            hit_zone: HIT_ZONE_BODY,
+                            attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                            attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                            attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                            server_time_ms,
+                        }));
+                }
             }
 
             if let Some(runtime) = self.players.get_mut(&attacker_id) {
@@ -782,7 +878,10 @@ impl LocalSession {
             .get(&victim_id)
             .map(|runtime| runtime.is_bot)
             .unwrap_or(false);
-        let died = self.arena.apply_player_damage(victim_id, damage);
+        let damage_outcome = self.arena.apply_player_damage(victim_id, damage);
+        if matches!(damage_outcome, PlayerDamageOutcome::Ignored) {
+            return;
+        }
         // Hit-stagger: block melee swings for a short window after taking damage.
         if let Some(runtime) = self.players.get_mut(&victim_id) {
             let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
@@ -790,7 +889,7 @@ impl LocalSession {
                 runtime.next_allowed_melee_ms = until;
             }
         }
-        if !died {
+        if !matches!(damage_outcome, PlayerDamageOutcome::Killed) {
             return;
         }
         if victim_id == LOCAL_PLAYER_ID {
@@ -1309,6 +1408,19 @@ fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
     out.to_vec()
 }
 
+fn encode_damage_event_packet(pkt: &DamageEventPacket) -> Vec<u8> {
+    let mut out = BytesMut::with_capacity(23);
+    out.put_u8(PKT_DAMAGE_EVENT);
+    out.put_u32_le(pkt.attacker_player_id);
+    out.put_u8(pkt.damage_amount);
+    out.put_u8(pkt.hit_zone);
+    out.put_i32_le(pkt.attacker_px_mm);
+    out.put_i32_le(pkt.attacker_py_mm);
+    out.put_i32_le(pkt.attacker_pz_mm);
+    out.put_u32_le(pkt.server_time_ms);
+    out.to_vec()
+}
+
 fn encode_snapshot_packet(pkt: &SnapshotPacket) -> Vec<u8> {
     let mut out = BytesMut::with_capacity(2048);
     out.put_u8(PKT_SNAPSHOT);
@@ -1709,6 +1821,22 @@ mod tests {
         assert!(ids.contains(&LOCAL_PLAYER_ID));
         assert!(ids.contains(&101));
         assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn connect_bot_starts_spawn_protected_in_practice() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        assert!(session.connect_bot(101));
+
+        let bot_state = session
+            .remote_player_states()
+            .into_iter()
+            .find(|state| state.id == 101)
+            .expect("bot state should exist");
+        assert_ne!(bot_state.flags & crate::constants::FLAG_SPAWN_PROTECTED, 0);
     }
 
     #[test]
@@ -2198,6 +2326,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2220,6 +2349,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2256,6 +2386,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         let before = session.server_time_ms();
         session.queue_melee_cmd(MeleeCmd {

@@ -32,6 +32,7 @@ pub enum ServerPacket {
     SnapshotV2(SnapshotV2Packet),
     ShotResult(ShotResultPacket),
     ShotFired(ShotFiredPacket),
+    DamageEvent(DamageEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -59,6 +60,7 @@ pub enum ServerReliablePacket {
     Welcome(WelcomePacket),
     ShotResult(ShotResultPacket),
     ShotFired(ShotFiredPacket),
+    DamageEvent(DamageEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -367,6 +369,16 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_i32_le(pkt.end_px_mm);
             out.put_i32_le(pkt.end_py_mm);
             out.put_i32_le(pkt.end_pz_mm);
+        }
+        ServerReliablePacket::DamageEvent(pkt) => {
+            out.put_u8(PKT_DAMAGE_EVENT);
+            out.put_u32_le(pkt.attacker_player_id);
+            out.put_u8(pkt.damage_amount);
+            out.put_u8(pkt.hit_zone);
+            out.put_i32_le(pkt.attacker_px_mm);
+            out.put_i32_le(pkt.attacker_py_mm);
+            out.put_i32_le(pkt.attacker_pz_mm);
+            out.put_u32_le(pkt.server_time_ms);
         }
         ServerReliablePacket::LocalPlayerEnergy(pkt) => {
             out.put_u8(PKT_LOCAL_PLAYER_ENERGY);
@@ -805,6 +817,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         }
         ServerPacket::ShotFired(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::ShotFired(*pkt))
+        }
+        ServerPacket::DamageEvent(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::DamageEvent(*pkt))
         }
         ServerPacket::LocalPlayerEnergy(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::LocalPlayerEnergy(pkt.clone()))

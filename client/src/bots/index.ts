@@ -39,12 +39,20 @@ export {
 } from './agent/steering';
 export * as behaviors from './agent/behaviors';
 export type {
+  ArenaHarassOptions,
   Behavior,
   BehaviorDecision,
   BotBehaviorContext,
   HarassNearestOptions,
   WanderOptions,
 } from './agent/behaviors';
+export {
+  DEFAULT_BOT_PERSONALITY,
+  resolvePersonality,
+  type BotBehaviorKind,
+  type BotFireMode,
+  type BotPersonality,
+} from './config/botPersonality';
 export type {
   BotIntent,
   BotMode,
@@ -67,8 +75,21 @@ export {
   type LocalSelfSnapshot,
   type PracticeBotBehaviorKind,
   type PracticeBotNavDebugConfig,
+  type PracticeBotShotVisual,
   type PracticeBotNavTuning,
   type PracticeBotRuntimeOptions,
   type PracticeBotRuntimeSyncOptions,
   type PracticeBotStats,
 } from './practice/PracticeBotRuntime';
+export {
+  LoadTestBotRuntime,
+  type AddLoadTestBotOptions,
+  type CreateLoadTestBotRuntimeOptions,
+  type LoadTestBotHandle,
+  type LoadTestBotInputs,
+} from './loadtest/LoadTestBotRuntime';
+export {
+  resolveLoadTestWorld,
+  clearLoadTestWorldCache,
+  type LoadTestWorldOptions,
+} from './loadtest/worldLoader';
