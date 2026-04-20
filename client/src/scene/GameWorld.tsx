@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ReactNode, type RefObject } from 'react';
+import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -3124,7 +3124,7 @@ function RapierDebugLines({
 }: {
   runtimeRef: RefObject<GameRuntimeClient | null>;
   modeBits: number;
-  telemetryRef: RefObject<{ sampleHz: number; vertexCount: number; lastCostMs: number }>;
+  telemetryRef: MutableRefObject<{ sampleHz: number; vertexCount: number; lastCostMs: number }>;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const materialRef = useRef<THREE.LineBasicMaterial | null>(null);
