@@ -14,3 +14,4 @@ blob-report/
 logs/
 .vercel
 .env*.local
+client/src/net/sharedConstants.ts

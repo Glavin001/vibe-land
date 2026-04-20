@@ -71,6 +71,10 @@ jobs:
       - name: Build WASM
         run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
 
+      - name: Generate constants
+        working-directory: client
+        run: npm run gen:constants
+
       - name: Verify WASM output
         run: ls -la client/src/wasm/pkg/
 
@@ -132,6 +136,10 @@ jobs:
 
       - name: Build WASM
         run: cd shared && wasm-pack build --target web --out-dir ../client/src/wasm/pkg
+
+      - name: Generate constants
+        working-directory: client
+        run: npm run gen:constants
 
       - name: Install Playwright browsers
         working-directory: client
