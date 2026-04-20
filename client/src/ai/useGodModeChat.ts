@@ -8,10 +8,16 @@ import {
   type ChatPart,
 } from './chatTypes';
 import { loadChat, saveChat } from './chatStore';
-import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
+import {
+  createLanguageModel,
+  getThinkingProviderOptions,
+  isLocalProvider,
+  type ProviderId,
+} from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
 import { createExecuteJsTool, createRollbackTool } from './worldTool';
 import type { WorldAccessors } from './worldToolHelpers';
+import { isLocalModelReady } from './localLlm';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
 
@@ -21,6 +27,11 @@ export type GodModeChatOptions = {
   provider: ProviderId;
   model: string;
   apiKey: string | undefined;
+  /**
+   * For local providers, whether the in-browser model has been loaded and is
+   * ready to generate. Cloud providers ignore this flag.
+   */
+  localReady?: boolean;
 };
 
 export type ImageAttachment = { dataUrl: string; mediaType: string };
@@ -39,7 +50,7 @@ export type GodModeChatHandle = {
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { chatId, accessors, provider, model, apiKey } = options;
+  const { chatId, accessors, provider, model, apiKey, localReady = false } = options;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
@@ -108,14 +119,25 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   }, [chatId, loadedChatId, messages, pendingHumanEdits]);
 
   const isLoaded = loadedChatId === chatId;
-  const canSend = Boolean(apiKey) && status === 'idle' && isLoaded;
+  const canSend =
+    status === 'idle' &&
+    isLoaded &&
+    (isLocalProvider(provider)
+      ? localReady || isLocalModelReady()
+      : Boolean(apiKey));
 
   const sendMessage = useCallback(
     async (text: string, attachments?: ImageAttachment[]) => {
       const trimmed = text.trim();
       if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
-      if (!apiKey) {
+      const isLocal = isLocalProvider(provider);
+      if (!isLocal && !apiKey) {
         setError(new Error(`Add an API key for ${provider} first.`));
+        setStatus('error');
+        return;
+      }
+      if (isLocal && !(localReady || isLocalModelReady())) {
+        setError(new Error('Download the local model before sending.'));
         setStatus('error');
         return;
       }
@@ -163,7 +185,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       abortRef.current = controller;
 
       try {
-        const languageModel = createLanguageModel(provider, model, apiKey);
+        const languageModel = createLanguageModel(provider, model, apiKey ?? '');
         const thinkingOpts = getThinkingProviderOptions(provider, model);
         const result = streamText({
           model: languageModel,
@@ -337,7 +359,7 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }
       }
     },
-    [apiKey, isLoaded, messages, model, pendingHumanEdits, provider, status],
+    [apiKey, isLoaded, localReady, messages, model, pendingHumanEdits, provider, status],
   );
 
   return useMemo<GodModeChatHandle>(

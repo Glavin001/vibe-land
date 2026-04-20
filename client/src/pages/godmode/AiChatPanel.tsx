@@ -20,7 +20,9 @@ import {
   MODELS,
   PROVIDER_LABELS,
   defaultModelFor,
+  isLocalProvider,
   isProviderId,
+  requiresApiKey,
   type ProviderId,
 } from '../../ai/providers';
 import {
@@ -42,10 +44,31 @@ import {
 } from '../../ai/settingsStore';
 import { useGodModeChat, type ImageAttachment } from '../../ai/useGodModeChat';
 import type { WorldAccessors } from '../../ai/worldToolHelpers';
+import {
+  LOCAL_MODEL_APPROX_SIZE_MB,
+  LOCAL_MODEL_LABEL,
+  downloadLocalModel,
+  isLocalModelReady,
+  isWebGpuAvailable,
+} from '../../ai/localLlm';
+import { useSpeechRecognition } from '../../ai/speech';
 
 export type AiChatPanelHandle = {
   pushHumanEdit: (summary: string) => void;
 };
+
+type LocalLoadState =
+  | { status: 'idle' }
+  | { status: 'downloading'; progress: number }
+  | { status: 'ready' }
+  | { status: 'error'; message: string };
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 100) return 100;
+  return value;
+}
 
 type AiChatPanelProps = {
   accessors: WorldAccessors;
@@ -58,6 +81,11 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
   const apiKey = settings.apiKeys[settings.provider];
+  const providerIsLocal = isLocalProvider(settings.provider);
+
+  const [localLoadState, setLocalLoadState] = useState<LocalLoadState>(() =>
+    isLocalModelReady() ? { status: 'ready' } : { status: 'idle' },
+  );
 
   // Active chat id. Seeded with a fresh id so the hook can mount synchronously
   // while we asynchronously restore the previous active id from IndexedDB.
@@ -71,6 +99,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     provider: settings.provider,
     model: settings.model,
     apiKey,
+    localReady: localLoadState.status === 'ready',
   });
 
   // Expose pushHumanEdit so the parent page can forward human edit summaries.
@@ -155,7 +184,9 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   }, []);
 
   const [draft, setDraft] = useState('');
-  const [settingsOpen, setSettingsOpen] = useState(!apiKey);
+  const [settingsOpen, setSettingsOpen] = useState(
+    providerIsLocal ? localLoadState.status !== 'ready' : !apiKey,
+  );
   const [chatListOpen, setChatListOpen] = useState(true);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -251,6 +282,40 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     }
   }, []);
 
+  const startLocalDownload = useCallback(async () => {
+    setLocalLoadState({ status: 'downloading', progress: 0 });
+    try {
+      await downloadLocalModel({
+        onProgress: (progressPct) => {
+          setLocalLoadState((prev) =>
+            prev.status === 'downloading'
+              ? { status: 'downloading', progress: clampPercent(progressPct) }
+              : prev,
+          );
+        },
+      });
+      setLocalLoadState({ status: 'ready' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLocalLoadState({ status: 'error', message });
+    }
+  }, []);
+
+  const speech = useSpeechRecognition({
+    onFinal: (text: string) => {
+      setDraft((prev) => (prev.length > 0 ? `${prev} ${text}` : text));
+    },
+  });
+  const onMicClick = useCallback(() => {
+    if (!speech.supported) return;
+    if (speech.listening) {
+      speech.stop();
+    } else {
+      speech.start();
+    }
+  }, [speech]);
+
+
   const messageListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = messageListRef.current;
@@ -289,9 +354,13 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   );
 
   const modelOptions = useMemo(() => MODELS[settings.provider], [settings.provider]);
-  const placeholderHint = apiKey
-    ? `Ask ${PROVIDER_LABELS[settings.provider]} (${settings.model}) to edit the world…`
-    : `Add an ${PROVIDER_LABELS[settings.provider]} API key to start chatting`;
+  const placeholderHint = providerIsLocal
+    ? localLoadState.status === 'ready'
+      ? `Ask ${LOCAL_MODEL_LABEL} (runs on your device)…`
+      : `Download ${LOCAL_MODEL_LABEL} from Settings to start chatting`
+    : apiKey
+      ? `Ask ${PROVIDER_LABELS[settings.provider]} (${settings.model}) to edit the world…`
+      : `Add an ${PROVIDER_LABELS[settings.provider]} API key to start chatting`;
   const hasDraft = draft.length > 0;
 
   const resolvedPanelStyle: CSSProperties = onClose
@@ -398,7 +467,17 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           </button>
           <span style={mutedStyle}>
             {PROVIDER_LABELS[settings.provider]} · {settings.model}
-            {apiKey ? ' · key set' : ' · no key'}
+            {providerIsLocal
+              ? localLoadState.status === 'ready'
+                ? ' · model ready'
+                : localLoadState.status === 'downloading'
+                  ? ` · downloading ${Math.round(localLoadState.progress)}%`
+                  : localLoadState.status === 'error'
+                    ? ' · download failed'
+                    : ' · not downloaded'
+              : apiKey
+                ? ' · key set'
+                : ' · no key'}
           </span>
         </div>
         {settingsOpen && (
@@ -430,27 +509,46 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
                 ))}
               </select>
             </label>
-            <label style={fieldLabelStyle}>
-              {PROVIDER_LABELS[settings.provider]} API key
-              <input
-                type="password"
-                value={apiKey ?? ''}
-                onChange={onApiKeyChange}
-                placeholder="sk-…"
-                style={inputStyle}
-                spellCheck={false}
-                autoComplete="off"
+            {requiresApiKey(settings.provider) && (
+              <label style={fieldLabelStyle}>
+                {PROVIDER_LABELS[settings.provider]} API key
+                <input
+                  type="password"
+                  value={apiKey ?? ''}
+                  onChange={onApiKeyChange}
+                  placeholder="sk-…"
+                  style={inputStyle}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            {providerIsLocal && (
+              <LocalModelStatus
+                state={localLoadState}
+                onDownload={startLocalDownload}
               />
-            </label>
+            )}
             <div style={buttonRowStyle}>
-              <button type="button" onClick={onClearKeys} style={dangerButtonStyle}>
-                Clear all keys
-              </button>
+              {requiresApiKey(settings.provider) && (
+                <button type="button" onClick={onClearKeys} style={dangerButtonStyle}>
+                  Clear all keys
+                </button>
+              )}
             </div>
-            <p style={mutedStyle}>
-              Keys live in <code>localStorage</code> on this device only. They&apos;re sent
-              directly to the provider with each request.
-            </p>
+            {providerIsLocal ? (
+              <p style={mutedStyle}>
+                The local model runs fully in your browser — no network calls after the
+                first download. WebGPU is{' '}
+                {isWebGpuAvailable() ? 'available (fast).' : 'unavailable — will fall back to CPU (slow).'}{' '}
+                Cached model weights persist in your browser storage.
+              </p>
+            ) : (
+              <p style={mutedStyle}>
+                Keys live in <code>localStorage</code> on this device only. They&apos;re sent
+                directly to the provider with each request.
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -520,6 +618,14 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           style={hasDraft ? expandedTextareaStyle : textareaStyle}
           disabled={chat.status === 'streaming'}
         />
+        {speech.listening && speech.interim.length > 0 && (
+          <div style={interimStyle}>{speech.interim}…</div>
+        )}
+        {speech.error && (
+          <div style={errorBannerStyle}>
+            <strong>Mic error:</strong> {speech.error}
+          </div>
+        )}
         <div style={composerActionsStyle}>
           {chat.status === 'streaming' ? (
             <button type="button" onClick={chat.stop} style={dangerButtonStyle}>
@@ -527,6 +633,16 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
             </button>
           ) : (
             <>
+              {speech.supported && (
+                <button
+                  type="button"
+                  onClick={onMicClick}
+                  style={speech.listening ? micActiveButtonStyle : secondaryButtonStyle}
+                  title={speech.listening ? 'Stop dictation' : 'Dictate via microphone'}
+                >
+                  {speech.listening ? '● Listening' : '🎙 Speak'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -553,6 +669,72 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     </aside>
   );
 });
+
+function LocalModelStatus({
+  state,
+  onDownload,
+}: {
+  state: LocalLoadState;
+  onDownload: () => void;
+}) {
+  if (state.status === 'idle') {
+    return (
+      <div style={localStatusStyle}>
+        <div style={fieldLabelStyle}>
+          Local model ({LOCAL_MODEL_LABEL})
+        </div>
+        <p style={mutedStyle}>
+          Running {LOCAL_MODEL_LABEL} in the browser requires downloading about{' '}
+          <strong>{LOCAL_MODEL_APPROX_SIZE_MB} MB</strong> of weights from the Hugging
+          Face CDN. Files are cached after first use. Click below to accept and
+          start the download.
+        </p>
+        <div style={buttonRowStyle}>
+          <button type="button" onClick={onDownload} style={primaryButtonStyle}>
+            Download {LOCAL_MODEL_LABEL} (~{LOCAL_MODEL_APPROX_SIZE_MB} MB)
+          </button>
+        </div>
+      </div>
+    );
+  }
+  if (state.status === 'downloading') {
+    const pct = Math.round(state.progress);
+    return (
+      <div style={localStatusStyle}>
+        <div style={fieldLabelStyle}>Downloading {LOCAL_MODEL_LABEL}…</div>
+        <div style={progressTrackStyle}>
+          <div style={{ ...progressFillStyle, width: `${pct}%` }} />
+        </div>
+        <p style={mutedStyle}>
+          {pct}%
+        </p>
+      </div>
+    );
+  }
+  if (state.status === 'ready') {
+    return (
+      <div style={localStatusStyle}>
+        <div style={fieldLabelStyle}>{LOCAL_MODEL_LABEL} is ready.</div>
+        <p style={mutedStyle}>
+          Inference runs on your device. No API key or network calls required.
+          Tool-calling uses Qwen3&apos;s native format — quality is lower than
+          cloud models.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div style={localStatusStyle}>
+      <div style={fieldLabelStyle}>Download failed</div>
+      <p style={mutedStyle}>{state.message}</p>
+      <div style={buttonRowStyle}>
+        <button type="button" onClick={onDownload} style={secondaryButtonStyle}>
+          Retry
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user';
@@ -789,6 +971,43 @@ const dangerButtonStyle: CSSProperties = {
   ...baseButtonStyle,
   background: '#ff8573',
   color: '#38130e',
+};
+
+const micActiveButtonStyle: CSSProperties = {
+  ...baseButtonStyle,
+  background: '#ff8573',
+  color: '#38130e',
+};
+
+const localStatusStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  border: '1px solid rgba(116, 212, 255, 0.24)',
+  borderRadius: 10,
+  padding: 10,
+  background: 'rgba(8, 18, 28, 0.72)',
+};
+
+const progressTrackStyle: CSSProperties = {
+  width: '100%',
+  height: 8,
+  borderRadius: 4,
+  background: 'rgba(167, 208, 237, 0.16)',
+  overflow: 'hidden',
+};
+
+const progressFillStyle: CSSProperties = {
+  height: '100%',
+  background: '#86d6f5',
+  transition: 'width 120ms linear',
+};
+
+const interimStyle: CSSProperties = {
+  fontSize: 12,
+  color: 'rgba(238, 247, 255, 0.55)',
+  fontStyle: 'italic',
+  padding: '0 2px',
 };
 
 const ghostButtonStyle: CSSProperties = {
