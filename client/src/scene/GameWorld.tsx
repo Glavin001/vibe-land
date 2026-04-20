@@ -66,8 +66,19 @@ import {
   type DamageFeedbackController,
 } from '../ui/useDamageFeedback';
 import { publishMeleeFeedback } from '../ui/meleeFeedback';
-import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
-import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
+import {
+  personalityFromScenario,
+  playerStateToBotSelf,
+} from '../loadtest/personalityFromScenario';
+import { BotBrain } from '../bots/agent/BotBrain';
+import { arenaHarass } from '../bots/agent/behaviors';
+import { resolvePersonality } from '../bots/config/botPersonality';
+import {
+  type BotCrowd,
+  createBotCrowdFromSharedProfile,
+} from '../bots/crowd/BotCrowd';
+import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
+import { anchorForBot, type LoadTestScenario, type PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
@@ -1207,11 +1218,9 @@ export function GameWorld({
   const remoteSpawnShieldsRef = useRef<Map<number, RemoteSpawnShieldHandle>>(new Map());
   const remoteSpawnShieldUntilRef = useRef<Map<number, number>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
-  const botBrainRef = useRef<BotBrainState | null>(
-    benchmarkAutopilot?.enabled
-      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
-      : null,
-  );
+  const localShotTraceRef = useRef<LocalShotTrace | null>(null);
+  const botBrainRef = useRef<BotBrain | null>(null);
+  const botCrowdRef = useRef<BotCrowd | null>(null);
   const benchmarkVehicleDriverRef = useRef<BenchmarkVehicleDriverState>({
     enteredVehicleAtMs: null,
     lastEnterPressedAtMs: null,
@@ -1344,11 +1353,60 @@ export function GameWorld({
   }, []);
 
   useEffect(() => {
-    botBrainRef.current = benchmarkAutopilot?.enabled
-      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
-      : null;
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
+
+    let cancelled = false;
+    if (!benchmarkAutopilot?.enabled) {
+      if (botBrainRef.current && botCrowdRef.current) {
+        botCrowdRef.current.removeBot(botBrainRef.current.handle);
+      }
+      botBrainRef.current = null;
+      botCrowdRef.current = null;
+      return;
+    }
+    void (async () => {
+      const crowd = await createBotCrowdFromSharedProfile(DEFAULT_WORLD_DOCUMENT, {
+        maxAgentRadius: 0.6,
+      });
+      if (cancelled) return;
+      const personality = resolvePersonality(personalityFromScenario(benchmarkAutopilot.scenario));
+      const anchor2d = anchorForBot(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario);
+      const anchor: Vec3Tuple = [anchor2d[0], 1.0, anchor2d[1]];
+      const handle = crowd.addBot(anchor);
+      const behavior = arenaHarass({
+        acquireDistanceM: personality.targetAcquireDistanceM,
+        releaseDistanceM: personality.targetReleaseDistanceM,
+        stopDistanceM: personality.stopDistanceM,
+        orbitDistanceM: personality.orbitDistanceM,
+        targetMemoryTicks: personality.targetMemoryTicks,
+        fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
+        meleeDistanceM: personality.meleeDistanceM,
+        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
+        recoveryDistanceM: personality.recoveryDistanceM,
+        fireAtCenter:
+          personality.fireMode === 'center'
+          || personality.fireMode === 'nearest_target_or_center',
+      });
+      const brain = new BotBrain(crowd, handle, behavior, {
+        anchor,
+        jumpCooldownTicks: personality.jumpCooldownTicks,
+        stuckTicksBeforeJump: personality.stuckTickThreshold,
+        minMoveSpeed: personality.minMoveSpeedM,
+        sprintTargetDistanceM: personality.sprintDistanceM,
+        meleeDistanceM: personality.meleeDistanceM,
+      });
+      botCrowdRef.current = crowd;
+      botBrainRef.current = brain;
+    })();
+    return () => {
+      cancelled = true;
+      if (botBrainRef.current && botCrowdRef.current) {
+        botCrowdRef.current.removeBot(botBrainRef.current.handle);
+      }
+      botBrainRef.current = null;
+      botCrowdRef.current = null;
+    };
   }, [benchmarkAutopilot]);
 
   useEffect(() => {
@@ -1864,34 +1922,27 @@ export function GameWorld({
           inputSample.activeFamily,
           benchmarkAutopilot.scenario.playBenchmark?.driverProfile ?? 'mixed',
         )
-      : botAutopilotEnabled
+      : botAutopilotEnabled && botBrainRef.current && botCrowdRef.current
         ? (() => {
           const localPosition = prediction.getPosition() ?? state.localPosition;
-          const localState = {
+          const self = playerStateToBotSelf({
             position: localPosition,
             velocity: physStats.velocity,
             yaw: yawRef.current,
             pitch: pitchRef.current,
             hp: client?.localPlayerHp ?? 100,
             flags: localFlags,
-          };
+          });
+          if (!self) return null;
           const remotePlayers: ObservedPlayer[] = Array.from(state.remotePlayers.values()).map((remote) => ({
             id: remote.id,
-            state: {
-              position: remote.position,
-              velocity: [0, 0, 0],
-              yaw: remote.yaw,
-              pitch: remote.pitch,
-              hp: remote.hp,
-              flags: remote.hp <= 0 ? FLAG_DEAD : 0,
-            },
+            position: [remote.position[0], remote.position[1], remote.position[2]],
+            isDead: remote.hp <= 0,
           }));
-          const intent = stepBotBrain(
-            botBrainRef.current!,
-            benchmarkAutopilot!.scenario,
-            localState,
-            remotePlayers,
-          );
+          // BotBrain expects a periodic crowd.step before think() so the
+          // navcat agent's desiredVelocity reflects the current frame.
+          botCrowdRef.current!.step(frameDelta);
+          const intent: BotIntent = botBrainRef.current!.think(self, remotePlayers);
           yawRef.current = intent.yaw;
           pitchRef.current = intent.pitch;
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
