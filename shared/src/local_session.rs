@@ -5,14 +5,15 @@ use crate::{
         DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
         HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
         MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
-        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_MELEE,
-        PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME,
-        PLAYER_EYE_HEIGHT_M, RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
+        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
+        RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
-    unit_conv::{i16_to_angle, snorm16_to_f32},
+    unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
@@ -25,8 +26,6 @@ use rapier3d::prelude::{
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
-const HITSCAN_BODY_DAMAGE: u8 = 25;
-const HITSCAN_HEAD_DAMAGE: u8 = 100;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
 
@@ -609,16 +608,42 @@ impl LocalSession {
                 if toi <= nearest_toi + 1e-3 {
                     result.confirmed = true;
                     result.hit_player_id = victim_id;
-                    result.hit_zone = match zone {
+                    let hit_zone_byte = match zone {
                         HitZone::Head => HIT_ZONE_HEAD,
                         HitZone::Body => HIT_ZONE_BODY,
                     };
+                    result.hit_zone = hit_zone_byte;
                     result.server_resolution = SHOT_RESOLUTION_PLAYER;
                     let damage = match zone {
-                        HitZone::Head => HITSCAN_HEAD_DAMAGE,
-                        HitZone::Body => HITSCAN_BODY_DAMAGE,
+                        HitZone::Head => RIFLE_HEAD_DAMAGE,
+                        HitZone::Body => RIFLE_BODY_DAMAGE,
                     };
+                    let prev_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
                     self.apply_damage(victim_id, damage, server_time_ms);
+                    let post_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
+                    let applied = prev_hp.saturating_sub(post_hp);
+                    if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                        let attacker_pos = pos;
+                        self.outbound_packets.push(encode_damage_event_packet(
+                            &DamageEventPacket {
+                                attacker_player_id: shooter_id,
+                                damage_amount: applied,
+                                hit_zone: hit_zone_byte,
+                                attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                                attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                                attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                                server_time_ms,
+                            },
+                        ));
+                    }
                 }
             } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
                 if world_toi.map(|world| world >= dynamic_toi).unwrap_or(true) {
@@ -775,7 +800,30 @@ impl LocalSession {
             }
 
             if let Some((victim_id, _dist)) = best {
+                let prev_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
                 self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+                let post_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
+                let applied = prev_hp.saturating_sub(post_hp);
+                if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                    self.outbound_packets
+                        .push(encode_damage_event_packet(&DamageEventPacket {
+                            attacker_player_id: attacker_id,
+                            damage_amount: applied,
+                            hit_zone: HIT_ZONE_BODY,
+                            attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                            attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                            attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                            server_time_ms,
+                        }));
+                }
             }
 
             if let Some(runtime) = self.players.get_mut(&attacker_id) {
@@ -1357,6 +1405,19 @@ fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
     out.put_u32_le(pkt.server_dynamic_body_id);
     out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
     out.put_u16_le(pkt.server_dynamic_impulse_centi);
+    out.to_vec()
+}
+
+fn encode_damage_event_packet(pkt: &DamageEventPacket) -> Vec<u8> {
+    let mut out = BytesMut::with_capacity(23);
+    out.put_u8(PKT_DAMAGE_EVENT);
+    out.put_u32_le(pkt.attacker_player_id);
+    out.put_u8(pkt.damage_amount);
+    out.put_u8(pkt.hit_zone);
+    out.put_i32_le(pkt.attacker_px_mm);
+    out.put_i32_le(pkt.attacker_py_mm);
+    out.put_i32_le(pkt.attacker_pz_mm);
+    out.put_u32_le(pkt.server_time_ms);
     out.to_vec()
 }
 
@@ -2265,6 +2326,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2287,6 +2349,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         session.queue_melee_cmd(MeleeCmd {
             seq: 1,
@@ -2323,6 +2386,7 @@ mod tests {
 
         place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
         place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
 
         let before = session.server_time_ms();
         session.queue_melee_cmd(MeleeCmd {

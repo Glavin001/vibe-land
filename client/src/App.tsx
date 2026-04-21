@@ -24,6 +24,8 @@ import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
 import { useControlHints } from './ui/useControlHints';
+import { useDamageFeedback } from './ui/useDamageFeedback';
+import { DamageOverlay } from './ui/DamageOverlay';
 import { useDebugStats } from './ui/useDebugStats';
 import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
 import {
@@ -180,6 +182,7 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
@@ -205,6 +208,7 @@ export function App({
     cycleRapierDebugPreset,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
+  const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
@@ -1001,6 +1005,8 @@ export function App({
         bindings={inputBindings}
         state={controlHintsState}
         visible={connected && isDesktop && !touchMode}
+        expanded={controlsOverlayExpanded}
+        onToggleExpanded={() => setControlsOverlayExpanded((value) => !value)}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
@@ -1057,6 +1063,7 @@ export function App({
         energy={displayStats.energy}
         visible={connected}
       />
+      <DamageOverlay {...damageOverlayState} visible={connected} />
       <LowEnergyWarning
         energy={displayStats.energy}
         visible={connected}
@@ -1126,6 +1133,7 @@ export function App({
           fogEnabled={fogSettings.enabled}
           fogDensity={fogSettings.density}
           fogColor={fogSettings.color}
+          damageFeedback={damageFeedbackController}
           sceneExtras={calibrationSceneExtras}
         />
       )}
