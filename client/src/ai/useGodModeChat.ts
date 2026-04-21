@@ -10,8 +10,20 @@ import {
 import { loadChat, saveChat } from './chatStore';
 import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
-import { createExecuteJsTool, createRollbackTool } from './worldTool';
-import { createCaptureScreenshotTool } from './screenshotTool';
+import {
+  executeJsInputSchema,
+  executeJsToolDescription,
+  executeJsToolExecute,
+  rollbackInputSchema,
+  rollbackToolDescription,
+  rollbackToolExecute,
+  type ToolRuntimeOptions,
+} from './worldTool';
+import {
+  captureScreenshotInputSchema,
+  captureScreenshotToolDescription,
+  captureScreenshotToolExecute,
+} from './screenshotTool';
 import type { CaptureFunction } from '../scene/SceneCaptureController';
 import type { WorldAccessors } from './worldToolHelpers';
 
@@ -196,24 +208,18 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
             return next;
           });
         };
-        const executeJsTool = createExecuteJsTool(accessorsRef.current);
-        const rollbackTool = createRollbackTool(accessorsRef.current);
-        const captureScreenshotTool = createCaptureScreenshotTool(
-          () => captureScreenshotRef.current,
-          accessorsRef.current,
-        );
         const llmTools = {
           execute_js: tool({
-            description: executeJsTool.description,
-            inputSchema: executeJsTool.inputSchema,
+            description: executeJsToolDescription,
+            inputSchema: executeJsInputSchema,
           }),
           rollback_to_commit: tool({
-            description: rollbackTool.description,
-            inputSchema: rollbackTool.inputSchema,
+            description: rollbackToolDescription,
+            inputSchema: rollbackInputSchema,
           }),
           capture_screenshot: tool({
-            description: captureScreenshotTool.description,
-            inputSchema: captureScreenshotTool.inputSchema,
+            description: captureScreenshotToolDescription,
+            inputSchema: captureScreenshotInputSchema,
           }),
         };
 
@@ -333,36 +339,33 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
 
           const toolCalls = await result.toolCalls;
           for (const toolCall of toolCalls) {
+            const toolOptions: ToolRuntimeOptions = {
+              toolCallId: toolCall.toolCallId,
+              messages: modelMessages,
+              abortSignal: controller.signal,
+            };
             let output: unknown;
             switch (toolCall.toolName) {
               case 'execute_js':
-                output = await (executeJsTool.execute as ((input: unknown, options: unknown) => Promise<unknown>))(
-                  toolCall.input,
-                  {
-                    toolCallId: toolCall.toolCallId,
-                    messages: modelMessages,
-                    abortSignal: controller.signal,
-                  },
+                output = await executeJsToolExecute(
+                  accessorsRef.current,
+                  executeJsInputSchema.parse(toolCall.input),
+                  toolOptions,
                 );
                 break;
               case 'rollback_to_commit':
-                output = await (rollbackTool.execute as ((input: unknown, options: unknown) => Promise<unknown>))(
-                  toolCall.input,
-                  {
-                    toolCallId: toolCall.toolCallId,
-                    messages: modelMessages,
-                    abortSignal: controller.signal,
-                  },
+                output = await rollbackToolExecute(
+                  accessorsRef.current,
+                  rollbackInputSchema.parse(toolCall.input),
+                  toolOptions,
                 );
                 break;
               case 'capture_screenshot':
-                output = await (captureScreenshotTool.execute as ((input: unknown, options: unknown) => Promise<unknown>))(
-                  toolCall.input,
-                  {
-                    toolCallId: toolCall.toolCallId,
-                    messages: modelMessages,
-                    abortSignal: controller.signal,
-                  },
+                output = await captureScreenshotToolExecute(
+                  () => captureScreenshotRef.current,
+                  accessorsRef.current,
+                  captureScreenshotInputSchema.parse(toolCall.input),
+                  toolOptions,
                 );
                 break;
               default:

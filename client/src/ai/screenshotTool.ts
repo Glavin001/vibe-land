@@ -3,8 +3,9 @@ import { z } from 'zod';
 import { getTerrainTileCenter, getTerrainTile, sampleTerrainHeightAtWorldPosition } from '../world/worldDocument';
 import type { WorldAccessors } from './worldToolHelpers';
 import type { CaptureFunction, ResolvedCaptureConfig } from '../scene/SceneCaptureController';
+import type { ToolRuntimeOptions } from './worldTool';
 
-const captureSchema = z.object({
+export const captureScreenshotInputSchema = z.object({
   preset: z
     .enum(['birds_eye', 'isometric'])
     .optional()
@@ -81,7 +82,7 @@ const captureSchema = z.object({
     .describe('Output image height in pixels. Default 768.'),
 });
 
-type CaptureInput = z.infer<typeof captureSchema>;
+export type CaptureInput = z.infer<typeof captureScreenshotInputSchema>;
 
 function sphericalToPosition(
   target: [number, number, number],
@@ -142,6 +143,62 @@ export type ScreenshotToolResult = {
   capturedImageDataUrl?: string; // stripped by useGodModeChat before storing in history
 };
 
+export const captureScreenshotToolDescription =
+  'Take an offscreen screenshot of the 3D world from a configurable camera viewpoint. '
+  + 'The captured PNG image is attached directly to the tool result so you can see it immediately and reason about it. '
+  + 'Use preset="birds_eye" with tileX/tileZ for a top-down tile view. '
+  + 'Use preset="isometric" for a 45° diagonal overview. '
+  + 'Orthographic cameras (the default) show measurements without perspective distortion. '
+  + 'Chain calls to visually verify edits: screenshot → inspect → edit → screenshot again.';
+
+export async function captureScreenshotToolExecute(
+  getCapture: () => CaptureFunction | null | undefined,
+  accessors: WorldAccessors,
+  input: CaptureInput,
+  _options?: ToolRuntimeOptions,
+): Promise<ScreenshotToolResult> {
+  const capture = getCapture();
+  if (!capture) {
+    return { ok: false, message: 'Screenshot capture is not available — the 3D scene may not be loaded yet.' };
+  }
+
+  // Validate tile exists before computing its center
+  let target: [number, number, number] = input.target
+    ? [input.target.x, input.target.y, input.target.z]
+    : [0, 0, 0];
+  let tileWidth: number | undefined;
+
+  if (input.tileX !== undefined && input.tileZ !== undefined) {
+    const world = accessors.getWorld();
+    const tile = getTerrainTile(world, input.tileX, input.tileZ);
+    if (!tile) {
+      return {
+        ok: false,
+        message: `Tile (${input.tileX}, ${input.tileZ}) does not exist in the world. Use ctx.listTerrainTiles() to see available tiles.`,
+      };
+    }
+    const [cx, cz] = getTerrainTileCenter(world, input.tileX, input.tileZ);
+    const cy = sampleTerrainHeightAtWorldPosition(world, cx, cz);
+    target = [cx, cy, cz];
+    tileWidth = world.terrain.tileHalfExtentM * 2;
+  }
+
+  try {
+    const resolved = resolveConfig(input, target, tileWidth);
+    const capturedImageDataUrl = await capture(resolved);
+    return {
+      ok: true,
+      message: `Screenshot captured: ${resolved.width}×${resolved.height}px, ${resolved.type} camera, orthoWidth=${resolved.orthoWidth.toFixed(1)}m.`,
+      width: resolved.width,
+      height: resolved.height,
+      capturedImageDataUrl,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, message: `Capture failed: ${msg}` };
+  }
+}
+
 /**
  * Creates the capture_screenshot tool. Requires:
  * - getCapture: getter that returns the CaptureFunction from SceneCaptureController (via ref)
@@ -152,55 +209,10 @@ export function createCaptureScreenshotTool(
   accessors: WorldAccessors,
 ) {
   return tool({
-    description:
-      'Take an offscreen screenshot of the 3D world from a configurable camera viewpoint. ' +
-      'The captured PNG image is attached directly to the tool result so you can see it immediately and reason about it. ' +
-      'Use preset="birds_eye" with tileX/tileZ for a top-down tile view. ' +
-      'Use preset="isometric" for a 45° diagonal overview. ' +
-      'Orthographic cameras (the default) show measurements without perspective distortion. ' +
-      'Chain calls to visually verify edits: screenshot → inspect → edit → screenshot again.',
-    inputSchema: captureSchema,
-    async execute(input): Promise<ScreenshotToolResult> {
-      const capture = getCapture();
-      if (!capture) {
-        return { ok: false, message: 'Screenshot capture is not available — the 3D scene may not be loaded yet.' };
-      }
-
-      // Validate tile exists before computing its center
-      let target: [number, number, number] = input.target
-        ? [input.target.x, input.target.y, input.target.z]
-        : [0, 0, 0];
-      let tileWidth: number | undefined;
-
-      if (input.tileX !== undefined && input.tileZ !== undefined) {
-        const world = accessors.getWorld();
-        const tile = getTerrainTile(world, input.tileX, input.tileZ);
-        if (!tile) {
-          return {
-            ok: false,
-            message: `Tile (${input.tileX}, ${input.tileZ}) does not exist in the world. Use ctx.listTerrainTiles() to see available tiles.`,
-          };
-        }
-        const [cx, cz] = getTerrainTileCenter(world, input.tileX, input.tileZ);
-        const cy = sampleTerrainHeightAtWorldPosition(world, cx, cz);
-        target = [cx, cy, cz];
-        tileWidth = world.terrain.tileHalfExtentM * 2;
-      }
-
-      try {
-        const resolved = resolveConfig(input, target, tileWidth);
-        const capturedImageDataUrl = await capture(resolved);
-        return {
-          ok: true,
-          message: `Screenshot captured: ${resolved.width}×${resolved.height}px, ${resolved.type} camera, orthoWidth=${resolved.orthoWidth.toFixed(1)}m.`,
-          width: resolved.width,
-          height: resolved.height,
-          capturedImageDataUrl,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { ok: false, message: `Capture failed: ${msg}` };
-      }
+    description: captureScreenshotToolDescription,
+    inputSchema: captureScreenshotInputSchema,
+    async execute(input, options): Promise<ScreenshotToolResult> {
+      return captureScreenshotToolExecute(getCapture, accessors, input, options);
     },
   });
 }
