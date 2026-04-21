@@ -69,6 +69,7 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
       | { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown }
     > = [];
     const toolResults: ToolContent = [];
+    const syntheticUserMessages: ModelMessage[] = [];
 
     for (const part of msg.parts) {
       if (part.type === 'text' && part.text.length > 0) {
@@ -87,20 +88,25 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
         if (part.isError) {
           output = { type: 'error-text', value: stringifyForModel(part.output) };
         } else if (part.images && part.images.length > 0) {
-          // Multi-modal tool result: text summary + captured image(s).
-          // AI SDK v6 requires type:'image-data' (not 'image'), field 'mediaType' (not 'mimeType'),
-          // and raw base64 data WITHOUT the 'data:image/png;base64,' prefix.
-          output = {
-            type: 'content',
-            value: [
-              { type: 'text', text: stringifyForModel(part.output) },
+          output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
+          // OpenAI's Responses API currently mishandles image-bearing
+          // function_call_output items in our browser setup. Keep the tool
+          // result itself compact and forward the screenshot through the
+          // regular image-message path instead.
+          syntheticUserMessages.push({
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Image result for tool ${part.toolName} (${part.toolCallId}). Use the attached image as the visual output of that tool call.`,
+              },
               ...part.images.map((img) => ({
-                type: 'image-data' as const,
-                data: img.dataUrl.replace(/^data:[^;]+;base64,/, ''),
-                mediaType: img.mediaType,
+                type: 'image' as const,
+                image: img.dataUrl,
+                mimeType: img.mediaType,
               })),
             ],
-          } as ToolResultPart['output'];
+          });
         } else {
           output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
         }
@@ -119,6 +125,9 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
     }
     if (toolResults.length > 0) {
       out.push({ role: 'tool', content: toolResults });
+    }
+    if (syntheticUserMessages.length > 0) {
+      out.push(...syntheticUserMessages);
     }
   }
   return out;

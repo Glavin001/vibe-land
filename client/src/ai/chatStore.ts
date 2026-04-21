@@ -420,6 +420,7 @@ function normalizePart(value: unknown): ChatPart | null {
           toolName: candidate.toolName,
           output: candidate.output,
           isError: candidate.isError === true ? true : undefined,
+          images: normalizeToolResultImages(candidate.images),
         }
         : null;
     case 'image':
@@ -447,6 +448,22 @@ function normalizeUsage(value: unknown): ChatUsage | null {
       outputTokens: candidate.outputTokens,
     }
     : null;
+}
+
+function normalizeToolResultImages(
+  value: unknown,
+): Array<{ dataUrl: string; mediaType: string }> | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const images = value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const candidate = item as Record<string, unknown>;
+      return typeof candidate.dataUrl === 'string' && typeof candidate.mediaType === 'string'
+        ? { dataUrl: candidate.dataUrl, mediaType: candidate.mediaType }
+        : null;
+    })
+    .filter((item): item is { dataUrl: string; mediaType: string } => item !== null);
+  return images.length > 0 ? images : undefined;
 }
 
 function normalizePendingHumanEdits(value: unknown): string[] {
