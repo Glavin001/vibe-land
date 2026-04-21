@@ -60,6 +60,7 @@ export type AiChatPanelHandle = {
 type AiChatPanelProps = {
   accessors: WorldAccessors;
   captureScreenshot?: CaptureFunction;
+  onClose?: () => void;
 };
 
 type PendingBranchAction =
@@ -71,7 +72,7 @@ type PendingBranchPayload =
   | { kind: 'edit-submit'; text: string; attachments: ImageAttachment[] };
 
 export const AiChatPanel = forwardRef(function AiChatPanel(
-  { accessors, captureScreenshot }: AiChatPanelProps,
+  { accessors, captureScreenshot, onClose }: AiChatPanelProps,
   ref: ForwardedRef<AiChatPanelHandle>,
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
@@ -444,17 +445,34 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const canSubmitComposer = chat.canSend && (activeDraft.trim().length > 0 || activeAttachments.length > 0);
   const messageActionsDisabled = chat.status === 'streaming' || !chat.isLoaded || isEditing;
 
+  const resolvedPanelStyle: CSSProperties = onClose
+    ? { ...panelStyle, height: '100%', width: '100%', borderLeft: 'none' }
+    : panelStyle;
+
   return (
-    <aside style={panelStyle}>
+    <aside style={resolvedPanelStyle}>
       <div style={headerStyle}>
         <div style={headerRowStyle}>
           <div style={headerTitleGroupStyle}>
             <span style={eyebrowStyle}>AI Co-Editor</span>
             <h2 style={titleStyle}>Chat</h2>
           </div>
-          <button type="button" onClick={onNewChat} style={newChatButtonStyle} title="Start a new chat">
-            + New chat
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button type="button" onClick={onNewChat} style={newChatButtonStyle} title="Start a new chat">
+              + New chat
+            </button>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                style={chatCloseButtonStyle}
+                aria-label="Close chat panel"
+                title="Close chat"
+              >
+                ✕
+              </button>
+            )}
+          </div>
         </div>
         <p style={mutedStyle}>
           Bring-your-own-key. Calls go straight to the provider from your browser — no proxy.
@@ -860,6 +878,18 @@ const panelStyle: CSSProperties = {
   background: 'rgba(3, 8, 14, 0.92)',
   color: '#eef7ff',
   overflow: 'hidden',
+};
+
+const chatCloseButtonStyle: CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: 8,
+  border: '1px solid rgba(167, 208, 237, 0.18)',
+  background: 'rgba(20, 34, 48, 0.9)',
+  color: '#eef7ff',
+  cursor: 'pointer',
+  fontSize: 14,
+  lineHeight: 1,
 };
 
 const headerStyle: CSSProperties = {

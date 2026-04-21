@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, WorldDocument, WorldDocumentError, WorldMeta, WorldTerrain,
-    WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, SpawnArea, WorldDocument, WorldDocumentError, WorldMeta,
+    WorldTerrain, WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -13,16 +13,20 @@ const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
 
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
-    WorldDocument::demo().instantiate(arena)
+    let world = WorldDocument::demo();
+    world.instantiate(arena)?;
+    arena.set_spawn_areas(world.spawn_areas.clone());
+    Ok(())
 }
 
 pub fn seed_world_for_match(
     arena: &mut PhysicsArena,
     match_id: &str,
 ) -> Result<(), WorldDocumentError> {
-    benchmark_world_document(match_id)
-        .unwrap_or_else(WorldDocument::demo)
-        .instantiate(arena)
+    let world = benchmark_world_document(match_id).unwrap_or_else(WorldDocument::demo);
+    world.instantiate(arena)?;
+    arena.set_spawn_areas(world.spawn_areas.clone());
+    Ok(())
 }
 
 fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {
@@ -71,6 +75,7 @@ fn benchmark_vehicle_world(
             energy: None,
             height: None,
         }],
+        spawn_areas: vec![],
     }
 }
 
@@ -225,5 +230,84 @@ mod tests {
         let vehicles = arena.snapshot_vehicles();
         assert_eq!(vehicles.len(), 1);
         assert!(vehicles[0].py_mm > 0);
+    }
+
+    #[test]
+    fn seed_world_with_spawn_areas_propagates_areas_to_arena() {
+        let area = SpawnArea {
+            id: 1,
+            position: [30.0, 0.0, -20.0],
+            radius: 12.0,
+        };
+        let world = WorldDocument {
+            version: vibe_land_shared::world_document::WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Spawn Test".to_string(),
+                description: String::new(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: 2,
+                tile_half_extent_m: 64.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0; 4],
+                    materials: vec![],
+                    material_weights: None,
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+            spawn_areas: vec![area],
+        };
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world.instantiate(&mut arena).expect("instantiate");
+        arena.set_spawn_areas(world.spawn_areas.clone());
+
+        assert_eq!(
+            arena.spawn_areas.len(),
+            1,
+            "spawn area should be registered on arena"
+        );
+
+        let spawn = arena.spawn_player(1);
+        let dx = spawn.x as f32 - 30.0;
+        let dz = spawn.z as f32 - (-20.0);
+        assert!(
+            dx * dx + dz * dz <= 12.0_f32 * 12.0,
+            "player spawn ({:.1}, {:.1}) not within area radius 12 of (30, -20)",
+            spawn.x,
+            spawn.z,
+        );
+    }
+
+    #[test]
+    fn default_world_spawn_areas_are_loaded_and_player_lands_within_one() {
+        // trail.world.json defines authored spawn areas; players must spawn inside one.
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        seed_default_world(&mut arena).expect("instantiate default world");
+        assert!(
+            !arena.spawn_areas.is_empty(),
+            "default world should load spawn areas from trail.world.json"
+        );
+        let spawn = arena.spawn_player(42);
+        assert!(
+            spawn.y > -1.0,
+            "spawn should land above ground, got y={:.2}",
+            spawn.y
+        );
+        let inside_any_area = arena.spawn_areas.iter().any(|area| {
+            let dx = spawn.x as f32 - area.position[0];
+            let dz = spawn.z as f32 - area.position[2];
+            dx * dx + dz * dz <= area.radius * area.radius
+        });
+        assert!(
+            inside_any_area,
+            "player spawn ({:.1}, {:.1}) not inside any of the {} spawn areas",
+            spawn.x,
+            spawn.z,
+            arena.spawn_areas.len(),
+        );
     }
 }

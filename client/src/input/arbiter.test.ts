@@ -18,6 +18,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     crouch: false,
     firePrimary: false,
     firePrimaryValue: 0,
+    aimSecondary: false,
     handbrake: false,
     interactPressed: false,
     resetVehiclePressed: false,
@@ -25,6 +26,7 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
     blockPlacePressed: false,
     materialSlot1Pressed: false,
     materialSlot2Pressed: false,
+    meleePressed: false,
     ...overrides,
   };
 }
@@ -32,6 +34,11 @@ function snapshot(overrides: Partial<ActionSnapshot>): ActionSnapshot {
 describe('pickActiveFamily', () => {
   it('prefers the only meaningful family', () => {
     const keyboardMouse = snapshot({ family: 'keyboardMouse', moveY: 1, activityId: 1 });
+    expect(pickActiveFamily(null, keyboardMouse, null)).toBe('keyboardMouse');
+  });
+
+  it('treats aimSecondary as meaningful input', () => {
+    const keyboardMouse = snapshot({ family: 'keyboardMouse', aimSecondary: true, activityId: 1 });
     expect(pickActiveFamily(null, keyboardMouse, null)).toBe('keyboardMouse');
   });
 

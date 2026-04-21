@@ -88,6 +88,8 @@ fn update_player_motion(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    ground_material_multiplier: f32,
+    max_speed_override: Option<f64>,
 ) {
     let cfg = &sim.config;
     let dt64 = dt as f64;
@@ -96,20 +98,20 @@ fn update_player_motion(
     *pitch = (input.pitch as f64).clamp(-1.55, 1.55);
 
     let wish = build_wish_dir(input, *yaw);
-    let max_speed = pick_move_speed(cfg, input.buttons);
+    let max_speed = max_speed_override.unwrap_or_else(|| pick_move_speed(cfg, input));
 
-    apply_horizontal_friction(velocity, cfg.friction, dt64, *on_ground);
-    accelerate(
-        velocity,
-        wish,
-        max_speed,
-        if *on_ground {
-            cfg.ground_accel
-        } else {
-            cfg.air_accel
-        },
-        dt64,
-    );
+    // Scale both the decelerating ground friction and the on-ground
+    // acceleration by the material under the player so ice feels slippery
+    // (low friction ⇒ long glide + sluggish start) and pavement feels grippy.
+    // Air movement is unaffected.
+    let multiplier = ground_material_multiplier.clamp(0.05, 4.0) as f64;
+    apply_horizontal_friction(velocity, cfg.friction * multiplier, dt64, *on_ground);
+    let accel = if *on_ground {
+        cfg.ground_accel * multiplier
+    } else {
+        cfg.air_accel
+    };
+    accelerate(velocity, wish, max_speed, accel, dt64);
 
     if *on_ground && (input.buttons & BTN_JUMP != 0) {
         velocity.y = cfg.jump_speed;
@@ -414,11 +416,23 @@ pub fn simulate_player_tick(
     on_ground: &mut bool,
     input: &InputCmd,
     dt: f32,
+    ground_material_multiplier: f32,
+    max_speed_override: Option<f64>,
 ) -> PlayerTickResult {
     let mut result = PlayerTickResult::default();
 
     let move_math_started = now_marker();
-    update_player_motion(sim, velocity, yaw, pitch, on_ground, input, dt);
+    update_player_motion(
+        sim,
+        velocity,
+        yaw,
+        pitch,
+        on_ground,
+        input,
+        dt,
+        ground_material_multiplier,
+        max_speed_override,
+    );
     result.timings.move_math_ms = elapsed_ms(move_math_started);
 
     let start_position = *position;
@@ -549,7 +563,9 @@ mod tests {
         input: &InputCmd,
         dt: f32,
     ) {
-        simulate_player_tick(sim, collider, pos, vel, yaw, pitch, on_ground, input, dt);
+        simulate_player_tick(
+            sim, collider, pos, vel, yaw, pitch, on_ground, input, dt, 1.0, None,
+        );
         sim.sync_player_collider(collider, pos);
     }
 
@@ -599,6 +615,91 @@ mod tests {
     }
 
     #[test]
+    fn max_speed_override_caps_horizontal_velocity() {
+        let mut sim = sim_with_ground();
+        let walk_speed = sim.config.walk_speed;
+        let mut pos = Vec3d::new(0.0, 2.0, 0.0);
+        let mut vel = Vec3d::zeros();
+        let mut yaw = 0.0;
+        let mut pitch = 0.0;
+        let mut on_ground = false;
+        let collider = sim.create_player_collider(pos, 1);
+        sim.rebuild_broad_phase();
+
+        let fwd = InputCmd {
+            seq: 1,
+            buttons: BTN_FORWARD,
+            move_x: 0,
+            move_y: 127,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+
+        for _ in 0..60 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &input(),
+                1.0 / 60.0,
+                1.0,
+                None,
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+
+        vel = Vec3d::zeros();
+        for _ in 0..120 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+                1.0,
+                None,
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+        let planar_no_override = (vel.x * vel.x + vel.z * vel.z).sqrt();
+        assert!(
+            (planar_no_override - walk_speed).abs() < 0.5,
+            "default run should approach walk_speed ({walk_speed}), got {planar_no_override}"
+        );
+
+        vel = Vec3d::zeros();
+        for _ in 0..120 {
+            simulate_player_tick(
+                &sim,
+                collider,
+                &mut pos,
+                &mut vel,
+                &mut yaw,
+                &mut pitch,
+                &mut on_ground,
+                &fwd,
+                1.0 / 60.0,
+                1.0,
+                Some(2.0),
+            );
+            sim.sync_player_collider(collider, &pos);
+        }
+        let planar_override = (vel.x * vel.x + vel.z * vel.z).sqrt();
+        assert!(
+            (planar_override - 2.0).abs() < 0.3,
+            "override should cap horizontal velocity near 2.0 m/s, got {planar_override}"
+        );
+    }
+
+    #[test]
     fn one_pass_without_dynamic_support_skips_support_probe() {
         let mut sim = sim_with_ground();
         let mut pos = Vec3d::new(0.0, 2.0, 0.0);
@@ -620,6 +721,8 @@ mod tests {
                 &mut on_ground,
                 &input(),
                 1.0 / 60.0,
+                1.0,
+                None,
             );
             sim.sync_player_collider(collider, &pos);
         }
@@ -634,6 +737,8 @@ mod tests {
             &mut on_ground,
             &input(),
             1.0 / 60.0,
+            1.0,
+            None,
         );
 
         assert!(on_ground, "player should remain grounded on static floor");

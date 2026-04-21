@@ -1,5 +1,6 @@
 use nalgebra::{Quaternion, UnitQuaternion};
 use rapier3d::prelude::InteractionGroups;
+use vibe_netcode::sim_world::SimWorld;
 
 use super::{elapsed_ms, now_marker, PhysicsArena, Vec3, Vehicle};
 use crate::vehicle::{
@@ -94,6 +95,7 @@ impl PhysicsArena {
                 &mut vehicle.controller,
                 &driver_input,
                 dt,
+                self.material_field.as_ref(),
             );
         }
     }
@@ -162,7 +164,7 @@ impl PhysicsArena {
                     if let Some(state) = self.players.get_mut(&player_id) {
                         state.position = vehicle_exit_position(&chassis_state);
                         if let Some(c) = self.dynamic.sim.colliders.get_mut(state.collider) {
-                            c.set_collision_groups(InteractionGroups::all());
+                            c.set_collision_groups(SimWorld::player_capsule_groups());
                         }
                         self.dynamic
                             .sim
@@ -208,5 +210,55 @@ impl PhysicsArena {
                 )
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::physics_arena::PhysicsArena;
+    use vibe_netcode::movement::MoveConfig;
+
+    #[test]
+    fn exiting_vehicle_restores_original_player_capsule_groups() {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.spawn_player(1);
+        let vehicle_id = arena.spawn_vehicle(0, nalgebra::Vector3::new(0.0, 2.0, 0.0));
+
+        let original_groups = {
+            let collider_handle = arena.players.get(&1).expect("player state").collider;
+            arena
+                .dynamic
+                .sim
+                .colliders
+                .get(collider_handle)
+                .expect("player collider")
+                .collision_groups()
+        };
+        assert_eq!(
+            original_groups,
+            SimWorld::player_capsule_groups(),
+            "player spawns with the shared capsule groups"
+        );
+
+        arena.enter_vehicle(1, vehicle_id);
+        arena.exit_vehicle(1);
+
+        let after_exit_groups = {
+            let collider_handle = arena.players.get(&1).expect("player state").collider;
+            arena
+                .dynamic
+                .sim
+                .colliders
+                .get(collider_handle)
+                .expect("player collider")
+                .collision_groups()
+        };
+        assert_eq!(
+            after_exit_groups, original_groups,
+            "exit_vehicle must restore the original capsule groups so the player\
+             doesn't end up in every collision group and start bumping into\
+             unrelated bodies after dismount",
+        );
     }
 }

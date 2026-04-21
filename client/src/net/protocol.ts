@@ -5,6 +5,7 @@ import {
   PKT_CLIENT_HELLO,
   PKT_INPUT_BUNDLE,
   PKT_FIRE,
+  PKT_MELEE,
   PKT_BLOCK_EDIT,
   PKT_VEHICLE_ENTER,
   PKT_VEHICLE_EXIT,
@@ -13,12 +14,14 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   PKT_SHOT_RESULT,
+  PKT_SHOT_FIRED,
   PKT_CHUNK_FULL,
   PKT_CHUNK_DIFF,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
   PKT_LOCAL_PLAYER_ENERGY,
   PKT_BATTERY_SYNC,
+  PKT_DAMAGE_EVENT,
   PKT_PING,
   PKT_PONG,
   BTN_FORWARD,
@@ -48,6 +51,14 @@ export type FireCmd = {
   clientInterpMs: number;
   clientDynamicInterpMs: number;
   dir: [number, number, number];
+};
+
+export type MeleeCmd = {
+  seq: number;
+  swingId: number;
+  clientTimeUs: number;
+  yaw: number;
+  pitch: number;
 };
 
 export type NetPlayerState = {
@@ -304,6 +315,31 @@ export type ShotResultPacket = {
   serverDynamicImpulseCenti: number;
 };
 
+export type ShotFiredPacket = {
+  type: 'shotFired';
+  shooterPlayerId: number;
+  shotId: number;
+  weapon: number;
+  hitKind: number;
+  hitZone: number;
+  serverFireTimeUs: number;
+  originPxMm: number;
+  originPyMm: number;
+  originPzMm: number;
+  endPxMm: number;
+  endPyMm: number;
+  endPzMm: number;
+};
+
+export type DamageEventPacket = {
+  type: 'damageEvent';
+  attackerPlayerId: number;
+  damageAmount: number;
+  hitZone: number;
+  attackerPosition: [number, number, number];
+  serverTimeMs: number;
+};
+
 export type LocalPlayerEnergyPacket = {
   type: 'localPlayerEnergy';
   energyCenti: number;
@@ -319,6 +355,8 @@ export type BatterySyncPacket = {
 export type ServerReliablePacket =
   | WelcomePacket
   | ShotResultPacket
+  | ShotFiredPacket
+  | DamageEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -338,6 +376,8 @@ export type ServerPacket =
   | SnapshotPacket
   | SnapshotV2Packet
   | ShotResultPacket
+  | ShotFiredPacket
+  | DamageEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -458,6 +498,19 @@ export function encodeFirePacket(packet: FireCmd): Uint8Array {
   return out;
 }
 
+export function encodeMeleePacket(packet: MeleeCmd): Uint8Array {
+  const out = new Uint8Array(1 + 2 + 4 + 8 + 2 + 2);
+  const view = new DataView(out.buffer);
+  let o = 0;
+  view.setUint8(o++, PKT_MELEE);
+  view.setUint16(o, packet.seq & 0xffff, true); o += 2;
+  view.setUint32(o, packet.swingId >>> 0, true); o += 4;
+  setUint64(view, o, packet.clientTimeUs); o += 8;
+  view.setInt16(o, angleToI16(packet.yaw), true); o += 2;
+  view.setInt16(o, angleToI16(packet.pitch), true); o += 2;
+  return out;
+}
+
 export function frameReliablePacket(payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(4 + payload.length);
   const view = new DataView(out.buffer);
@@ -511,6 +564,35 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
         serverDynamicImpulseCenti,
       };
     }
+    case PKT_SHOT_FIRED: {
+      const shooterPlayerId = view.getUint32(o, true); o += 4;
+      const shotId = view.getUint32(o, true); o += 4;
+      const weapon = view.getUint8(o++);
+      const hitKind = view.getUint8(o++);
+      const hitZone = view.getUint8(o++);
+      const serverFireTimeUs = getUint64(view, o); o += 8;
+      const originPxMm = view.getInt32(o, true); o += 4;
+      const originPyMm = view.getInt32(o, true); o += 4;
+      const originPzMm = view.getInt32(o, true); o += 4;
+      const endPxMm = view.getInt32(o, true); o += 4;
+      const endPyMm = view.getInt32(o, true); o += 4;
+      const endPzMm = view.getInt32(o, true); o += 4;
+      return {
+        type: 'shotFired',
+        shooterPlayerId,
+        shotId,
+        weapon,
+        hitKind,
+        hitZone,
+        serverFireTimeUs,
+        originPxMm,
+        originPyMm,
+        originPzMm,
+        endPxMm,
+        endPyMm,
+        endPzMm,
+      };
+    }
     case PKT_CHUNK_FULL:
       return decodeChunkFullPacket(data);
     case PKT_CHUNK_DIFF:
@@ -523,6 +605,8 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return { type: 'localPlayerEnergy', energyCenti: view.getUint32(o, true) };
     case PKT_BATTERY_SYNC:
       return decodeBatterySyncPacket(view, o);
+    case PKT_DAMAGE_EVENT:
+      return decodeDamageEventPacket(view, o);
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
@@ -823,6 +907,28 @@ function decodeBatterySyncPacket(view: DataView, o: number): BatterySyncPacket {
   return { type: 'batterySync', fullResync, batteryStates, removedIds };
 }
 
+function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
+  const attackerPlayerId = view.getUint32(o, true); o += 4;
+  const damageAmount = view.getUint8(o++);
+  const hitZone = view.getUint8(o++);
+  const attackerPxMm = view.getInt32(o, true); o += 4;
+  const attackerPyMm = view.getInt32(o, true); o += 4;
+  const attackerPzMm = view.getInt32(o, true); o += 4;
+  const serverTimeMs = view.getUint32(o, true); o += 4;
+  return {
+    type: 'damageEvent',
+    attackerPlayerId,
+    damageAmount,
+    hitZone,
+    attackerPosition: [
+      attackerPxMm / 1000,
+      attackerPyMm / 1000,
+      attackerPzMm / 1000,
+    ],
+    serverTimeMs,
+  };
+}
+
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
   const bytes = toBytes(data);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -887,6 +993,15 @@ export function netPlayerStateToMeters(state: NetPlayerState): PlayerStateMeters
     pitch: i16ToAngle(state.pitchI16),
     hp: state.hp,
     flags: state.flags,
+  };
+}
+
+export function shotFiredToWorldEndpoints(
+  packet: ShotFiredPacket,
+): { origin: [number, number, number]; end: [number, number, number] } {
+  return {
+    origin: [mmToMeters(packet.originPxMm), mmToMeters(packet.originPyMm), mmToMeters(packet.originPzMm)],
+    end: [mmToMeters(packet.endPxMm), mmToMeters(packet.endPyMm), mmToMeters(packet.endPzMm)],
   };
 }
 
@@ -1146,6 +1261,7 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
   switch (kind) {
     case PKT_WELCOME:
     case PKT_SHOT_RESULT:
+    case PKT_SHOT_FIRED:
       return decodeServerReliablePacket(data);
     case PKT_SNAPSHOT:
       return decodeServerDatagramPacket(data);
@@ -1163,6 +1279,8 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return { type: 'localPlayerEnergy', energyCenti: view.getUint32(1, true) };
     case PKT_BATTERY_SYNC:
       return decodeBatterySyncPacket(view, 1);
+    case PKT_DAMAGE_EVENT:
+      return decodeDamageEventPacket(view, 1);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

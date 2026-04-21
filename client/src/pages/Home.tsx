@@ -14,13 +14,14 @@ function NavCard({ href, tag, title, description, note, accentClass, tagClass, n
     <a
       href={href}
       className={[
-        'block no-underline text-inherit rounded-2xl p-6',
+        'block no-underline text-inherit rounded-2xl p-5 sm:p-6',
         'border border-white/[0.08]',
         'border-t-2',
         accentClass,
         'bg-gradient-to-b from-white/[0.04] to-transparent',
         'transition-all duration-200',
         'hover:border-white/[0.16] hover:from-white/[0.07]',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60',
       ].join(' ')}
     >
       <div className={`font-mono text-[10px] uppercase tracking-[0.25em] mb-3 ${tagClass}`}>
@@ -29,7 +30,7 @@ function NavCard({ href, tag, title, description, note, accentClass, tagClass, n
       <h2 className="m-0 text-[22px] font-semibold leading-tight text-white/90 mb-2">
         {title}
       </h2>
-      <p className="text-sm leading-relaxed text-white/50 mt-2 mb-3">
+      <p className="text-sm leading-relaxed text-white/55 mt-2 mb-3">
         {description}
       </p>
       <div className={`text-xs font-medium ${noteClass}`}>{note}</div>
@@ -39,36 +40,36 @@ function NavCard({ href, tag, title, description, note, accentClass, tagClass, n
 
 export function HomePage() {
   return (
-    <div className="relative min-h-screen font-sans bg-[#050c16] text-[#edf6ff] flex items-center justify-center p-8 overflow-hidden">
+    <div className="relative h-full w-full overflow-x-hidden overflow-y-auto font-sans bg-[#050c16] text-[#edf6ff]">
 
-      {/* Ambient background glows */}
-      <div className="pointer-events-none absolute inset-0">
+      {/* Ambient background glows — fixed layer so they stay put while content scrolls */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div className="absolute -top-32 left-1/2 -translate-x-1/2 w-[900px] h-[600px] rounded-full bg-sky-500/[0.07] blur-[120px]" />
         <div className="absolute top-1/3 -right-32 w-[500px] h-[500px] rounded-full bg-cyan-600/[0.04] blur-[100px]" />
         <div className="absolute bottom-0 left-0 w-[400px] h-[400px] rounded-full bg-indigo-600/[0.03] blur-[80px]" />
       </div>
 
-      <div className="relative z-10 w-full max-w-[1040px]">
+      <div className="relative z-10 mx-auto w-full max-w-[1040px] px-5 py-10 sm:px-8 sm:py-14 md:py-20">
 
         {/* Eyebrow */}
-        <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.35em] text-sky-500/50 mb-10">
+        <div className="flex items-center gap-3 font-mono text-[10px] uppercase tracking-[0.35em] text-sky-500/50 mb-6 sm:mb-10">
           <span className="w-8 h-px bg-sky-500/30" />
           vibe-land
           <span className="w-8 h-px bg-sky-500/30" />
         </div>
 
         {/* Hero */}
-        <div className="mb-10">
-          <h1 className="text-[clamp(44px,8vw,88px)] font-black leading-[0.9] tracking-tight mb-5">
-            One build.
+        <div className="mb-8 sm:mb-12">
+          <h1 className="text-[clamp(40px,8vw,88px)] font-black leading-[0.95] tracking-tight mb-4 sm:mb-6">
+            A sandbox shooter,
             <br />
             <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-400 via-cyan-300 to-teal-300">
-              Two ways to play.
+              live in your browser.
             </span>
           </h1>
-          <p className="max-w-[600px] text-base leading-relaxed text-white/45">
-            Multiplayer and the firing range now ship in the same web app.
-            Use direct links for fast entry, or start here.
+          <p className="max-w-[640px] text-base sm:text-[17px] leading-relaxed text-white/60">
+            Drill against bots solo, drop into a live match with real players, or sculpt
+            a world from scratch and share it. No install. No login. Just play.
           </p>
         </div>
 
@@ -78,18 +79,18 @@ export function HomePage() {
             href="/play"
             tag="/play"
             title="Multiplayer"
-            description="Jump into a live match with other players. Connects automatically using the best available protocol."
-            note="Requires an active server connection."
+            description="Jump into a live match with real players — plus bots if you want more chaos. Low-latency netcode, server-authoritative physics, vehicles and hitscan weapons."
+            note="Live servers · ready to join."
             accentClass="border-t-sky-400"
             tagClass="text-sky-400/60"
-            noteClass="text-yellow-300/70"
+            noteClass="text-sky-300/75"
           />
           <NavCard
             href="/practice"
             tag="/practice"
-            title="Firing Range"
-            description="Play solo in your browser with no server needed. Full physics and gameplay, all running client-side."
-            note="Works fully offline once assets are cached."
+            title="Solo"
+            description="You versus up to 32 AI bots. Tune their skill, grab a vehicle, dial in your aim. Full physics, running entirely in your browser."
+            note="Works offline once loaded."
             accentClass="border-t-emerald-400"
             tagClass="text-emerald-400/60"
             noteClass="text-emerald-300/75"
@@ -98,8 +99,8 @@ export function HomePage() {
             href="/builder/world"
             tag="/builder/world"
             title="World Builder"
-            description="Sculpt terrain, place objects, and autosave drafts. Launch a solo run directly from your current world."
-            note="All data stays in your browser — import and export as JSON."
+            description="Sculpt terrain, carve ramps, paint materials, drop in vehicles. Spawn bots to test your arena, then publish it to the gallery."
+            note="Autosaves · import + export JSON."
             accentClass="border-t-amber-400"
             tagClass="text-amber-400/60"
             noteClass="text-amber-300/70"
@@ -112,8 +113,8 @@ export function HomePage() {
             href="/gallery"
             tag="/gallery"
             title="Gallery"
-            description="Browse worlds published by other builders. Jump straight into a single-player run or open one in the builder to tinker."
-            note="Browse worlds shared by other players."
+            description="Play worlds built by the community. Drop straight in against bots, or fork any one of them in the builder and remix it into something of your own."
+            note="Fresh maps from real builders."
             accentClass="border-t-violet-400"
             tagClass="text-violet-400/60"
             noteClass="text-violet-300/70"
@@ -121,12 +122,12 @@ export function HomePage() {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center gap-4 font-mono text-xs text-white/25">
-          <a href="/stats" className="hover:text-sky-400/70 transition-colors duration-200">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-mono text-xs text-white/30">
+          <a href="/stats" className="hover:text-sky-400/80 transition-colors duration-200">
             server stats
           </a>
           <span>·</span>
-          <a href="/loadtest" className="hover:text-sky-400/70 transition-colors duration-200">
+          <a href="/loadtest" className="hover:text-sky-400/80 transition-colors duration-200">
             load test
           </a>
         </div>

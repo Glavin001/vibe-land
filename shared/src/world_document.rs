@@ -10,6 +10,14 @@ pub const DEFAULT_WORLD_DOCUMENT_JSON: &str = include_str!("../../worlds/trail.w
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpawnArea {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub radius: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorldDocument {
     #[serde(default = "world_document_version")]
     pub version: u32,
@@ -17,6 +25,8 @@ pub struct WorldDocument {
     pub terrain: WorldTerrain,
     pub static_props: Vec<StaticProp>,
     pub dynamic_entities: Vec<DynamicEntity>,
+    #[serde(default)]
+    pub spawn_areas: Vec<SpawnArea>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -40,6 +50,34 @@ pub struct TerrainMaterial {
     pub fuel_load: f32,
     pub burn_rate: f32,
     pub moisture: f32,
+}
+
+/// Blended friction/restitution used by the physics engine at a world position.
+/// `friction` is the Coulomb-style coefficient used by Rapier colliders and by the
+/// kinematic player controller's horizontal friction term. `reference_friction` is
+/// the baseline against which the player's kinematic friction/acceleration are scaled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectiveTerrainMaterial {
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+impl EffectiveTerrainMaterial {
+    /// Grass-like baseline — matches the unauthored default so worlds without
+    /// material data behave as they did before the material pipeline existed.
+    pub const DEFAULT: Self = Self {
+        friction: 0.6,
+        restitution: 0.1,
+    };
+
+    /// Friction value against which the player's kinematic friction/accel and the
+    /// vehicle's wheel friction_slip are normalized (so grass ≈ 1.0× multiplier).
+    pub const REFERENCE_FRICTION: f32 = 0.6;
+
+    pub fn friction_multiplier(&self) -> f32 {
+        // Clamp so a zero-friction material doesn't completely disable accel math.
+        (self.friction / Self::REFERENCE_FRICTION).max(0.05)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -247,6 +285,7 @@ pub trait WorldDocumentArena {
         heights: DMatrix<f32>,
         scale: Vector3<f32>,
         user_data: u128,
+        material: EffectiveTerrainMaterial,
     );
 
     fn add_static_cuboid(
@@ -286,6 +325,12 @@ pub trait WorldDocumentArena {
     }
 
     fn rebuild_broad_phase(&mut self);
+
+    /// Install the point-samplable material field used at tick time for player
+    /// on-foot friction and vehicle wheel friction_slip. Default no-op so
+    /// implementations that don't need runtime sampling aren't forced to store
+    /// anything.
+    fn set_material_field(&mut self, _field: Option<TerrainMaterialField>) {}
 }
 
 impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
@@ -295,10 +340,21 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
         heights: DMatrix<f32>,
         scale: Vector3<f32>,
         user_data: u128,
+        material: EffectiveTerrainMaterial,
     ) {
-        crate::physics_arena::PhysicsArena::add_static_heightfield(
-            self, center, heights, scale, user_data,
+        crate::physics_arena::PhysicsArena::add_static_heightfield_with_material(
+            self,
+            center,
+            heights,
+            scale,
+            user_data,
+            material.friction,
+            material.restitution,
         );
+    }
+
+    fn set_material_field(&mut self, field: Option<TerrainMaterialField>) {
+        crate::physics_arena::PhysicsArena::set_material_field(self, field);
     }
 
     fn add_static_cuboid(
@@ -370,6 +426,142 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
 
     fn rebuild_broad_phase(&mut self) {
         crate::physics_arena::PhysicsArena::rebuild_broad_phase(self);
+    }
+}
+
+/// Point-samplable per-tile material data used by the physics arena at tick time
+/// (for player on-foot friction and vehicle wheel friction_slip).
+#[derive(Clone, Debug)]
+pub struct TerrainMaterialField {
+    pub tile_grid_size: u16,
+    pub tile_half_extent_m: f32,
+    pub tiles: Vec<TerrainMaterialFieldTile>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TerrainMaterialFieldTile {
+    pub tile_x: i32,
+    pub tile_z: i32,
+    pub materials: Vec<EffectiveTerrainMaterial>,
+    /// Flat `[vertex_idx * materials.len() + material_idx]` weights, or `None`
+    /// when the tile has no per-vertex splat data (uniform blend fallback).
+    pub weights: Option<Vec<f32>>,
+}
+
+impl TerrainMaterialField {
+    pub fn sample(&self, x: f32, z: f32) -> EffectiveTerrainMaterial {
+        let grid_size = usize::from(self.tile_grid_size);
+        if grid_size < 2 || self.tiles.is_empty() {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+        let side = self.tile_half_extent_m * 2.0;
+        if side <= 0.0 {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+
+        // Pick the tile containing (x, z); fall back to nearest if outside.
+        let tile = self
+            .tiles
+            .iter()
+            .find(|t| {
+                let (cx, cz) = (t.tile_x as f32 * side, t.tile_z as f32 * side);
+                x >= cx - self.tile_half_extent_m
+                    && x <= cx + self.tile_half_extent_m
+                    && z >= cz - self.tile_half_extent_m
+                    && z <= cz + self.tile_half_extent_m
+            })
+            .or_else(|| {
+                self.tiles.iter().min_by(|a, b| {
+                    let (ax, az) = (a.tile_x as f32 * side, a.tile_z as f32 * side);
+                    let (bx, bz) = (b.tile_x as f32 * side, b.tile_z as f32 * side);
+                    let ad = (ax - x).powi(2) + (az - z).powi(2);
+                    let bd = (bx - x).powi(2) + (bz - z).powi(2);
+                    ad.partial_cmp(&bd).unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+        let Some(tile) = tile else {
+            return EffectiveTerrainMaterial::DEFAULT;
+        };
+        if tile.materials.is_empty() {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+        let num_materials = tile.materials.len();
+
+        let Some(weights) = tile.weights.as_ref() else {
+            return blend_effective_material_from(&tile.materials, |_| 1.0 / num_materials as f32);
+        };
+
+        let (center_x, center_z) = (tile.tile_x as f32 * side, tile.tile_z as f32 * side);
+        let max_index = (grid_size - 1) as f32;
+        let max_cell = (grid_size - 2) as f32;
+        let col =
+            (((x - center_x + self.tile_half_extent_m) / side) * max_index).clamp(0.0, max_index);
+        let row =
+            (((z - center_z + self.tile_half_extent_m) / side) * max_index).clamp(0.0, max_index);
+        let cell_col = col.floor().min(max_cell) as usize;
+        let cell_row = row.floor().min(max_cell) as usize;
+        let u = col - cell_col as f32;
+        let v = row - cell_row as f32;
+
+        let idx00 = cell_row * grid_size + cell_col;
+        let idx10 = cell_row * grid_size + cell_col + 1;
+        let idx01 = (cell_row + 1) * grid_size + cell_col;
+        let idx11 = (cell_row + 1) * grid_size + cell_col + 1;
+        let w00 = 1.0 - u - v + u * v;
+        let w10 = u - u * v;
+        let w01 = v - u * v;
+        let w11 = u * v;
+
+        blend_effective_material_from(&tile.materials, |m_idx| {
+            weights[idx00 * num_materials + m_idx] * w00
+                + weights[idx10 * num_materials + m_idx] * w10
+                + weights[idx01 * num_materials + m_idx] * w01
+                + weights[idx11 * num_materials + m_idx] * w11
+        })
+    }
+}
+
+fn blend_effective_material(
+    materials: &[TerrainMaterial],
+    weight_for: impl Fn(usize) -> f32,
+) -> EffectiveTerrainMaterial {
+    let mut friction = 0.0f32;
+    let mut restitution = 0.0f32;
+    let mut total = 0.0f32;
+    for (i, mat) in materials.iter().enumerate() {
+        let w = weight_for(i).max(0.0);
+        friction += mat.friction * w;
+        restitution += mat.restitution * w;
+        total += w;
+    }
+    if total <= f32::EPSILON {
+        return EffectiveTerrainMaterial::DEFAULT;
+    }
+    EffectiveTerrainMaterial {
+        friction: friction / total,
+        restitution: restitution / total,
+    }
+}
+
+fn blend_effective_material_from(
+    materials: &[EffectiveTerrainMaterial],
+    weight_for: impl Fn(usize) -> f32,
+) -> EffectiveTerrainMaterial {
+    let mut friction = 0.0f32;
+    let mut restitution = 0.0f32;
+    let mut total = 0.0f32;
+    for (i, mat) in materials.iter().enumerate() {
+        let w = weight_for(i).max(0.0);
+        friction += mat.friction * w;
+        restitution += mat.restitution * w;
+        total += w;
+    }
+    if total <= f32::EPSILON {
+        return EffectiveTerrainMaterial::DEFAULT;
+    }
+    EffectiveTerrainMaterial {
+        friction: friction / total,
+        restitution: restitution / total,
     }
 }
 
@@ -570,6 +762,175 @@ impl WorldDocument {
         }
     }
 
+    /// Bilinearly sample the blended material at a world (x, z) using per-vertex
+    /// splatmap weights. Returns `EffectiveTerrainMaterial::DEFAULT` when the tile
+    /// has no authored materials or weights (so unauthored worlds keep today's
+    /// behavior).
+    pub fn sample_terrain_material_at_world_position(
+        &self,
+        x: f32,
+        z: f32,
+    ) -> EffectiveTerrainMaterial {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if grid_size < 2 || self.terrain.tiles.is_empty() {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        if side <= 0.0 {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+
+        let (min_tile_x, max_tile_x, min_tile_z, max_tile_z, min_x, max_x, min_z, max_z) =
+            self.terrain_world_bounds();
+        let clamped_x = x.clamp(min_x, max_x);
+        let clamped_z = z.clamp(min_z, max_z);
+        let tile_x = (((clamped_x + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_x, max_tile_x);
+        let tile_z = (((clamped_z + self.terrain.tile_half_extent_m) / side).floor() as i32)
+            .clamp(min_tile_z, max_tile_z);
+        let Some(tile) = self
+            .terrain_tile(tile_x, tile_z)
+            .or_else(|| self.find_nearest_terrain_tile(clamped_x, clamped_z))
+        else {
+            return EffectiveTerrainMaterial::DEFAULT;
+        };
+
+        self.sample_tile_material(tile, clamped_x, clamped_z)
+    }
+
+    fn sample_tile_material(
+        &self,
+        tile: &WorldTerrainTile,
+        x: f32,
+        z: f32,
+    ) -> EffectiveTerrainMaterial {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if tile.materials.is_empty() {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+        let num_materials = tile.materials.len();
+        let expected_weights = grid_size * grid_size * num_materials;
+        let Some(weights) = tile
+            .material_weights
+            .as_ref()
+            .filter(|w| w.len() == expected_weights)
+        else {
+            // No per-vertex weights: fall back to uniform blend of all materials.
+            return blend_effective_material(&tile.materials, |_m_idx| 1.0 / num_materials as f32);
+        };
+
+        let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
+        let side = self.terrain.tile_half_extent_m * 2.0;
+        let max_index = (grid_size - 1) as f32;
+        let max_cell = (grid_size - 2) as f32;
+        let col = (((x - center_x + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
+        let row = (((z - center_z + self.terrain.tile_half_extent_m) / side) * max_index)
+            .clamp(0.0, max_index);
+        let cell_col = col.floor().min(max_cell) as usize;
+        let cell_row = row.floor().min(max_cell) as usize;
+        let u = col - cell_col as f32;
+        let v = row - cell_row as f32;
+
+        let idx00 = cell_row * grid_size + cell_col;
+        let idx10 = cell_row * grid_size + cell_col + 1;
+        let idx01 = (cell_row + 1) * grid_size + cell_col;
+        let idx11 = (cell_row + 1) * grid_size + cell_col + 1;
+        let w00 = 1.0 - u - v + u * v;
+        let w10 = u - u * v;
+        let w01 = v - u * v;
+        let w11 = u * v;
+
+        blend_effective_material(&tile.materials, |m_idx| {
+            weights[idx00 * num_materials + m_idx] * w00
+                + weights[idx10 * num_materials + m_idx] * w10
+                + weights[idx01 * num_materials + m_idx] * w01
+                + weights[idx11 * num_materials + m_idx] * w11
+        })
+    }
+
+    /// Returns the weighted-average material for a whole tile. Used to set a
+    /// single friction/restitution value on the heightfield collider so dynamic
+    /// bodies (balls, boxes, vehicle chassis) feel the dominant surface.
+    pub fn tile_average_material(&self, tile: &WorldTerrainTile) -> EffectiveTerrainMaterial {
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if tile.materials.is_empty() {
+            return EffectiveTerrainMaterial::DEFAULT;
+        }
+        let num_materials = tile.materials.len();
+        let vertex_count = grid_size * grid_size;
+        let expected_weights = vertex_count * num_materials;
+        let Some(weights) = tile
+            .material_weights
+            .as_ref()
+            .filter(|w| w.len() == expected_weights)
+        else {
+            return blend_effective_material(&tile.materials, |_| 1.0 / num_materials as f32);
+        };
+
+        let total: f32 = (0..num_materials)
+            .map(|m| {
+                let mut sum = 0.0;
+                for v in 0..vertex_count {
+                    sum += weights[v * num_materials + m];
+                }
+                sum
+            })
+            .sum();
+        if total <= f32::EPSILON {
+            return blend_effective_material(&tile.materials, |_| 1.0 / num_materials as f32);
+        }
+
+        blend_effective_material(&tile.materials, |m_idx| {
+            let mut sum = 0.0;
+            for v in 0..vertex_count {
+                sum += weights[v * num_materials + m_idx];
+            }
+            sum / total
+        })
+    }
+
+    /// Build a point-samplable material field for the physics arena. Returns
+    /// `None` when no tile has authored materials (so callers can skip the whole
+    /// sampling path).
+    pub fn build_material_field(&self) -> Option<TerrainMaterialField> {
+        if !self.terrain.tiles.iter().any(|t| !t.materials.is_empty()) {
+            return None;
+        }
+        let grid_size = usize::from(self.terrain.tile_grid_size);
+        if grid_size < 2 {
+            return None;
+        }
+        let tiles = self
+            .terrain
+            .tiles
+            .iter()
+            .map(|tile| TerrainMaterialFieldTile {
+                tile_x: tile.tile_x,
+                tile_z: tile.tile_z,
+                materials: tile
+                    .materials
+                    .iter()
+                    .map(|m| EffectiveTerrainMaterial {
+                        friction: m.friction,
+                        restitution: m.restitution,
+                    })
+                    .collect(),
+                weights: tile
+                    .material_weights
+                    .as_ref()
+                    .filter(|w| w.len() == grid_size * grid_size * tile.materials.len().max(1))
+                    .cloned(),
+            })
+            .collect();
+        Some(TerrainMaterialField {
+            tile_grid_size: self.terrain.tile_grid_size,
+            tile_half_extent_m: self.terrain.tile_half_extent_m,
+            tiles,
+        })
+    }
+
     pub fn terrain_tile_center(&self, tile_x: i32, tile_z: i32) -> (f32, f32) {
         let side = self.terrain.tile_half_extent_m * 2.0;
         (tile_x as f32 * side, tile_z as f32 * side)
@@ -717,13 +1078,16 @@ impl WorldDocument {
     ) -> Result<(), WorldDocumentError> {
         for tile in &self.terrain.tiles {
             let (center_x, center_z) = self.terrain_tile_center(tile.tile_x, tile.tile_z);
+            let tile_material = self.tile_average_material(tile);
             arena.add_static_heightfield(
                 Vector3::new(center_x, 0.0, center_z),
                 self.terrain_tile_matrix(tile)?,
                 self.terrain_tile_scale(),
                 0,
+                tile_material,
             );
         }
+        arena.set_material_field(self.build_material_field());
 
         for prop in &self.static_props {
             if matches!(prop.kind, StaticPropKind::Cuboid) {
@@ -888,6 +1252,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -1069,6 +1434,7 @@ mod tests {
                 energy: Some(275.0),
                 height: Some(1.4),
             }],
+            spawn_areas: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1118,6 +1484,7 @@ mod tests {
                 energy: None,
                 height: None,
             }],
+            spawn_areas: vec![],
         };
 
         let mut arena = PhysicsArena::new(MoveConfig::default());
@@ -1653,5 +2020,415 @@ mod tests {
                 normal
             );
         }
+    }
+
+    // ── Terrain material physics ─────────────────────────────────────────
+
+    fn ice_material() -> TerrainMaterial {
+        TerrainMaterial {
+            name: "ice".to_string(),
+            color: "#bfe1f5".to_string(),
+            roughness: 0.1,
+            metalness: 0.05,
+            friction: 0.05,
+            restitution: 0.1,
+            flammability: 0.0,
+            fuel_load: 0.0,
+            burn_rate: 0.0,
+            moisture: 1.0,
+        }
+    }
+
+    fn pavement_material() -> TerrainMaterial {
+        TerrainMaterial {
+            name: "pavement".to_string(),
+            color: "#6d6d6d".to_string(),
+            roughness: 0.9,
+            metalness: 0.0,
+            friction: 0.9,
+            restitution: 0.05,
+            flammability: 0.0,
+            fuel_load: 0.0,
+            burn_rate: 0.0,
+            moisture: 0.1,
+        }
+    }
+
+    /// Build a single-tile flat world whose left half is `left_material` and
+    /// right half is `right_material` (split on x=0). Grid size 3 keeps the
+    /// bilinear interpolation at x=0 midpoint sharp.
+    fn split_material_world(left: TerrainMaterial, right: TerrainMaterial) -> WorldDocument {
+        let grid_size: usize = 3;
+        let vertex_count = grid_size * grid_size;
+        let heights = vec![0.0f32; vertex_count];
+        let mut material_weights = vec![0.0f32; vertex_count * 2];
+        // Layout: [vertex * num_materials + m]. Left column (col 0) = left,
+        // right column (col 2) = right, middle column (col 1) = 50/50.
+        for row in 0..grid_size {
+            for col in 0..grid_size {
+                let v = row * grid_size + col;
+                let (wl, wr) = match col {
+                    0 => (1.0, 0.0),
+                    2 => (0.0, 1.0),
+                    _ => (0.5, 0.5),
+                };
+                material_weights[v * 2] = wl;
+                material_weights[v * 2 + 1] = wr;
+            }
+        }
+        WorldDocument {
+            version: WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: "Split Material Flat".to_string(),
+                description: "Flat split-material terrain for physics tests.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: grid_size as u16,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights,
+                    materials: vec![left, right],
+                    material_weights: Some(material_weights),
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+            spawn_areas: vec![],
+        }
+    }
+
+    fn uniform_material_world(material: TerrainMaterial) -> WorldDocument {
+        let grid_size: usize = 3;
+        let vertex_count = grid_size * grid_size;
+        WorldDocument {
+            version: WORLD_DOCUMENT_VERSION,
+            meta: WorldMeta {
+                name: format!("Uniform {}", material.name),
+                description: "Flat uniform material terrain for physics tests.".to_string(),
+            },
+            terrain: WorldTerrain {
+                tile_grid_size: grid_size as u16,
+                tile_half_extent_m: 10.0,
+                tiles: vec![WorldTerrainTile {
+                    tile_x: 0,
+                    tile_z: 0,
+                    heights: vec![0.0f32; vertex_count],
+                    materials: vec![material],
+                    material_weights: Some(vec![1.0; vertex_count]),
+                }],
+            },
+            static_props: vec![],
+            dynamic_entities: vec![],
+            spawn_areas: vec![],
+        }
+    }
+
+    #[test]
+    fn sample_material_falls_back_to_default_when_no_materials() {
+        let world = smooth_hill_world();
+        let sampled = world.sample_terrain_material_at_world_position(0.0, 0.0);
+        assert_eq!(sampled, EffectiveTerrainMaterial::DEFAULT);
+    }
+
+    #[test]
+    fn sample_material_on_single_material_tile_returns_that_material() {
+        let world = uniform_material_world(ice_material());
+        let sampled = world.sample_terrain_material_at_world_position(0.0, 0.0);
+        assert!((sampled.friction - 0.05).abs() < 1e-4);
+    }
+
+    #[test]
+    fn sample_material_on_split_tile_tracks_position() {
+        let world = split_material_world(ice_material(), pavement_material());
+        // tile spans x = -10..10 with 3×3 grid: verts at x = -10, 0, 10.
+        let left = world.sample_terrain_material_at_world_position(-8.0, 0.0);
+        let right = world.sample_terrain_material_at_world_position(8.0, 0.0);
+        let mid = world.sample_terrain_material_at_world_position(0.0, 0.0);
+        assert!(
+            left.friction < 0.2,
+            "left half should be icy, got {}",
+            left.friction
+        );
+        assert!(
+            right.friction > 0.7,
+            "right half should be pavement, got {}",
+            right.friction
+        );
+        assert!(
+            (mid.friction - 0.475).abs() < 0.05,
+            "midpoint should blend to ~0.475, got {}",
+            mid.friction
+        );
+    }
+
+    #[test]
+    fn tile_average_material_weighted_by_summed_weights() {
+        let world = split_material_world(ice_material(), pavement_material());
+        let avg = world.tile_average_material(&world.terrain.tiles[0]);
+        // Split is symmetrical (3 cols: left 100% ice, mid 50/50, right 100% pavement)
+        // so per-material summed weights are equal → average friction ≈ (0.05+0.9)/2 = 0.475.
+        assert!(
+            (avg.friction - 0.475).abs() < 0.05,
+            "tile average friction should be ~0.475, got {}",
+            avg.friction
+        );
+    }
+
+    #[test]
+    fn build_material_field_is_none_when_no_tile_has_materials() {
+        let world = smooth_hill_world();
+        assert!(world.build_material_field().is_none());
+    }
+
+    #[test]
+    fn build_material_field_samples_match_document_samples() {
+        let world = split_material_world(ice_material(), pavement_material());
+        let field = world
+            .build_material_field()
+            .expect("material field for authored world");
+        for (x, z) in [(-8.0, 0.0), (0.0, 0.0), (8.0, 0.0), (-2.0, 3.0)] {
+            let from_doc = world.sample_terrain_material_at_world_position(x, z);
+            let from_field = field.sample(x, z);
+            assert!(
+                (from_doc.friction - from_field.friction).abs() < 1e-4,
+                "field sample mismatch at ({x}, {z}): doc={}, field={}",
+                from_doc.friction,
+                from_field.friction
+            );
+        }
+    }
+
+    /// Drive a player on a uniform-ice tile vs. a uniform-pavement tile with
+    /// zero input after an initial velocity; ice must retain far more speed.
+    #[test]
+    fn player_decelerates_slower_on_ice_than_pavement() {
+        fn residual_speed(world: &WorldDocument) -> f64 {
+            let mut arena = PhysicsArena::new(MoveConfig::default());
+            world
+                .instantiate(&mut arena)
+                .expect("instantiate material world");
+            let player_id = 1;
+            arena.spawn_player(player_id);
+            // Settle onto ground.
+            for _ in 0..120 {
+                arena.simulate_player_tick(player_id, &InputCmd::default(), DT);
+            }
+            // Give the capsule horizontal velocity, then coast with no input.
+            {
+                let state = arena.players.get_mut(&player_id).expect("player exists");
+                state.velocity = crate::movement::Vec3d::new(6.0, 0.0, 0.0);
+                state.on_ground = true;
+            }
+            for _ in 0..120 {
+                arena.simulate_player_tick(player_id, &InputCmd::default(), DT);
+            }
+            let state = arena.players.get(&player_id).expect("player exists");
+            (state.velocity.x * state.velocity.x + state.velocity.z * state.velocity.z).sqrt()
+        }
+
+        let ice_speed = residual_speed(&uniform_material_world(ice_material()));
+        let pavement_speed = residual_speed(&uniform_material_world(pavement_material()));
+        assert!(
+            ice_speed > pavement_speed * 2.0,
+            "ice residual speed ({ice_speed:.3}) must exceed 2× pavement residual ({pavement_speed:.3})"
+        );
+    }
+
+    /// The heightfield collider should carry the authored friction/restitution
+    /// so balls and boxes collide more elastically on bouncy surfaces, etc.
+    #[test]
+    fn heightfield_collider_adopts_tile_average_material() {
+        let world = uniform_material_world(ice_material());
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate material world");
+        let mut found = 0;
+        for (_handle, collider) in arena.dynamic.sim.colliders.iter() {
+            if collider.shape().as_heightfield().is_some() {
+                assert!(
+                    (collider.friction() - ice_material().friction).abs() < 1e-3,
+                    "heightfield collider friction should be ice (0.05), got {}",
+                    collider.friction()
+                );
+                found += 1;
+            }
+        }
+        assert!(found > 0, "expected at least one heightfield collider");
+    }
+
+    /// `PhysicsArena::sample_terrain_material` (used by the KCC) and the raw
+    /// `TerrainMaterialField::sample` (used by vehicle wheels and by the
+    /// solver-contact hook) must be the single source of truth — byte-identical
+    /// at any world position. A drift here would desync player, vehicle, and
+    /// dynamic-body friction responses.
+    #[test]
+    fn kcc_wheel_and_hook_all_read_from_the_same_material_sample() {
+        let world = split_material_world(ice_material(), pavement_material());
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate material world");
+        let field = arena
+            .material_field
+            .as_ref()
+            .expect("material field present")
+            .clone();
+
+        for (x, z) in [(-8.0, 0.0), (0.0, 0.0), (8.0, 0.0), (-3.0, 2.0)] {
+            let kcc = arena.sample_terrain_material(x, z);
+            let wheel_or_hook = field.sample(x, z);
+            assert_eq!(
+                kcc, wheel_or_hook,
+                "KCC and field.sample must agree at ({x}, {z})"
+            );
+            // Multiplier path used by player accel + wheel friction_slip must
+            // also derive from the same sample.
+            assert_eq!(
+                arena.sample_terrain_material(x, z).friction_multiplier(),
+                field.sample(x, z).friction_multiplier(),
+            );
+        }
+    }
+
+    /// `TerrainMaterialHook` rewrites each `SolverContact::friction` to
+    /// `sqrt(terrain_friction * other_friction)` at the contact's (x, z). Wrap
+    /// the hook in a capturing proxy, step a resting ball on ice vs. pavement,
+    /// and verify the values the hook wrote match the closed-form prediction.
+    #[test]
+    fn terrain_material_hook_rewrites_contact_friction_per_sample_position() {
+        use std::sync::Mutex;
+
+        use rapier3d::prelude::{ContactModificationContext, PhysicsHooks};
+
+        use crate::physics_arena::TerrainMaterialHook;
+
+        struct CapturingHook<'a> {
+            inner: TerrainMaterialHook<'a>,
+            captured: Mutex<Vec<(f32, f32, f32)>>,
+        }
+
+        impl PhysicsHooks for CapturingHook<'_> {
+            fn modify_solver_contacts(&self, ctx: &mut ContactModificationContext) {
+                self.inner.modify_solver_contacts(ctx);
+                let mut captured = self.captured.lock().expect("mutex unpoisoned");
+                for contact in ctx.solver_contacts.iter() {
+                    captured.push((contact.point.x, contact.point.z, contact.friction));
+                }
+            }
+        }
+
+        let world = split_material_world(ice_material(), pavement_material());
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        world
+            .instantiate(&mut arena)
+            .expect("instantiate material world");
+        let field = arena
+            .material_field
+            .as_ref()
+            .expect("material field present")
+            .clone();
+
+        // Ball collider friction is 0.2 (see `DynamicArena::spawn_dynamic_ball_with_id`).
+        let ball_friction: f32 = 0.2;
+        arena.spawn_dynamic_ball(vector![-8.0, 0.6, 0.0], 0.5);
+        arena.spawn_dynamic_ball(vector![8.0, 0.6, 0.0], 0.5);
+
+        let hook = CapturingHook {
+            inner: TerrainMaterialHook::new(&field),
+            captured: Mutex::new(Vec::new()),
+        };
+        // A handful of substeps: the first few let the balls settle into
+        // persistent contact; the later ones produce stable contact friction.
+        for _ in 0..15 {
+            arena.dynamic.step_dynamics_with_hooks(DT, &hook);
+        }
+        let captured = hook.captured.into_inner().expect("mutex unpoisoned");
+        assert!(
+            !captured.is_empty(),
+            "expected the hook to see solver contacts"
+        );
+
+        let mut saw_ice = false;
+        let mut saw_pavement = false;
+        for (x, z, friction) in captured {
+            // Closed-form: contact friction = sqrt(bilinear(x,z).friction *
+            // other_collider_friction). Use the field's actual bilinear sample
+            // at the *captured* contact point, not the raw material friction —
+            // contacts land in the interpolated interior, not the ideal corner.
+            let sampled = field.sample(x, z).friction;
+            let expected = (sampled * ball_friction).sqrt();
+            assert!(
+                (friction - expected).abs() < 1e-4,
+                "contact friction at ({x:.3}, {z:.3}) should be sqrt({sampled:.4}·{ball_friction}) = {expected:.4}, got {friction:.4}"
+            );
+            if x < -4.0 {
+                saw_ice = true;
+            } else if x > 4.0 {
+                saw_pavement = true;
+            }
+        }
+        assert!(
+            saw_ice,
+            "expected contacts on the ice side of the split tile"
+        );
+        assert!(
+            saw_pavement,
+            "expected contacts on the pavement side of the split tile"
+        );
+    }
+
+    /// End-to-end regression using `PhysicsArena::step_dynamics` (which builds
+    /// the production `TerrainMaterialHook` internally when a material field is
+    /// present). A sliding box on ice must retain dramatically more speed than
+    /// a twin on pavement. Use a cuboid (not a ball) so kinetic friction acts
+    /// directly on the translating body without being absorbed by rolling.
+    #[test]
+    fn box_slides_farther_on_ice_than_pavement_via_contact_hook() {
+        fn residual_speed(spawn_x: f32) -> f32 {
+            let world = split_material_world(ice_material(), pavement_material());
+            let mut arena = PhysicsArena::new(MoveConfig::default());
+            world
+                .instantiate(&mut arena)
+                .expect("instantiate material world");
+            let box_id =
+                arena.spawn_dynamic_box(vector![spawn_x, 0.6, 0.0], vector![0.5, 0.5, 0.5]);
+            // Let it settle onto the heightfield so contacts are persistent.
+            for _ in 0..30 {
+                arena.step_dynamics(DT);
+            }
+            // Kick the box perpendicular to the ice/pavement split so it
+            // stays on the intended material the whole test.
+            let db = arena
+                .dynamic
+                .dynamic_bodies
+                .get(&box_id)
+                .expect("box body exists");
+            let body_handle = db.body_handle;
+            if let Some(rb) = arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+                rb.set_linvel(vector![0.0, 0.0, 6.0], true);
+                rb.set_angvel(vector![0.0, 0.0, 0.0], true);
+            }
+            for _ in 0..30 {
+                arena.step_dynamics(DT);
+            }
+            let rb = arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .expect("box body still alive");
+            let v = rb.linvel();
+            (v.x * v.x + v.z * v.z).sqrt()
+        }
+
+        let ice_speed = residual_speed(-8.0);
+        let pavement_speed = residual_speed(8.0);
+        assert!(
+            ice_speed > pavement_speed * 1.5,
+            "ice residual speed ({ice_speed:.3}) should substantially exceed pavement ({pavement_speed:.3})"
+        );
     }
 }

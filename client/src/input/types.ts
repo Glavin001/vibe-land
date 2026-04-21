@@ -18,6 +18,7 @@ export type ActionSnapshot = {
   crouch: boolean;
   firePrimary: boolean;
   firePrimaryValue: number;
+  aimSecondary: boolean;
   handbrake: boolean;
   interactPressed: boolean;
   resetVehiclePressed: boolean;
@@ -25,6 +26,7 @@ export type ActionSnapshot = {
   blockPlacePressed: boolean;
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
+  meleePressed: boolean;
 };
 
 export type InputSample = {
@@ -44,9 +46,11 @@ export type SemanticInputState = {
 export type ResolvedGameInput = SemanticInputState & {
   activeFamily: DeviceFamily | null;
   firePrimary: boolean;
+  aimSecondary: boolean;
   interactPressed: boolean;
   blockRemovePressed: boolean;
   blockPlacePressed: boolean;
   materialSlot1Pressed: boolean;
   materialSlot2Pressed: boolean;
+  meleePressed: boolean;
 };

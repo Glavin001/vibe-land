@@ -89,6 +89,15 @@ pub struct FireCmd {
 }
 
 #[derive(Clone, Debug)]
+pub struct MeleeCmd {
+    pub seq: u16,
+    pub swing_id: u32,
+    pub client_time_us: u64,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+#[derive(Clone, Debug)]
 pub struct BlockCell {
     pub x: u8,
     pub y: u8,
@@ -165,6 +174,33 @@ pub const SHOT_RESOLUTION_MISS: u8 = 0;
 pub const SHOT_RESOLUTION_PLAYER: u8 = 1;
 pub const SHOT_RESOLUTION_DYNAMIC: u8 = 2;
 pub const SHOT_RESOLUTION_BLOCKED_BY_WORLD: u8 = 3;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ShotFiredPacket {
+    pub shooter_player_id: u32,
+    pub shot_id: u32,
+    pub weapon: u8,
+    pub hit_kind: u8,
+    pub hit_zone: u8,
+    pub server_fire_time_us: u64,
+    pub origin_px_mm: i32,
+    pub origin_py_mm: i32,
+    pub origin_pz_mm: i32,
+    pub end_px_mm: i32,
+    pub end_py_mm: i32,
+    pub end_pz_mm: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DamageEventPacket {
+    pub attacker_player_id: u32,
+    pub damage_amount: u8,
+    pub hit_zone: u8,
+    pub attacker_px_mm: i32,
+    pub attacker_py_mm: i32,
+    pub attacker_pz_mm: i32,
+    pub server_time_ms: u32,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetVehicleState {
@@ -262,6 +298,32 @@ pub fn make_net_battery_state(
         height_cm: (height.max(0.0) * 100.0)
             .round()
             .clamp(0.0, u16::MAX as f32) as u16,
+    }
+}
+
+pub fn make_net_shot_fired(
+    shooter_player_id: u32,
+    shot_id: u32,
+    weapon: u8,
+    hit_kind: u8,
+    hit_zone: u8,
+    server_fire_time_us: u64,
+    origin: [f32; 3],
+    end: [f32; 3],
+) -> ShotFiredPacket {
+    ShotFiredPacket {
+        shooter_player_id,
+        shot_id,
+        weapon,
+        hit_kind,
+        hit_zone,
+        server_fire_time_us,
+        origin_px_mm: meters_to_mm(origin[0]),
+        origin_py_mm: meters_to_mm(origin[1]),
+        origin_pz_mm: meters_to_mm(origin[2]),
+        end_px_mm: meters_to_mm(end[0]),
+        end_py_mm: meters_to_mm(end[1]),
+        end_pz_mm: meters_to_mm(end[2]),
     }
 }
 

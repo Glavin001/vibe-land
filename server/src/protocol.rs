@@ -17,6 +17,7 @@ pub struct ClientHello {
 pub enum ClientPacket {
     InputBundle(Vec<InputCmd>),
     Fire(FireCmd),
+    Melee(MeleeCmd),
     BlockEdit(BlockEditCmd),
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
@@ -30,6 +31,8 @@ pub enum ServerPacket {
     Snapshot(SnapshotPacket),
     SnapshotV2(SnapshotV2Packet),
     ShotResult(ShotResultPacket),
+    ShotFired(ShotFiredPacket),
+    DamageEvent(DamageEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -44,6 +47,7 @@ pub enum ServerPacket {
 pub enum ClientDatagram {
     InputBundle(Vec<InputFrame>),
     Fire(FireCmd),
+    Melee(MeleeCmd),
     BlockEdit(BlockEditCmd),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
@@ -55,6 +59,8 @@ pub enum ClientDatagram {
 pub enum ServerReliablePacket {
     Welcome(WelcomePacket),
     ShotResult(ShotResultPacket),
+    ShotFired(ShotFiredPacket),
+    DamageEvent(DamageEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -246,6 +252,21 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 dir,
             })
         }
+        PKT_MELEE => {
+            ensure!(buf.remaining() >= 18, "short melee datagram");
+            let seq = buf.get_u16_le();
+            let swing_id = buf.get_u32_le();
+            let client_time_us = buf.get_u64_le();
+            let yaw = i16_to_angle(buf.get_i16_le());
+            let pitch = i16_to_angle(buf.get_i16_le());
+            ClientDatagram::Melee(MeleeCmd {
+                seq,
+                swing_id,
+                client_time_us,
+                yaw,
+                pitch,
+            })
+        }
         PKT_BLOCK_EDIT => {
             ensure!(buf.remaining() >= 14, "short block edit datagram");
             let chunk = [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()];
@@ -296,6 +317,7 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
     match d {
         ClientDatagram::InputBundle(frames) => ClientPacket::InputBundle(frames),
         ClientDatagram::Fire(cmd) => ClientPacket::Fire(cmd),
+        ClientDatagram::Melee(cmd) => ClientPacket::Melee(cmd),
         ClientDatagram::BlockEdit(cmd) => ClientPacket::BlockEdit(cmd),
         ClientDatagram::VehicleEnter(cmd) => ClientPacket::VehicleEnter(cmd),
         ClientDatagram::VehicleExit(cmd) => ClientPacket::VehicleExit(cmd),
@@ -332,6 +354,31 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_u32_le(pkt.server_dynamic_body_id);
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
+        }
+        ServerReliablePacket::ShotFired(pkt) => {
+            out.put_u8(PKT_SHOT_FIRED);
+            out.put_u32_le(pkt.shooter_player_id);
+            out.put_u32_le(pkt.shot_id);
+            out.put_u8(pkt.weapon);
+            out.put_u8(pkt.hit_kind);
+            out.put_u8(pkt.hit_zone);
+            out.put_u64_le(pkt.server_fire_time_us);
+            out.put_i32_le(pkt.origin_px_mm);
+            out.put_i32_le(pkt.origin_py_mm);
+            out.put_i32_le(pkt.origin_pz_mm);
+            out.put_i32_le(pkt.end_px_mm);
+            out.put_i32_le(pkt.end_py_mm);
+            out.put_i32_le(pkt.end_pz_mm);
+        }
+        ServerReliablePacket::DamageEvent(pkt) => {
+            out.put_u8(PKT_DAMAGE_EVENT);
+            out.put_u32_le(pkt.attacker_player_id);
+            out.put_u8(pkt.damage_amount);
+            out.put_u8(pkt.hit_zone);
+            out.put_i32_le(pkt.attacker_px_mm);
+            out.put_i32_le(pkt.attacker_py_mm);
+            out.put_i32_le(pkt.attacker_pz_mm);
+            out.put_u32_le(pkt.server_time_ms);
         }
         ServerReliablePacket::LocalPlayerEnergy(pkt) => {
             out.put_u8(PKT_LOCAL_PLAYER_ENERGY);
@@ -585,6 +632,21 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 dir,
             })
         }
+        PKT_MELEE => {
+            ensure!(buf.remaining() >= 18, "short melee packet");
+            let seq = buf.get_u16_le();
+            let swing_id = buf.get_u32_le();
+            let client_time_us = buf.get_u64_le();
+            let yaw = i16_to_angle(buf.get_i16_le());
+            let pitch = i16_to_angle(buf.get_i16_le());
+            ClientPacket::Melee(MeleeCmd {
+                seq,
+                swing_id,
+                client_time_us,
+                yaw,
+                pitch,
+            })
+        }
         PKT_BLOCK_EDIT => {
             ensure!(buf.remaining() >= 14, "short block edit packet");
             let chunk = [buf.get_i16_le(), buf.get_i16_le(), buf.get_i16_le()];
@@ -752,6 +814,12 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
             out.put_u32_le(pkt.server_dynamic_body_id);
             out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
             out.put_u16_le(pkt.server_dynamic_impulse_centi);
+        }
+        ServerPacket::ShotFired(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::ShotFired(*pkt))
+        }
+        ServerPacket::DamageEvent(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::DamageEvent(*pkt))
         }
         ServerPacket::LocalPlayerEnergy(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::LocalPlayerEnergy(pkt.clone()))
@@ -941,6 +1009,54 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes([encoded[13], encoded[14], encoded[15], encoded[16]]),
             9
+        );
+    }
+
+    #[test]
+    fn shot_fired_encode_layout() {
+        let packet = ServerPacket::ShotFired(ShotFiredPacket {
+            shooter_player_id: 7,
+            shot_id: 0xdead_beef,
+            weapon: 1,
+            hit_kind: SHOT_RESOLUTION_PLAYER,
+            hit_zone: HIT_ZONE_HEAD,
+            server_fire_time_us: 0x0102_0304_0506_0708,
+            origin_px_mm: 1_000,
+            origin_py_mm: 2_000,
+            origin_pz_mm: 3_000,
+            end_px_mm: -1_500,
+            end_py_mm: 2_500,
+            end_pz_mm: 4_000,
+        });
+        let encoded = encode_server_packet(&packet);
+        // 1 byte type + 4+4+1+1+1+8+6*4 = 44 bytes total
+        assert_eq!(encoded.len(), 44);
+        assert_eq!(encoded[0], PKT_SHOT_FIRED);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            7
+        );
+        assert_eq!(
+            u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+            0xdead_beef
+        );
+        assert_eq!(encoded[9], 1);
+        assert_eq!(encoded[10], SHOT_RESOLUTION_PLAYER);
+        assert_eq!(encoded[11], HIT_ZONE_HEAD);
+        let mut t = [0u8; 8];
+        t.copy_from_slice(&encoded[12..20]);
+        assert_eq!(u64::from_le_bytes(t), 0x0102_0304_0506_0708);
+        assert_eq!(
+            i32::from_le_bytes([encoded[20], encoded[21], encoded[22], encoded[23]]),
+            1_000
+        );
+        assert_eq!(
+            i32::from_le_bytes([encoded[32], encoded[33], encoded[34], encoded[35]]),
+            -1_500
+        );
+        assert_eq!(
+            i32::from_le_bytes([encoded[40], encoded[41], encoded[42], encoded[43]]),
+            4_000
         );
     }
 

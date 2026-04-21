@@ -3,11 +3,20 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  decodeServerPacket,
+  encodeFirePacket,
+  encodeInputBundle,
+  encodeMeleePacket,
+  encodeVehicleEnterPacket,
+  encodeVehicleExitPacket,
+  netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
+  type DamageEventPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
+  type MeleeCmd,
   type NetPlayerState,
   type NetVehicleState,
   type VehicleStateMeters,
@@ -16,6 +25,7 @@ import { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS } from '../runtime/clientSimConstant
 import {
   decodeLocalSessionBatteries,
   decodeLocalSessionDynamicBodies,
+  decodeLocalSessionPlayers,
   decodeLocalSessionPlayerState,
   decodeLocalSessionSnapshotMeta,
   decodeLocalSessionVehicleState,
@@ -29,10 +39,33 @@ export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
   worldJson?: string;
 };
 
-export class LocalPracticeClient {
+export interface PracticeBotHost {
+  readonly remotePlayers: Map<number, RemotePlayer>;
+  readonly vehicles: Map<number, VehicleStateMeters>;
+  readonly playerId: number;
+  readonly localPlayerHp: number;
+  readonly localPlayerFlags: number;
+
+  connectBot(botId: number): boolean;
+  disconnectBot(botId: number): boolean;
+  setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean;
+  sendBotInputs(botId: number, cmds: InputCmd[]): void;
+  sendBotFire(botId: number, cmd: FireCmd): void;
+  sendBotMelee(botId: number, cmd: MeleeCmd): void;
+  sendBotVehicleEnter(botId: number, vehicleId: number, seat?: number): void;
+  sendBotVehicleExit(botId: number, vehicleId: number): void;
+  castSceneRay?(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    maxDistance?: number,
+  ): { toi: number } | null;
+}
+
+export class LocalPracticeClient implements PracticeBotHost {
   readonly interpolator = new PlayerInterpolator();
   readonly serverClock = new ServerClockEstimator();
   readonly remotePlayers = new Map<number, RemotePlayer>();
@@ -123,8 +156,91 @@ export class LocalPracticeClient {
     );
   }
 
+  sendMelee(cmd: MeleeCmd): void {
+    this.session?.queueMelee(
+      cmd.seq & 0xffff,
+      cmd.swingId >>> 0,
+      cmd.clientTimeUs,
+      cmd.yaw,
+      cmd.pitch,
+    );
+  }
+
   sendBlockEdit(_cmd: BlockEditCmd): void {
     // Practice mode does not currently expose direct block-edit authority.
+  }
+
+  connectBot(botId: number): boolean {
+    const added = this.session?.connectBot(botId >>> 0) ?? false;
+    if (added) {
+      this.syncFromSession(true);
+    }
+    return added;
+  }
+
+  disconnectBot(botId: number): boolean {
+    const removed = this.session?.disconnectBot(botId >>> 0) ?? false;
+    if (removed) {
+      this.syncFromSession(true);
+    }
+    return removed;
+  }
+
+  setBotMaxSpeed(botId: number, maxSpeedMps: number | null): boolean {
+    const session = this.session;
+    if (!session) return false;
+    const value = maxSpeedMps == null ? -1 : maxSpeedMps;
+    return session.setBotMaxSpeed(botId >>> 0, value);
+  }
+
+  sendBotInputs(botId: number, cmds: InputCmd[]): void {
+    const session = this.session;
+    if (!session || cmds.length === 0) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeInputBundle(cmds));
+    } catch (error) {
+      console.warn('[local-practice] bot input rejected', error);
+    }
+  }
+
+  sendBotFire(botId: number, cmd: FireCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeFirePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] bot fire rejected', error);
+    }
+  }
+
+  sendBotMelee(botId: number, cmd: MeleeCmd): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeMeleePacket(cmd));
+    } catch (error) {
+      console.warn('[local-practice] bot melee rejected', error);
+    }
+  }
+
+  sendBotVehicleEnter(botId: number, vehicleId: number, _seat = 0): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeVehicleEnterPacket(vehicleId >>> 0, 0));
+    } catch (error) {
+      console.warn('[local-practice] bot vehicle enter rejected', error);
+    }
+  }
+
+  sendBotVehicleExit(botId: number, vehicleId: number): void {
+    const session = this.session;
+    if (!session) return;
+    try {
+      session.handleBotPacket(botId >>> 0, encodeVehicleExitPacket(vehicleId >>> 0));
+    } catch (error) {
+      console.warn('[local-practice] bot vehicle exit rejected', error);
+    }
   }
 
   sendVehicleEnter(vehicleId: number, _seat = 0): void {
@@ -151,8 +267,84 @@ export class LocalPracticeClient {
     return { toi: result[0] };
   }
 
+  classifyHitscanPlayer(
+    origin: [number, number, number],
+    direction: [number, number, number],
+    bodyCenter: [number, number, number],
+    blockerDistance: number | null,
+  ): { distance: number; kind: number } | null {
+    const result = this.session?.classifyHitscanPlayer(
+      origin[0], origin[1], origin[2],
+      direction[0], direction[1], direction[2],
+      bodyCenter[0], bodyCenter[1], bodyCenter[2],
+      blockerDistance ?? Number.POSITIVE_INFINITY,
+    );
+    if (!result || result.length === 0) return null;
+    return { distance: result[0], kind: result[1] };
+  }
+
   getVehicleDebug(vehicleId: number): VehicleDebugSnapshot | null {
     return decodeVehicleDebugSnapshot(this.session?.getVehicleDebug(vehicleId >>> 0));
+  }
+
+  // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+  spawnRagdollBody(
+    id: number,
+    hx: number, hy: number, hz: number,
+    px: number, py: number, pz: number,
+    qx: number, qy: number, qz: number, qw: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.session?.spawnRagdollBody(
+      id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz,
+    );
+  }
+
+  removeRagdollBody(id: number): void {
+    this.session?.removeRagdollBody(id);
+  }
+
+  getRagdollBodyState(id: number): Float64Array | null {
+    const s = this.session?.getRagdollBodyState(id);
+    if (!s || s.length < 7) return null;
+    return s;
+  }
+
+  setRagdollBodyVelocity(
+    id: number,
+    vx: number, vy: number, vz: number,
+    wx: number, wy: number, wz: number,
+  ): void {
+    this.session?.setRagdollBodyVelocity(id, vx, vy, vz, wx, wy, wz);
+  }
+
+  createRagdollSphericalJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+  ): void {
+    this.session?.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+    );
+  }
+
+  createRagdollRevoluteJoint(
+    jointId: number, b1Id: number, b2Id: number,
+    a1x: number, a1y: number, a1z: number,
+    a2x: number, a2y: number, a2z: number,
+    ax: number, ay: number, az: number,
+    limitMin: number, limitMax: number,
+  ): void {
+    this.session?.createRagdollRevoluteJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+      ax, ay, az, limitMin, limitMax,
+    );
+  }
+
+  removeRagdollJoint(jointId: number): void {
+    this.session?.removeRagdollJoint(jointId);
   }
 
   sampleRemoteVehicle(id: number, _renderTimeUs?: number): VehicleSample | null {
@@ -294,6 +486,7 @@ export class LocalPracticeClient {
       }
     }
 
+    this.syncRemotePlayers(serverTimeUs, session.getRemotePlayerStates());
     this.syncDynamicBodies(serverTimeUs, session.getDynamicBodyStates());
     const localVehicleState = this.syncVehicles(serverTimeUs, session.getVehicleStates());
     this.syncBatteries(session.getBatteryStates());
@@ -305,9 +498,70 @@ export class LocalPracticeClient {
     this.debugTelemetry.observeAcceptedSnapshot(
       'direct',
       this.latestServerTick,
-      playerState ? 1 : 0,
+      (playerState ? 1 : 0) + this.remotePlayers.size,
       this.dynamicBodies.size,
     );
+
+    if (emitCallbacks) {
+      this.drainSessionPackets();
+    }
+  }
+
+  private drainSessionPackets(): void {
+    const session = this.session;
+    if (!session) return;
+    const blob = session.drainPackets();
+    if (!blob || blob.length === 0) return;
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    let offset = 0;
+    while (offset + 4 <= blob.length) {
+      const packetLen = view.getUint32(offset, true);
+      offset += 4;
+      if (packetLen === 0 || offset + packetLen > blob.length) break;
+      const packetBytes = blob.subarray(offset, offset + packetLen);
+      offset += packetLen;
+      let decoded;
+      try {
+        decoded = decodeServerPacket(packetBytes);
+      } catch {
+        continue;
+      }
+      if (decoded.type === 'damageEvent') {
+        this.config.onDamageEvent?.(decoded);
+      }
+    }
+  }
+
+  private syncRemotePlayers(serverTimeUs: number, raw: ArrayLike<number>): void {
+    const activeIds = new Set<number>();
+    for (const state of decodeLocalSessionPlayers(raw)) {
+      activeIds.add(state.id);
+      const meters = netPlayerStateToMeters(state);
+      this.interpolator.push(state.id, {
+        serverTimeUs,
+        position: meters.position,
+        velocity: meters.velocity,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+        flags: state.flags,
+      });
+      this.remotePlayers.set(state.id, {
+        id: state.id,
+        position: meters.position,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+        flags: state.flags,
+      });
+    }
+
+    for (const id of [...this.remotePlayers.keys()]) {
+      if (!activeIds.has(id)) {
+        this.remotePlayers.delete(id);
+        this.interpolator.remove(id);
+      }
+    }
   }
 
   private syncDynamicBodies(serverTimeUs: number, raw: ArrayLike<number>): void {

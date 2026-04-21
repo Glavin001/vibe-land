@@ -1,22 +1,32 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::{
     constants::{
-        DYNAMIC_BODY_IMPULSE, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
-        OUT_OF_BOUNDS_Y_M, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE, PKT_PING, PKT_SHOT_RESULT,
-        PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M,
-        RIFLE_FIRE_INTERVAL_MS, SIM_HZ, SNAPSHOT_HZ_LOCAL,
+        DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
+        MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
+        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE,
+        PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
+        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
+        RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
-    physics_arena::{MoveConfig, PhysicsArena},
+    physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
-    unit_conv::{i16_to_angle, snorm16_to_f32},
+    unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
 };
 use bytes::{Buf, BufMut, BytesMut};
+use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
+use rapier3d::prelude::{
+    ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
+    RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
+};
+use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
-const LOCAL_PLAYER_ID: u32 = 1;
+pub const LOCAL_PLAYER_ID: u32 = 1;
+const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
 
 #[derive(Default)]
@@ -26,6 +36,12 @@ struct PlayerRuntime {
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
     next_allowed_fire_ms: u32,
+    next_allowed_melee_ms: u32,
+    last_processed_swing_id: Option<u32>,
+    melee_flag_clear_tick: u32,
+    spawn_protection_ends_at_tick: u32,
+    is_bot: bool,
+    respawn_cooldown_ticks: u32,
     respawn_at_ms: Option<u32>,
 }
 
@@ -40,10 +56,15 @@ enum LocalDeathCause {
 pub struct LocalSession {
     arena: PhysicsArena,
     connected: bool,
-    player: PlayerRuntime,
-    queued_shots: Vec<FireCmd>,
+    players: HashMap<u32, PlayerRuntime>,
+    queued_shots: Vec<(u32, FireCmd)>,
+    queued_melees: Vec<(u32, MeleeCmd)>,
     outbound_packets: Vec<Vec<u8>>,
     server_tick: u32,
+    // Client-local ragdoll bodies (not server-reconciled). These live in the
+    // same physics world as terrain/vehicles so they collide naturally.
+    ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
+    ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
 }
 
 impl LocalSession {
@@ -62,14 +83,18 @@ impl LocalSession {
         world
             .instantiate(&mut arena)
             .map_err(|error| error.to_string())?;
+        arena.set_spawn_areas(world.spawn_areas.clone());
 
         Ok(Self {
             arena,
             connected: false,
-            player: PlayerRuntime::default(),
+            players: HashMap::new(),
             queued_shots: Vec::new(),
+            queued_melees: Vec::new(),
             outbound_packets: Vec::new(),
             server_tick: 0,
+            ragdoll_bodies: HashMap::new(),
+            ragdoll_joint_handles: HashMap::new(),
         })
     }
 
@@ -79,8 +104,10 @@ impl LocalSession {
         }
 
         self.connected = true;
-        self.player = PlayerRuntime::default();
+        self.players
+            .insert(LOCAL_PLAYER_ID, PlayerRuntime::default());
         self.arena.spawn_player(LOCAL_PLAYER_ID);
+        self.activate_spawn_protection(LOCAL_PLAYER_ID);
 
         let server_time_us = self.server_time_us();
         self.outbound_packets
@@ -99,9 +126,116 @@ impl LocalSession {
         }
         self.connected = false;
         self.queued_shots.clear();
-        self.player = PlayerRuntime::default();
+        self.queued_melees.clear();
+        let ids: Vec<u32> = self.players.keys().copied().collect();
+        for id in ids {
+            self.arena.remove_player(id);
+        }
+        self.players.clear();
         self.outbound_packets.clear();
-        self.arena.remove_player(LOCAL_PLAYER_ID);
+    }
+
+    pub fn connect_bot(&mut self, bot_id: u32) -> bool {
+        if !self.connected || bot_id == LOCAL_PLAYER_ID || self.players.contains_key(&bot_id) {
+            return false;
+        }
+        let mut runtime = PlayerRuntime::default();
+        runtime.is_bot = true;
+        self.players.insert(bot_id, runtime);
+        self.arena.spawn_player(bot_id);
+        self.activate_spawn_protection(bot_id);
+        true
+    }
+
+    pub fn set_bot_max_speed(&mut self, bot_id: u32, max_speed: Option<f64>) -> bool {
+        if bot_id == LOCAL_PLAYER_ID {
+            return false;
+        }
+        let is_bot = self
+            .players
+            .get(&bot_id)
+            .map(|runtime| runtime.is_bot)
+            .unwrap_or(false);
+        if !is_bot {
+            return false;
+        }
+        self.arena.set_player_max_speed_override(bot_id, max_speed)
+    }
+
+    pub fn disconnect_bot(&mut self, bot_id: u32) -> bool {
+        if bot_id == LOCAL_PLAYER_ID {
+            return false;
+        }
+        let Some(runtime) = self.players.remove(&bot_id) else {
+            return false;
+        };
+        if !runtime.is_bot {
+            self.players.insert(bot_id, runtime);
+            return false;
+        }
+        self.arena.remove_player(bot_id);
+        true
+    }
+
+    /// Push a bot's input packet. Bots use the same wire format as the
+    /// human client; supported kinds are `PKT_INPUT_BUNDLE`, `PKT_FIRE`,
+    /// `PKT_VEHICLE_ENTER`, and `PKT_VEHICLE_EXIT`. Vehicle enter/exit
+    /// routes straight through `arena.enter_vehicle` /
+    /// `arena.exit_vehicle`, which already take a generic player id.
+    pub fn handle_bot_packet(&mut self, bot_id: u32, bytes: &[u8]) -> Result<(), String> {
+        if bot_id == LOCAL_PLAYER_ID {
+            return Err("cannot push bot input for local player id".to_string());
+        }
+        {
+            let Some(runtime) = self.players.get(&bot_id) else {
+                return Err(format!("unknown bot id {bot_id}"));
+            };
+            if !runtime.is_bot {
+                return Err(format!("player {bot_id} is not a bot"));
+            }
+        }
+        if bytes.is_empty() {
+            return Err("empty bot packet".to_string());
+        }
+        let mut buf = bytes;
+        match buf.get_u8() {
+            PKT_INPUT_BUNDLE => {
+                let frames = decode_input_bundle_frames(&mut buf)?;
+                let runtime = self
+                    .players
+                    .get_mut(&bot_id)
+                    .expect("bot runtime existed in the check above");
+                enqueue_inputs(runtime, frames);
+                Ok(())
+            }
+            PKT_FIRE => {
+                let shot = decode_fire_cmd(&mut buf)?;
+                self.clear_spawn_protection(bot_id);
+                self.queued_shots.push((bot_id, shot));
+                Ok(())
+            }
+            PKT_MELEE => {
+                let cmd = decode_melee_cmd(&mut buf)?;
+                self.clear_spawn_protection(bot_id);
+                self.queued_melees.push((bot_id, cmd));
+                Ok(())
+            }
+            PKT_VEHICLE_ENTER => {
+                let vehicle_id = decode_vehicle_enter(&mut buf)?;
+                if self.arena.vehicles.contains_key(&vehicle_id) {
+                    self.arena.enter_vehicle(bot_id, vehicle_id);
+                }
+                Ok(())
+            }
+            PKT_VEHICLE_EXIT => {
+                let vehicle_id = decode_vehicle_exit(&mut buf)?;
+                if self.arena.vehicle_of_player.get(&bot_id) == Some(&vehicle_id) {
+                    self.arena.exit_vehicle(bot_id);
+                }
+                Ok(())
+            }
+            other => Err(format!("unsupported bot packet kind {other}")),
+        }
     }
 
     pub fn handle_client_packet(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -117,10 +251,20 @@ impl LocalSession {
         match kind {
             PKT_INPUT_BUNDLE => {
                 let frames = decode_input_bundle_frames(&mut buf)?;
-                enqueue_inputs(&mut self.player, frames);
+                let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) else {
+                    return Ok(());
+                };
+                enqueue_inputs(runtime, frames);
             }
             PKT_FIRE => {
-                self.queued_shots.push(decode_fire_cmd(&mut buf)?);
+                self.clear_spawn_protection(LOCAL_PLAYER_ID);
+                self.queued_shots
+                    .push((LOCAL_PLAYER_ID, decode_fire_cmd(&mut buf)?));
+            }
+            PKT_MELEE => {
+                self.clear_spawn_protection(LOCAL_PLAYER_ID);
+                self.queued_melees
+                    .push((LOCAL_PLAYER_ID, decode_melee_cmd(&mut buf)?));
             }
             PKT_VEHICLE_ENTER => {
                 let vehicle_id = decode_vehicle_enter(&mut buf)?;
@@ -144,14 +288,25 @@ impl LocalSession {
         if !self.connected {
             return;
         }
-        enqueue_inputs(&mut self.player, vec![input]);
+        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
+            enqueue_inputs(runtime, vec![input]);
+        }
     }
 
     pub fn queue_fire_cmd(&mut self, cmd: FireCmd) {
         if !self.connected {
             return;
         }
-        self.queued_shots.push(cmd);
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
+        self.queued_shots.push((LOCAL_PLAYER_ID, cmd));
+    }
+
+    pub fn queue_melee_cmd(&mut self, cmd: MeleeCmd) {
+        if !self.connected {
+            return;
+        }
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
+        self.queued_melees.push((LOCAL_PLAYER_ID, cmd));
     }
 
     pub fn enter_vehicle(&mut self, vehicle_id: u32) {
@@ -181,16 +336,59 @@ impl LocalSession {
         let server_time_ms = self.server_time_ms();
 
         self.process_respawn(server_time_ms);
+        self.expire_spawn_protection();
 
-        let input = take_input_for_tick(&mut self.player);
-        let (previous_input, was_on_ground) = self
-            .arena
-            .players
-            .get(&LOCAL_PLAYER_ID)
-            .map(|state| (state.last_input.clone(), state.on_ground))
-            .unwrap_or_default();
-        self.arena.simulate_player_tick(LOCAL_PLAYER_ID, &input, dt);
+        let mut local_input = InputCmd::default();
+        let mut previous_local_input = InputCmd::default();
+        let mut local_was_on_ground = false;
+        let player_ids: Vec<u32> = self.players.keys().copied().collect();
+        for id in player_ids {
+            let mut skip_sim = false;
+            if let Some(runtime) = self.players.get_mut(&id) {
+                if runtime.is_bot && runtime.respawn_cooldown_ticks > 0 {
+                    runtime.respawn_cooldown_ticks -= 1;
+                    if runtime.respawn_cooldown_ticks == 0 {
+                        self.arena.respawn_player(id);
+                        self.activate_spawn_protection(id);
+                    } else {
+                        skip_sim = true;
+                    }
+                }
+            }
+            if skip_sim {
+                continue;
+            }
+            let input = {
+                let Some(runtime) = self.players.get_mut(&id) else {
+                    continue;
+                };
+                take_input_for_tick(runtime)
+            };
+            if id == LOCAL_PLAYER_ID {
+                let (previous_input, was_on_ground) = self
+                    .arena
+                    .players
+                    .get(&LOCAL_PLAYER_ID)
+                    .map(|state| (state.last_input.clone(), state.on_ground))
+                    .unwrap_or_default();
+                previous_local_input = previous_input;
+                local_was_on_ground = was_on_ground;
+                local_input = input.clone();
+            }
+            self.arena.simulate_player_tick(id, &input, dt);
+        }
         self.arena.step_vehicles_and_dynamics(dt);
+
+        let vehicle_killed = self.arena.apply_vehicle_player_collisions();
+        for killed_id in vehicle_killed {
+            if killed_id == LOCAL_PLAYER_ID {
+                self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+            } else if let Some(runtime) = self.players.get_mut(&killed_id) {
+                if runtime.is_bot {
+                    runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+                }
+            }
+        }
 
         let gained_energy: f32 = self
             .arena
@@ -205,9 +403,9 @@ impl LocalSession {
         }
         let depleted_on_foot = self.arena.apply_on_foot_energy_drain(
             LOCAL_PLAYER_ID,
-            &previous_input,
-            &input,
-            was_on_ground,
+            &previous_local_input,
+            &local_input,
+            local_was_on_ground,
             dt,
         );
         let depleted = self.arena.apply_vehicle_energy_drain(dt);
@@ -222,6 +420,7 @@ impl LocalSession {
         }
 
         self.process_hitscan(server_time_ms);
+        self.process_melee(server_time_ms);
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
@@ -229,22 +428,64 @@ impl LocalSession {
     }
 
     fn process_respawn(&mut self, server_time_ms: u32) {
-        let Some(deadline) = self.player.respawn_at_ms else {
+        let Some(deadline) = self
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .and_then(|runtime| runtime.respawn_at_ms)
+        else {
             return;
         };
         if deadline > server_time_ms {
             return;
         }
-        self.player.respawn_at_ms = None;
-        self.player.pending_inputs.clear();
-        self.player.last_applied_input = InputCmd::default();
+        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
+            runtime.respawn_at_ms = None;
+            runtime.pending_inputs.clear();
+            runtime.last_applied_input = InputCmd::default();
+        }
         let _ = self.arena.respawn_player(LOCAL_PLAYER_ID);
+        self.activate_spawn_protection(LOCAL_PLAYER_ID);
+    }
+
+    fn activate_spawn_protection(&mut self, player_id: u32) {
+        let until_tick = self.server_tick.saturating_add(
+            crate::constants::SPAWN_PROTECTION_MS
+                .saturating_mul(SIM_HZ as u32)
+                .saturating_add(999)
+                / 1000,
+        );
+        let _ = self.arena.set_player_spawn_protected(player_id, true);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = until_tick;
+        }
+    }
+
+    fn clear_spawn_protection(&mut self, player_id: u32) {
+        let _ = self.arena.set_player_spawn_protected(player_id, false);
+        if let Some(runtime) = self.players.get_mut(&player_id) {
+            runtime.spawn_protection_ends_at_tick = 0;
+        }
+    }
+
+    fn expire_spawn_protection(&mut self) {
+        let expired_ids: Vec<u32> = self
+            .players
+            .iter()
+            .filter_map(|(&player_id, runtime)| {
+                (runtime.spawn_protection_ends_at_tick != 0
+                    && runtime.spawn_protection_ends_at_tick <= self.server_tick)
+                    .then_some(player_id)
+            })
+            .collect();
+        for player_id in expired_ids {
+            self.clear_spawn_protection(player_id);
+        }
     }
 
     fn kill_local_player(&mut self, server_time_ms: u32, cause: LocalDeathCause) {
         let battery_drop = if matches!(cause, LocalDeathCause::HpDamage) {
             self.arena.players.get(&LOCAL_PLAYER_ID).and_then(|player| {
-                if !player.dead && player.energy > 0.0 {
+                if player.energy > 0.0 {
                     Some((player.position, player.energy))
                 } else {
                     None
@@ -257,19 +498,26 @@ impl LocalSession {
         self.arena.exit_vehicle(LOCAL_PLAYER_ID);
         self.arena.set_player_dead(LOCAL_PLAYER_ID, true);
         if let Some((position, energy)) = battery_drop {
+            let height = crate::constants::DEFAULT_BATTERY_HEIGHT_M;
+            let terrain_y = self.arena.terrain_y_at(position.x, position.z);
+            let mut snapped = position;
+            snapped.y = terrain_y + height as f64 * 0.5 + 0.02;
             let _ = self.arena.spawn_battery(
-                position,
+                snapped,
                 energy,
                 crate::constants::DEFAULT_BATTERY_RADIUS_M,
-                crate::constants::DEFAULT_BATTERY_HEIGHT_M,
+                height,
             );
         }
         if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
             player.energy = 0.0;
         }
-        self.player.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
-        self.player.pending_inputs.clear();
-        self.player.last_applied_input = InputCmd::default();
+        if let Some(runtime) = self.players.get_mut(&LOCAL_PLAYER_ID) {
+            runtime.respawn_at_ms = Some(server_time_ms.saturating_add(LOCAL_RESPAWN_DELAY_MS));
+            runtime.pending_inputs.clear();
+            runtime.last_applied_input = InputCmd::default();
+        }
+        self.clear_spawn_protection(LOCAL_PLAYER_ID);
     }
 
     pub fn drain_packets(&mut self) -> Vec<Vec<u8>> {
@@ -289,18 +537,23 @@ impl LocalSession {
 
     fn process_hitscan(&mut self, server_time_ms: u32) {
         let shots = std::mem::take(&mut self.queued_shots);
-        for shot in shots {
-            if self.player.next_allowed_fire_ms > server_time_ms {
-                continue;
+        for (shooter_id, shot) in shots {
+            {
+                let Some(shooter) = self.players.get_mut(&shooter_id) else {
+                    continue;
+                };
+                if shooter.next_allowed_fire_ms > server_time_ms {
+                    continue;
+                }
+                shooter.next_allowed_fire_ms =
+                    server_time_ms.saturating_add(RIFLE_FIRE_INTERVAL_MS);
             }
-            self.player.next_allowed_fire_ms =
-                server_time_ms.saturating_add(RIFLE_FIRE_INTERVAL_MS);
 
-            if self.arena.vehicle_of_player.contains_key(&LOCAL_PLAYER_ID) {
+            if self.arena.vehicle_of_player.contains_key(&shooter_id) {
                 continue;
             }
             let Some((pos, _vel, _yaw, _pitch, hp, _flags)) =
-                self.arena.snapshot_player(LOCAL_PLAYER_ID)
+                self.arena.snapshot_player(shooter_id)
             else {
                 continue;
             };
@@ -308,17 +561,20 @@ impl LocalSession {
                 continue;
             }
 
-            let mut depleted = false;
-            if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
-                if player.dead {
+            if shooter_id == LOCAL_PLAYER_ID {
+                let mut depleted = false;
+                if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                    if player.dead {
+                        continue;
+                    }
+                    player.energy =
+                        (player.energy - crate::constants::RIFLE_SHOT_ENERGY_COST).max(0.0);
+                    depleted = player.energy <= 0.0;
+                }
+                if depleted {
+                    self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
                     continue;
                 }
-                player.energy = (player.energy - crate::constants::RIFLE_SHOT_ENERGY_COST).max(0.0);
-                depleted = player.energy <= 0.0;
-            }
-            if depleted {
-                self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
-                continue;
             }
 
             let origin = [pos[0], pos[1] + PLAYER_EYE_HEIGHT_M, pos[2]];
@@ -326,26 +582,71 @@ impl LocalSession {
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE_M,
-                Some(LOCAL_PLAYER_ID),
+                Some(shooter_id),
             );
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE_M,
-                Some(LOCAL_PLAYER_ID),
+                Some(shooter_id),
             );
+            let player_hit = self.cast_player_hitscan(shooter_id, origin, shot.dir);
 
-            let result = if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
-                if world_toi.map(|world| world < dynamic_toi).unwrap_or(false) {
-                    make_shot_result(
-                        shot.shot_id,
-                        shot.weapon,
-                        SHOT_RESOLUTION_BLOCKED_BY_WORLD,
-                        0,
-                        0.0,
-                        0.0,
-                    )
-                } else {
+            let nearest_toi = [
+                world_toi,
+                dynamic_hit.map(|(_, toi, _)| toi),
+                player_hit.map(|(_, toi, _)| toi),
+            ]
+            .into_iter()
+            .flatten()
+            .fold(f32::MAX, f32::min);
+
+            let mut result =
+                make_shot_result(shot.shot_id, shot.weapon, SHOT_RESOLUTION_MISS, 0, 0.0, 0.0);
+
+            if let Some((victim_id, toi, zone)) = player_hit {
+                if toi <= nearest_toi + 1e-3 {
+                    result.confirmed = true;
+                    result.hit_player_id = victim_id;
+                    let hit_zone_byte = match zone {
+                        HitZone::Head => HIT_ZONE_HEAD,
+                        HitZone::Body => HIT_ZONE_BODY,
+                    };
+                    result.hit_zone = hit_zone_byte;
+                    result.server_resolution = SHOT_RESOLUTION_PLAYER;
+                    let damage = match zone {
+                        HitZone::Head => RIFLE_HEAD_DAMAGE,
+                        HitZone::Body => RIFLE_BODY_DAMAGE,
+                    };
+                    let prev_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
+                    self.apply_damage(victim_id, damage, server_time_ms);
+                    let post_hp = self
+                        .arena
+                        .snapshot_player(victim_id)
+                        .map(|(_, _, _, _, hp, _)| hp)
+                        .unwrap_or(0);
+                    let applied = prev_hp.saturating_sub(post_hp);
+                    if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                        let attacker_pos = pos;
+                        self.outbound_packets.push(encode_damage_event_packet(
+                            &DamageEventPacket {
+                                attacker_player_id: shooter_id,
+                                damage_amount: applied,
+                                hit_zone: hit_zone_byte,
+                                attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                                attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                                attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                                server_time_ms,
+                            },
+                        ));
+                    }
+                }
+            } else if let Some((dynamic_body_id, dynamic_toi, normal)) = dynamic_hit {
+                if world_toi.map(|world| world >= dynamic_toi).unwrap_or(true) {
                     let impact_point = [
                         origin[0] + shot.dir[0] * dynamic_toi,
                         origin[1] + shot.dir[1] * dynamic_toi,
@@ -361,21 +662,244 @@ impl LocalSession {
                         impulse,
                         impact_point,
                     );
-                    make_shot_result(
-                        shot.shot_id,
-                        shot.weapon,
-                        SHOT_RESOLUTION_DYNAMIC,
-                        dynamic_body_id,
-                        dynamic_toi,
-                        DYNAMIC_BODY_IMPULSE,
-                    )
+                    result.server_resolution = SHOT_RESOLUTION_DYNAMIC;
+                    result.server_dynamic_body_id = dynamic_body_id;
+                    result.server_dynamic_hit_toi_cm = (dynamic_toi.max(0.0) * 100.0)
+                        .round()
+                        .clamp(0.0, u16::MAX as f32)
+                        as u16;
+                    result.server_dynamic_impulse_centi = (DYNAMIC_BODY_IMPULSE.max(0.0) * 100.0)
+                        .round()
+                        .clamp(0.0, u16::MAX as f32)
+                        as u16;
                 }
-            } else {
-                make_shot_result(shot.shot_id, shot.weapon, SHOT_RESOLUTION_MISS, 0, 0.0, 0.0)
-            };
+            } else if world_toi.is_some() {
+                result.server_resolution = SHOT_RESOLUTION_BLOCKED_BY_WORLD;
+            }
 
             self.outbound_packets
                 .push(encode_shot_result_packet(&result));
+        }
+    }
+
+    // TODO: lag-compensate melee
+    fn process_melee(&mut self, server_time_ms: u32) {
+        let swings = std::mem::take(&mut self.queued_melees);
+        for (attacker_id, cmd) in swings {
+            {
+                let Some(runtime) = self.players.get_mut(&attacker_id) else {
+                    continue;
+                };
+                if runtime
+                    .last_processed_swing_id
+                    .map(|prev| prev == cmd.swing_id)
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if runtime.next_allowed_melee_ms > server_time_ms {
+                    continue;
+                }
+                runtime.next_allowed_melee_ms = server_time_ms.saturating_add(MELEE_COOLDOWN_MS);
+                runtime.last_processed_swing_id = Some(cmd.swing_id);
+            }
+
+            if self.arena.vehicle_of_player.contains_key(&attacker_id) {
+                continue;
+            }
+            let Some((attacker_pos, _vel, _yaw, _pitch, attacker_hp, attacker_flags)) =
+                self.arena.snapshot_player(attacker_id)
+            else {
+                continue;
+            };
+            if attacker_hp == 0 || (attacker_flags & FLAG_DEAD) != 0 {
+                continue;
+            }
+
+            if attacker_id == LOCAL_PLAYER_ID {
+                let mut depleted = false;
+                if let Some(player) = self.arena.players.get_mut(&LOCAL_PLAYER_ID) {
+                    if player.dead {
+                        continue;
+                    }
+                    player.energy = (player.energy - MELEE_ENERGY_COST).max(0.0);
+                    depleted = player.energy <= 0.0;
+                }
+                if depleted {
+                    self.kill_local_player(server_time_ms, LocalDeathCause::EnergyDepletion);
+                    continue;
+                }
+            }
+
+            let eye = [
+                attacker_pos[0],
+                attacker_pos[1] + PLAYER_EYE_HEIGHT_M,
+                attacker_pos[2],
+            ];
+            let cos_p = cmd.pitch.cos();
+            let aim = [
+                cmd.yaw.sin() * cos_p,
+                cmd.pitch.sin(),
+                cmd.yaw.cos() * cos_p,
+            ];
+            let aim_xz_len = (aim[0] * aim[0] + aim[2] * aim[2]).sqrt();
+            if aim_xz_len <= 1e-4 {
+                // Aim is (nearly) vertical — cone is ill-defined; skip.
+                if let Some(runtime) = self.players.get_mut(&attacker_id) {
+                    runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
+                }
+                continue;
+            }
+            let aim_xz = [aim[0] / aim_xz_len, aim[2] / aim_xz_len];
+
+            let capsule_radius = self.arena.config().capsule_radius;
+            let max_reach = MELEE_RANGE_M + capsule_radius;
+            let max_reach_sq = max_reach * max_reach;
+
+            let mut best: Option<(u32, f32)> = None;
+            for &victim_id in self.players.keys() {
+                if victim_id == attacker_id {
+                    continue;
+                }
+                if self.arena.vehicle_of_player.contains_key(&victim_id) {
+                    continue;
+                }
+                let Some((victim_pos, _vv, _vy, _vp, victim_hp, victim_flags)) =
+                    self.arena.snapshot_player(victim_id)
+                else {
+                    continue;
+                };
+                if victim_hp == 0 || (victim_flags & FLAG_DEAD) != 0 {
+                    continue;
+                }
+                let dx = victim_pos[0] - eye[0];
+                let dy = victim_pos[1] - attacker_pos[1];
+                let dz = victim_pos[2] - eye[2];
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                if dist_sq > max_reach_sq {
+                    continue;
+                }
+                let planar_len = (dx * dx + dz * dz).sqrt();
+                if planar_len <= 1e-4 {
+                    // Directly overlapping — accept.
+                    let dist = dist_sq.sqrt();
+                    if best.map(|(_, d)| dist < d).unwrap_or(true) {
+                        best = Some((victim_id, dist));
+                    }
+                    continue;
+                }
+                let to_victim_xz = [dx / planar_len, dz / planar_len];
+                let dot = aim_xz[0] * to_victim_xz[0] + aim_xz[1] * to_victim_xz[1];
+                if dot < MELEE_HALF_CONE_COS {
+                    continue;
+                }
+                let dist = dist_sq.sqrt();
+                if best.map(|(_, d)| dist < d).unwrap_or(true) {
+                    best = Some((victim_id, dist));
+                }
+            }
+
+            if let Some((victim_id, _dist)) = best {
+                let prev_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
+                self.apply_damage(victim_id, MELEE_DAMAGE, server_time_ms);
+                let post_hp = self
+                    .arena
+                    .snapshot_player(victim_id)
+                    .map(|(_, _, _, _, hp, _)| hp)
+                    .unwrap_or(0);
+                let applied = prev_hp.saturating_sub(post_hp);
+                if applied > 0 && victim_id == LOCAL_PLAYER_ID {
+                    self.outbound_packets
+                        .push(encode_damage_event_packet(&DamageEventPacket {
+                            attacker_player_id: attacker_id,
+                            damage_amount: applied,
+                            hit_zone: HIT_ZONE_BODY,
+                            attacker_px_mm: meters_to_mm(attacker_pos[0]),
+                            attacker_py_mm: meters_to_mm(attacker_pos[1]),
+                            attacker_pz_mm: meters_to_mm(attacker_pos[2]),
+                            server_time_ms,
+                        }));
+                }
+            }
+
+            if let Some(runtime) = self.players.get_mut(&attacker_id) {
+                runtime.melee_flag_clear_tick = self.server_tick + MELEE_FLAG_DURATION_TICKS;
+            }
+        }
+    }
+
+    fn cast_player_hitscan(
+        &self,
+        shooter_id: u32,
+        origin: [f32; 3],
+        dir: [f32; 3],
+    ) -> Option<(u32, f32, HitZone)> {
+        let capsule_half_segment = self.arena.config().capsule_half_segment;
+        let capsule_radius = self.arena.config().capsule_radius;
+        let mut best: Option<(u32, f32, HitZone)> = None;
+        for &victim_id in self.players.keys() {
+            if victim_id == shooter_id {
+                continue;
+            }
+            let Some((pos, _vel, _yaw, _pitch, hp, flags)) = self.arena.snapshot_player(victim_id)
+            else {
+                continue;
+            };
+            if hp == 0 || (flags & FLAG_DEAD) != 0 {
+                continue;
+            }
+            let Some(hit) = classify_player_hitscan(
+                origin,
+                dir,
+                pos,
+                capsule_half_segment,
+                capsule_radius,
+                None,
+            ) else {
+                continue;
+            };
+            if hit.distance > HITSCAN_MAX_DISTANCE_M {
+                continue;
+            }
+            if best.map(|(_, toi, _)| hit.distance < toi).unwrap_or(true) {
+                best = Some((victim_id, hit.distance, hit.zone));
+            }
+        }
+        best
+    }
+
+    fn apply_damage(&mut self, victim_id: u32, damage: u8, server_time_ms: u32) {
+        let is_bot = self
+            .players
+            .get(&victim_id)
+            .map(|runtime| runtime.is_bot)
+            .unwrap_or(false);
+        let damage_outcome = self.arena.apply_player_damage(victim_id, damage);
+        if matches!(damage_outcome, PlayerDamageOutcome::Ignored) {
+            return;
+        }
+        // Hit-stagger: block melee swings for a short window after taking damage.
+        if let Some(runtime) = self.players.get_mut(&victim_id) {
+            let until = server_time_ms.saturating_add(MELEE_HIT_RECOVERY_MS);
+            if runtime.next_allowed_melee_ms < until {
+                runtime.next_allowed_melee_ms = until;
+            }
+        }
+        if !matches!(damage_outcome, PlayerDamageOutcome::Killed) {
+            return;
+        }
+        if victim_id == LOCAL_PLAYER_ID {
+            self.kill_local_player(server_time_ms, LocalDeathCause::HpDamage);
+            return;
+        }
+        if is_bot {
+            if let Some(runtime) = self.players.get_mut(&victim_id) {
+                runtime.respawn_cooldown_ticks = BOT_RESPAWN_TICKS;
+            }
         }
     }
 
@@ -384,6 +908,7 @@ impl LocalSession {
         if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(LOCAL_PLAYER_ID)
         {
             let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
+            let flags = self.flags_with_melee(LOCAL_PLAYER_ID, flags);
             player_states.push(make_net_player_state(
                 LOCAL_PLAYER_ID,
                 pos,
@@ -394,6 +919,17 @@ impl LocalSession {
                 flags,
                 energy,
             ));
+        }
+        for (&id, _) in &self.players {
+            if id == LOCAL_PLAYER_ID {
+                continue;
+            }
+            if let Some((pos, vel, yaw, pitch, hp, flags)) = self.arena.snapshot_player(id) {
+                let flags = self.flags_with_melee(id, flags);
+                player_states.push(make_net_player_state(
+                    id, pos, vel, yaw, pitch, hp, flags, 0.0,
+                ));
+            }
         }
 
         let dynamic_body_states = self
@@ -406,10 +942,16 @@ impl LocalSession {
             .collect();
         let vehicle_states = self.arena.snapshot_vehicles();
 
+        let ack_input_seq = self
+            .players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|runtime| runtime.last_ack_input_seq)
+            .unwrap_or(0);
+
         encode_snapshot_packet(&SnapshotPacket {
             server_time_us: self.server_time_us(),
             server_tick: self.server_tick,
-            ack_input_seq: self.player.last_ack_input_seq,
+            ack_input_seq,
             player_states,
             projectile_states: Vec::new(),
             dynamic_body_states,
@@ -434,12 +976,16 @@ impl LocalSession {
     }
 
     pub fn ack_input_seq(&self) -> u16 {
-        self.player.last_ack_input_seq
+        self.players
+            .get(&LOCAL_PLAYER_ID)
+            .map(|runtime| runtime.last_ack_input_seq)
+            .unwrap_or(0)
     }
 
     pub fn local_player_state(&self) -> Option<NetPlayerState> {
         let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(LOCAL_PLAYER_ID)?;
         let energy = self.arena.player_energy(LOCAL_PLAYER_ID).unwrap_or(0.0);
+        let flags = self.flags_with_melee(LOCAL_PLAYER_ID, flags);
         Some(make_net_player_state(
             LOCAL_PLAYER_ID,
             pos,
@@ -450,6 +996,38 @@ impl LocalSession {
             flags,
             energy,
         ))
+    }
+
+    pub fn remote_player_states(&self) -> Vec<NetPlayerState> {
+        let mut ids = self
+            .players
+            .keys()
+            .copied()
+            .filter(|id| *id != LOCAL_PLAYER_ID)
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| {
+                let (pos, vel, yaw, pitch, hp, flags) = self.arena.snapshot_player(id)?;
+                let flags = self.flags_with_melee(id, flags);
+                Some(make_net_player_state(
+                    id, pos, vel, yaw, pitch, hp, flags, 0.0,
+                ))
+            })
+            .collect()
+    }
+
+    fn flags_with_melee(&self, player_id: u32, flags: u16) -> u16 {
+        let meleeing = self
+            .players
+            .get(&player_id)
+            .map(|runtime| self.server_tick < runtime.melee_flag_clear_tick)
+            .unwrap_or(false);
+        if meleeing {
+            flags | FLAG_MELEEING
+        } else {
+            flags
+        }
     }
 
     pub fn dynamic_body_states(&self) -> Vec<NetDynamicBodyState> {
@@ -481,6 +1059,30 @@ impl LocalSession {
             .cast_static_world_ray(origin, dir, max_toi, Some(LOCAL_PLAYER_ID))
     }
 
+    pub fn classify_hitscan_player(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        body_pos: [f32; 3],
+        blocker_toi: Option<f32>,
+    ) -> Option<(f32, u8)> {
+        let hit = classify_player_hitscan(
+            origin,
+            dir,
+            body_pos,
+            self.arena.config().capsule_half_segment,
+            self.arena.config().capsule_radius,
+            blocker_toi,
+        )?;
+        Some((
+            hit.distance,
+            match hit.zone {
+                HitZone::Body => HIT_ZONE_BODY,
+                HitZone::Head => HIT_ZONE_HEAD,
+            },
+        ))
+    }
+
     pub fn vehicle_debug(&self, vehicle_id: u32) -> Option<VehicleDebugSnapshot> {
         let vehicle = self.arena.vehicles.get(&vehicle_id)?;
         read_vehicle_debug_snapshot(
@@ -488,6 +1090,174 @@ impl LocalSession {
             vehicle.chassis_body,
             &vehicle.controller,
         )
+    }
+
+    // ── Client-local ragdoll bodies ──────────────────────────────────────────
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_ragdoll_body(
+        &mut self,
+        id: u32,
+        hx: f32,
+        hy: f32,
+        hz: f32,
+        px: f32,
+        py: f32,
+        pz: f32,
+        qx: f32,
+        qy: f32,
+        qz: f32,
+        qw: f32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(qw, qx, qy, qz));
+        let body = RigidBodyBuilder::dynamic()
+            .position(Isometry3::from_parts(Translation3::new(px, py, pz), iso))
+            .linvel(vector![vx, vy, vz])
+            .angvel(vector![wx, wy, wz])
+            .linear_damping(0.02)
+            .angular_damping(0.02)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.arena.dynamic.sim.rigid_bodies.insert(body);
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(hx, hy, hz)
+            .density(2.0)
+            .restitution(0.3)
+            .friction(0.6)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let _ = self.arena.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.arena.dynamic.sim.rigid_bodies,
+        );
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    pub fn remove_ragdoll_body(&mut self, id: u32) {
+        if let Some(body_handle) = self.ragdoll_bodies.remove(&id) {
+            self.arena.dynamic.sim.rigid_bodies.remove(
+                body_handle,
+                &mut self.arena.dynamic.sim.island_manager,
+                &mut self.arena.dynamic.sim.colliders,
+                &mut self.arena.dynamic.impulse_joints,
+                &mut self.arena.dynamic.multibody_joints,
+                true,
+            );
+        }
+    }
+
+    /// Returns `[px, py, pz, qx, qy, qz, qw]` or empty on miss.
+    pub fn ragdoll_body_state(&self, id: u32) -> Option<[f32; 7]> {
+        let body_handle = *self.ragdoll_bodies.get(&id)?;
+        let rb = self.arena.dynamic.sim.rigid_bodies.get(body_handle)?;
+        let p = rb.translation();
+        let r = rb.rotation();
+        Some([p.x, p.y, p.z, r.i, r.j, r.k, r.w])
+    }
+
+    pub fn set_ragdoll_body_velocity(
+        &mut self,
+        id: u32,
+        vx: f32,
+        vy: f32,
+        vz: f32,
+        wx: f32,
+        wy: f32,
+        wz: f32,
+    ) {
+        let Some(&body_handle) = self.ragdoll_bodies.get(&id) else {
+            return;
+        };
+        if let Some(rb) = self.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![vx, vy, vz], true);
+            rb.set_angvel(vector![wx, wy, wz], true);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_spherical_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let joint = SphericalJointBuilder::new()
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_ragdoll_revolute_joint(
+        &mut self,
+        joint_id: u32,
+        b1_id: u32,
+        b2_id: u32,
+        a1x: f32,
+        a1y: f32,
+        a1z: f32,
+        a2x: f32,
+        a2y: f32,
+        a2z: f32,
+        ax: f32,
+        ay: f32,
+        az: f32,
+        limit_min: f32,
+        limit_max: f32,
+    ) {
+        let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
+            return;
+        };
+        let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
+            return;
+        };
+        let axis = Unit::new_normalize(vector![ax, ay, az]);
+        let joint = RevoluteJointBuilder::new(axis)
+            .local_anchor1(Point3::new(a1x, a1y, a1z))
+            .local_anchor2(Point3::new(a2x, a2y, a2z))
+            .limits([limit_min, limit_max])
+            .build();
+        let handle = self
+            .arena
+            .dynamic
+            .impulse_joints
+            .insert(b1h, b2h, joint, true);
+        self.ragdoll_joint_handles.insert(joint_id, handle);
+    }
+
+    pub fn remove_ragdoll_joint(&mut self, joint_id: u32) {
+        if let Some(handle) = self.ragdoll_joint_handles.remove(&joint_id) {
+            self.arena.dynamic.impulse_joints.remove(handle, false);
+        }
     }
 }
 
@@ -583,6 +1353,19 @@ fn decode_fire_cmd(buf: &mut &[u8]) -> Result<FireCmd, String> {
     })
 }
 
+fn decode_melee_cmd(buf: &mut &[u8]) -> Result<MeleeCmd, String> {
+    if buf.remaining() < 18 {
+        return Err("short melee packet".to_string());
+    }
+    Ok(MeleeCmd {
+        seq: buf.get_u16_le(),
+        swing_id: buf.get_u32_le(),
+        client_time_us: buf.get_u64_le(),
+        yaw: i16_to_angle(buf.get_i16_le()),
+        pitch: i16_to_angle(buf.get_i16_le()),
+    })
+}
+
 fn decode_vehicle_enter(buf: &mut &[u8]) -> Result<u32, String> {
     if buf.remaining() < 5 {
         return Err("short vehicle enter packet".to_string());
@@ -622,6 +1405,19 @@ fn encode_shot_result_packet(pkt: &ShotResultPacket) -> Vec<u8> {
     out.put_u32_le(pkt.server_dynamic_body_id);
     out.put_u16_le(pkt.server_dynamic_hit_toi_cm);
     out.put_u16_le(pkt.server_dynamic_impulse_centi);
+    out.to_vec()
+}
+
+fn encode_damage_event_packet(pkt: &DamageEventPacket) -> Vec<u8> {
+    let mut out = BytesMut::with_capacity(23);
+    out.put_u8(PKT_DAMAGE_EVENT);
+    out.put_u32_le(pkt.attacker_player_id);
+    out.put_u8(pkt.damage_amount);
+    out.put_u8(pkt.hit_zone);
+    out.put_i32_le(pkt.attacker_px_mm);
+    out.put_i32_le(pkt.attacker_py_mm);
+    out.put_i32_le(pkt.attacker_pz_mm);
+    out.put_u32_le(pkt.server_time_ms);
     out.to_vec()
 }
 
@@ -814,6 +1610,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -837,6 +1634,7 @@ mod tests {
             },
             static_props: vec![],
             dynamic_entities: vec![],
+            spawn_areas: vec![],
         }
     }
 
@@ -957,8 +1755,10 @@ mod tests {
             !initial_vehicle.is_empty(),
             "demo local session should expose at least one vehicle"
         );
-        let (vehicle_id, driver_id, _, _, _) = initial_vehicle[0];
-        assert_eq!(driver_id, 0, "authored vehicle should start unoccupied");
+        let (vehicle_id, _, _, _, _) = *initial_vehicle
+            .iter()
+            .find(|(_, driver, _, _, _)| *driver == 0)
+            .expect("at least one authored vehicle should start unoccupied");
 
         session
             .handle_client_packet(&encode_vehicle_enter_packet_for_test(vehicle_id))
@@ -981,6 +1781,236 @@ mod tests {
             entered.1, LOCAL_PLAYER_ID,
             "local session vehicle should be driven by the local player after enter"
         );
+    }
+
+    fn decode_snapshot_player_ids(bytes: &[u8]) -> Vec<u32> {
+        let mut buf = bytes;
+        assert_eq!(buf.get_u8(), PKT_SNAPSHOT);
+        let _server_time = buf.get_u64_le();
+        let _server_tick = buf.get_u32_le();
+        let _ack = buf.get_u16_le();
+        let player_count = buf.get_u16_le() as usize;
+        let _projectile_count = buf.get_u16_le() as usize;
+        let _dynamic_count = buf.get_u16_le() as usize;
+        let _vehicle_count = buf.get_u16_le() as usize;
+        let mut ids = Vec::with_capacity(player_count);
+        for _ in 0..player_count {
+            ids.push(buf.get_u32_le());
+            buf.advance(25);
+        }
+        ids
+    }
+
+    #[test]
+    fn connect_bot_spawns_extra_player_state() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        assert!(session.connect_bot(101));
+        assert!(!session.connect_bot(101));
+        assert!(!session.connect_bot(LOCAL_PLAYER_ID));
+
+        session.tick(1.0 / 60.0);
+        let snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
+        let ids = decode_snapshot_player_ids(&snapshot);
+        assert!(ids.contains(&LOCAL_PLAYER_ID));
+        assert!(ids.contains(&101));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn connect_bot_starts_spawn_protected_in_practice() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+
+        assert!(session.connect_bot(101));
+
+        let bot_state = session
+            .remote_player_states()
+            .into_iter()
+            .find(|state| state.id == 101)
+            .expect("bot state should exist");
+        assert_ne!(bot_state.flags & crate::constants::FLAG_SPAWN_PROTECTED, 0);
+    }
+
+    #[test]
+    fn bot_input_drives_its_own_kcc() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(202));
+
+        let frame = InputCmd {
+            seq: 1,
+            buttons: crate::constants::BTN_FORWARD,
+            move_x: 0,
+            move_y: 127,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let bytes = encode_single_input_bundle(&frame);
+        session.handle_bot_packet(202, &bytes).unwrap();
+        let start = session.arena.snapshot_player(202).unwrap().0;
+        for _ in 0..10 {
+            session.tick(1.0 / 60.0);
+        }
+        let after = session.arena.snapshot_player(202).unwrap().0;
+        let dz = (after[2] - start[2]).abs();
+        assert!(
+            dz > 0.0,
+            "bot should have moved after 10 ticks of forward input"
+        );
+    }
+
+    fn encode_vehicle_exit_packet_for_test(vehicle_id: u32) -> Vec<u8> {
+        let mut out = BytesMut::with_capacity(5);
+        out.put_u8(PKT_VEHICLE_EXIT);
+        out.put_u32_le(vehicle_id);
+        out.to_vec()
+    }
+
+    #[test]
+    fn bot_can_enter_and_drive_a_vehicle() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(404));
+
+        // Tick once so the vehicle state is represented in a snapshot the
+        // test can inspect.
+        session.tick(1.0 / 60.0);
+        let initial_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("initial snapshot after connect_bot");
+        let initial_vehicles = decode_snapshot_vehicle_states(&initial_snapshot);
+        assert!(
+            !initial_vehicles.is_empty(),
+            "demo local preview should expose at least one authored vehicle"
+        );
+        let (vehicle_id, _, start_px, _, start_pz) = *initial_vehicles
+            .iter()
+            .find(|(_, driver, _, _, _)| *driver == 0)
+            .expect("at least one authored vehicle should start unoccupied");
+
+        // Route the enter packet through `handle_bot_packet` — this is the
+        // path `PracticeBotRuntime` uses when a bot reaches the
+        // `entering_vehicle` FSM state.
+        session
+            .handle_bot_packet(404, &encode_vehicle_enter_packet_for_test(vehicle_id))
+            .expect("bot vehicle enter should be accepted");
+        session.tick(1.0 / 60.0);
+
+        // The arena should now record the bot as the vehicle's driver, and
+        // `vehicle_of_player` should mirror that.
+        assert_eq!(
+            session.arena.vehicle_of_player.get(&404),
+            Some(&vehicle_id),
+            "bot should be seated in the vehicle after handle_bot_packet"
+        );
+        let seated_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after bot entered vehicle");
+        let seated_vehicles = decode_snapshot_vehicle_states(&seated_snapshot);
+        let (_, seated_driver_id, _, _, _) = *seated_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("seated vehicle should still be in the snapshot");
+        assert_eq!(
+            seated_driver_id, 404,
+            "snapshot driver_id should reflect the seated bot"
+        );
+
+        // Push a forward-throttle input bundle and tick for ~0.5 s of sim
+        // time. With `input_to_vehicle_cmd` driving the raycast vehicle,
+        // chassis-local forward (−Z) should translate the vehicle along
+        // world −Z (authored vehicle spawns unrotated in the demo world).
+        let frame = InputCmd {
+            seq: 1,
+            buttons: 0,
+            move_x: 0,
+            move_y: 127,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+        let bytes = encode_single_input_bundle(&frame);
+        session
+            .handle_bot_packet(404, &bytes)
+            .expect("bot input bundle should be accepted while driving");
+        for _ in 0..30 {
+            session.tick(1.0 / 60.0);
+        }
+        let driven_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .rev()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after driving the vehicle");
+        let driven_vehicles = decode_snapshot_vehicle_states(&driven_snapshot);
+        let (_, _, end_px, _, end_pz) = *driven_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("driven vehicle should still be in the snapshot");
+        let dx = (end_px - start_px).abs();
+        let dz = (end_pz - start_pz).abs();
+        assert!(
+            dx > 0 || dz > 0,
+            "bot-driven vehicle should have moved from its spawn after 30 forward ticks"
+        );
+
+        // Exit cleanly via `handle_bot_packet` and confirm the driver slot
+        // clears.
+        session
+            .handle_bot_packet(404, &encode_vehicle_exit_packet_for_test(vehicle_id))
+            .expect("bot vehicle exit should be accepted");
+        session.tick(1.0 / 60.0);
+        assert!(
+            !session.arena.vehicle_of_player.contains_key(&404),
+            "bot should no longer be seated after exit packet"
+        );
+        let exited_snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .expect("snapshot after bot exited");
+        let exited_vehicles = decode_snapshot_vehicle_states(&exited_snapshot);
+        let (_, exited_driver_id, _, _, _) = *exited_vehicles
+            .iter()
+            .find(|(id, _, _, _, _)| *id == vehicle_id)
+            .expect("exited vehicle should still be in the snapshot");
+        assert_eq!(
+            exited_driver_id, 0,
+            "vehicle should be unoccupied again after exit"
+        );
+    }
+
+    #[test]
+    fn disconnect_bot_removes_it_from_snapshots() {
+        let mut session = LocalSession::new();
+        session.connect();
+        let _ = session.drain_packets();
+        assert!(session.connect_bot(303));
+        assert!(session.disconnect_bot(303));
+        assert!(!session.disconnect_bot(303));
+        assert!(!session.disconnect_bot(LOCAL_PLAYER_ID));
+
+        session.tick(1.0 / 60.0);
+        let snapshot = session
+            .drain_packets()
+            .into_iter()
+            .find(|pkt| pkt[0] == PKT_SNAPSHOT)
+            .unwrap();
+        let ids = decode_snapshot_player_ids(&snapshot);
+        assert!(!ids.contains(&303));
     }
 
     #[test]
@@ -1053,6 +2083,45 @@ mod tests {
     }
 
     #[test]
+    fn bot_fire_does_not_deplete_local_player_energy() {
+        let mut session = isolated_energy_session();
+        assert!(session.connect_bot(404));
+
+        let starting_energy = 250.0;
+        session
+            .arena
+            .players
+            .get_mut(&LOCAL_PLAYER_ID)
+            .expect("local player exists")
+            .energy = starting_energy;
+
+        session.queued_shots.push((
+            404,
+            FireCmd {
+                seq: 1,
+                shot_id: 8,
+                weapon: 1,
+                client_fire_time_us: session.server_time_us(),
+                client_interp_ms: 0,
+                client_dynamic_interp_ms: 0,
+                dir: [1.0, 0.0, 0.0],
+            },
+        ));
+        session.process_hitscan(session.server_time_ms());
+
+        assert_eq!(
+            session
+                .arena
+                .players
+                .get(&LOCAL_PLAYER_ID)
+                .expect("local player exists")
+                .energy,
+            starting_energy,
+            "bot shots should not spend local-player energy"
+        );
+    }
+
+    #[test]
     fn overlapping_battery_pickup_restores_energy_and_removes_battery() {
         let mut session = isolated_energy_session();
 
@@ -1092,6 +2161,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn local_session_keeps_smooth_hill_vehicle_supported() {
         let mut world = make_smooth_hill_world();
         let hill_x = 0.0f32;
@@ -1233,5 +2303,151 @@ mod tests {
                 vehicle.id,
             );
         }
+    }
+
+    fn place_player_at(session: &mut LocalSession, id: u32, x: f64, y: f64, z: f64) {
+        let state = session.arena.players.get_mut(&id).expect("player exists");
+        state.position = crate::movement::Vec3d::new(x, y, z);
+        state.velocity = crate::movement::Vec3d::zeros();
+        let collider = state.collider;
+        let pos = state.position;
+        session
+            .arena
+            .dynamic
+            .sim
+            .sync_player_collider(collider, &pos);
+    }
+
+    #[test]
+    fn melee_hits_victim_in_cone_and_deals_damage() {
+        let mut session = isolated_energy_session();
+        let bot_id = 501;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100 - MELEE_DAMAGE);
+    }
+
+    #[test]
+    fn melee_cooldown_rejects_rapid_swings() {
+        let mut session = isolated_energy_session();
+        let bot_id = 502;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        // Second swing immediately — should be gated by cooldown.
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 2,
+            swing_id: 2,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(
+            victim_hp,
+            100 - MELEE_DAMAGE,
+            "cooldown should block the second swing"
+        );
+    }
+
+    #[test]
+    fn damage_staggers_victim_melee_cooldown() {
+        let mut session = isolated_energy_session();
+        let bot_id = 504;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        session.arena.set_player_spawn_protected(bot_id, false);
+
+        let before = session.server_time_ms();
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let runtime = session.players.get(&bot_id).expect("bot exists");
+        assert!(
+            runtime.next_allowed_melee_ms >= before.saturating_add(MELEE_HIT_RECOVERY_MS),
+            "victim should be staggered for at least MELEE_HIT_RECOVERY_MS after a hit",
+        );
+    }
+
+    #[test]
+    fn melee_spares_victim_in_vehicle() {
+        let mut session = isolated_energy_session();
+        let bot_id = 503;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.2);
+        // Fake the bot into a vehicle by injecting the mapping directly.
+        session.arena.vehicle_of_player.insert(bot_id, 9999);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100, "vehicle occupants are immune to melee");
+    }
+
+    #[test]
+    fn melee_misses_victim_outside_shortened_range() {
+        let mut session = isolated_energy_session();
+        let bot_id = 505;
+        assert!(session.connect_bot(bot_id));
+
+        place_player_at(&mut session, LOCAL_PLAYER_ID, 0.0, 1.0, 0.0);
+        place_player_at(&mut session, bot_id, 0.0, 1.0, 1.5);
+
+        session.queue_melee_cmd(MeleeCmd {
+            seq: 1,
+            swing_id: 1,
+            client_time_us: session.server_time_us(),
+            yaw: 0.0,
+            pitch: 0.0,
+        });
+        session.process_melee(session.server_time_ms());
+
+        let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
+        assert_eq!(victim_hp, 100, "victim should be out of melee range");
     }
 }

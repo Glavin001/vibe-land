@@ -13,6 +13,7 @@ import {
 import {
   type BatteryStateMeters,
   type BatterySyncPacket,
+  type DamageEventPacket,
   encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
   netStateToMeters,
@@ -24,6 +25,7 @@ import {
   type FireCmd,
   type InputCmd,
   type LocalPlayerEnergyPacket,
+  type MeleeCmd,
   type NetBatteryState,
   type NetPlayerState,
   type NetVehicleState,
@@ -31,6 +33,7 @@ import {
   type SnapshotV2Packet,
   type ServerPacket,
   type ServerWorldPacket,
+  type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
 } from './protocol';
@@ -41,6 +44,8 @@ export type RemotePlayer = {
   yaw: number;
   pitch: number;
   hp: number;
+  /** Latest player state flags (FLAG_DEAD, FLAG_IN_VEHICLE, ...). */
+  flags: number;
 };
 
 export type NetcodeClientConfig = {
@@ -50,6 +55,8 @@ export type NetcodeClientConfig = {
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onWorldPacket?: (packet: ServerWorldPacket) => void;
   onShotResult?: (packet: ServerPacket) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
+  onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -259,6 +266,14 @@ export class NetcodeClient {
     }
   }
 
+  sendMelee(cmd: MeleeCmd): void {
+    if (this.wtClient) {
+      this.wtClient.sendMelee(cmd);
+    } else {
+      this.socket?.sendMelee(cmd);
+    }
+  }
+
   sendBlockEdit(cmd: BlockEditCmd): void {
     if (this.wtClient) {
       this.wtClient.sendBlockEdit(cmd);
@@ -410,6 +425,7 @@ export class NetcodeClient {
         yaw,
         pitch,
         hp: player.hp,
+        flags: player.flags,
       });
     }
 
@@ -740,6 +756,7 @@ export class NetcodeClient {
               yaw: m.yaw,
               pitch: m.pitch,
               hp: m.hp,
+              flags: ps.flags,
             });
           }
         }
@@ -808,6 +825,12 @@ export class NetcodeClient {
           packet.serverDynamicImpulseCenti,
         );
         this.config.onShotResult?.(packet);
+        break;
+      case 'damageEvent':
+        this.config.onDamageEvent?.(packet);
+        break;
+      case 'shotFired':
+        this.config.onShotFired?.(packet);
         break;
       default:
         break;

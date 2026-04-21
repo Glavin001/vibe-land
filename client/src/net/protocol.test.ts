@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   encodeInputBundle,
   encodeFirePacket,
+  encodeMeleePacket,
   decodeServerPacket,
   decodeServerDatagramPacket,
   decodeServerReliablePacket,
@@ -17,6 +18,8 @@ import {
   type InputFrame,
   type NetPlayerState,
   type FireCmd,
+  type MeleeCmd,
+  PKT_MELEE,
   BTN_FORWARD,
   BTN_BACK,
   BTN_LEFT,
@@ -26,6 +29,7 @@ import {
   PKT_SNAPSHOT,
   PKT_SNAPSHOT_V2,
   PKT_WELCOME,
+  PKT_SHOT_FIRED,
   PKT_SHOT_RESULT,
   PKT_PLAYER_ROSTER,
   PKT_DYNAMIC_BODY_META,
@@ -230,6 +234,35 @@ describe('encodeFirePacket', () => {
     expect(view.getUint8(7)).toBe(1);
     expect(view.getUint32(8, true)).toBe(9_876_543);
     expect(view.getUint16(16, true)).toBe(66);
+  });
+});
+
+describe('encodeMeleePacket', () => {
+  it('encodes swing id, timing, and yaw/pitch with round-trip precision', () => {
+    const cmd: MeleeCmd = {
+      seq: 0x1234,
+      swingId: 0xabcdef01,
+      clientTimeUs: 123_456_789,
+      yaw: 0.75,
+      pitch: -0.25,
+    };
+    const encoded = encodeMeleePacket(cmd);
+    const view = new DataView(encoded.buffer);
+    expect(encoded.length).toBe(1 + 2 + 4 + 8 + 2 + 2);
+    expect(view.getUint8(0)).toBe(PKT_MELEE);
+    expect(view.getUint16(1, true)).toBe(0x1234);
+    expect(view.getUint32(3, true)).toBe(0xabcdef01);
+    // clientTimeUs u64 LE
+    const lo = view.getUint32(7, true);
+    const hi = view.getUint32(11, true);
+    expect(lo + hi * 0x100000000).toBe(123_456_789);
+    // yaw / pitch round-trip via angleToI16 / i16ToAngle (yaw wraps to [0,2π))
+    const yawOut = i16ToAngle(view.getInt16(15, true));
+    expect(yawOut).toBeCloseTo(0.75, 2);
+    const pitchOut = i16ToAngle(view.getInt16(17, true));
+    // -0.25 wraps to 2π - 0.25 when roundtripped through angleToI16's unsigned form
+    const expected = pitchOut > Math.PI ? pitchOut - 2 * Math.PI : pitchOut;
+    expect(expected).toBeCloseTo(-0.25, 2);
   });
 });
 
@@ -636,6 +669,80 @@ describe('shotResult packet decode', () => {
     if (packet.type === 'shotResult') {
       expect(packet.hitZone).toBe(2);
     }
+  });
+});
+
+function buildShotFiredBinary(opts: {
+  shooterPlayerId?: number;
+  shotId?: number;
+  weapon?: number;
+  hitKind?: number;
+  hitZone?: number;
+  serverFireTimeUs?: number;
+  originPxMm?: number;
+  originPyMm?: number;
+  originPzMm?: number;
+  endPxMm?: number;
+  endPyMm?: number;
+  endPzMm?: number;
+}): Uint8Array {
+  const size = 1 + 4 + 4 + 1 + 1 + 1 + 8 + 12 + 12;
+  const buf = new Uint8Array(size);
+  const view = new DataView(buf.buffer);
+  let o = 0;
+
+  view.setUint8(o++, PKT_SHOT_FIRED);
+  view.setUint32(o, opts.shooterPlayerId ?? 10, true); o += 4;
+  view.setUint32(o, opts.shotId ?? 7, true); o += 4;
+  view.setUint8(o++, opts.weapon ?? 1);
+  view.setUint8(o++, opts.hitKind ?? 1);
+  view.setUint8(o++, opts.hitZone ?? 2);
+  view.setBigUint64(o, BigInt(opts.serverFireTimeUs ?? 0), true); o += 8;
+  view.setInt32(o, opts.originPxMm ?? 100, true); o += 4;
+  view.setInt32(o, opts.originPyMm ?? 200, true); o += 4;
+  view.setInt32(o, opts.originPzMm ?? 300, true); o += 4;
+  view.setInt32(o, opts.endPxMm ?? 400, true); o += 4;
+  view.setInt32(o, opts.endPyMm ?? 500, true); o += 4;
+  view.setInt32(o, opts.endPzMm ?? 600, true);
+
+  return buf;
+}
+
+describe('shotFired packet decode', () => {
+  it('decodes broadcast shot-fired packets', () => {
+    const binary = buildShotFiredBinary({
+      shooterPlayerId: 42,
+      shotId: 99,
+      weapon: 1,
+      hitKind: 1,
+      hitZone: 2,
+      serverFireTimeUs: 1_234_567_890,
+      originPxMm: 1500,
+      originPyMm: 2000,
+      originPzMm: -3000,
+      endPxMm: 4500,
+      endPyMm: 2100,
+      endPzMm: -3050,
+    });
+    const packet = decodeServerReliablePacket(binary);
+
+    expect(packet.type).toBe('shotFired');
+    if (packet.type === 'shotFired') {
+      expect(packet.shooterPlayerId).toBe(42);
+      expect(packet.shotId).toBe(99);
+      expect(packet.weapon).toBe(1);
+      expect(packet.hitKind).toBe(1);
+      expect(packet.hitZone).toBe(2);
+      expect(packet.serverFireTimeUs).toBe(1_234_567_890);
+      expect(packet.originPxMm).toBe(1500);
+      expect(packet.endPzMm).toBe(-3050);
+    }
+  });
+
+  it('dispatches shot-fired packets through decodeServerPacket', () => {
+    const binary = buildShotFiredBinary({});
+    const packet = decodeServerPacket(binary);
+    expect(packet.type).toBe('shotFired');
   });
 });
 

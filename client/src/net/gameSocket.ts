@@ -4,12 +4,14 @@ import {
   encodeFirePacket,
   encodeInputBundle,
   encodeInputPacket,
+  encodeMeleePacket,
   encodePingPacket,
   encodeVehicleEnterPacket,
   encodeVehicleExitPacket,
   type BlockEditCmd,
   type FireCmd,
   type InputCmd,
+  type MeleeCmd,
   type ServerPacket,
 } from './protocol';
 
@@ -74,6 +76,10 @@ export class GameSocket {
 
   sendFire(cmd: FireCmd): void {
     this.sendRaw(encodeFirePacket(cmd));
+  }
+
+  sendMelee(cmd: MeleeCmd): void {
+    this.sendRaw(encodeMeleePacket(cmd));
   }
 
   sendBlockEdit(cmd: BlockEditCmd): void {

@@ -15,6 +15,11 @@ const STATIC_WORLD_GROUP: Group = Group::GROUP_1;
 const PUSHABLE_DYNAMIC_GROUP: Group = Group::GROUP_2;
 const PLAYER_GROUP: Group = Group::GROUP_3;
 
+/// High bit of a collider's `user_data` reserved to mark it as a terrain
+/// heightfield participating in the per-contact material hook. The low 127
+/// bits remain available for application-level identifiers.
+pub const TERRAIN_MATERIAL_USER_DATA_FLAG: u128 = 1u128 << 127;
+
 #[derive(Clone, Debug)]
 pub struct DynamicBodyContact {
     pub body_id: u32,
@@ -304,6 +309,22 @@ impl SimWorld {
         scale: Vector3<f32>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_heightfield_with_material(center, heights, scale, user_data, 0.5, 0.0)
+    }
+
+    pub fn add_static_heightfield_with_material(
+        &mut self,
+        center: Vector3<f32>,
+        heights: DMatrix<f32>,
+        scale: Vector3<f32>,
+        user_data: u128,
+        friction: f32,
+        restitution: f32,
+    ) -> ColliderHandle {
+        // Stamp the terrain-material flag bit on `user_data` and enable the
+        // MODIFY_SOLVER_CONTACTS hook so a registered `TerrainMaterialHook`
+        // can identify this collider and rewrite per-contact friction.
+        let tagged_user_data = user_data | TERRAIN_MATERIAL_USER_DATA_FLAG;
         self.colliders.insert(
             ColliderBuilder::heightfield_with_flags(
                 heights,
@@ -311,8 +332,11 @@ impl SimWorld {
                 HeightFieldFlags::FIX_INTERNAL_EDGES,
             )
             .translation(center)
+            .friction(friction.max(0.0))
+            .restitution(restitution.clamp(0.0, 1.0))
+            .active_hooks(ActiveHooks::MODIFY_SOLVER_CONTACTS)
             .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
-            .user_data(user_data)
+            .user_data(tagged_user_data)
             .build(),
         )
     }
@@ -395,10 +419,7 @@ impl SimWorld {
         .active_collision_types(
             ActiveCollisionTypes::default() | ActiveCollisionTypes::KINEMATIC_FIXED,
         )
-        .collision_groups(InteractionGroups::new(
-            PLAYER_GROUP,
-            STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP | PLAYER_GROUP,
-        ))
+        .collision_groups(Self::player_capsule_groups())
         .user_data(player_id as u128)
         .build();
         self.colliders.insert(collider)
@@ -585,6 +606,16 @@ impl SimWorld {
 
     pub fn player_dynamic_groups() -> InteractionGroups {
         InteractionGroups::new(PUSHABLE_DYNAMIC_GROUP, PUSHABLE_DYNAMIC_GROUP)
+    }
+
+    /// Collision groups the player capsule is created with. Must match the
+    /// value applied in `create_player_collider` so vehicle exit can restore
+    /// the player to its original groups without widening membership.
+    pub fn player_capsule_groups() -> InteractionGroups {
+        InteractionGroups::new(
+            PLAYER_GROUP,
+            STATIC_WORLD_GROUP | PUSHABLE_DYNAMIC_GROUP | PLAYER_GROUP,
+        )
     }
 
     pub fn intersect_pushable_dynamic_bodies(
