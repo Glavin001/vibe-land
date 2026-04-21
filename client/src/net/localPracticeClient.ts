@@ -32,7 +32,7 @@ import {
   VEHICLE_STATE_STRIDE,
 } from '../runtime/localSessionDecode';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from '../runtime/vehicleDebug';
-import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
+import { initSharedPhysics, WasmLocalSession, type WasmDebugRenderBuffers, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
 
 export type LocalPracticeClientConfig = {
@@ -113,6 +113,10 @@ export class LocalPracticeClient implements PracticeBotHost {
   }
 
   ping(): void {}
+
+  debugRender(modeBits: number): WasmDebugRenderBuffers | null {
+    return this.session?.debugRender(modeBits) ?? null;
+  }
 
   disconnect(): void {
     this.closedByClient = true;

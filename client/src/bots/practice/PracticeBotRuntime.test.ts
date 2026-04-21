@@ -135,31 +135,26 @@ describe('PracticeBotRuntime.create', () => {
   it('tracks the local player on flat ground and updates the chase target when the player moves', () => {
     vi.useFakeTimers();
 
+    // fireMode:'off' disables the stand-and-shoot window so the bot goes
+    // straight to follow_target whenever a player is in acquisition range.
     const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
       navigationProfile: getSharedPlayerNavigationProfile(),
       maxAgentRadius: 0.6,
+      personality: { fireMode: 'off' },
     });
 
-    const botId = runtime.spawnBot();
+    // Spawn bot at platform center so player positions are predictable.
+    const botId = runtime.spawnBot({ position: [0, 0, 0] });
     const initialInfo = runtime.getBotDebugInfos()[0];
     expect(initialInfo?.id).toBe(botId);
 
     const host = new FakePracticeBotHost();
-    host.spawnPositions.set(botId, [
-      initialInfo?.position[0] ?? 0,
-      playerCenterY(initialInfo?.position[1] ?? 0),
-      initialInfo?.position[2] ?? 0,
-    ]);
+    const botGroundY = initialInfo?.position[1] ?? 0;
+    host.spawnPositions.set(botId, [0, playerCenterY(botGroundY), 0]);
 
-    // Place the player far enough outside melee range (2 m) so the harass
-    // behavior produces a non-null chase target.  The original test used
-    // +1.25/+0.75 (~1.46 m planar), which is within the 2 m melee threshold
-    // and produces target=null.
-    let localPosition: [number, number, number] = [
-      (initialInfo?.position[0] ?? 0) + 2.5,
-      playerCenterY(initialInfo?.position[1] ?? 0),
-      initialInfo?.position[2] ?? 0,
-    ];
+    // Place player 3 m away on the x-axis — outside the 2 m melee threshold
+    // so the bot enters follow_target mode and navigates toward them.
+    let localPosition: [number, number, number] = [3, playerCenterY(botGroundY), 0];
     const getSelf = () => ({
       id: host.playerId,
       position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
@@ -175,16 +170,14 @@ describe('PracticeBotRuntime.create', () => {
     expect(info?.mode).toBe('follow_target');
     expect(info?.targetPlayerId).toBe(host.playerId);
     expect(info?.lastMoveAccepted).toBe(true);
+    // rawTarget is the orbit approach point, not the exact player position.
     expect(info?.rawTarget).not.toBeNull();
     expect(info?.targetSnapDistanceM ?? Number.POSITIVE_INFINITY).toBeLessThan(2);
     expect(host.sentInputCounts.get(botId) ?? 0).toBeGreaterThan(0);
 
-    localPosition = [
-      (initialInfo?.position[0] ?? 0) - 2.5,
-      playerCenterY(initialInfo?.position[1] ?? 0),
-      initialInfo?.position[2] ?? 0,
-    ];
-    vi.advanceTimersByTime(200);
+    // Move player to opposite side — bot should update its orbit target.
+    localPosition = [-3, playerCenterY(botGroundY), 0];
+    vi.advanceTimersByTime(100);
 
     info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
@@ -229,29 +222,25 @@ describe('PracticeBotRuntime.create', () => {
   it('clears stale snapped targets when the player moves somewhere unsnappable', () => {
     vi.useFakeTimers();
 
+    // fireMode:'off' disables stand-and-shoot so the bot goes straight to
+    // follow_target whenever a player is in acquisition range.
     const runtime = PracticeBotRuntime.createSync(makeFlatPlatformWorld(), {
       navigationProfile: getSharedPlayerNavigationProfile(),
       maxAgentRadius: 0.6,
+      personality: { fireMode: 'off' },
     });
 
-    const botId = runtime.spawnBot();
+    // Spawn bot at platform center so player positions are predictable.
+    const botId = runtime.spawnBot({ position: [0, 0, 0] });
     const initialInfo = runtime.getBotDebugInfos()[0];
     expect(initialInfo?.id).toBe(botId);
 
     const host = new FakePracticeBotHost();
-    host.spawnPositions.set(botId, [
-      initialInfo?.position[0] ?? 0,
-      playerCenterY(initialInfo?.position[1] ?? 0),
-      initialInfo?.position[2] ?? 0,
-    ]);
+    const botGroundY = initialInfo?.position[1] ?? 0;
+    host.spawnPositions.set(botId, [0, playerCenterY(botGroundY), 0]);
 
-    // Place player outside melee range (2 m) so the harass behavior emits a
-    // non-null chase target.  +1/+1 is ~1.41 m planar, which is within melee.
-    let localPosition: [number, number, number] = [
-      (initialInfo?.position[0] ?? 0) + 2.5,
-      playerCenterY(initialInfo?.position[1] ?? 0),
-      initialInfo?.position[2] ?? 0,
-    ];
+    // Place player 3 m away — outside the 2 m melee threshold so the bot navigates.
+    let localPosition: [number, number, number] = [3, playerCenterY(botGroundY), 0];
     const getSelf = () => ({
       id: host.playerId,
       position: [localPosition[0], localPosition[1], localPosition[2]] as [number, number, number],
@@ -267,11 +256,14 @@ describe('PracticeBotRuntime.create', () => {
     expect(info?.lastMoveAccepted).toBe(true);
     expect(info?.target).not.toBeNull();
 
+    // Move player far outside the navmesh — the orbit approach point will
+    // also be outside, so the navmesh snap fails and the snapped target clears.
     localPosition = [50, 10, 50];
     vi.advanceTimersByTime(100);
 
     info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
+    // rawTarget is the orbit approach point toward the player (not the exact player position).
     expect(info?.rawTarget).not.toBeNull();
     expect(info?.lastMoveAccepted).toBe(false);
     expect(info?.target).toBeNull();

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type MutableRefObject } from 'react';
 import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
 import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -95,6 +95,7 @@ import type { SplineData } from '../ai/splineData';
 import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
 import { useCustomStencils } from '../ai/customStencilStore';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
+import { SceneCaptureController, type CaptureFunction } from '../scene/SceneCaptureController';
 import {
   getSharedVehicleDefinition,
   getSharedVehicleDefinitions,
@@ -208,6 +209,12 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const isAiEditRef = useRef(false);
   const aiChatRef = useRef<AiChatPanelHandle>(null);
   const splinesRef = useRef<Map<string, SplineData>>(new Map());
+  const captureRef = useRef<CaptureFunction | null>(null);
+
+  const captureScreenshot = useCallback<CaptureFunction>((config) => {
+    if (!captureRef.current) return Promise.reject(new Error('Scene capture not ready'));
+    return captureRef.current(config);
+  }, []);
 
   const activeCustomStencilId = typeof terrainToolMode === 'string' && terrainToolMode.startsWith('custom:')
     ? terrainToolMode.slice(7)
@@ -962,6 +969,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           applyCustomStencilToWorld(current, activeCustomStencil, activeCustomParams, x, z),
         );
       }}
+      captureRef={captureRef}
       onCanvasReady={(canvas) => {
         editorCanvasRef.current = canvas;
       }}
@@ -1697,11 +1705,12 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
           <AiChatPanel
             ref={aiChatRef}
             accessors={aiAccessors}
+            captureScreenshot={captureScreenshot}
             onClose={() => setRightDrawerOpen(false)}
           />
         </div>
       ) : (
-        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} captureScreenshot={captureScreenshot} />
       )}
     </div>
   );
@@ -1879,6 +1888,7 @@ function GodModeEditorScene({
   activeCustomStencil,
   activeCustomParams,
   onApplyCustomStencil,
+  captureRef,
   onCanvasReady,
   spawnAreas,
 }: {
@@ -1922,6 +1932,7 @@ function GodModeEditorScene({
   activeCustomStencil: CustomStencilDefinition | null;
   activeCustomParams: Record<string, unknown>;
   onApplyCustomStencil: (x: number, z: number) => void;
+  captureRef: MutableRefObject<CaptureFunction | null>;
   onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
   spawnAreas: SpawnArea[];
 }) {
@@ -2371,6 +2382,7 @@ function GodModeEditorScene({
         </mesh>
       )}
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
+      <SceneCaptureController captureRef={captureRef} />
     </Canvas>
   );
 }
