@@ -14,8 +14,16 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { forwardRef } from 'react';
-import type { ChatImagePart, ChatMessage, ChatPart } from '../../ai/chatTypes';
-import { makeChatId } from '../../ai/chatTypes';
+import type { ChatImagePart, ChatMessage, ChatPart, ChatToolResultPart } from '../../ai/chatTypes';
+import { compactToolResultOutput, extractToolResultImages, makeChatId } from '../../ai/chatTypes';
+import {
+  findRetryAnchorUserMessageId,
+  getMessageAttachments,
+  getMessageText,
+  removeMessageById,
+  takeMessagesBefore,
+  takeMessagesThrough,
+} from '../../ai/chatHistory';
 import {
   MODELS,
   PROVIDER_LABELS,
@@ -29,6 +37,7 @@ import {
   listChatMeta,
   loadActiveChatId,
   loadComposerDraft,
+  saveChat,
   saveActiveChatId,
   saveComposerDraft,
   subscribeToChats,
@@ -41,6 +50,7 @@ import {
   type AiChatSettings,
 } from '../../ai/settingsStore';
 import { useGodModeChat, type ImageAttachment } from '../../ai/useGodModeChat';
+import type { CaptureFunction } from '../../scene/SceneCaptureController';
 import type { WorldAccessors } from '../../ai/worldToolHelpers';
 
 export type AiChatPanelHandle = {
@@ -49,11 +59,20 @@ export type AiChatPanelHandle = {
 
 type AiChatPanelProps = {
   accessors: WorldAccessors;
+  captureScreenshot?: CaptureFunction;
   onClose?: () => void;
 };
 
+type PendingBranchAction =
+  | { chatId: string; kind: 'retry'; anchorMessageId: string }
+  | { chatId: string; kind: 'edit-submit'; text: string; attachments: ImageAttachment[] };
+
+type PendingBranchPayload =
+  | { kind: 'retry'; anchorMessageId: string }
+  | { kind: 'edit-submit'; text: string; attachments: ImageAttachment[] };
+
 export const AiChatPanel = forwardRef(function AiChatPanel(
-  { accessors, onClose }: AiChatPanelProps,
+  { accessors, captureScreenshot, onClose }: AiChatPanelProps,
   ref: ForwardedRef<AiChatPanelHandle>,
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
@@ -71,6 +90,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     provider: settings.provider,
     model: settings.model,
     apiKey,
+    captureScreenshot,
   });
 
   // Expose pushHumanEdit so the parent page can forward human edit summaries.
@@ -158,7 +178,12 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   const [settingsOpen, setSettingsOpen] = useState(!apiKey);
   const [chatListOpen, setChatListOpen] = useState(true);
   const [attachments, setAttachments] = useState<ImageAttachment[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [editAttachments, setEditAttachments] = useState<ImageAttachment[]>([]);
+  const [pendingBranchAction, setPendingBranchAction] = useState<PendingBranchAction | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerSnapshotRef = useRef<{ draft: string; attachments: ImageAttachment[] } | null>(null);
 
   // Restore the composer draft for the active chat whenever it changes.
   const draftChatIdRef = useRef<string | null>(null);
@@ -182,23 +207,43 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     void saveComposerDraft(chatId, draft);
   }, [chatId, draft]);
 
-  const onNewChat = useCallback(() => {
-    if (chat.status === 'streaming') chat.stop();
+  const clearEditMode = useCallback((restoreComposer: boolean) => {
+    if (restoreComposer && composerSnapshotRef.current) {
+      setDraft(composerSnapshotRef.current.draft);
+      setAttachments(composerSnapshotRef.current.attachments);
+    }
+    composerSnapshotRef.current = null;
+    setEditingMessageId(null);
+    setEditDraft('');
+    setEditAttachments([]);
+  }, []);
+
+  const clearComposerState = useCallback(() => {
+    composerSnapshotRef.current = null;
     setDraft('');
     setAttachments([]);
+    setEditingMessageId(null);
+    setEditDraft('');
+    setEditAttachments([]);
+  }, []);
+
+  const onNewChat = useCallback(() => {
+    if (chat.status === 'streaming') chat.stop();
+    setPendingBranchAction(null);
+    clearComposerState();
     const nextId = makeChatId();
     setChatId(nextId);
-  }, [chat]);
+  }, [chat, clearComposerState]);
 
   const onSelectChat = useCallback(
     (id: string) => {
       if (id === chatId) return;
       if (chat.status === 'streaming') chat.stop();
-      setDraft('');
-      setAttachments([]);
+      setPendingBranchAction(null);
+      clearComposerState();
       setChatId(id);
     },
-    [chat, chatId],
+    [chat, chatId, clearComposerState],
   );
 
   const onDeleteChat = useCallback(
@@ -208,13 +253,103 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
         await deleteChat(id);
         if (id === chatId) {
           if (chat.status === 'streaming') chat.stop();
-          setDraft('');
-          setAttachments([]);
+          setPendingBranchAction(null);
+          clearComposerState();
           setChatId(makeChatId());
         }
       })();
     },
-    [chat, chatId],
+    [chat, chatId, clearComposerState],
+  );
+
+  const branchIntoChat = useCallback(
+    async (branchMessages: ChatMessage[], action?: PendingBranchPayload) => {
+      if (chat.status === 'streaming') chat.stop();
+      const nextId = makeChatId();
+      await clearComposerDraft(nextId);
+      await saveChat(nextId, {
+        messages: branchMessages,
+        pendingHumanEdits: chat.pendingHumanEditSummaries,
+      });
+      setPendingBranchAction(action ? { chatId: nextId, ...action } : null);
+      clearComposerState();
+      setChatId(nextId);
+    },
+    [chat, clearComposerState],
+  );
+
+  useEffect(() => {
+    if (!pendingBranchAction) return;
+    if (pendingBranchAction.chatId !== chatId) return;
+    if (!chat.isLoaded || chat.status === 'streaming') return;
+    setPendingBranchAction(null);
+    void (async () => {
+      if (pendingBranchAction.kind === 'retry') {
+        await chat.regenerateMessage(pendingBranchAction.anchorMessageId);
+        return;
+      }
+      await chat.sendMessage(
+        pendingBranchAction.text,
+        pendingBranchAction.attachments.length > 0 ? pendingBranchAction.attachments : undefined,
+      );
+    })();
+  }, [chat, chatId, pendingBranchAction]);
+
+  const isEditing = editingMessageId !== null;
+  const activeDraft = isEditing ? editDraft : draft;
+  const activeAttachments = isEditing ? editAttachments : attachments;
+
+  const setActiveAttachments = useCallback(
+    (updater: (current: ImageAttachment[]) => ImageAttachment[]) => {
+      if (isEditing) {
+        setEditAttachments(updater);
+        return;
+      }
+      setAttachments(updater);
+    },
+    [isEditing],
+  );
+
+  const appendAttachment = useCallback(
+    (attachment: ImageAttachment) => {
+      setActiveAttachments((prev) => [...prev, attachment]);
+    },
+    [setActiveAttachments],
+  );
+
+  const onStartEdit = useCallback(
+    (message: ChatMessage) => {
+      if (chat.status === 'streaming' || message.role !== 'user') return;
+      composerSnapshotRef.current = { draft, attachments };
+      setEditingMessageId(message.id);
+      setEditDraft(getMessageText(message));
+      setEditAttachments(getMessageAttachments(message));
+    },
+    [attachments, chat.status, draft],
+  );
+
+  const onCancelEdit = useCallback(() => {
+    clearEditMode(true);
+  }, [clearEditMode]);
+
+  const onRetryMessage = useCallback(
+    (assistantMessageId: string) => {
+      const anchorMessageId = findRetryAnchorUserMessageId(chat.messages, assistantMessageId);
+      if (!anchorMessageId) return;
+      const branchMessages = takeMessagesThrough(chat.messages, anchorMessageId);
+      void branchIntoChat(branchMessages, {
+        kind: 'retry',
+        anchorMessageId,
+      });
+    },
+    [branchIntoChat, chat.messages],
+  );
+
+  const onDeleteMessage = useCallback(
+    (messageId: string) => {
+      void branchIntoChat(removeMessageById(chat.messages, messageId));
+    },
+    [branchIntoChat, chat.messages],
   );
 
   const onPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
@@ -226,14 +361,11 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       if (!file) continue;
       const reader = new FileReader();
       reader.onload = () => {
-        setAttachments((prev) => [
-          ...prev,
-          { dataUrl: reader.result as string, mediaType: item.type },
-        ]);
+        appendAttachment({ dataUrl: reader.result as string, mediaType: item.type });
       };
       reader.readAsDataURL(file);
     }
-  }, []);
+  }, [appendAttachment]);
 
   const onFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -242,14 +374,11 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       if (!file.type.startsWith('image/')) continue;
       const reader = new FileReader();
       reader.onload = () => {
-        setAttachments((prev) => [
-          ...prev,
-          { dataUrl: reader.result as string, mediaType: file.type },
-        ]);
+        appendAttachment({ dataUrl: reader.result as string, mediaType: file.type });
       };
       reader.readAsDataURL(file);
     }
-  }, []);
+  }, [appendAttachment]);
 
   const messageListRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -268,13 +397,29 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     void chat.sendMessage(text, atts.length > 0 ? atts : undefined);
   }, [attachments, chat, chatId, draft]);
 
+  const submitEditedBranch = useCallback(() => {
+    if (!editingMessageId) return;
+    const branchMessages = takeMessagesBefore(chat.messages, editingMessageId);
+    const text = editDraft;
+    const atts = editAttachments;
+    void branchIntoChat(branchMessages, {
+      kind: 'edit-submit',
+      text,
+      attachments: atts,
+    });
+  }, [branchIntoChat, chat.messages, editAttachments, editDraft, editingMessageId]);
+
   const onSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       if (!chat.canSend) return;
+      if (isEditing) {
+        submitEditedBranch();
+        return;
+      }
       sendWithReset();
     },
-    [chat.canSend, sendWithReset],
+    [chat.canSend, isEditing, sendWithReset, submitEditedBranch],
   );
 
   const onKeyDown = useCallback(
@@ -282,17 +427,23 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         if (!chat.canSend) return;
+        if (isEditing) {
+          submitEditedBranch();
+          return;
+        }
         sendWithReset();
       }
     },
-    [chat.canSend, sendWithReset],
+    [chat.canSend, isEditing, sendWithReset, submitEditedBranch],
   );
 
   const modelOptions = useMemo(() => MODELS[settings.provider], [settings.provider]);
   const placeholderHint = apiKey
     ? `Ask ${PROVIDER_LABELS[settings.provider]} (${settings.model}) to edit the world…`
     : `Add an ${PROVIDER_LABELS[settings.provider]} API key to start chatting`;
-  const hasDraft = draft.length > 0;
+  const hasDraft = activeDraft.length > 0;
+  const canSubmitComposer = chat.canSend && (activeDraft.trim().length > 0 || activeAttachments.length > 0);
+  const messageActionsDisabled = chat.status === 'streaming' || !chat.isLoaded || isEditing;
 
   const resolvedPanelStyle: CSSProperties = onClose
     ? { ...panelStyle, height: '100%', width: '100%', borderLeft: 'none' }
@@ -467,7 +618,14 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           </div>
         )}
         {chat.messages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            actionsDisabled={messageActionsDisabled}
+            onDelete={() => onDeleteMessage(msg.id)}
+            onEdit={msg.role === 'user' ? () => onStartEdit(msg) : undefined}
+            onRetry={msg.role === 'assistant' ? () => onRetryMessage(msg.id) : undefined}
+          />
         ))}
         {chat.status === 'streaming' && <div style={streamingIndicatorStyle}>…thinking</div>}
       </div>
@@ -493,14 +651,24 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           style={{ display: 'none' }}
           onChange={onFileChange}
         />
-        {attachments.length > 0 && (
+        {isEditing && (
+          <div style={editBannerStyle}>
+            <div style={editBannerTextStyle}>
+              Editing an earlier message. Submitting creates a new branched chat and keeps this one intact.
+            </div>
+            <button type="button" onClick={onCancelEdit} style={ghostButtonStyle}>
+              Cancel edit
+            </button>
+          </div>
+        )}
+        {activeAttachments.length > 0 && (
           <div style={thumbnailStripStyle}>
-            {attachments.map((att, i) => (
+            {activeAttachments.map((att, i) => (
               <div key={i} style={thumbnailWrapStyle}>
                 <img src={att.dataUrl} style={thumbnailStyle} alt="" />
                 <button
                   type="button"
-                  onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                  onClick={() => setActiveAttachments((prev) => prev.filter((_, j) => j !== i))}
                   style={thumbnailRemoveStyle}
                   title="Remove"
                 >
@@ -511,11 +679,17 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
           </div>
         )}
         <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          value={activeDraft}
+          onChange={(e) => {
+            if (isEditing) {
+              setEditDraft(e.target.value);
+              return;
+            }
+            setDraft(e.target.value);
+          }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
-          placeholder={placeholderHint}
+          placeholder={isEditing ? 'Edit this earlier message, then submit a branched retry…' : placeholderHint}
           rows={3}
           style={hasDraft ? expandedTextareaStyle : textareaStyle}
           disabled={chat.status === 'streaming'}
@@ -537,14 +711,14 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
               </button>
               <button
                 type="submit"
-                disabled={!chat.canSend || (draft.trim().length === 0 && attachments.length === 0)}
+                disabled={!canSubmitComposer}
                 style={
-                  chat.canSend && (draft.trim().length > 0 || attachments.length > 0)
+                  canSubmitComposer
                     ? primaryButtonStyle
                     : disabledButtonStyle
                 }
               >
-                Send
+                {isEditing ? 'Branch + send' : 'Send'}
               </button>
             </>
           )}
@@ -554,11 +728,55 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   );
 });
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  actionsDisabled,
+  onDelete,
+  onEdit,
+  onRetry,
+}: {
+  message: ChatMessage;
+  actionsDisabled: boolean;
+  onDelete: () => void;
+  onEdit?: () => void;
+  onRetry?: () => void;
+}) {
   const isUser = message.role === 'user';
   return (
     <div style={isUser ? userBubbleStyle : assistantBubbleStyle}>
-      <div style={roleLabelStyle}>{isUser ? 'You' : 'Assistant'}</div>
+      <div style={messageHeaderStyle}>
+        <div style={roleLabelStyle}>{isUser ? 'You' : 'Assistant'}</div>
+        <div style={messageActionsStyle}>
+          {onEdit && (
+            <button
+              type="button"
+              onClick={onEdit}
+              disabled={actionsDisabled}
+              style={actionsDisabled ? disabledInlineActionStyle : inlineActionStyle}
+            >
+              Edit
+            </button>
+          )}
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              disabled={actionsDisabled}
+              style={actionsDisabled ? disabledInlineActionStyle : inlineActionStyle}
+            >
+              Retry
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={actionsDisabled}
+            style={actionsDisabled ? disabledInlineActionStyle : dangerInlineActionStyle}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
       {message.parts.map((part, idx) => (
         <PartView key={idx} part={part} />
       ))}
@@ -594,6 +812,8 @@ function PartView({ part }: { part: ChatPart }) {
   }
   if (part.type === 'tool-result') {
     const isError = Boolean(part.isError);
+    const typedPart = part as ChatToolResultPart;
+    const images = extractToolResultImages(typedPart);
     return (
       <details
         open={isError}
@@ -605,7 +825,10 @@ function PartView({ part }: { part: ChatPart }) {
           </span>{' '}
           {part.toolName}
         </summary>
-        <pre style={codeBlockStyle}>{jsonStringify(part.output)}</pre>
+        <pre style={codeBlockStyle}>{jsonStringify(compactToolResultOutput(typedPart))}</pre>
+        {images.map((img, i) => (
+          <img key={i} src={img.dataUrl} style={screenshotImageStyle} alt="Captured screenshot" />
+        ))}
       </details>
     );
   }
@@ -924,11 +1147,47 @@ const assistantBubbleStyle: CSSProperties = {
   gap: 6,
 };
 
+const messageHeaderStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 10,
+};
+
 const roleLabelStyle: CSSProperties = {
   fontSize: 10,
   letterSpacing: '0.16em',
   textTransform: 'uppercase',
   color: '#86d6f5',
+};
+
+const messageActionsStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  flexWrap: 'wrap',
+};
+
+const inlineActionStyle: CSSProperties = {
+  border: '1px solid rgba(167, 208, 237, 0.16)',
+  borderRadius: 999,
+  background: 'rgba(20, 34, 48, 0.96)',
+  color: '#eef7ff',
+  fontSize: 11,
+  padding: '3px 8px',
+  cursor: 'pointer',
+};
+
+const dangerInlineActionStyle: CSSProperties = {
+  ...inlineActionStyle,
+  color: '#ffbcb0',
+  borderColor: 'rgba(255, 133, 115, 0.2)',
+};
+
+const disabledInlineActionStyle: CSSProperties = {
+  ...inlineActionStyle,
+  color: 'rgba(238, 247, 255, 0.4)',
+  cursor: 'not-allowed',
 };
 
 const textPartStyle: CSSProperties = {
@@ -1040,6 +1299,23 @@ const pendingBannerStyle: CSSProperties = {
   fontSize: 12,
 };
 
+const editBannerStyle: CSSProperties = {
+  border: '1px solid rgba(158, 216, 111, 0.28)',
+  background: 'rgba(158, 216, 111, 0.12)',
+  color: '#d6efaf',
+  borderRadius: 12,
+  padding: '8px 12px',
+  fontSize: 12,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 10,
+};
+
+const editBannerTextStyle: CSSProperties = {
+  flex: 1,
+};
+
 const composerStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
@@ -1121,4 +1397,12 @@ const attachedImageStyle: CSSProperties = {
   borderRadius: 8,
   border: '1px solid rgba(116, 212, 255, 0.2)',
   display: 'block',
+};
+
+const screenshotImageStyle: CSSProperties = {
+  maxWidth: '100%',
+  borderRadius: 6,
+  border: '1px solid rgba(116, 212, 255, 0.25)',
+  display: 'block',
+  marginTop: 8,
 };
