@@ -1609,6 +1609,8 @@ impl WasmSimWorld {
 pub struct WasmLocalSession {
     inner: LocalSession,
     debug_pipeline: DebugRenderPipeline,
+    debug_scratch_vertices: Vec<f32>,
+    debug_scratch_colors: Vec<f32>,
 }
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
@@ -1627,7 +1629,12 @@ impl WasmLocalSession {
             }
             None => LocalSession::new(),
         };
-        Ok(Self { inner, debug_pipeline: default_debug_pipeline() })
+        Ok(Self {
+            inner,
+            debug_pipeline: default_debug_pipeline(),
+            debug_scratch_vertices: Vec::new(),
+            debug_scratch_colors: Vec::new(),
+        })
     }
 
     pub fn connect(&mut self) {
@@ -2005,9 +2012,24 @@ impl WasmLocalSession {
     }
 
     #[wasm_bindgen(js_name = debugRender)]
-    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
-        let buffers = self.inner.debug_render(&mut self.debug_pipeline, mode_bits);
-        DebugRenderBuffers::from_line_buffers(buffers)
+    pub fn debug_render(&mut self, mode_bits: u32) -> u32 {
+        self.inner.debug_render(
+            &mut self.debug_pipeline,
+            mode_bits,
+            &mut self.debug_scratch_vertices,
+            &mut self.debug_scratch_colors,
+        );
+        (self.debug_scratch_vertices.len() / 3) as u32
+    }
+
+    #[wasm_bindgen(js_name = debugRenderPositions)]
+    pub fn debug_render_positions(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_vertices) }
+    }
+
+    #[wasm_bindgen(js_name = debugRenderColors)]
+    pub fn debug_render_colors(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_colors) }
     }
 }
 
