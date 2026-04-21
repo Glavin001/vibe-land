@@ -219,7 +219,9 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     blockerToi: number,
   ): number[];
   getVehicleDebug(vehicleId: number): number[];
-  debugRender(modeBits: number): WasmDebugRenderBuffers;
+  debugRender(modeBits: number): number; // returns vertex (endpoint) count
+  debugRenderPositions(): Float32Array;  // zero-copy view, valid until next debugRender call
+  debugRenderColors(): Float32Array;     // zero-copy RGB view, valid until next debugRender call
   drainPackets(): Uint8Array;
 
   // ── Client-local ragdoll bodies ──────────────────────────────────────────
