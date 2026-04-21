@@ -166,7 +166,10 @@ describe('PracticeBotRuntime.create', () => {
     });
 
     runtime.attach(host, getSelf);
-    vi.advanceTimersByTime(100);
+    // Advance past the default standAndShootTicks (18 ticks ≈ 300 ms at 60 Hz)
+    // so the bot exits the "stand and shoot" acquisition phase and enters the
+    // normal follow_target movement loop before we sample the debug state.
+    vi.advanceTimersByTime(500);
 
     let info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
@@ -258,7 +261,9 @@ describe('PracticeBotRuntime.create', () => {
     });
 
     runtime.attach(host, getSelf);
-    vi.advanceTimersByTime(100);
+    // Advance past the default standAndShootTicks (18 ticks ≈ 300 ms at 60 Hz)
+    // so the bot exits "stand and shoot" mode before we sample the debug state.
+    vi.advanceTimersByTime(500);
 
     let info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
