@@ -105,6 +105,23 @@ type EditorMode = 'edit' | 'play';
 type EditorTool = 'select' | 'terrain' | 'paint';
 type TerrainToolMode = 'sculpt' | 'ramp' | 'add-tile' | 'delete-tile' | `custom:${string}`;
 type TransformMode = 'translate' | 'rotate' | 'scale';
+type BuilderSidebarTab = 'select' | 'terrain' | 'objects';
+
+const MOBILE_BREAKPOINT = 900;
+const NARROW_MOBILE_DRAWER_BREAKPOINT = 480;
+
+function useIsMobile(breakpoint: number = MOBILE_BREAKPOINT): boolean {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false,
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => setIsMobile(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
 
 type PublishStatus =
   | { kind: 'idle' }
@@ -168,6 +185,20 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     | { kind: 'loaded'; id: string; name: string }
     | { kind: 'error'; id: string; message: string }
   >(publishedId ? { kind: 'loading', id: publishedId } : { kind: 'idle' });
+  const isMobile = useIsMobile();
+  const isNarrowMobile = useIsMobile(NARROW_MOBILE_DRAWER_BREAKPOINT);
+  const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
+  const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<BuilderSidebarTab>('select');
+  const [aboutOpen, setAboutOpen] = useState(true);
+  const [fileOpen, setFileOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => {
+    if (!isMobile) {
+      setLeftDrawerOpen(false);
+      setRightDrawerOpen(false);
+    }
+  }, [isMobile]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
@@ -816,6 +847,40 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
 
   const canUndo = editHistory.undoStack.length > 0;
   const canRedo = editHistory.redoStack.length > 0;
+  const authoredObjectCount = world.staticProps.length + world.dynamicEntities.length + world.spawnAreas.length;
+  const activeTerrainPanel = tool === 'paint' ? 'paint' : terrainToolMode;
+  const commitCount = editHistory.undoStack.length;
+  const backupCount = history.length;
+
+  useEffect(() => {
+    setSidebarTab((current) => {
+      if (current === 'objects') {
+        return current;
+      }
+      return tool === 'select' ? 'select' : 'terrain';
+    });
+  }, [tool]);
+
+  const handleSelectSidebarTab = useCallback((nextTab: BuilderSidebarTab) => {
+    setSidebarTab(nextTab);
+    if (nextTab === 'select') {
+      setTool('select');
+      return;
+    }
+    if (nextTab === 'terrain' && tool === 'select') {
+      setTool('terrain');
+    }
+  }, [tool]);
+
+  const handleSelectTerrainPanel = useCallback((nextPanel: typeof activeTerrainPanel) => {
+    setSidebarTab('terrain');
+    if (nextPanel === 'paint') {
+      setTool('paint');
+      return;
+    }
+    setTool('terrain');
+    setTerrainToolMode(nextPanel);
+  }, []);
 
   const terrainMaterials = useMemo(() => getTerrainMaterials(world), [world]);
 
@@ -950,19 +1015,54 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         routeLabel="/godmode"
         autoConnect
         sessionKey={playSessionKey}
+        hideTopNav
+        hideStatusBanner
         overlay={(
-          <div style={godModePlayOverlayStyle}>
-            <span>Godmode Play uses the same local-practice runtime with the current authored world.</span>
-            <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World</button>
-            <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>Back To Edit</button>
+          <div className={godModePlayOverlayClassName}>
+            <div className={godModePlayBadgeClassName}>World Builder</div>
+            <div className={godModePlayActionsClassName}>
+              <button type="button" onClick={handleResetPlayWorld} style={secondaryButtonStyle}>Reset World</button>
+              <button type="button" onClick={handleReturnToEdit} style={secondaryButtonStyle}>To Edit</button>
+            </div>
           </div>
         )}
       />
     );
   }
 
+  const pageStyleDynamic: CSSProperties = isMobile
+    ? {
+        ...pageStyle,
+        gridTemplateColumns: '1fr',
+        gridTemplateRows: '48px 1fr',
+      }
+    : pageStyle;
+
+  const sidebarStyleDynamic: CSSProperties | undefined = isMobile
+    ? {
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        bottom: 0,
+        width: isNarrowMobile ? '100vw' : 'min(86vw, 360px)',
+        zIndex: 60,
+        transform: leftDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+        transition: 'transform 0.22s ease',
+        boxShadow: leftDrawerOpen ? '0 0 30px rgba(0, 0, 0, 0.55)' : 'none',
+      }
+    : undefined;
+
+  const viewportStyleDynamic: CSSProperties = isMobile
+    ? { ...viewportStyle, height: '100%', gridRow: '2 / 3' }
+    : viewportStyle;
+
+  const closeDrawers = () => {
+    setLeftDrawerOpen(false);
+    setRightDrawerOpen(false);
+  };
+
   return (
-    <div style={pageStyle}>
+    <div style={pageStyleDynamic}>
       <input
         ref={fileInputRef}
         type="file"
@@ -970,488 +1070,610 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         style={{ display: 'none' }}
         onChange={(event) => void handleImportFile(event)}
       />
-      <aside style={sidebarStyle}>
-        <div>
-          <div style={eyebrowStyle}>vibe-land</div>
-          <h1 style={titleStyle}>World Builder</h1>
-          <p style={bodyStyle}>
-            Edit the authored world document locally, autosave drafts in your browser, and launch a fresh single-player simulation from the current authored state.
-          </p>
+      {isMobile && (
+        <div className="relative z-40 col-span-full row-start-1 grid h-12 w-screen max-w-none grid-cols-[40px_minmax(0,1fr)_40px] items-center gap-2 border-b border-[rgba(141,186,221,0.14)] bg-[rgba(3,8,14,0.96)] px-2.5 text-[#eef7ff]">
+          <button
+            type="button"
+            onClick={() => {
+              setRightDrawerOpen(false);
+              setLeftDrawerOpen((v) => !v);
+            }}
+            className="flex h-9 w-10 items-center justify-center rounded-[10px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.7)] p-0 text-[#eef7ff]"
+            aria-label="Toggle world builder tools"
+          >
+            <span className="inline-flex h-3 w-4 flex-col justify-between">
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
+              <span className="block h-0.5 rounded-sm bg-[#86d6f5]" />
+            </span>
+          </button>
+          <div className="pointer-events-none min-w-0 truncate px-2 text-center text-xs font-semibold uppercase tracking-[0.12em] text-[#86d6f5]">
+            World Builder
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setLeftDrawerOpen(false);
+              setRightDrawerOpen((v) => !v);
+            }}
+            className="flex h-9 w-10 items-center justify-center rounded-[10px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.7)] p-0 text-[#eef7ff]"
+            aria-label="Toggle AI chat"
+          >
+            <span className="text-base leading-none">💬</span>
+          </button>
         </div>
-
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Mode</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={() => setMode('edit')} style={mode === 'edit' ? activeButtonStyle : secondaryButtonStyle}>Edit</button>
-            <button type="button" onClick={handleStartPlay} style={mode === 'play' ? activeButtonStyle : secondaryButtonStyle}>Play</button>
-          </div>
-          <div style={mutedTextStyle}>
-            Leaving Play always returns to the authored document. Runtime drift is discarded.
-          </div>
-        </div>
-
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Draft</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={handleExport} style={primaryButtonStyle}>Export JSON</button>
-            <button type="button" onClick={handleImportButton} style={secondaryButtonStyle}>Import JSON</button>
-            <button type="button" onClick={handleResetToDefault} style={secondaryButtonStyle}>Reset To Default</button>
-            <button type="button" onClick={handleClearAll} style={dangerButtonStyle}>Clear All</button>
-          </div>
-          <div style={mutedTextStyle}>
-            Autosaves are stored in IndexedDB for larger worlds. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
-          </div>
-        </div>
-
-        {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
-          <div style={sectionStyle}>
-            <div style={sectionTitleStyle}>Cloud</div>
-            <div style={buttonRowStyle}>
-              {cloudEnabled && (
+      )}
+      {isMobile && (leftDrawerOpen || rightDrawerOpen) && (
+        <div
+          onClick={closeDrawers}
+          style={drawerBackdropStyle}
+          aria-hidden="true"
+        />
+      )}
+      <aside style={sidebarStyleDynamic} className={builderSidebarClassName}>
+        <div className={builderHeaderClassName}>
+          <div className="flex items-center justify-between gap-2">
+            <h1 className={builderCompactTitleClassName}>World Builder</h1>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={handleStartPlay} className={builderHeaderPlayButtonClassName}>Play</button>
+              {isMobile && (
                 <button
                   type="button"
-                  onClick={() => void handleStartPublish()}
-                  style={primaryButtonStyle}
-                  disabled={
-                    publishStatus.kind === 'capturing'
-                    || publishStatus.kind === 'preview'
-                    || publishStatus.kind === 'publishing'
-                    || mode !== 'edit'
-                  }
+                  onClick={() => setLeftDrawerOpen(false)}
+                  className={drawerCloseButtonClassName}
+                  aria-label="Close world builder tools"
                 >
-                  {publishStatus.kind === 'capturing' ? 'Capturing…' : 'Publish to Cloud'}
+                  ✕
                 </button>
               )}
-              <button type="button" onClick={handleOpenGallery} style={secondaryButtonStyle}>
-                Browse Gallery
-              </button>
             </div>
-            {cloudLoadStatus.kind === 'loading' && (
-              <div style={mutedTextStyle}>Loading published world {cloudLoadStatus.id}…</div>
-            )}
-            {cloudLoadStatus.kind === 'loaded' && (
-              <div style={mutedTextStyle}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
-            )}
-            {cloudLoadStatus.kind === 'error' && (
-              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
-                Failed to load published world: {cloudLoadStatus.message}
-              </div>
-            )}
-            {publishStatus.kind === 'idle' && cloudEnabled && (
-              <div style={mutedTextStyle}>
-                Publishing captures a screenshot and saves your world to the cloud. Published worlds appear in the gallery.
-              </div>
-            )}
-            {publishStatus.kind === 'success' && (
-              <div style={mutedTextStyle}>
-                Published as <code>{publishStatus.id}</code>.{' '}
-                {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
-                <div style={{ marginTop: 4, wordBreak: 'break-all', color: '#9cd4ff' }}>{publishStatus.shareUrl}</div>
-              </div>
-            )}
-            {publishStatus.kind === 'error' && (
-              <div style={{ ...mutedTextStyle, color: '#ffb4a6' }}>
-                Publish failed: {publishStatus.message}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Undo / Redo</div>
-          <div style={buttonRowStyle}>
-            <button type="button" onClick={handleUndo} style={secondaryButtonStyle} disabled={!canUndo}>Undo</button>
-            <button type="button" onClick={handleRedo} style={secondaryButtonStyle} disabled={!canRedo}>Redo</button>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="text"
-              value={commitMessageDraft}
-              onChange={(e) => setCommitMessageDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
-              placeholder="Commit message..."
-              style={{ flex: 1, padding: '5px 8px', fontSize: 12, background: 'rgba(20, 34, 48, 0.96)', color: '#eef7ff', border: '1px solid rgba(167, 208, 237, 0.18)', borderRadius: 8, fontFamily: 'inherit' }}
-            />
-            <button type="button" onClick={handleHumanCommit} style={secondaryButtonStyle} disabled={!commitMessageDraft.trim()}>Commit</button>
-          </div>
-          {editHistory.undoStack.length > 0 && (
-            <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
-              {editHistory.undoStack.map((entry) => (
-                <div key={entry.commitId} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '3px 4px', borderRadius: 6, background: 'rgba(0,0,0,0.18)' }}>
-                  <code style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(134,214,245,0.7)', flexShrink: 0 }}>{entry.commitId}</code>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'rgba(238,247,255,0.82)' }}>{entry.commitMessage}</span>
-                  <span style={{
-                    fontSize: 9,
-                    padding: '1px 5px',
-                    borderRadius: 4,
-                    flexShrink: 0,
-                    background: entry.source === 'ai' ? 'rgba(116,212,255,0.2)' : entry.source === 'rollback' ? 'rgba(255,200,100,0.2)' : 'rgba(255,255,255,0.08)',
-                    color: entry.source === 'ai' ? '#bae8ff' : entry.source === 'rollback' ? '#ffe0a0' : 'rgba(238,247,255,0.5)',
-                  }}>{entry.source}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div style={mutedTextStyle}>
-            Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
           </div>
         </div>
 
         {mode === 'edit' && (
           <>
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Tools</div>
-              <div style={buttonRowStyle}>
-                <button type="button" onClick={() => setTool('select')} style={tool === 'select' ? activeButtonStyle : secondaryButtonStyle}>Select</button>
-                <button type="button" onClick={() => setTool('terrain')} style={tool === 'terrain' ? activeButtonStyle : secondaryButtonStyle}>Terrain</button>
-                <button type="button" onClick={() => setTool('paint')} style={tool === 'paint' ? activeButtonStyle : secondaryButtonStyle}>Paint</button>
-              </div>
-              {tool === 'terrain' && (
-                <div style={fieldStackStyle}>
-                  <div style={buttonRowStyle}>
-                    <button type="button" onClick={() => setTerrainToolMode('sculpt')} style={terrainToolMode === 'sculpt' ? activeButtonStyle : secondaryButtonStyle}>Sculpt</button>
-                    <button type="button" onClick={() => setTerrainToolMode('add-tile')} style={terrainToolMode === 'add-tile' ? activeButtonStyle : secondaryButtonStyle}>Add Tile</button>
-                    <button type="button" onClick={() => setTerrainToolMode('delete-tile')} style={terrainToolMode === 'delete-tile' ? activeButtonStyle : secondaryButtonStyle}>Delete Tile</button>
+            <div className={builderDisclosureClassName}>
+              <button type="button" onClick={() => setAboutOpen((value) => !value)} className={builderDisclosureButtonClassName}>
+                <span className={builderDisclosureTitleWrapClassName}>
+                  <span className={builderSectionTitleClassName}>About</span>
+                  <span className={builderDisclosureSummaryClassName}>
+                    {world.terrain.tiles.length} tiles · {authoredObjectCount} objects
+                  </span>
+                </span>
+                <span className={builderDisclosureChevronClassName}>{aboutOpen ? '−' : '+'}</span>
+              </button>
+              {aboutOpen && (
+                <div className={builderDisclosureBodyClassName}>
+                  <div className={builderStatsGridClassName}>
+                    <div className={builderStatCardClassName}>
+                      <span className={builderStatLabelClassName}>Tiles</span>
+                      <strong className={builderStatValueClassName}>{world.terrain.tiles.length}</strong>
+                    </div>
+                    <div className={builderStatCardClassName}>
+                      <span className={builderStatLabelClassName}>Objects</span>
+                      <strong className={builderStatValueClassName}>{authoredObjectCount}</strong>
+                    </div>
+                    <div className={builderStatCardClassName}>
+                      <span className={builderStatLabelClassName}>Samples</span>
+                      <strong className={builderStatValueClassName}>{world.terrain.tileGridSize}</strong>
+                    </div>
+                    <div className={builderStatCardClassName}>
+                      <span className={builderStatLabelClassName}>Undo</span>
+                      <strong className={builderStatValueClassName}>{commitCount}</strong>
+                    </div>
                   </div>
-                  <label style={fieldLabelStyle}>
-                    Stencil
-                    <select
-                      value={terrainToolMode === 'ramp' || terrainToolMode.startsWith('custom:') ? terrainToolMode : ''}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        if (value === '') return;
-                        if (value === 'ramp') {
-                          setTerrainToolMode('ramp');
-                          return;
-                        }
-                        if (value.startsWith('custom:')) {
-                          const id = value.slice(7);
-                          const stencil = customStencils.find((s) => s.id === id);
-                          setTerrainToolMode(`custom:${id}`);
-                          if (stencil && !customStencilParams[id]) {
-                            setCustomStencilParams((prev) => ({ ...prev, [id]: stencil.defaultParams ?? {} }));
-                          }
-                        }
-                      }}
-                      style={stencilSelectStyle}
-                    >
-                      <option value="" disabled>Select stencil…</option>
-                      <option value="ramp">Ramp</option>
-                      {customStencils.map((s) => (
-                        <option key={s.id} value={`custom:${s.id}`} title={s.description}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {terrainToolMode === 'sculpt' ? (
-                    <>
-                      <label style={fieldLabelStyle}>
-                        Radius
-                        <input type="range" min="2" max="20" step="0.5" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
-                        <span>{brushRadius.toFixed(1)}m</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Strength
-                        <input type="range" min="0.02" max="0.35" step="0.01" value={brushStrength} onChange={(event) => setBrushStrength(Number(event.target.value))} />
-                        <span>{brushStrength.toFixed(2)}</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Lower Plateau
-                        <input
-                          type="number"
-                          min={TERRAIN_MIN_HEIGHT}
-                          max={brushMaxHeight}
-                          step="0.5"
-                          value={brushMinHeight}
-                          onChange={(event) => setBrushMinHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, brushMaxHeight))}
-                        />
-                        <span>Terrain under this height stops lowering.</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Upper Plateau
-                        <input
-                          type="number"
-                          min={brushMinHeight}
-                          max={TERRAIN_MAX_HEIGHT}
-                          step="0.5"
-                          value={brushMaxHeight}
-                          onChange={(event) => setBrushMaxHeight(clampBrushHeight(Number(event.target.value), brushMinHeight, TERRAIN_MAX_HEIGHT))}
-                        />
-                        <span>Terrain above this height stops raising.</span>
-                      </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setBrushMode('raise')} style={brushMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise</button>
-                        <button type="button" onClick={() => setBrushMode('lower')} style={brushMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Lower</button>
+                  <div className={builderMutedTextClassName}>
+                    Terrain grid: {world.terrain.tileGridSize} x {world.terrain.tileGridSize} samples per tile. Sparse terrain can expand from exposed edges directly in the viewport.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className={builderDisclosureClassName}>
+              <button type="button" onClick={() => setFileOpen((value) => !value)} className={builderDisclosureButtonClassName}>
+                <span className={builderDisclosureTitleWrapClassName}>
+                  <span className={builderSectionTitleClassName}>File</span>
+                  <span className={builderDisclosureSummaryClassName}>
+                    {lastImportName ? `Imported ${lastImportName}` : 'Export, import, reset'}
+                  </span>
+                </span>
+                <span className={builderDisclosureChevronClassName}>{fileOpen ? '−' : '+'}</span>
+              </button>
+              {fileOpen && (
+                <div className={builderDisclosureBodyClassName}>
+                  <div className={builderButtonGridClassName}>
+                    <button type="button" onClick={handleExport} className={builderButtonClassName('primary')}>Export JSON</button>
+                    <button type="button" onClick={handleImportButton} className={builderButtonClassName('secondary')}>Import JSON</button>
+                    <button type="button" onClick={handleResetToDefault} className={builderButtonClassName('secondary')}>Reset to Default</button>
+                    <button type="button" onClick={handleClearAll} className={builderButtonClassName('danger')}>Clear All</button>
+                  </div>
+                  <div className={builderMutedTextClassName}>
+                    Autosaves live in IndexedDB. {lastImportName ? `Last import: ${lastImportName}` : 'No imported file yet.'}
+                  </div>
+                  {(cloudEnabled || cloudLoadStatus.kind !== 'idle') && (
+                    <div className="flex flex-col gap-2 border-t border-[rgba(141,186,221,0.08)] pt-2">
+                      <div className={builderSectionTitleClassName}>Cloud</div>
+                      <div className={builderButtonRowClassName}>
+                        {cloudEnabled && (
+                          <button
+                            type="button"
+                            onClick={() => void handleStartPublish()}
+                            className={builderButtonClassName('primary')}
+                            disabled={
+                              publishStatus.kind === 'capturing'
+                              || publishStatus.kind === 'preview'
+                              || publishStatus.kind === 'publishing'
+                              || mode !== 'edit'
+                            }
+                          >
+                            {publishStatus.kind === 'capturing' ? 'Capturing…' : 'Publish to Cloud'}
+                          </button>
+                        )}
+                        <button type="button" onClick={handleOpenGallery} className={builderButtonClassName('secondary')}>
+                          Browse Gallery
+                        </button>
                       </div>
-                      <div style={mutedTextStyle}>
-                        {brushMode === 'lower'
-                          ? `Lowering plateaus at ${brushMinHeight.toFixed(1)}m.`
-                          : `Raising plateaus at ${brushMaxHeight.toFixed(1)}m.`}
-                      </div>
-                    </>
-                  ) : terrainToolMode === 'ramp' ? (
-                    <>
-                      <label style={fieldLabelStyle}>
-                        Strength
-                        <input type="range" min="0.02" max="1" step="0.02" value={rampStrength} onChange={(event) => setRampStrength(Number(event.target.value))} />
-                        <span>{rampStrength.toFixed(2)}</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Width
-                        <input type="range" min="2" max="30" step="0.5" value={rampWidth} onChange={(event) => setRampWidth(Number(event.target.value))} />
-                        <span>{rampWidth.toFixed(1)}m</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Length
-                        <input type="range" min="4" max="40" step="0.5" value={rampLength} onChange={(event) => setRampLength(Number(event.target.value))} />
-                        <span>{rampLength.toFixed(1)}m</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Grade
-                        <input type="range" min="1" max="100" step="1" value={rampGradePct} onChange={(event) => setRampGradePct(Number(event.target.value))} />
-                        <span>{rampGradePct.toFixed(0)}%</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Direction
-                        <input
-                          type="range"
-                          min="0"
-                          max="355"
-                          step="5"
-                          value={rampYawDegrees}
-                          onChange={(event) => setRampYawDegrees(Number(event.target.value))}
-                        />
-                        <span>{`${rampYawDegrees.toFixed(0)}deg start -> end`}</span>
-                      </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampTargetEdge('start')} style={rampTargetEdge === 'start' ? activeButtonStyle : secondaryButtonStyle}>Target Start</button>
-                        <button type="button" onClick={() => setRampTargetEdge('end')} style={rampTargetEdge === 'end' ? activeButtonStyle : secondaryButtonStyle}>Target End</button>
-                      </div>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampTargetKind('min')} style={rampTargetKind === 'min' ? activeButtonStyle : secondaryButtonStyle}>Target Min</button>
-                        <button type="button" onClick={() => setRampTargetKind('max')} style={rampTargetKind === 'max' ? activeButtonStyle : secondaryButtonStyle}>Target Max</button>
-                      </div>
-                      <label style={fieldLabelStyle}>
-                        Target Height
-                        <input
-                          type="number"
-                          min={TERRAIN_MIN_HEIGHT}
-                          max={TERRAIN_MAX_HEIGHT}
-                          step="0.5"
-                          value={rampTargetHeight}
-                          onChange={(event) => setRampTargetHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT))}
-                        />
-                        <span>{rampTargetEdge === 'start' ? 'Start edge' : 'End edge'} uses this {rampTargetKind} height.</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Side Shoulder
-                        <input type="range" min="0" max="20" step="0.5" value={rampSideFalloff} onChange={(event) => setRampSideFalloff(Number(event.target.value))} />
-                        <span>{rampSideFalloff.toFixed(1)}m</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        Start Falloff
-                        <input type="range" min="0" max="20" step="0.5" value={rampStartFalloff} onChange={(event) => setRampStartFalloff(Number(event.target.value))} />
-                        <span>{rampStartFalloff.toFixed(1)}m</span>
-                      </label>
-                      <label style={fieldLabelStyle}>
-                        End Falloff
-                        <input type="range" min="0" max="20" step="0.5" value={rampEndFalloff} onChange={(event) => setRampEndFalloff(Number(event.target.value))} />
-                        <span>{rampEndFalloff.toFixed(1)}m</span>
-                      </label>
-                      <div style={buttonRowStyle}>
-                        <button type="button" onClick={() => setRampMode('raise')} style={rampMode === 'raise' ? activeButtonStyle : secondaryButtonStyle}>Raise Ramp</button>
-                        <button type="button" onClick={() => setRampMode('lower')} style={rampMode === 'lower' ? activeButtonStyle : secondaryButtonStyle}>Cut Ramp</button>
-                      </div>
-                      <div style={mutedTextStyle}>
-                        Hold and drag to morph terrain toward the target ramp. Repeated passes converge instead of stacking.
-                      </div>
-                      <div style={mutedTextStyle}>
-                        {describeRampTool(rampLength, rampGradePct, rampTargetHeight, rampTargetEdge, rampTargetKind, rampMode)}
-                      </div>
-                    </>
-                  ) : terrainToolMode === 'add-tile' ? (
-                    <div style={mutedTextStyle}>
-                      Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
+                      {cloudLoadStatus.kind === 'loading' && (
+                        <div className={builderMutedTextClassName}>Loading published world {cloudLoadStatus.id}…</div>
+                      )}
+                      {cloudLoadStatus.kind === 'loaded' && (
+                        <div className={builderMutedTextClassName}>Loaded &ldquo;{cloudLoadStatus.name}&rdquo; from the gallery.</div>
+                      )}
+                      {cloudLoadStatus.kind === 'error' && (
+                        <div className={builderErrorTextClassName}>Failed to load published world: {cloudLoadStatus.message}</div>
+                      )}
+                      {publishStatus.kind === 'idle' && cloudEnabled && (
+                        <div className={builderMutedTextClassName}>Publishing captures a screenshot and saves your world to the cloud.</div>
+                      )}
+                      {publishStatus.kind === 'success' && (
+                        <div className={builderMutedTextClassName}>
+                          Published as <code>{publishStatus.id}</code>. {publishStatus.clipboardOk ? 'Share link copied to clipboard.' : 'Copy the share link below.'}
+                          <div className="mt-1 break-all text-[#9cd4ff]">{publishStatus.shareUrl}</div>
+                        </div>
+                      )}
+                      {publishStatus.kind === 'error' && (
+                        <div className={builderErrorTextClassName}>Publish failed: {publishStatus.message}</div>
+                      )}
                     </div>
-                  ) : terrainToolMode === 'delete-tile' ? (
-                    <div style={mutedTextStyle}>
-                      Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
-                    </div>
-                  ) : activeCustomStencil ? (
-                    <CustomStencilPanel
-                      stencil={activeCustomStencil}
-                      params={activeCustomParams}
-                      onChange={(nextParams) => {
-                        if (!activeCustomStencilId) return;
-                        setCustomStencilParams((prev) => ({ ...prev, [activeCustomStencilId]: nextParams }));
-                      }}
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className={builderDisclosureClassName}>
+              <button type="button" onClick={() => setHistoryOpen((value) => !value)} className={builderDisclosureButtonClassName}>
+                <span className={builderDisclosureTitleWrapClassName}>
+                  <span className={builderSectionTitleClassName}>History</span>
+                  <span className={builderDisclosureSummaryClassName}>
+                    {commitCount} commits · {backupCount} backups
+                  </span>
+                </span>
+                <span className={builderDisclosureChevronClassName}>{historyOpen ? '−' : '+'}</span>
+              </button>
+              {historyOpen && (
+                <div className={builderDisclosureBodyClassName}>
+                  <div className={builderButtonGridClassName}>
+                    <button type="button" onClick={handleUndo} className={builderButtonClassName('secondary')} disabled={!canUndo}>Undo</button>
+                    <button type="button" onClick={handleRedo} className={builderButtonClassName('secondary')} disabled={!canRedo}>Redo</button>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={commitMessageDraft}
+                      onChange={(e) => setCommitMessageDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') handleHumanCommit(); }}
+                      placeholder="Commit message..."
+                      className="min-w-0 flex-1 rounded-[9px] border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.96)] px-2.5 py-2 text-xs text-[#eef7ff] placeholder:text-[rgba(238,247,255,0.38)]"
                     />
-                  ) : null}
+                    <button type="button" onClick={handleHumanCommit} className={builderButtonClassName('secondary')} disabled={!commitMessageDraft.trim()}>Commit</button>
+                  </div>
+                  <div className={builderMutedTextClassName}>
+                    Cmd/Ctrl+Z undo. Shift+Cmd/Ctrl+Z or Ctrl+Y redo.
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className={builderSectionTitleClassName}>Commits</div>
+                    {editHistory.undoStack.length > 0 ? (
+                      <div className="flex max-h-44 flex-col gap-1 overflow-y-auto text-[11px]">
+                        {editHistory.undoStack.map((entry) => (
+                          <div key={entry.commitId} className="flex items-center gap-1.5 rounded-lg bg-[rgba(0,0,0,0.18)] px-1.5 py-1.5">
+                            <code className="shrink-0 font-mono text-[10px] text-[rgba(134,214,245,0.7)]">{entry.commitId}</code>
+                            <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[rgba(238,247,255,0.82)]">{entry.commitMessage}</span>
+                            <span className={builderHistorySourceBadgeClassName(entry.source)}>{entry.source}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={builderMutedTextClassName}>No commits yet.</div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className={builderSectionTitleClassName}>Backups</div>
+                    {history.length > 0 ? (
+                      <div className={builderHistoryListClassName}>
+                        {history.slice(0, 6).map((revision) => (
+                          <button
+                            key={revision.id}
+                            type="button"
+                            onClick={() => handleRestoreRevision(revision)}
+                            className={builderHistoryButtonClassName}
+                          >
+                            <span>{revision.summary}</span>
+                            <span className={builderMutedTextClassName}>{new Date(revision.savedAt).toLocaleString()}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={builderMutedTextClassName}>No backups yet.</div>
+                    )}
+                  </div>
                 </div>
               )}
-              {tool === 'paint' && (
-                <div style={fieldStackStyle}>
-                  <div style={mutedTextStyle}>Material</div>
-                  <div style={buttonRowStyle}>
-                    {terrainMaterials.map((mat, index) => (
-                      <button
-                        key={mat.name}
-                        type="button"
-                        onClick={() => setPaintMaterial(index)}
-                        style={{
-                          ...baseButtonStyle,
-                          background: paintMaterial === index ? mat.color : 'rgba(20, 34, 48, 0.96)',
-                          color: paintMaterial === index ? '#000' : '#eef7ff',
-                          borderColor: paintMaterial === index ? mat.color : 'rgba(167, 208, 237, 0.16)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                        }}
-                      >
-                        <span style={{ width: 12, height: 12, borderRadius: 3, background: mat.color, display: 'inline-block', border: '1px solid rgba(255,255,255,0.2)' }} />
-                        {mat.name}
-                      </button>
-                    ))}
+            </div>
+
+            <div className={builderSectionClassName}>
+              <div className="flex items-center justify-between gap-2">
+                <div className={builderSectionTitleClassName}>Edit Tools</div>
+                <div className={builderMutedTextClassName}>Select, sculpt, place</div>
+              </div>
+              <div className={builderButtonRowClassName}>
+                <button type="button" onClick={() => handleSelectSidebarTab('select')} className={builderButtonClassName(sidebarTab === 'select' ? 'active' : 'secondary')}>Select</button>
+                <button type="button" onClick={() => handleSelectSidebarTab('objects')} className={builderButtonClassName(sidebarTab === 'objects' ? 'active' : 'secondary')}>Place</button>
+                <button type="button" onClick={() => handleSelectSidebarTab('terrain')} className={builderButtonClassName(sidebarTab === 'terrain' ? 'active' : 'secondary')}>Terrain</button>
+              </div>
+
+              {sidebarTab === 'select' && (
+                <div className={builderNestedPanelClassName}>
+                  <div className={builderNestedPanelHeaderClassName}>
+                    <div className={builderNestedPanelTitleClassName}>Select</div>
+                    <div className={builderNestedPanelHintClassName}>Selection details</div>
                   </div>
-                  <label style={fieldLabelStyle}>
-                    Radius
-                    <input type="range" min="2" max="20" step="0.5" value={paintRadius} onChange={(event) => setPaintRadius(Number(event.target.value))} />
-                    <span>{paintRadius.toFixed(1)}m</span>
-                  </label>
-                  <label style={fieldLabelStyle}>
-                    Strength
-                    <input type="range" min="0.05" max="1.0" step="0.05" value={paintStrength} onChange={(event) => setPaintStrength(Number(event.target.value))} />
-                    <span>{paintStrength.toFixed(2)}</span>
-                  </label>
+                  <div className={builderFieldStackClassName}>
+                    {!selected && <div className={builderMutedTextClassName}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
+                    {selectedTransformEntity && (
+                      <>
+                        <div className={builderButtonRowClassName}>
+                          <button type="button" onClick={() => setTransformMode('translate')} className={builderButtonClassName(transformMode === 'translate' ? 'active' : 'secondary')}>Move (W)</button>
+                          <button
+                            type="button"
+                            onClick={() => setTransformMode('rotate')}
+                            className={builderButtonClassName(transformMode === 'rotate' ? 'active' : 'secondary')}
+                            disabled={!selectedTransformEntity.canRotate}
+                          >
+                            Rotate (E)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTransformMode('scale')}
+                            className={builderButtonClassName(transformMode === 'scale' ? 'active' : 'secondary')}
+                            disabled={!selectedTransformEntity.canResize}
+                          >
+                            Resize (R)
+                          </button>
+                        </div>
+                        <div className={builderMutedTextClassName}>
+                          Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
+                        </div>
+                      </>
+                    )}
+                    {selectedStatic && (
+                      <EditorFields
+                        title={`Static ${selectedStatic.id}`}
+                        position={selectedStatic.position}
+                        onPositionChange={updateSelectedPosition}
+                        yawDegrees={(yawFromQuaternion(selectedStatic.rotation) * 180) / Math.PI}
+                        onYawChange={updateSelectedYaw}
+                        dimensions={selectedStatic.halfExtents}
+                        onDimensionsChange={updateSelectedHalfExtent}
+                        onDelete={removeSelected}
+                      />
+                    )}
+                    {selectedDynamic && (
+                      <EditorFields
+                        title={`${selectedDynamic.kind} ${selectedDynamic.id}`}
+                        position={selectedDynamic.position}
+                        onPositionChange={updateSelectedPosition}
+                        dimensions={selectedDynamic.halfExtents}
+                        onDimensionsChange={updateSelectedHalfExtent}
+                        radius={selectedDynamic.radius}
+                        onRadiusChange={updateSelectedRadius}
+                        vehicleType={selectedDynamic.kind === 'vehicle'
+                          ? (selectedDynamic.vehicleType ?? getSharedVehicleDefaultType())
+                          : undefined}
+                        vehicleTypeOptions={selectedDynamic.kind === 'vehicle'
+                          ? getSharedVehicleDefinitions().map((definition) => ({
+                            value: definition.vehicleType,
+                            label: definition.name,
+                          }))
+                          : undefined}
+                        onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
+                        yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
+                        onYawChange={updateSelectedYaw}
+                        onDelete={removeSelected}
+                      />
+                    )}
+                    {selectedSpawnArea && (
+                      <SpawnAreaEditorFields
+                        area={selectedSpawnArea}
+                        onPositionChange={updateSelectedPosition}
+                        onRadiusChange={updateSelectedRadius}
+                        onDelete={removeSelected}
+                      />
+                    )}
+                  </div>
                 </div>
               )}
-            </div>
 
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Add Objects</div>
-              <div style={buttonGridStyle}>
-                <button type="button" onClick={addStaticCuboid} style={secondaryButtonStyle}>Static Cuboid</button>
-                <button type="button" onClick={() => addDynamicEntity('box')} style={secondaryButtonStyle}>Dynamic Box</button>
-                <button type="button" onClick={() => addDynamicEntity('ball')} style={secondaryButtonStyle}>Ball</button>
-                <button type="button" onClick={() => addDynamicEntity('vehicle')} style={secondaryButtonStyle}>Vehicle</button>
-                <button type="button" onClick={addSpawnArea} style={secondaryButtonStyle}>Spawn Area</button>
-              </div>
-              {world.spawnAreas.length > 0 && (
-                <div style={mutedTextStyle}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
-              )}
-              {world.spawnAreas.length === 0 && (
-                <div style={mutedTextStyle}>No spawn areas — players use the default spawn lanes.</div>
-              )}
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Terrain Grid</div>
-              <div style={mutedTextStyle}>
-                {world.terrain.tiles.length} tiles · {world.terrain.tileGridSize} x {world.terrain.tileGridSize} samples per tile
-              </div>
-              <div style={mutedTextStyle}>
-                Terrain now grows from exposed edges directly in the 3D viewport, so you can build sparse connected layouts like corridors, U-shapes, or C-shapes without filling a full rectangle.
-              </div>
-            </div>
-
-            <div style={sectionStyle}>
-              <div style={sectionTitleStyle}>Selection</div>
-              {!selected && <div style={mutedTextStyle}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
-              {selectedTransformEntity && (
-                <>
-                  <div style={buttonRowStyle}>
-                    <button type="button" onClick={() => setTransformMode('translate')} style={transformMode === 'translate' ? activeButtonStyle : secondaryButtonStyle}>Move (W)</button>
-                    <button
-                      type="button"
-                      onClick={() => setTransformMode('rotate')}
-                      style={transformMode === 'rotate' ? activeButtonStyle : secondaryButtonStyle}
-                      disabled={!selectedTransformEntity.canRotate}
-                    >
-                      Rotate (E)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTransformMode('scale')}
-                      style={transformMode === 'scale' ? activeButtonStyle : secondaryButtonStyle}
-                      disabled={!selectedTransformEntity.canResize}
-                    >
-                      Resize (R)
-                    </button>
+              {sidebarTab === 'terrain' && (
+                <div className={builderNestedPanelClassName}>
+                  <div className={builderNestedPanelHeaderClassName}>
+                    <div className={builderNestedPanelTitleClassName}>Terrain Modes</div>
+                    <div className={builderNestedPanelHintClassName}>Nested under Terrain</div>
                   </div>
-                  <div style={mutedTextStyle}>
-                    Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
+                  <div className={builderFieldStackClassName}>
+                    <div className={builderNestedTabRailClassName}>
+                      <div className={builderButtonRowClassName}>
+                        <button type="button" onClick={() => handleSelectTerrainPanel('add-tile')} className={builderButtonClassName(activeTerrainPanel === 'add-tile' ? 'active' : 'secondary')}>Add Tile</button>
+                        <button type="button" onClick={() => handleSelectTerrainPanel('delete-tile')} className={builderButtonClassName(activeTerrainPanel === 'delete-tile' ? 'active' : 'secondary')}>Delete Tile</button>
+                        <button type="button" onClick={() => handleSelectTerrainPanel('sculpt')} className={builderButtonClassName(activeTerrainPanel === 'sculpt' ? 'active' : 'secondary')}>Sculpt</button>
+                        <button type="button" onClick={() => handleSelectTerrainPanel('paint')} className={builderButtonClassName(activeTerrainPanel === 'paint' ? 'active' : 'secondary')}>Paint</button>
+                      </div>
+                      <label className={`${builderFieldLabelClassName} mt-2`}>
+                        Stencil
+                        <select
+                          value={activeTerrainPanel === 'ramp' || (typeof activeTerrainPanel === 'string' && activeTerrainPanel.startsWith('custom:')) ? activeTerrainPanel : ''}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === '') return;
+                            if (value === 'ramp') {
+                              handleSelectTerrainPanel('ramp');
+                              return;
+                            }
+                            if (value.startsWith('custom:')) {
+                              const id = value.slice(7);
+                              const stencil = customStencils.find((s) => s.id === id);
+                              handleSelectTerrainPanel(`custom:${id}`);
+                              if (stencil && !customStencilParams[id]) {
+                                setCustomStencilParams((prev) => ({ ...prev, [id]: stencil.defaultParams ?? {} }));
+                              }
+                            }
+                          }}
+                          className={builderStencilSelectClassName}
+                        >
+                          <option value="" disabled>Select stencil…</option>
+                          <option value="ramp">Ramp</option>
+                          {customStencils.map((s) => (
+                            <option key={s.id} value={`custom:${s.id}`} title={s.description}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    {activeTerrainPanel === 'paint' ? (
+                      <div className={builderFieldStackClassName}>
+                        <div className={builderSubsectionTitleClassName}>Paint Settings</div>
+                        <div className={builderMutedTextClassName}>Apply materials to the terrain surface.</div>
+                        <div className={builderMutedTextClassName}>Material</div>
+                        <div className={builderButtonRowClassName}>
+                          {terrainMaterials.map((mat, index) => (
+                            <button
+                              key={mat.name}
+                              type="button"
+                              onClick={() => setPaintMaterial(index)}
+                              className={builderMaterialButtonClassName}
+                              style={{
+                                background: paintMaterial === index ? mat.color : 'rgba(20, 34, 48, 0.96)',
+                                color: paintMaterial === index ? '#000' : '#eef7ff',
+                                borderColor: paintMaterial === index ? mat.color : 'rgba(167, 208, 237, 0.16)',
+                              }}
+                            >
+                              <span className="inline-block h-3 w-3 rounded-[3px] border border-[rgba(255,255,255,0.2)]" style={{ background: mat.color }} />
+                              {mat.name}
+                            </button>
+                          ))}
+                        </div>
+                        <label className={builderFieldLabelClassName}>
+                          Radius
+                          <input type="range" min="2" max="20" step="0.5" value={paintRadius} onChange={(event) => setPaintRadius(Number(event.target.value))} />
+                          <span>{paintRadius.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Strength
+                          <input type="range" min="0.05" max="1.0" step="0.05" value={paintStrength} onChange={(event) => setPaintStrength(Number(event.target.value))} />
+                          <span>{paintStrength.toFixed(2)}</span>
+                        </label>
+                      </div>
+                    ) : activeTerrainPanel === 'sculpt' ? (
+                      <>
+                        <div className={builderSubsectionTitleClassName}>Sculpt Settings</div>
+                        <div className={builderMutedTextClassName}>Raise or lower terrain while respecting plateau limits.</div>
+                        <label className={builderFieldLabelClassName}>
+                          Radius
+                          <input type="range" min="2" max="20" step="0.5" value={brushRadius} onChange={(event) => setBrushRadius(Number(event.target.value))} />
+                          <span>{brushRadius.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Strength
+                          <input type="range" min="0.02" max="0.35" step="0.01" value={brushStrength} onChange={(event) => setBrushStrength(Number(event.target.value))} />
+                          <span>{brushStrength.toFixed(2)}</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Lower Plateau
+                          <input
+                            type="number"
+                            min={TERRAIN_MIN_HEIGHT}
+                            max={brushMaxHeight}
+                            step="0.5"
+                            value={brushMinHeight}
+                            onChange={(event) => setBrushMinHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, brushMaxHeight))}
+                          />
+                          <span>Terrain under this height stops lowering.</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Upper Plateau
+                          <input
+                            type="number"
+                            min={brushMinHeight}
+                            max={TERRAIN_MAX_HEIGHT}
+                            step="0.5"
+                            value={brushMaxHeight}
+                            onChange={(event) => setBrushMaxHeight(clampBrushHeight(Number(event.target.value), brushMinHeight, TERRAIN_MAX_HEIGHT))}
+                          />
+                          <span>Terrain above this height stops raising.</span>
+                        </label>
+                        <div className={builderButtonRowClassName}>
+                          <button type="button" onClick={() => setBrushMode('raise')} className={builderButtonClassName(brushMode === 'raise' ? 'active' : 'secondary')}>Raise</button>
+                          <button type="button" onClick={() => setBrushMode('lower')} className={builderButtonClassName(brushMode === 'lower' ? 'active' : 'secondary')}>Lower</button>
+                        </div>
+                        <div className={builderMutedTextClassName}>
+                          {brushMode === 'lower'
+                            ? `Lowering plateaus at ${brushMinHeight.toFixed(1)}m.`
+                            : `Raising plateaus at ${brushMaxHeight.toFixed(1)}m.`}
+                        </div>
+                      </>
+                    ) : activeTerrainPanel === 'ramp' ? (
+                      <>
+                        <div className={builderSubsectionTitleClassName}>Ramp Settings</div>
+                        <div className={builderMutedTextClassName}>Shape a graded path with edge targets and falloff controls.</div>
+                        <label className={builderFieldLabelClassName}>
+                          Strength
+                          <input type="range" min="0.02" max="1" step="0.02" value={rampStrength} onChange={(event) => setRampStrength(Number(event.target.value))} />
+                          <span>{rampStrength.toFixed(2)}</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Width
+                          <input type="range" min="2" max="30" step="0.5" value={rampWidth} onChange={(event) => setRampWidth(Number(event.target.value))} />
+                          <span>{rampWidth.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Length
+                          <input type="range" min="4" max="40" step="0.5" value={rampLength} onChange={(event) => setRampLength(Number(event.target.value))} />
+                          <span>{rampLength.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Grade
+                          <input type="range" min="1" max="100" step="1" value={rampGradePct} onChange={(event) => setRampGradePct(Number(event.target.value))} />
+                          <span>{rampGradePct.toFixed(0)}%</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Direction
+                          <input
+                            type="range"
+                            min="0"
+                            max="355"
+                            step="5"
+                            value={rampYawDegrees}
+                            onChange={(event) => setRampYawDegrees(Number(event.target.value))}
+                          />
+                          <span>{`${rampYawDegrees.toFixed(0)}deg start -> end`}</span>
+                        </label>
+                        <div className={builderButtonRowClassName}>
+                          <button type="button" onClick={() => setRampTargetEdge('start')} className={builderButtonClassName(rampTargetEdge === 'start' ? 'active' : 'secondary')}>Target Start</button>
+                          <button type="button" onClick={() => setRampTargetEdge('end')} className={builderButtonClassName(rampTargetEdge === 'end' ? 'active' : 'secondary')}>Target End</button>
+                        </div>
+                        <div className={builderButtonRowClassName}>
+                          <button type="button" onClick={() => setRampTargetKind('min')} className={builderButtonClassName(rampTargetKind === 'min' ? 'active' : 'secondary')}>Target Min</button>
+                          <button type="button" onClick={() => setRampTargetKind('max')} className={builderButtonClassName(rampTargetKind === 'max' ? 'active' : 'secondary')}>Target Max</button>
+                        </div>
+                        <label className={builderFieldLabelClassName}>
+                          Target Height
+                          <input
+                            type="number"
+                            min={TERRAIN_MIN_HEIGHT}
+                            max={TERRAIN_MAX_HEIGHT}
+                            step="0.5"
+                            value={rampTargetHeight}
+                            onChange={(event) => setRampTargetHeight(clampBrushHeight(Number(event.target.value), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT))}
+                          />
+                          <span>{rampTargetEdge === 'start' ? 'Start edge' : 'End edge'} uses this {rampTargetKind} height.</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Side Shoulder
+                          <input type="range" min="0" max="20" step="0.5" value={rampSideFalloff} onChange={(event) => setRampSideFalloff(Number(event.target.value))} />
+                          <span>{rampSideFalloff.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          Start Falloff
+                          <input type="range" min="0" max="20" step="0.5" value={rampStartFalloff} onChange={(event) => setRampStartFalloff(Number(event.target.value))} />
+                          <span>{rampStartFalloff.toFixed(1)}m</span>
+                        </label>
+                        <label className={builderFieldLabelClassName}>
+                          End Falloff
+                          <input type="range" min="0" max="20" step="0.5" value={rampEndFalloff} onChange={(event) => setRampEndFalloff(Number(event.target.value))} />
+                          <span>{rampEndFalloff.toFixed(1)}m</span>
+                        </label>
+                        <div className={builderButtonRowClassName}>
+                          <button type="button" onClick={() => setRampMode('raise')} className={builderButtonClassName(rampMode === 'raise' ? 'active' : 'secondary')}>Raise Ramp</button>
+                          <button type="button" onClick={() => setRampMode('lower')} className={builderButtonClassName(rampMode === 'lower' ? 'active' : 'secondary')}>Cut Ramp</button>
+                        </div>
+                        <div className={builderMutedTextClassName}>
+                          Hold and drag to morph terrain toward the target ramp. Repeated passes converge instead of stacking.
+                        </div>
+                        <div className={builderMutedTextClassName}>
+                          {describeRampTool(rampLength, rampGradePct, rampTargetHeight, rampTargetEdge, rampTargetKind, rampMode)}
+                        </div>
+                      </>
+                    ) : activeTerrainPanel === 'add-tile' ? (
+                      <>
+                        <div className={builderSubsectionTitleClassName}>Add Tile</div>
+                        <div className={builderMutedTextClassName}>
+                          Exposed edges in the viewport show ghost tiles with floating add buttons. Click any ghost tile to extend the world in connected, sparse shapes.
+                        </div>
+                      </>
+                    ) : activeTerrainPanel === 'delete-tile' ? (
+                      <>
+                        <div className={builderSubsectionTitleClassName}>Delete Tile</div>
+                        <div className={builderMutedTextClassName}>
+                          Hover a terrain tile in the viewport and click the floating delete button to remove that exact tile. The last remaining tile is protected.
+                        </div>
+                      </>
+                    ) : activeCustomStencil ? (
+                      <>
+                        <div className={builderSubsectionTitleClassName}>{activeCustomStencil.name}</div>
+                        <div className={builderMutedTextClassName}>{activeCustomStencil.description}</div>
+                        <CustomStencilPanel
+                          stencil={activeCustomStencil}
+                          params={activeCustomParams}
+                          onChange={(nextParams) => {
+                            if (!activeCustomStencilId) return;
+                            setCustomStencilParams((prev) => ({ ...prev, [activeCustomStencilId]: nextParams }));
+                          }}
+                        />
+                      </>
+                    ) : null}
                   </div>
-                </>
+                </div>
               )}
-              {selectedStatic && (
-                <EditorFields
-                  title={`Static ${selectedStatic.id}`}
-                  position={selectedStatic.position}
-                  onPositionChange={updateSelectedPosition}
-                  yawDegrees={(yawFromQuaternion(selectedStatic.rotation) * 180) / Math.PI}
-                  onYawChange={updateSelectedYaw}
-                  dimensions={selectedStatic.halfExtents}
-                  onDimensionsChange={updateSelectedHalfExtent}
-                  onDelete={removeSelected}
-                />
-              )}
-              {selectedDynamic && (
-                <EditorFields
-                  title={`${selectedDynamic.kind} ${selectedDynamic.id}`}
-                  position={selectedDynamic.position}
-                  onPositionChange={updateSelectedPosition}
-                  dimensions={selectedDynamic.halfExtents}
-                  onDimensionsChange={updateSelectedHalfExtent}
-                  radius={selectedDynamic.radius}
-                  onRadiusChange={updateSelectedRadius}
-                  vehicleType={selectedDynamic.kind === 'vehicle'
-                    ? (selectedDynamic.vehicleType ?? getSharedVehicleDefaultType())
-                    : undefined}
-                  vehicleTypeOptions={selectedDynamic.kind === 'vehicle'
-                    ? getSharedVehicleDefinitions().map((definition) => ({
-                      value: definition.vehicleType,
-                      label: definition.name,
-                    }))
-                    : undefined}
-                  onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
-                  yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
-                  onYawChange={updateSelectedYaw}
-                  onDelete={removeSelected}
-                />
-              )}
-              {selectedSpawnArea && (
-                <SpawnAreaEditorFields
-                  area={selectedSpawnArea}
-                  onPositionChange={updateSelectedPosition}
-                  onRadiusChange={updateSelectedRadius}
-                  onDelete={removeSelected}
-                />
+
+              {sidebarTab === 'objects' && (
+                <div className={builderNestedPanelClassName}>
+                  <div className={builderNestedPanelHeaderClassName}>
+                    <div className={builderNestedPanelTitleClassName}>Place</div>
+                    <div className={builderNestedPanelHintClassName}>Placement tools</div>
+                  </div>
+                  <div className={builderFieldStackClassName}>
+                    <div className={builderButtonGridClassName}>
+                      <button type="button" onClick={addStaticCuboid} className={builderButtonClassName('secondary')}>Static Cuboid</button>
+                      <button type="button" onClick={() => addDynamicEntity('box')} className={builderButtonClassName('secondary')}>Dynamic Box</button>
+                      <button type="button" onClick={() => addDynamicEntity('ball')} className={builderButtonClassName('secondary')}>Ball</button>
+                      <button type="button" onClick={() => addDynamicEntity('vehicle')} className={builderButtonClassName('secondary')}>Vehicle</button>
+                      <button type="button" onClick={addSpawnArea} className={builderButtonClassName('secondary')}>Spawn Area</button>
+                    </div>
+                    {world.spawnAreas.length > 0 ? (
+                      <div className={builderMutedTextClassName}>{world.spawnAreas.length} spawn area{world.spawnAreas.length !== 1 ? 's' : ''}. Players spawn inside these areas when joining.</div>
+                    ) : (
+                      <div className={builderMutedTextClassName}>No spawn areas. Players use the default spawn lanes.</div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           </>
         )}
-
-        <div style={sectionStyle}>
-          <div style={sectionTitleStyle}>Recent Backups</div>
-          <div style={historyListStyle}>
-            {history.slice(0, 6).map((revision) => (
-              <button
-                key={revision.id}
-                type="button"
-                onClick={() => handleRestoreRevision(revision)}
-                style={historyButtonStyle}
-              >
-                <span>{revision.summary}</span>
-                <span style={mutedTextStyle}>{new Date(revision.savedAt).toLocaleString()}</span>
-              </button>
-            ))}
-            {history.length === 0 && <div style={mutedTextStyle}>No backups yet.</div>}
-          </div>
-        </div>
       </aside>
 
-      <main style={viewportStyle}>
+      <main style={viewportStyleDynamic}>
         {mode === 'edit' && tool === 'select' && (
           <div style={editorViewportOverlayStyle}>
             <span>{selectedTransformEntity ? `Selected ${selectedTransformEntity.kind} ${selectedTransformEntity.id}` : 'Select an object'}</span>
@@ -1477,7 +1699,24 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         )}
       </main>
 
-      <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+      {isMobile ? (
+        <div
+          style={{
+            ...chatDrawerStyle,
+            width: isNarrowMobile ? '100vw' : chatDrawerStyle.width,
+            transform: rightDrawerOpen ? 'translateX(0)' : 'translateX(100%)',
+            boxShadow: rightDrawerOpen ? '0 0 30px rgba(0, 0, 0, 0.55)' : 'none',
+          }}
+        >
+          <AiChatPanel
+            ref={aiChatRef}
+            accessors={aiAccessors}
+            onClose={() => setRightDrawerOpen(false)}
+          />
+        </div>
+      ) : (
+        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} />
+      )}
     </div>
   );
 }
@@ -2593,22 +2832,31 @@ function slugify(value: string): string {
 
 const pageStyle: CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '340px minmax(0, 1fr) 380px',
+  gridTemplateColumns: '300px minmax(0, 1fr) 380px',
   height: '100vh',
   background: 'linear-gradient(180deg, #0d1824 0%, #060a10 100%)',
   color: '#eef7ff',
   overflow: 'hidden',
 };
 
-const sidebarStyle: CSSProperties = {
-  borderRight: '1px solid rgba(141, 186, 221, 0.14)',
-  padding: 24,
+const drawerBackdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'rgba(0, 0, 0, 0.5)',
+  zIndex: 50,
+};
+
+const chatDrawerStyle: CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  right: 0,
+  bottom: 0,
+  width: 'min(92vw, 420px)',
+  zIndex: 60,
+  transition: 'transform 0.22s ease',
   display: 'flex',
   flexDirection: 'column',
-  gap: 18,
   minHeight: 0,
-  overflowY: 'auto',
-  background: 'rgba(3, 8, 14, 0.92)',
 };
 
 const viewportStyle: CSSProperties = {
@@ -2617,78 +2865,29 @@ const viewportStyle: CSSProperties = {
   height: '100vh',
 };
 
-const sectionStyle: CSSProperties = {
-  border: '1px solid rgba(141, 186, 221, 0.14)',
-  borderRadius: 16,
-  padding: 16,
-  background: 'rgba(14, 26, 38, 0.84)',
-};
-
-const sectionTitleStyle: CSSProperties = {
-  fontSize: 13,
-  letterSpacing: '0.16em',
-  textTransform: 'uppercase',
-  color: '#86d6f5',
-  marginBottom: 10,
-};
-
-const eyebrowStyle: CSSProperties = {
-  fontSize: 12,
-  letterSpacing: '0.24em',
-  textTransform: 'uppercase',
-  color: '#86d6f5',
-};
-
-const titleStyle: CSSProperties = {
-  margin: '10px 0 8px',
-  fontSize: 42,
-  lineHeight: 1,
-  fontWeight: 700,
-};
-
-const bodyStyle: CSSProperties = {
-  color: 'rgba(238, 247, 255, 0.72)',
-  lineHeight: 1.55,
-  margin: 0,
-};
-
-const mutedTextStyle: CSSProperties = {
-  fontSize: 13,
-  color: 'rgba(238, 247, 255, 0.6)',
-};
-
-const buttonRowStyle: CSSProperties = {
-  display: 'flex',
-  gap: 8,
-  flexWrap: 'wrap',
-};
-
-const buttonGridStyle: CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-  gap: 8,
-};
-
 const fieldStackStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 10,
+  gap: 8,
 };
 
 const fieldLabelStyle: CSSProperties = {
   display: 'flex',
   flexDirection: 'column',
-  gap: 6,
-  fontSize: 13,
+  gap: 5,
+  fontSize: 12,
   color: 'rgba(238, 247, 255, 0.82)',
 };
 
 const baseButtonStyle: CSSProperties = {
-  borderRadius: 10,
-  padding: '10px 12px',
+  borderRadius: 9,
+  padding: '8px 10px',
   border: '1px solid rgba(167, 208, 237, 0.16)',
   cursor: 'pointer',
   fontWeight: 600,
+  fontSize: 12,
+  lineHeight: 1.2,
+  fontFamily: 'inherit',
 };
 
 const primaryButtonStyle: CSSProperties = {
@@ -2715,43 +2914,69 @@ const dangerButtonStyle: CSSProperties = {
   color: '#38130e',
 };
 
-const stencilSelectStyle: CSSProperties = {
-  ...baseButtonStyle,
-  background: 'rgba(20, 34, 48, 0.96)',
-  color: '#eef7ff',
-  padding: '8px 10px',
-  appearance: 'auto',
-};
+const builderSidebarClassName = 'flex min-h-0 flex-col gap-2.5 overflow-y-auto border-r border-[rgba(141,186,221,0.14)] bg-[rgba(3,8,14,0.92)] p-3.5 max-md:p-4';
+const drawerCloseButtonClassName = 'flex h-8 w-8 items-center justify-center rounded-lg border border-[rgba(167,208,237,0.18)] bg-[rgba(20,34,48,0.9)] text-sm leading-none text-[#eef7ff]';
+const builderHeaderClassName = 'rounded-2xl border border-[rgba(141,186,221,0.12)] bg-[linear-gradient(180deg,rgba(14,26,38,0.96)_0%,rgba(10,18,28,0.92)_100%)] px-3.5 py-3';
+const builderCompactTitleClassName = 'm-0 text-[15px] font-bold uppercase tracking-[0.12em] text-[#eef7ff]';
+const builderHeaderPlayButtonClassName = 'rounded-[9px] border border-[rgba(116,212,255,0.24)] bg-[rgba(116,212,255,0.14)] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-[#bdeaff] transition-colors hover:bg-[rgba(116,212,255,0.22)]';
+const builderStatsGridClassName = 'grid grid-cols-2 gap-2';
+const builderStatCardClassName = 'flex flex-col gap-0.5 rounded-xl border border-[rgba(141,186,221,0.1)] bg-[rgba(5,13,20,0.54)] px-2.5 py-2.5';
+const builderStatLabelClassName = 'text-[10px] uppercase tracking-[0.12em] text-[rgba(190,226,244,0.58)]';
+const builderStatValueClassName = 'text-base leading-[1.1] text-[#eef7ff]';
+const builderSectionClassName = 'flex flex-col gap-2 rounded-[14px] border border-[rgba(141,186,221,0.14)] bg-[rgba(14,26,38,0.84)] p-3';
+const builderSectionTitleClassName = 'mb-0 text-[11px] uppercase tracking-[0.18em] text-[#86d6f5]';
+const builderMutedTextClassName = 'text-xs leading-[1.45] text-[rgba(238,247,255,0.6)]';
+const builderErrorTextClassName = 'text-xs leading-[1.45] text-[#ffb4a6]';
+const builderDisclosureClassName = 'rounded-[14px] border border-[rgba(141,186,221,0.14)] bg-[rgba(14,26,38,0.84)]';
+const builderDisclosureButtonClassName = 'flex w-full items-center justify-between gap-2 px-3 py-3 text-left';
+const builderDisclosureTitleWrapClassName = 'flex min-w-0 flex-col gap-1';
+const builderDisclosureSummaryClassName = 'truncate text-xs leading-[1.3] text-[rgba(238,247,255,0.6)]';
+const builderDisclosureChevronClassName = 'shrink-0 text-lg leading-none text-[rgba(190,226,244,0.7)]';
+const builderDisclosureBodyClassName = 'flex flex-col gap-2 border-t border-[rgba(141,186,221,0.08)] px-3 pb-3 pt-2';
+const builderButtonRowClassName = 'flex flex-wrap gap-1.5';
+const builderButtonGridClassName = 'grid grid-cols-2 gap-1.5';
+const builderFieldStackClassName = 'flex flex-col gap-2';
+const builderFieldLabelClassName = 'flex flex-col gap-[5px] text-xs text-[rgba(238,247,255,0.82)]';
+const builderNestedPanelClassName = 'mt-1 flex flex-col gap-3 rounded-xl border border-[rgba(141,186,221,0.12)] bg-[rgba(7,16,24,0.72)] px-3 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]';
+const builderNestedPanelHeaderClassName = 'flex items-center justify-between gap-2 border-b border-[rgba(141,186,221,0.08)] pb-2';
+const builderNestedPanelTitleClassName = 'text-[10px] font-semibold uppercase tracking-[0.18em] text-[rgba(190,226,244,0.82)]';
+const builderNestedPanelHintClassName = 'text-[11px] leading-[1.3] text-[rgba(238,247,255,0.45)]';
+const builderNestedTabRailClassName = 'rounded-lg border border-[rgba(141,186,221,0.08)] bg-[rgba(255,255,255,0.02)] p-2';
+const builderSubsectionTitleClassName = 'text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(190,226,244,0.72)]';
+const builderMaterialButtonClassName = 'flex items-center gap-1.5 rounded-[9px] border px-2.5 py-2 text-xs font-semibold leading-[1.2] text-[#eef7ff]';
+const builderStencilSelectClassName = 'rounded-[9px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.96)] px-2.5 py-2 text-xs text-[#eef7ff]';
+const builderHistoryListClassName = 'flex flex-col gap-1.5';
+const builderHistoryButtonClassName = `${builderButtonClassName('secondary')} flex items-center justify-between text-left`;
 
-const historyListStyle: CSSProperties = {
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 8,
-};
+function builderButtonClassName(variant: 'primary' | 'secondary' | 'active' | 'danger'): string {
+  const base = 'rounded-[9px] border px-2.5 py-2 text-xs font-semibold leading-[1.2] font-[inherit] transition-colors disabled:cursor-not-allowed disabled:opacity-50';
+  switch (variant) {
+    case 'primary':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#9ed86f] text-[#10210d]`;
+    case 'active':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#74d4ff] text-[#102434]`;
+    case 'danger':
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[#ff8573] text-[#38130e]`;
+    case 'secondary':
+    default:
+      return `${base} border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.96)] text-[#eef7ff]`;
+  }
+}
 
-const historyButtonStyle: CSSProperties = {
-  ...secondaryButtonStyle,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  textAlign: 'left',
-};
+function builderHistorySourceBadgeClassName(source: CommitEntry['source']): string {
+  const base = 'shrink-0 rounded px-1.5 py-px text-[9px]';
+  if (source === 'ai') {
+    return `${base} bg-[rgba(116,212,255,0.2)] text-[#bae8ff]`;
+  }
+  if (source === 'rollback') {
+    return `${base} bg-[rgba(255,200,100,0.2)] text-[#ffe0a0]`;
+  }
+  return `${base} bg-[rgba(255,255,255,0.08)] text-[rgba(238,247,255,0.5)]`;
+}
 
-const godModePlayOverlayStyle: CSSProperties = {
-  position: 'absolute',
-  top: 44,
-  left: 8,
-  right: 8,
-  zIndex: 12,
-  display: 'flex',
-  justifyContent: 'space-between',
-  alignItems: 'center',
-  gap: 12,
-  background: 'rgba(5, 9, 16, 0.64)',
-  padding: '8px 12px',
-  borderRadius: 12,
-  color: '#eef7ff',
-};
+const godModePlayOverlayClassName = 'absolute left-2 top-2 z-[12] flex max-w-[min(calc(100vw-16px),360px)] items-center gap-2 rounded-xl border border-[rgba(141,186,221,0.14)] bg-[rgba(5,9,16,0.64)] px-3 py-2 text-[#eef7ff] backdrop-blur-[10px]';
+const godModePlayBadgeClassName = 'whitespace-nowrap text-[11px] font-bold uppercase tracking-[0.16em] text-[#86d6f5]';
+const godModePlayActionsClassName = 'flex flex-wrap justify-start gap-2';
 
 const editorViewportOverlayStyle: CSSProperties = {
   position: 'absolute',

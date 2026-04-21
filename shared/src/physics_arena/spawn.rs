@@ -3,6 +3,7 @@ use std::f64::consts::{FRAC_PI_4, FRAC_PI_8};
 use nalgebra::Vector3;
 
 use super::{PhysicsArena, PlayerMotorState};
+use crate::constants::PLAYER_AOI_RADIUS_M;
 use crate::movement::Vec3d;
 use crate::protocol::InputCmd;
 
@@ -13,6 +14,17 @@ use crate::protocol::InputCmd;
 /// always picks the max-distance candidate, so this acts only as a
 /// final-resort floor.
 const SPAWN_MIN_CLEARANCE_M: f64 = 2.5;
+
+/// A spawn is "visible" when at least one other living player is within
+/// this radius — otherwise the newcomer falls outside every other
+/// player's area-of-interest and sees an empty world until someone
+/// walks close enough to be replicated. We rank visible candidates
+/// ahead of invisible ones so the anti-camper scoring doesn't fling
+/// fresh spawns to opposite corners of maps where authored spawn areas
+/// sit farther apart than `PLAYER_AOI_RADIUS_M`. 0.9 keeps a small
+/// buffer so a candidate right at the AOI edge doesn't flicker in and
+/// out on the other player's first step.
+const SPAWN_VISIBILITY_RADIUS_M: f64 = PLAYER_AOI_RADIUS_M as f64 * 0.9;
 
 impl PhysicsArena {
     fn spawn_lane_position(lane: u32) -> (f64, f64) {
@@ -102,29 +114,38 @@ impl PhysicsArena {
 
     fn next_spawn_position_from_areas(&mut self) -> Vec3d {
         // Enumerate every candidate across every spawn area and score each
-        // by squared distance to the nearest living player. The candidate
-        // with the greatest minimum distance wins — this picks the area
-        // farthest from spawn campers and, within that area, the spot
-        // with the most breathing room before anyone can reach the
-        // newcomer. Candidates that physically overlap an existing
-        // collider (player, crate, vehicle) are demoted behind clear
-        // ones so we don't spawn inside something; on a densely occupied
-        // map we still return the best we have as a last resort.
+        // by squared distance to the nearest living player. Visibility
+        // (min distance ≤ SPAWN_VISIBILITY_RADIUS_M) ranks above raw
+        // score so the newcomer stays inside someone else's AOI —
+        // otherwise on maps with widely-spaced spawn areas the
+        // anti-camper bias can fling the spawn beyond replication
+        // range and make the match look empty. Within each visibility
+        // bucket the candidate with the greatest minimum distance wins,
+        // picking the area farthest from spawn campers and within that
+        // area the spot with the most breathing room. Candidates that
+        // physically overlap an existing collider (player, crate,
+        // vehicle) are demoted behind clear ones so we don't spawn
+        // inside something; on a densely occupied map we still return
+        // the best we have as a last resort.
         //
-        // When no players are alive, every candidate ties on score (∞).
-        // Ties are broken by round-robin rotation starting at
+        // When no players are alive, every candidate ties on score (∞)
+        // and visibility doesn't apply (no one to be visible to). Ties
+        // are broken by round-robin rotation starting at
         // `next_spawn_index`, then by candidate index within the area,
         // so successive empty-map spawns still distribute across areas.
         // After picking, we advance `next_spawn_index` past the chosen
         // area so the next spawn prefers a different one.
         let area_count = self.spawn_areas.len() as u32;
         let rotation_base = self.next_spawn_index;
+        let visibility_sq = SPAWN_VISIBILITY_RADIUS_M * SPAWN_VISIBILITY_RADIUS_M;
+        let has_live_players = self.players.values().any(|p| !p.dead);
 
         let mut best_x = 0.0_f64;
         let mut best_z = 0.0_f64;
         let mut best_area_idx: u32 = 0;
         let mut best_score = f64::NEG_INFINITY;
         let mut best_clear = false;
+        let mut best_visible = false;
         let mut best_rotation_rank: u32 = u32::MAX;
         let mut best_candidate_rank: u32 = u32::MAX;
 
@@ -138,17 +159,21 @@ impl PhysicsArena {
                     area.radius as f64,
                 )
             };
-            for (candidate_rank, (x, z)) in
-                spawn_area_candidates(cx, cz, radius).enumerate()
-            {
+            for (candidate_rank, (x, z)) in spawn_area_candidates(cx, cz, radius).enumerate() {
                 let score = self.min_player_distance_sq(x, z);
                 let clear = self.spawn_lane_is_clear(x, z);
+                // A candidate is "visible" when at least one other live
+                // player sits within AOI. Irrelevant on empty maps —
+                // fold it out so round-robin still distributes evenly.
+                let visible = !has_live_players || score <= visibility_sq;
                 let candidate_rank = candidate_rank as u32;
-                // Prefer (physically clear, higher player score). Break
-                // floating-point ties on the score with an epsilon so
-                // near-identical candidates don't churn the winner.
+                // Prefer (visible, physically clear, higher player score).
+                // Break floating-point ties on the score with an epsilon
+                // so near-identical candidates don't churn the winner.
                 let better = if best_rotation_rank == u32::MAX {
                     true
+                } else if visible != best_visible {
+                    visible && !best_visible
                 } else if clear != best_clear {
                     clear && !best_clear
                 } else if score > best_score + 1e-3 {
@@ -166,6 +191,7 @@ impl PhysicsArena {
                     best_area_idx = area_idx;
                     best_score = score;
                     best_clear = clear;
+                    best_visible = visible;
                     best_rotation_rank = area_offset;
                     best_candidate_rank = candidate_rank;
                 }
@@ -300,6 +326,12 @@ mod tests {
 
     #[test]
     fn round_robin_distributes_across_two_areas() {
+        // Area B sits ~57 m from A — far enough that the anti-camper
+        // scorer clearly prefers it over A when a camper is present,
+        // but inside the AOI visibility radius so the newcomer can
+        // still see (and be seen by) the camper. Tests upstream of the
+        // visibility constraint used artificial 200 m spacing, which
+        // collided with the SPAWN_VISIBILITY_RADIUS_M guard.
         let mut arena = arena_with_areas(vec![
             SpawnArea {
                 id: 1,
@@ -308,7 +340,7 @@ mod tests {
             },
             SpawnArea {
                 id: 2,
-                position: [200.0, 0.0, 200.0],
+                position: [40.0, 0.0, 40.0],
                 radius: 5.0,
             },
         ]);
@@ -318,9 +350,9 @@ mod tests {
 
         // Empty map → round-robin tie-break puts player 1 in area A.
         // Player 1 then becomes a threat at A's centre, so the scorer
-        // sends player 2 to area B (200,200).
+        // sends player 2 to area B (40,40).
         let dist1_a = ((s1.x * s1.x + s1.z * s1.z) as f32).sqrt();
-        let dist2_b = (((s2.x - 200.0).powi(2) + (s2.z - 200.0).powi(2)) as f32).sqrt();
+        let dist2_b = (((s2.x - 40.0).powi(2) + (s2.z - 40.0).powi(2)) as f32).sqrt();
         assert!(
             dist1_a <= 5.0,
             "player 1 ({:.1},{:.1}) not in area A",
@@ -399,7 +431,10 @@ mod tests {
     fn spawn_prefers_area_farthest_from_existing_threat() {
         // Spawn-camper scenario: a hostile player is stationed at area A.
         // New spawns must prefer area B even if A appears first in the
-        // round-robin rotation.
+        // round-robin rotation. B sits within the AOI visibility radius
+        // so the newcomer still replicates to the camper — the scorer
+        // used to allow 150 m here but that's beyond AOI in a real
+        // match, so the visibility guard now rejects such positions.
         let mut arena = arena_with_areas(vec![
             SpawnArea {
                 id: 1,
@@ -408,7 +443,7 @@ mod tests {
             },
             SpawnArea {
                 id: 2,
-                position: [150.0, 0.0, 0.0],
+                position: [50.0, 0.0, 0.0],
                 radius: 4.0,
             },
         ]);
@@ -426,10 +461,10 @@ mod tests {
         // candidate inside A than for any candidate inside B.
         for id in 2..=5 {
             let spawn = arena.spawn_player(id);
-            let dist_from_b = ((spawn.x - 150.0).powi(2) + spawn.z.powi(2)).sqrt();
+            let dist_from_b = ((spawn.x - 50.0).powi(2) + spawn.z.powi(2)).sqrt();
             assert!(
                 dist_from_b <= 4.0,
-                "player {id} spawn ({:.2},{:.2}) should land in area B (150,0), \
+                "player {id} spawn ({:.2},{:.2}) should land in area B (50,0), \
                  not next to the camper in area A",
                 spawn.x,
                 spawn.z
@@ -511,6 +546,52 @@ mod tests {
             area_hits,
             [2, 2, 2],
             "empty-map spawns should distribute evenly via round-robin, got {area_hits:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_stays_visible_even_when_all_areas_are_beyond_aoi() {
+        // Two spawn areas placed farther apart than the AOI visibility
+        // radius. Without the visibility guard the anti-camper scorer
+        // would happily send the newcomer to the invisible-far area,
+        // breaking replication: neither client's snapshot would list
+        // the other. With the guard, we take the closer area even
+        // though it means landing next to the camper, because being
+        // seen is worth more than a few extra metres of breathing
+        // room.
+        let mut arena = arena_with_areas(vec![
+            SpawnArea {
+                id: 1,
+                position: [0.0, 0.0, 0.0],
+                radius: 4.0,
+            },
+            SpawnArea {
+                id: 2,
+                position: [110.0, 0.0, 0.0],
+                radius: 4.0,
+            },
+        ]);
+
+        let s1 = arena.spawn_player(1);
+        assert!(
+            s1.x.abs() <= 4.0 && s1.z.abs() <= 4.0,
+            "setup: player 1 should land in area A"
+        );
+
+        let s2 = arena.spawn_player(2);
+        let dist_from_a = (s2.x.powi(2) + s2.z.powi(2)).sqrt();
+        let dist_from_b = ((s2.x - 110.0).powi(2) + s2.z.powi(2)).sqrt();
+        // Area B is 110 m from A, beyond SPAWN_VISIBILITY_RADIUS_M
+        // (0.9 × PLAYER_AOI_RADIUS_M = 72 m). The visibility guard
+        // must keep the newcomer in A where they can still replicate.
+        assert!(
+            dist_from_a <= 4.0,
+            "player 2 ({:.1},{:.1}) should fall back to visible area A \
+             (dist A = {:.1}, dist B = {:.1}) so both players can see each other",
+            s2.x,
+            s2.z,
+            dist_from_a,
+            dist_from_b,
         );
     }
 }
