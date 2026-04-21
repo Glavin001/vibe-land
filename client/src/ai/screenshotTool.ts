@@ -140,7 +140,7 @@ export type ScreenshotToolResult = {
   message: string;
   width?: number;
   height?: number;
-  capturedImageDataUrl?: string; // stripped by useGodModeChat before storing in history
+  capturedImageDataUrl?: string;
 };
 
 export const captureScreenshotToolDescription =

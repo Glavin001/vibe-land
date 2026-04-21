@@ -372,29 +372,13 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
                 throw new Error(`Unsupported tool call: ${toolCall.toolName}`);
             }
 
-            const rawOutput = output as Record<string, unknown> | null | undefined;
-            let storedOutput: unknown = rawOutput;
-            let images: Array<{ dataUrl: string; mediaType: string }> | undefined;
-            if (
-              toolCall.toolName === 'capture_screenshot'
-              && rawOutput
-              && typeof rawOutput.capturedImageDataUrl === 'string'
-            ) {
-              const capturedImageDataUrl = rawOutput.capturedImageDataUrl;
-              // eslint-disable-next-line @typescript-eslint/no-unused-vars
-              const { capturedImageDataUrl: _stripped, ...rest } = rawOutput;
-              storedOutput = rest;
-              images = [{ dataUrl: capturedImageDataUrl, mediaType: 'image/png' }];
-            }
-
             updateAssistant((parts) => [
               ...parts,
               {
                 type: 'tool-result',
                 toolCallId: toolCall.toolCallId,
                 toolName: toolCall.toolName,
-                output: storedOutput,
-                ...(images ? { images } : {}),
+                output,
               },
             ]);
           }

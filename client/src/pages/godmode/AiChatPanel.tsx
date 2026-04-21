@@ -15,7 +15,7 @@ import {
 } from 'react';
 import { forwardRef } from 'react';
 import type { ChatImagePart, ChatMessage, ChatPart, ChatToolResultPart } from '../../ai/chatTypes';
-import { makeChatId } from '../../ai/chatTypes';
+import { compactToolResultOutput, extractToolResultImages, makeChatId } from '../../ai/chatTypes';
 import {
   findRetryAnchorUserMessageId,
   getMessageAttachments,
@@ -795,6 +795,7 @@ function PartView({ part }: { part: ChatPart }) {
   if (part.type === 'tool-result') {
     const isError = Boolean(part.isError);
     const typedPart = part as ChatToolResultPart;
+    const images = extractToolResultImages(typedPart);
     return (
       <details
         open={isError}
@@ -806,8 +807,8 @@ function PartView({ part }: { part: ChatPart }) {
           </span>{' '}
           {part.toolName}
         </summary>
-        <pre style={codeBlockStyle}>{jsonStringify(part.output)}</pre>
-        {typedPart.images?.map((img, i) => (
+        <pre style={codeBlockStyle}>{jsonStringify(compactToolResultOutput(typedPart))}</pre>
+        {images.map((img, i) => (
           <img key={i} src={img.dataUrl} style={screenshotImageStyle} alt="Captured screenshot" />
         ))}
       </details>

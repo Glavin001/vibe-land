@@ -14,8 +14,6 @@ export type ChatToolResultPart = {
   toolName: string;
   output: unknown;
   isError?: boolean;
-  /** Captured screenshots attached to this result. Stored separately so the large dataUrls don't bloat the JSON output that gets replayed to the model. */
-  images?: Array<{ dataUrl: string; mediaType: string }>;
 };
 export type ChatImagePart = { type: 'image'; dataUrl: string; mediaType: string };
 
@@ -87,28 +85,29 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
         let output: ToolResultPart['output'];
         if (part.isError) {
           output = { type: 'error-text', value: stringifyForModel(part.output) };
-        } else if (part.images && part.images.length > 0) {
-          output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
-          // OpenAI's Responses API currently mishandles image-bearing
-          // function_call_output items in our browser setup. Keep the tool
-          // result itself compact and forward the screenshot through the
-          // regular image-message path instead.
-          syntheticUserMessages.push({
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `Image result for tool ${part.toolName} (${part.toolCallId}). Use the attached image as the visual output of that tool call.`,
-              },
-              ...part.images.map((img) => ({
-                type: 'image' as const,
-                image: img.dataUrl,
-                mimeType: img.mediaType,
-              })),
-            ],
-          });
         } else {
-          output = { type: 'json', value: toJsonValue(part.output) } as ToolResultPart['output'];
+          const images = extractToolResultImages(part);
+          output = { type: 'json', value: toJsonValue(compactToolResultOutput(part)) } as ToolResultPart['output'];
+          if (images.length > 0) {
+            // OpenAI's Responses API currently mishandles image-bearing
+            // function_call_output items in our browser setup. Keep the tool
+            // result itself compact and forward the screenshot through the
+            // regular image-message path instead.
+            syntheticUserMessages.push({
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: `Image result for tool ${part.toolName} (${part.toolCallId}). Use the attached image as the visual output of that tool call.`,
+                },
+                ...images.map((img) => ({
+                  type: 'image' as const,
+                  image: img.dataUrl,
+                  mimeType: img.mediaType,
+                })),
+              ],
+            });
+          }
         }
         const resultPart: ToolResultPart = {
           type: 'tool-result',
@@ -131,6 +130,28 @@ export function toModelMessages(messages: ChatMessage[]): ModelMessage[] {
     }
   }
   return out;
+}
+
+export function extractToolResultImages(part: ChatToolResultPart): Array<{ dataUrl: string; mediaType: string }> {
+  if (part.toolName === 'capture_screenshot' && part.output && typeof part.output === 'object') {
+    const candidate = part.output as Record<string, unknown>;
+    if (typeof candidate.capturedImageDataUrl === 'string') {
+      return [{ dataUrl: candidate.capturedImageDataUrl, mediaType: 'image/png' }];
+    }
+  }
+  return [];
+}
+
+export function compactToolResultOutput(part: ChatToolResultPart): unknown {
+  if (part.toolName === 'capture_screenshot' && part.output && typeof part.output === 'object') {
+    const candidate = part.output as Record<string, unknown>;
+    if (typeof candidate.capturedImageDataUrl === 'string') {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { capturedImageDataUrl: _stripped, ...rest } = candidate;
+      return rest;
+    }
+  }
+  return part.output;
 }
 
 function renderUserContent(
