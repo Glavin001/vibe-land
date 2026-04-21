@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Once;
 
+use js_sys;
 use nalgebra::{vector, Quaternion, UnitQuaternion, Vector3};
 use rapier3d::control::DynamicRayCastVehicleController;
 use rapier3d::prelude::*;
 use wasm_bindgen::prelude::*;
 
-use crate::debug_render::{default_debug_pipeline, render_debug_buffers, DebugLineBuffers};
+use crate::debug_render::{default_debug_pipeline, render_debug_buffers};
 use crate::local_session::LocalSession;
 use crate::movement::{default_player_navigation_profile, MoveConfig, Vec3d};
 use crate::protocol::{
@@ -96,33 +97,6 @@ struct WasmVehicle {
 }
 
 #[wasm_bindgen]
-pub struct DebugRenderBuffers {
-    vertices: Box<[f32]>,
-    colors: Box<[f32]>,
-}
-
-impl DebugRenderBuffers {
-    fn from_line_buffers(buffers: DebugLineBuffers) -> Self {
-        Self {
-            vertices: buffers.vertices.into_boxed_slice(),
-            colors: buffers.colors.into_boxed_slice(),
-        }
-    }
-}
-
-#[wasm_bindgen]
-impl DebugRenderBuffers {
-    #[wasm_bindgen(getter)]
-    pub fn vertices(&self) -> Box<[f32]> {
-        self.vertices.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn colors(&self) -> Box<[f32]> {
-        self.colors.clone()
-    }
-}
-
 /// Client-side physics simulation exposed to JavaScript via WASM.
 ///
 /// Wraps `SimWorld` and adds single-player state management, pending input
@@ -163,6 +137,8 @@ pub struct WasmSimWorld {
     vehicle_pending_inputs: Vec<InputCmd>,
     gravity: Vector3<f32>,
     debug_pipeline: DebugRenderPipeline,
+    debug_scratch_vertices: Vec<f32>,
+    debug_scratch_colors: Vec<f32>,
     material_field: Option<TerrainMaterialField>,
 }
 
@@ -194,6 +170,8 @@ impl WasmSimWorld {
             vehicle_pending_inputs: Vec::new(),
             gravity: vector![0.0, -20.0, 0.0],
             debug_pipeline: default_debug_pipeline(),
+            debug_scratch_vertices: Vec::new(),
+            debug_scratch_colors: Vec::new(),
             material_field: None,
         }
     }
@@ -1150,19 +1128,21 @@ impl WasmSimWorld {
         self.step_vehicle_pipeline(dt);
     }
 
+    /// Render debug lines into internal scratch buffers.  Returns the number of
+    /// line endpoints (vertices); each endpoint occupies 3 floats in the position
+    /// and color buffers.  Call `debugRenderPositions()` / `debugRenderColors()`
+    /// immediately after to obtain zero-copy views into WASM memory.
     #[wasm_bindgen(js_name = debugRender)]
-    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
+    pub fn debug_render(&mut self, mode_bits: u32) -> u32 {
         // Keep collider world-poses in sync with any rigid bodies we moved
-        // manually from snapshots/reconciliation. This updates attached collider
-        // transforms without advancing the simulation.
+        // manually from snapshots/reconciliation.
         self.sim
             .rigid_bodies
             .propagate_modified_body_positions_to_colliders(&mut self.sim.colliders);
-        // Observer clients may update collider transforms from snapshots without
-        // advancing local physics. Flush those pending collider changes so the
-        // debug draw reflects current proxy positions rather than stale AABBs.
+        // Flush pending collider changes so the debug draw reflects current
+        // proxy positions rather than stale AABBs.
         self.sim.sync_broad_phase();
-        let buffers = render_debug_buffers(
+        render_debug_buffers(
             &mut self.debug_pipeline,
             mode_bits,
             &self.sim.rigid_bodies,
@@ -1170,8 +1150,24 @@ impl WasmSimWorld {
             &self.vehicle_joints,
             &self.vehicle_multibody_joints,
             &self.sim.narrow_phase,
+            &mut self.debug_scratch_vertices,
+            &mut self.debug_scratch_colors,
         );
-        DebugRenderBuffers::from_line_buffers(buffers)
+        (self.debug_scratch_vertices.len() / 3) as u32
+    }
+
+    /// Zero-copy view of the position buffer filled by the last `debugRender` call.
+    /// Each endpoint is [x, y, z]; length = vertexCount * 3.
+    #[wasm_bindgen(js_name = debugRenderPositions)]
+    pub fn debug_render_positions(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_vertices) }
+    }
+
+    /// Zero-copy view of the color buffer filled by the last `debugRender` call.
+    /// Colors are packed as RGB (no alpha); length = vertexCount * 3.
+    #[wasm_bindgen(js_name = debugRenderColors)]
+    pub fn debug_render_colors(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_colors) }
     }
 
     // ── Vehicle simulation (driver-side prediction) ──────────────────────────
@@ -1613,6 +1609,8 @@ impl WasmSimWorld {
 pub struct WasmLocalSession {
     inner: LocalSession,
     debug_pipeline: DebugRenderPipeline,
+    debug_scratch_vertices: Vec<f32>,
+    debug_scratch_colors: Vec<f32>,
 }
 
 const LOCAL_DYNAMIC_BODY_STATE_STRIDE: usize = 18;
@@ -1631,7 +1629,12 @@ impl WasmLocalSession {
             }
             None => LocalSession::new(),
         };
-        Ok(Self { inner, debug_pipeline: default_debug_pipeline() })
+        Ok(Self {
+            inner,
+            debug_pipeline: default_debug_pipeline(),
+            debug_scratch_vertices: Vec::new(),
+            debug_scratch_colors: Vec::new(),
+        })
     }
 
     pub fn connect(&mut self) {
@@ -2009,9 +2012,24 @@ impl WasmLocalSession {
     }
 
     #[wasm_bindgen(js_name = debugRender)]
-    pub fn debug_render(&mut self, mode_bits: u32) -> DebugRenderBuffers {
-        let buffers = self.inner.debug_render(&mut self.debug_pipeline, mode_bits);
-        DebugRenderBuffers::from_line_buffers(buffers)
+    pub fn debug_render(&mut self, mode_bits: u32) -> u32 {
+        self.inner.debug_render(
+            &mut self.debug_pipeline,
+            mode_bits,
+            &mut self.debug_scratch_vertices,
+            &mut self.debug_scratch_colors,
+        );
+        (self.debug_scratch_vertices.len() / 3) as u32
+    }
+
+    #[wasm_bindgen(js_name = debugRenderPositions)]
+    pub fn debug_render_positions(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_vertices) }
+    }
+
+    #[wasm_bindgen(js_name = debugRenderColors)]
+    pub fn debug_render_colors(&self) -> js_sys::Float32Array {
+        unsafe { js_sys::Float32Array::view(&self.debug_scratch_colors) }
     }
 }
 

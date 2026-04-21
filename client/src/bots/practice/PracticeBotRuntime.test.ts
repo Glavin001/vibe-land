@@ -162,7 +162,9 @@ describe('PracticeBotRuntime.create', () => {
     });
 
     runtime.attach(host, getSelf);
-    vi.advanceTimersByTime(100);
+    // Advance past the standAndShootTicks window (18 ticks × 60 Hz ≈ 300 ms)
+    // so the bot emits a navigation target rather than standing to shoot.
+    vi.advanceTimersByTime(400);
 
     let info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');
@@ -246,7 +248,8 @@ describe('PracticeBotRuntime.create', () => {
     });
 
     runtime.attach(host, getSelf);
-    vi.advanceTimersByTime(100);
+    // Advance past standAndShootTicks (18 ticks × 60 Hz ≈ 300 ms).
+    vi.advanceTimersByTime(400);
 
     let info = runtime.getBotDebugInfos()[0];
     expect(info?.mode).toBe('follow_target');

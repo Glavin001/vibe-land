@@ -115,7 +115,12 @@ export class LocalPracticeClient implements PracticeBotHost {
   ping(): void {}
 
   debugRender(modeBits: number): WasmDebugRenderBuffers | null {
-    return this.session?.debugRender(modeBits) ?? null;
+    if (!this.session) return null;
+    this.session.debugRender(modeBits);
+    return {
+      vertices: this.session.debugRenderPositions(),
+      colors: this.session.debugRenderColors(),
+    };
   }
 
   disconnect(): void {
