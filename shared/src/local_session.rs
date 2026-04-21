@@ -10,6 +10,7 @@ use crate::{
         PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
         RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
+    debug_render::{render_debug_buffers, DebugLineBuffers},
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
@@ -19,6 +20,7 @@ use crate::{
 };
 use bytes::{Buf, BufMut, BytesMut};
 use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
+use rapier3d::pipeline::DebugRenderPipeline;
 use rapier3d::prelude::{
     ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
     RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
@@ -1258,6 +1260,21 @@ impl LocalSession {
         if let Some(handle) = self.ragdoll_joint_handles.remove(&joint_id) {
             self.arena.dynamic.impulse_joints.remove(handle, false);
         }
+    }
+
+    pub fn debug_render(&mut self, pipeline: &mut DebugRenderPipeline, mode_bits: u32) -> DebugLineBuffers {
+        self.arena.dynamic.sim.rigid_bodies
+            .propagate_modified_body_positions_to_colliders(&mut self.arena.dynamic.sim.colliders);
+        self.arena.sync_broad_phase();
+        render_debug_buffers(
+            pipeline,
+            mode_bits,
+            &self.arena.dynamic.sim.rigid_bodies,
+            &self.arena.dynamic.sim.colliders,
+            &self.arena.dynamic.impulse_joints,
+            &self.arena.dynamic.multibody_joints,
+            &self.arena.dynamic.sim.narrow_phase,
+        )
     }
 }
 
