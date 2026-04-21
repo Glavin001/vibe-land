@@ -846,8 +846,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return 0;
   }
 
-  getDebugRenderBuffers(_modeBits: number): WasmDebugRenderBuffers | null {
-    return null;
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    if (!this.client || modeBits === 0) return null;
+    return this.client.debugRender(modeBits);
   }
 
   getDebugStats(): RuntimeDebugStats {
