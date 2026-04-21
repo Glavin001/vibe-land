@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { stepCountIs, streamText } from 'ai';
+import { streamText, tool } from 'ai';
 import {
   makeChatId,
   toModelMessages,
@@ -10,7 +10,21 @@ import {
 import { loadChat, saveChat } from './chatStore';
 import { createLanguageModel, getThinkingProviderOptions, type ProviderId } from './providers';
 import { SYSTEM_PROMPT } from './systemPrompt';
-import { createExecuteJsTool, createRollbackTool } from './worldTool';
+import {
+  executeJsInputSchema,
+  executeJsToolDescription,
+  executeJsToolExecute,
+  rollbackInputSchema,
+  rollbackToolDescription,
+  rollbackToolExecute,
+  type ToolRuntimeOptions,
+} from './worldTool';
+import {
+  captureScreenshotInputSchema,
+  captureScreenshotToolDescription,
+  captureScreenshotToolExecute,
+} from './screenshotTool';
+import type { CaptureFunction } from '../scene/SceneCaptureController';
 import type { WorldAccessors } from './worldToolHelpers';
 
 export type ChatStatus = 'idle' | 'streaming' | 'error';
@@ -21,6 +35,7 @@ export type GodModeChatOptions = {
   provider: ProviderId;
   model: string;
   apiKey: string | undefined;
+  captureScreenshot?: CaptureFunction;
 };
 
 export type ImageAttachment = { dataUrl: string; mediaType: string };
@@ -30,8 +45,13 @@ export type GodModeChatHandle = {
   status: ChatStatus;
   error: Error | null;
   pendingHumanEdits: number;
+  pendingHumanEditSummaries: string[];
+  isLoaded: boolean;
   canSend: boolean;
+  setMessages(messages: ChatMessage[]): void;
   sendMessage(text: string, attachments?: ImageAttachment[]): Promise<void>;
+  regenerateMessage(messageId: string): Promise<void>;
+  submitEditedMessage(messageId: string, text: string, attachments?: ImageAttachment[]): Promise<void>;
   stop(): void;
   pushHumanEdit(summary: string): void;
 };
@@ -39,9 +59,9 @@ export type GodModeChatHandle = {
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { chatId, accessors, provider, model, apiKey } = options;
+  const { chatId, accessors, provider, model, apiKey, captureScreenshot } = options;
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessageState] = useState<ChatMessage[]>([]);
   const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
   const [error, setError] = useState<Error | null>(null);
@@ -54,6 +74,11 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   useEffect(() => {
     accessorsRef.current = accessors;
   }, [accessors]);
+
+  const captureScreenshotRef = useRef(captureScreenshot);
+  useEffect(() => {
+    captureScreenshotRef.current = captureScreenshot;
+  }, [captureScreenshot]);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -85,13 +110,13 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
     }
     setStatus('idle');
     setError(null);
-    setMessages([]);
+    setMessageState([]);
     setPendingHumanEdits([]);
     setLoadedChatId(null);
     let cancelled = false;
     void loadChat(chatId).then((state) => {
       if (cancelled) return;
-      setMessages(state.messages);
+      setMessageState(state.messages);
       setPendingHumanEdits(state.pendingHumanEdits);
       setLoadedChatId(chatId);
     });
@@ -108,29 +133,11 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   }, [chatId, loadedChatId, messages, pendingHumanEdits]);
 
   const isLoaded = loadedChatId === chatId;
-  const canSend = Boolean(apiKey) && status === 'idle' && isLoaded;
+  const canSend = Boolean(apiKey) && status !== 'streaming' && isLoaded;
 
-  const sendMessage = useCallback(
-    async (text: string, attachments?: ImageAttachment[]) => {
-      const trimmed = text.trim();
-      if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
-      if (!apiKey) {
-        setError(new Error(`Add an API key for ${provider} first.`));
-        setStatus('error');
-        return;
-      }
-      if (status === 'streaming') return;
-      if (!isLoaded) return;
-
-      // Snapshot pending human edits and clear them up-front so concurrent
-      // edits while we wait for the model start a fresh buffer.
-      let hiddenContext: string | undefined;
-      if (pendingHumanEdits.length > 0) {
-        hiddenContext = `<context>Human edits since last turn: ${pendingHumanEdits.join('; ')}</context>`;
-      }
-      setPendingHumanEdits([]);
-
-      const parts: ChatPart[] = [{ type: 'text', text: trimmed }];
+  const buildUserMessage = useCallback(
+    (text: string, attachments?: ImageAttachment[], hiddenContext?: string): ChatMessage => {
+      const parts: ChatPart[] = [{ type: 'text', text }];
       if (attachments && attachments.length > 0) {
         const imageParts: ChatImagePart[] = attachments.map((att) => ({
           type: 'image',
@@ -139,23 +146,49 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }));
         parts.push(...imageParts);
       }
-      const userMessage: ChatMessage = {
+      return {
         id: makeChatId(),
         role: 'user',
         parts,
         createdAt: Date.now(),
         hiddenContext,
       };
+    },
+    [],
+  );
+
+  const ensureCanStartRequest = useCallback((): boolean => {
+      if (!apiKey) {
+        setError(new Error(`Add an API key for ${provider} first.`));
+        setStatus('error');
+        return false;
+      }
+      if (status === 'streaming') return false;
+      if (!isLoaded) return false;
+      return true;
+    }, [apiKey, isLoaded, provider, status]);
+
+  const consumePendingHumanEdits = useCallback((): string | undefined => {
+    if (pendingHumanEdits.length === 0) return undefined;
+    setPendingHumanEdits([]);
+    return `<context>Human edits since last turn: ${pendingHumanEdits.join('; ')}</context>`;
+  }, [pendingHumanEdits]);
+
+  const runAssistantTurn = useCallback(
+    async (baseMessages: ChatMessage[]) => {
+      const activeApiKey = apiKey;
+      if (!activeApiKey) {
+        throw new Error(`Add an API key for ${provider} first.`);
+      }
       const assistantId = makeChatId();
-      const assistantMessage: ChatMessage = {
+      const assistantMessageBase: Omit<ChatMessage, 'parts'> = {
         id: assistantId,
         role: 'assistant',
-        parts: [],
         createdAt: Date.now(),
       };
+      let assistantParts: ChatPart[] = [];
 
-      const baseMessages = [...messages, userMessage];
-      setMessages([...baseMessages, assistantMessage]);
+      setMessageState([...baseMessages, { ...assistantMessageBase, parts: assistantParts }]);
       setStatus('streaming');
       setError(null);
 
@@ -163,163 +196,202 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       abortRef.current = controller;
 
       try {
-        const languageModel = createLanguageModel(provider, model, apiKey);
+        const languageModel = createLanguageModel(provider, model, activeApiKey);
         const thinkingOpts = getThinkingProviderOptions(provider, model);
-        const result = streamText({
-          model: languageModel,
-          system: SYSTEM_PROMPT,
-          messages: toModelMessages(baseMessages),
-          tools: {
-            execute_js: createExecuteJsTool(accessorsRef.current),
-            rollback_to_commit: createRollbackTool(accessorsRef.current),
-          },
-          stopWhen: stepCountIs(MAX_TOOL_STEPS),
-          abortSignal: controller.signal,
-          // Disable automatic retries — for BYOK in the browser, retrying
-          // on 429/5xx just wastes the user's quota and delays the error.
-          maxRetries: 0,
-          providerOptions: {
-            ...thinkingOpts,
-            // Prevent OpenAI from issuing multiple tool calls in a single step.
-            // Parallel execution drops returnValue from SandboxResult (vercel/ai#3854).
-            // Deep-merge with any thinking options already under the openai key.
-            openai: { parallelToolCalls: false, ...thinkingOpts.openai },
-          },
-        });
-
-        // Track in-flight text/reasoning blocks so streamed deltas append to
-        // the same part instead of creating a new one per chunk.
-        const textPartIds = new Map<string, number>(); // delta id -> parts index
-        const reasoningPartIds = new Map<string, number>();
-
         const updateAssistant = (mutator: (parts: ChatPart[]) => ChatPart[]) => {
-          setMessages((current) => {
+          assistantParts = mutator(assistantParts);
+          setMessageState((current) => {
             const idx = current.findIndex((m) => m.id === assistantId);
             if (idx === -1) return current;
-            const target = current[idx];
-            const nextParts = mutator(target.parts);
-            const nextMessage: ChatMessage = { ...target, parts: nextParts };
             const next = current.slice();
-            next[idx] = nextMessage;
+            next[idx] = { ...current[idx], parts: assistantParts };
             return next;
           });
         };
+        const llmTools = {
+          execute_js: tool({
+            description: executeJsToolDescription,
+            inputSchema: executeJsInputSchema,
+          }),
+          rollback_to_commit: tool({
+            description: rollbackToolDescription,
+            inputSchema: rollbackInputSchema,
+          }),
+          capture_screenshot: tool({
+            description: captureScreenshotToolDescription,
+            inputSchema: captureScreenshotInputSchema,
+          }),
+        };
 
-        for await (const part of result.fullStream) {
-          if (controller.signal.aborted) break;
+        let totalInputTokens = 0;
+        let totalOutputTokens = 0;
 
-          switch (part.type) {
-            case 'text-start': {
-              updateAssistant((parts) => {
-                textPartIds.set(part.id, parts.length);
-                return [...parts, { type: 'text', text: '' }];
-              });
-              break;
+        for (let step = 0; step < MAX_TOOL_STEPS; step += 1) {
+          const messagesForStep = [...baseMessages, { ...assistantMessageBase, parts: assistantParts }];
+          const modelMessages = toModelMessages(messagesForStep);
+
+          const result = streamText({
+            model: languageModel,
+            system: SYSTEM_PROMPT,
+            messages: modelMessages,
+            tools: llmTools,
+            abortSignal: controller.signal,
+            maxRetries: 0,
+            providerOptions: {
+              ...thinkingOpts,
+              openai: { parallelToolCalls: false, ...thinkingOpts.openai },
+            },
+          });
+
+          const textPartIds = new Map<string, number>();
+          const reasoningPartIds = new Map<string, number>();
+
+          for await (const part of result.fullStream) {
+            if (controller.signal.aborted) break;
+
+            switch (part.type) {
+              case 'text-start': {
+                updateAssistant((parts) => {
+                  textPartIds.set(part.id, parts.length);
+                  return [...parts, { type: 'text', text: '' }];
+                });
+                break;
+              }
+              case 'text-delta': {
+                updateAssistant((parts) => {
+                  let index = textPartIds.get(part.id);
+                  let nextParts = parts;
+                  if (index === undefined) {
+                    index = parts.length;
+                    textPartIds.set(part.id, index);
+                    nextParts = [...parts, { type: 'text', text: '' }];
+                  }
+                  const target = nextParts[index];
+                  if (target?.type !== 'text') return nextParts;
+                  const updated: ChatPart = { type: 'text', text: target.text + part.text };
+                  const out = nextParts.slice();
+                  out[index] = updated;
+                  return out;
+                });
+                break;
+              }
+              case 'reasoning-start': {
+                updateAssistant((parts) => {
+                  reasoningPartIds.set(part.id, parts.length);
+                  return [...parts, { type: 'reasoning', text: '' }];
+                });
+                break;
+              }
+              case 'reasoning-delta': {
+                updateAssistant((parts) => {
+                  let index = reasoningPartIds.get(part.id);
+                  let nextParts = parts;
+                  if (index === undefined) {
+                    index = parts.length;
+                    reasoningPartIds.set(part.id, index);
+                    nextParts = [...parts, { type: 'reasoning', text: '' }];
+                  }
+                  const target = nextParts[index];
+                  if (target?.type !== 'reasoning') return nextParts;
+                  const updated: ChatPart = { type: 'reasoning', text: target.text + part.text };
+                  const out = nextParts.slice();
+                  out[index] = updated;
+                  return out;
+                });
+                break;
+              }
+              case 'tool-call': {
+                updateAssistant((parts) => [
+                  ...parts,
+                  {
+                    type: 'tool-call',
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    input: part.input,
+                  },
+                ]);
+                break;
+              }
+              case 'tool-result':
+              case 'tool-error':
+              case 'error': {
+                if (part.type === 'error') throw toError(part.error);
+                if (part.type === 'tool-error') throw toError(part.error);
+                break;
+              }
+              default:
+                break;
             }
-            case 'text-delta': {
-              updateAssistant((parts) => {
-                let index = textPartIds.get(part.id);
-                let nextParts = parts;
-                if (index === undefined) {
-                  index = parts.length;
-                  textPartIds.set(part.id, index);
-                  nextParts = [...parts, { type: 'text', text: '' }];
-                }
-                const target = nextParts[index];
-                if (target?.type !== 'text') return nextParts;
-                const updated: ChatPart = { type: 'text', text: target.text + part.text };
-                const out = nextParts.slice();
-                out[index] = updated;
-                return out;
-              });
-              break;
-            }
-            case 'reasoning-start': {
-              updateAssistant((parts) => {
-                reasoningPartIds.set(part.id, parts.length);
-                return [...parts, { type: 'reasoning', text: '' }];
-              });
-              break;
-            }
-            case 'reasoning-delta': {
-              updateAssistant((parts) => {
-                let index = reasoningPartIds.get(part.id);
-                let nextParts = parts;
-                if (index === undefined) {
-                  index = parts.length;
-                  reasoningPartIds.set(part.id, index);
-                  nextParts = [...parts, { type: 'reasoning', text: '' }];
-                }
-                const target = nextParts[index];
-                if (target?.type !== 'reasoning') return nextParts;
-                const updated: ChatPart = { type: 'reasoning', text: target.text + part.text };
-                const out = nextParts.slice();
-                out[index] = updated;
-                return out;
-              });
-              break;
-            }
-            case 'tool-call': {
-              updateAssistant((parts) => [
-                ...parts,
-                {
-                  type: 'tool-call',
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  input: part.input,
-                },
-              ]);
-              break;
-            }
-            case 'tool-result': {
-              updateAssistant((parts) => [
-                ...parts,
-                {
-                  type: 'tool-result',
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  output: part.output,
-                },
-              ]);
-              break;
-            }
-            case 'tool-error': {
-              updateAssistant((parts) => [
-                ...parts,
-                {
-                  type: 'tool-result',
-                  toolCallId: part.toolCallId,
-                  toolName: part.toolName,
-                  output: { error: errorMessage(part.error) },
-                  isError: true,
-                },
-              ]);
-              break;
-            }
-            case 'error': {
-              throw toError(part.error);
-            }
-            default:
-              break;
           }
-        }
 
-        // Capture cumulative token usage across all tool-use steps.
-        if (!controller.signal.aborted) {
           try {
             const { inputTokens, outputTokens } = await result.totalUsage;
-            if (inputTokens !== undefined && outputTokens !== undefined) {
-              setMessages((current) => {
-                const idx = current.findIndex((m) => m.id === assistantId);
-                if (idx === -1) return current;
-                const next = current.slice();
-                next[idx] = { ...current[idx], usage: { inputTokens, outputTokens } };
-                return next;
-              });
-            }
+            if (inputTokens !== undefined) totalInputTokens += inputTokens;
+            if (outputTokens !== undefined) totalOutputTokens += outputTokens;
           } catch {
             // Usage unavailable from this provider/model — skip silently.
           }
+
+          const finishReason = await result.finishReason;
+          if (finishReason !== 'tool-calls') {
+            break;
+          }
+
+          const toolCalls = await result.toolCalls;
+          for (const toolCall of toolCalls) {
+            const toolOptions: ToolRuntimeOptions = {
+              toolCallId: toolCall.toolCallId,
+              messages: modelMessages,
+              abortSignal: controller.signal,
+            };
+            let output: unknown;
+            switch (toolCall.toolName) {
+              case 'execute_js':
+                output = await executeJsToolExecute(
+                  accessorsRef.current,
+                  executeJsInputSchema.parse(toolCall.input),
+                  toolOptions,
+                );
+                break;
+              case 'rollback_to_commit':
+                output = await rollbackToolExecute(
+                  accessorsRef.current,
+                  rollbackInputSchema.parse(toolCall.input),
+                  toolOptions,
+                );
+                break;
+              case 'capture_screenshot':
+                output = await captureScreenshotToolExecute(
+                  () => captureScreenshotRef.current,
+                  accessorsRef.current,
+                  captureScreenshotInputSchema.parse(toolCall.input),
+                  toolOptions,
+                );
+                break;
+              default:
+                throw new Error(`Unsupported tool call: ${toolCall.toolName}`);
+            }
+
+            updateAssistant((parts) => [
+              ...parts,
+              {
+                type: 'tool-result',
+                toolCallId: toolCall.toolCallId,
+                toolName: toolCall.toolName,
+                output,
+              },
+            ]);
+          }
+        }
+
+        if (totalInputTokens > 0 || totalOutputTokens > 0) {
+          setMessageState((current) => {
+            const idx = current.findIndex((m) => m.id === assistantId);
+            if (idx === -1) return current;
+            const next = current.slice();
+            next[idx] = { ...current[idx], usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens } };
+            return next;
+          });
         }
 
         setStatus('idle');
@@ -337,7 +409,66 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
         }
       }
     },
-    [apiKey, isLoaded, messages, model, pendingHumanEdits, provider, status],
+    [apiKey, isLoaded, model, provider, status],
+  );
+
+  const setMessages = useCallback(
+    (nextMessages: ChatMessage[]) => {
+      if (status === 'streaming') return;
+      setMessageState(nextMessages);
+      setStatus('idle');
+      setError(null);
+    },
+    [status],
+  );
+
+  const sendMessage = useCallback(
+    async (text: string, attachments?: ImageAttachment[]) => {
+      const trimmed = text.trim();
+      if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
+      if (!ensureCanStartRequest()) return;
+      const hiddenContext = consumePendingHumanEdits();
+      const userMessage = buildUserMessage(trimmed, attachments, hiddenContext);
+      await runAssistantTurn([...messages, userMessage]);
+    },
+    [buildUserMessage, consumePendingHumanEdits, ensureCanStartRequest, messages, runAssistantTurn],
+  );
+
+  const regenerateMessage = useCallback(
+    async (messageId: string) => {
+      if (!ensureCanStartRequest()) return;
+      const targetIndex = messages.findIndex((message) => message.id === messageId);
+      if (targetIndex === -1) return;
+      let userIndex = targetIndex;
+      if (messages[targetIndex]?.role !== 'user') {
+        userIndex = -1;
+        for (let index = targetIndex - 1; index >= 0; index -= 1) {
+          if (messages[index]?.role === 'user') {
+            userIndex = index;
+            break;
+          }
+        }
+      }
+      if (userIndex === -1) return;
+      await runAssistantTurn(messages.slice(0, userIndex + 1));
+    },
+    [ensureCanStartRequest, messages, runAssistantTurn],
+  );
+
+  const submitEditedMessage = useCallback(
+    async (messageId: string, text: string, attachments?: ImageAttachment[]) => {
+      const targetIndex = messages.findIndex(
+        (message) => message.id === messageId && message.role === 'user',
+      );
+      if (targetIndex === -1) return;
+      const trimmed = text.trim();
+      if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
+      if (!ensureCanStartRequest()) return;
+      const hiddenContext = consumePendingHumanEdits();
+      const userMessage = buildUserMessage(trimmed, attachments, hiddenContext);
+      await runAssistantTurn([...messages.slice(0, targetIndex), userMessage]);
+    },
+    [buildUserMessage, consumePendingHumanEdits, ensureCanStartRequest, messages, runAssistantTurn],
   );
 
   return useMemo<GodModeChatHandle>(
@@ -346,12 +477,31 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       status,
       error,
       pendingHumanEdits: pendingHumanEdits.length,
+      pendingHumanEditSummaries: pendingHumanEdits,
+      isLoaded,
       canSend,
+      setMessages,
       sendMessage,
+      regenerateMessage,
+      submitEditedMessage,
       stop,
       pushHumanEdit,
     }),
-    [canSend, error, messages, pendingHumanEdits.length, pushHumanEdit, sendMessage, status, stop],
+    [
+      canSend,
+      error,
+      isLoaded,
+      messages,
+      pendingHumanEdits.length,
+      pendingHumanEdits,
+      pushHumanEdit,
+      regenerateMessage,
+      sendMessage,
+      setMessages,
+      status,
+      stop,
+      submitEditedMessage,
+    ],
   );
 }
 
@@ -362,15 +512,5 @@ function toError(value: unknown): Error {
     return new Error(JSON.stringify(value));
   } catch {
     return new Error(String(value));
-  }
-}
-
-function errorMessage(value: unknown): string {
-  if (value instanceof Error) return value.message;
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
   }
 }
