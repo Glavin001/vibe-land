@@ -19,6 +19,7 @@ function blankWorld(): WorldDocument {
     },
     staticProps: [],
     dynamicEntities: [],
+    spawnAreas: [],
   };
 }
 
@@ -365,5 +366,172 @@ describe('buildWorldCtx', () => {
     const result = ctx.applyCustomStencil('nonexistent', 0, 0);
     expect(result.changed).toBe(false);
     expect(result.error).toMatch(/nonexistent/);
+  });
+
+  it('addSpawnArea pushes a new spawn area and returns its id', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.addSpawnArea({ position: [4, 0, -3], radius: 8 });
+    expect(result.changed).toBe(true);
+    expect(typeof result.id).toBe('number');
+    const world = env.current();
+    expect(world.spawnAreas).toHaveLength(1);
+    expect(world.spawnAreas[0]).toEqual({ id: result.id, position: [4, 0, -3], radius: 8 });
+    expect(env.aiEditCount()).toBe(1);
+  });
+
+  it('addSpawnArea rejects radius < 1 and bad position', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    expect(ctx.addSpawnArea({ position: [0, 0, 0], radius: 0 }).reason).toMatch(/radius/);
+    expect(
+      // @ts-expect-error testing runtime guard
+      ctx.addSpawnArea({ position: [0, 0], radius: 5 }).reason,
+    ).toMatch(/position/);
+    expect(env.current().spawnAreas).toHaveLength(0);
+  });
+
+  it('updateSpawnArea patches position and radius', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push({ id: 1, position: [0, 0, 0], radius: 5 });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.updateSpawnArea(1, { position: [10, 0, 10], radius: 12 });
+    expect(result.changed).toBe(true);
+    expect(env.current().spawnAreas[0]).toEqual({ id: 1, position: [10, 0, 10], radius: 12 });
+  });
+
+  it('updateSpawnArea rejects unknown id and bad radius', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push({ id: 1, position: [0, 0, 0], radius: 5 });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    expect(ctx.updateSpawnArea(999, { radius: 6 }).reason).toContain('no spawn area');
+    expect(ctx.updateSpawnArea(1, { radius: 0 }).reason).toMatch(/radius/);
+    expect(env.current().spawnAreas[0].radius).toBe(5);
+  });
+
+  it('removeSpawnArea drops by id and reports unknown', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push({ id: 1, position: [0, 0, 0], radius: 5 });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    expect(ctx.removeSpawnArea(1).changed).toBe(true);
+    expect(env.current().spawnAreas).toHaveLength(0);
+    expect(ctx.removeSpawnArea(1).reason).toContain('no spawn area');
+  });
+
+  it('listSpawnAreas / getSpawnArea return clones of state', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push({ id: 7, position: [1, 0, 2], radius: 3 });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    const list = ctx.listSpawnAreas();
+    expect(list).toHaveLength(1);
+    list[0].radius = 999;
+    expect(env.current().spawnAreas[0].radius).toBe(3);
+    const single = ctx.getSpawnArea(7);
+    expect(single).toEqual({ id: 7, position: [1, 0, 2], radius: 3 });
+    expect(ctx.getSpawnArea(404)).toBeNull();
+  });
+
+  it('findEntitiesInRadius includes spawn areas with kind: "spawnArea"', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push(
+      { id: 1, position: [0, 0, 0], radius: 5 },
+      { id: 2, position: [100, 0, 100], radius: 5 },
+    );
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    const results = ctx.findEntitiesInRadius({ x: 0, z: 0, radius: 5 });
+    expect(results).toHaveLength(1);
+    expect(results[0].kind).toBe('spawnArea');
+    expect(results[0].entity.id).toBe(1);
+  });
+
+  it('findEntitiesInBox includes spawn areas', () => {
+    const initial = blankWorld();
+    initial.spawnAreas.push({ id: 5, position: [1, 0, 1], radius: 4 });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    const results = ctx.findEntitiesInBox({ minX: -2, maxX: 2, minZ: -2, maxZ: 2 });
+    expect(results).toHaveLength(1);
+    expect(results[0].kind).toBe('spawnArea');
+  });
+
+  it('listTerrainMaterials exposes default materials with index/name/color', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const materials = ctx.listTerrainMaterials();
+    expect(materials.length).toBeGreaterThan(0);
+    expect(materials[0]).toHaveProperty('index', 0);
+    expect(typeof materials[0].name).toBe('string');
+    expect(typeof materials[0].color).toBe('string');
+    expect(materials.some((m) => m.name === 'grass')).toBe(true);
+  });
+
+  it('paintTerrainMaterial accepts material name and writes splatmap weights', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.paintTerrainMaterial({
+      centerX: 0, centerZ: 0, radius: 12, strength: 1, material: 'pavement',
+    });
+    expect(result.changed).toBe(true);
+    const tile = env.current().terrain.tiles[0];
+    expect(tile.materialWeights).toBeDefined();
+    expect((tile.materialWeights ?? []).length).toBeGreaterThan(0);
+  });
+
+  it('paintTerrainMaterial accepts material index too', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.paintTerrainMaterial({
+      centerX: 0, centerZ: 0, radius: 12, strength: 1, material: 0,
+    });
+    expect(result.changed).toBe(true);
+  });
+
+  it('paintTerrainMaterial rejects unknown material', () => {
+    const env = makeAccessors(blankWorld());
+    const ctx = buildWorldCtx(env.accessors);
+    const result = ctx.paintTerrainMaterial({
+      centerX: 0, centerZ: 0, radius: 12, strength: 1, material: 'unobtainium',
+    });
+    expect(result.changed).toBe(false);
+    expect(result.reason).toContain('unobtainium');
+    const result2 = ctx.paintTerrainMaterial({
+      centerX: 0, centerZ: 0, radius: 12, strength: 1, material: 9999,
+    });
+    expect(result2.changed).toBe(false);
+    expect(result2.reason).toMatch(/9999/);
+  });
+
+  it('updateEntity patches vehicleType only on vehicle entities', () => {
+    const initial = blankWorld();
+    initial.dynamicEntities.push(
+      { id: 1, kind: 'vehicle', position: [0, 0, 0], rotation: identityQuaternion(), vehicleType: 0 },
+      { id: 2, kind: 'box', position: [0, 0, 0], rotation: identityQuaternion(), halfExtents: [1, 1, 1] },
+    );
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+
+    expect(ctx.updateEntity(1, { vehicleType: 3 }).changed).toBe(true);
+    expect(env.current().dynamicEntities[0].vehicleType).toBe(3);
+
+    // box: vehicleType in patch is silently ignored (no field added)
+    ctx.updateEntity(2, { vehicleType: 7 });
+    expect(env.current().dynamicEntities[1].vehicleType).toBeUndefined();
+  });
+
+  it('updateEntity patches material on static cuboids', () => {
+    const initial = blankWorld();
+    initial.staticProps.push({
+      id: 1, kind: 'cuboid', position: [0, 0, 0], rotation: identityQuaternion(),
+      halfExtents: [1, 1, 1], material: 'editor-static',
+    });
+    const env = makeAccessors(initial);
+    const ctx = buildWorldCtx(env.accessors);
+    expect(ctx.updateEntity(1, { material: 'metal' }).changed).toBe(true);
+    expect(env.current().staticProps[0].material).toBe('metal');
   });
 });

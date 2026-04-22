@@ -30,8 +30,15 @@ type WorldDocument = {
     radius?: number;              // ball only
     vehicleType?: number;         // vehicle only
   }>;
+  spawnAreas: Array<{
+    id: number;                   // separate ID space from entities
+    position: [x, y, z];
+    radius: number;               // meters; clamped >= 1
+  }>;
 };
 \`\`\`
+
+Spawn areas mark where players can spawn into the world. They are circles on the XZ plane (Y is the ground reference). They are stored in their own array with their own numeric ID space — they are not entities, so they don't appear in \`listStaticProps\`/\`listDynamicEntities\`/\`getEntity\`/\`updateEntity\`. Use the dedicated spawn-area helpers below.
 
 Coordinates are right-handed, Y is up, units are meters. Terrain heights are absolute Y values. Tile (0,0) spans X: [-tileHalfExtentM, +tileHalfExtentM] and Z: [-tileHalfExtentM, +tileHalfExtentM]. Tile (1,0) is immediately to the east. Quaternions are [x, y, z, w]; use \`ctx.quaternionFromYaw(yawRadians)\` if you only need a yaw rotation.
 
@@ -130,6 +137,9 @@ Call \`execute_js\` one step at a time — wait for each result before issuing t
 - \`ctx.getMeta()\` → \`{ name, description }\`.
 - \`ctx.listStaticProps()\` / \`ctx.listDynamicEntities()\` → arrays of plain objects.
 - \`ctx.getEntity(id)\` → \`{ kind: 'static'|'dynamic', entity }\` or null.
+- \`ctx.listSpawnAreas()\` → array of \`{ id, position, radius }\`.
+- \`ctx.getSpawnArea(id)\` → single spawn area or null.
+- \`ctx.listTerrainMaterials()\` → \`Array<{ index, name, color }>\`. Use a name (e.g. \`'grass'\`) or index when calling \`paintTerrainMaterial\`.
 - \`ctx.getTerrainInfo()\` → \`{ tileGridSize, tileHalfExtentM, tileCount, bounds }\`.
 - \`ctx.listTerrainTiles()\` → array of \`{ tileX, tileZ }\`.
 - \`ctx.getTerrainTile(tileX, tileZ)\` → \`{ tileX, tileZ, heights: number[] }\` or null.
@@ -142,7 +152,7 @@ Call \`execute_js\` one step at a time — wait for each result before issuing t
 - \`ctx.nextEntityId()\` → next free numeric id.
 
 ## Entity search helpers
-- \`ctx.findEntitiesInRadius({ x, z, radius, y?, yRadius? })\` → array of \`{ kind, entity }\` for all static props and dynamic entities whose XZ position is within \`radius\` meters. Add optional \`y\` + \`yRadius\` to also filter by vertical band.
+- \`ctx.findEntitiesInRadius({ x, z, radius, y?, yRadius? })\` → array of \`{ kind, entity }\` for all static props, dynamic entities, **and spawn areas** whose XZ position is within \`radius\` meters. \`kind\` is \`'static' | 'dynamic' | 'spawnArea'\`. Add optional \`y\` + \`yRadius\` to also filter by vertical band.
 - \`ctx.findEntitiesInBox({ minX, maxX, minZ, maxZ, minY?, maxY? })\` → same but axis-aligned box filter.
 
 ## Write helpers
@@ -152,7 +162,11 @@ Terrain write helpers also return when changed: \`samplesAffected, deltaMin, del
 - \`ctx.addStaticCuboid({ position, halfExtents, rotation?, material? })\`
 - \`ctx.addDynamicEntity({ kind: 'box'|'ball'|'vehicle', position, halfExtents?, radius?, rotation?, vehicleType? })\`
 - \`ctx.removeEntity(id)\`
-- \`ctx.updateEntity(id, patch)\` — patch fields: \`position\`, \`rotation\`, \`halfExtents\`, \`radius\`.
+- \`ctx.updateEntity(id, patch)\` — patch fields: \`position\`, \`rotation\`, \`halfExtents\`, \`radius\`, \`vehicleType\` (vehicles only), \`material\` (static cuboids only).
+- \`ctx.addSpawnArea({ position, radius })\` → \`{ changed, id? }\`. Defines where players spawn. \`radius\` is clamped to \`>= 1\`.
+- \`ctx.updateSpawnArea(id, patch)\` — patch fields: \`position\`, \`radius\`.
+- \`ctx.removeSpawnArea(id)\`
+- \`ctx.paintTerrainMaterial({ centerX, centerZ, radius, strength, material })\` — paint a terrain material onto the splatmap. \`material\` accepts a name (e.g. \`'grass'\`, \`'pavement'\`, \`'sand'\`) or numeric index from \`listTerrainMaterials()\`. Same quadratic-falloff brush as terrain sculpt; \`strength\` blends toward the material at the center. This does not change terrain heights.
 - \`ctx.applyTerrainBrush({ centerX, centerZ, radius, strength, mode: 'raise'|'lower', minHeight?, maxHeight? })\`
 - \`ctx.flattenTerrain({ centerX, centerZ, radius, targetHeight, strength })\` — move terrain toward a fixed height. \`strength ∈ [0,1]\`; center reaches targetHeight exactly at strength=1.
 - \`ctx.smoothTerrain({ centerX, centerZ, radius, strength })\` — blend each sample toward the average of its 4 neighbors. Reduces spikes. \`strength ∈ [0,1]\`.
@@ -380,6 +394,14 @@ const seamX = ctx.getTerrainTileBounds(info.bounds.maxTileX + 1, 0).minX;
 for (let i = 0; i < 3; i++) {
   ctx.smoothTerrain({ centerX: seamX, centerZ: 0, radius: 10, strength: 0.5 });
 }
+\`\`\`
+
+**Add a spawn area and paint a pavement pad under it:**
+\`\`\`js
+const y = ctx.sampleTerrainHeight(10, -5);
+const { id } = ctx.addSpawnArea({ position: [10, y, -5], radius: 6 });
+ctx.paintTerrainMaterial({ centerX: 10, centerZ: -5, radius: 6, strength: 1, material: 'pavement' });
+return { spawnAreaId: id };
 \`\`\`
 
 **Scatter dynamic boxes on terrain surface:**
