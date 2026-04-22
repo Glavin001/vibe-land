@@ -1423,25 +1423,39 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                         <button type="button" onClick={() => handleSelectTerrainPanel('add-tile')} className={builderButtonClassName(activeTerrainPanel === 'add-tile' ? 'active' : 'secondary')}>Add Tile</button>
                         <button type="button" onClick={() => handleSelectTerrainPanel('delete-tile')} className={builderButtonClassName(activeTerrainPanel === 'delete-tile' ? 'active' : 'secondary')}>Delete Tile</button>
                         <button type="button" onClick={() => handleSelectTerrainPanel('sculpt')} className={builderButtonClassName(activeTerrainPanel === 'sculpt' ? 'active' : 'secondary')}>Sculpt</button>
-                        <button type="button" onClick={() => handleSelectTerrainPanel('ramp')} className={builderButtonClassName(activeTerrainPanel === 'ramp' ? 'active' : 'secondary')}>Ramp</button>
                         <button type="button" onClick={() => handleSelectTerrainPanel('paint')} className={builderButtonClassName(activeTerrainPanel === 'paint' ? 'active' : 'secondary')}>Paint</button>
-                        {customStencils.map((s) => (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => {
-                              handleSelectTerrainPanel(`custom:${s.id}`);
-                              if (!customStencilParams[s.id]) {
-                                setCustomStencilParams((prev) => ({ ...prev, [s.id]: s.defaultParams ?? {} }));
-                              }
-                            }}
-                            className={builderButtonClassName(activeTerrainPanel === `custom:${s.id}` ? 'active' : 'secondary')}
-                            title={s.description}
-                          >
-                            {s.name}
-                          </button>
-                        ))}
                       </div>
+                      <label className={`${builderFieldLabelClassName} mt-2`}>
+                        Stencil
+                        <select
+                          value={activeTerrainPanel === 'ramp' || (typeof activeTerrainPanel === 'string' && activeTerrainPanel.startsWith('custom:')) ? activeTerrainPanel : ''}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            if (value === '') return;
+                            if (value === 'ramp') {
+                              handleSelectTerrainPanel('ramp');
+                              return;
+                            }
+                            if (value.startsWith('custom:')) {
+                              const id = value.slice(7);
+                              const stencil = customStencils.find((s) => s.id === id);
+                              handleSelectTerrainPanel(`custom:${id}`);
+                              if (stencil && !customStencilParams[id]) {
+                                setCustomStencilParams((prev) => ({ ...prev, [id]: stencil.defaultParams ?? {} }));
+                              }
+                            }
+                          }}
+                          className={builderStencilSelectClassName}
+                        >
+                          <option value="" disabled>Select stencil…</option>
+                          <option value="ramp">Ramp</option>
+                          {customStencils.map((s) => (
+                            <option key={s.id} value={`custom:${s.id}`} title={s.description}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
 
                     {activeTerrainPanel === 'paint' ? (
@@ -2942,6 +2956,7 @@ const builderNestedPanelHintClassName = 'text-[11px] leading-[1.3] text-[rgba(23
 const builderNestedTabRailClassName = 'rounded-lg border border-[rgba(141,186,221,0.08)] bg-[rgba(255,255,255,0.02)] p-2';
 const builderSubsectionTitleClassName = 'text-[11px] font-semibold uppercase tracking-[0.16em] text-[rgba(190,226,244,0.72)]';
 const builderMaterialButtonClassName = 'flex items-center gap-1.5 rounded-[9px] border px-2.5 py-2 text-xs font-semibold leading-[1.2] text-[#eef7ff]';
+const builderStencilSelectClassName = 'rounded-[9px] border border-[rgba(167,208,237,0.16)] bg-[rgba(20,34,48,0.96)] px-2.5 py-2 text-xs text-[#eef7ff]';
 const builderHistoryListClassName = 'flex flex-col gap-1.5';
 const builderHistoryButtonClassName = `${builderButtonClassName('secondary')} flex items-center justify-between text-left`;
 
