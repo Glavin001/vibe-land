@@ -8,10 +8,13 @@ import { ServerStats } from './pages/ServerStats';
 import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
+import { initAnalytics, trackPageView } from './analytics';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
 import './e2eBridge';
+
+initAnalytics();
 
 const root = createRoot(document.getElementById('root')!);
 
@@ -23,6 +26,7 @@ if (window.location.pathname === '/godmode' || window.location.pathname === '/go
 }
 
 const route = resolveAppRoute(window.location.pathname, window.location.search);
+trackPageView(window.location.pathname, { route: route.kind });
 
 switch (route.kind) {
   case 'stats':

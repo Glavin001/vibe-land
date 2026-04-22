@@ -1,6 +1,7 @@
 mod demo_world;
 mod lag_comp;
 mod movement;
+mod posthog;
 mod protocol;
 mod voxel_world;
 
@@ -559,6 +560,7 @@ struct AppState {
     respawn_delay_ms: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    posthog: Arc<posthog::PosthogClient>,
 }
 
 #[derive(Clone)]
@@ -695,6 +697,7 @@ struct MatchState {
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    posthog: Arc<posthog::PosthogClient>,
     next_player_handle: u16,
     reusable_player_handles: VecDeque<(u32, u8)>,
     free_player_handles: VecDeque<u8>,
@@ -767,12 +770,13 @@ async fn main() -> Result<()> {
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
 
+    let http = reqwest::Client::new();
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: AsyncRwLock::new(HashMap::new()),
             next_player_id: AtomicU32::new(1),
             verifier: SpacetimeVerifier {
-                http: reqwest::Client::new(),
+                http: http.clone(),
                 base_url: std::env::var("SPACETIMEDB_BASE_URL")
                     .unwrap_or_else(|_| "https://maincloud.spacetimedb.com".to_string()),
             },
@@ -782,6 +786,7 @@ async fn main() -> Result<()> {
             respawn_delay_ms,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            posthog: Arc::new(posthog::PosthogClient::from_env(http)),
         }),
     };
 
@@ -845,10 +850,17 @@ async fn main() -> Result<()> {
 }
 
 fn load_repo_env() {
-    let repo_env = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let repo_env = base.join(".env");
     match dotenvy::from_path(&repo_env) {
         Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
         Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
+    }
+    // .env.local overrides .env (not committed, holds secrets like POSTHOG_API_KEY)
+    let local_env = base.join(".env.local");
+    match dotenvy::from_path_override(&local_env) {
+        Ok(()) => info!(path = %local_env.display(), "loaded repo .env.local"),
+        Err(_) => {} // optional, silence when absent
     }
 }
 
@@ -1169,6 +1181,7 @@ async fn run_match_loop(
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    posthog: Arc<posthog::PosthogClient>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
     let world = VoxelWorld::new();
@@ -1215,6 +1228,7 @@ async fn run_match_loop(
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
+        posthog,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -1265,6 +1279,7 @@ fn spawn_match_loop(
             app.stats_tx.clone(),
             telemetry,
             app.stats_registry.clone(),
+            app.posthog.clone(),
         ))
         .catch_unwind()
         .await;
@@ -1457,6 +1472,16 @@ impl MatchState {
                     active_players = self.players.len(),
                     "player connected to match"
                 );
+                self.posthog.capture(
+                    format!("player-{}", conn.player_id),
+                    "player_connected",
+                    serde_json::json!({
+                        "match_id": self.id,
+                        "player_id": conn.player_id,
+                        "transport": transport,
+                        "active_players": self.players.len(),
+                    }),
+                );
 
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
@@ -1536,6 +1561,15 @@ impl MatchState {
                         "player disconnected from match"
                     );
                 }
+                self.posthog.capture(
+                    format!("player-{player_id}"),
+                    "player_disconnected",
+                    serde_json::json!({
+                        "match_id": self.id,
+                        "player_id": player_id,
+                        "active_players": self.players.len(),
+                    }),
+                );
                 self.queue_roster_sync();
             }
             MatchEvent::Packet { player_id, packet } => {
