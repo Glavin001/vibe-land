@@ -60,6 +60,7 @@ export type AiChatPanelHandle = {
 type AiChatPanelProps = {
   accessors: WorldAccessors;
   captureScreenshot?: CaptureFunction;
+  getEditorContext?: () => string;
   onClose?: () => void;
 };
 
@@ -72,7 +73,7 @@ type PendingBranchPayload =
   | { kind: 'edit-submit'; text: string; attachments: ImageAttachment[] };
 
 export const AiChatPanel = forwardRef(function AiChatPanel(
-  { accessors, captureScreenshot, onClose }: AiChatPanelProps,
+  { accessors, captureScreenshot, getEditorContext, onClose }: AiChatPanelProps,
   ref: ForwardedRef<AiChatPanelHandle>,
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
@@ -91,6 +92,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     model: settings.model,
     apiKey,
     captureScreenshot,
+    getEditorContext,
   });
 
   // Expose pushHumanEdit so the parent page can forward human edit summaries.
