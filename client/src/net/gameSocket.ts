@@ -138,6 +138,6 @@ export class GameSocket {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    this.ws.send(packet);
+    this.ws.send(packet as unknown as ArrayBuffer);
   }
 }

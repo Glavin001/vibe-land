@@ -30,8 +30,15 @@ type WorldDocument = {
     radius?: number;              // ball only
     vehicleType?: number;         // vehicle only
   }>;
+  spawnAreas: Array<{
+    id: number;                   // separate ID space from entities
+    position: [x, y, z];
+    radius: number;               // meters; clamped >= 1
+  }>;
 };
 \`\`\`
+
+Spawn areas mark where players can spawn into the world. They are circles on the XZ plane (Y is the ground reference). They are stored in their own array with their own numeric ID space — they are not entities, so they don't appear in \`listStaticProps\`/\`listDynamicEntities\`/\`getEntity\`/\`updateEntity\`. Use the dedicated spawn-area helpers below.
 
 Coordinates are right-handed, Y is up, units are meters. Terrain heights are absolute Y values. Tile (0,0) spans X: [-tileHalfExtentM, +tileHalfExtentM] and Z: [-tileHalfExtentM, +tileHalfExtentM]. Tile (1,0) is immediately to the east. Quaternions are [x, y, z, w]; use \`ctx.quaternionFromYaw(yawRadians)\` if you only need a yaw rotation.
 
@@ -73,6 +80,44 @@ The tool result will be JSON like:
 ## rollback_to_commit
 Roll back the world to the state before a given commit. Takes a \`commitId\` string. The rollback itself becomes a new commit and can be undone.
 
+## capture_screenshot
+
+Take an offscreen screenshot of the 3D world from a configurable camera viewpoint. The PNG image is attached directly to the tool result so you can see it immediately in the same response step and reason about it.
+
+**Parameters:**
+- \`preset\`: \`"birds_eye"\` | \`"isometric"\` — quick shorthand presets with sensible defaults
+- \`target\`: \`[x, y, z]\` — world-space look-at point (default: origin)
+- \`tileX\` / \`tileZ\`: Target the center of a terrain tile (auto-computes target at the tile center; overrides \`target\`)
+- \`position\`: \`[x, y, z]\` — explicit camera world position (overrides spherical placement)
+- \`distance\`: Distance from target in meters
+- \`elevationDeg\`: 0 = horizontal, 90 = straight down (default: 45)
+- \`azimuthDeg\`: 0 = +Z axis, 90 = +X axis, 180 = north (default: 135)
+- \`type\`: \`"orthographic"\` | \`"perspective"\` (default: \`"orthographic"\`)
+- \`fov\`: Perspective field-of-view in degrees (default: 55)
+- \`orthoWidth\`: Orthographic view width in world meters (default: 180 or auto-fit to tile)
+- \`width\` / \`height\`: Output resolution in pixels (default: 1024 × 768)
+
+**Quick examples:**
+\`\`\`js
+// Top-down orthographic overview of tile (0,0)
+{ preset: "birds_eye", tileX: 0, tileZ: 0 }
+
+// Diagonal isometric view of a tile
+{ preset: "isometric", tileX: 0, tileZ: 0 }
+
+// Perspective shot from a custom angle
+{ target: { x: 0, y: 5, z: 0 }, distance: 80, elevationDeg: 30, azimuthDeg: 135, type: "perspective" }
+
+// Zoomed orthographic overhead of an area
+{ target: { x: 0, y: 0, z: 0 }, elevationDeg: 90, orthoWidth: 60 }
+\`\`\`
+
+**Workflow tips:**
+- Use **orthographic** cameras to inspect measurements and proportions without perspective distortion
+- Use \`tileX\`/\`tileZ\` with \`preset: "birds_eye"\` for a clean top-down tile overview
+- **Chain screenshots**: take one → reason about what you see → make edits → take another to verify
+- Increase \`orthoWidth\` or \`distance\` to see more; decrease to zoom in on details
+
 # Commits and rollback
 
 Every \`execute_js\` call that modifies the world creates a **commit** with your \`commitMessage\`. The tool result includes the \`commitId\`. The human can also create named commits from the UI.
@@ -92,6 +137,9 @@ Call \`execute_js\` one step at a time — wait for each result before issuing t
 - \`ctx.getMeta()\` → \`{ name, description }\`.
 - \`ctx.listStaticProps()\` / \`ctx.listDynamicEntities()\` → arrays of plain objects.
 - \`ctx.getEntity(id)\` → \`{ kind: 'static'|'dynamic', entity }\` or null.
+- \`ctx.listSpawnAreas()\` → array of \`{ id, position, radius }\`.
+- \`ctx.getSpawnArea(id)\` → single spawn area or null.
+- \`ctx.listTerrainMaterials()\` → \`Array<{ index, name, color }>\`. Use a name (e.g. \`'grass'\`) or index when calling \`paintTerrainMaterial\`.
 - \`ctx.getTerrainInfo()\` → \`{ tileGridSize, tileHalfExtentM, tileCount, bounds }\`.
 - \`ctx.listTerrainTiles()\` → array of \`{ tileX, tileZ }\`.
 - \`ctx.getTerrainTile(tileX, tileZ)\` → \`{ tileX, tileZ, heights: number[] }\` or null.
@@ -104,7 +152,7 @@ Call \`execute_js\` one step at a time — wait for each result before issuing t
 - \`ctx.nextEntityId()\` → next free numeric id.
 
 ## Entity search helpers
-- \`ctx.findEntitiesInRadius({ x, z, radius, y?, yRadius? })\` → array of \`{ kind, entity }\` for all static props and dynamic entities whose XZ position is within \`radius\` meters. Add optional \`y\` + \`yRadius\` to also filter by vertical band.
+- \`ctx.findEntitiesInRadius({ x, z, radius, y?, yRadius? })\` → array of \`{ kind, entity }\` for all static props, dynamic entities, **and spawn areas** whose XZ position is within \`radius\` meters. \`kind\` is \`'static' | 'dynamic' | 'spawnArea'\`. Add optional \`y\` + \`yRadius\` to also filter by vertical band.
 - \`ctx.findEntitiesInBox({ minX, maxX, minZ, maxZ, minY?, maxY? })\` → same but axis-aligned box filter.
 
 ## Write helpers
@@ -114,7 +162,11 @@ Terrain write helpers also return when changed: \`samplesAffected, deltaMin, del
 - \`ctx.addStaticCuboid({ position, halfExtents, rotation?, material? })\`
 - \`ctx.addDynamicEntity({ kind: 'box'|'ball'|'vehicle', position, halfExtents?, radius?, rotation?, vehicleType? })\`
 - \`ctx.removeEntity(id)\`
-- \`ctx.updateEntity(id, patch)\` — patch fields: \`position\`, \`rotation\`, \`halfExtents\`, \`radius\`.
+- \`ctx.updateEntity(id, patch)\` — patch fields: \`position\`, \`rotation\`, \`halfExtents\`, \`radius\`, \`vehicleType\` (vehicles only), \`material\` (static cuboids only).
+- \`ctx.addSpawnArea({ position, radius })\` → \`{ changed, id? }\`. Defines where players spawn. \`radius\` is clamped to \`>= 1\`.
+- \`ctx.updateSpawnArea(id, patch)\` — patch fields: \`position\`, \`radius\`.
+- \`ctx.removeSpawnArea(id)\`
+- \`ctx.paintTerrainMaterial({ centerX, centerZ, radius, strength, material })\` — paint a terrain material onto the splatmap. \`material\` accepts a name (e.g. \`'grass'\`, \`'pavement'\`, \`'sand'\`) or numeric index from \`listTerrainMaterials()\`. Same quadratic-falloff brush as terrain sculpt; \`strength\` blends toward the material at the center. This does not change terrain heights.
 - \`ctx.applyTerrainBrush({ centerX, centerZ, radius, strength, mode: 'raise'|'lower', minHeight?, maxHeight? })\`
 - \`ctx.flattenTerrain({ centerX, centerZ, radius, targetHeight, strength })\` — move terrain toward a fixed height. \`strength ∈ [0,1]\`; center reaches targetHeight exactly at strength=1.
 - \`ctx.smoothTerrain({ centerX, centerZ, radius, strength })\` — blend each sample toward the average of its 4 neighbors. Reduces spikes. \`strength ∈ [0,1]\`.
@@ -342,6 +394,14 @@ const seamX = ctx.getTerrainTileBounds(info.bounds.maxTileX + 1, 0).minX;
 for (let i = 0; i < 3; i++) {
   ctx.smoothTerrain({ centerX: seamX, centerZ: 0, radius: 10, strength: 0.5 });
 }
+\`\`\`
+
+**Add a spawn area and paint a pavement pad under it:**
+\`\`\`js
+const y = ctx.sampleTerrainHeight(10, -5);
+const { id } = ctx.addSpawnArea({ position: [10, y, -5], radius: 6 });
+ctx.paintTerrainMaterial({ centerX: 10, centerZ: -5, radius: 6, strength: 1, material: 'pavement' });
+return { spawnAreaId: id };
 \`\`\`
 
 **Scatter dynamic boxes on terrain surface:**

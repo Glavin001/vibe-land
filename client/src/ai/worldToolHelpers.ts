@@ -1,5 +1,6 @@
 import {
   addTerrainTile,
+  applyMaterialBrush,
   applyTerrainBrush,
   applyTerrainNoiseBrush,
   applyTerrainRampStencil,
@@ -7,7 +8,9 @@ import {
   cloneWorldDocument,
   flattenTerrainBrush,
   getAddableTerrainTiles,
+  getNextSpawnAreaId,
   getNextWorldEntityId,
+  getTerrainMaterials,
   getTerrainRegionStats,
   getTerrainTile,
   getTerrainTileBounds,
@@ -21,6 +24,7 @@ import {
   smoothTerrainBrush,
   type DynamicEntity,
   type Quaternion,
+  type SpawnArea,
   type StaticProp,
   type TerrainRampStencil,
   type Vec3,
@@ -78,7 +82,10 @@ export type WorldCtx = {
   getMeta(): { name: string; description: string };
   listStaticProps(): StaticProp[];
   listDynamicEntities(): DynamicEntity[];
+  listSpawnAreas(): SpawnArea[];
   getEntity(id: number): { kind: 'static'; entity: StaticProp } | { kind: 'dynamic'; entity: DynamicEntity } | null;
+  getSpawnArea(id: number): SpawnArea | null;
+  listTerrainMaterials(): Array<{ index: number; name: string; color: string }>;
   getTerrainInfo(): {
     tileGridSize: number;
     tileHalfExtentM: number;
@@ -116,7 +123,7 @@ export type WorldCtx = {
     radius: number;
     y?: number;
     yRadius?: number;
-  }): Array<{ kind: 'static' | 'dynamic'; entity: StaticProp | DynamicEntity }>;
+  }): Array<{ kind: 'static' | 'dynamic' | 'spawnArea'; entity: StaticProp | DynamicEntity | SpawnArea }>;
   findEntitiesInBox(spec: {
     minX: number;
     maxX: number;
@@ -124,7 +131,7 @@ export type WorldCtx = {
     maxZ: number;
     minY?: number;
     maxY?: number;
-  }): Array<{ kind: 'static' | 'dynamic'; entity: StaticProp | DynamicEntity }>;
+  }): Array<{ kind: 'static' | 'dynamic' | 'spawnArea'; entity: StaticProp | DynamicEntity | SpawnArea }>;
 
   // ---- WRITE ----
   addStaticCuboid(spec: {
@@ -149,8 +156,30 @@ export type WorldCtx = {
       rotation: Quaternion;
       halfExtents: Vec3;
       radius: number;
+      vehicleType: number;
+      material: string;
     }>,
   ): { changed: boolean; reason?: string };
+
+  // ---- WRITE: SPAWN AREAS ----
+  addSpawnArea(spec: {
+    position: Vec3;
+    radius: number;
+  }): { changed: boolean; id?: number; reason?: string };
+  updateSpawnArea(
+    id: number,
+    patch: Partial<{ position: Vec3; radius: number }>,
+  ): { changed: boolean; reason?: string };
+  removeSpawnArea(id: number): { changed: boolean; reason?: string };
+
+  // ---- WRITE: TERRAIN MATERIAL PAINT ----
+  paintTerrainMaterial(spec: {
+    centerX: number;
+    centerZ: number;
+    radius: number;
+    strength: number;
+    material: string | number;
+  }): { changed: boolean; reason?: string };
 
   applyTerrainBrush(spec: {
     centerX: number;
@@ -276,6 +305,9 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
     listDynamicEntities() {
       return cloneArray(accessors.getWorld().dynamicEntities);
     },
+    listSpawnAreas() {
+      return cloneArray(accessors.getWorld().spawnAreas);
+    },
     getEntity(id) {
       const found = findEntityWithKind(id);
       if (!found) return null;
@@ -283,6 +315,17 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
         return { kind: 'static', entity: cloneJson(found.entity as StaticProp) };
       }
       return { kind: 'dynamic', entity: cloneJson(found.entity as DynamicEntity) };
+    },
+    getSpawnArea(id) {
+      const area = accessors.getWorld().spawnAreas.find((a) => a.id === id);
+      return area ? cloneJson(area) : null;
+    },
+    listTerrainMaterials() {
+      return getTerrainMaterials(accessors.getWorld()).map((mat, index) => ({
+        index,
+        name: mat.name,
+        color: mat.color,
+      }));
     },
     getTerrainInfo() {
       const world = accessors.getWorld();
@@ -330,7 +373,7 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
     findEntitiesInRadius(spec) {
       const world = accessors.getWorld();
       const { x, z, radius, y, yRadius } = spec;
-      const results: Array<{ kind: 'static' | 'dynamic'; entity: StaticProp | DynamicEntity }> = [];
+      const results: Array<{ kind: 'static' | 'dynamic' | 'spawnArea'; entity: StaticProp | DynamicEntity | SpawnArea }> = [];
       for (const entity of world.staticProps) {
         if (Math.hypot(entity.position[0] - x, entity.position[2] - z) > radius) continue;
         if (typeof y === 'number' && typeof yRadius === 'number') {
@@ -345,12 +388,19 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
         }
         results.push({ kind: 'dynamic', entity: cloneJson(entity) });
       }
+      for (const area of world.spawnAreas) {
+        if (Math.hypot(area.position[0] - x, area.position[2] - z) > radius) continue;
+        if (typeof y === 'number' && typeof yRadius === 'number') {
+          if (Math.abs(area.position[1] - y) > yRadius) continue;
+        }
+        results.push({ kind: 'spawnArea', entity: cloneJson(area) });
+      }
       return results;
     },
     findEntitiesInBox(spec) {
       const world = accessors.getWorld();
       const { minX, maxX, minZ, maxZ, minY, maxY } = spec;
-      const results: Array<{ kind: 'static' | 'dynamic'; entity: StaticProp | DynamicEntity }> = [];
+      const results: Array<{ kind: 'static' | 'dynamic' | 'spawnArea'; entity: StaticProp | DynamicEntity | SpawnArea }> = [];
       function inBox(pos: Vec3): boolean {
         if (pos[0] < minX || pos[0] > maxX) return false;
         if (pos[2] < minZ || pos[2] > maxZ) return false;
@@ -363,6 +413,9 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
       }
       for (const entity of world.dynamicEntities) {
         if (inBox(entity.position)) results.push({ kind: 'dynamic', entity: cloneJson(entity) });
+      }
+      for (const area of world.spawnAreas) {
+        if (inBox(area.position)) results.push({ kind: 'spawnArea', entity: cloneJson(area) });
       }
       return results;
     },
@@ -454,6 +507,7 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
             ...(patch.position ? { position: [...patch.position] as Vec3 } : {}),
             ...(patch.rotation ? { rotation: [...patch.rotation] as Quaternion } : {}),
             ...(patch.halfExtents ? { halfExtents: [...patch.halfExtents] as Vec3 } : {}),
+            ...(typeof patch.material === 'string' ? { material: patch.material } : {}),
           };
           const nextProps = [...current.staticProps];
           nextProps[idx] = updated;
@@ -468,11 +522,103 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
           ...(patch.rotation ? { rotation: [...patch.rotation] as Quaternion } : {}),
           ...(patch.halfExtents ? { halfExtents: [...patch.halfExtents] as Vec3 } : {}),
           ...(typeof patch.radius === 'number' ? { radius: patch.radius } : {}),
+          ...(typeof patch.vehicleType === 'number' && target.kind === 'vehicle'
+            ? { vehicleType: Math.trunc(patch.vehicleType) }
+            : {}),
         };
         const nextEntities = [...current.dynamicEntities];
         nextEntities[idx] = updated;
         return { ...current, dynamicEntities: nextEntities };
       });
+      return { changed };
+    },
+
+    addSpawnArea(spec) {
+      const positionError = validateVec3('position', spec.position);
+      if (positionError) return { changed: false, reason: positionError };
+      if (typeof spec.radius !== 'number' || !Number.isFinite(spec.radius) || spec.radius < 1) {
+        return { changed: false, reason: 'radius must be a finite number >= 1' };
+      }
+      let assignedId = 0;
+      const changed = aiEdit((current) => {
+        const id = getNextSpawnAreaId(current);
+        assignedId = id;
+        const next: SpawnArea = {
+          id,
+          position: [...spec.position] as Vec3,
+          radius: spec.radius,
+        };
+        return { ...current, spawnAreas: [...current.spawnAreas, next] };
+      });
+      return changed ? { changed, id: assignedId } : { changed };
+    },
+
+    updateSpawnArea(id, patch) {
+      if (!patch || typeof patch !== 'object') {
+        return { changed: false, reason: 'patch must be an object' };
+      }
+      if (patch.position) {
+        const err = validateVec3('position', patch.position);
+        if (err) return { changed: false, reason: err };
+      }
+      if (typeof patch.radius === 'number' && (!Number.isFinite(patch.radius) || patch.radius < 1)) {
+        return { changed: false, reason: 'radius must be a finite number >= 1' };
+      }
+      const exists = accessors.getWorld().spawnAreas.some((a) => a.id === id);
+      if (!exists) return { changed: false, reason: `no spawn area with id ${id}` };
+
+      const changed = aiEdit((current) => {
+        const idx = current.spawnAreas.findIndex((a) => a.id === id);
+        if (idx === -1) return current;
+        const target = current.spawnAreas[idx];
+        const updated: SpawnArea = {
+          ...target,
+          ...(patch.position ? { position: [...patch.position] as Vec3 } : {}),
+          ...(typeof patch.radius === 'number' ? { radius: patch.radius } : {}),
+        };
+        const nextAreas = [...current.spawnAreas];
+        nextAreas[idx] = updated;
+        return { ...current, spawnAreas: nextAreas };
+      });
+      return { changed };
+    },
+
+    removeSpawnArea(id) {
+      const exists = accessors.getWorld().spawnAreas.some((a) => a.id === id);
+      if (!exists) return { changed: false, reason: `no spawn area with id ${id}` };
+      const changed = aiEdit((current) => ({
+        ...current,
+        spawnAreas: current.spawnAreas.filter((a) => a.id !== id),
+      }));
+      return { changed };
+    },
+
+    paintTerrainMaterial(spec) {
+      if (typeof spec?.centerX !== 'number' || typeof spec?.centerZ !== 'number') {
+        return { changed: false, reason: 'centerX and centerZ must be numbers' };
+      }
+      if (typeof spec.radius !== 'number' || spec.radius <= 0) {
+        return { changed: false, reason: 'radius must be a positive number' };
+      }
+      if (typeof spec.strength !== 'number' || !Number.isFinite(spec.strength)) {
+        return { changed: false, reason: 'strength must be a finite number' };
+      }
+      const materials = getTerrainMaterials(accessors.getWorld());
+      let materialIndex: number;
+      if (typeof spec.material === 'number') {
+        materialIndex = spec.material;
+      } else if (typeof spec.material === 'string') {
+        materialIndex = materials.findIndex((m) => m.name === spec.material);
+      } else {
+        return { changed: false, reason: 'material must be a name (string) or index (number)' };
+      }
+      if (materialIndex < 0 || materialIndex >= materials.length) {
+        const known = materials.map((m, i) => `${i}:${m.name}`).join(', ');
+        return { changed: false, reason: `unknown material ${JSON.stringify(spec.material)}. Known: ${known}` };
+      }
+      const changed = aiEdit((current) =>
+        applyMaterialBrush(current, spec.centerX, spec.centerZ, spec.radius, spec.strength, materialIndex),
+      );
       return { changed };
     },
 

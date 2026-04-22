@@ -28,6 +28,9 @@ export type DebugStats = {
   directSnapshotsReceived: number;
   rapierDebugLabel: string;
   rapierDebugModeBits: number;
+  rapierDebugSampleHz: number;
+  rapierDebugVertexCount: number;
+  rapierDebugLastCostMs: number;
 
   // Physics / Prediction
   pendingInputs: number;
@@ -235,6 +238,9 @@ export const DEFAULT_STATS: DebugStats = {
   directSnapshotsReceived: 0,
   rapierDebugLabel: 'off',
   rapierDebugModeBits: 0,
+  rapierDebugSampleHz: 0,
+  rapierDebugVertexCount: 0,
+  rapierDebugLastCostMs: 0,
   pendingInputs: 0,
   predictionTicks: 0,
   playerCorrectionMagnitude: 0,
@@ -493,7 +499,7 @@ export function debugStatsToMarkdown(stats: DebugStats, extras: DebugMarkdownExt
     `- snapshot_source_last: ${stats.lastSnapshotSource}`,
     `- stale_snapshots_dropped: ${stats.staleSnapshotsDropped}`,
     `- snapshot_src_counts: rel=${stats.reliableSnapshotsReceived} dgram=${stats.datagramSnapshotsReceived} local=${stats.localSnapshotsReceived} direct=${stats.directSnapshotsReceived}`,
-    `- rapier_debug: ${stats.rapierDebugLabel} (${stats.rapierDebugModeBits})`,
+    `- rapier_debug: ${stats.rapierDebugLabel} (${stats.rapierDebugModeBits}) ${stats.rapierDebugModeBits !== 0 ? `@ ${stats.rapierDebugSampleHz}Hz verts=${stats.rapierDebugVertexCount} cost=${fmt(stats.rapierDebugLastCostMs, 2)}ms` : ''}`,
     '',
     '## Physics',
     `- pending_inputs: ${stats.pendingInputs}`,
