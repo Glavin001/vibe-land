@@ -17,12 +17,11 @@ import { buildInputFromButtons } from '../../scene/inputBuilder';
 import type { SharedPlayerNavigationProfile } from '../../wasm/sharedPhysics';
 import type { WorldDocument } from '../../world/worldDocument';
 import { BotBrain } from '../agent/BotBrain';
+import { makeBehaviorFromPersonality } from '../agent/behaviors';
 import {
-  harassNearest,
-  holdAnchor,
-  wander,
-  type Behavior,
-} from '../agent/behaviors';
+  type BotPersonality,
+  resolvePersonality,
+} from '../config/botPersonality';
 import {
   BotCrowd,
   createBotCrowd,
@@ -68,37 +67,28 @@ export interface PracticeBotRuntimeOptions {
   tileSizeVoxels?: number;
   /** Whether bots are allowed to emit rifle fire. */
   enableShooting?: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  enableRecoveryLeash?: boolean;
   /** Whether bots start with vehicle mode enabled. */
   useVehicles?: boolean;
   /** Override the default vehicle profile used by the walk-vs-drive planner. */
   vehicleProfile?: VehicleProfile;
+  /**
+   * Unified bot personality. Fields here become the canonical defaults for
+   * behavior selection, locomotion, target acquisition, fire/melee ranges,
+   * and reflexes. Legacy scalar options on this struct (`initialBehavior`,
+   * `maxSpeed`, `useVehicles`, `vehicleProfile`) still win when supplied,
+   * for backwards compatibility with callers that haven't migrated.
+   */
+  personality?: Partial<BotPersonality>;
 }
 
 export interface PracticeBotRuntimeSyncOptions extends PracticeBotRuntimeOptions {
   navigationProfile: SharedPlayerNavigationProfile;
 }
 
-/**
- * Stock {@link VehicleProfile} for the default practice-mode vehicle (the
- * small Rapier raycast car). Values are intentionally conservative — tune
- * `turningRadius` and `cruiseSpeed` after playtesting.
- *
- * - `turningRadius`: at `VEHICLE_MAX_STEER_RAD = 0.5 rad` and a 1.8 m
- *   wheelbase, the kinematic lower bound is ≈ 1.8 / tan(0.5) ≈ 3.3 m. We
- *   bump to 5 m to account for the raycast-vehicle's drift and the fact
- *   that A* costs use centroids, not wheelbase geometry.
- * - `cruiseSpeed`: empirical — the chassis reaches ~14 m/s on a straight
- *   with the default engine force. 12 m/s leaves margin for the car
- *   actually *exiting* a corner.
- */
-export const DEFAULT_VEHICLE_PROFILE: VehicleProfile = Object.freeze({
-  turningRadius: 5,
-  agentRadius: 1.3,
-  agentHeight: 1.5,
-  cruiseSpeed: 12,
-  enterDistance: 2.5,
-  enterExitOverheadSec: 1.5,
-});
+export { DEFAULT_VEHICLE_PROFILE } from './practiceVehicleDefaults';
+import { DEFAULT_VEHICLE_PROFILE } from './practiceVehicleDefaults';
 
 export interface PracticeBotStats {
   bots: number;
@@ -108,6 +98,8 @@ export interface PracticeBotStats {
   running: boolean;
   /** Whether the bot runtime currently allows ranged fire. */
   enableShooting: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  enableRecoveryLeash: boolean;
   /** Whether the vehicle-aware planner is currently enabled. */
   useVehicles: boolean;
   /** Number of vehicle-sized tris in the lazy vehicle navmesh, 0 if unbuilt. */
@@ -226,18 +218,6 @@ const DEFAULT_BEHAVIOR: PracticeBotBehaviorKind = 'harass';
 const DEFAULT_TICK_HZ = 60;
 const VEHICLE_OBSTACLE_RADIUS = Math.hypot(0.9, 1.8) + 0.2;
 const VEHICLE_OBSTACLE_HEIGHT = 1.2;
-
-// ~1° of yaw/pitch jitter: enough to prevent reliable headshots, not enough
-// to make the bot feel broken.
-const DEFAULT_AIM_JITTER_RAD = 0.02;
-// Lead moving targets by ~80 ms — matches the practice tick at 60 Hz and
-// feels natural without being a wall-hack aimbot.
-const DEFAULT_AIM_LEAD_SEC = 0.08;
-// ~200 ms reaction delay at 60 Hz before the first shot lands.
-const DEFAULT_FIRE_PREP_TICKS = 12;
-// Engagement range for the harass behavior's fire intent. Rifle hitscan
-// reaches farther than this but accuracy falls off quickly past 30 m.
-const DEFAULT_HARASS_FIRE_RANGE_M = 28;
 // Extra local-clock slack on top of the server's 100 ms cooldown, to avoid
 // racing the server and getting shots silently dropped.
 const LOCAL_FIRE_COOLDOWN_SLACK_MS = 8;
@@ -250,6 +230,7 @@ export class PracticeBotRuntime {
   private behaviorKind: PracticeBotBehaviorKind;
   private maxSpeed: number;
   private readonly tickHz: number;
+  private readonly personality: BotPersonality;
   private host: PracticeBotHost | null = null;
   private getSelf: LocalSelfAccessor | null = null;
   private tickHandle: ReturnType<typeof setInterval> | null = null;
@@ -262,6 +243,8 @@ export class PracticeBotRuntime {
   private useVehicles: boolean;
   /** Whether bots may emit FireCmd packets. */
   private enableShooting: boolean;
+  /** Whether bots leash back to their anchor when they stray too far. */
+  private enableRecoveryLeash: boolean;
   /** Static physical profile of the vehicle the bots would drive. */
   private readonly vehicleProfile: VehicleProfile;
   /**
@@ -327,12 +310,30 @@ export class PracticeBotRuntime {
     this.world = world;
     this.maxAgentRadius = options.maxAgentRadius ?? 0.6;
     this.crowd = crowd;
-    this.behaviorKind = options.initialBehavior ?? DEFAULT_BEHAVIOR;
+    const personality = resolvePersonality(options.personality);
+    personality.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
+    this.personality = personality;
+    this.behaviorKind = options.initialBehavior ?? personality.behaviorKind;
+    // Keep the personality's behaviorKind in sync with the runtime's so the
+    // shared `makeBehaviorFromPersonality` helper spawns the right Behavior
+    // when `initialBehavior` overrides what the personality specified.
+    this.personality.behaviorKind = this.behaviorKind;
     this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     this.tickHz = options.tickHz ?? DEFAULT_TICK_HZ;
     this.enableShooting = options.enableShooting ?? true;
-    this.useVehicles = options.useVehicles ?? false;
-    this.vehicleProfile = options.vehicleProfile ?? DEFAULT_VEHICLE_PROFILE;
+    this.enableRecoveryLeash = options.enableRecoveryLeash ?? false;
+    this.useVehicles = options.useVehicles ?? personality.useVehicles;
+    this.vehicleProfile = options.vehicleProfile ?? personality.vehicleProfile;
+  }
+
+  /**
+   * Resolved unified bot personality. Mutated in place by the runtime's
+   * setters so behaviors spawned later see the latest tuning. Callers that
+   * want to swap personality wholesale should construct a new runtime —
+   * this is intentionally a get-only accessor.
+   */
+  getPersonality(): BotPersonality {
+    return this.personality;
   }
 
   attach(host: PracticeBotHost, getSelf: LocalSelfAccessor): void {
@@ -393,6 +394,7 @@ export class PracticeBotRuntime {
       navTriangles: this.crowd.nav.geometry.triangleCount,
       running: this.running,
       enableShooting: this.enableShooting,
+      enableRecoveryLeash: this.enableRecoveryLeash,
       useVehicles: this.useVehicles,
       vehicleNavTriangles: this.vehicleCrowd?.nav.geometry.triangleCount ?? 0,
     };
@@ -416,6 +418,7 @@ export class PracticeBotRuntime {
   setUseVehicles(value: boolean): void {
     if (value === this.useVehicles) return;
     this.useVehicles = value;
+    this.personality.useVehicles = value;
     if (value) {
       this.ensureVehicleCrowd();
     } else {
@@ -430,6 +433,14 @@ export class PracticeBotRuntime {
     this.enableShooting = value;
   }
 
+  setEnableRecoveryLeash(value: boolean): void {
+    if (value === this.enableRecoveryLeash) return;
+    this.enableRecoveryLeash = value;
+    for (const bot of this.bots.values()) {
+      bot.brain.setBehavior(this.makeCurrentBehavior());
+    }
+  }
+
   private ensureVehicleCrowd(): BotCrowd {
     if (this.vehicleCrowd) return this.vehicleCrowd;
     this.vehicleCrowd = createVehicleBotCrowd(this.world, this.vehicleProfile);
@@ -440,8 +451,9 @@ export class PracticeBotRuntime {
   setBehavior(kind: PracticeBotBehaviorKind): void {
     if (kind === this.behaviorKind) return;
     this.behaviorKind = kind;
+    this.personality.behaviorKind = kind;
     for (const bot of this.bots.values()) {
-      bot.brain.setBehavior(makeBehavior(kind));
+      bot.brain.setBehavior(this.makeCurrentBehavior());
       bot.behaviorKind = kind;
     }
   }
@@ -449,6 +461,7 @@ export class PracticeBotRuntime {
   setMaxSpeed(speed: number): void {
     void speed;
     this.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
+    this.personality.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     for (const bot of this.bots.values()) {
       const agent = this.crowd.getAgent(bot.handle.id);
       if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
@@ -476,11 +489,16 @@ export class PracticeBotRuntime {
     if (agent) agent.maxSpeed = PRACTICE_BOT_SPRINT_SPEED;
     const id = snapshot?.id ?? this.nextId;
     this.nextId = Math.max(this.nextId, id + 1);
-    const brain = new BotBrain(this.crowd, handle, makeBehavior(this.behaviorKind), {
+    const brain = new BotBrain(this.crowd, handle, this.makeCurrentBehavior(), {
       anchor: snapshot?.anchor ?? spawn,
-      aimJitterRad: DEFAULT_AIM_JITTER_RAD,
-      aimLeadSec: DEFAULT_AIM_LEAD_SEC,
-      firePrepTicks: DEFAULT_FIRE_PREP_TICKS,
+      jumpCooldownTicks: this.personality.jumpCooldownTicks,
+      stuckTicksBeforeJump: this.personality.stuckTickThreshold,
+      minMoveSpeed: this.personality.minMoveSpeedM,
+      sprintTargetDistanceM: this.personality.sprintDistanceM,
+      meleeDistanceM: this.personality.meleeDistanceM,
+      aimJitterRad: this.personality.aimJitterRad,
+      aimLeadSec: this.personality.aimLeadSec,
+      firePrepTicks: this.personality.firePrepTicks,
       seed: id >>> 0,
     });
     this.bots.set(id, {
@@ -512,6 +530,16 @@ export class PracticeBotRuntime {
       this.host.setBotMaxSpeed(id, null);
     }
     return id;
+  }
+
+  private makeCurrentBehavior() {
+    return makeBehaviorFromPersonality(this.personality, {
+      enableDistanceRecovery: this.enableRecoveryLeash,
+      recoveryFloorReference: 'anchor',
+      recoveryDropBelowAnchorM: 2.0,
+      recoveryReference: 'anchor',
+      recoveryTarget: 'anchor',
+    });
   }
 
   removeBot(id: number): boolean {
@@ -1359,22 +1387,4 @@ function makeIdleIntent(): BotIntent {
     vehicleId: null,
   };
 }
-
-function makeBehavior(kind: PracticeBotBehaviorKind): Behavior {
-  switch (kind) {
-    case 'wander':
-      return wander({ radiusM: 18 });
-    case 'hold':
-      return holdAnchor();
-    case 'harass':
-    default:
-      return harassNearest({
-        acquireDistanceM: 80,
-        releaseDistanceM: 120,
-        fireDistanceM: DEFAULT_HARASS_FIRE_RANGE_M,
-        minFireDistanceM: 2,
-      });
-  }
-}
-
 void FLAG_DEAD;

@@ -3,6 +3,7 @@ import { NetDebugTelemetry, type LocalShotTelemetry } from './debugTelemetry';
 import {
   type BatteryStateMeters,
   SIM_HZ,
+  decodeServerPacket,
   encodeFirePacket,
   encodeInputBundle,
   encodeMeleePacket,
@@ -11,6 +12,7 @@ import {
   netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
+  type DamageEventPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
   type InputCmd,
@@ -30,13 +32,14 @@ import {
   VEHICLE_STATE_STRIDE,
 } from '../runtime/localSessionDecode';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from '../runtime/vehicleDebug';
-import { initSharedPhysics, WasmLocalSession, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
+import { initSharedPhysics, WasmLocalSession, type WasmDebugRenderBuffers, type WasmLocalSessionInstance } from '../wasm/sharedPhysics';
 import type { RemotePlayer } from './netcodeClient';
 
 export type LocalPracticeClientConfig = {
   onDisconnect?: (reason?: string) => void;
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
   worldJson?: string;
 };
 
@@ -110,6 +113,15 @@ export class LocalPracticeClient implements PracticeBotHost {
   }
 
   ping(): void {}
+
+  debugRender(modeBits: number): WasmDebugRenderBuffers | null {
+    if (!this.session) return null;
+    this.session.debugRender(modeBits);
+    return {
+      vertices: this.session.debugRenderPositions(),
+      colors: this.session.debugRenderColors(),
+    };
+  }
 
   disconnect(): void {
     this.closedByClient = true;
@@ -498,6 +510,35 @@ export class LocalPracticeClient implements PracticeBotHost {
       (playerState ? 1 : 0) + this.remotePlayers.size,
       this.dynamicBodies.size,
     );
+
+    if (emitCallbacks) {
+      this.drainSessionPackets();
+    }
+  }
+
+  private drainSessionPackets(): void {
+    const session = this.session;
+    if (!session) return;
+    const blob = session.drainPackets();
+    if (!blob || blob.length === 0) return;
+    const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+    let offset = 0;
+    while (offset + 4 <= blob.length) {
+      const packetLen = view.getUint32(offset, true);
+      offset += 4;
+      if (packetLen === 0 || offset + packetLen > blob.length) break;
+      const packetBytes = blob.subarray(offset, offset + packetLen);
+      offset += packetLen;
+      let decoded;
+      try {
+        decoded = decodeServerPacket(packetBytes);
+      } catch {
+        continue;
+      }
+      if (decoded.type === 'damageEvent') {
+        this.config.onDamageEvent?.(decoded);
+      }
+    }
   }
 
   private syncRemotePlayers(serverTimeUs: number, raw: ArrayLike<number>): void {

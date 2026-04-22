@@ -11,6 +11,7 @@ import {
 } from '../net/interpolation';
 import {
   type BatteryStateMeters,
+  type DamageEventPacket,
   DYNAMIC_BODY_IMPULSE,
   type BlockEditCmd,
   type DynamicBodyStateMeters,
@@ -90,6 +91,7 @@ export type GameRuntimeCallbacks = {
   onDisconnect: (reason?: string) => void;
   onSnapshot?: () => void;
   onRenderBlocksChanged?: (blocks: RenderBlock[]) => void;
+  onDamageEvent?: (packet: DamageEventPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
 };
 
@@ -616,6 +618,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
           this.callbacks.onSnapshot?.();
           void ackInputSeq;
         },
+        onDamageEvent: (packet) => {
+          this.callbacks.onDamageEvent?.(packet);
+        },
       });
       this.client = client;
       this.state.remoteInterpolator = client.interpolator;
@@ -841,8 +846,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
     return 0;
   }
 
-  getDebugRenderBuffers(_modeBits: number): WasmDebugRenderBuffers | null {
-    return null;
+  getDebugRenderBuffers(modeBits: number): WasmDebugRenderBuffers | null {
+    if (!this.client || modeBits === 0) return null;
+    return this.client.debugRender(modeBits);
   }
 
   getDebugStats(): RuntimeDebugStats {
@@ -1087,6 +1093,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         },
         onWorldPacket: (packet) => {
           this.applyWorldPacket(packet);
+        },
+        onDamageEvent: (packet) => {
+          this.callbacks.onDamageEvent?.(packet);
         },
         onShotFired: (packet) => {
           this.callbacks.onShotFired?.(packet);
@@ -1612,7 +1621,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     if (!this.sim || modeBits === 0) {
       return null;
     }
-    return this.sim.debugRender(modeBits);
+    this.sim.debugRender(modeBits);
+    return {
+      vertices: this.sim.debugRenderPositions(),
+      colors: this.sim.debugRenderColors(),
+    };
   }
 
   getDebugStats(): RuntimeDebugStats {

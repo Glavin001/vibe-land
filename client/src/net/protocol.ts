@@ -21,6 +21,7 @@ import {
   PKT_DYNAMIC_BODY_META,
   PKT_LOCAL_PLAYER_ENERGY,
   PKT_BATTERY_SYNC,
+  PKT_DAMAGE_EVENT,
   PKT_PING,
   PKT_PONG,
   BTN_FORWARD,
@@ -330,6 +331,15 @@ export type ShotFiredPacket = {
   endPzMm: number;
 };
 
+export type DamageEventPacket = {
+  type: 'damageEvent';
+  attackerPlayerId: number;
+  damageAmount: number;
+  hitZone: number;
+  attackerPosition: [number, number, number];
+  serverTimeMs: number;
+};
+
 export type LocalPlayerEnergyPacket = {
   type: 'localPlayerEnergy';
   energyCenti: number;
@@ -346,6 +356,7 @@ export type ServerReliablePacket =
   | WelcomePacket
   | ShotResultPacket
   | ShotFiredPacket
+  | DamageEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -366,6 +377,7 @@ export type ServerPacket =
   | SnapshotV2Packet
   | ShotResultPacket
   | ShotFiredPacket
+  | DamageEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -593,6 +605,8 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return { type: 'localPlayerEnergy', energyCenti: view.getUint32(o, true) };
     case PKT_BATTERY_SYNC:
       return decodeBatterySyncPacket(view, o);
+    case PKT_DAMAGE_EVENT:
+      return decodeDamageEventPacket(view, o);
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
@@ -891,6 +905,28 @@ function decodeBatterySyncPacket(view: DataView, o: number): BatterySyncPacket {
     o += 4;
   }
   return { type: 'batterySync', fullResync, batteryStates, removedIds };
+}
+
+function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
+  const attackerPlayerId = view.getUint32(o, true); o += 4;
+  const damageAmount = view.getUint8(o++);
+  const hitZone = view.getUint8(o++);
+  const attackerPxMm = view.getInt32(o, true); o += 4;
+  const attackerPyMm = view.getInt32(o, true); o += 4;
+  const attackerPzMm = view.getInt32(o, true); o += 4;
+  const serverTimeMs = view.getUint32(o, true); o += 4;
+  return {
+    type: 'damageEvent',
+    attackerPlayerId,
+    damageAmount,
+    hitZone,
+    attackerPosition: [
+      attackerPxMm / 1000,
+      attackerPyMm / 1000,
+      attackerPzMm / 1000,
+    ],
+    serverTimeMs,
+  };
 }
 
 export function decodeServerDatagramPacket(data: ArrayBuffer | Uint8Array): ServerDatagramPacket {
@@ -1243,6 +1279,8 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return { type: 'localPlayerEnergy', energyCenti: view.getUint32(1, true) };
     case PKT_BATTERY_SYNC:
       return decodeBatterySyncPacket(view, 1);
+    case PKT_DAMAGE_EVENT:
+      return decodeDamageEventPacket(view, 1);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

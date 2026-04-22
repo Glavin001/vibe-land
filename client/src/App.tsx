@@ -19,10 +19,13 @@ import { ControlHintsOverlay } from './ui/ControlHintsOverlay';
 import { ControlsSettingsPanel } from './ui/ControlsSettingsPanel';
 import { debugStatsToMarkdown, DebugOverlay, type DebugStats } from './ui/DebugOverlay';
 import { EnergyBar } from './ui/EnergyBar';
+import { LowEnergyWarning } from './ui/LowEnergyWarning';
 import { MeleeHUD } from './ui/MeleeHUD';
 import { MobileHUD } from './ui/MobileHUD';
 import { SpawnProtectionHUD } from './ui/SpawnProtectionHUD';
 import { useControlHints } from './ui/useControlHints';
+import { useDamageFeedback } from './ui/useDamageFeedback';
+import { DamageOverlay } from './ui/DamageOverlay';
 import { useDebugStats } from './ui/useDebugStats';
 import { normalizeScenario, type LoadTestScenario } from './loadtest/scenario';
 import {
@@ -60,6 +63,8 @@ type AppProps = {
   routeLabel?: string;
   autoConnect?: boolean;
   sessionKey?: number;
+  hideTopNav?: boolean;
+  hideStatusBanner?: boolean;
 };
 
 type BenchmarkConfig = {
@@ -126,6 +131,8 @@ export function App({
   routeLabel,
   autoConnect = false,
   sessionKey = 0,
+  hideTopNav = false,
+  hideStatusBanner = false,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
@@ -175,6 +182,7 @@ export function App({
   const [crosshairState, setCrosshairState] = useState<CrosshairAimState>('idle');
   const [scopeActive, setScopeActive] = useState(false);
   const [inputFamilyMode, setInputFamilyMode] = useState<InputFamilyMode>('auto');
+  const [controlsOverlayExpanded, setControlsOverlayExpanded] = useState(true);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [localRenderSmoothingEnabled, setLocalRenderSmoothingEnabled] = useState(true);
   const [vehicleSmoothingEnabled, setVehicleSmoothingEnabled] = useState(false);
@@ -200,6 +208,7 @@ export function App({
     cycleRapierDebugPreset,
   } = useDebugStats();
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
+  const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
   const copyNoticeTimerRef = useRef<number | null>(null);
@@ -262,6 +271,7 @@ export function App({
   const [practiceBotDesiredCount, setPracticeBotDesiredCount] = useState(0);
   const [practiceBotDesiredBehavior, setPracticeBotDesiredBehavior] = useState<PracticeBotBehaviorKind>('harass');
   const [practiceBotShootingEnabled, setPracticeBotShootingEnabled] = useState(true);
+  const [practiceBotRecoveryLeashEnabled, setPracticeBotRecoveryLeashEnabled] = useState(false);
   const [practiceBotDebugOverlay, setPracticeBotDebugOverlay] = useState(false);
   const [practiceBotDebugLabels, setPracticeBotDebugLabels] = useState(false);
   const [playerIdLabelsEnabled, setPlayerIdLabelsEnabled] = useState(false);
@@ -319,6 +329,13 @@ export function App({
     runtime.setEnableShooting(value);
     refreshPracticeBotStats();
   }, [refreshPracticeBotStats]);
+  const handleSetBotEnableRecoveryLeash = useCallback((value: boolean) => {
+    setPracticeBotRecoveryLeashEnabled(value);
+    const runtime = practiceBotRuntimeRef.current;
+    if (!runtime) return;
+    runtime.setEnableRecoveryLeash(value);
+    refreshPracticeBotStats();
+  }, [refreshPracticeBotStats]);
   const handleSetBotUseVehicles = useCallback((value: boolean) => {
     const runtime = practiceBotRuntimeRef.current;
     if (!runtime) return;
@@ -374,6 +391,7 @@ export function App({
     const desiredCount = practiceBotDesiredCount;
     const desiredBehavior = practiceBotDesiredBehavior;
     const desiredShootingEnabled = practiceBotShootingEnabled;
+    const desiredRecoveryLeashEnabled = practiceBotRecoveryLeashEnabled;
     const navTuning = practiceBotNavTuning;
     const handle = window.setTimeout(() => {
       void (async () => {
@@ -382,6 +400,7 @@ export function App({
           const runtimeOptions = {
             maxAgentRadius: 0.6,
             enableShooting: desiredShootingEnabled,
+            enableRecoveryLeash: desiredRecoveryLeashEnabled,
             navigationProfile: {
               ...sharedProfile,
               walkableClimb: navTuning?.walkableClimb ?? sharedProfile.walkableClimb,
@@ -431,6 +450,7 @@ export function App({
     practiceMode,
     effectiveWorldDocument,
     practiceBotShootingEnabled,
+    practiceBotRecoveryLeashEnabled,
     practiceBotNavTuning,
   ]);
 
@@ -636,8 +656,8 @@ export function App({
     setPlayerId(id);
     hasEverConnectedRef.current = true;
     const touchHint = 'Touch: left thumb moves (push past ring to sprint), right thumb swipes look, tap FIRE/JUMP/RUN';
-    const desktopHint = 'controls are configurable from the Controls panel';
-    setStatus(`${practiceMode ? modeLabel : `Player #${id}`} — ${touchMode ? touchHint : desktopHint}`);
+    const statusLabel = practiceMode ? modeLabel : `Player #${id}`;
+    setStatus(touchMode ? `${statusLabel} — ${touchHint}` : statusLabel);
     if (benchmarkConfig && benchmarkStartedAtRef.current == null) {
       benchmarkStartedAtRef.current = new Date().toISOString();
       publishBenchmarkState('running');
@@ -834,51 +854,36 @@ export function App({
           </div>
         </div>
       )}
-      <div
-        data-testid="status-banner"
-        style={{
-          position: 'absolute',
-          top: 8,
-          left: 8,
-          zIndex: 5,
-          background: 'rgba(0,0,0,0.6)',
-          padding: '4px 12px',
-          borderRadius: 4,
-          fontSize: 14,
-          pointerEvents: 'none',
-        }}
-      >
-        {status}
-      </div>
-      <div
-        style={{
-          position: 'absolute',
-          top: 8,
-          right: 8,
-          zIndex: 12,
-          display: 'flex',
-          gap: 8,
-        }}
-      >
-        <a href="/" style={navLinkStyle}>
-          Home
-        </a>
-        <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
-          {practiceMode ? 'Multiplayer' : 'Firing range'}
-        </a>
-        <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
-          Controls
-        </button>
-        {practiceMode && connected && (
-          <button
-            type="button"
-            onClick={openCalibration}
-            style={calibrateButtonStyle}
-          >
-            Calibrate
+      {!hideStatusBanner && (
+        <div
+          data-testid="status-banner"
+          className="pointer-events-none absolute left-2 top-2 z-5 rounded bg-[rgba(0,0,0,0.6)] px-3 py-1 text-sm"
+        >
+          {status}
+        </div>
+      )}
+      {!hideTopNav && (
+        <div className="absolute right-2 top-2 z-12 flex gap-2">
+          <a href="/" style={navLinkStyle}>
+            Home
+          </a>
+          <a href={practiceMode ? buildMatchHref('/play', multiplayerMatchId) : '/practice'} style={navLinkStyle}>
+            {practiceMode ? 'Multiplayer' : 'Firing range'}
+          </a>
+          <button type="button" onClick={() => setControlsOpen(true)} style={navButtonStyle}>
+            Controls
           </button>
-        )}
-      </div>
+          {practiceMode && connected && (
+            <button
+              type="button"
+              onClick={openCalibration}
+              style={calibrateButtonStyle}
+            >
+              Calibrate
+            </button>
+          )}
+        </div>
+      )}
       {overlay}
       {copyNotice && (
         <div
@@ -1000,6 +1005,8 @@ export function App({
         bindings={inputBindings}
         state={controlHintsState}
         visible={connected && isDesktop && !touchMode}
+        expanded={controlsOverlayExpanded}
+        onToggleExpanded={() => setControlsOverlayExpanded((value) => !value)}
         inputFamilyMode={inputFamilyMode}
         onInputFamilyModeChange={setInputFamilyMode}
       />
@@ -1048,10 +1055,16 @@ export function App({
         onToggleDebugOverlay={handleToggleBotDebugOverlay}
         onToggleDebugLabels={handleToggleBotDebugLabels}
         onSetEnableShooting={handleSetBotEnableShooting}
+        onSetEnableRecoveryLeash={handleSetBotEnableRecoveryLeash}
         onSetUseVehicles={handleSetBotUseVehicles}
       />
       <EnergyBar
         hp={displayStats.hp}
+        energy={displayStats.energy}
+        visible={connected}
+      />
+      <DamageOverlay {...damageOverlayState} visible={connected} />
+      <LowEnergyWarning
         energy={displayStats.energy}
         visible={connected}
       />
@@ -1120,6 +1133,7 @@ export function App({
           fogEnabled={fogSettings.enabled}
           fogDensity={fogSettings.density}
           fogColor={fogSettings.color}
+          damageFeedback={damageFeedbackController}
           sceneExtras={calibrationSceneExtras}
         />
       )}
@@ -1143,12 +1157,5 @@ const navButtonStyle: CSSProperties = {
 };
 
 const calibrateButtonStyle: CSSProperties = {
-  background: 'rgba(149, 233, 255, 0.22)',
-  border: '1px solid rgba(149, 233, 255, 0.45)',
-  color: '#edf6ff',
-  padding: '6px 12px',
-  borderRadius: 999,
-  fontSize: 13,
-  cursor: 'pointer',
-  fontWeight: 600,
+  ...navButtonStyle,
 };

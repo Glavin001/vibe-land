@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type ReactNode, type RefObject } from 'react';
+import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -54,11 +54,31 @@ import {
   SPAWN_PROTECTION_MS,
   WEAPON_HITSCAN,
 } from '../net/protocol';
-import type { NetVehicleState, ShotFiredPacket, VehicleStateMeters } from '../net/protocol';
+import type {
+  DamageEventPacket,
+  NetVehicleState,
+  ShotFiredPacket,
+  VehicleStateMeters,
+} from '../net/protocol';
 import { netPlayerStateToMeters, shotFiredToWorldEndpoints } from '../net/protocol';
+import {
+  computeBodyLocalDirectionWeights,
+  type DamageFeedbackController,
+} from '../ui/useDamageFeedback';
 import { publishMeleeFeedback } from '../ui/meleeFeedback';
-import { createBotBrainState, stepBotBrain, type BotBrainState, type ObservedPlayer } from '../loadtest/brain';
-import type { LoadTestScenario, PlayBenchmarkDriverProfile } from '../loadtest/scenario';
+import {
+  personalityFromScenario,
+  playerStateToBotSelf,
+} from '../loadtest/personalityFromScenario';
+import { BotBrain } from '../bots/agent/BotBrain';
+import { arenaHarass } from '../bots/agent/behaviors';
+import { resolvePersonality } from '../bots/config/botPersonality';
+import {
+  type BotCrowd,
+  createBotCrowdFromSharedProfile,
+} from '../bots/crowd/BotCrowd';
+import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
+import { anchorForBot, type LoadTestScenario, type PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { WorldTerrain } from './WorldTerrain';
@@ -141,7 +161,7 @@ type FrameDebugCallback = (
     transport: string;
     playerId: number;
   },
-  debug: { rapierDebugLabel: string; rapierDebugModeBits: number },
+  debug: { rapierDebugLabel: string; rapierDebugModeBits: number; rapierDebugSampleHz: number; rapierDebugVertexCount: number; rapierDebugLastCostMs: number },
   physics: {
     pendingInputs: number;
     predictionTicks: number;
@@ -368,6 +388,7 @@ type GameWorldProps = {
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
+  damageFeedback?: DamageFeedbackController | null;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
   // firing-range scene, so the player's feel during drills is identical to
@@ -1092,6 +1113,7 @@ export function GameWorld({
   fogEnabled = true,
   fogDensity = DEFAULT_FOG_SETTINGS.density,
   fogColor = DEFAULT_FOG_SETTINGS.color,
+  damageFeedback,
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
@@ -1114,6 +1136,11 @@ export function GameWorld({
   onInputFrameRef.current = onInputFrame;
   const onSnapshotRef = useRef(onSnapshot);
   onSnapshotRef.current = onSnapshot;
+  const rapierDebugTelemetryRef = useRef({ sampleHz: 0, vertexCount: 0, lastCostMs: 0 });
+  const damageFeedbackRef = useRef<DamageFeedbackController | null>(damageFeedback ?? null);
+  damageFeedbackRef.current = damageFeedback ?? null;
+  const lastLocalDeadRef = useRef(false);
+  const damageEventHandlerRef = useRef<(packet: DamageEventPacket) => void>(() => {});
   const activeShotTracesRef = useRef<LocalShotTrace[]>([]);
   const nextShotTraceIdRef = useRef(1);
   const runtimeRefForShotFired = useRef<GameRuntimeClient | null>(null);
@@ -1144,6 +1171,7 @@ export function GameWorld({
     onDisconnect,
     () => onSnapshotRef.current?.(),
     localRenderSmoothingEnabled,
+    (packet) => damageEventHandlerRef.current(packet),
     handleServerShotFired,
   );
   runtimeRefForShotFired.current = runtimeRef.current;
@@ -1152,6 +1180,24 @@ export function GameWorld({
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
+  damageEventHandlerRef.current = (packet: DamageEventPacket) => {
+    const controller = damageFeedbackRef.current;
+    if (!controller) return;
+    const localPos = runtimeRef.current?.getPosition() ?? null;
+    if (!localPos) {
+      controller.pushEvent({
+        amount: packet.damageAmount,
+        weights: { front: 1, back: 0, left: 0, right: 0 },
+      });
+      return;
+    }
+    const weights = computeBodyLocalDirectionWeights(
+      packet.attackerPosition,
+      localPos,
+      yawRef.current ?? 0,
+    );
+    controller.pushEvent({ amount: packet.damageAmount, weights });
+  };
   const remoteGroupRef = useRef<THREE.Group>(null);
   const localPlayerDebugRef = useRef<THREE.Group>(null);
   const remoteMeshes = useRef<Map<number, RemotePlayerHandle>>(new Map());
@@ -1173,11 +1219,9 @@ export function GameWorld({
   const remoteSpawnShieldsRef = useRef<Map<number, RemoteSpawnShieldHandle>>(new Map());
   const remoteSpawnShieldUntilRef = useRef<Map<number, number>>(new Map());
   const lastAimStateRef = useRef<CrosshairAimState>('idle');
-  const botBrainRef = useRef<BotBrainState | null>(
-    benchmarkAutopilot?.enabled
-      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
-      : null,
-  );
+  const localShotTraceRef = useRef<LocalShotTrace | null>(null);
+  const botBrainRef = useRef<BotBrain | null>(null);
+  const botCrowdRef = useRef<BotCrowd | null>(null);
   const benchmarkVehicleDriverRef = useRef<BenchmarkVehicleDriverState>({
     enteredVehicleAtMs: null,
     lastEnterPressedAtMs: null,
@@ -1310,11 +1354,60 @@ export function GameWorld({
   }, []);
 
   useEffect(() => {
-    botBrainRef.current = benchmarkAutopilot?.enabled
-      ? createBotBrainState(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario)
-      : null;
     benchmarkVehicleDriverRef.current.enteredVehicleAtMs = null;
     benchmarkVehicleDriverRef.current.lastEnterPressedAtMs = null;
+
+    let cancelled = false;
+    if (!benchmarkAutopilot?.enabled) {
+      if (botBrainRef.current && botCrowdRef.current) {
+        botCrowdRef.current.removeBot(botBrainRef.current.handle);
+      }
+      botBrainRef.current = null;
+      botCrowdRef.current = null;
+      return;
+    }
+    void (async () => {
+      const crowd = await createBotCrowdFromSharedProfile(DEFAULT_WORLD_DOCUMENT, {
+        maxAgentRadius: 0.6,
+      });
+      if (cancelled) return;
+      const personality = resolvePersonality(personalityFromScenario(benchmarkAutopilot.scenario));
+      const anchor2d = anchorForBot(benchmarkAutopilot.clientIndex, benchmarkAutopilot.scenario);
+      const anchor: Vec3Tuple = [anchor2d[0], 1.0, anchor2d[1]];
+      const handle = crowd.addBot(anchor);
+      const behavior = arenaHarass({
+        acquireDistanceM: personality.targetAcquireDistanceM,
+        releaseDistanceM: personality.targetReleaseDistanceM,
+        stopDistanceM: personality.stopDistanceM,
+        orbitDistanceM: personality.orbitDistanceM,
+        targetMemoryTicks: personality.targetMemoryTicks,
+        fireDistanceM: personality.fireMode === 'off' ? 0 : personality.fireDistanceM,
+        meleeDistanceM: personality.meleeDistanceM,
+        meleeAgainstVehicleDistanceM: personality.meleeAgainstVehicleDistanceM,
+        recoveryDistanceM: personality.recoveryDistanceM,
+        fireAtCenter:
+          personality.fireMode === 'center'
+          || personality.fireMode === 'nearest_target_or_center',
+      });
+      const brain = new BotBrain(crowd, handle, behavior, {
+        anchor,
+        jumpCooldownTicks: personality.jumpCooldownTicks,
+        stuckTicksBeforeJump: personality.stuckTickThreshold,
+        minMoveSpeed: personality.minMoveSpeedM,
+        sprintTargetDistanceM: personality.sprintDistanceM,
+        meleeDistanceM: personality.meleeDistanceM,
+      });
+      botCrowdRef.current = crowd;
+      botBrainRef.current = brain;
+    })();
+    return () => {
+      cancelled = true;
+      if (botBrainRef.current && botCrowdRef.current) {
+        botCrowdRef.current.removeBot(botBrainRef.current.handle);
+      }
+      botBrainRef.current = null;
+      botCrowdRef.current = null;
+    };
   }, [benchmarkAutopilot]);
 
   useEffect(() => {
@@ -1379,6 +1472,10 @@ export function GameWorld({
         }
       : null;
     const localDead = (localFlags & FLAG_DEAD) !== 0;
+    if (localDead !== lastLocalDeadRef.current) {
+      lastLocalDeadRef.current = localDead;
+      damageFeedbackRef.current?.setDead(localDead);
+    }
     const drivenVehicleId = client?.getDrivenVehicleId() ?? null;
     const drivenVehicleState = drivenVehicleId != null ? client?.vehicles.get(drivenVehicleId) ?? null : null;
     const localVehicleRenderTimeUs = client?.serverClock.renderTimeUs((client?.interpolationDelayMs ?? 0) * 1000) ?? 0;
@@ -1826,34 +1923,27 @@ export function GameWorld({
           inputSample.activeFamily,
           benchmarkAutopilot.scenario.playBenchmark?.driverProfile ?? 'mixed',
         )
-      : botAutopilotEnabled
+      : botAutopilotEnabled && botBrainRef.current && botCrowdRef.current
         ? (() => {
           const localPosition = prediction.getPosition() ?? state.localPosition;
-          const localState = {
+          const self = playerStateToBotSelf({
             position: localPosition,
             velocity: physStats.velocity,
             yaw: yawRef.current,
             pitch: pitchRef.current,
             hp: client?.localPlayerHp ?? 100,
             flags: localFlags,
-          };
+          });
+          if (!self) return null;
           const remotePlayers: ObservedPlayer[] = Array.from(state.remotePlayers.values()).map((remote) => ({
             id: remote.id,
-            state: {
-              position: remote.position,
-              velocity: [0, 0, 0],
-              yaw: remote.yaw,
-              pitch: remote.pitch,
-              hp: remote.hp,
-              flags: remote.hp <= 0 ? FLAG_DEAD : 0,
-            },
+            position: [remote.position[0], remote.position[1], remote.position[2]],
+            isDead: remote.hp <= 0,
           }));
-          const intent = stepBotBrain(
-            botBrainRef.current!,
-            benchmarkAutopilot!.scenario,
-            localState,
-            remotePlayers,
-          );
+          // BotBrain expects a periodic crowd.step before think() so the
+          // navcat agent's desiredVelocity reflects the current frame.
+          botCrowdRef.current!.step(frameDelta);
+          const intent: BotIntent = botBrainRef.current!.think(self, remotePlayers);
           yawRef.current = intent.yaw;
           pitchRef.current = intent.pitch;
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
@@ -2343,6 +2433,9 @@ export function GameWorld({
         {
           rapierDebugLabel: rapierDebugModeLabel(rapierDebugModeBits),
           rapierDebugModeBits,
+          rapierDebugSampleHz: rapierDebugTelemetryRef.current.sampleHz,
+          rapierDebugVertexCount: rapierDebugTelemetryRef.current.vertexCount,
+          rapierDebugLastCostMs: rapierDebugTelemetryRef.current.lastCostMs,
         },
         physStats,
         {
@@ -3022,7 +3115,7 @@ export function GameWorld({
         />
       ))}
 
-      <RapierDebugLines runtimeRef={runtimeRef} modeBits={rapierDebugModeBits} />
+      <RapierDebugLines runtimeRef={runtimeRef} modeBits={rapierDebugModeBits} telemetryRef={rapierDebugTelemetryRef} />
 
       {/* Local player physics capsule */}
       <group ref={localPlayerDebugRef}>
@@ -3151,64 +3244,106 @@ function rapierDebugModeLabel(modeBits: number): string {
   }
 }
 
+// Shapes-only mode (0b11) is cheap — sample at 20 Hz.  All other modes include
+// joints / rigid-body axes and are capped at 10 Hz.
+const DEBUG_SAMPLE_INTERVAL_MS_SHAPES = 50;  // 20 Hz
+const DEBUG_SAMPLE_INTERVAL_MS_FULL   = 100; // 10 Hz
+
 function RapierDebugLines({
   runtimeRef,
   modeBits,
+  telemetryRef,
 }: {
   runtimeRef: RefObject<GameRuntimeClient | null>;
   modeBits: number;
+  telemetryRef: MutableRefObject<{ sampleHz: number; vertexCount: number; lastCostMs: number }>;
 }) {
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
   const materialRef = useRef<THREE.LineBasicMaterial | null>(null);
 
+  // Persistent backing arrays — grown geometrically, never shrunk.
+  const posBufRef   = useRef<Float32Array>(new Float32Array(0));
+  const colorBufRef = useRef<Float32Array>(new Float32Array(0));
+  const lastSampleRef = useRef<number>(-Infinity);
+  const prevModeBitsRef = useRef<number>(modeBits);
+
   useEffect(() => {
     return () => {
-      const geometry = geometryRef.current;
-      const material = materialRef.current;
-      if (geometry) {
-        geometry.dispose();
-      }
-      if (material) {
-        material.dispose();
-      }
+      geometryRef.current?.dispose();
+      materialRef.current?.dispose();
     };
   }, []);
 
-  useFrame(() => {
+  useFrame(({ clock }: { clock: { getElapsedTime(): number } }) => {
     const runtime = runtimeRef.current;
     const geometry = geometryRef.current;
     if (!geometry || !runtime) return;
 
     if (modeBits === 0) {
       geometry.setDrawRange(0, 0);
+      telemetryRef.current.sampleHz = 0;
+      telemetryRef.current.vertexCount = 0;
       return;
     }
 
+    const nowMs = clock.getElapsedTime() * 1000;
+    const interval = modeBits === 0b11
+      ? DEBUG_SAMPLE_INTERVAL_MS_SHAPES
+      : DEBUG_SAMPLE_INTERVAL_MS_FULL;
+    const modeChanged = modeBits !== prevModeBitsRef.current;
+
+    if (!modeChanged && nowMs - lastSampleRef.current < interval) return;
+
+    prevModeBitsRef.current = modeBits;
+    lastSampleRef.current = nowMs;
+
+    const t0 = performance.now();
     const buffers = runtime.getDebugRenderBuffers(modeBits);
     if (!buffers) {
       geometry.setDrawRange(0, 0);
       return;
     }
 
-    const positionArray = buffers.vertices;
-    const rgbaArray = buffers.colors;
-    const rgbArray = new Float32Array((rgbaArray.length / 4) * 3);
-    for (let src = 0, dst = 0; src + 3 < rgbaArray.length; src += 4, dst += 3) {
-      rgbArray[dst] = rgbaArray[src];
-      rgbArray[dst + 1] = rgbaArray[src + 1];
-      rgbArray[dst + 2] = rgbaArray[src + 2];
+    const srcPos   = buffers.vertices;
+    const srcColor = buffers.colors;
+    const needed   = srcPos.length;
+
+    // Grow backing arrays geometrically when capacity is insufficient.
+    if (posBufRef.current.length < needed) {
+      const cap = Math.max(needed, posBufRef.current.length * 2);
+      posBufRef.current   = new Float32Array(cap);
+      colorBufRef.current = new Float32Array(cap);
     }
+    posBufRef.current.set(srcPos);
+    colorBufRef.current.set(srcColor);
 
-    const positionAttribute = new THREE.Float32BufferAttribute(positionArray, 3);
-    positionAttribute.setUsage(THREE.DynamicDrawUsage);
-    geometry.setAttribute('position', positionAttribute);
+    // Reuse existing BufferAttribute when it already wraps our backing array;
+    // otherwise create one and mark it dynamic.
+    let posAttr = geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!posAttr || posAttr.array !== posBufRef.current) {
+      posAttr = new THREE.BufferAttribute(posBufRef.current, 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('position', posAttr);
+    }
+    posAttr.needsUpdate = true;
 
-    const colorAttribute = new THREE.Float32BufferAttribute(rgbArray, 3);
-    colorAttribute.setUsage(THREE.DynamicDrawUsage);
-    geometry.setAttribute('color', colorAttribute);
+    let colorAttr = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+    if (!colorAttr || colorAttr.array !== colorBufRef.current) {
+      colorAttr = new THREE.BufferAttribute(colorBufRef.current, 3);
+      colorAttr.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('color', colorAttr);
+    }
+    colorAttr.needsUpdate = true;
 
-    geometry.setDrawRange(0, positionArray.length / 3);
-    geometry.computeBoundingSphere();
+    const vertexCount = needed / 3;
+    geometry.setDrawRange(0, vertexCount);
+    // computeBoundingSphere() is intentionally omitted — frustumCulled={false}
+    // means the bounding sphere is never consulted.
+
+    const costMs = performance.now() - t0;
+    telemetryRef.current.sampleHz    = Math.round(1000 / interval);
+    telemetryRef.current.vertexCount = vertexCount;
+    telemetryRef.current.lastCostMs  = costMs;
   });
 
   return (
