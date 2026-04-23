@@ -14,7 +14,9 @@ export const DESTRUCTIBLE_CHUNK_TRANSFORM_STRIDE = 11;
 const SIGNIFICANT_OVERLAP_EPSILON_M = 0.05;
 const NEAR_COINCIDENT_DISTANCE_EPSILON_M = 0.1;
 
-const CHUNK_HALF_EXTENTS_BY_KIND: Record<Destructible['kind'], [number, number, number]> = {
+type FactoryKind = 'wall' | 'tower';
+
+const CHUNK_HALF_EXTENTS_BY_KIND: Record<FactoryKind, [number, number, number]> = {
   wall: [0.25, 0.25, 0.16],
   tower: [0.25, 0.25, 0.25],
 };
@@ -135,9 +137,11 @@ export function computeDestructibleSpatialMetrics(
     };
   }
 
-  const kindById = new Map<number, Destructible['kind']>();
+  const kindById = new Map<number, FactoryKind>();
   for (const destructible of destructibles) {
-    kindById.set(destructible.id, destructible.kind);
+    if (destructible.kind === 'wall' || destructible.kind === 'tower') {
+      kindById.set(destructible.id, destructible.kind);
+    }
   }
 
   const samplesById = new Map<number, ChunkMetricsSample[]>();

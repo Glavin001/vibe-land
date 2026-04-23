@@ -14,18 +14,23 @@ import {
   getTerrainTileCenter,
   getTerrainWorldBounds,
   identityQuaternion,
+  MAX_CHUNKS_PER_STRUCTURE,
   quaternionFromYaw,
   removeTerrainTile,
   sampleTerrainHeightAtWorldPosition,
   sampleTerrainHeightGrid,
   smoothTerrainBrush,
+  type Chunk,
+  type Destructible,
   type DynamicEntity,
   type Quaternion,
   type StaticProp,
+  type StructureDestructible,
   type TerrainRampStencil,
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
+import { expandFactoryKindToChunks } from '../world/destructibleFactory';
 import { applyCustomStencilToWorld, type CustomStencilDefinition } from './customStencil';
 import { getStencil, registerStencil } from './customStencilStore';
 
@@ -151,6 +156,48 @@ export type WorldCtx = {
       radius: number;
     }>,
   ): { changed: boolean; reason?: string };
+
+  // ---- DESTRUCTIBLES ----
+  listDestructibles(): Destructible[];
+  getDestructible(id: number): Destructible | null;
+  addDestructibleStructure(spec: {
+    position: Vec3;
+    rotation?: Quaternion;
+    density?: number;
+    solverMaterialScale?: number;
+    fractured?: boolean;
+    chunks: Chunk[];
+  }): { changed: boolean; id?: number; reason?: string };
+  removeDestructible(id: number): { changed: boolean; reason?: string };
+  updateDestructible(
+    id: number,
+    patch: Partial<{
+      position: Vec3;
+      rotation: Quaternion;
+      density: number;
+      solverMaterialScale: number;
+      fractured: boolean;
+    }>,
+  ): { changed: boolean; reason?: string };
+  addChunk(
+    structureId: number,
+    chunk: Chunk,
+  ): { changed: boolean; chunkIndex?: number; reason?: string };
+  updateChunk(
+    structureId: number,
+    chunkIndex: number,
+    patch: Partial<Chunk>,
+  ): { changed: boolean; reason?: string };
+  removeChunk(
+    structureId: number,
+    chunkIndex: number,
+  ): { changed: boolean; reason?: string };
+  duplicateChunk(
+    structureId: number,
+    chunkIndex: number,
+    offset?: Vec3,
+  ): { changed: boolean; chunkIndex?: number; reason?: string };
+  convertFactoryToStructure(id: number): { changed: boolean; reason?: string };
 
   applyTerrainBrush(spec: {
     centerX: number;
@@ -476,6 +523,315 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
       return { changed };
     },
 
+    // ---- DESTRUCTIBLES ----
+    listDestructibles() {
+      return cloneArray(accessors.getWorld().destructibles);
+    },
+
+    getDestructible(id) {
+      const found = accessors.getWorld().destructibles.find((d) => d.id === id);
+      return found ? cloneJson(found) : null;
+    },
+
+    addDestructibleStructure(spec) {
+      if (!spec || typeof spec !== 'object') {
+        return { changed: false, reason: 'spec must be an object' };
+      }
+      const positionErr = validateVec3('position', spec.position);
+      if (positionErr) return { changed: false, reason: positionErr };
+      if (!Array.isArray(spec.chunks) || spec.chunks.length === 0) {
+        return { changed: false, reason: 'chunks must be a non-empty array' };
+      }
+      if (spec.chunks.length > MAX_CHUNKS_PER_STRUCTURE) {
+        return {
+          changed: false,
+          reason: `chunks length ${spec.chunks.length} exceeds max ${MAX_CHUNKS_PER_STRUCTURE}`,
+        };
+      }
+      const validatedChunks: Chunk[] = [];
+      for (let i = 0; i < spec.chunks.length; i += 1) {
+        const result = validateChunkInput(spec.chunks[i]);
+        if (!result.ok) return { changed: false, reason: `chunks[${i}]: ${result.reason}` };
+        validatedChunks.push(result.chunk);
+      }
+      let assignedId = 0;
+      const changed = aiEdit((current) => {
+        const id = getNextWorldEntityId(current);
+        assignedId = id;
+        const next: StructureDestructible = {
+          id,
+          kind: 'structure',
+          position: [...spec.position] as Vec3,
+          rotation: spec.rotation ? ([...spec.rotation] as Quaternion) : identityQuaternion(),
+          ...(typeof spec.density === 'number' ? { density: spec.density } : {}),
+          ...(typeof spec.solverMaterialScale === 'number'
+            ? { solverMaterialScale: spec.solverMaterialScale }
+            : {}),
+          ...(spec.fractured === true ? { fractured: true } : {}),
+          chunks: validatedChunks,
+        };
+        return { ...current, destructibles: [...current.destructibles, next] };
+      });
+      return changed ? { changed, id: assignedId } : { changed };
+    },
+
+    removeDestructible(id) {
+      const world = accessors.getWorld();
+      if (!world.destructibles.some((d) => d.id === id)) {
+        return { changed: false, reason: `no destructible with id ${id}` };
+      }
+      const changed = aiEdit((current) => ({
+        ...current,
+        destructibles: current.destructibles.filter((d) => d.id !== id),
+      }));
+      return { changed };
+    },
+
+    updateDestructible(id, patch) {
+      if (!patch || typeof patch !== 'object') {
+        return { changed: false, reason: 'patch must be an object' };
+      }
+      if (patch.position) {
+        const err = validateVec3('position', patch.position);
+        if (err) return { changed: false, reason: err };
+      }
+      const found = accessors.getWorld().destructibles.find((d) => d.id === id);
+      if (!found) return { changed: false, reason: `no destructible with id ${id}` };
+      const isFactory = found.kind === 'wall' || found.kind === 'tower';
+      if (
+        isFactory
+        && (typeof patch.density === 'number'
+          || typeof patch.solverMaterialScale === 'number'
+          || typeof patch.fractured === 'boolean')
+      ) {
+        return {
+          changed: false,
+          reason: 'density / solverMaterialScale / fractured only apply to structure destructibles',
+        };
+      }
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === id);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        const nextList = [...current.destructibles];
+        if (target.kind === 'structure') {
+          const merged: StructureDestructible = {
+            ...target,
+            ...(patch.position ? { position: [...patch.position] as Vec3 } : {}),
+            ...(patch.rotation ? { rotation: [...patch.rotation] as Quaternion } : {}),
+            ...(typeof patch.density === 'number' ? { density: patch.density } : {}),
+            ...(typeof patch.solverMaterialScale === 'number'
+              ? { solverMaterialScale: patch.solverMaterialScale }
+              : {}),
+          };
+          if (typeof patch.fractured === 'boolean') {
+            if (patch.fractured) {
+              merged.fractured = true;
+            } else {
+              delete merged.fractured;
+            }
+          }
+          nextList[idx] = merged;
+        } else {
+          nextList[idx] = {
+            ...target,
+            ...(patch.position ? { position: [...patch.position] as Vec3 } : {}),
+            ...(patch.rotation ? { rotation: [...patch.rotation] as Quaternion } : {}),
+          };
+        }
+        return { ...current, destructibles: nextList };
+      });
+      return { changed };
+    },
+
+    addChunk(structureId, chunk) {
+      const found = accessors.getWorld().destructibles.find((d) => d.id === structureId);
+      if (!found) return { changed: false, reason: `no destructible with id ${structureId}` };
+      if (found.kind !== 'structure') {
+        return {
+          changed: false,
+          reason: 'factory destructibles are immutable; convert to structure first',
+        };
+      }
+      if (found.chunks.length >= MAX_CHUNKS_PER_STRUCTURE) {
+        return {
+          changed: false,
+          reason: `structure ${structureId} is at max chunks (${MAX_CHUNKS_PER_STRUCTURE})`,
+        };
+      }
+      const result = validateChunkInput(chunk);
+      if (!result.ok) return { changed: false, reason: result.reason };
+      let assignedIndex = -1;
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === structureId);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        if (target.kind !== 'structure') return current;
+        assignedIndex = target.chunks.length;
+        const updated: StructureDestructible = {
+          ...target,
+          chunks: [...target.chunks, result.chunk],
+        };
+        const nextList = [...current.destructibles];
+        nextList[idx] = updated;
+        return { ...current, destructibles: nextList };
+      });
+      return changed ? { changed, chunkIndex: assignedIndex } : { changed };
+    },
+
+    updateChunk(structureId, chunkIndex, patch) {
+      if (!patch || typeof patch !== 'object') {
+        return { changed: false, reason: 'patch must be an object' };
+      }
+      const found = accessors.getWorld().destructibles.find((d) => d.id === structureId);
+      if (!found) return { changed: false, reason: `no destructible with id ${structureId}` };
+      if (found.kind !== 'structure') {
+        return {
+          changed: false,
+          reason: 'factory destructibles are immutable; convert to structure first',
+        };
+      }
+      if (chunkIndex < 0 || chunkIndex >= found.chunks.length) {
+        return {
+          changed: false,
+          reason: `chunk index ${chunkIndex} out of range [0, ${found.chunks.length})`,
+        };
+      }
+      const merged: Chunk = { ...found.chunks[chunkIndex], ...patch };
+      const result = validateChunkInput(merged);
+      if (!result.ok) return { changed: false, reason: result.reason };
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === structureId);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        if (target.kind !== 'structure') return current;
+        if (chunkIndex >= target.chunks.length) return current;
+        const nextChunks = [...target.chunks];
+        nextChunks[chunkIndex] = result.chunk;
+        const updated: StructureDestructible = { ...target, chunks: nextChunks };
+        const nextList = [...current.destructibles];
+        nextList[idx] = updated;
+        return { ...current, destructibles: nextList };
+      });
+      return { changed };
+    },
+
+    removeChunk(structureId, chunkIndex) {
+      const found = accessors.getWorld().destructibles.find((d) => d.id === structureId);
+      if (!found) return { changed: false, reason: `no destructible with id ${structureId}` };
+      if (found.kind !== 'structure') {
+        return {
+          changed: false,
+          reason: 'factory destructibles are immutable; convert to structure first',
+        };
+      }
+      if (chunkIndex < 0 || chunkIndex >= found.chunks.length) {
+        return {
+          changed: false,
+          reason: `chunk index ${chunkIndex} out of range [0, ${found.chunks.length})`,
+        };
+      }
+      if (found.chunks.length === 1) {
+        return {
+          changed: false,
+          reason: 'cannot remove last chunk; use removeDestructible to remove the whole structure',
+        };
+      }
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === structureId);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        if (target.kind !== 'structure') return current;
+        const nextChunks = target.chunks.filter((_, i) => i !== chunkIndex);
+        const updated: StructureDestructible = { ...target, chunks: nextChunks };
+        const nextList = [...current.destructibles];
+        nextList[idx] = updated;
+        return { ...current, destructibles: nextList };
+      });
+      return { changed };
+    },
+
+    duplicateChunk(structureId, chunkIndex, offset) {
+      const found = accessors.getWorld().destructibles.find((d) => d.id === structureId);
+      if (!found) return { changed: false, reason: `no destructible with id ${structureId}` };
+      if (found.kind !== 'structure') {
+        return {
+          changed: false,
+          reason: 'factory destructibles are immutable; convert to structure first',
+        };
+      }
+      if (chunkIndex < 0 || chunkIndex >= found.chunks.length) {
+        return {
+          changed: false,
+          reason: `chunk index ${chunkIndex} out of range [0, ${found.chunks.length})`,
+        };
+      }
+      if (found.chunks.length >= MAX_CHUNKS_PER_STRUCTURE) {
+        return {
+          changed: false,
+          reason: `structure ${structureId} is at max chunks (${MAX_CHUNKS_PER_STRUCTURE})`,
+        };
+      }
+      if (offset !== undefined) {
+        const err = validateVec3('offset', offset);
+        if (err) return { changed: false, reason: err };
+      }
+      const offsetVec: Vec3 = offset ? ([...offset] as Vec3) : [0, 0, 0];
+      let assignedIndex = -1;
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === structureId);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        if (target.kind !== 'structure') return current;
+        const source = target.chunks[chunkIndex];
+        const cloned: Chunk = {
+          ...source,
+          position: [
+            source.position[0] + offsetVec[0],
+            source.position[1] + offsetVec[1],
+            source.position[2] + offsetVec[2],
+          ],
+          rotation: [...source.rotation] as Quaternion,
+          ...(source.halfExtents ? { halfExtents: [...source.halfExtents] as Vec3 } : {}),
+        };
+        assignedIndex = target.chunks.length;
+        const updated: StructureDestructible = {
+          ...target,
+          chunks: [...target.chunks, cloned],
+        };
+        const nextList = [...current.destructibles];
+        nextList[idx] = updated;
+        return { ...current, destructibles: nextList };
+      });
+      return changed ? { changed, chunkIndex: assignedIndex } : { changed };
+    },
+
+    convertFactoryToStructure(id) {
+      const found = accessors.getWorld().destructibles.find((d) => d.id === id);
+      if (!found) return { changed: false, reason: `no destructible with id ${id}` };
+      if (found.kind === 'structure') {
+        return { changed: false, reason: `destructible ${id} is already a structure` };
+      }
+      const chunks = expandFactoryKindToChunks(found.kind);
+      const changed = aiEdit((current) => {
+        const idx = current.destructibles.findIndex((d) => d.id === id);
+        if (idx === -1) return current;
+        const target = current.destructibles[idx];
+        if (target.kind === 'structure') return current;
+        const structure: StructureDestructible = {
+          id: target.id,
+          kind: 'structure',
+          position: [...target.position] as Vec3,
+          rotation: [...target.rotation] as Quaternion,
+          chunks,
+        };
+        const nextList = [...current.destructibles];
+        nextList[idx] = structure;
+        return { ...current, destructibles: nextList };
+      });
+      return { changed };
+    },
+
     applyTerrainBrush(spec) {
       if (typeof spec?.centerX !== 'number' || typeof spec?.centerZ !== 'number') {
         return { changed: false };
@@ -751,6 +1107,71 @@ function computeTerrainMutationStats(before: WorldDocument, after: WorldDocument
     return { samplesAffected: 0, deltaMin: 0, deltaMax: 0, heightMin: 0, heightMax: 0 };
   }
   return { samplesAffected, deltaMin, deltaMax, heightMin, heightMax };
+}
+
+type ValidatedChunk = { ok: true; chunk: Chunk } | { ok: false; reason: string };
+
+function validateChunkInput(raw: unknown): ValidatedChunk {
+  if (!raw || typeof raw !== 'object') {
+    return { ok: false, reason: 'chunk must be an object' };
+  }
+  const c = raw as Partial<Chunk> & { shape?: string };
+  if (c.shape !== 'box' && c.shape !== 'sphere' && c.shape !== 'capsule') {
+    return { ok: false, reason: `unknown shape ${String(c.shape)}; must be box | sphere | capsule` };
+  }
+  const position = c.position ?? [0, 0, 0];
+  const posErr = validateVec3('position', position);
+  if (posErr) return { ok: false, reason: posErr };
+  if (c.rotation !== undefined) {
+    if (
+      !Array.isArray(c.rotation)
+      || c.rotation.length !== 4
+      || c.rotation.some((v) => typeof v !== 'number' || !Number.isFinite(v))
+    ) {
+      return { ok: false, reason: 'rotation must be a [x, y, z, w] tuple of finite numbers' };
+    }
+  }
+  if (c.shape === 'box') {
+    if (
+      !Array.isArray(c.halfExtents)
+      || c.halfExtents.length !== 3
+      || c.halfExtents.some((v) => typeof v !== 'number' || !(v > 0))
+    ) {
+      return { ok: false, reason: 'box chunk requires halfExtents: [x, y, z] with positive numbers' };
+    }
+  } else if (c.shape === 'sphere') {
+    if (typeof c.radius !== 'number' || !(c.radius > 0)) {
+      return { ok: false, reason: 'sphere chunk requires positive radius' };
+    }
+  } else {
+    if (typeof c.radius !== 'number' || !(c.radius > 0)) {
+      return { ok: false, reason: 'capsule chunk requires positive radius' };
+    }
+    if (typeof c.height !== 'number' || !(c.height >= 0)) {
+      return { ok: false, reason: 'capsule chunk requires non-negative height' };
+    }
+  }
+  if (c.mass !== undefined && (typeof c.mass !== 'number' || !(c.mass >= 0))) {
+    return { ok: false, reason: 'mass must be a non-negative number when provided' };
+  }
+  const chunk: Chunk = {
+    shape: c.shape,
+    position: [...(position as Vec3)] as Vec3,
+    rotation: c.rotation ? ([...c.rotation] as Quaternion) : identityQuaternion(),
+  };
+  if (c.shape === 'box' && Array.isArray(c.halfExtents)) {
+    chunk.halfExtents = [...c.halfExtents] as Vec3;
+  }
+  if ((c.shape === 'sphere' || c.shape === 'capsule') && typeof c.radius === 'number') {
+    chunk.radius = c.radius;
+  }
+  if (c.shape === 'capsule' && typeof c.height === 'number') {
+    chunk.height = c.height;
+  }
+  if (typeof c.mass === 'number') chunk.mass = c.mass;
+  if (typeof c.material === 'string') chunk.material = c.material;
+  if (c.anchor === true) chunk.anchor = true;
+  return { ok: true, chunk };
 }
 
 function validateVec3(name: string, value: unknown): string | null {

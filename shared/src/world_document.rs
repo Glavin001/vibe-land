@@ -113,18 +113,104 @@ pub enum DynamicEntityKind {
     Battery,
 }
 
-/// A destructible structure placed in the world, backed by the Blast
-/// stress-solver (see `destructibles` module).  The Blast scenario is
-/// chosen by `kind`; position/rotation place the resulting chunks in the
-/// world.  `id` must be unique within the document.
+/// Default per-chunk material density in kg/m³ used when a structure
+/// destructible does not specify `density` explicitly. Mirrors
+/// `DEFAULT_STRUCTURE_DENSITY_KG_M3` in the TS schema.
+pub const DEFAULT_STRUCTURE_DENSITY_KG_M3: f32 = 2400.0;
+pub const DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE: f32 = 1.0;
+/// Reserved high-bits in the chunk-body id scheme
+/// `(destructible_id << 12) | chunk_index`. Authors must keep chunks per
+/// structure ≤ 4096 so the id stays unique in the native arena.
+pub const MAX_CHUNKS_PER_STRUCTURE: usize = 4096;
+/// Target brick edge length (meters) used when `Structure.fractured` is
+/// true. Mirrors `FRACTURE_BRICK_EDGE_M` in the TS schema.
+pub const FRACTURE_BRICK_EDGE_M: f32 = 0.25;
+
+fn default_structure_density() -> f32 {
+    DEFAULT_STRUCTURE_DENSITY_KG_M3
+}
+
+fn default_solver_material_scale() -> f32 {
+    DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE
+}
+
+/// A destructible structure placed in the world. `Wall`/`Tower` pick
+/// preset Blast scenarios (opaque factory scenarios). `Structure` is
+/// fully authored: its `chunks` array describes primitives (box /
+/// sphere / capsule) composed in the structure's local frame, which are
+/// auto-bonded by the Blast stress solver in single-player (WASM) and
+/// expanded into independent dynamic rigid bodies on the native server
+/// (multiplayer).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DestructibleDoc {
-    pub id: u32,
-    pub kind: DestructibleKind,
-    pub position: [f32; 3],
-    #[serde(default = "identity_rotation")]
-    pub rotation: [f32; 4],
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DestructibleDoc {
+    Wall {
+        id: u32,
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+    },
+    Tower {
+        id: u32,
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+    },
+    Structure {
+        id: u32,
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+        #[serde(default = "default_structure_density")]
+        density: f32,
+        #[serde(
+            default = "default_solver_material_scale",
+            rename = "solverMaterialScale"
+        )]
+        solver_material_scale: f32,
+        /// When true, each authored chunk is subdivided into
+        /// brick-sized sub-chunks at spawn time and the Blast
+        /// auto-bonder wires them into a single bonded network.
+        /// Defaults to `false` so existing worlds behave unchanged.
+        #[serde(default)]
+        fractured: bool,
+        #[serde(default)]
+        chunks: Vec<ChunkDoc>,
+    },
+}
+
+impl DestructibleDoc {
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::Wall { id, .. } | Self::Tower { id, .. } | Self::Structure { id, .. } => *id,
+        }
+    }
+
+    pub fn position(&self) -> [f32; 3] {
+        match self {
+            Self::Wall { position, .. }
+            | Self::Tower { position, .. }
+            | Self::Structure { position, .. } => *position,
+        }
+    }
+
+    pub fn rotation(&self) -> [f32; 4] {
+        match self {
+            Self::Wall { rotation, .. }
+            | Self::Tower { rotation, .. }
+            | Self::Structure { rotation, .. } => *rotation,
+        }
+    }
+
+    /// Returns the factory kind for `Wall`/`Tower`, or `None` for an
+    /// authored `Structure`.
+    pub fn factory_kind(&self) -> Option<DestructibleKind> {
+        match self {
+            Self::Wall { .. } => Some(DestructibleKind::Wall),
+            Self::Tower { .. } => Some(DestructibleKind::Tower),
+            Self::Structure { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +218,128 @@ pub struct DestructibleDoc {
 pub enum DestructibleKind {
     Wall,
     Tower,
+}
+
+/// One authored chunk inside a `DestructibleDoc::Structure`.
+///
+/// Transforms are in the structure's local frame. Sizes:
+/// - `Box` → `half_extents` (meters).
+/// - `Sphere` → `radius`.
+/// - `Capsule` → `radius` + `height` (cylindrical segment; caps are
+///   hemispheres of the same radius).
+///
+/// `mass` overrides `density * volume`. `anchor = true` marks the chunk
+/// as a support (replaces the implicit `y == 0` rule). On the native
+/// server, anchored sphere/capsule chunks are spawned as tight-fit
+/// static cuboids (the native build has no frozen dynamic body concept).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "lowercase")]
+pub enum ChunkDoc {
+    Box {
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+        #[serde(rename = "halfExtents")]
+        half_extents: [f32; 3],
+        #[serde(default)]
+        mass: Option<f32>,
+        #[serde(default)]
+        material: Option<String>,
+        #[serde(default)]
+        anchor: bool,
+    },
+    Sphere {
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+        radius: f32,
+        #[serde(default)]
+        mass: Option<f32>,
+        #[serde(default)]
+        material: Option<String>,
+        #[serde(default)]
+        anchor: bool,
+    },
+    Capsule {
+        position: [f32; 3],
+        #[serde(default = "identity_rotation")]
+        rotation: [f32; 4],
+        radius: f32,
+        height: f32,
+        #[serde(default)]
+        mass: Option<f32>,
+        #[serde(default)]
+        material: Option<String>,
+        #[serde(default)]
+        anchor: bool,
+    },
+}
+
+impl ChunkDoc {
+    pub fn position(&self) -> [f32; 3] {
+        match self {
+            Self::Box { position, .. }
+            | Self::Sphere { position, .. }
+            | Self::Capsule { position, .. } => *position,
+        }
+    }
+
+    pub fn rotation(&self) -> [f32; 4] {
+        match self {
+            Self::Box { rotation, .. }
+            | Self::Sphere { rotation, .. }
+            | Self::Capsule { rotation, .. } => *rotation,
+        }
+    }
+
+    pub fn anchor(&self) -> bool {
+        match self {
+            Self::Box { anchor, .. }
+            | Self::Sphere { anchor, .. }
+            | Self::Capsule { anchor, .. } => *anchor,
+        }
+    }
+
+    pub fn mass_override(&self) -> Option<f32> {
+        match self {
+            Self::Box { mass, .. } | Self::Sphere { mass, .. } | Self::Capsule { mass, .. } => {
+                *mass
+            }
+        }
+    }
+
+    /// Physical volume in m³, used by the default density → mass rule
+    /// when `mass` is not overridden.
+    pub fn volume_m3(&self) -> f32 {
+        match self {
+            Self::Box { half_extents, .. } => {
+                8.0 * half_extents[0] * half_extents[1] * half_extents[2]
+            }
+            Self::Sphere { radius, .. } => {
+                (4.0 / 3.0) * std::f32::consts::PI * radius.powi(3)
+            }
+            Self::Capsule { radius, height, .. } => {
+                let sphere = (4.0 / 3.0) * std::f32::consts::PI * radius.powi(3);
+                let cyl = std::f32::consts::PI * radius.powi(2) * *height;
+                sphere + cyl
+            }
+        }
+    }
+
+    /// Tight axis-aligned half-extents used by the native fallback for
+    /// sphere/capsule anchors (the native server has no frozen-dynamic
+    /// concept, so anchors degrade to static cuboids).
+    pub fn aabb_half_extents(&self) -> [f32; 3] {
+        match self {
+            Self::Box { half_extents, .. } => *half_extents,
+            Self::Sphere { radius, .. } => [*radius, *radius, *radius],
+            // Capsule aligned along local Y: caps extend beyond `height/2`
+            // by `radius` on top and bottom.
+            Self::Capsule { radius, height, .. } => {
+                [*radius, height * 0.5 + *radius, *radius]
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,13 +508,7 @@ pub trait WorldDocumentArena {
         rotation: [f32; 4],
     );
 
-    fn spawn_destructible(
-        &mut self,
-        id: u32,
-        kind: DestructibleKind,
-        position: [f32; 3],
-        rotation: [f32; 4],
-    );
+    fn spawn_destructible(&mut self, doc: &DestructibleDoc);
 
     fn spawn_battery_with_id(
         &mut self,
@@ -386,14 +588,8 @@ impl WorldDocumentArena for crate::physics_arena::PhysicsArena {
         );
     }
 
-    fn spawn_destructible(
-        &mut self,
-        id: u32,
-        kind: DestructibleKind,
-        position: [f32; 3],
-        rotation: [f32; 4],
-    ) {
-        crate::physics_arena::PhysicsArena::spawn_destructible(self, id, kind, position, rotation);
+    fn spawn_destructible(&mut self, doc: &DestructibleDoc) {
+        crate::physics_arena::PhysicsArena::spawn_destructible(self, doc);
     }
 
     fn spawn_battery_with_id(
@@ -789,12 +985,7 @@ impl WorldDocument {
         arena.rebuild_broad_phase();
 
         for destructible in &self.destructibles {
-            arena.spawn_destructible(
-                destructible.id,
-                destructible.kind,
-                destructible.position,
-                destructible.rotation,
-            );
+            arena.spawn_destructible(destructible);
         }
 
         for entity in &self.dynamic_entities {
@@ -1096,15 +1287,13 @@ mod tests {
     fn instantiate_spawns_destructibles_into_local_preview_arena() {
         let mut world = WorldDocument::demo();
         world.destructibles = vec![
-            DestructibleDoc {
+            DestructibleDoc::Wall {
                 id: 2000,
-                kind: DestructibleKind::Wall,
                 position: [0.0, 0.0, 8.0],
                 rotation: identity_rotation(),
             },
-            DestructibleDoc {
+            DestructibleDoc::Tower {
                 id: 2001,
-                kind: DestructibleKind::Tower,
                 position: [10.0, 0.5, -5.0],
                 rotation: identity_rotation(),
             },
@@ -1262,13 +1451,23 @@ mod tests {
             .instantiate(&mut arena)
             .expect("instantiate clamped world");
 
+        // Native fallback expands destructible structures into dynamic
+        // bodies with stable ids `(destructible_id << 12) | chunk_index`.
+        // Those chunks are authored at structure-local poses and should
+        // not be clamped against the current terrain — only authored
+        // dynamic entities participate in clamping.
+        const DESTRUCTIBLE_CHUNK_ID_THRESHOLD: u32 = 1 << 12;
         let dynamic_snapshot = arena.snapshot_dynamic_bodies();
+        let authored_dynamics: Vec<_> = dynamic_snapshot
+            .iter()
+            .filter(|(id, _, _, _, _, _, _)| *id < DESTRUCTIBLE_CHUNK_ID_THRESHOLD)
+            .collect();
         assert!(
-            dynamic_snapshot
+            authored_dynamics
                 .iter()
                 .all(|(_, pos, _, _, _, _, _)| pos[1] > 4.0),
             "dynamic entities should be clamped above terrain: {:?}",
-            dynamic_snapshot
+            authored_dynamics
                 .iter()
                 .map(|(id, pos, _, _, _, _, _)| (*id, pos[1]))
                 .collect::<Vec<_>>()
@@ -1735,5 +1934,97 @@ mod tests {
                 normal
             );
         }
+    }
+
+    /// Native multiplayer fallback: an authored structure should expand
+    /// into one dynamic rigid body per non-anchor chunk, with stable ids
+    /// following `(destructible_id << 12) | chunk_index`. Anchor chunks
+    /// become static cuboids, so they do not show up in the dynamic-body
+    /// snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_fallback_expands_structure_into_per_chunk_dynamic_bodies() {
+        let structure_id: u32 = 400;
+        let structure = DestructibleDoc::Structure {
+            id: structure_id,
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            density: DEFAULT_STRUCTURE_DENSITY_KG_M3,
+            solver_material_scale: DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE,
+            fractured: false,
+            chunks: vec![
+                ChunkDoc::Box {
+                    position: [0.0, 0.25, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    half_extents: [0.25, 0.25, 0.25],
+                    mass: None,
+                    material: None,
+                    anchor: true,
+                },
+                ChunkDoc::Box {
+                    position: [0.0, 0.75, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    half_extents: [0.25, 0.25, 0.25],
+                    mass: None,
+                    material: None,
+                    anchor: false,
+                },
+                ChunkDoc::Sphere {
+                    position: [0.0, 1.5, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    radius: 0.25,
+                    mass: None,
+                    material: None,
+                    anchor: false,
+                },
+                ChunkDoc::Capsule {
+                    position: [0.0, 2.5, 0.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    radius: 0.2,
+                    height: 0.6,
+                    mass: None,
+                    material: None,
+                    anchor: false,
+                },
+            ],
+        };
+
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let before = arena.snapshot_dynamic_bodies().len();
+        assert!(arena.spawn_destructible(&structure));
+        let after = arena.snapshot_dynamic_bodies();
+        assert_eq!(
+            after.len() - before,
+            3,
+            "expected 3 dynamic bodies (1 box + 1 sphere + 1 capsule); got {:?}",
+            after
+        );
+        let expected_ids: Vec<u32> = (1..=3)
+            .map(|chunk_index| (structure_id << 12) | chunk_index as u32)
+            .collect();
+        for id in expected_ids {
+            assert!(
+                after.iter().any(|snap| snap.0 == id),
+                "missing chunk body id {} (bodies: {:?})",
+                id,
+                after.iter().map(|s| s.0).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_fallback_expands_factory_wall_into_dynamic_bodies() {
+        let wall = DestructibleDoc::Wall {
+            id: 500,
+            position: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let before = arena.snapshot_dynamic_bodies().len();
+        assert!(arena.spawn_destructible(&wall));
+        // Default wall is 12x6x1 cells; bottom row (12 cells) is anchored
+        // → 60 dynamic bodies after expansion.
+        assert_eq!(arena.snapshot_dynamic_bodies().len() - before, 60);
     }
 }

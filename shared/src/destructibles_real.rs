@@ -23,8 +23,10 @@ use wasm_bindgen::prelude::*;
 use blast_stress_solver::authoring::{build_scenario_from_pieces, BondingOptions, ScenarioPiece};
 use blast_stress_solver::rapier::{DebrisCollisionMode, DestructibleSet, FracturePolicy};
 use blast_stress_solver::scenarios::{TowerOptions, WallOptions};
-use blast_stress_solver::types::{SolverSettings, Vec3 as BlastVec3};
+use blast_stress_solver::types::{ScenarioCollider, SolverSettings, Vec3 as BlastVec3};
 use blast_stress_solver::ScenarioNode;
+
+use crate::world_document::{ChunkDoc as DocChunk, DestructibleDoc, MAX_CHUNKS_PER_STRUCTURE};
 
 use crate::destructibles_math::{
     authored_position_to_solver_position, effective_solver_material_scale,
@@ -283,6 +285,213 @@ fn build_authored_tower_scenario() -> Result<blast_stress_solver::types::Scenari
     .map_err(|error| format!("failed to auto-bond tower pieces: {error}"))
 }
 
+#[inline]
+fn rotate_vec(v: BlastVec3, rot: &UnitQuaternion<f32>) -> BlastVec3 {
+    let rotated = rot.transform_vector(&Vector3::new(v.x, v.y, v.z));
+    BlastVec3::new(rotated.x, rotated.y, rotated.z)
+}
+
+#[inline]
+fn chunk_unit_rotation(chunk: &DocChunk) -> UnitQuaternion<f32> {
+    let rot = chunk.rotation();
+    let q = Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
+    UnitQuaternion::from_quaternion(q)
+}
+
+fn box_piece_triangles(half_extents: [f32; 3], rot: &UnitQuaternion<f32>) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
+    let hx = half_extents[0];
+    let hy = half_extents[1];
+    let hz = half_extents[2];
+    let raw_corners = [
+        BlastVec3::new(-hx, -hy, -hz),
+        BlastVec3::new(hx, -hy, -hz),
+        BlastVec3::new(-hx, hy, -hz),
+        BlastVec3::new(hx, hy, -hz),
+        BlastVec3::new(-hx, -hy, hz),
+        BlastVec3::new(hx, -hy, hz),
+        BlastVec3::new(-hx, hy, hz),
+        BlastVec3::new(hx, hy, hz),
+    ];
+    let corners: Vec<BlastVec3> = raw_corners.iter().map(|c| rotate_vec(*c, rot)).collect();
+    let p000 = corners[0];
+    let p100 = corners[1];
+    let p010 = corners[2];
+    let p110 = corners[3];
+    let p001 = corners[4];
+    let p101 = corners[5];
+    let p011 = corners[6];
+    let p111 = corners[7];
+    let triangles = vec![
+        p000, p101, p001, p000, p100, p101, p010, p011, p111, p010, p111, p110, p000, p001, p011,
+        p000, p011, p010, p100, p110, p111, p100, p111, p101, p000, p010, p110, p000, p110, p100,
+        p001, p101, p111, p001, p111, p011,
+    ];
+    (triangles, corners)
+}
+
+fn sphere_piece_triangles(radius: f32, rot: &UnitQuaternion<f32>) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
+    // 8-face octahedron is enough for bonding-surface coverage at low radius.
+    let r = radius;
+    let raw_pts = [
+        BlastVec3::new(r, 0.0, 0.0),
+        BlastVec3::new(-r, 0.0, 0.0),
+        BlastVec3::new(0.0, r, 0.0),
+        BlastVec3::new(0.0, -r, 0.0),
+        BlastVec3::new(0.0, 0.0, r),
+        BlastVec3::new(0.0, 0.0, -r),
+    ];
+    let pts: Vec<BlastVec3> = raw_pts.iter().map(|p| rotate_vec(*p, rot)).collect();
+    let faces: [(usize, usize, usize); 8] = [
+        (0, 2, 4),
+        (2, 1, 4),
+        (1, 3, 4),
+        (3, 0, 4),
+        (2, 0, 5),
+        (1, 2, 5),
+        (3, 1, 5),
+        (0, 3, 5),
+    ];
+    let mut triangles = Vec::with_capacity(faces.len() * 3);
+    for (a, b, c) in faces {
+        triangles.extend_from_slice(&[pts[a], pts[b], pts[c]]);
+    }
+    (triangles, pts)
+}
+
+fn capsule_piece_triangles(
+    radius: f32,
+    height: f32,
+    rot: &UnitQuaternion<f32>,
+) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
+    const SIDES: usize = 8;
+    let half_h = height * 0.5;
+    let mut ring_top: Vec<BlastVec3> = Vec::with_capacity(SIDES);
+    let mut ring_bot: Vec<BlastVec3> = Vec::with_capacity(SIDES);
+    for i in 0..SIDES {
+        let theta = (i as f32) / (SIDES as f32) * std::f32::consts::TAU;
+        let x = radius * theta.cos();
+        let z = radius * theta.sin();
+        ring_top.push(BlastVec3::new(x, half_h, z));
+        ring_bot.push(BlastVec3::new(x, -half_h, z));
+    }
+    let top_pole = BlastVec3::new(0.0, half_h + radius, 0.0);
+    let bot_pole = BlastVec3::new(0.0, -half_h - radius, 0.0);
+
+    let mut triangles: Vec<BlastVec3> = Vec::new();
+    for i in 0..SIDES {
+        let j = (i + 1) % SIDES;
+        triangles.extend_from_slice(&[ring_bot[i], ring_bot[j], ring_top[j]]);
+        triangles.extend_from_slice(&[ring_bot[i], ring_top[j], ring_top[i]]);
+    }
+    for i in 0..SIDES {
+        let j = (i + 1) % SIDES;
+        triangles.extend_from_slice(&[ring_top[i], ring_top[j], top_pole]);
+    }
+    for i in 0..SIDES {
+        let j = (i + 1) % SIDES;
+        triangles.extend_from_slice(&[ring_bot[j], ring_bot[i], bot_pole]);
+    }
+    let triangles = triangles.into_iter().map(|p| rotate_vec(p, rot)).collect();
+
+    let mut hull_points: Vec<BlastVec3> = Vec::with_capacity(SIDES * 2 + 2);
+    for p in ring_top.iter().chain(ring_bot.iter()) {
+        hull_points.push(rotate_vec(*p, rot));
+    }
+    hull_points.push(rotate_vec(top_pole, rot));
+    hull_points.push(rotate_vec(bot_pole, rot));
+    (triangles, hull_points)
+}
+
+/// Convert an authored [`DocChunk`] to a Blast [`ScenarioPiece`].
+///
+/// Triangles and hull points are pre-rotated by the chunk's local
+/// rotation and offset by its centroid so the scenario is defined in
+/// the structure's local frame. `spawn_scenario` then applies the
+/// structure-level pose to every node body.
+fn chunk_to_piece(chunk: &DocChunk, density: f32) -> ScenarioPiece {
+    let pos = chunk.position();
+    let centroid = BlastVec3::new(pos[0], pos[1], pos[2]);
+    let rotation = chunk_unit_rotation(chunk);
+
+    let is_support = chunk.anchor();
+    let volume = if is_support { 0.0 } else { chunk.volume_m3() };
+    let mass = if is_support {
+        0.0
+    } else {
+        chunk.mass_override().unwrap_or(volume * density).max(0.0)
+    };
+
+    let aabb = chunk.aabb_half_extents();
+    let node_size = Some(BlastVec3::new(
+        aabb[0] * 2.0,
+        aabb[1] * 2.0,
+        aabb[2] * 2.0,
+    ));
+
+    let (local_triangles, hull_points, collider_shape) = match chunk {
+        DocChunk::Box { half_extents, .. } => {
+            let (tris, corners) = box_piece_triangles(*half_extents, &rotation);
+            // When chunk has no rotation, Rapier's Cuboid collider is the
+            // correct visual match — fall back to it so mass/inertia are
+            // computed from the authored half-extents.
+            let rot_arr = chunk.rotation();
+            let identity = rot_arr[3].abs() >= 1.0 - 1.0e-5
+                && rot_arr[0].abs() <= 1.0e-4
+                && rot_arr[1].abs() <= 1.0e-4
+                && rot_arr[2].abs() <= 1.0e-4;
+            let collider = if identity {
+                Some(ScenarioCollider::Cuboid {
+                    half_extents: BlastVec3::new(half_extents[0], half_extents[1], half_extents[2]),
+                })
+            } else {
+                Some(ScenarioCollider::ConvexHull { points: corners })
+            };
+            (tris, Vec::new(), collider)
+        }
+        DocChunk::Sphere { radius, .. } => {
+            let (tris, pts) = sphere_piece_triangles(*radius, &rotation);
+            (tris, pts, None)
+        }
+        DocChunk::Capsule { radius, height, .. } => {
+            let (tris, pts) = capsule_piece_triangles(*radius, *height, &rotation);
+            (tris, pts.clone(), Some(ScenarioCollider::ConvexHull { points: pts }))
+        }
+    };
+
+    let triangles = local_triangles
+        .into_iter()
+        .map(|p| BlastVec3::new(centroid.x + p.x, centroid.y + p.y, centroid.z + p.z))
+        .collect();
+
+    // Sphere: use ConvexHull collider in world-local space (translated to centroid)
+    // so Rapier's generated collider matches the visible sphere bounds.
+    let collider_shape = match (chunk, collider_shape) {
+        (DocChunk::Sphere { .. }, _) => {
+            // Translate hull points to sit at origin in body-local frame
+            // (centroid is applied separately via node pose); leave as-is.
+            Some(ScenarioCollider::ConvexHull { points: hull_points })
+        }
+        (_, other) => other,
+    };
+
+    ScenarioPiece {
+        node: ScenarioNode {
+            centroid,
+            mass,
+            volume,
+        },
+        triangles,
+        bondable: true,
+        node_size,
+        collider_shape,
+    }
+}
+
+/// Build Blast pieces from an authored structure's chunk list.
+pub fn pieces_from_doc_chunks(chunks: &[DocChunk], density: f32) -> Vec<ScenarioPiece> {
+    chunks.iter().map(|c| chunk_to_piece(c, density)).collect()
+}
+
 fn configured_fracture_policy() -> FracturePolicy {
     FracturePolicy {
         // Match the upstream wall/tower demo behavior. Leaving this enabled
@@ -302,6 +511,9 @@ fn configured_debris_collision_mode() -> DebrisCollisionMode {
 pub enum DestructibleKind {
     Wall,
     Tower,
+    /// Authored [`DestructibleDoc::Structure`] with a per-instance chunk
+    /// list. Used for arbitrary box / sphere / capsule compositions.
+    Structure,
 }
 
 /// A single destructible instance placed in the world.  Owns a
@@ -857,6 +1069,69 @@ impl DestructibleRegistry {
             pose,
             scenario,
             self.runtime_config.tower_material_scale,
+        )
+    }
+
+    /// Spawn an authored structure described by a
+    /// [`DestructibleDoc::Structure`]. The chunks are auto-bonded via
+    /// Blast's default bonding options; the structure-level
+    /// `solver_material_scale` is passed through to solver tuning.
+    ///
+    /// Returns `false` if the doc is not a `Structure` variant, the
+    /// chunk list exceeds [`MAX_CHUNKS_PER_STRUCTURE`], or bonding
+    /// fails.
+    pub fn spawn_structure(&mut self, sim: &mut SimWorld, doc: &DestructibleDoc) -> bool {
+        let DestructibleDoc::Structure {
+            id,
+            position,
+            rotation,
+            density,
+            solver_material_scale,
+            fractured,
+            chunks,
+        } = doc
+        else {
+            return false;
+        };
+        if chunks.is_empty() {
+            return false;
+        }
+        let expanded_chunks = if *fractured {
+            crate::destructibles_fracture::fracture_chunks_default(chunks)
+        } else {
+            chunks.clone()
+        };
+        if expanded_chunks.len() > MAX_CHUNKS_PER_STRUCTURE {
+            dlog(&format!(
+                "[destructibles] structure id={} has {} chunks (> MAX_CHUNKS_PER_STRUCTURE={})",
+                id,
+                expanded_chunks.len(),
+                MAX_CHUNKS_PER_STRUCTURE
+            ));
+            return false;
+        }
+        let pieces = pieces_from_doc_chunks(&expanded_chunks, *density);
+        let scenario = match build_scenario_from_pieces(&pieces, &BondingOptions::default()) {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                dlog(&format!(
+                    "[destructibles] structure id={} bond failed: {error}",
+                    id
+                ));
+                return false;
+            }
+        };
+        let translation = Translation3::new(position[0], position[1], position[2]);
+        let q = Quaternion::new(rotation[3], rotation[0], rotation[1], rotation[2]);
+        let unit = UnitQuaternion::from_quaternion(q);
+        let pose = Isometry3::from_parts(translation, unit);
+        self.spawn_scenario(
+            sim,
+            *id,
+            DestructibleKind::Structure,
+            pose,
+            scenario,
+            *solver_material_scale,
         )
     }
 
