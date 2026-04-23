@@ -16,20 +16,25 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
-  // Route every `import … from 'three'` to the WebGPU entry point. It
-  // re-exports the full three API and adds WebGPURenderer, so all 17
-  // consumers (and @react-three/fiber, drei, etc.) share a single THREE
-  // module graph — no duplicate-module hazard. Skipped under vitest: the
-  // webgpu bundle references `self` at import time which doesn't exist in
-  // Node; unit tests don't render, so the plain three build is fine there.
+  // Route the bare `import … from 'three'` specifier to the WebGPU entry
+  // point. It re-exports the full three API and adds WebGPURenderer, so
+  // all consumers (and @react-three/fiber, drei, etc.) share a single
+  // THREE module graph — no duplicate-module hazard. The regex is anchored
+  // so deep imports like `three/examples/jsm/loaders/GLTFLoader.js` pass
+  // through unchanged (those don't exist under `three/webgpu/...`).
+  // Skipped under vitest: the webgpu bundle references `self` at import
+  // time which doesn't exist in Node; unit tests don't render, so the
+  // plain three build is fine there.
   const isTestRun = process.env.VITEST !== undefined || mode === 'test';
-  const threeAlias = isTestRun ? {} : { three: 'three/webgpu' };
+  const threeAliases = isTestRun
+    ? []
+    : [{ find: /^three$/, replacement: 'three/webgpu' }];
 
   return {
     plugins: [tailwindcss(), react()],
     envDir: '../',
     resolve: {
-      alias: threeAlias,
+      alias: threeAliases,
     },
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
