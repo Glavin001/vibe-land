@@ -153,6 +153,13 @@ export type StructureDestructible = {
   density?: number;
   /** Multiplier on Blast per-material stiffness; defaults to 1. */
   solverMaterialScale?: number;
+  /**
+   * When true, each authored chunk is subdivided into brick-sized
+   * sub-chunks at spawn time and the Blast auto-bonder wires them into
+   * a single bonded network. Disabled by default. Applies on both
+   * single-player (Blast) and native (per-chunk rigid body) paths.
+   */
+  fractured?: boolean;
   chunks: Chunk[];
 };
 
@@ -189,6 +196,12 @@ export type Chunk = {
 export const DEFAULT_STRUCTURE_DENSITY_KG_M3 = 2400;
 export const DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE = 1;
 export const MAX_CHUNKS_PER_STRUCTURE = 4096;
+/**
+ * Target brick edge length (meters) used when `StructureDestructible.fractured`
+ * is true. Authored chunks are subdivided so no resulting sub-brick is smaller
+ * than this on any axis. Picked around the size of a concrete masonry unit.
+ */
+export const FRACTURE_BRICK_EDGE_M = 0.25;
 
 export type WorldDraftRevision = {
   id: string;
@@ -275,6 +288,7 @@ function normalizeDestructible(raw: unknown): Destructible {
     rotation?: unknown;
     density?: number;
     solverMaterialScale?: number;
+    fractured?: boolean;
     chunks?: unknown[];
   };
   if (typeof candidate.id !== 'number') {
@@ -302,6 +316,7 @@ function normalizeDestructible(raw: unknown): Destructible {
       ...(typeof candidate.solverMaterialScale === 'number'
         ? { solverMaterialScale: candidate.solverMaterialScale }
         : {}),
+      ...(candidate.fractured === true ? { fractured: true } : {}),
       chunks,
     };
   }

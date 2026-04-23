@@ -814,6 +814,23 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     applyPreviewWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyPreviewWorldEdit, selected]);
 
+  const updateSelectedDestructibleFractured = useCallback((nextFractured: boolean) => {
+    if (selected?.kind !== 'destructible') return;
+    const targetId = selected.id;
+    applyCommittedWorldEdit((current) => ({
+      ...current,
+      destructibles: current.destructibles.map((entry) => {
+        if (entry.id !== targetId || entry.kind !== 'structure') return entry;
+        if ((entry.fractured ?? false) === nextFractured) return entry;
+        if (!nextFractured) {
+          const { fractured: _drop, ...rest } = entry;
+          return rest;
+        }
+        return { ...entry, fractured: true };
+      }),
+    }));
+  }, [applyCommittedWorldEdit, selected]);
+
   const canUndo = editHistory.undoStack.length > 0;
   const canRedo = editHistory.redoStack.length > 0;
 
@@ -1413,6 +1430,15 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                       {selectedDestructible.chunks.length} chunk{selectedDestructible.chunks.length === 1 ? '' : 's'}
                       {' · '}density {selectedDestructible.density ?? 2400} kg/m³
                       {' · '}solver scale {selectedDestructible.solverMaterialScale ?? 1}
+                      <br />
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedDestructible.fractured === true}
+                          onChange={(event) => updateSelectedDestructibleFractured(event.target.checked)}
+                        />
+                        Fractured (split each chunk into brick-sized sub-chunks at runtime and auto-bond)
+                      </label>
                       <br />
                       Use the AI chat to add / remove / tune individual chunks.
                     </div>

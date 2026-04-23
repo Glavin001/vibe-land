@@ -165,6 +165,7 @@ export type WorldCtx = {
     rotation?: Quaternion;
     density?: number;
     solverMaterialScale?: number;
+    fractured?: boolean;
     chunks: Chunk[];
   }): { changed: boolean; id?: number; reason?: string };
   removeDestructible(id: number): { changed: boolean; reason?: string };
@@ -175,6 +176,7 @@ export type WorldCtx = {
       rotation: Quaternion;
       density: number;
       solverMaterialScale: number;
+      fractured: boolean;
     }>,
   ): { changed: boolean; reason?: string };
   addChunk(
@@ -565,6 +567,7 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
           ...(typeof spec.solverMaterialScale === 'number'
             ? { solverMaterialScale: spec.solverMaterialScale }
             : {}),
+          ...(spec.fractured === true ? { fractured: true } : {}),
           chunks: validatedChunks,
         };
         return { ...current, destructibles: [...current.destructibles, next] };
@@ -597,11 +600,13 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
       const isFactory = found.kind === 'wall' || found.kind === 'tower';
       if (
         isFactory
-        && (typeof patch.density === 'number' || typeof patch.solverMaterialScale === 'number')
+        && (typeof patch.density === 'number'
+          || typeof patch.solverMaterialScale === 'number'
+          || typeof patch.fractured === 'boolean')
       ) {
         return {
           changed: false,
-          reason: 'density / solverMaterialScale only apply to structure destructibles',
+          reason: 'density / solverMaterialScale / fractured only apply to structure destructibles',
         };
       }
       const changed = aiEdit((current) => {
@@ -610,7 +615,7 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
         const target = current.destructibles[idx];
         const nextList = [...current.destructibles];
         if (target.kind === 'structure') {
-          nextList[idx] = {
+          const merged: StructureDestructible = {
             ...target,
             ...(patch.position ? { position: [...patch.position] as Vec3 } : {}),
             ...(patch.rotation ? { rotation: [...patch.rotation] as Quaternion } : {}),
@@ -619,6 +624,14 @@ export function buildWorldCtx(accessors: WorldAccessors): WorldCtx {
               ? { solverMaterialScale: patch.solverMaterialScale }
               : {}),
           };
+          if (typeof patch.fractured === 'boolean') {
+            if (patch.fractured) {
+              merged.fractured = true;
+            } else {
+              delete merged.fractured;
+            }
+          }
+          nextList[idx] = merged;
         } else {
           nextList[idx] = {
             ...target,

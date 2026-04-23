@@ -122,6 +122,9 @@ pub const DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE: f32 = 1.0;
 /// `(destructible_id << 12) | chunk_index`. Authors must keep chunks per
 /// structure ≤ 4096 so the id stays unique in the native arena.
 pub const MAX_CHUNKS_PER_STRUCTURE: usize = 4096;
+/// Target brick edge length (meters) used when `Structure.fractured` is
+/// true. Mirrors `FRACTURE_BRICK_EDGE_M` in the TS schema.
+pub const FRACTURE_BRICK_EDGE_M: f32 = 0.25;
 
 fn default_structure_density() -> f32 {
     DEFAULT_STRUCTURE_DENSITY_KG_M3
@@ -165,6 +168,12 @@ pub enum DestructibleDoc {
             rename = "solverMaterialScale"
         )]
         solver_material_scale: f32,
+        /// When true, each authored chunk is subdivided into
+        /// brick-sized sub-chunks at spawn time and the Blast
+        /// auto-bonder wires them into a single bonded network.
+        /// Defaults to `false` so existing worlds behave unchanged.
+        #[serde(default)]
+        fractured: bool,
         #[serde(default)]
         chunks: Vec<ChunkDoc>,
     },
@@ -1942,6 +1951,7 @@ mod tests {
             rotation: [0.0, 0.0, 0.0, 1.0],
             density: DEFAULT_STRUCTURE_DENSITY_KG_M3,
             solver_material_scale: DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE,
+            fractured: false,
             chunks: vec![
                 ChunkDoc::Box {
                     position: [0.0, 0.25, 0.0],

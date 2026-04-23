@@ -381,7 +381,15 @@ impl PhysicsArena {
             | crate::world_document::DestructibleDoc::Tower { .. } => {
                 factory_chunks_for_fallback(doc.factory_kind().expect("factory"))
             }
-            crate::world_document::DestructibleDoc::Structure { chunks, .. } => chunks.clone(),
+            crate::world_document::DestructibleDoc::Structure {
+                chunks, fractured, ..
+            } => {
+                if *fractured {
+                    crate::destructibles_fracture::fracture_chunks_default(chunks)
+                } else {
+                    chunks.clone()
+                }
+            }
         };
         if chunks.len() > crate::world_document::MAX_CHUNKS_PER_STRUCTURE {
             return false;

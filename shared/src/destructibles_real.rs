@@ -1087,6 +1087,7 @@ impl DestructibleRegistry {
             rotation,
             density,
             solver_material_scale,
+            fractured,
             chunks,
         } = doc
         else {
@@ -1095,16 +1096,21 @@ impl DestructibleRegistry {
         if chunks.is_empty() {
             return false;
         }
-        if chunks.len() > MAX_CHUNKS_PER_STRUCTURE {
+        let expanded_chunks = if *fractured {
+            crate::destructibles_fracture::fracture_chunks_default(chunks)
+        } else {
+            chunks.clone()
+        };
+        if expanded_chunks.len() > MAX_CHUNKS_PER_STRUCTURE {
             dlog(&format!(
                 "[destructibles] structure id={} has {} chunks (> MAX_CHUNKS_PER_STRUCTURE={})",
                 id,
-                chunks.len(),
+                expanded_chunks.len(),
                 MAX_CHUNKS_PER_STRUCTURE
             ));
             return false;
         }
-        let pieces = pieces_from_doc_chunks(chunks, *density);
+        let pieces = pieces_from_doc_chunks(&expanded_chunks, *density);
         let scenario = match build_scenario_from_pieces(&pieces, &BondingOptions::default()) {
             Ok(scenario) => scenario,
             Err(error) => {

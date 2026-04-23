@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import * as THREE from 'three';
 import type { Chunk, Destructible, WorldDocument } from '../world/worldDocument';
-import { expandFactoryKindToChunks } from '../world/destructibleFactory';
+import { expandFactoryKindToChunks, fractureChunks } from '../world/destructibleFactory';
 import type { SelectedTarget } from '../pages/godModeEditorDocument';
 
 type Props = {
@@ -24,8 +24,8 @@ function baseColor(doc: Destructible): number {
 }
 
 function chunksFor(doc: Destructible): Chunk[] {
-  if (doc.kind === 'structure') return doc.chunks;
-  return expandFactoryKindToChunks(doc.kind);
+  if (doc.kind !== 'structure') return expandFactoryKindToChunks(doc.kind);
+  return doc.fractured ? fractureChunks(doc.chunks) : doc.chunks;
 }
 
 export function DestructibleAuthoringPreview({

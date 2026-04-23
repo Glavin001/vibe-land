@@ -39,6 +39,7 @@ type WorldDocument = {
         rotation: [x, y, z, w];
         density?: number;              // kg/m³, default 2400
         solverMaterialScale?: number;  // Blast stiffness multiplier, default 1
+        fractured?: boolean;           // runtime: split each chunk into ~0.25m bricks, auto-bond
         chunks: Array<{
           shape: 'box' | 'sphere' | 'capsule';
           position: [x, y, z];           // in structure-local frame
@@ -155,11 +156,11 @@ Destructibles are authored assemblies of chunks that fracture under impact. Sing
 - \`ctx.getDestructible(id)\` → one destructible or null.
 
 **Create / remove:**
-- \`ctx.addDestructibleStructure({ position, rotation?, density?, solverMaterialScale?, chunks })\` → \`{ changed, id?, reason? }\`. \`chunks\` must be a non-empty array (≤ 4096).
+- \`ctx.addDestructibleStructure({ position, rotation?, density?, solverMaterialScale?, fractured?, chunks })\` → \`{ changed, id?, reason? }\`. \`chunks\` must be a non-empty array (≤ 4096).
 - \`ctx.removeDestructible(id)\` → \`{ changed, reason? }\`.
 
 **Edit structure / factory pose:**
-- \`ctx.updateDestructible(id, { position?, rotation?, density?, solverMaterialScale? })\` → \`{ changed, reason? }\`. \`density\`/\`solverMaterialScale\` only valid for \`structure\` kind.
+- \`ctx.updateDestructible(id, { position?, rotation?, density?, solverMaterialScale?, fractured? })\` → \`{ changed, reason? }\`. \`density\`/\`solverMaterialScale\`/\`fractured\` only valid for \`structure\` kind.
 
 **Chunk-level CRUD (structure kind only):**
 - \`ctx.addChunk(structureId, chunk)\` → \`{ changed, chunkIndex?, reason? }\`.
@@ -175,6 +176,8 @@ Destructibles are authored assemblies of chunks that fracture under impact. Sing
 **Anchors:** \`anchor: true\` pins a chunk as a static support — it never moves. Anchors replace the old implicit \`y == 0\` rule, so mark the bottom row of any stacked structure as anchors, or the whole thing collapses on spawn. On the native server, non-box anchors fall back to tight-fit AABB cuboids.
 
 **Multiplayer reality:** in MP there is no stress solver — every non-anchor chunk is an independent dynamic body. Design structures so that removing bonds yields sensible physics: an arch in MP will collapse immediately unless both pillars are fully anchored. Anchors stay put in both single-player and multiplayer.
+
+**Fractured structures (opt-in, default off):** set \`fractured: true\` on a structure and every **box** chunk is subdivided into brick-sized sub-chunks (~0.25 m edge) at spawn time; the Blast auto-bonder wires them into a rich network so impact damage fractures locally instead of destroying the whole chunk. Sphere / capsule chunks pass through unchanged for now. Sub-bricks inherit the parent chunk's \`anchor\` and \`material\`; explicit \`mass\` overrides are divided across them so total mass is preserved. Keep authored chunk counts reasonable — the post-fracture total must stay under 4096 per structure.
 
 **Authoring tips:**
 - Chunk positions are in the **structure's local frame**. The structure's own \`position\`/\`rotation\` applies on top.
