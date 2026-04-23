@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type MutableRefObject } from 'react';
 import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
-import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
@@ -145,6 +145,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const [editHistory, setEditHistory] = useState<WorldEditHistory>(() => createEmptyWorldEditHistory());
   const [storageReady, setStorageReady] = useState(false);
   const [selected, setSelected] = useState<SelectedTarget>(null);
+  const [multiSelected, setMultiSelected] = useState<SelectedTarget[]>([]);
   const [brushRadius, setBrushRadius] = useState(8);
   const [brushStrength, setBrushStrength] = useState(0.12);
   const [brushMode, setBrushMode] = useState<'raise' | 'lower'>('raise');
@@ -210,6 +211,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const aiChatRef = useRef<AiChatPanelHandle>(null);
   const splinesRef = useRef<Map<string, SplineData>>(new Map());
   const captureRef = useRef<CaptureFunction | null>(null);
+  const cameraStateRef = useRef<{ position: [number, number, number]; target: [number, number, number] } | null>(null);
+  const multiSelectedRef = useRef<SelectedTarget[]>([]);
 
   const captureScreenshot = useCallback<CaptureFunction>((config) => {
     if (!captureRef.current) return Promise.reject(new Error('Scene capture not ready'));
@@ -229,6 +232,10 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   useEffect(() => {
     worldRef.current = world;
   }, [world]);
+
+  useEffect(() => {
+    multiSelectedRef.current = multiSelected;
+  }, [multiSelected]);
 
   useEffect(() => {
     editHistoryRef.current = editHistory;
@@ -457,11 +464,12 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [storageReady, world]);
 
   useEffect(() => {
-    if (!selected) {
-      return;
+    const filteredMulti = multiSelectedRef.current.filter((t) => t && selectionExists(world, t));
+    if (filteredMulti.length !== multiSelectedRef.current.length) {
+      setMultiSelected(filteredMulti);
     }
-    if (!selectionExists(world, selected)) {
-      setSelected(null);
+    if (selected && !selectionExists(world, selected)) {
+      setSelected(filteredMulti[filteredMulti.length - 1] ?? null);
     }
   }, [selected, world]);
 
@@ -779,6 +787,22 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     }
   }, [applyCommittedWorldEdit]);
 
+  const handleSelect = useCallback((next: SelectedTarget, shiftKey = false) => {
+    if (!shiftKey || !next) {
+      setSelected(next);
+      setMultiSelected(next ? [next] : []);
+      return;
+    }
+    setMultiSelected((prev) => {
+      const alreadyIn = prev.some((t) => t?.kind === next.kind && t?.id === next.id);
+      const newList = alreadyIn
+        ? prev.filter((t) => !(t?.kind === next.kind && t?.id === next.id))
+        : [...prev, next];
+      setSelected(newList[newList.length - 1] ?? null);
+      return newList;
+    });
+  }, []);
+
   const removeSelected = useCallback(() => {
     if (!selected) {
       return;
@@ -786,8 +810,97 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     const changed = applyCommittedWorldEdit((current) => removeSelectedTargetFromWorld(current, selected));
     if (changed) {
       setSelected(null);
+      setMultiSelected([]);
     }
   }, [applyCommittedWorldEdit, selected]);
+
+  const bulkMoveSelected = useCallback((delta: Vec3) => {
+    if (multiSelected.length < 2) return;
+    applyCommittedWorldEdit((current) => {
+      let next = current;
+      for (const target of multiSelected) {
+        if (!target) continue;
+        let pos: Vec3 | undefined;
+        if (target.kind === 'static') pos = next.staticProps.find((p) => p.id === target.id)?.position;
+        else if (target.kind === 'dynamic') pos = next.dynamicEntities.find((e) => e.id === target.id)?.position;
+        else if (target.kind === 'spawnArea') pos = next.spawnAreas.find((a) => a.id === target.id)?.position;
+        if (!pos) continue;
+        next = updateSelectedTargetPosition(next, target, [
+          pos[0] + delta[0],
+          pos[1] + delta[1],
+          pos[2] + delta[2],
+        ] as Vec3);
+      }
+      return next;
+    });
+  }, [applyCommittedWorldEdit, multiSelected]);
+
+  const bulkRemoveSelected = useCallback(() => {
+    if (multiSelected.length < 2) return;
+    applyCommittedWorldEdit((current) => {
+      let next = current;
+      for (const target of multiSelected) {
+        next = removeSelectedTargetFromWorld(next, target);
+      }
+      return next;
+    });
+    setSelected(null);
+    setMultiSelected([]);
+  }, [applyCommittedWorldEdit, multiSelected]);
+
+  const getEditorContext = useCallback((): string => {
+    const cam = cameraStateRef.current;
+    const items = multiSelectedRef.current;
+    const w = worldRef.current;
+
+    type SelectionEntry = {
+      kind: string;
+      id: number;
+      position: [number, number, number];
+      size?: [number, number, number];
+      halfExtents?: [number, number, number];
+      radius?: number;
+    };
+
+    const payload: {
+      camera?: { position: [number, number, number]; target: [number, number, number]; fov: number };
+      selection: SelectionEntry[];
+    } = { selection: [] };
+
+    if (cam) {
+      payload.camera = { position: cam.position, target: cam.target, fov: 55 };
+    }
+
+    for (const t of items) {
+      if (!t) continue;
+      if (t.kind === 'static') {
+        const prop = w.staticProps.find((p) => p.id === t.id);
+        if (prop) {
+          payload.selection.push({
+            kind: 'static',
+            id: t.id,
+            position: prop.position,
+            size: prop.halfExtents.map((v) => v * 2) as [number, number, number],
+          });
+        }
+      } else if (t.kind === 'dynamic') {
+        const ent = w.dynamicEntities.find((e) => e.id === t.id);
+        if (ent) {
+          const entry: SelectionEntry = { kind: ent.kind, id: t.id, position: ent.position };
+          if (ent.halfExtents) entry.halfExtents = ent.halfExtents;
+          if (ent.radius != null) entry.radius = ent.radius;
+          payload.selection.push(entry);
+        }
+      } else if (t.kind === 'spawnArea') {
+        const area = w.spawnAreas.find((a) => a.id === t.id);
+        if (area) {
+          payload.selection.push({ kind: 'spawnArea', id: t.id, position: area.position, radius: area.radius });
+        }
+      }
+    }
+
+    return `<editor-context>\n${JSON.stringify(payload, null, 2)}\n</editor-context>`;
+  }, []);
 
   const updateSelectedPosition = useCallback((axis: 0 | 1 | 2, value: number) => {
     const basePosition = selectedTransformEntity?.position;
@@ -916,7 +1029,9 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
       rampSideFalloff={rampSideFalloff}
       rampStartFalloff={rampStartFalloff}
       rampEndFalloff={rampEndFalloff}
-      onSelect={setSelected}
+      multiSelected={multiSelected}
+      onSelect={handleSelect}
+      cameraStateRef={cameraStateRef}
       onTerrainEditStart={beginTrackedWorldEdit}
       onTerrainEditEnd={commitTrackedWorldEdit}
       onTransformStart={beginTrackedWorldEdit}
@@ -998,6 +1113,8 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     terrainToolMode,
     beginTrackedWorldEdit,
     commitTrackedWorldEdit,
+    handleSelect,
+    multiSelected,
     selected,
     selectedTransformEntity,
     tool,
@@ -1333,79 +1450,92 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <div className={builderNestedPanelClassName}>
                   <div className={builderNestedPanelHeaderClassName}>
                     <div className={builderNestedPanelTitleClassName}>Select</div>
-                    <div className={builderNestedPanelHintClassName}>Selection details</div>
+                    <div className={builderNestedPanelHintClassName}>
+                      {multiSelected.length > 1 ? `${multiSelected.length} selected` : 'Selection details'}
+                    </div>
                   </div>
                   <div className={builderFieldStackClassName}>
-                    {!selected && <div className={builderMutedTextClassName}>Select an authored object to move, rotate, and resize it directly in the viewport.</div>}
-                    {selectedTransformEntity && (
+                    {multiSelected.length > 1 ? (
+                      <MultiSelectPanel
+                        multiSelected={multiSelected}
+                        world={world}
+                        onBulkMove={bulkMoveSelected}
+                        onBulkDelete={bulkRemoveSelected}
+                      />
+                    ) : (
                       <>
-                        <div className={builderButtonRowClassName}>
-                          <button type="button" onClick={() => setTransformMode('translate')} className={builderButtonClassName(transformMode === 'translate' ? 'active' : 'secondary')}>Move (W)</button>
-                          <button
-                            type="button"
-                            onClick={() => setTransformMode('rotate')}
-                            className={builderButtonClassName(transformMode === 'rotate' ? 'active' : 'secondary')}
-                            disabled={!selectedTransformEntity.canRotate}
-                          >
-                            Rotate (E)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setTransformMode('scale')}
-                            className={builderButtonClassName(transformMode === 'scale' ? 'active' : 'secondary')}
-                            disabled={!selectedTransformEntity.canResize}
-                          >
-                            Resize (R)
-                          </button>
-                        </div>
-                        <div className={builderMutedTextClassName}>
-                          Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
-                        </div>
+                        {!selected && <div className={builderMutedTextClassName}>Select an authored object to move, rotate, and resize it directly in the viewport. Shift+click to select multiple.</div>}
+                        {selectedTransformEntity && (
+                          <>
+                            <div className={builderButtonRowClassName}>
+                              <button type="button" onClick={() => setTransformMode('translate')} className={builderButtonClassName(transformMode === 'translate' ? 'active' : 'secondary')}>Move (W)</button>
+                              <button
+                                type="button"
+                                onClick={() => setTransformMode('rotate')}
+                                className={builderButtonClassName(transformMode === 'rotate' ? 'active' : 'secondary')}
+                                disabled={!selectedTransformEntity.canRotate}
+                              >
+                                Rotate (E)
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setTransformMode('scale')}
+                                className={builderButtonClassName(transformMode === 'scale' ? 'active' : 'secondary')}
+                                disabled={!selectedTransformEntity.canResize}
+                              >
+                                Resize (R)
+                              </button>
+                            </div>
+                            <div className={builderMutedTextClassName}>
+                              Drag the gizmo in the scene. Resize writes real shape dimensions into the world document instead of storing mesh scale.
+                            </div>
+                          </>
+                        )}
+                        {selectedStatic && (
+                          <EditorFields
+                            title={`Static ${selectedStatic.id}`}
+                            position={selectedStatic.position}
+                            onPositionChange={updateSelectedPosition}
+                            yawDegrees={(yawFromQuaternion(selectedStatic.rotation) * 180) / Math.PI}
+                            onYawChange={updateSelectedYaw}
+                            dimensions={selectedStatic.halfExtents}
+                            onDimensionsChange={updateSelectedHalfExtent}
+                            onDelete={removeSelected}
+                          />
+                        )}
+                        {selectedDynamic && (
+                          <EditorFields
+                            title={`${selectedDynamic.kind} ${selectedDynamic.id}`}
+                            position={selectedDynamic.position}
+                            onPositionChange={updateSelectedPosition}
+                            dimensions={selectedDynamic.halfExtents}
+                            onDimensionsChange={updateSelectedHalfExtent}
+                            radius={selectedDynamic.radius}
+                            onRadiusChange={updateSelectedRadius}
+                            vehicleType={selectedDynamic.kind === 'vehicle'
+                              ? (selectedDynamic.vehicleType ?? getSharedVehicleDefaultType())
+                              : undefined}
+                            vehicleTypeOptions={selectedDynamic.kind === 'vehicle'
+                              ? getSharedVehicleDefinitions().map((definition) => ({
+                                value: definition.vehicleType,
+                                label: definition.name,
+                              }))
+                              : undefined}
+                            onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
+                            yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
+                            onYawChange={updateSelectedYaw}
+                            onDelete={removeSelected}
+                          />
+                        )}
+                        {selectedSpawnArea && (
+                          <SpawnAreaEditorFields
+                            area={selectedSpawnArea}
+                            onPositionChange={updateSelectedPosition}
+                            onRadiusChange={updateSelectedRadius}
+                            onDelete={removeSelected}
+                          />
+                        )}
                       </>
-                    )}
-                    {selectedStatic && (
-                      <EditorFields
-                        title={`Static ${selectedStatic.id}`}
-                        position={selectedStatic.position}
-                        onPositionChange={updateSelectedPosition}
-                        yawDegrees={(yawFromQuaternion(selectedStatic.rotation) * 180) / Math.PI}
-                        onYawChange={updateSelectedYaw}
-                        dimensions={selectedStatic.halfExtents}
-                        onDimensionsChange={updateSelectedHalfExtent}
-                        onDelete={removeSelected}
-                      />
-                    )}
-                    {selectedDynamic && (
-                      <EditorFields
-                        title={`${selectedDynamic.kind} ${selectedDynamic.id}`}
-                        position={selectedDynamic.position}
-                        onPositionChange={updateSelectedPosition}
-                        dimensions={selectedDynamic.halfExtents}
-                        onDimensionsChange={updateSelectedHalfExtent}
-                        radius={selectedDynamic.radius}
-                        onRadiusChange={updateSelectedRadius}
-                        vehicleType={selectedDynamic.kind === 'vehicle'
-                          ? (selectedDynamic.vehicleType ?? getSharedVehicleDefaultType())
-                          : undefined}
-                        vehicleTypeOptions={selectedDynamic.kind === 'vehicle'
-                          ? getSharedVehicleDefinitions().map((definition) => ({
-                            value: definition.vehicleType,
-                            label: definition.name,
-                          }))
-                          : undefined}
-                        onVehicleTypeChange={selectedDynamic.kind === 'vehicle' ? updateSelectedVehicleType : undefined}
-                        yawDegrees={(yawFromQuaternion(selectedDynamic.rotation) * 180) / Math.PI}
-                        onYawChange={updateSelectedYaw}
-                        onDelete={removeSelected}
-                      />
-                    )}
-                    {selectedSpawnArea && (
-                      <SpawnAreaEditorFields
-                        area={selectedSpawnArea}
-                        onPositionChange={updateSelectedPosition}
-                        onRadiusChange={updateSelectedRadius}
-                        onDelete={removeSelected}
-                      />
                     )}
                   </div>
                 </div>
@@ -1720,11 +1850,12 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
             ref={aiChatRef}
             accessors={aiAccessors}
             captureScreenshot={captureScreenshot}
+            getEditorContext={getEditorContext}
             onClose={() => setRightDrawerOpen(false)}
           />
         </div>
       ) : (
-        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} captureScreenshot={captureScreenshot} />
+        <AiChatPanel ref={aiChatRef} accessors={aiAccessors} captureScreenshot={captureScreenshot} getEditorContext={getEditorContext} />
       )}
     </div>
   );
@@ -1866,6 +1997,7 @@ function GodModeEditorScene({
   tool,
   terrainToolMode,
   selected,
+  multiSelected,
   transformMode,
   selectedTransformEntity,
   brushRadius,
@@ -1884,6 +2016,7 @@ function GodModeEditorScene({
   rampStartFalloff,
   rampEndFalloff,
   onSelect,
+  cameraStateRef,
   onTerrainEditStart,
   onTerrainEditEnd,
   onTransformStart,
@@ -1929,7 +2062,9 @@ function GodModeEditorScene({
   rampSideFalloff: number;
   rampStartFalloff: number;
   rampEndFalloff: number;
-  onSelect: (next: SelectedTarget) => void;
+  multiSelected: SelectedTarget[];
+  onSelect: (next: SelectedTarget, shiftKey?: boolean) => void;
+  cameraStateRef: MutableRefObject<{ position: [number, number, number]; target: [number, number, number] } | null>;
   onTerrainEditStart: () => void;
   onTerrainEditEnd: () => void;
   onTransformStart: () => void;
@@ -1964,6 +2099,7 @@ function GodModeEditorScene({
   const selectedObject = selectedObjectKey ? objectRefs.current.get(selectedObjectKey) ?? null : null;
   const canShowTransform =
     tool === 'select'
+    && multiSelected.length <= 1
     && selectedObject != null
     && selectedTransformEntity != null
     && (transformMode !== 'rotate' || selectedTransformEntity.canRotate)
@@ -2285,11 +2421,11 @@ function GodModeEditorScene({
             onPointerDown={(event) => {
               event.stopPropagation();
               if (event.intersections[0]?.object !== event.object) return;
-              onSelect({ kind: 'static', id: entity.id });
+              onSelect({ kind: 'static', id: entity.id }, event.shiftKey);
             }}
           >
             <boxGeometry args={scaleExtents(entity.halfExtents)} />
-            <meshStandardMaterial color={selected?.kind === 'static' && selected.id === entity.id ? 0xbce784 : 0x7b6955} roughness={0.86} metalness={0.04} />
+            <meshStandardMaterial color={multiSelected.some((t) => t?.kind === 'static' && t?.id === entity.id) ? 0xbce784 : 0x7b6955} roughness={0.86} metalness={0.04} />
           </mesh>
         ))}
         {world.dynamicEntities.map((entity) => (
@@ -2303,7 +2439,7 @@ function GodModeEditorScene({
             onPointerDown={(event) => {
               event.stopPropagation();
               if (event.intersections[0]?.object !== event.object) return;
-              onSelect({ kind: 'dynamic', id: entity.id });
+              onSelect({ kind: 'dynamic', id: entity.id }, event.shiftKey);
             }}
           >
             {entity.kind === 'ball' ? (
@@ -2316,7 +2452,7 @@ function GodModeEditorScene({
             )}
             <meshStandardMaterial
               color={
-                selected?.kind === 'dynamic' && selected.id === entity.id
+                multiSelected.some((t) => t?.kind === 'dynamic' && t?.id === entity.id)
                   ? 0xfff38a
                   : entity.kind === 'vehicle'
                     ? 0x4da6ff
@@ -2332,7 +2468,7 @@ function GodModeEditorScene({
       </group>
       <group>
         {spawnAreas.map((area) => {
-          const isSelected = selected?.kind === 'spawnArea' && selected.id === area.id;
+          const isSelected = multiSelected.some((t) => t?.kind === 'spawnArea' && t?.id === area.id);
           const terrainY = sampleTerrainHeightAtWorldPosition(world, area.position[0], area.position[2]);
           const y = terrainY + 0.06;
           return (
@@ -2346,7 +2482,7 @@ function GodModeEditorScene({
                 onPointerDown={(event) => {
                   event.stopPropagation();
                   if (event.intersections[0]?.object !== event.object) return;
-                  onSelect({ kind: 'spawnArea', id: area.id });
+                  onSelect({ kind: 'spawnArea', id: area.id }, event.shiftKey);
                 }}
               >
                 <circleGeometry args={[area.radius, 64]} />
@@ -2400,6 +2536,7 @@ function GodModeEditorScene({
       )}
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
       <SceneCaptureController captureRef={captureRef} />
+      <CameraStateTracker cameraStateRef={cameraStateRef} />
     </Canvas>
   );
 }
@@ -2415,6 +2552,25 @@ function CanvasDomBinder({ onReady }: { onReady: (canvas: HTMLCanvasElement | nu
       onReady(null);
     };
   }, [gl, onReady]);
+  return null;
+}
+
+// Tracks camera position and OrbitControls target each frame so the parent
+// component can read them synchronously when building AI message context.
+// Must live inside the <Canvas>.
+function CameraStateTracker({
+  cameraStateRef,
+}: {
+  cameraStateRef: MutableRefObject<{ position: [number, number, number]; target: [number, number, number] } | null>;
+}) {
+  useFrame((state) => {
+    const controls = state.controls as { target?: THREE.Vector3 } | null;
+    const target = controls?.target;
+    cameraStateRef.current = {
+      position: [state.camera.position.x, state.camera.position.y, state.camera.position.z],
+      target: target ? [target.x, target.y, target.z] : [0, 0, 0],
+    };
+  });
   return null;
 }
 
@@ -2702,6 +2858,83 @@ function describeRampTool(
     ? 'Raise only lifts terrain toward that profile.'
     : 'Cut only lowers terrain toward that profile.';
   return `${targetLabel}; ${resolvedLabel}. ${movementLabel}`;
+}
+
+function MultiSelectPanel({
+  multiSelected,
+  world,
+  onBulkMove,
+  onBulkDelete,
+}: {
+  multiSelected: SelectedTarget[];
+  world: WorldDocument;
+  onBulkMove: (delta: Vec3) => void;
+  onBulkDelete: () => void;
+}) {
+  const [deltaX, setDeltaX] = useState(0);
+  const [deltaY, setDeltaY] = useState(0);
+  const [deltaZ, setDeltaZ] = useState(0);
+
+  const labels = multiSelected.map((t) => {
+    if (!t) return null;
+    if (t.kind === 'static') {
+      const prop = world.staticProps.find((p) => p.id === t.id);
+      return prop
+        ? `Static #${t.id} @ [${prop.position.map((v) => v.toFixed(1)).join(', ')}]`
+        : `Static #${t.id}`;
+    }
+    if (t.kind === 'dynamic') {
+      const ent = world.dynamicEntities.find((e) => e.id === t.id);
+      return ent
+        ? `${ent.kind} #${t.id} @ [${ent.position.map((v) => v.toFixed(1)).join(', ')}]`
+        : `Dynamic #${t.id}`;
+    }
+    const area = world.spawnAreas.find((a) => a.id === t.id);
+    return area
+      ? `Spawn area #${t.id} @ [${area.position[0].toFixed(1)}, ${area.position[2].toFixed(1)}]`
+      : `Spawn area #${t.id}`;
+  });
+
+  const applyMove = () => {
+    onBulkMove([deltaX, deltaY, deltaZ]);
+    setDeltaX(0);
+    setDeltaY(0);
+    setDeltaZ(0);
+  };
+
+  return (
+    <div style={fieldStackStyle}>
+      <div style={{ fontWeight: 600 }}>{multiSelected.length} elements selected</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: 'rgba(238,247,255,0.7)' }}>
+        {labels.map((label, i) => (
+          <span key={i}>{label}</span>
+        ))}
+      </div>
+      <div style={{ fontWeight: 600, marginTop: 4 }}>Move (Δ offset)</div>
+      {(['X', 'Y', 'Z'] as const).map((axis, i) => (
+        <label key={axis} style={fieldLabelStyle}>
+          Δ {axis}
+          <input
+            type="number"
+            step="0.1"
+            value={[deltaX, deltaY, deltaZ][i]}
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              if (i === 0) setDeltaX(v);
+              else if (i === 1) setDeltaY(v);
+              else setDeltaZ(v);
+            }}
+          />
+        </label>
+      ))}
+      <button type="button" onClick={applyMove} style={primaryButtonStyle}>
+        Apply Move
+      </button>
+      <button type="button" onClick={onBulkDelete} style={dangerButtonStyle}>
+        Delete All
+      </button>
+    </div>
+  );
 }
 
 function EditorFields({

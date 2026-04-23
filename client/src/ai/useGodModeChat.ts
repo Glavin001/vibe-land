@@ -36,6 +36,7 @@ export type GodModeChatOptions = {
   model: string;
   apiKey: string | undefined;
   captureScreenshot?: CaptureFunction;
+  getEditorContext?: () => string;
 };
 
 export type ImageAttachment = { dataUrl: string; mediaType: string };
@@ -59,7 +60,7 @@ export type GodModeChatHandle = {
 const MAX_TOOL_STEPS = 12;
 
 export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
-  const { chatId, accessors, provider, model, apiKey, captureScreenshot } = options;
+  const { chatId, accessors, provider, model, apiKey, captureScreenshot, getEditorContext } = options;
 
   const [messages, setMessageState] = useState<ChatMessage[]>([]);
   const [pendingHumanEdits, setPendingHumanEdits] = useState<string[]>([]);
@@ -79,6 +80,11 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
   useEffect(() => {
     captureScreenshotRef.current = captureScreenshot;
   }, [captureScreenshot]);
+
+  const getEditorContextRef = useRef(getEditorContext);
+  useEffect(() => {
+    getEditorContextRef.current = getEditorContext;
+  }, [getEditorContext]);
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -427,7 +433,10 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       const trimmed = text.trim();
       if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
       if (!ensureCanStartRequest()) return;
-      const hiddenContext = consumePendingHumanEdits();
+      const humanEditsCtx = consumePendingHumanEdits();
+      const editorCtx = getEditorContextRef.current?.();
+      const hiddenParts = [humanEditsCtx, editorCtx].filter(Boolean);
+      const hiddenContext = hiddenParts.length > 0 ? hiddenParts.join('\n') : undefined;
       const userMessage = buildUserMessage(trimmed, attachments, hiddenContext);
       await runAssistantTurn([...messages, userMessage]);
     },
@@ -464,7 +473,10 @@ export function useGodModeChat(options: GodModeChatOptions): GodModeChatHandle {
       const trimmed = text.trim();
       if (trimmed.length === 0 && (!attachments || attachments.length === 0)) return;
       if (!ensureCanStartRequest()) return;
-      const hiddenContext = consumePendingHumanEdits();
+      const humanEditsCtx = consumePendingHumanEdits();
+      const editorCtx = getEditorContextRef.current?.();
+      const hiddenParts = [humanEditsCtx, editorCtx].filter(Boolean);
+      const hiddenContext = hiddenParts.length > 0 ? hiddenParts.join('\n') : undefined;
       const userMessage = buildUserMessage(trimmed, attachments, hiddenContext);
       await runAssistantTurn([...messages.slice(0, targetIndex), userMessage]);
     },

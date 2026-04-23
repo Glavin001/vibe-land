@@ -62,6 +62,7 @@ export type AiChatPanelHandle = {
 type AiChatPanelProps = {
   accessors: WorldAccessors;
   captureScreenshot?: CaptureFunction;
+  getEditorContext?: () => string;
   onClose?: () => void;
 };
 
@@ -74,7 +75,7 @@ type PendingBranchPayload =
   | { kind: 'edit-submit'; text: string; attachments: ImageAttachment[] };
 
 export const AiChatPanel = forwardRef(function AiChatPanel(
-  { accessors, captureScreenshot, onClose }: AiChatPanelProps,
+  { accessors, captureScreenshot, getEditorContext, onClose }: AiChatPanelProps,
   ref: ForwardedRef<AiChatPanelHandle>,
 ) {
   const [settings, setSettings] = useState<AiChatSettings>(() => loadSettings());
@@ -93,6 +94,7 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
     model: settings.model,
     apiKey,
     captureScreenshot,
+    getEditorContext,
   });
 
   // Expose pushHumanEdit so the parent page can forward human edit summaries.
@@ -731,6 +733,95 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
   );
 });
 
+// ─── Editor context card ──────────────────────────────────────────────────────
+
+type EditorContextPayload = {
+  camera?: { position: [number, number, number]; target: [number, number, number]; fov: number };
+  selection: Array<{
+    kind: string;
+    id: number;
+    position: [number, number, number];
+    size?: [number, number, number];
+    halfExtents?: [number, number, number];
+    radius?: number;
+  }>;
+};
+
+function parseEditorContext(hiddenContext: string): EditorContextPayload | null {
+  const match = hiddenContext.match(/<editor-context>([\s\S]*?)<\/editor-context>/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]) as EditorContextPayload;
+  } catch {
+    return null;
+  }
+}
+
+function EditorContextCard({ ctx }: { ctx: EditorContextPayload }) {
+  const camPos = ctx.camera?.position;
+  const selCount = ctx.selection?.length ?? 0;
+
+  const summaryParts: string[] = [];
+  if (camPos) summaryParts.push(`📷 [${camPos.map((v) => v.toFixed(1)).join(', ')}]`);
+  summaryParts.push(selCount > 0 ? `◈ ${selCount} selected` : '◈ nothing selected');
+
+  return (
+    <details style={editorContextCardStyle}>
+      <summary style={editorContextSummaryStyle}>
+        <span style={editorContextBadgeStyle}>context</span>
+        <span style={{ color: 'rgba(238, 247, 255, 0.55)', fontSize: 11 }}>
+          {summaryParts.join('  ')}
+        </span>
+      </summary>
+      <div style={editorContextBodyStyle}>
+        {ctx.camera && (
+          <div style={editorContextSectionStyle}>
+            <div style={editorContextSectionLabelStyle}>Camera</div>
+            <div style={editorContextRowStyle}>
+              <span style={editorContextKeyStyle}>position</span>
+              <span>[{ctx.camera.position.map((v) => v.toFixed(2)).join(', ')}]</span>
+            </div>
+            <div style={editorContextRowStyle}>
+              <span style={editorContextKeyStyle}>target</span>
+              <span>[{ctx.camera.target.map((v) => v.toFixed(2)).join(', ')}]</span>
+            </div>
+            <div style={editorContextRowStyle}>
+              <span style={editorContextKeyStyle}>fov</span>
+              <span>{ctx.camera.fov}°</span>
+            </div>
+          </div>
+        )}
+        {ctx.selection && ctx.selection.length > 0 && (
+          <div style={editorContextSectionStyle}>
+            <div style={editorContextSectionLabelStyle}>Selection ({ctx.selection.length})</div>
+            {ctx.selection.map((item) => {
+              const dimStr = item.size
+                ? item.size.map((v) => v.toFixed(1)).join('×')
+                : item.halfExtents
+                  ? `he ${item.halfExtents.map((v) => v.toFixed(1)).join('×')}`
+                  : item.radius != null
+                    ? `r=${item.radius.toFixed(1)}`
+                    : '';
+              return (
+                <div key={item.id} style={editorContextRowStyle}>
+                  <span style={editorContextKeyStyle}>{item.kind} #{item.id}</span>
+                  <span>[{item.position.map((v) => v.toFixed(1)).join(', ')}]</span>
+                  {dimStr && <span style={{ color: 'rgba(238,247,255,0.4)' }}>{dimStr}</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {(!ctx.selection || ctx.selection.length === 0) && (
+          <div style={{ color: 'rgba(238,247,255,0.4)', fontSize: 11 }}>Nothing selected</div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function MessageBubble({
   message,
   actionsDisabled,
@@ -785,6 +876,10 @@ function MessageBubble({
       {message.parts.map((part, idx) => (
         <PartView key={idx} part={part} isAnimating={isStreamingMessage} />
       ))}
+      {isUser && message.hiddenContext && (() => {
+        const ctx = parseEditorContext(message.hiddenContext);
+        return ctx ? <EditorContextCard ctx={ctx} /> : null;
+      })()}
       {!isUser && message.usage && (
         <div style={usageStyle}>
           {message.usage.inputTokens.toLocaleString()} in · {message.usage.outputTokens.toLocaleString()} out
@@ -1422,4 +1517,67 @@ const screenshotImageStyle: CSSProperties = {
   border: '1px solid rgba(116, 212, 255, 0.25)',
   display: 'block',
   marginTop: 8,
+};
+
+const editorContextCardStyle: CSSProperties = {
+  border: '1px solid rgba(190, 145, 255, 0.2)',
+  borderRadius: 10,
+  padding: '5px 8px',
+  background: 'rgba(8, 14, 28, 0.65)',
+  marginTop: 4,
+};
+
+const editorContextSummaryStyle: CSSProperties = {
+  cursor: 'pointer',
+  fontSize: 11,
+  letterSpacing: '0.08em',
+  color: 'rgba(238, 247, 255, 0.7)',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  listStyle: 'none',
+};
+
+const editorContextBadgeStyle: CSSProperties = {
+  background: 'rgba(190, 145, 255, 0.2)',
+  color: '#dbb8ff',
+  padding: '1px 6px',
+  borderRadius: 6,
+  fontSize: 10,
+  textTransform: 'uppercase',
+  letterSpacing: '0.12em',
+};
+
+const editorContextBodyStyle: CSSProperties = {
+  marginTop: 6,
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+
+const editorContextSectionStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+};
+
+const editorContextSectionLabelStyle: CSSProperties = {
+  fontSize: 10,
+  textTransform: 'uppercase',
+  letterSpacing: '0.14em',
+  color: 'rgba(190, 145, 255, 0.7)',
+  marginBottom: 2,
+};
+
+const editorContextRowStyle: CSSProperties = {
+  display: 'flex',
+  gap: 8,
+  fontSize: 11,
+  color: 'rgba(238, 247, 255, 0.75)',
+  flexWrap: 'wrap',
+};
+
+const editorContextKeyStyle: CSSProperties = {
+  color: 'rgba(238, 247, 255, 0.45)',
+  minWidth: 80,
 };
