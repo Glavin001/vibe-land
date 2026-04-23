@@ -2284,6 +2284,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.intersections[0]?.object !== event.object) return;
               onSelect({ kind: 'static', id: entity.id });
             }}
           >
@@ -2301,6 +2302,7 @@ function GodModeEditorScene({
             receiveShadow
             onPointerDown={(event) => {
               event.stopPropagation();
+              if (event.intersections[0]?.object !== event.object) return;
               onSelect({ kind: 'dynamic', id: entity.id });
             }}
           >
@@ -2343,6 +2345,7 @@ function GodModeEditorScene({
                 rotation-x={-Math.PI / 2}
                 onPointerDown={(event) => {
                   event.stopPropagation();
+                  if (event.intersections[0]?.object !== event.object) return;
                   onSelect({ kind: 'spawnArea', id: area.id });
                 }}
               >
