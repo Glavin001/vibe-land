@@ -71,26 +71,16 @@ export function DemoTerrain() {
     });
 
     material.onBeforeCompile = (shader) => {
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPosition;')
-        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWorldPosition = worldPosition.xyz;');
-
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vWorldPosition;')
-        .replace(
-          '#include <dithering_fragment>',
-          `
-            float contourHeight = vWorldPosition.y * 4.75 + 0.075 * (vWorldPosition.x + vWorldPosition.z);
-            float contourBand = min(fract(contourHeight), 1.0 - fract(contourHeight));
-            float contourLine = 1.0 - smoothstep(0.03, 0.11, contourBand);
-            float slopeShade = clamp(1.0 - normal.y, 0.0, 1.0);
-            gl_FragColor.rgb *= 1.0 - contourLine * (0.16 + slopeShade * 0.28);
-            gl_FragColor.rgb += vec3(0.05, 0.04, 0.02) * slopeShade;
-            #include <dithering_fragment>
-          `,
-        );
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <dithering_fragment>',
+        `
+          float slopeShade = clamp(1.0 - normal.y, 0.0, 1.0);
+          gl_FragColor.rgb += vec3(0.05, 0.04, 0.02) * slopeShade;
+          #include <dithering_fragment>
+        `,
+      );
     };
-    material.customProgramCacheKey = () => 'demo-terrain-contours-v1';
+    material.customProgramCacheKey = () => 'demo-terrain-slopeshade-v1';
 
     return material;
   }, []);
