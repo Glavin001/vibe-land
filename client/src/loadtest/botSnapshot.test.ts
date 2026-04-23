@@ -104,6 +104,7 @@ describe('applyBotSnapshotState', () => {
           flags: 1,
         },
       ],
+      coldRemotePlayers: [],
       sphereStates: [],
       boxStates: [],
       vehicleStates: [],

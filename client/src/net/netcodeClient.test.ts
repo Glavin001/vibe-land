@@ -161,6 +161,7 @@ function makeSnapshotV2(opts: {
       hp: player.hp ?? 100,
       flags: player.flags ?? FLAG_ON_GROUND,
     })),
+    coldRemotePlayers: [],
     sphereStates: (opts.sphereStates ?? []).map((body) => ({
       handle: body.handle,
       dxQ2_5mm: Math.round((body.offset[0] * 1000) / 2.5),
