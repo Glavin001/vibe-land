@@ -849,46 +849,57 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [applyCommittedWorldEdit, multiSelected]);
 
   const getEditorContext = useCallback((): string => {
-    const lines: string[] = [];
     const cam = cameraStateRef.current;
-    if (cam) {
-      const pos = cam.position.map((v) => v.toFixed(2)).join(', ');
-      const tgt = cam.target.map((v) => v.toFixed(2)).join(', ');
-      lines.push(`Camera: position=[${pos}], target=[${tgt}], fov=55°`);
-    }
     const items = multiSelectedRef.current;
     const w = worldRef.current;
-    if (items.length === 0) {
-      lines.push('Selection: none');
-    } else {
-      lines.push(`Selection: ${items.length} element${items.length !== 1 ? 's' : ''}`);
-      for (const t of items) {
-        if (!t) continue;
-        if (t.kind === 'static') {
-          const prop = w.staticProps.find((p) => p.id === t.id);
-          if (prop) {
-            const p = prop.position.map((v) => v.toFixed(2)).join(', ');
-            const s = prop.halfExtents.map((v) => (v * 2).toFixed(2)).join(', ');
-            lines.push(`  static #${t.id}: position=[${p}], size(W×H×D)=[${s}]`);
-          }
-        } else if (t.kind === 'dynamic') {
-          const ent = w.dynamicEntities.find((e) => e.id === t.id);
-          if (ent) {
-            const p = ent.position.map((v) => v.toFixed(2)).join(', ');
-            const extra = ent.halfExtents
-              ? `, halfExtents=[${ent.halfExtents.map((v) => v.toFixed(2)).join(', ')}]`
-              : ent.radius != null ? `, radius=${ent.radius.toFixed(2)}` : '';
-            lines.push(`  ${ent.kind} #${t.id}: position=[${p}]${extra}`);
-          }
-        } else if (t.kind === 'spawnArea') {
-          const area = w.spawnAreas.find((a) => a.id === t.id);
-          if (area) {
-            lines.push(`  spawnArea #${t.id}: position=[${area.position[0].toFixed(2)}, ${area.position[2].toFixed(2)}], radius=${area.radius.toFixed(2)}`);
-          }
+
+    type SelectionEntry = {
+      kind: string;
+      id: number;
+      position: [number, number, number];
+      size?: [number, number, number];
+      halfExtents?: [number, number, number];
+      radius?: number;
+    };
+
+    const payload: {
+      camera?: { position: [number, number, number]; target: [number, number, number]; fov: number };
+      selection: SelectionEntry[];
+    } = { selection: [] };
+
+    if (cam) {
+      payload.camera = { position: cam.position, target: cam.target, fov: 55 };
+    }
+
+    for (const t of items) {
+      if (!t) continue;
+      if (t.kind === 'static') {
+        const prop = w.staticProps.find((p) => p.id === t.id);
+        if (prop) {
+          payload.selection.push({
+            kind: 'static',
+            id: t.id,
+            position: prop.position,
+            size: prop.halfExtents.map((v) => v * 2) as [number, number, number],
+          });
+        }
+      } else if (t.kind === 'dynamic') {
+        const ent = w.dynamicEntities.find((e) => e.id === t.id);
+        if (ent) {
+          const entry: SelectionEntry = { kind: ent.kind, id: t.id, position: ent.position };
+          if (ent.halfExtents) entry.halfExtents = ent.halfExtents;
+          if (ent.radius != null) entry.radius = ent.radius;
+          payload.selection.push(entry);
+        }
+      } else if (t.kind === 'spawnArea') {
+        const area = w.spawnAreas.find((a) => a.id === t.id);
+        if (area) {
+          payload.selection.push({ kind: 'spawnArea', id: t.id, position: area.position, radius: area.radius });
         }
       }
     }
-    return `<editor-context>\n${lines.join('\n')}\n</editor-context>`;
+
+    return `<editor-context>\n${JSON.stringify(payload, null, 2)}\n</editor-context>`;
   }, []);
 
   const updateSelectedPosition = useCallback((axis: 0 | 1 | 2, value: number) => {
