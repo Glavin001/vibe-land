@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type MutableRefObject } from 'react';
 import { OrbitControls, Sky, TransformControls } from '@react-three/drei';
-import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
@@ -57,7 +57,6 @@ import {
   fetchPublishedWorld,
   publishWorld,
 } from '../world/worldsCloud';
-import { captureCanvasScreenshot } from '../world/canvasScreenshot';
 import { recordPublishedWorld } from '../world/publishedHistory';
 import {
   createEmptyWorldEditHistory,
@@ -95,7 +94,12 @@ import type { SplineData } from '../ai/splineData';
 import { applyCustomStencilToWorld, type CustomStencilDefinition } from '../ai/customStencil';
 import { useCustomStencils } from '../ai/customStencilStore';
 import type { WorldAccessors } from '../ai/worldToolHelpers';
-import { SceneCaptureController, type CaptureFunction } from '../scene/SceneCaptureController';
+import {
+  SceneCaptureController,
+  type CaptureFunction,
+  type CaptureCurrentViewFunction,
+} from '../scene/SceneCaptureController';
+import { createRenderer, isWebGPUBackend } from '../scene/createRenderer';
 import {
   getSharedVehicleDefinition,
   getSharedVehicleDefinitions,
@@ -201,7 +205,6 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     }
   }, [isMobile]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const editorCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const worldRef = useRef(world);
   const editHistoryRef = useRef(editHistory);
@@ -210,6 +213,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const aiChatRef = useRef<AiChatPanelHandle>(null);
   const splinesRef = useRef<Map<string, SplineData>>(new Map());
   const captureRef = useRef<CaptureFunction | null>(null);
+  const captureCurrentViewRef = useRef<CaptureCurrentViewFunction | null>(null);
 
   const captureScreenshot = useCallback<CaptureFunction>((config) => {
     if (!captureRef.current) return Promise.reject(new Error('Scene capture not ready'));
@@ -582,11 +586,11 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   }, [applyCommittedWorldEdit]);
 
   const captureCurrentScreenshot = useCallback(async () => {
-    const canvas = editorCanvasRef.current;
-    if (!canvas) {
+    const fn = captureCurrentViewRef.current;
+    if (!fn) {
       throw new Error('Builder canvas is not ready. Switch to Edit mode and try again.');
     }
-    return captureCanvasScreenshot(canvas);
+    return fn();
   }, []);
 
   const handleStartPublish = useCallback(async () => {
@@ -970,9 +974,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
         );
       }}
       captureRef={captureRef}
-      onCanvasReady={(canvas) => {
-        editorCanvasRef.current = canvas;
-      }}
+      captureCurrentViewRef={captureCurrentViewRef}
       spawnAreas={world.spawnAreas}
     />
   ), [
@@ -1903,7 +1905,7 @@ function GodModeEditorScene({
   activeCustomParams,
   onApplyCustomStencil,
   captureRef,
-  onCanvasReady,
+  captureCurrentViewRef,
   spawnAreas,
 }: {
   world: WorldDocument;
@@ -1947,7 +1949,7 @@ function GodModeEditorScene({
   activeCustomParams: Record<string, unknown>;
   onApplyCustomStencil: (x: number, z: number) => void;
   captureRef: MutableRefObject<CaptureFunction | null>;
-  onCanvasReady?: (canvas: HTMLCanvasElement | null) => void;
+  captureCurrentViewRef: MutableRefObject<CaptureCurrentViewFunction | null>;
   spawnAreas: SpawnArea[];
 }) {
   const paintingRef = useRef(false);
@@ -2179,8 +2181,23 @@ function GodModeEditorScene({
     <Canvas
       shadows
       camera={{ fov: 55, near: 0.1, far: 600, position: [28, 28, 28] }}
-      gl={{ preserveDrawingBuffer: true, antialias: true }}
       style={{ width: '100%', height: '100%' }}
+      frameloop="never"
+      gl={(canvas) => {
+        const { renderer } = createRenderer({
+          canvas: canvas as HTMLCanvasElement,
+          antialias: true,
+        });
+        return renderer;
+      }}
+      onCreated={async ({ gl, set, invalidate }) => {
+        const init = (gl as unknown as { init?: () => Promise<void> }).init;
+        if (typeof init === 'function') await init.call(gl);
+        set({ frameloop: 'always' });
+        invalidate();
+        (window as unknown as { __rendererBackend?: string }).__rendererBackend =
+          isWebGPUBackend(gl) ? 'webgpu' : 'webgl2';
+      }}
       onPointerUp={handleTerrainPointerUp}
       onPointerMissed={() => {
         const wasEditing = paintingRef.current || isRampApplying;
@@ -2194,7 +2211,6 @@ function GodModeEditorScene({
         }
       }}
     >
-      {onCanvasReady && <CanvasDomBinder onReady={onCanvasReady} />}
       <ambientLight intensity={0.55} />
       <directionalLight position={[32, 48, 12]} intensity={1.4} castShadow shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
       <Sky sunPosition={[24, 12, 8]} />
@@ -2396,23 +2412,9 @@ function GodModeEditorScene({
         </mesh>
       )}
       <OrbitControls makeDefault enabled={tool === 'select'} maxDistance={180} target={[0, 0, 0]} />
-      <SceneCaptureController captureRef={captureRef} />
+      <SceneCaptureController captureRef={captureRef} captureCurrentViewRef={captureCurrentViewRef} />
     </Canvas>
   );
-}
-
-// Exposes the underlying R3F canvas (via useThree) to the outer component so
-// we can grab pixel data for screenshots. Must live inside the <Canvas>.
-function CanvasDomBinder({ onReady }: { onReady: (canvas: HTMLCanvasElement | null) => void }) {
-  const gl = useThree((state) => state.gl);
-  useEffect(() => {
-    const canvas = gl?.domElement ?? null;
-    onReady(canvas);
-    return () => {
-      onReady(null);
-    };
-  }, [gl, onReady]);
-  return null;
 }
 
 function FloatingTileActionButton({

@@ -16,9 +16,21 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
+  // Route every `import … from 'three'` to the WebGPU entry point. It
+  // re-exports the full three API and adds WebGPURenderer, so all 17
+  // consumers (and @react-three/fiber, drei, etc.) share a single THREE
+  // module graph — no duplicate-module hazard. Skipped under vitest: the
+  // webgpu bundle references `self` at import time which doesn't exist in
+  // Node; unit tests don't render, so the plain three build is fine there.
+  const isTestRun = process.env.VITEST !== undefined || mode === 'test';
+  const threeAlias = isTestRun ? {} : { three: 'three/webgpu' };
+
   return {
     plugins: [tailwindcss(), react()],
     envDir: '../',
+    resolve: {
+      alias: threeAlias,
+    },
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
       host: '0.0.0.0',

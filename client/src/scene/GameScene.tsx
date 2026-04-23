@@ -7,6 +7,7 @@ import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+import { createRenderer, isWebGPUBackend } from './createRenderer';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -79,6 +80,22 @@ export function GameScene({
       shadows
       camera={{ fov: 75, near: 0.1, far: 200, position: [0, 5, 10] }}
       data-testid="game-canvas"
+      frameloop="never"
+      gl={(canvas) => {
+        const { renderer } = createRenderer({
+          canvas: canvas as HTMLCanvasElement,
+          antialias: true,
+        });
+        return renderer;
+      }}
+      onCreated={async ({ gl, set, invalidate }) => {
+        const init = (gl as unknown as { init?: () => Promise<void> }).init;
+        if (typeof init === 'function') await init.call(gl);
+        set({ frameloop: 'always' });
+        invalidate();
+        (window as unknown as { __rendererBackend?: string }).__rendererBackend =
+          isWebGPUBackend(gl) ? 'webgpu' : 'webgl2';
+      }}
       onPointerDown={(e) => {
         if (touchMode) return;
         (e.target as HTMLCanvasElement).requestPointerLock();
