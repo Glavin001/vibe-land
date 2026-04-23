@@ -14,6 +14,8 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { forwardRef } from 'react';
+import { Streamdown } from 'streamdown';
+import 'streamdown/styles.css';
 import type { ChatImagePart, ChatMessage, ChatPart, ChatToolResultPart } from '../../ai/chatTypes';
 import { compactToolResultOutput, extractToolResultImages, makeChatId } from '../../ai/chatTypes';
 import {
@@ -619,11 +621,12 @@ export const AiChatPanel = forwardRef(function AiChatPanel(
             </p>
           </div>
         )}
-        {chat.messages.map((msg) => (
+        {chat.messages.map((msg, idx) => (
           <MessageBubble
             key={msg.id}
             message={msg}
             actionsDisabled={messageActionsDisabled}
+            isStreamingMessage={chat.status === 'streaming' && idx === chat.messages.length - 1}
             onDelete={() => onDeleteMessage(msg.id)}
             onEdit={msg.role === 'user' ? () => onStartEdit(msg) : undefined}
             onRetry={msg.role === 'assistant' ? () => onRetryMessage(msg.id) : undefined}
@@ -822,12 +825,14 @@ function EditorContextCard({ ctx }: { ctx: EditorContextPayload }) {
 function MessageBubble({
   message,
   actionsDisabled,
+  isStreamingMessage,
   onDelete,
   onEdit,
   onRetry,
 }: {
   message: ChatMessage;
   actionsDisabled: boolean;
+  isStreamingMessage?: boolean;
   onDelete: () => void;
   onEdit?: () => void;
   onRetry?: () => void;
@@ -869,7 +874,7 @@ function MessageBubble({
         </div>
       </div>
       {message.parts.map((part, idx) => (
-        <PartView key={idx} part={part} />
+        <PartView key={idx} part={part} isAnimating={isStreamingMessage} />
       ))}
       {isUser && message.hiddenContext && (() => {
         const ctx = parseEditorContext(message.hiddenContext);
@@ -884,12 +889,24 @@ function MessageBubble({
   );
 }
 
-function PartView({ part }: { part: ChatPart }) {
+function PartView({ part, isAnimating }: { part: ChatPart; isAnimating?: boolean }) {
   if (part.type === 'text') {
-    return <div style={textPartStyle}>{part.text}</div>;
+    return (
+      <div style={textPartStreamdownStyle}>
+        <Streamdown isAnimating={isAnimating} animated mode="streaming">
+          {part.text}
+        </Streamdown>
+      </div>
+    );
   }
   if (part.type === 'reasoning') {
-    return <div style={reasoningPartStyle}>{part.text}</div>;
+    return (
+      <div style={reasoningPartWrapperStyle}>
+        <Streamdown isAnimating={isAnimating} animated mode="streaming">
+          {part.text}
+        </Streamdown>
+      </div>
+    );
   }
   if (part.type === 'image') {
     return <img src={(part as ChatImagePart).dataUrl} style={attachedImageStyle} alt="Attached image" />;
@@ -1285,20 +1302,20 @@ const disabledInlineActionStyle: CSSProperties = {
   cursor: 'not-allowed',
 };
 
-const textPartStyle: CSSProperties = {
-  whiteSpace: 'pre-wrap',
+const textPartStreamdownStyle: CSSProperties = {
   wordBreak: 'break-word',
   fontSize: 13,
   lineHeight: 1.5,
 };
 
-const reasoningPartStyle: CSSProperties = {
-  whiteSpace: 'pre-wrap',
+const reasoningPartWrapperStyle: CSSProperties = {
   wordBreak: 'break-word',
   fontSize: 12,
   lineHeight: 1.5,
   color: 'rgba(238, 247, 255, 0.55)',
   fontStyle: 'italic',
+  borderLeft: '2px solid rgba(238, 247, 255, 0.15)',
+  paddingLeft: 8,
 };
 
 const toolCallStyle: CSSProperties = {

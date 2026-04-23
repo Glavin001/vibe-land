@@ -1,1 +1,16 @@
 @import "tailwindcss";
+@source "../node_modules/streamdown/dist/*.js";
+
+:root {
+  --background: oklch(0.07 0.012 220);
+  --foreground: oklch(0.95 0.018 210);
+  --card: oklch(0.13 0.015 220);
+  --card-foreground: oklch(0.95 0.018 210);
+  --muted: oklch(0.18 0.01 220);
+  --muted-foreground: oklch(0.65 0.01 210);
+  --border: oklch(0.3 0.025 220);
+  --input: oklch(0.15 0.015 220);
+  --primary: oklch(0.82 0.07 200);
+  --primary-foreground: oklch(0.1 0.015 220);
+  --radius: 0.5rem;
+}

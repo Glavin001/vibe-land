@@ -105,6 +105,9 @@ import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
 import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
+import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets';
+import { WeatherParticles } from './WeatherParticles';
+import { useWeatherAmbience } from '../graphics/weatherAudio';
 
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -388,6 +391,10 @@ type GameWorldProps = {
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
+  weather?: WeatherPreset;
+  windStrengthMps?: number;
+  windDirectionDeg?: number;
+  intensity?: number;
   damageFeedback?: DamageFeedbackController | null;
   // Optional children rendered inside the R3F scene. Used by the calibration
   // wizard to inject drill targets (FlickDrill / TrackDrill) into the live
@@ -1112,10 +1119,17 @@ export function GameWorld({
   cosmeticDeathPhysicsEnabled = true,
   fogEnabled = true,
   fogDensity = DEFAULT_FOG_SETTINGS.density,
-  fogColor = DEFAULT_FOG_SETTINGS.color,
+  fogColor,
+  weather = DEFAULT_FOG_SETTINGS.weather,
+  windStrengthMps = DEFAULT_FOG_SETTINGS.windStrengthMps,
+  windDirectionDeg = DEFAULT_FOG_SETTINGS.windDirectionDeg,
+  intensity = DEFAULT_FOG_SETTINGS.intensity,
   damageFeedback,
   sceneExtras,
 }: GameWorldProps) {
+  const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
+  const effectiveFogDensity = fogDensity * intensity;
+  useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
   const worldJson = useMemo(() => serializeWorldDocument(worldDocument), [worldDocument]);
@@ -3075,8 +3089,18 @@ export function GameWorld({
 
   return (
     <>
-      <color attach="background" args={[fogColor]} />
-      {fogEnabled && <fogExp2 attach="fog" args={[fogColor, fogDensity]} />}
+      <color attach="background" args={[resolvedFogColor]} />
+      {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, effectiveFogDensity]} />}
+      {fogEnabled && (
+        <WeatherParticles
+          weather={weather}
+          windStrengthMps={windStrengthMps}
+          windDirectionDeg={windDirectionDeg}
+          fogColor={resolvedFogColor}
+          fogDensity={effectiveFogDensity}
+          intensity={intensity}
+        />
+      )}
       <Sky
         distance={450000}
         sunPosition={[120, 28, 40]}

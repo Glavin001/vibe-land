@@ -7,6 +7,7 @@ import type { InputBindings } from '../input/bindings';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
+import type { WeatherPreset } from '../graphics/weatherPresets';
 
 type GameSceneProps = {
   mode: GameMode;
@@ -36,6 +37,10 @@ type GameSceneProps = {
   fogEnabled?: boolean;
   fogDensity?: number;
   fogColor?: string;
+  weather?: WeatherPreset;
+  windStrengthMps?: number;
+  windDirectionDeg?: number;
+  intensity?: number;
   damageFeedback?: React.ComponentProps<typeof GameWorld>['damageFeedback'];
   sceneExtras?: ReactNode;
 };
@@ -69,6 +74,10 @@ export function GameScene({
   fogEnabled,
   fogDensity,
   fogColor,
+  weather,
+  windStrengthMps,
+  windDirectionDeg,
+  intensity,
   damageFeedback,
   sceneExtras,
 }: GameSceneProps) {
@@ -117,6 +126,10 @@ export function GameScene({
           fogEnabled={fogEnabled}
           fogDensity={fogDensity}
           fogColor={fogColor}
+          weather={weather}
+          windStrengthMps={windStrengthMps}
+          windDirectionDeg={windDirectionDeg}
+          intensity={intensity}
           damageFeedback={damageFeedback}
           sceneExtras={sceneExtras}
         />
