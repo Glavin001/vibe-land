@@ -41,6 +41,7 @@ type GameSceneProps = {
   windStrengthMps?: number;
   windDirectionDeg?: number;
   intensity?: number;
+  damageFeedback?: React.ComponentProps<typeof GameWorld>['damageFeedback'];
   sceneExtras?: ReactNode;
 };
 
@@ -77,6 +78,7 @@ export function GameScene({
   windStrengthMps,
   windDirectionDeg,
   intensity,
+  damageFeedback,
   sceneExtras,
 }: GameSceneProps) {
   const touchMode = isTouchDevice();
@@ -128,6 +130,7 @@ export function GameScene({
           windStrengthMps={windStrengthMps}
           windDirectionDeg={windDirectionDeg}
           intensity={intensity}
+          damageFeedback={damageFeedback}
           sceneExtras={sceneExtras}
         />
       </Suspense>

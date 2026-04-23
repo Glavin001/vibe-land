@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import {
   gamepadAxisLabel,
   gamepadButtonLabel,
@@ -12,6 +13,8 @@ type ControlHintsOverlayProps = {
   bindings: InputBindings;
   state: ControlHintsState;
   visible: boolean;
+  expanded: boolean;
+  onToggleExpanded: () => void;
   inputFamilyMode: InputFamilyMode;
   onInputFamilyModeChange: (mode: InputFamilyMode) => void;
 };
@@ -109,10 +112,38 @@ const MODE_OPTIONS: Array<{ mode: InputFamilyMode; label: string }> = [
   { mode: 'gamepad', label: 'Gamepad' },
 ];
 
+const OVERLAY_SHELL_STYLE = {
+  position: 'absolute',
+  left: '50%',
+  bottom: 16,
+  transform: 'translateX(-50%)',
+  zIndex: 8,
+  borderRadius: 14,
+  background: 'rgba(7, 11, 16, 0.58)',
+  border: '1px solid rgba(255,255,255,0.08)',
+  boxShadow: '0 18px 40px rgba(0,0,0,0.25)',
+  backdropFilter: 'blur(18px)',
+  pointerEvents: 'none',
+} satisfies CSSProperties;
+
+const CHIP_BUTTON_STYLE = {
+  border: '1px solid rgba(255,255,255,0.12)',
+  borderRadius: 999,
+  background: 'rgba(255,255,255,0.06)',
+  color: 'rgba(255,255,255,0.82)',
+  padding: '5px 10px',
+  fontSize: 11,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  cursor: 'pointer',
+} satisfies CSSProperties;
+
 export function ControlHintsOverlay({
   bindings,
   state,
   visible,
+  expanded,
+  onToggleExpanded,
   inputFamilyMode,
   onInputFamilyModeChange,
 }: ControlHintsOverlayProps) {
@@ -126,92 +157,116 @@ export function ControlHintsOverlay({
   return (
     <div
       style={{
-        position: 'absolute',
-        left: '50%',
-        bottom: 16,
-        transform: 'translateX(-50%)',
-        zIndex: 8,
-        width: 880,
-        maxWidth: 'calc(100% - 32px)',
-        padding: '12px 14px',
-        borderRadius: 14,
-        background: 'rgba(7, 11, 16, 0.58)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        boxShadow: '0 18px 40px rgba(0,0,0,0.25)',
-        backdropFilter: 'blur(18px)',
-        pointerEvents: 'none',
+        ...OVERLAY_SHELL_STYLE,
+        width: expanded ? 880 : 'auto',
+        maxWidth: expanded ? 'calc(100% - 32px)' : 'calc(100% - 32px)',
+        padding: expanded ? '12px 14px' : '8px 10px',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
-          <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto' }}>
-            {MODE_OPTIONS.map((option) => {
-              const selected = option.mode === inputFamilyMode;
-              return (
-                <button
-                  key={option.mode}
-                  type="button"
-                  onClick={() => onInputFamilyModeChange(option.mode)}
-                  style={{
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    background: selected ? 'rgba(149, 233, 255, 0.24)' : 'rgba(255,255,255,0.06)',
-                    color: selected ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.65)',
-                    borderRadius: 999,
-                    padding: '5px 10px',
-                    fontSize: 11,
-                    letterSpacing: '0.06em',
-                    textTransform: 'uppercase',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.5 }}>
-          {inputFamilyMode === 'auto' ? 'last used wins' : `${inputFamilyMode === 'gamepad' ? 'gamepad' : 'keyboard'} locked`}
-        </div>
-      </div>
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-          gap: '8px 14px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          gap: 12,
+          marginBottom: expanded ? 10 : 0,
         }}
       >
-        {rows.map((row) => (
-          <div
-            key={`${context}-${family}-${row.command}`}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+          <button
+            type="button"
+            onClick={onToggleExpanded}
+            aria-label={expanded ? 'Minimize controls overlay' : 'Expand controls overlay'}
             style={{
-              display: 'grid',
-              gridTemplateColumns: '140px 120px 1fr',
-              alignItems: 'center',
-              gap: 10,
-              minWidth: 0,
+              ...CHIP_BUTTON_STYLE,
+              pointerEvents: 'auto',
+              flexShrink: 0,
             }}
           >
-            <div style={{ fontSize: 12, color: row.active ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.72)' }}>{row.command}</div>
-            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row.binding}</div>
-            <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-              <div
-                style={{
-                  width: `${clamp01(row.value) * 100}%`,
-                  height: '100%',
-                  borderRadius: 999,
-                  background: row.active
-                    ? 'linear-gradient(90deg, rgba(252,244,163,0.95), rgba(255,123,92,0.95))'
-                    : 'linear-gradient(90deg, rgba(116,220,255,0.78), rgba(129,255,191,0.78))',
-                  opacity: clamp01(row.value) > 0 ? 1 : 0.18,
-                  transition: 'width 40ms linear, opacity 80ms linear',
-                }}
-              />
-            </div>
+            {expanded ? '▼ Controls' : '▶ Controls'}
+          </button>
+          {expanded && (
+            <>
+              <div style={{ fontSize: 13, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.9 }}>{title}</div>
+              <div style={{ display: 'flex', gap: 6, pointerEvents: 'auto', flexWrap: 'wrap' }}>
+                {MODE_OPTIONS.map((option) => {
+                  const selected = option.mode === inputFamilyMode;
+                  return (
+                    <button
+                      key={option.mode}
+                      type="button"
+                      onClick={() => onInputFamilyModeChange(option.mode)}
+                      style={{
+                        ...CHIP_BUTTON_STYLE,
+                        background: selected ? 'rgba(149, 233, 255, 0.24)' : CHIP_BUTTON_STYLE.background,
+                        color: selected ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.65)',
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+        {expanded ? (
+          <div style={{ fontSize: 11, opacity: 0.5, textAlign: 'right' }}>
+            {inputFamilyMode === 'auto' ? 'last used wins' : `${inputFamilyMode === 'gamepad' ? 'gamepad' : 'keyboard'} locked`}
           </div>
-        ))}
+        ) : (
+          <div
+            style={{
+              fontSize: 11,
+              opacity: 0.62,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {family === 'gamepad' ? 'Gamepad' : 'Keyboard + Mouse'}
+          </div>
+        )}
       </div>
+      {expanded && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            gap: '8px 14px',
+          }}
+        >
+          {rows.map((row) => (
+            <div
+              key={`${context}-${family}-${row.command}`}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '140px 120px 1fr',
+                alignItems: 'center',
+                gap: 10,
+                minWidth: 0,
+              }}
+            >
+              <div style={{ fontSize: 12, color: row.active ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.72)' }}>{row.command}</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{row.binding}</div>
+              <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                <div
+                  style={{
+                    width: `${clamp01(row.value) * 100}%`,
+                    height: '100%',
+                    borderRadius: 999,
+                    background: row.active
+                      ? 'linear-gradient(90deg, rgba(252,244,163,0.95), rgba(255,123,92,0.95))'
+                      : 'linear-gradient(90deg, rgba(116,220,255,0.78), rgba(129,255,191,0.78))',
+                    opacity: clamp01(row.value) > 0 ? 1 : 0.18,
+                    transition: 'width 40ms linear, opacity 80ms linear',
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
