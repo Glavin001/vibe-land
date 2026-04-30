@@ -14,3 +14,6 @@ blob-report/
 logs/
 .vercel
 .env*.local
+
+# Large published worlds for local /practice/shared?local=1 testing (download separately)
+worlds/*.world.json

@@ -4,7 +4,12 @@
  * First-class bot automation framework built on top of navcat.
  */
 
-export { buildWorldGeometry, type BotWorldGeometry } from './world/worldGeometry';
+export {
+  buildWorldGeometry,
+  buildWorldGeometryFullResolution,
+  type BotWorldGeometry,
+  type BuildWorldGeometryOptions,
+} from './world/worldGeometry';
 export {
   buildBotNavMesh,
   buildBotNavMeshFromSharedProfile,

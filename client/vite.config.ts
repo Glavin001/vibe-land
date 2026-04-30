@@ -1,7 +1,38 @@
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import type { Connect } from 'vite';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+
+function localPublishedWorldsMiddleware(repoRoot: string): Connect.NextHandleFunction {
+  return (req, res, next) => {
+    const url = req.url;
+    if (!url?.startsWith('/published/') || !url.endsWith('.world.json')) {
+      next();
+      return;
+    }
+    const name = path.basename(url, '.world.json');
+    if (!/^[0-9a-f-]+$/i.test(name)) {
+      next();
+      return;
+    }
+    const filePath = path.join(repoRoot, 'worlds', `${name}.world.json`);
+    if (!fs.existsSync(filePath)) {
+      next();
+      return;
+    }
+    try {
+      const body = fs.readFileSync(filePath);
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(body);
+    } catch {
+      next();
+    }
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '../', '');
@@ -16,8 +47,19 @@ export default defineConfig(({ mode }) => {
     ? { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) }
     : undefined;
 
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
   return {
-    plugins: [tailwindcss(), react()],
+    plugins: [
+      tailwindcss(),
+      react(),
+      {
+        name: 'local-published-worlds',
+        configureServer(server) {
+          server.middlewares.use(localPublishedWorldsMiddleware(repoRoot));
+        },
+      },
+    ],
     envDir: '../',
     server: {
       port: Number(env.CLIENT_PORT) || 3001,
