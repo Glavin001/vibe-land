@@ -1,0 +1,30 @@
+[Unit]
+Description=vibe-land API server (Node handlers for /api/worlds/*)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vibe-land
+Group=vibe-land
+WorkingDirectory=/var/www/vibe-land
+EnvironmentFile=/etc/vibe-land/api.env
+# API_PORT, API_HOST, and the WORLDS_STORAGE_DIR / R2_* variables live in
+# /etc/vibe-land/api.env. See .env.example at the repo root for the full list.
+ExecStart=/usr/bin/npm run api:start
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — the API reads from a filesystem storage dir if configured, so
+# don't lock down /var entirely.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/vibe-land-worlds
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
