@@ -170,7 +170,11 @@ export function App({
     } : undefined,
     [benchmarkConfig],
   );
-  const effectiveAutoConnect = autoConnect || benchmarkConfig?.autostart === true;
+  const portalAutoConnect = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('portal') === 'true';
+  }, []);
+  const effectiveAutoConnect = autoConnect || benchmarkConfig?.autostart === true || portalAutoConnect;
   const pathLabel = routeLabel ?? (
     mode === 'multiplayer'
       ? buildMatchHref('/play', multiplayerMatchId)

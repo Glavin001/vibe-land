@@ -81,6 +81,7 @@ import type { BotIntent, ObservedPlayer, Vec3Tuple } from '../bots/types';
 import { anchorForBot, type LoadTestScenario, type PlayBenchmarkDriverProfile } from '../loadtest/scenario';
 import type { PracticeBotRuntime, PracticeBotShotVisual } from '../bots';
 import { BotsDebugOverlay } from './BotsDebugOverlay';
+import { Portals } from './Portals';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import {
@@ -3130,6 +3131,7 @@ export function GameWorld({
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
+      <Portals runtimeRef={runtimeRef} />
 
       {renderBlocks.map((block) => (
         <WorldBlock
