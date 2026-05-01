@@ -20,7 +20,7 @@ const PORTAL_GROUND_OFFSET_M = 1.4;
 const TERRAIN_RAYCAST_FROM_Y = 200;
 const TERRAIN_RAYCAST_DISTANCE = 400;
 // Default exit portal XZ — east of world origin, where the demo worlds spawn.
-const EXIT_PORTAL_XZ: [number, number] = [8, 0];
+const EXIT_PORTAL_XZ: [number, number] = [20, 0];
 
 function getCurrentSelfRef(): string | null {
   if (typeof window === 'undefined') return null;
