@@ -361,7 +361,7 @@ describe('snapshot decode', () => {
 });
 
 function buildSnapshotV2Binary(): Uint8Array {
-  const size = 1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 12 + 19 + 20 + 30;
+  const size = 1 + 4 + 2 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 1 + 12 + 19 + 20 + 30;
   const buf = new Uint8Array(size);
   const view = new DataView(buf.buffer);
   let o = 0;
@@ -373,6 +373,7 @@ function buildSnapshotV2Binary(): Uint8Array {
   view.setInt32(o, 2_000, true); o += 4;
   view.setInt32(o, -4_000, true); o += 4;
   view.setUint8(o++, 1);
+  view.setUint8(o++, 0);
   view.setUint8(o++, 1);
   view.setUint8(o++, 0);
   view.setUint8(o++, 1);
@@ -438,6 +439,7 @@ describe('snapshot V2 decode', () => {
     expect(packet.anchorPxMm).toBe(10_000);
     expect(packet.remotePlayers).toHaveLength(1);
     expect(packet.remotePlayers[0].handle).toBe(2);
+    expect(packet.coldRemotePlayers).toHaveLength(0);
     expect(packet.sphereStates).toHaveLength(1);
     expect(packet.sphereStates[0].handle).toBe(7);
     expect(packet.vehicleStates).toHaveLength(1);

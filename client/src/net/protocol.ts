@@ -237,6 +237,15 @@ export type RemotePlayerStateV2 = {
   flags: number;
 };
 
+export type RemotePlayerColdStateV2 = {
+  handle: number;
+  dxQ2_5mm: number;
+  dyQ2_5mm: number;
+  dzQ2_5mm: number;
+  yawI16: number;
+  flags: number;
+};
+
 export type DynamicSphereStateV2 = {
   handle: number;
   dxQ2_5mm: number;
@@ -297,6 +306,7 @@ export type SnapshotV2Packet = {
   anchorPzMm: number;
   selfState: SelfPlayerStateV2;
   remotePlayers: RemotePlayerStateV2[];
+  coldRemotePlayers: RemotePlayerColdStateV2[];
   sphereStates: DynamicSphereStateV2[];
   boxStates: DynamicBoxStateV2[];
   vehicleStates: VehicleStateV2[];
@@ -739,6 +749,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const anchorPyMm = view.getInt32(o, true); o += 4;
   const anchorPzMm = view.getInt32(o, true); o += 4;
   const remotePlayerCount = view.getUint8(o++);
+  const coldRemotePlayerCount = view.getUint8(o++);
   const sphereCount = view.getUint8(o++);
   const boxCount = view.getUint8(o++);
   const vehicleCount = view.getUint8(o++);
@@ -770,6 +781,19 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
       flags: view.getUint8(o + 18),
     });
     o += 19;
+  }
+
+  const coldRemotePlayers: RemotePlayerColdStateV2[] = [];
+  for (let i = 0; i < coldRemotePlayerCount; i += 1) {
+    coldRemotePlayers.push({
+      handle: view.getUint8(o),
+      dxQ2_5mm: view.getInt16(o + 1, true),
+      dyQ2_5mm: view.getInt16(o + 3, true),
+      dzQ2_5mm: view.getInt16(o + 5, true),
+      yawI16: view.getInt16(o + 7, true),
+      flags: view.getUint8(o + 9),
+    });
+    o += 10;
   }
 
   const sphereStates: DynamicSphereStateV2[] = [];
@@ -844,6 +868,7 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     anchorPzMm,
     selfState,
     remotePlayers,
+    coldRemotePlayers,
     sphereStates,
     boxStates,
     vehicleStates,
