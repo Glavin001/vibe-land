@@ -3,6 +3,7 @@ import {
   VIBE_JAM_PORTAL_URL,
   buildPortalRedirectUrl,
   buildReturnPortalUrl,
+  getCanonicalSelfRef,
   readPortalParams,
 } from './portalParams';
 
@@ -115,5 +116,22 @@ describe('buildReturnPortalUrl', () => {
   it('preserves http:// when caller explicitly requests it', () => {
     const url = buildReturnPortalUrl('http://localhost:3000', {}, null);
     expect(new URL(url).protocol).toBe('http:');
+  });
+});
+
+describe('getCanonicalSelfRef', () => {
+  it('returns null for null/undefined/empty origin', () => {
+    expect(getCanonicalSelfRef(null)).toBeNull();
+    expect(getCanonicalSelfRef(undefined)).toBeNull();
+    expect(getCanonicalSelfRef('')).toBeNull();
+  });
+
+  it('appends a single trailing slash to the origin', () => {
+    expect(getCanonicalSelfRef('https://vibe-land.example')).toBe('https://vibe-land.example/');
+  });
+
+  it('does not double trailing slashes', () => {
+    expect(getCanonicalSelfRef('https://vibe-land.example/')).toBe('https://vibe-land.example/');
+    expect(getCanonicalSelfRef('https://vibe-land.example///')).toBe('https://vibe-land.example/');
   });
 });

@@ -1,5 +1,15 @@
 export const VIBE_JAM_PORTAL_URL = 'https://vibejam.cc/portal/2026';
 
+// `/` is the URL we publish to the Vibe Jam webring. All outbound portals send
+// this as `ref=` so reciprocal portals from other games come back to our
+// canonical landing page (which forwards to /play on arrival).
+export function getCanonicalSelfRef(origin: string | null | undefined): string | null {
+  if (!origin) return null;
+  // Tolerate trailing slashes / explicit paths in the origin string.
+  const trimmed = origin.replace(/\/+$/, '');
+  return `${trimmed}/`;
+}
+
 export const FORWARDED_PORTAL_KEYS = [
   'username',
   'color',

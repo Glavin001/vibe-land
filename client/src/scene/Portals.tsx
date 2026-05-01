@@ -1,5 +1,5 @@
 import { Html } from '@react-three/drei';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useMemo, useRef, type RefObject } from 'react';
 import * as THREE from 'three';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
@@ -7,15 +7,59 @@ import {
   VIBE_JAM_PORTAL_URL,
   buildPortalRedirectUrl,
   buildReturnPortalUrl,
+  getCanonicalSelfRef,
   readPortalParams,
 } from './portalParams';
 
 const PORTAL_TRIGGER_RADIUS_M = 1.6;
 const PORTAL_REARM_RADIUS_M = 2.6;
+// Ring is radius 1.4 m; lifting the center to ground+1.4 puts the bottom of
+// the ring on the ground and the player walks comfortably through the middle.
+const PORTAL_GROUND_OFFSET_M = 1.4;
+// Cast from well above any plausible terrain height down to its lowest plausible value.
+const TERRAIN_RAYCAST_FROM_Y = 200;
+const TERRAIN_RAYCAST_DISTANCE = 400;
+// Default exit portal XZ — east of world origin, where the demo worlds spawn.
+const EXIT_PORTAL_XZ: [number, number] = [8, 0];
 
 function getCurrentSelfRef(): string | null {
   if (typeof window === 'undefined') return null;
-  return window.location.host || null;
+  return getCanonicalSelfRef(window.location.origin);
+}
+
+const DOWN = new THREE.Vector3(0, -1, 0);
+const RAY_ORIGIN = new THREE.Vector3();
+
+// Casts a ray straight down at (x, z) and returns the highest hit Y, or null
+// if the scene has no geometry yet. Hits any visible mesh — terrain tiles,
+// world props, the player capsule helper — which is fine for clamping a portal
+// to "the surface beneath it".
+function raycastTerrainY(
+  scene: THREE.Object3D,
+  raycaster: THREE.Raycaster,
+  x: number,
+  z: number,
+): number | null {
+  RAY_ORIGIN.set(x, TERRAIN_RAYCAST_FROM_Y, z);
+  raycaster.set(RAY_ORIGIN, DOWN);
+  raycaster.near = 0;
+  raycaster.far = TERRAIN_RAYCAST_DISTANCE;
+  const hits = raycaster.intersectObject(scene, true);
+  for (const hit of hits) {
+    // Skip the portal's own geometry / labels / lights.
+    let parent: THREE.Object3D | null = hit.object;
+    let isPortalDescendant = false;
+    while (parent) {
+      if (parent.userData.isVibeJamPortal === true) {
+        isPortalDescendant = true;
+        break;
+      }
+      parent = parent.parent;
+    }
+    if (isPortalDescendant) continue;
+    return hit.point.y;
+  }
+  return null;
 }
 
 export function Portals({
@@ -26,6 +70,7 @@ export function Portals({
   const params = useMemo(() => readPortalParams(window.location.search), []);
   const selfRef = useMemo(() => getCurrentSelfRef(), []);
   const startActive = params.isFromPortal && params.ref !== null;
+  const scene = useThree((state) => state.scene);
 
   const exitGroupRef = useRef<THREE.Group>(null);
   const startGroupRef = useRef<THREE.Group>(null);
@@ -35,15 +80,33 @@ export function Portals({
   const startInitializedRef = useRef(false);
   const exitArmedRef = useRef(false);
   const startArmedRef = useRef(false);
+  const exitGroundedRef = useRef(false);
 
   const tmpVec = useRef(new THREE.Vector3());
-  const exitPos = useMemo(() => new THREE.Vector3(8, 1.8, 0), []);
+  const raycaster = useMemo(() => new THREE.Raycaster(), []);
+  const exitPos = useMemo(
+    () => new THREE.Vector3(EXIT_PORTAL_XZ[0], PORTAL_GROUND_OFFSET_M, EXIT_PORTAL_XZ[1]),
+    [],
+  );
   const startPosRef = useRef(new THREE.Vector3());
 
   useFrame((_, dt) => {
     // Idle spin even before player is ready.
     if (exitRingRef.current) exitRingRef.current.rotation.z += dt * 0.6;
     if (startRingRef.current) startRingRef.current.rotation.z -= dt * 0.6;
+
+    // Resolve the exit portal's ground height once terrain has mounted.
+    // Retried every frame until it sticks; cheap (single ray).
+    if (!exitGroundedRef.current) {
+      const groundY = raycastTerrainY(scene, raycaster, exitPos.x, exitPos.z);
+      if (groundY !== null) {
+        exitPos.set(exitPos.x, groundY + PORTAL_GROUND_OFFSET_M, exitPos.z);
+        if (exitGroupRef.current) {
+          exitGroupRef.current.position.copy(exitPos);
+        }
+        exitGroundedRef.current = true;
+      }
+    }
 
     if (triggeredRef.current) return;
     const client = runtimeRef.current;
@@ -55,7 +118,9 @@ export function Portals({
     // Initialize start portal at the player's first valid position so they
     // appear to spawn out of it. Stays invisible until placed.
     if (startActive && !startInitializedRef.current) {
-      startPosRef.current.set(pos[0], pos[1] + 0.4, pos[2]);
+      const groundY = raycastTerrainY(scene, raycaster, pos[0], pos[2]);
+      const baseY = groundY !== null ? groundY : pos[1];
+      startPosRef.current.set(pos[0], baseY + PORTAL_GROUND_OFFSET_M, pos[2]);
       const group = startGroupRef.current;
       if (group) {
         group.position.copy(startPosRef.current);
@@ -101,6 +166,7 @@ export function Portals({
       <group
         ref={startGroupRef}
         visible={false}
+        userData={{ isVibeJamPortal: true }}
       >
         {startActive && (
           <PortalVisualBody
@@ -126,7 +192,7 @@ type PortalVisualProps = {
 
 function PortalVisual({ groupRef, ringRef, position, color, emissive, label }: PortalVisualProps) {
   return (
-    <group ref={groupRef} position={position}>
+    <group ref={groupRef} position={position} userData={{ isVibeJamPortal: true }}>
       <PortalVisualBody ringRef={ringRef} color={color} emissive={emissive} label={label} />
     </group>
   );

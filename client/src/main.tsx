@@ -22,6 +22,20 @@ if (window.location.pathname === '/godmode' || window.location.pathname === '/go
   window.history.replaceState(null, '', '/builder/world' + window.location.search + window.location.hash);
 }
 
+// Vibe Jam portal landing: `/` is the URL we publish to the webring, so any
+// portal-arrival hits there. Forward to `/play` (auto-connect happens once the
+// game route loads) while preserving the full query string + hash.
+if (
+  (window.location.pathname === '/' || window.location.pathname === '/index.html')
+  && new URLSearchParams(window.location.search).get('portal') === 'true'
+) {
+  window.history.replaceState(
+    null,
+    '',
+    '/play' + window.location.search + window.location.hash,
+  );
+}
+
 const route = resolveAppRoute(window.location.pathname, window.location.search);
 
 switch (route.kind) {

@@ -12,6 +12,7 @@ import {
   type InputBindings,
   type KeyboardBindings,
 } from './input/bindings';
+import { usePointerLockEngagement } from './input/usePointerLockEngagement';
 import { GameScene } from './scene/GameScene';
 import type { CrosshairAimState } from './scene/aimTargeting';
 import type { DeviceFamily, InputFamilyMode, InputSample } from './input/types';
@@ -220,6 +221,16 @@ export function App({
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
+
+  const getGameCanvas = useCallback(
+    () => document.querySelector<HTMLCanvasElement>('canvas[data-testid="game-canvas"]'),
+    [],
+  );
+  usePointerLockEngagement({
+    enabled: connected && !touchMode,
+    getCanvas: getGameCanvas,
+  });
+
   const copyNoticeTimerRef = useRef<number | null>(null);
   const benchmarkStartedAtRef = useRef<string | null>(null);
   const benchmarkDisconnectReasonRef = useRef<string | null>(null);
