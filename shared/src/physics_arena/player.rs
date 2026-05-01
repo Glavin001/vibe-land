@@ -1,8 +1,34 @@
 use nalgebra as na;
 
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::prelude::*;
+
 use super::{elapsed_ms, now_marker, PhysicsArena, PlayerDamageOutcome};
 use crate::constants::{FLAG_DEAD, FLAG_IN_VEHICLE, FLAG_ON_GROUND, FLAG_SPAWN_PROTECTED};
 use crate::protocol::InputCmd;
+
+struct PlayerTickWork {
+    player_id: u32,
+    collider: rapier3d::prelude::ColliderHandle,
+    position: super::Vec3d,
+    velocity: super::Vec3d,
+    yaw: f64,
+    pitch: f64,
+    on_ground: bool,
+    input: InputCmd,
+    ground_material_multiplier: f32,
+    max_speed_override: Option<f64>,
+}
+
+struct PlayerTickOutput {
+    player_id: u32,
+    result: super::PlayerTickResult,
+    new_position: super::Vec3d,
+    new_velocity: super::Vec3d,
+    new_yaw: f64,
+    new_pitch: f64,
+    new_on_ground: bool,
+}
 
 impl PhysicsArena {
     pub fn simulate_player_tick(
@@ -77,6 +103,206 @@ impl PhysicsArena {
         tick_result.dynamic_stats.impulses_applied_count = impulses_applied_count;
 
         Some(tick_result)
+    }
+
+    /// Run one simulation step for many players in a single batch.
+    ///
+    /// The read-only KCC/dynamic-contact computation runs on a rayon thread
+    /// pool (on non-wasm targets); the write-back phase — collider sync and
+    /// dynamic-body impulse application — stays serial and is iterated in
+    /// `player_id` order for determinism. All players observe the
+    /// start-of-tick world state, which is a small behavior change versus the
+    /// old sequential loop (where later players saw earlier players' synced
+    /// collider positions and applied impulses) but is the price of the
+    /// parallel speed-up needed to push past ~150 concurrent players.
+    ///
+    /// Returns one `(player_id, Option<PlayerTickResult>)` per input, in the
+    /// same order as `inputs`. `None` is returned for players that were in a
+    /// vehicle, were dead, or no longer exist — matching the semantics of
+    /// `simulate_player_tick`.
+    pub fn simulate_players_tick(
+        &mut self,
+        inputs: &[(u32, InputCmd)],
+        dt: f32,
+    ) -> Vec<(u32, Option<super::PlayerTickResult>)> {
+        let mut results: Vec<(u32, Option<super::PlayerTickResult>)> =
+            Vec::with_capacity(inputs.len());
+        let mut work_items: Vec<PlayerTickWork> = Vec::with_capacity(inputs.len());
+
+        for (player_id, input) in inputs {
+            let player_id = *player_id;
+
+            if self.vehicle_of_player.contains_key(&player_id) {
+                if let Some(state) = self.players.get_mut(&player_id) {
+                    state.last_input = input.clone();
+                }
+                results.push((player_id, None));
+                continue;
+            }
+
+            let (
+                player_x,
+                player_z,
+                max_speed_override,
+                collider,
+                position,
+                velocity,
+                yaw,
+                pitch,
+                on_ground,
+            ) = {
+                let Some(state) = self.players.get_mut(&player_id) else {
+                    results.push((player_id, None));
+                    continue;
+                };
+                if state.dead {
+                    state.last_input = InputCmd::default();
+                    state.velocity = super::Vec3d::zeros();
+                    results.push((player_id, None));
+                    continue;
+                }
+                state.last_input = input.clone();
+                (
+                    state.position.x as f32,
+                    state.position.z as f32,
+                    state.max_speed_override,
+                    state.collider,
+                    state.position,
+                    state.velocity,
+                    state.yaw,
+                    state.pitch,
+                    state.on_ground,
+                )
+            };
+
+            let ground_material_multiplier = self
+                .sample_terrain_material(player_x, player_z)
+                .friction_multiplier();
+
+            work_items.push(PlayerTickWork {
+                player_id,
+                collider,
+                position,
+                velocity,
+                yaw,
+                pitch,
+                on_ground,
+                input: input.clone(),
+                ground_material_multiplier,
+                max_speed_override,
+            });
+            results.push((player_id, None));
+        }
+
+        let sim = &self.dynamic.sim;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let outputs: Vec<PlayerTickOutput> = work_items
+            .into_par_iter()
+            .map(|mut w| {
+                let result = super::simulate_player_tick(
+                    sim,
+                    w.collider,
+                    &mut w.position,
+                    &mut w.velocity,
+                    &mut w.yaw,
+                    &mut w.pitch,
+                    &mut w.on_ground,
+                    &w.input,
+                    dt,
+                    w.ground_material_multiplier,
+                    w.max_speed_override,
+                );
+                PlayerTickOutput {
+                    player_id: w.player_id,
+                    result,
+                    new_position: w.position,
+                    new_velocity: w.velocity,
+                    new_yaw: w.yaw,
+                    new_pitch: w.pitch,
+                    new_on_ground: w.on_ground,
+                }
+            })
+            .collect();
+
+        #[cfg(target_arch = "wasm32")]
+        let outputs: Vec<PlayerTickOutput> = work_items
+            .into_iter()
+            .map(|mut w| {
+                let result = super::simulate_player_tick(
+                    sim,
+                    w.collider,
+                    &mut w.position,
+                    &mut w.velocity,
+                    &mut w.yaw,
+                    &mut w.pitch,
+                    &mut w.on_ground,
+                    &w.input,
+                    dt,
+                    w.ground_material_multiplier,
+                    w.max_speed_override,
+                );
+                PlayerTickOutput {
+                    player_id: w.player_id,
+                    result,
+                    new_position: w.position,
+                    new_velocity: w.velocity,
+                    new_yaw: w.yaw,
+                    new_pitch: w.pitch,
+                    new_on_ground: w.on_ground,
+                }
+            })
+            .collect();
+
+        let mut outputs_sorted = outputs;
+        outputs_sorted.sort_by_key(|o| o.player_id);
+
+        let mut final_results: std::collections::HashMap<u32, super::PlayerTickResult> =
+            std::collections::HashMap::with_capacity(outputs_sorted.len());
+
+        for mut output in outputs_sorted {
+            if let Some(state) = self.players.get_mut(&output.player_id) {
+                state.position = output.new_position;
+                state.velocity = output.new_velocity;
+                state.yaw = output.new_yaw;
+                state.pitch = output.new_pitch;
+                state.on_ground = output.new_on_ground;
+            }
+
+            let sync_started = now_marker();
+            let collider_opt = self
+                .players
+                .get(&output.player_id)
+                .map(|state| (state.collider, state.position));
+            if let Some((collider, position)) = collider_opt {
+                self.dynamic.sim.sync_player_collider(collider, &position);
+            }
+            output.result.timings.collider_sync_ms = elapsed_ms(sync_started);
+
+            let impulse_started = now_marker();
+            let mut impulses_applied_count = 0usize;
+            for impulse in &output.result.dynamic_impulses {
+                if self.apply_dynamic_body_impulse(
+                    impulse.body_id,
+                    impulse.impulse,
+                    impulse.contact_point,
+                ) {
+                    impulses_applied_count += 1;
+                }
+            }
+            output.result.timings.dynamic_impulse_apply_ms = elapsed_ms(impulse_started);
+            output.result.dynamic_stats.impulses_applied_count = impulses_applied_count;
+
+            final_results.insert(output.player_id, output.result);
+        }
+
+        for (player_id, slot) in results.iter_mut() {
+            if let Some(r) = final_results.remove(player_id) {
+                *slot = Some(r);
+            }
+        }
+
+        results
     }
 
     pub fn snapshot_player(
@@ -307,5 +533,119 @@ mod tests {
 
         let (_, _, _, _, _, flags) = arena.snapshot_player(7).expect("player should exist");
         assert_ne!(flags & FLAG_SPAWN_PROTECTED, 0);
+    }
+
+    use crate::protocol::InputCmd;
+    use nalgebra::vector;
+
+    fn arena_with_ground(player_count: u32) -> PhysicsArena {
+        let mut arena = PhysicsArena::new(MoveConfig::default());
+        arena.add_static_cuboid(vector![0.0, -0.5, 0.0], vector![500.0, 0.5, 500.0], 0);
+        arena.rebuild_broad_phase();
+        for id in 1..=player_count {
+            arena.spawn_player(id);
+        }
+        arena.rebuild_broad_phase();
+        arena
+    }
+
+    #[test]
+    fn batch_and_sequential_player_tick_produce_identical_state() {
+        // No dynamic bodies in the world, so the serial and parallel paths
+        // should be bit-for-bit identical: the only cross-player side effect
+        // (impulses on dynamic bodies) is absent, and KCC queries exclude
+        // other players' capsules regardless of ordering.
+        let player_count = 12;
+        let mut sequential = arena_with_ground(player_count);
+        let mut batched = arena_with_ground(player_count);
+
+        let dt = 1.0 / 60.0;
+        let mut rng_state: u32 = 0xC0FFEE;
+        let mut next_input = |tick: u32, id: u32| {
+            // Simple deterministic per-(tick, id) input jitter so different
+            // players take different paths across the ground.
+            rng_state = rng_state
+                .wrapping_mul(1664525)
+                .wrapping_add(1013904223 ^ tick.wrapping_mul(2654435761) ^ id);
+            let yaw = ((rng_state >> 16) as f32) * std::f32::consts::TAU / 65535.0;
+            let move_y = if (rng_state >> 8) & 1 == 0 {
+                127i8
+            } else {
+                -127i8
+            };
+            let move_x = if (rng_state >> 9) & 1 == 0 {
+                40i8
+            } else {
+                -40i8
+            };
+            InputCmd {
+                seq: tick as u16,
+                buttons: 0,
+                move_x,
+                move_y,
+                yaw,
+                pitch: 0.0,
+            }
+        };
+
+        for tick in 0..30 {
+            let mut batch_inputs = Vec::with_capacity(player_count as usize);
+            for id in 1..=player_count {
+                let input = next_input(tick, id);
+                let _ = sequential.simulate_player_tick(id, &input, dt);
+                batch_inputs.push((id, input));
+            }
+            let _ = batched.simulate_players_tick(&batch_inputs, dt);
+        }
+
+        for id in 1..=player_count {
+            let s = sequential.players.get(&id).expect("sequential player");
+            let b = batched.players.get(&id).expect("batched player");
+            let dpos = s.position - b.position;
+            let dvel = s.velocity - b.velocity;
+            assert!(
+                dpos.norm() < 1e-6,
+                "player {id} position diverged: seq={:?} batch={:?}",
+                s.position,
+                b.position
+            );
+            assert!(
+                dvel.norm() < 1e-6,
+                "player {id} velocity diverged: seq={:?} batch={:?}",
+                s.velocity,
+                b.velocity
+            );
+            assert_eq!(
+                s.on_ground, b.on_ground,
+                "player {id} on_ground diverged: seq={} batch={}",
+                s.on_ground, b.on_ground
+            );
+        }
+    }
+
+    #[test]
+    fn batch_tick_returns_none_for_dead_and_vehicle_players() {
+        let mut arena = arena_with_ground(3);
+        arena.set_player_dead(2, true);
+
+        let inputs = vec![
+            (1, InputCmd::default()),
+            (2, InputCmd::default()),
+            (3, InputCmd::default()),
+            (99, InputCmd::default()), // nonexistent
+        ];
+        let results = arena.simulate_players_tick(&inputs, 1.0 / 60.0);
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].0, 1);
+        assert!(results[0].1.is_some(), "alive player 1 should get a result");
+        assert_eq!(results[1].0, 2);
+        assert!(results[1].1.is_none(), "dead player 2 should be skipped");
+        assert_eq!(results[2].0, 3);
+        assert!(results[2].1.is_some(), "alive player 3 should get a result");
+        assert_eq!(results[3].0, 99);
+        assert!(
+            results[3].1.is_none(),
+            "nonexistent player should be skipped"
+        );
     }
 }
