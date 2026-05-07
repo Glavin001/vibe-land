@@ -206,33 +206,48 @@ function parseSpawnArea(raw: unknown): SpawnArea {
   };
 }
 
-export function serializeWorldDocument(world: WorldDocument): string {
-  return JSON.stringify(
-    {
-      ...world,
-      version: WORLD_DOCUMENT_VERSION,
-      terrain: {
-        tileGridSize: world.terrain.tileGridSize,
-        tileHalfExtentM: world.terrain.tileHalfExtentM,
-        tiles: sortTerrainTiles(world.terrain.tiles).map((tile) => {
-          const entry: Record<string, unknown> = {
-            tileX: tile.tileX,
-            tileZ: tile.tileZ,
-            heights: [...tile.heights],
-          };
-          if (tile.materials && tile.materials.length > 0) {
-            entry.materials = tile.materials;
-          }
-          if (tile.materialWeights && tile.materialWeights.length > 0) {
-            entry.materialWeights = [...tile.materialWeights];
-          }
-          return entry;
-        }),
-      },
+export type SerializeWorldDocumentOptions = {
+  /** Pretty-print JSON (larger; use for downloads / human inspection only). */
+  pretty?: boolean;
+};
+
+/**
+ * Serializes a world for storage or WASM `loadWorldDocument`. Defaults to a
+ * compact single-line JSON string to avoid multi-megabyte pretty prints and
+ * extra allocation from spreading large height arrays.
+ */
+export function serializeWorldDocument(
+  world: WorldDocument,
+  options?: SerializeWorldDocumentOptions,
+): string {
+  const pretty = options?.pretty === true;
+  const tiles = sortTerrainTiles(world.terrain.tiles).map((tile) => {
+    const entry: Record<string, unknown> = {
+      tileX: tile.tileX,
+      tileZ: tile.tileZ,
+      heights: tile.heights,
+    };
+    if (tile.materials && tile.materials.length > 0) {
+      entry.materials = tile.materials;
+    }
+    if (tile.materialWeights && tile.materialWeights.length > 0) {
+      entry.materialWeights = tile.materialWeights;
+    }
+    return entry;
+  });
+  const payload = {
+    version: WORLD_DOCUMENT_VERSION,
+    meta: world.meta,
+    terrain: {
+      tileGridSize: world.terrain.tileGridSize,
+      tileHalfExtentM: world.terrain.tileHalfExtentM,
+      tiles,
     },
-    null,
-    2,
-  );
+    staticProps: world.staticProps,
+    dynamicEntities: world.dynamicEntities,
+    spawnAreas: world.spawnAreas,
+  };
+  return pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload);
 }
 
 export function cloneWorldDocument(world: WorldDocument): WorldDocument {
