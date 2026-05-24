@@ -864,8 +864,8 @@ describe('Destructible scenarios (Blast stress solver)', () => {
   // ─────────────────────────────────────────────────────────────────────
   // Practice-mode placement regression tests
   //
-  // The `/practice` route places destructibles at the coordinates in
-  // `PRACTICE_DESTRUCTIBLES` inside `client/src/scene/GameWorld.tsx`:
+  // The `/practice` route loads `worlds/trail.world.json`, which
+  // authors its destructibles at:
   //
   //   Wall:  id=2000 kind=wall  position=(0, 0, 8)
   //   Tower: id=2001 kind=tower position=(10, 0.5, -5)
@@ -886,7 +886,7 @@ describe('Destructible scenarios (Blast stress solver)', () => {
         version: 2,
         meta: {
           name: 'Practice-mode destructible placement',
-          description: 'Mirrors client/src/scene/GameWorld.tsx PRACTICE_DESTRUCTIBLES.',
+          description: 'Mirrors worlds/trail.world.json destructibles array.',
         },
         terrain: {
           tileGridSize: gridSize,
@@ -1685,6 +1685,92 @@ describe('Destructible scenarios (Blast stress solver)', () => {
       if (drift > maxTowerDrift) maxTowerDrift = drift;
     }
     expect(maxTowerDrift).toBeLessThan(0.2);
+
+    sim.free();
+  });
+});
+
+describe('Authored structure destructibles', () => {
+  /** Build a stacked-box structure: bottom row anchored, 2 dynamic bricks on top. */
+  function makeStackedStructureWorld(): WorldDocument {
+    const gridSize = 9;
+    return {
+      version: 2,
+      meta: {
+        name: 'Authored stacked structure',
+        description: 'Two bricks balanced on an anchored base.',
+      },
+      terrain: {
+        tileGridSize: gridSize,
+        tileHalfExtentM: 16,
+        tiles: [{
+          tileX: 0,
+          tileZ: 0,
+          heights: makeFlatTileHeights(gridSize),
+        }],
+      },
+      staticProps: [],
+      dynamicEntities: [],
+      destructibles: [
+        {
+          id: 8001,
+          kind: 'structure',
+          position: [0, 0, 0],
+          rotation: [0, 0, 0, 1],
+          density: 2400,
+          chunks: [
+            // Bottom anchor.
+            {
+              shape: 'box',
+              position: [0, 0.25, 0],
+              rotation: [0, 0, 0, 1],
+              halfExtents: [0.25, 0.25, 0.25],
+              anchor: true,
+            },
+            // Middle brick sits on the anchor.
+            {
+              shape: 'box',
+              position: [0, 0.75, 0],
+              rotation: [0, 0, 0, 1],
+              halfExtents: [0.25, 0.25, 0.25],
+            },
+            // Top brick sits on the middle.
+            {
+              shape: 'box',
+              position: [0, 1.25, 0],
+              rotation: [0, 0, 0, 1],
+              halfExtents: [0.25, 0.25, 0.25],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('spawns the authored chunks and keeps them bonded under gravity', () => {
+    const sim = new WasmSimWorld();
+    sim.loadWorldDocument(serializeWorldDocument(makeStackedStructureWorld()));
+    sim.rebuildBroadPhase();
+    sim.stepDestructibles(); // prime transform buffer
+
+    const count = sim.getDestructibleChunkCount();
+    expect(count).toBe(3);
+
+    const start = Float32Array.from(sim.getDestructibleChunkTransforms());
+    for (let i = 0; i < 120; i += 1) sim.stepDynamics(1 / 60);
+    const end = sim.getDestructibleChunkTransforms();
+
+    // Every chunk must still be present (stress solver keeps them bonded).
+    let maxYDrift = 0;
+    for (let i = 0; i < count; i += 1) {
+      const base = i * CHUNK_TRANSFORM_STRIDE;
+      const present = end[base + 9] ?? 0;
+      expect(present).toBeGreaterThan(0);
+      const dy = Math.abs((end[base + 3] ?? 0) - (start[base + 3] ?? 0));
+      if (dy > maxYDrift) maxYDrift = dy;
+    }
+    // Bonded chunks should not visibly drift under the tiny bond tension.
+    expect(maxYDrift).toBeLessThan(0.05);
 
     sim.free();
   });

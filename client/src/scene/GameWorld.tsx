@@ -75,40 +75,6 @@ import { PLAYER_PROFILE } from './characterAnim/profile';
 import { preload as preloadCharacterAssets } from './characterAnim/sharedAssets';
 import { STATE } from './characterAnim/types';
 
-/**
- * Practice-mode destructible structures.  Injected into the world
- * document at runtime (instead of authored in `trail.world.json`) so
- * the shared physics test suite — which exercises the default world —
- * stays unaffected by the Blast solver.
- *
- * The trail world's practice spawn / vehicles cluster around
- * `(0..8, *, 0)` on flat terrain (`terrain Y ≈ 0` for roughly
- * `x ∈ [-10, 12], z ∈ [-10, 6]`), with a ball pit at
- * `x ∈ [8, 15], z ∈ [8, 15]`.  Positions below are chosen to sit in
- * the flat area a short drive from each vehicle, in their own empty
- * space (no overlap with the second car at `(8, 2, 0)`, the ball pit,
- * or the hilly terrain outside the plaza). The wall is intentionally
- * placed straight ahead of the origin car so `/practice` browser
- * verification can drive into it with a single forward input.
- *
- * Shared destructible spawning now compensates for the upstream fixed
- * support row, so authored positions place the playable structure at
- * ground level instead of leaving that support lip exposed as a curb.
- * The practice coordinates below therefore remain the intuitive
- * authoring values: wall at `y=0`, tower at `y=0.5`.
- */
-const PRACTICE_DESTRUCTIBLES: ReadonlyArray<{
-  id: number;
-  kind: 'wall' | 'tower';
-  position: [number, number, number];
-  rotation: [number, number, number, number];
-}> = [
-  // Wall: 8m straight ahead of the origin vehicle — enter and drive forward.
-  { id: 2000, kind: 'wall', position: [0, 0, 8], rotation: [0, 0, 0, 1] },
-  // Tower: 5m N of the second vehicle at (8, *, 0) — drive forward to hit.
-  { id: 2001, kind: 'tower', position: [10, 0.5, -5], rotation: [0, 0, 0, 1] },
-];
-
 const VEHICLE_INTERACT_RADIUS = 4.0;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
@@ -1089,27 +1055,9 @@ export function GameWorld({
   sceneExtras,
 }: GameWorldProps) {
   const practiceMode = isPracticeMode(mode);
-  // In practice mode we overlay Blast destructibles onto the base world
-  // document so they flow through `loadWorldDocument` → `spawn_wall` /
-  // `spawn_tower` and through `<DestructibleChunks>` rendering without
-  // touching the authored `trail.world.json` (which the shared physics
-  // test suite loads).
-  const effectiveWorldDocument = useMemo(() => {
-    if (!practiceMode) return worldDocument;
-    if (worldDocument.destructibles.length > 0) return worldDocument;
-    return {
-      ...worldDocument,
-      destructibles: PRACTICE_DESTRUCTIBLES.map((d) => ({
-        id: d.id,
-        kind: d.kind,
-        position: [...d.position] as [number, number, number],
-        rotation: [...d.rotation] as [number, number, number, number],
-      })),
-    };
-  }, [practiceMode, worldDocument]);
   const worldJson = useMemo(
-    () => serializeWorldDocument(effectiveWorldDocument),
-    [effectiveWorldDocument],
+    () => serializeWorldDocument(worldDocument),
+    [worldDocument],
   );
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
   const predictionWorldJson = useMemo(
@@ -2477,7 +2425,7 @@ export function GameWorld({
         debugState: destructibleDebugState,
         debugConfig: destructibleDebugConfig,
         loggingEnabled: destructibleLoggingEnabled,
-        spatialMetrics: computeDestructibleSpatialMetrics(effectiveWorldDocument.destructibles, destructibleChunkTransforms),
+        spatialMetrics: computeDestructibleSpatialMetrics(worldDocument.destructibles, destructibleChunkTransforms),
       };
       const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
       for (const [id, rp] of state.remotePlayers) {
@@ -2844,11 +2792,11 @@ export function GameWorld({
         shadow-normalBias={0.03}
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
-      <WorldTerrain world={effectiveWorldDocument} />
-      <WorldStaticProps world={effectiveWorldDocument} />
-      {practiceMode && effectiveWorldDocument.destructibles.length > 0 && (
+      <WorldTerrain world={worldDocument} />
+      <WorldStaticProps world={worldDocument} />
+      {practiceMode && worldDocument.destructibles.length > 0 && (
         <DestructibleChunks
-          world={effectiveWorldDocument}
+          world={worldDocument}
           getChunkTransforms={() => runtimeRef.current?.getDestructibleChunkTransforms() ?? new Float32Array(0)}
         />
       )}

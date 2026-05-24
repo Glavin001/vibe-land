@@ -4,6 +4,7 @@ import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import { App } from '../App';
 import { WorldTerrain } from '../scene/WorldTerrain';
+import { DestructibleAuthoringPreview } from '../scene/DestructibleAuthoringPreview';
 import {
   DEFAULT_WORLD_DOCUMENT,
   DEFAULT_TERRAIN_MATERIALS,
@@ -68,9 +69,11 @@ import {
   type WorldEditHistory,
 } from './godModeHistory';
 import {
+  addDestructibleStructureToWorld,
   addDynamicEntityToWorld,
   addStaticCuboidToWorld,
   clonePlayWorldSnapshot,
+  getSelectedDestructible,
   getSelectedDynamic,
   getSelectedStatic,
   removeSelectedTargetFromWorld,
@@ -426,6 +429,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
 
   const selectedStatic = useMemo(() => getSelectedStatic(world, selected), [selected, world]);
   const selectedDynamic = useMemo(() => getSelectedDynamic(world, selected), [selected, world]);
+  const selectedDestructible = useMemo(() => getSelectedDestructible(world, selected), [selected, world]);
   const selectedTransformEntity = useMemo<SelectedTransformEntity | null>(() => {
     return resolveSelectedTransformEntity(world, selected);
   }, [selected, world]);
@@ -725,6 +729,18 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     }
   }, [applyCommittedWorldEdit]);
 
+  const addDestructibleStructure = useCallback(() => {
+    let nextSelected: SelectedTarget = null;
+    const changed = applyCommittedWorldEdit((current) => {
+      const result = addDestructibleStructureToWorld(current);
+      nextSelected = result.selected;
+      return result.world;
+    });
+    if (changed && nextSelected) {
+      setSelected(nextSelected);
+    }
+  }, [applyCommittedWorldEdit]);
+
   const removeSelected = useCallback(() => {
     if (!selected) {
       return;
@@ -797,6 +813,23 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
   const updateSelectedRotationQuaternion = useCallback((nextRotation: Quaternion) => {
     applyPreviewWorldEdit((current) => updateSelectedTargetRotation(current, selected, nextRotation));
   }, [applyPreviewWorldEdit, selected]);
+
+  const updateSelectedDestructibleFractured = useCallback((nextFractured: boolean) => {
+    if (selected?.kind !== 'destructible') return;
+    const targetId = selected.id;
+    applyCommittedWorldEdit((current) => ({
+      ...current,
+      destructibles: current.destructibles.map((entry) => {
+        if (entry.id !== targetId || entry.kind !== 'structure') return entry;
+        if ((entry.fractured ?? false) === nextFractured) return entry;
+        if (!nextFractured) {
+          const { fractured: _drop, ...rest } = entry;
+          return rest;
+        }
+        return { ...entry, fractured: true };
+      }),
+    }));
+  }, [applyCommittedWorldEdit, selected]);
 
   const canUndo = editHistory.undoStack.length > 0;
   const canRedo = editHistory.redoStack.length > 0;
@@ -1304,6 +1337,7 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                 <button type="button" onClick={() => addDynamicEntity('box')} style={secondaryButtonStyle}>Dynamic Box</button>
                 <button type="button" onClick={() => addDynamicEntity('ball')} style={secondaryButtonStyle}>Ball</button>
                 <button type="button" onClick={() => addDynamicEntity('vehicle')} style={secondaryButtonStyle}>Vehicle</button>
+                <button type="button" onClick={addDestructibleStructure} style={secondaryButtonStyle}>Destructible</button>
               </div>
             </div>
 
@@ -1381,6 +1415,40 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                   onYawChange={updateSelectedYaw}
                   onDelete={removeSelected}
                 />
+              )}
+              {selectedDestructible && (
+                <EditorFields
+                  title={`destructible ${selectedDestructible.kind} ${selectedDestructible.id}`}
+                  position={selectedDestructible.position}
+                  onPositionChange={updateSelectedPosition}
+                  yawDegrees={(yawFromQuaternion(selectedDestructible.rotation) * 180) / Math.PI}
+                  onYawChange={updateSelectedYaw}
+                  onDelete={removeSelected}
+                >
+                  {selectedDestructible.kind === 'structure' ? (
+                    <div style={mutedTextStyle}>
+                      {selectedDestructible.chunks.length} chunk{selectedDestructible.chunks.length === 1 ? '' : 's'}
+                      {' · '}density {selectedDestructible.density ?? 2400} kg/m³
+                      {' · '}solver scale {selectedDestructible.solverMaterialScale ?? 1}
+                      <br />
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedDestructible.fractured === true}
+                          onChange={(event) => updateSelectedDestructibleFractured(event.target.checked)}
+                        />
+                        Fractured (split each chunk into brick-sized sub-chunks at runtime and auto-bond)
+                      </label>
+                      <br />
+                      Use the AI chat to add / remove / tune individual chunks.
+                    </div>
+                  ) : (
+                    <div style={mutedTextStyle}>
+                      Factory {selectedDestructible.kind} — immutable preset. Ask the AI to convert it to a
+                      structure if you want to edit individual chunks.
+                    </div>
+                  )}
+                </EditorFields>
               )}
             </div>
           </>
@@ -1975,6 +2043,12 @@ function GodModeEditorScene({
           centerZ={terrainPointerPoint[2]}
         />
       )}
+      <DestructibleAuthoringPreview
+        world={world}
+        selected={selected}
+        onSelect={onSelect}
+        registerSelectableObject={registerSelectableObject}
+      />
       <group>
         {world.staticProps.map((entity) => (
           <mesh
@@ -2375,6 +2449,7 @@ function EditorFields({
   yawDegrees,
   onYawChange,
   onDelete,
+  children,
 }: {
   title: string;
   position: [number, number, number];
@@ -2389,6 +2464,7 @@ function EditorFields({
   yawDegrees?: number;
   onYawChange?: (value: number) => void;
   onDelete: () => void;
+  children?: React.ReactNode;
 }) {
   return (
     <div style={fieldStackStyle}>
@@ -2433,6 +2509,7 @@ function EditorFields({
           <input type="number" step="1" value={yawDegrees} onChange={(event) => onYawChange(Number(event.target.value))} />
         </label>
       )}
+      {children}
       <button type="button" onClick={onDelete} style={dangerButtonStyle}>Delete</button>
     </div>
   );

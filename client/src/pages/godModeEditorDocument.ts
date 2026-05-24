@@ -1,12 +1,16 @@
 import {
   cloneWorldDocument,
+  DEFAULT_STRUCTURE_DENSITY_KG_M3,
+  DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE,
   getMinimumDynamicEntityY,
   getNextWorldEntityId,
   identityQuaternion,
   sampleTerrainHeightAtWorldPosition,
+  type Destructible,
   type DynamicEntity,
   type Quaternion,
   type StaticProp,
+  type StructureDestructible,
   type Vec3,
   type WorldDocument,
 } from '../world/worldDocument';
@@ -17,10 +21,11 @@ const DEFAULT_EDITOR_VEHICLE_TYPE = getSharedVehicleTypeByKey('cybertruck') ?? 0
 export type SelectedTarget =
   | { kind: 'static'; id: number }
   | { kind: 'dynamic'; id: number }
+  | { kind: 'destructible'; id: number }
   | null;
 
 export type SelectedTransformEntity = {
-  kind: 'static' | 'dynamic';
+  kind: 'static' | 'dynamic' | 'destructible';
   id: number;
   position: Vec3;
   rotation: Quaternion;
@@ -34,9 +39,23 @@ export function selectionExists(world: WorldDocument, selected: SelectedTarget):
   if (!selected) {
     return false;
   }
-  return selected.kind === 'static'
-    ? world.staticProps.some((entity) => entity.id === selected.id)
-    : world.dynamicEntities.some((entity) => entity.id === selected.id);
+  if (selected.kind === 'static') {
+    return world.staticProps.some((entity) => entity.id === selected.id);
+  }
+  if (selected.kind === 'dynamic') {
+    return world.dynamicEntities.some((entity) => entity.id === selected.id);
+  }
+  return world.destructibles.some((entity) => entity.id === selected.id);
+}
+
+export function getSelectedDestructible(
+  world: WorldDocument,
+  selected: SelectedTarget,
+): Destructible | null {
+  if (selected?.kind !== 'destructible') {
+    return null;
+  }
+  return world.destructibles.find((entity) => entity.id === selected.id) ?? null;
 }
 
 export function getSelectedStatic(world: WorldDocument, selected: SelectedTarget): StaticProp | null {
@@ -84,6 +103,18 @@ export function resolveSelectedTransformEntity(
     };
   }
 
+  const selectedDestructible = getSelectedDestructible(world, selected);
+  if (selectedDestructible) {
+    return {
+      kind: 'destructible',
+      id: selectedDestructible.id,
+      position: selectedDestructible.position,
+      rotation: selectedDestructible.rotation,
+      canRotate: true,
+      canResize: false,
+    };
+  }
+
   return null;
 }
 
@@ -106,6 +137,46 @@ export function addStaticCuboidToWorld(
       staticProps: [...current.staticProps, nextStatic],
     },
     selected: { kind: 'static', id: nextId },
+  };
+}
+
+export function addDestructibleStructureToWorld(
+  current: WorldDocument,
+): { world: WorldDocument; selected: SelectedTarget } {
+  const nextId = getNextWorldEntityId(current);
+  const baseY = sampleTerrainHeightAtWorldPosition(current, 0, 0);
+  const seed: StructureDestructible = {
+    id: nextId,
+    kind: 'structure',
+    position: [0, baseY, 0],
+    rotation: identityQuaternion(),
+    density: DEFAULT_STRUCTURE_DENSITY_KG_M3,
+    solverMaterialScale: DEFAULT_STRUCTURE_SOLVER_MATERIAL_SCALE,
+    // Seed with a 2-chunk stack so the bond solver has something to wire
+    // and the native server has something to topple. Bottom is an anchor
+    // so the upper brick rests on a static support.
+    chunks: [
+      {
+        shape: 'box',
+        position: [0, 0.25, 0],
+        rotation: identityQuaternion(),
+        halfExtents: [0.25, 0.25, 0.25],
+        anchor: true,
+      },
+      {
+        shape: 'box',
+        position: [0, 0.75, 0],
+        rotation: identityQuaternion(),
+        halfExtents: [0.25, 0.25, 0.25],
+      },
+    ],
+  };
+  return {
+    world: {
+      ...current,
+      destructibles: [...current.destructibles, seed],
+    },
+    selected: { kind: 'destructible', id: nextId },
   };
 }
 
@@ -149,6 +220,12 @@ export function removeSelectedTargetFromWorld(
       staticProps: current.staticProps.filter((entity) => entity.id !== selected.id),
     };
   }
+  if (selected.kind === 'destructible') {
+    return {
+      ...current,
+      destructibles: current.destructibles.filter((entity) => entity.id !== selected.id),
+    };
+  }
   return {
     ...current,
     dynamicEntities: current.dynamicEntities.filter((entity) => entity.id !== selected.id),
@@ -169,6 +246,16 @@ export function updateSelectedTargetPosition(
       staticProps: current.staticProps.map((entity) => (
         entity.id === selected.id
           ? { ...entity, position: nextPosition }
+          : entity
+      )),
+    };
+  }
+  if (selected.kind === 'destructible') {
+    return {
+      ...current,
+      destructibles: current.destructibles.map((entity) => (
+        entity.id === selected.id
+          ? ({ ...entity, position: nextPosition } as Destructible)
           : entity
       )),
     };
@@ -274,6 +361,16 @@ export function updateSelectedTargetRotation(
       staticProps: current.staticProps.map((entity) => (
         entity.id === selected.id
           ? { ...entity, rotation: nextRotation }
+          : entity
+      )),
+    };
+  }
+  if (selected.kind === 'destructible') {
+    return {
+      ...current,
+      destructibles: current.destructibles.map((entity) => (
+        entity.id === selected.id
+          ? ({ ...entity, rotation: nextRotation } as Destructible)
           : entity
       )),
     };
