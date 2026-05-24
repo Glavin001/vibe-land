@@ -315,9 +315,7 @@ impl ChunkDoc {
             Self::Box { half_extents, .. } => {
                 8.0 * half_extents[0] * half_extents[1] * half_extents[2]
             }
-            Self::Sphere { radius, .. } => {
-                (4.0 / 3.0) * std::f32::consts::PI * radius.powi(3)
-            }
+            Self::Sphere { radius, .. } => (4.0 / 3.0) * std::f32::consts::PI * radius.powi(3),
             Self::Capsule { radius, height, .. } => {
                 let sphere = (4.0 / 3.0) * std::f32::consts::PI * radius.powi(3);
                 let cyl = std::f32::consts::PI * radius.powi(2) * *height;
@@ -335,9 +333,7 @@ impl ChunkDoc {
             Self::Sphere { radius, .. } => [*radius, *radius, *radius],
             // Capsule aligned along local Y: caps extend beyond `height/2`
             // by `radius` on top and bottom.
-            Self::Capsule { radius, height, .. } => {
-                [*radius, height * 0.5 + *radius, *radius]
-            }
+            Self::Capsule { radius, height, .. } => [*radius, height * 0.5 + *radius, *radius],
         }
     }
 }

@@ -339,19 +339,27 @@ impl PhysicsArena {
     #[cfg(target_arch = "wasm32")]
     pub fn spawn_destructible(&mut self, doc: &crate::world_document::DestructibleDoc) -> bool {
         match doc {
-            crate::world_document::DestructibleDoc::Wall { id, position, rotation } => {
+            crate::world_document::DestructibleDoc::Wall {
+                id,
+                position,
+                rotation,
+            } => {
                 let pose = pose_from_world_doc(DestructibleKind::Wall, *position, *rotation);
                 self.destructibles
                     .spawn_wall(&mut self.dynamic.sim, *id, pose)
             }
-            crate::world_document::DestructibleDoc::Tower { id, position, rotation } => {
+            crate::world_document::DestructibleDoc::Tower {
+                id,
+                position,
+                rotation,
+            } => {
                 let pose = pose_from_world_doc(DestructibleKind::Tower, *position, *rotation);
                 self.destructibles
                     .spawn_tower(&mut self.dynamic.sim, *id, pose)
             }
-            crate::world_document::DestructibleDoc::Structure { .. } => {
-                self.destructibles.spawn_structure(&mut self.dynamic.sim, doc)
-            }
+            crate::world_document::DestructibleDoc::Structure { .. } => self
+                .destructibles
+                .spawn_structure(&mut self.dynamic.sim, doc),
         }
     }
 
@@ -371,10 +379,7 @@ impl PhysicsArena {
         let doc_rot = doc.rotation();
         let doc_id = doc.id();
         let rot = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-            doc_rot[3],
-            doc_rot[0],
-            doc_rot[1],
-            doc_rot[2],
+            doc_rot[3], doc_rot[0], doc_rot[1], doc_rot[2],
         ));
         let chunks = match doc {
             crate::world_document::DestructibleDoc::Wall { .. }

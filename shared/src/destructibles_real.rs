@@ -298,7 +298,10 @@ fn chunk_unit_rotation(chunk: &DocChunk) -> UnitQuaternion<f32> {
     UnitQuaternion::from_quaternion(q)
 }
 
-fn box_piece_triangles(half_extents: [f32; 3], rot: &UnitQuaternion<f32>) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
+fn box_piece_triangles(
+    half_extents: [f32; 3],
+    rot: &UnitQuaternion<f32>,
+) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
     let hx = half_extents[0];
     let hy = half_extents[1];
     let hz = half_extents[2];
@@ -329,7 +332,10 @@ fn box_piece_triangles(half_extents: [f32; 3], rot: &UnitQuaternion<f32>) -> (Ve
     (triangles, corners)
 }
 
-fn sphere_piece_triangles(radius: f32, rot: &UnitQuaternion<f32>) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
+fn sphere_piece_triangles(
+    radius: f32,
+    rot: &UnitQuaternion<f32>,
+) -> (Vec<BlastVec3>, Vec<BlastVec3>) {
     // 8-face octahedron is enough for bonding-surface coverage at low radius.
     let r = radius;
     let raw_pts = [
@@ -422,11 +428,7 @@ fn chunk_to_piece(chunk: &DocChunk, density: f32) -> ScenarioPiece {
     };
 
     let aabb = chunk.aabb_half_extents();
-    let node_size = Some(BlastVec3::new(
-        aabb[0] * 2.0,
-        aabb[1] * 2.0,
-        aabb[2] * 2.0,
-    ));
+    let node_size = Some(BlastVec3::new(aabb[0] * 2.0, aabb[1] * 2.0, aabb[2] * 2.0));
 
     let (local_triangles, hull_points, collider_shape) = match chunk {
         DocChunk::Box { half_extents, .. } => {
@@ -454,7 +456,11 @@ fn chunk_to_piece(chunk: &DocChunk, density: f32) -> ScenarioPiece {
         }
         DocChunk::Capsule { radius, height, .. } => {
             let (tris, pts) = capsule_piece_triangles(*radius, *height, &rotation);
-            (tris, pts.clone(), Some(ScenarioCollider::ConvexHull { points: pts }))
+            (
+                tris,
+                pts.clone(),
+                Some(ScenarioCollider::ConvexHull { points: pts }),
+            )
         }
     };
 
@@ -469,7 +475,9 @@ fn chunk_to_piece(chunk: &DocChunk, density: f32) -> ScenarioPiece {
         (DocChunk::Sphere { .. }, _) => {
             // Translate hull points to sit at origin in body-local frame
             // (centroid is applied separately via node pose); leave as-is.
-            Some(ScenarioCollider::ConvexHull { points: hull_points })
+            Some(ScenarioCollider::ConvexHull {
+                points: hull_points,
+            })
         }
         (_, other) => other,
     };
