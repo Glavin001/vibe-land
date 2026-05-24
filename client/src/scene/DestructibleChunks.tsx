@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import type { Chunk, Destructible, WorldDocument } from '../world/worldDocument';
+import type { Chunk, WorldDocument } from '../world/worldDocument';
+import { fractureChunks } from '../world/destructibleFactory';
 
 /**
  * Stride of the chunk transforms buffer produced by
@@ -119,8 +120,17 @@ export function DestructibleChunks({ world, getChunkTransforms }: DestructibleCh
       // Structure: group chunks by a (shape + size) key so each unique
       // geometry gets its own InstancedMesh. Slot order = order within the
       // group (not global chunk index), so we record the mapping.
+      //
+      // When `fractured` is true the WASM side subdivides each authored
+      // box chunk into brick-sized sub-chunks at spawn (see
+      // `fracture_chunks_default` in `destructibles_fracture.rs`), and the
+      // chunk indices returned by `get_destructible_chunk_transforms` index
+      // into that expanded list — not the authored one. Mirror the same
+      // expansion on the client so the visual chunks line up 1:1 with the
+      // physics chunks.
+      const renderChunks: Chunk[] = doc.fractured ? fractureChunks(doc.chunks) : doc.chunks;
       const groupByKey = new Map<string, { key: string; indices: number[]; geom: THREE.BufferGeometry }>();
-      doc.chunks.forEach((chunk: Chunk, index: number) => {
+      renderChunks.forEach((chunk: Chunk, index: number) => {
         const key = chunkGeometryKey(chunk);
         const existing = groupByKey.get(key);
         if (existing) {
