@@ -26,16 +26,21 @@ import type { GameRuntimeClient } from '../runtime/gameRuntime';
 // the whole rig — and every spawned ragdoll body — starts sunk into the ground and
 // collides immediately.
 const STAND_Y = 0.8;
-const SPAWN = new THREE.Vector3(10, STAND_Y, 8);
+// z=0 keeps us on the flat centre of the demo terrain but OUTSIDE the ball-pit
+// walls (which sit around z 7.5–15.5), so the car has a clear run at the player.
+const SPAWN = new THREE.Vector3(10, STAND_Y, 0);
 // A "car" body id that can't collide with the player's ragdoll body ids.
 const CAR_ID = 0xc0ff_0001;
 const CAR_HALF = new THREE.Vector3(1.0, 0.5, 1.7);
+const CAR_SPEED = 13; // m/s, +X toward the player
 
 type ScenarioKey = 'idle' | 'run' | 'fall' | 'car';
 
 export interface LabApi {
   run(scenario: ScenarioKey): void;
   respawn(): void;
+  playClip(name: string): void;
+  ragdollNow(): void;
 }
 
 interface SceneState {
@@ -54,6 +59,8 @@ interface SceneState {
   convertAt: number | null;
   convertVel: THREE.Vector3;
   carAt: number | null;
+  // While true the body stays animated until the car reaches it, then ragdolls.
+  carKillPending: boolean;
   // Rapier debug wireframe.
   debugLines: THREE.LineSegments | null;
   dbgPos: Float32Array;
@@ -77,6 +84,7 @@ function newSceneState(): SceneState {
     convertAt: null,
     convertVel: new THREE.Vector3(),
     carAt: null,
+    carKillPending: false,
   };
 }
 
@@ -86,12 +94,14 @@ function RagdollScene({
   timeScaleRef,
   debugRef,
   onStatus,
+  onClips,
 }: {
   apiRef: MutableRefObject<LabApi | null>;
   frozenRef: MutableRefObject<boolean>;
   timeScaleRef: MutableRefObject<number>;
   debugRef: MutableRefObject<boolean>;
   onStatus: (s: string) => void;
+  onClips: (names: string[]) => void;
 }) {
   const { scene } = useThree();
   const stRef = useRef<SceneState>(newSceneState());
@@ -145,6 +155,12 @@ function RagdollScene({
         st.handle = handle;
         st.ready = true;
         onStatus('Ready — pick a scenario');
+        const reportClips = () => {
+          const names = handle.clipNames();
+          if (names.length) onClips(names.slice().sort());
+          else if (!disposed) setTimeout(reportClips, 100);
+        };
+        reportClips();
       })
       .catch((err) => {
         console.error('[RagdollLab] failed to init', err);
@@ -174,36 +190,47 @@ function RagdollScene({
       st.preState = STATE.idle;
       st.preSpeed = 0;
       st.convertAt = null;
+      st.carKillPending = false;
       removeCar();
     };
 
+    // The rig's local +Z is its forward (left arm sits at +X, so right = -X).
+    const forward = () =>
+      new THREE.Vector3(0, 0, 1).applyQuaternion(st.handle!.root.quaternion).normalize();
+
     const api: LabApi = {
       run(scenario) {
-        if (!st.ready) return;
+        if (!st.ready || !st.handle) return;
         switch (scenario) {
           case 'idle':
             resetToSpawn(STAND_Y);
             toRagdoll(new THREE.Vector3(0, 0, 0));
             onStatus('Idle collapse — crumples straight down');
             break;
-          case 'run':
-            // Show a running stride, then collapse forward with momentum.
+          case 'run': {
+            // Show a running stride, then collapse forward (the way it faces).
+            // Turn to face +X so the forward tumble plays out across the open
+            // ground (left→right) in frame instead of into/away-from the camera.
             resetToSpawn(STAND_Y);
+            st.handle.root.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
             st.preState = STATE.move;
             st.preSpeed = 7;
             st.convertAt = performance.now() + 750;
-            st.convertVel.set(6, 1.5, 0);
+            st.convertVel.copy(forward()).multiplyScalar(6).setY(1.5);
             onStatus('Run & tumble — running, then collapses forward…');
             break;
+          }
           case 'fall':
             resetToSpawn(3.5);
             toRagdoll(new THREE.Vector3(0, 0, 0));
             onStatus('Fall from height — drops and settles on the ground');
             break;
           case 'car': {
+            // Stay ALIVE/animated; the car spawns aimed at the player and only
+            // kills (ragdolls) on contact.
             resetToSpawn(STAND_Y);
-            toRagdoll(new THREE.Vector3(0, 0, 0));
-            st.carAt = performance.now() + 120;
+            st.carAt = performance.now() + 60;
+            st.carKillPending = true;
             onStatus('Hit by a "car" — incoming!');
             break;
           }
@@ -213,6 +240,17 @@ function RagdollScene({
         if (!st.ready) return;
         resetToSpawn(STAND_Y);
         onStatus('Respawned — back to live animation');
+      },
+      playClip(name) {
+        if (!st.ready || !st.handle) return;
+        resetToSpawn(STAND_Y); // ensure animated (also clears any active ragdoll)
+        st.handle.playOneShot(name);
+        onStatus(`Playing "${name}" — hit Ragdoll to drop from this pose`);
+      },
+      ragdollNow() {
+        if (!st.ready || st.mode === 'ragdoll') return;
+        toRagdoll(new THREE.Vector3(0, 0, 0));
+        onStatus('Ragdoll — dropped from the current animation pose');
       },
     };
     apiRef.current = api;
@@ -236,7 +274,7 @@ function RagdollScene({
       }
       stRef.current = newSceneState();
     };
-  }, [scene, apiRef, onStatus]);
+  }, [scene, apiRef, onStatus, onClips]);
 
   useFrame((_, dtRaw) => {
     const st = stRef.current;
@@ -251,10 +289,12 @@ function RagdollScene({
     }
     if (st.carAt != null && now >= st.carAt) {
       st.carAt = null;
-      // spawn car via closure-free path: replicate spawnCar inline
+      // Spawn the car a short distance to the player's -X, aimed straight at them.
+      // Its velocity is force-held level/straight each frame until contact (below)
+      // so it can't bite the ground, tip, or decelerate before it arrives.
       const w = st.world;
       w.removeRagdollBody(CAR_ID);
-      const px = SPAWN.x - 8;
+      const px = SPAWN.x - 5;
       const py = CAR_HALF.y + 0.05;
       const pz = SPAWN.z;
       w.spawnRagdollBody(
@@ -262,7 +302,7 @@ function RagdollScene({
         CAR_HALF.x, CAR_HALF.y, CAR_HALF.z,
         px, py, pz,
         0, 0, 0, 1,
-        16, 0, 0,
+        CAR_SPEED, 0, 0,
         0, 0, 0,
       );
       st.carActive = true;
@@ -277,6 +317,22 @@ function RagdollScene({
 
     // Physics step (skipped while frozen so you can inspect the exact snapshot).
     if (!frozenRef.current) st.world.advance(dt);
+
+    // Car impact: while the player is still alive, ragdoll only once the car's
+    // leading edge reaches them — then the moving car body plows into the fresh
+    // ragdoll and launches it.
+    if (st.carKillPending && st.carActive && st.mode === 'animate') {
+      // Hold the car on a straight, level course at constant speed so nothing
+      // slows or tips it before it reaches the player.
+      st.world.setRagdollBodyVelocity(CAR_ID, CAR_SPEED, 0, 0, 0, 0, 0);
+      const cs = st.world.getRagdollBodyState(CAR_ID);
+      if (cs && cs[0] + CAR_HALF.x >= SPAWN.x - 0.4) {
+        // Contact: kill now and release the car (keeps its momentum) to plow through.
+        st.carKillPending = false;
+        st.handle.setRagdoll(true, new THREE.Vector3(CAR_SPEED * 0.35, 1.2, 0));
+        st.mode = 'ragdoll';
+      }
+    }
 
     // Drive the character. While ragdoll is active, update() reads physics and
     // ignores the state/speed args; otherwise it plays the requested animation.
@@ -344,6 +400,8 @@ export function RagdollLabPage() {
   const [frozen, setFrozen] = useState(false);
   const [timeScale, setTimeScale] = useState(1);
   const [debug, setDebug] = useState(false);
+  const [clips, setClips] = useState<string[]>([]);
+  const [selectedClip, setSelectedClip] = useState<string | null>(null);
 
   useEffect(() => {
     frozenRef.current = frozen;
@@ -371,7 +429,7 @@ export function RagdollLabPage() {
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#0b1018' }}>
-      <Canvas shadows camera={{ position: [SPAWN.x + 5, 3, SPAWN.z + 6], fov: 50 }}>
+      <Canvas shadows camera={{ position: [SPAWN.x + 1, 5, SPAWN.z + 13], fov: 52 }}>
         <Sky sunPosition={[20, 30, 10]} />
         <ambientLight intensity={0.6} />
         <directionalLight
@@ -402,8 +460,9 @@ export function RagdollLabPage() {
           timeScaleRef={timeScaleRef}
           debugRef={debugRef}
           onStatus={setStatus}
+          onClips={setClips}
         />
-        <OrbitControls makeDefault target={[SPAWN.x, 1, SPAWN.z]} maxDistance={40} minDistance={2} />
+        <OrbitControls makeDefault target={[SPAWN.x + 1, 1, SPAWN.z]} maxDistance={40} minDistance={2} />
       </Canvas>
 
       <div
@@ -452,6 +511,47 @@ export function RagdollLabPage() {
             onChange={(e) => setTimeScale(parseFloat(e.target.value))}
             style={{ width: '100%' }}
           />
+        </div>
+
+        <div style={{ marginTop: 12, borderTop: '1px solid #26344a', paddingTop: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+            Animations {clips.length ? `(${clips.length})` : '…'}
+          </div>
+          <button
+            style={{ ...btn, background: '#3a1f2b', borderColor: '#7a3450', fontWeight: 600 }}
+            onClick={() => apiRef.current?.ragdollNow()}
+          >
+            💀 Ragdoll now (drop from current pose)
+          </button>
+          <div
+            style={{
+              maxHeight: 200,
+              overflowY: 'auto',
+              border: '1px solid #26344a',
+              borderRadius: 6,
+              padding: 4,
+            }}
+          >
+            {clips.map((name) => (
+              <button
+                key={name}
+                onClick={() => {
+                  setSelectedClip(name);
+                  apiRef.current?.playClip(name);
+                }}
+                style={{
+                  ...btn,
+                  marginBottom: 3,
+                  padding: '5px 8px',
+                  fontSize: 12,
+                  background: selectedClip === name ? '#234' : 'transparent',
+                  border: 'none',
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div style={{ fontSize: 11, opacity: 0.6, marginTop: 10 }}>Drag to orbit · scroll to zoom</div>
