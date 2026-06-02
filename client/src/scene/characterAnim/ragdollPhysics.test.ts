@@ -119,14 +119,36 @@ describe('Ragdoll physics integration (WASM)', () => {
     expect(maxRel).toBeLessThan(0.7);
   });
 
+  it('stays stable even when activated from the raw bind/T-pose', async () => {
+    // The limb hinges (elbows/knees) align their frames to the death pose, so even
+    // the worst case — perfectly straight limbs in the bind/T-pose — must not
+    // explode. (Before that fix this blew the ragdoll thousands of metres apart.)
+    const sim = makeSim();
+    const model = await loadRealCharacterModel(new THREE.Group());
+    model.root.position.y += 1.2; // no posing: raw bind/T-pose
+    const ragdoll = new Ragdoll(model, 1, adaptRuntime(sim));
+    ragdoll.activate(new THREE.Vector3());
+
+    const ids = RAGDOLL_PARTS.map((p) => bodyId(1, PART_INDEX[p]));
+    for (let i = 0; i < 120; i++) {
+      sim.stepDynamics(1 / 60);
+      const pelvis = sim.getRagdollBodyState(ids[0]) as Float64Array;
+      for (const id of ids) {
+        const s = sim.getRagdollBodyState(id) as Float64Array;
+        expect(Number.isFinite(s[0]) && Number.isFinite(s[1]) && Number.isFinite(s[2])).toBe(true);
+        const d = Math.hypot(s[0] - pelvis[0], s[1] - pelvis[1], s[2] - pelvis[2]);
+        expect(d, `spread at step ${i}`).toBeLessThan(2.0);
+      }
+    }
+  });
+
   it('collapses a full ragdoll into a coherent, settling pile', async () => {
     const sim = makeSim();
     const runtime = adaptRuntime(sim);
     // Load the REAL shipped rig through the production CharacterModel pipeline, so
     // this end-to-end collapse is exactly what /play and /practice run on death.
     const model = await loadRealCharacterModel(new THREE.Group());
-    // Pose with a real clip first — production always ragdolls from an animation
-    // pose, never the raw bind/T-pose (a degenerate case for the limb hinges).
+    // A real animation pose, like production (also covered: the bind pose above).
     poseWithClip(model, 'Death01', 0.7);
 
     // CharacterModel builds at the capsule-centre frame (feet ~0.7 m below the

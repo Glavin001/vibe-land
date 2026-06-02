@@ -958,14 +958,40 @@ impl WasmSimWorld {
             return;
         };
         let axis = nalgebra::Unit::new_normalize(vector![ax, ay, az]);
-        let joint = RevoluteJointBuilder::new(axis)
-            .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
-            .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
+
+        // Capture the bodies' spawn orientations so the hinge frames can be aligned
+        // to the death pose. Without this the builder leaves the two frames'
+        // locked axes mutually mis-aligned whenever the limbs aren't already
+        // parallel, and the solver yanks them together — for straight-limb poses
+        // (e.g. an extended arm) that correction explodes the ragdoll.
+        let (q1, q2) = match (
+            self.sim.rigid_bodies.get(b1h),
+            self.sim.rigid_bodies.get(b2h),
+        ) {
+            (Some(rb1), Some(rb2)) => (*rb1.rotation(), *rb2.rotation()),
+            _ => (UnitQuaternion::identity(), UnitQuaternion::identity()),
+        };
+
+        let mut joint = RevoluteJointBuilder::new(axis)
             .limits([limit_min, limit_max])
             // See spherical joint: jointed bodies overlap, so disable their mutual
             // contacts to keep the solver stable.
             .contacts_enabled(false)
             .build();
+
+        // The builder derived both local frames' basis from `axis`. Re-anchor
+        // frame1 and rotate frame2 so the two frames coincide in world at spawn:
+        // then the joint's locked axes are satisfied at the death pose (no snap)
+        // and the hinge angle / limits are measured relative to it.
+        let f1 = joint.data.local_frame1.rotation;
+        let world_hinge_frame = q1 * f1;
+        joint.data.local_frame1 =
+            nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(a1x, a1y, a1z), f1);
+        joint.data.local_frame2 = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(a2x, a2y, a2z),
+            q2.inverse() * world_hinge_frame,
+        );
+
         let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
         self.ragdoll_joint_handles.insert(joint_id, handle);
     }

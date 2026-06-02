@@ -103,22 +103,20 @@ describe('Ragdoll conversion on the real UAL rig', () => {
     }
   });
 
-  it('connects every joint at near-coincident anchors on the real rig', async () => {
+  it('connects every joint at coincident anchors on the real rig', async () => {
     const { runtime, bodies, joints } = makeMockRuntime();
     new Ragdoll(await freshModel(), 1, runtime).activate(new THREE.Vector3());
 
     const gap = (j: SpawnedJoint) =>
       anchorWorld(bodies.get(j.b1)!, j.a1).distanceTo(anchorWorld(bodies.get(j.b2)!, j.a2));
 
+    // Anchors are derived from the real bone joint position and expressed in each
+    // body's frame, so the two anchors land on the same world point (to float
+    // precision) for every joint — no on-death tug, on whatever rig is loaded.
     for (const j of joints) {
       const g = gap(j);
       expect(Number.isFinite(g)).toBe(true);
-      // KNOWN: the shoulder/hip anchors on the torso/pelvis are heuristic
-      // (torso.hx / pelvis.hx*0.5) and don't match real UAL proportions — they
-      // start ~0.32 m (shoulders) / ~0.17 m (hips) apart, so the solver tugs the
-      // limbs in slightly on death. Tracked as a follow-up (compute anchors from
-      // bone origins). This bound guards against that getting worse.
-      expect(g, `joint anchor gap ${j.b1}->${j.b2}`).toBeLessThan(0.4);
+      expect(g, `joint anchor gap ${j.b1}->${j.b2}`).toBeLessThan(1e-4);
     }
   });
 
