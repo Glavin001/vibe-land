@@ -892,6 +892,12 @@ impl WasmSimWorld {
         let joint = SphericalJointBuilder::new()
             .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
             .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
+            // Disable contacts between the two jointed bodies: their boxes overlap
+            // at the joint, so leaving contacts on makes the contact solver fight
+            // the joint — pushing limbs out of a natural resting/folded pose and
+            // adding needless solver work. Non-adjacent ragdoll parts (and
+            // terrain/vehicles) still collide via their collision groups.
+            .contacts_enabled(false)
             .build();
         let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
         self.ragdoll_joint_handles.insert(joint_id, handle);
@@ -927,6 +933,9 @@ impl WasmSimWorld {
             .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
             .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
             .limits([limit_min, limit_max])
+            // See spherical joint: jointed bodies overlap, so disable their mutual
+            // contacts to keep the solver stable.
+            .contacts_enabled(false)
             .build();
         let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
         self.ragdoll_joint_handles.insert(joint_id, handle);

@@ -94,26 +94,27 @@ export const JOINT_DEFS: JointDef[] = [
     a1: [0, -(PART_CONFIG.head.hy + C),  0],
     a2: [0,  (PART_CONFIG.torso.hy + C), 0],
   },
-  // Left shoulder: upperArmL proximal ↔ torso left side
+  // Left shoulder: upperArmL proximal ↔ torso left side.
+  // +Y = distal (toward elbow), so the shoulder/proximal end is -Y (mirrors hip).
   {
     type: 'spherical',
     b1: 'upperArmL', b2: 'torso',
-    a1: [0, (PART_CONFIG.upperArmL.hy + C), 0],
+    a1: [0, -(PART_CONFIG.upperArmL.hy + C), 0],
     a2: [-(PART_CONFIG.torso.hx + C), PART_CONFIG.torso.hy * 0.6, 0],
   },
   // Right shoulder: upperArmR proximal ↔ torso right side
   {
     type: 'spherical',
     b1: 'upperArmR', b2: 'torso',
-    a1: [0, (PART_CONFIG.upperArmR.hy + C), 0],
+    a1: [0, -(PART_CONFIG.upperArmR.hy + C), 0],
     a2: [(PART_CONFIG.torso.hx + C), PART_CONFIG.torso.hy * 0.6, 0],
   },
-  // Left elbow (revolute Z)
+  // Left elbow (revolute Z): lowerArm proximal (-Y) ↔ upperArm distal (+Y), mirrors knee.
   {
     type: 'revolute',
     b1: 'lowerArmL', b2: 'upperArmL',
-    a1: [0, (PART_CONFIG.lowerArmL.hy + C), 0],
-    a2: [0, -(PART_CONFIG.upperArmL.hy + C), 0],
+    a1: [0, -(PART_CONFIG.lowerArmL.hy + C), 0],
+    a2: [0, (PART_CONFIG.upperArmL.hy + C), 0],
     axis: [0, 0, 1],
     limits: [-2.4, 0.1],
   },
@@ -121,8 +122,8 @@ export const JOINT_DEFS: JointDef[] = [
   {
     type: 'revolute',
     b1: 'lowerArmR', b2: 'upperArmR',
-    a1: [0, (PART_CONFIG.lowerArmR.hy + C), 0],
-    a2: [0, -(PART_CONFIG.upperArmR.hy + C), 0],
+    a1: [0, -(PART_CONFIG.lowerArmR.hy + C), 0],
+    a2: [0, (PART_CONFIG.upperArmR.hy + C), 0],
     axis: [0, 0, 1],
     limits: [-2.4, 0.1],
   },

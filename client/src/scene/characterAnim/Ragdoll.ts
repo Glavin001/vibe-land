@@ -97,10 +97,13 @@ export class Ragdoll {
       }
       bone.updateWorldMatrix(true, false);
 
-      // Bone world position + quaternion.
-      bone.getWorldPosition(_v0);
+      // Bone world position + quaternion. Decompose (rather than
+      // setFromRotationMatrix) so the rig's uniform scale is stripped out and we
+      // get a true *unit* quaternion — setFromRotationMatrix on a scaled matrix
+      // yields a non-unit quaternion, which then corrupts the offset/rotOffset
+      // calibration below (THREE's invert/applyQuaternion assume unit length).
+      bone.matrixWorld.decompose(_v0, _q0, _v1);
       const boneWorldPos = _v0.clone();
-      _q0.setFromRotationMatrix(bone.matrixWorld);
       const boneWorldQuat = _q0.clone();
 
       // Tip position: defines body +Y axis direction.
@@ -138,33 +141,21 @@ export class Ragdoll {
 
       const bId = bodyId(this.playerId, PART_INDEX[part]);
 
+      // Every part inherits the player's last-frame linear velocity so the
+      // ragdoll hands off as one cohesive body (no "limbs left behind" jolt),
+      // then collapses under gravity + joint constraints. A small random spin
+      // adds natural tumble; the core (pelvis/torso) gets a slightly larger kick.
+      const spin = part === 'pelvis' || part === 'torso' ? 1.2 : 0.6;
       this.runtime.spawnRagdollBody(
         bId,
         cfg.hx * s, cfg.hy * s, cfg.hz * s,
         bodyWorldPos.x, bodyWorldPos.y, bodyWorldPos.z,
         bodyOrientQuat.x, bodyOrientQuat.y, bodyOrientQuat.z, bodyOrientQuat.w,
-        0, 0, 0,
-        0, 0, 0,
+        seedVelocity.x, seedVelocity.y, seedVelocity.z,
+        (Math.random() - 0.5) * 2 * spin,
+        (Math.random() - 0.5) * 2 * spin,
+        (Math.random() - 0.5) * 2 * spin,
       );
-
-      // Only the torso carries the player's last-frame velocity; limbs are
-      // dragged along by joints for a natural shot reaction.
-      if (part === 'torso') {
-        this.runtime.setRagdollBodyVelocity(
-          bId,
-          seedVelocity.x, seedVelocity.y, seedVelocity.z,
-          0, 0, 0,
-        );
-      } else if (part === 'pelvis') {
-        // Small random angular kick for natural tumble (no linear velocity).
-        this.runtime.setRagdollBodyVelocity(
-          bId,
-          0, 0, 0,
-          (Math.random() - 0.5) * 4,
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 4,
-        );
-      }
 
       this.calibrations.set(part, { bone: bone as THREE.Bone, posOffsetInBone, rotOffset, bId });
     }
