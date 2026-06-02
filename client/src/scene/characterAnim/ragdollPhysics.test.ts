@@ -119,6 +119,34 @@ describe('Ragdoll physics integration (WASM)', () => {
     expect(maxRel).toBeLessThan(0.7);
   });
 
+  it('keeps the feet on the ground (foot colliders, no poke-through)', async () => {
+    const sim = makeSim();
+    const model = await loadRealCharacterModel(new THREE.Group());
+    // Bind pose = legs straight down, feet pointing at the floor — the worst case
+    // for the foot mesh poking through (terrain is flat y=0 around the origin).
+    model.root.position.y += 1.0;
+    const ragdoll = new Ragdoll(model, 1, adaptRuntime(sim));
+    ragdoll.activate(new THREE.Vector3());
+
+    const toeBones = ['foot_l', 'ball_l', 'ball_leaf_l', 'foot_r', 'ball_r', 'ball_leaf_r']
+      .map((n) => model.root.getObjectByName(n))
+      .filter((b): b is THREE.Object3D => !!b);
+    const p = new THREE.Vector3();
+    let minY = Infinity;
+    for (let i = 0; i < 240; i++) {
+      sim.stepDynamics(1 / 60);
+      ragdoll.update();
+      model.root.updateMatrixWorld(true);
+      for (const b of toeBones) {
+        b.getWorldPosition(p);
+        minY = Math.min(minY, p.y);
+      }
+    }
+    // With the foot bodies the toes are caught at the surface (a few mm of collider
+    // margin). Without them the unsupported toe sank well below the floor.
+    expect(minY).toBeGreaterThan(-0.05);
+  });
+
   it('stays stable even when activated from the raw bind/T-pose', async () => {
     // The limb hinges (elbows/knees) align their frames to the death pose, so even
     // the worst case — perfectly straight limbs in the bind/T-pose — must not

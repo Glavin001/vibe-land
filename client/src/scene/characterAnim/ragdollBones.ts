@@ -1,5 +1,9 @@
 // Ragdoll body configuration for Quaternius Universal Animation Library (UAL) rig.
-// 11 box bodies, 10 impulse joints — mirroring vibe-city Ragdoll.tsx topology.
+// 13 box bodies, 12 impulse joints — mirroring vibe-city Ragdoll.tsx topology,
+// plus a foot body per leg so the feet collide with the ground instead of the
+// foot mesh poking through below the shin collider.
+//
+// Note: body/joint IDs pack the index into 4 bits, so keep both lists ≤ 16.
 
 export const RAGDOLL_PARTS = [
   'pelvis',
@@ -11,8 +15,10 @@ export const RAGDOLL_PARTS = [
   'lowerArmR',
   'thighL',
   'shinL',
+  'footL',
   'thighR',
   'shinR',
+  'footR',
 ] as const;
 
 export type RagdollPart = (typeof RAGDOLL_PARTS)[number];
@@ -41,8 +47,11 @@ export const PART_CONFIG: Record<RagdollPart, PartConfig> = {
   lowerArmR: { bone: 'lowerarm_r', tipBone: 'hand_r',    hx: 0.07,  hy: 0.14,  hz: 0.07 },
   thighL:    { bone: 'thigh_l',    tipBone: 'calf_l',    hx: 0.08,  hy: 0.21,  hz: 0.08 },
   shinL:     { bone: 'calf_l',     tipBone: 'foot_l',    hx: 0.08,  hy: 0.21,  hz: 0.08 },
+  // Foot: +Y runs ankle(foot_l)→toe(ball_l); hz gives it a little sole thickness.
+  footL:     { bone: 'foot_l',     tipBone: 'ball_l',    hx: 0.05,  hy: 0.10,  hz: 0.06 },
   thighR:    { bone: 'thigh_r',    tipBone: 'calf_r',    hx: 0.08,  hy: 0.21,  hz: 0.08 },
   shinR:     { bone: 'calf_r',     tipBone: 'foot_r',    hx: 0.08,  hy: 0.21,  hz: 0.08 },
+  footR:     { bone: 'foot_r',     tipBone: 'ball_r',    hx: 0.05,  hy: 0.10,  hz: 0.06 },
 };
 
 // Part index in RAGDOLL_PARTS array — used for stable ID computation.
@@ -102,4 +111,7 @@ export const JOINT_DEFS: JointDef[] = [
   // Knees (hinge about b1 body-local Z)
   { type: 'revolute', b1: 'shinL', b2: 'thighL', axis: [0, 0, 1], limits: [-2.6, 0.05] },
   { type: 'revolute', b1: 'shinR', b2: 'thighR', axis: [0, 0, 1], limits: [-2.6, 0.05] },
+  // Ankles: foot ↔ shin (hinge about b1 body-local Z, modest range)
+  { type: 'revolute', b1: 'footL', b2: 'shinL', axis: [0, 0, 1], limits: [-0.7, 0.7] },
+  { type: 'revolute', b1: 'footR', b2: 'shinR', axis: [0, 0, 1], limits: [-0.7, 0.7] },
 ];
