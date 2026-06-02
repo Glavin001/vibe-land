@@ -54,6 +54,10 @@ interface SceneState {
   convertAt: number | null;
   convertVel: THREE.Vector3;
   carAt: number | null;
+  // Rapier debug wireframe.
+  debugLines: THREE.LineSegments | null;
+  dbgPos: Float32Array;
+  dbgCol: Float32Array;
 }
 
 function newSceneState(): SceneState {
@@ -65,6 +69,9 @@ function newSceneState(): SceneState {
     mode: 'animate',
     preState: STATE.idle,
     preSpeed: 0,
+    debugLines: null,
+    dbgPos: new Float32Array(0),
+    dbgCol: new Float32Array(0),
     carMesh: null,
     carActive: false,
     convertAt: null,
@@ -77,11 +84,13 @@ function RagdollScene({
   apiRef,
   frozenRef,
   timeScaleRef,
+  debugRef,
   onStatus,
 }: {
   apiRef: MutableRefObject<LabApi | null>;
   frozenRef: MutableRefObject<boolean>;
   timeScaleRef: MutableRefObject<number>;
+  debugRef: MutableRefObject<boolean>;
   onStatus: (s: string) => void;
 }) {
   const { scene } = useThree();
@@ -104,6 +113,20 @@ function RagdollScene({
     carMesh.visible = false;
     scene.add(carMesh);
     st.carMesh = carMesh;
+
+    // Rapier debug wireframe (collider shapes + body axes), driven each frame.
+    const dbgGeom = new THREE.BufferGeometry();
+    dbgGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
+    dbgGeom.setAttribute('color', new THREE.BufferAttribute(new Float32Array(0), 3));
+    const debugLines = new THREE.LineSegments(
+      dbgGeom,
+      new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true }),
+    );
+    debugLines.frustumCulled = false;
+    debugLines.renderOrder = 999;
+    debugLines.visible = false;
+    scene.add(debugLines);
+    st.debugLines = debugLines;
 
     onStatus('Loading physics + character…');
     CosmeticPhysicsWorld.create()
@@ -206,6 +229,11 @@ function RagdollScene({
         st.carMesh.geometry.dispose();
         (st.carMesh.material as THREE.Material).dispose();
       }
+      if (st.debugLines) {
+        scene.remove(st.debugLines);
+        st.debugLines.geometry.dispose();
+        (st.debugLines.material as THREE.Material).dispose();
+      }
       stRef.current = newSceneState();
     };
   }, [scene, apiRef, onStatus]);
@@ -266,6 +294,42 @@ function RagdollScene({
         st.carMesh.quaternion.set(s[3], s[4], s[5], s[6]);
       }
     }
+
+    // Rapier debug wireframe: collider shapes (1) + rigid-body axes (2).
+    const dbg = st.debugLines;
+    if (dbg) {
+      if (debugRef.current) {
+        const buf = st.world.debugRender(0b11);
+        const n = buf ? buf.vertices.length : 0;
+        if (buf && n > 0) {
+          if (st.dbgPos.length < n) {
+            st.dbgPos = new Float32Array(n);
+            st.dbgCol = new Float32Array(n);
+          }
+          st.dbgPos.set(buf.vertices);
+          st.dbgCol.set(buf.colors);
+          let posAttr = dbg.geometry.getAttribute('position') as THREE.BufferAttribute;
+          if (posAttr.array !== st.dbgPos) {
+            posAttr = new THREE.BufferAttribute(st.dbgPos, 3);
+            posAttr.setUsage(THREE.DynamicDrawUsage);
+            dbg.geometry.setAttribute('position', posAttr);
+          }
+          posAttr.needsUpdate = true;
+          let colAttr = dbg.geometry.getAttribute('color') as THREE.BufferAttribute;
+          if (colAttr.array !== st.dbgCol) {
+            colAttr = new THREE.BufferAttribute(st.dbgCol, 3);
+            colAttr.setUsage(THREE.DynamicDrawUsage);
+            dbg.geometry.setAttribute('color', colAttr);
+          }
+          colAttr.needsUpdate = true;
+        }
+        dbg.geometry.setDrawRange(0, n / 3);
+        dbg.visible = true;
+      } else if (dbg.visible) {
+        dbg.geometry.setDrawRange(0, 0);
+        dbg.visible = false;
+      }
+    }
   });
 
   return null;
@@ -275,9 +339,11 @@ export function RagdollLabPage() {
   const apiRef = useRef<LabApi | null>(null);
   const frozenRef = useRef(false);
   const timeScaleRef = useRef(1);
+  const debugRef = useRef(false);
   const [status, setStatus] = useState('Loading…');
   const [frozen, setFrozen] = useState(false);
   const [timeScale, setTimeScale] = useState(1);
+  const [debug, setDebug] = useState(false);
 
   useEffect(() => {
     frozenRef.current = frozen;
@@ -285,6 +351,9 @@ export function RagdollLabPage() {
   useEffect(() => {
     timeScaleRef.current = timeScale;
   }, [timeScale]);
+  useEffect(() => {
+    debugRef.current = debug;
+  }, [debug]);
 
   const btn: CSSProperties = {
     display: 'block',
@@ -331,6 +400,7 @@ export function RagdollLabPage() {
           apiRef={apiRef}
           frozenRef={frozenRef}
           timeScaleRef={timeScaleRef}
+          debugRef={debugRef}
           onStatus={setStatus}
         />
         <OrbitControls makeDefault target={[SPAWN.x, 1, SPAWN.z]} maxDistance={40} minDistance={2} />
@@ -364,6 +434,11 @@ export function RagdollLabPage() {
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 13 }}>
           <input type="checkbox" checked={frozen} onChange={(e) => setFrozen(e.target.checked)} />
           Freeze physics (inspect snapshot)
+        </label>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, fontSize: 13 }}>
+          <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} />
+          Rapier debug (colliders + terrain)
         </label>
 
         <div style={{ marginTop: 10, fontSize: 13 }}>

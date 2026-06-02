@@ -144,4 +144,16 @@ export class CosmeticPhysicsWorld {
   removeRagdollJoint(jointId: number): void {
     this.sim.removeRagdollJoint(jointId);
   }
+
+  /**
+   * Rapier debug wireframe for the cosmetic world (ragdoll colliders + terrain).
+   * `modeBits` follows rapier's DebugRenderMode (1=COLLIDER_SHAPES, 2=RIGID_BODY_AXES,
+   * so 0b11 = shapes + axes). The returned typed arrays are zero-copy views into
+   * WASM memory, valid only until the next debugRender call — copy before reusing.
+   */
+  debugRender(modeBits: number): { vertices: Float32Array; colors: Float32Array } | null {
+    const count = this.sim.debugRender(modeBits);
+    if (count === 0) return null;
+    return { vertices: this.sim.debugRenderPositions(), colors: this.sim.debugRenderColors() };
+  }
 }
