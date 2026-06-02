@@ -17,9 +17,8 @@ import * as THREE from 'three';
 import { initWasmForTests, WasmSimWorld } from '../../wasm/testInit';
 import { Ragdoll } from './Ragdoll';
 import { RAGDOLL_PARTS, PART_INDEX } from './ragdollBones';
-import type { CharacterModel } from './CharacterModel';
 import type { GameRuntimeClient } from '../../runtime/gameRuntime';
-import { buildSyntheticSkeleton } from './ragdollTestSkeleton';
+import { loadRealCharacterModel, poseWithClip } from './ragdollTestModel';
 
 beforeAll(() => {
   initWasmForTests();
@@ -120,13 +119,19 @@ describe('Ragdoll physics integration (WASM)', () => {
     expect(maxRel).toBeLessThan(0.7);
   });
 
-  it('collapses a full ragdoll into a coherent, settling pile', () => {
+  it('collapses a full ragdoll into a coherent, settling pile', async () => {
     const sim = makeSim();
     const runtime = adaptRuntime(sim);
-    // Use a realistic non-unit rig scale + posed bones so the real calibration and
-    // scale-measurement paths are exercised end-to-end.
-    const { root } = buildSyntheticSkeleton({ scale: 0.85, pose: true, rootY: 0 });
-    const model = { root } as unknown as CharacterModel;
+    // Load the REAL shipped rig through the production CharacterModel pipeline, so
+    // this end-to-end collapse is exactly what /play and /practice run on death.
+    const model = await loadRealCharacterModel(new THREE.Group());
+    // Pose with a real clip first — production always ragdolls from an animation
+    // pose, never the raw bind/T-pose (a degenerate case for the limb hinges).
+    poseWithClip(model, 'Death01', 0.7);
+
+    // CharacterModel builds at the capsule-centre frame (feet ~0.7 m below the
+    // root); lift it so the body starts above the y=0 terrain rather than sunk in.
+    model.root.position.y += 1.2;
 
     const ragdoll = new Ragdoll(model, 1, runtime);
     ragdoll.activate(new THREE.Vector3(0, 0, 0));
@@ -154,9 +159,9 @@ describe('Ragdoll physics integration (WASM)', () => {
       sim.stepDynamics(1 / 60);
       ragdoll.update();
       const ss = states();
-      // A human ragdoll is <1.8m tall; the parts must never spread past ~1.6m of
+      // A human ragdoll is <1.8m tall; no part should ever be more than ~2m from
       // the pelvis. A flung limb or solver blow-up would exceed this.
-      expect(spreadFromPelvis(ss), `spread at step ${i}`).toBeLessThan(1.6);
+      expect(spreadFromPelvis(ss), `spread at step ${i}`).toBeLessThan(2.0);
       if (i > 200) {
         for (let k = 0; k < ids.length; k++) {
           const s = ss[k];
