@@ -62,6 +62,12 @@ export type SphericalJointDef = {
   // Positive Y = toward tip, negative Y = toward bone origin.
   a1: [number, number, number]; // on b1
   a2: [number, number, number]; // on b2
+  // Cone/twist angular limits (radians), measured relative to the death pose.
+  // `swing` is the cone half-angle off the b1 bone axis (lift/spread); `twist`
+  // is the half-range of rotation about the b1 bone axis. These keep ball joints
+  // (neck/shoulders/hips/spine) from rotating into anatomically impossible poses.
+  swing: number;
+  twist: number;
 };
 
 export type RevoluteJointDef = {
@@ -86,6 +92,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'torso', b2: 'pelvis',
     a1: [0, -(PART_CONFIG.torso.hy + C),  0],
     a2: [0,  (PART_CONFIG.pelvis.hy + C), 0],
+    swing: 0.6, twist: 0.5,
   },
   // Neck: head bottom ↔ torso top
   {
@@ -93,6 +100,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'head', b2: 'torso',
     a1: [0, -(PART_CONFIG.head.hy + C),  0],
     a2: [0,  (PART_CONFIG.torso.hy + C), 0],
+    swing: 0.7, twist: 0.8,
   },
   // Left shoulder: upperArmL proximal ↔ torso left side.
   // +Y = distal (toward elbow), so the shoulder/proximal end is -Y (mirrors hip).
@@ -101,6 +109,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'upperArmL', b2: 'torso',
     a1: [0, -(PART_CONFIG.upperArmL.hy + C), 0],
     a2: [-(PART_CONFIG.torso.hx + C), PART_CONFIG.torso.hy * 0.6, 0],
+    swing: 1.4, twist: 1.0,
   },
   // Right shoulder: upperArmR proximal ↔ torso right side
   {
@@ -108,6 +117,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'upperArmR', b2: 'torso',
     a1: [0, -(PART_CONFIG.upperArmR.hy + C), 0],
     a2: [(PART_CONFIG.torso.hx + C), PART_CONFIG.torso.hy * 0.6, 0],
+    swing: 1.4, twist: 1.0,
   },
   // Left elbow (revolute Z): lowerArm proximal (-Y) ↔ upperArm distal (+Y), mirrors knee.
   {
@@ -133,6 +143,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'thighL', b2: 'pelvis',
     a1: [0, -(PART_CONFIG.thighL.hy + C), 0],
     a2: [-(PART_CONFIG.pelvis.hx * 0.5), -(PART_CONFIG.pelvis.hy + C), 0],
+    swing: 1.1, twist: 0.5,
   },
   // Right hip: thighR proximal ↔ pelvis right-bottom
   {
@@ -140,6 +151,7 @@ export const JOINT_DEFS: JointDef[] = [
     b1: 'thighR', b2: 'pelvis',
     a1: [0, -(PART_CONFIG.thighR.hy + C), 0],
     a2: [(PART_CONFIG.pelvis.hx * 0.5), -(PART_CONFIG.pelvis.hy + C), 0],
+    swing: 1.1, twist: 0.5,
   },
   // Left knee (revolute Z)
   {

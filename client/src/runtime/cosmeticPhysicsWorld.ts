@@ -110,8 +110,12 @@ export class CosmeticPhysicsWorld {
     a2x: number,
     a2y: number,
     a2z: number,
+    swingLimit: number,
+    twistLimit: number,
   ): void {
-    this.sim.createRagdollSphericalJoint(jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z);
+    this.sim.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z, swingLimit, twistLimit,
+    );
   }
 
   createRagdollRevoluteJoint(

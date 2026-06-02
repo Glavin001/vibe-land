@@ -869,7 +869,12 @@ impl WasmSimWorld {
         }
     }
 
-    /// Create a spherical impulse joint between two ragdoll bodies.
+    /// Create a spherical impulse joint between two ragdoll bodies, with cone
+    /// (swing) and twist angular limits. The limits are measured relative to the
+    /// bodies' *current* (death-pose) relative orientation, so `0` = the snapshot
+    /// pose: `swing` bounds the cone off the b1 bone axis (AngX/AngZ) and `twist`
+    /// bounds rotation about it (AngY). This stops ball joints (neck, shoulders,
+    /// hips, spine) from rotating into anatomically impossible poses.
     #[wasm_bindgen(js_name = createRagdollSphericalJoint)]
     pub fn create_ragdoll_spherical_joint(
         &mut self,
@@ -882,6 +887,8 @@ impl WasmSimWorld {
         a2x: f32,
         a2y: f32,
         a2z: f32,
+        swing: f32,
+        twist: f32,
     ) {
         let Some(&b1h) = self.ragdoll_bodies.get(&b1_id) else {
             return;
@@ -889,16 +896,38 @@ impl WasmSimWorld {
         let Some(&b2h) = self.ragdoll_bodies.get(&b2_id) else {
             return;
         };
-        let joint = SphericalJointBuilder::new()
-            .local_anchor1(nalgebra::Point3::new(a1x, a1y, a1z))
-            .local_anchor2(nalgebra::Point3::new(a2x, a2y, a2z))
+
+        // Capture the current relative orientation so the limit "rest" is the death
+        // pose. Pick the joint frame to coincide with body1's frame (so AngY = the
+        // b1 bone axis / twist); then frame2's basis rotates body2 into that frame.
+        let (q1, q2) = match (
+            self.sim.rigid_bodies.get(b1h),
+            self.sim.rigid_bodies.get(b2h),
+        ) {
+            (Some(rb1), Some(rb2)) => (*rb1.rotation(), *rb2.rotation()),
+            _ => (UnitQuaternion::identity(), UnitQuaternion::identity()),
+        };
+        let r2 = q2.inverse() * q1;
+        let frame1 = nalgebra::Isometry3::from_parts(
+            nalgebra::Translation3::new(a1x, a1y, a1z),
+            UnitQuaternion::identity(),
+        );
+        let frame2 =
+            nalgebra::Isometry3::from_parts(nalgebra::Translation3::new(a2x, a2y, a2z), r2);
+
+        let mut joint = SphericalJointBuilder::new()
             // Disable contacts between the two jointed bodies: their boxes overlap
             // at the joint, so leaving contacts on makes the contact solver fight
             // the joint — pushing limbs out of a natural resting/folded pose and
             // adding needless solver work. Non-adjacent ragdoll parts (and
             // terrain/vehicles) still collide via their collision groups.
             .contacts_enabled(false)
+            .limits(JointAxis::AngX, [-swing, swing])
+            .limits(JointAxis::AngY, [-twist, twist])
+            .limits(JointAxis::AngZ, [-swing, swing])
             .build();
+        joint.set_local_frame1(frame1);
+        joint.set_local_frame2(frame2);
         let handle = self.vehicle_joints.insert(b1h, b2h, joint, true);
         self.ragdoll_joint_handles.insert(joint_id, handle);
     }

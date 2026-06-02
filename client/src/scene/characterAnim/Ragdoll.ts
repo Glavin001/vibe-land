@@ -172,6 +172,7 @@ export class Ragdoll {
           jId, b1Id, b2Id,
           def.a1[0] * s, def.a1[1] * s, def.a1[2] * s,
           def.a2[0] * s, def.a2[1] * s, def.a2[2] * s,
+          def.swing, def.twist,
         );
       } else {
         this.runtime.createRagdollRevoluteJoint(

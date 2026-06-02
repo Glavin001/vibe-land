@@ -71,7 +71,9 @@ describe('Ragdoll physics integration (WASM)', () => {
     // joint anchors violated by ~0.56m: anchor1 = body1+0.22, anchor2 = body2-0.22.
     sim.spawnRagdollBody(1, 0.2, 0.2, 0.2, 0, 20.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
     sim.spawnRagdollBody(2, 0.2, 0.2, 0.2, 0, 21.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
-    sim.createRagdollSphericalJoint(10, 1, 2, 0, 0.22, 0, 0, -0.22, 0);
+    // Generous limits (effectively unconstrained) so this geometric closure
+    // check isn't affected by the cone/twist bounds.
+    sim.createRagdollSphericalJoint(10, 1, 2, 0, 0.22, 0, 0, -0.22, 0, Math.PI, Math.PI);
 
     const anchorGap = () => {
       const a = sim.getRagdollBodyState(1) as Float64Array;
@@ -89,6 +91,33 @@ describe('Ragdoll physics integration (WASM)', () => {
     const gap = anchorGap();
     expect(Number.isFinite(gap)).toBe(true);
     expect(gap).toBeLessThan(0.1);
+  });
+
+  it('enforces spherical-joint cone/twist limits under a hard spin', () => {
+    const sim = makeSim();
+    // Two stacked boxes (identity orientation) joined with a tight ±0.3 rad cone
+    // and twist. Body1 is given a big angular velocity on every axis.
+    sim.spawnRagdollBody(1, 0.2, 0.2, 0.2, 0, 20.0, 0, 0, 0, 0, 1, 0, 0, 0, 8, 8, 8);
+    sim.spawnRagdollBody(2, 0.2, 0.2, 0.2, 0, 20.5, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    const LIMIT = 0.3;
+    sim.createRagdollSphericalJoint(10, 1, 2, 0, 0.22, 0, 0, -0.22, 0, LIMIT, LIMIT);
+
+    const q1 = new THREE.Quaternion();
+    const q2 = new THREE.Quaternion();
+    let maxRel = 0;
+    for (let i = 0; i < 60; i++) {
+      sim.stepDynamics(1 / 60);
+      const a = sim.getRagdollBodyState(1) as Float64Array;
+      const b = sim.getRagdollBodyState(2) as Float64Array;
+      q1.set(a[3], a[4], a[5], a[6]);
+      q2.set(b[3], b[4], b[5], b[6]);
+      // Relative rotation angle between the two bodies.
+      const rel = q2.clone().invert().multiply(q1);
+      maxRel = Math.max(maxRel, 2 * Math.acos(Math.min(1, Math.abs(rel.w))));
+    }
+    // A free spherical joint would let the spin open up toward π; the limit must
+    // hold it near the cone (allow generous solver slack).
+    expect(maxRel).toBeLessThan(0.7);
   });
 
   it('collapses a full ragdoll into a coherent, settling pile', () => {
