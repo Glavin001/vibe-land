@@ -19,7 +19,14 @@ import type { GameRuntimeClient } from '../runtime/gameRuntime';
 
 // Spawn on the flat centre of the demo heightfield (terrain height ≈ 0 within a
 // 16 m radius of this point — see shared/src/terrain.rs).
-const SPAWN = new THREE.Vector3(10, 0, 8);
+//
+// `handle.root` marks the physics-capsule *centre*, not the ground: CharacterModel
+// places the feet ~0.7 m below the root (capsule bottom is at -0.8 from centre).
+// So to stand the body on the y=0 terrain the root must sit ~0.8 m up, otherwise
+// the whole rig — and every spawned ragdoll body — starts sunk into the ground and
+// collides immediately.
+const STAND_Y = 0.8;
+const SPAWN = new THREE.Vector3(10, STAND_Y, 8);
 // A "car" body id that can't collide with the player's ragdoll body ids.
 const CAR_ID = 0xc0ff_0001;
 const CAR_HALF = new THREE.Vector3(1.0, 0.5, 1.7);
@@ -152,13 +159,13 @@ function RagdollScene({
         if (!st.ready) return;
         switch (scenario) {
           case 'idle':
-            resetToSpawn(0);
+            resetToSpawn(STAND_Y);
             toRagdoll(new THREE.Vector3(0, 0, 0));
             onStatus('Idle collapse — crumples straight down');
             break;
           case 'run':
             // Show a running stride, then collapse forward with momentum.
-            resetToSpawn(0);
+            resetToSpawn(STAND_Y);
             st.preState = STATE.move;
             st.preSpeed = 7;
             st.convertAt = performance.now() + 750;
@@ -166,12 +173,12 @@ function RagdollScene({
             onStatus('Run & tumble — running, then collapses forward…');
             break;
           case 'fall':
-            resetToSpawn(5.5);
+            resetToSpawn(3.5);
             toRagdoll(new THREE.Vector3(0, 0, 0));
             onStatus('Fall from height — drops and settles on the ground');
             break;
           case 'car': {
-            resetToSpawn(0);
+            resetToSpawn(STAND_Y);
             toRagdoll(new THREE.Vector3(0, 0, 0));
             st.carAt = performance.now() + 120;
             onStatus('Hit by a "car" — incoming!');
@@ -181,7 +188,7 @@ function RagdollScene({
       },
       respawn() {
         if (!st.ready) return;
-        resetToSpawn(0);
+        resetToSpawn(STAND_Y);
         onStatus('Respawned — back to live animation');
       },
     };
