@@ -143,6 +143,7 @@ type WasmSimWorldInstance = InstanceType<typeof RawWasmSimWorld> & {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void;
   createRagdollRevoluteJoint(
     jointId: number, b1Id: number, b2Id: number,
@@ -245,6 +246,7 @@ type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void;
   createRagdollRevoluteJoint(
     jointId: number, b1Id: number, b2Id: number,

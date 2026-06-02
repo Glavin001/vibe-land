@@ -41,6 +41,11 @@ describe('resolveAppRoute', () => {
     expect(resolveAppRoute('/gallery')).toEqual({ kind: 'gallery' });
   });
 
+  it('routes the ragdoll lab page', () => {
+    expect(resolveAppRoute('/ragdoll-lab')).toEqual({ kind: 'ragdollLab' });
+    expect(resolveAppRoute('/ragdoll-lab/')).toEqual({ kind: 'ragdollLab' });
+  });
+
   it('routes /practice/shared/:id to the shared-practice runner', () => {
     expect(resolveAppRoute('/practice/shared/abc123')).toEqual({ kind: 'sharedPractice', id: 'abc123' });
     expect(resolveAppRoute('/practice/shared/abc123/')).toEqual({ kind: 'sharedPractice', id: 'abc123' });

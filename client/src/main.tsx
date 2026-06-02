@@ -8,6 +8,7 @@ import { ServerStats } from './pages/ServerStats';
 import { GodModePage } from './pages/GodMode';
 import { GalleryPage } from './pages/Gallery';
 import { SharedPracticePage } from './pages/SharedPractice';
+import { RagdollLabPage } from './pages/RagdollLab';
 
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
@@ -56,6 +57,9 @@ switch (route.kind) {
     break;
   case 'gallery':
     root.render(<GalleryPage />);
+    break;
+  case 'ragdollLab':
+    root.render(<RagdollLabPage />);
     break;
   case 'launcher':
   default:

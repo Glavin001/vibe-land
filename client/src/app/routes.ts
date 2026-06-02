@@ -7,7 +7,8 @@ export type AppRoute =
   | { kind: 'stats' }
   | { kind: 'loadtest' }
   | { kind: 'builder'; page: 'world'; publishedId?: string }
-  | { kind: 'gallery' };
+  | { kind: 'gallery' }
+  | { kind: 'ragdollLab' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -49,6 +50,8 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'builder', page: 'world', publishedId };
     case '/gallery':
       return { kind: 'gallery' };
+    case '/ragdoll-lab':
+      return { kind: 'ragdollLab' };
     default:
       return { kind: 'launcher' };
   }

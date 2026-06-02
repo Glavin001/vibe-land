@@ -10,6 +10,9 @@ import * as THREE from 'three';
 import { load as loadGlb } from './sharedAssets';
 import type { AnimationProfile } from './types';
 
+/** Shape returned by `sharedAssets.load` (a per-instance cloned scene + clips). */
+export type LoadedGlb = { scene: THREE.Group; animations: THREE.AnimationClip[] };
+
 const PHYSICS_CAPSULE_RADIUS = 0.35;
 const PHYSICS_CAPSULE_HALF_SEGMENT = 0.45;
 const PHYSICS_CAPSULE_BOTTOM = -(PHYSICS_CAPSULE_RADIUS + PHYSICS_CAPSULE_HALF_SEGMENT);
@@ -56,6 +59,25 @@ export class CharacterModel {
 
   static async load(profile: AnimationProfile, parent: THREE.Object3D): Promise<CharacterModel> {
     const main = await loadGlb(profile.modelUrl);
+    const extras: LoadedGlb[] = [];
+    for (const url of profile.animationUrls) {
+      if (url === profile.modelUrl) continue;
+      try {
+        extras.push(await loadGlb(url));
+      } catch (err) {
+        console.warn(`[CharacterModel] Failed to load animation GLB: ${url}`, err);
+      }
+    }
+    return CharacterModel.build(main, extras, parent);
+  }
+
+  /**
+   * Build a CharacterModel from already-loaded GLB data (scene + clips). Exposed
+   * separately from `load()` so tests can exercise this exact production
+   * processing — scale measurement, material cloning, root-motion stripping —
+   * against the real GLB parsed locally, instead of a hand-built stand-in.
+   */
+  static build(main: LoadedGlb, extras: LoadedGlb[], parent: THREE.Object3D): CharacterModel {
     const root = main.scene;
     root.name = 'CharacterModel';
 
@@ -96,18 +118,9 @@ export class CharacterModel {
     parent.add(root);
 
     const clips = new Map<string, THREE.AnimationClip>();
-    for (const clip of main.animations) {
-      if (!clips.has(clip.name)) clips.set(clip.name, clip.clone());
-    }
-    for (const url of profile.animationUrls) {
-      if (url === profile.modelUrl) continue;
-      try {
-        const extra = await loadGlb(url);
-        for (const clip of extra.animations) {
-          if (!clips.has(clip.name)) clips.set(clip.name, clip.clone());
-        }
-      } catch (err) {
-        console.warn(`[CharacterModel] Failed to load animation GLB: ${url}`, err);
+    for (const source of [main, ...extras]) {
+      for (const clip of source.animations) {
+        if (!clips.has(clip.name)) clips.set(clip.name, clip.clone());
       }
     }
 

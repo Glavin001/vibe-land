@@ -1,0 +1,236 @@
+// End-to-end (real WASM Rapier) integration test for the ragdoll.
+//
+// This drives the *entire* real pipeline — Ragdoll.activate spawns bodies + joints
+// into a live WasmSimWorld using the actual calibration, we step Rapier, and
+// Ragdoll.update() writes the bones back. It asserts the body collapses as one
+// coherent, settling pile (no NaN, bounded spread, falls to the ground, no
+// residual jitter). A gross spawn/joint/marshaling regression would blow the
+// spread up or produce NaN here.
+//
+// (The pixel-precise calibration round-trip and the joint wiring/anchor convention
+// are pinned down deterministically without WASM in Ragdoll.test.ts.)
+//
+// Requires the WASM package to be built (npm run build:wasm), like the other
+// WASM-backed tests in this repo.
+import { beforeAll, describe, expect, it } from 'vitest';
+import * as THREE from 'three';
+import { initWasmForTests, WasmSimWorld } from '../../wasm/testInit';
+import { Ragdoll } from './Ragdoll';
+import { RAGDOLL_PARTS, PART_INDEX } from './ragdollBones';
+import type { GameRuntimeClient } from '../../runtime/gameRuntime';
+import { loadRealCharacterModel, poseWithClip } from './ragdollTestModel';
+
+beforeAll(() => {
+  initWasmForTests();
+});
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function makeSim(): any {
+  const sim: any = new WasmSimWorld();
+  sim.seedDemoTerrain();
+  sim.rebuildBroadPhase();
+  return sim;
+}
+
+/** Adapt the raw WasmSimWorld to the GameRuntimeClient surface Ragdoll calls. */
+function adaptRuntime(sim: any): GameRuntimeClient {
+  return {
+    spawnRagdollBody: (...a: number[]) => sim.spawnRagdollBody(...a),
+    removeRagdollBody: (id: number) => sim.removeRagdollBody(id),
+    getRagdollBodyState: (id: number) => {
+      const s = sim.getRagdollBodyState(id) as Float64Array;
+      return s && s.length === 7 ? s : null;
+    },
+    setRagdollBodyVelocity: (...a: number[]) => sim.setRagdollBodyVelocity(...a),
+    createRagdollSphericalJoint: (...a: number[]) => sim.createRagdollSphericalJoint(...a),
+    createRagdollRevoluteJoint: (...a: number[]) => sim.createRagdollRevoluteJoint(...a),
+    removeRagdollJoint: (id: number) => sim.removeRagdollJoint(id),
+  } as unknown as GameRuntimeClient;
+}
+
+function bodyId(playerId: number, partIndex: number): number {
+  return (0xc000_0000 | ((playerId & 0xff) << 4) | (partIndex & 0xf)) >>> 0;
+}
+
+describe('Ragdoll physics integration (WASM)', () => {
+  it('round-trips a body transform through getRagdollBodyState', () => {
+    const sim = makeSim();
+    sim.spawnRagdollBody(1, 0.2, 0.2, 0.2, 1, 5, -2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    const s = sim.getRagdollBodyState(1) as Float64Array;
+    expect(s.length).toBe(7);
+    expect(s[0]).toBeCloseTo(1, 4);
+    expect(s[1]).toBeCloseTo(5, 4);
+    expect(s[2]).toBeCloseTo(-2, 4);
+    expect(s[6]).toBeCloseTo(1, 4); // identity quaternion w
+  });
+
+  it('pulls a jointed pair to satisfy the shared anchor constraint', () => {
+    const sim = makeSim();
+    // Spawn high (no ground/tumble interference in the window we measure) with the
+    // joint anchors violated by ~0.56m: anchor1 = body1+0.22, anchor2 = body2-0.22.
+    sim.spawnRagdollBody(1, 0.2, 0.2, 0.2, 0, 20.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    sim.spawnRagdollBody(2, 0.2, 0.2, 0.2, 0, 21.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    // Generous limits (effectively unconstrained) so this geometric closure
+    // check isn't affected by the cone/twist bounds.
+    sim.createRagdollSphericalJoint(10, 1, 2, 0, 0.22, 0, 0, -0.22, 0, Math.PI, Math.PI);
+
+    const anchorGap = () => {
+      const a = sim.getRagdollBodyState(1) as Float64Array;
+      const b = sim.getRagdollBodyState(2) as Float64Array;
+      // |(p1 + (0,0.22,0)) - (p2 + (0,-0.22,0))| with identity rotations.
+      return Math.hypot(a[0] - b[0], a[1] + 0.22 - (b[1] - 0.22), a[2] - b[2]);
+    };
+
+    const initialGap = anchorGap();
+    expect(initialGap).toBeGreaterThan(0.4);
+    // Free fall is equal for both bodies, so relative motion is purely the joint
+    // closing its constraint violation. Stay well above the ground.
+    for (let i = 0; i < 30; i++) sim.stepDynamics(1 / 60);
+
+    const gap = anchorGap();
+    expect(Number.isFinite(gap)).toBe(true);
+    expect(gap).toBeLessThan(0.1);
+  });
+
+  it('enforces spherical-joint cone/twist limits under a hard spin', () => {
+    const sim = makeSim();
+    // Two stacked boxes (identity orientation) joined with a tight ±0.3 rad cone
+    // and twist. Body1 is given a big angular velocity on every axis.
+    sim.spawnRagdollBody(1, 0.2, 0.2, 0.2, 0, 20.0, 0, 0, 0, 0, 1, 0, 0, 0, 8, 8, 8);
+    sim.spawnRagdollBody(2, 0.2, 0.2, 0.2, 0, 20.5, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0);
+    const LIMIT = 0.3;
+    sim.createRagdollSphericalJoint(10, 1, 2, 0, 0.22, 0, 0, -0.22, 0, LIMIT, LIMIT);
+
+    const q1 = new THREE.Quaternion();
+    const q2 = new THREE.Quaternion();
+    let maxRel = 0;
+    for (let i = 0; i < 60; i++) {
+      sim.stepDynamics(1 / 60);
+      const a = sim.getRagdollBodyState(1) as Float64Array;
+      const b = sim.getRagdollBodyState(2) as Float64Array;
+      q1.set(a[3], a[4], a[5], a[6]);
+      q2.set(b[3], b[4], b[5], b[6]);
+      // Relative rotation angle between the two bodies.
+      const rel = q2.clone().invert().multiply(q1);
+      maxRel = Math.max(maxRel, 2 * Math.acos(Math.min(1, Math.abs(rel.w))));
+    }
+    // A free spherical joint would let the spin open up toward π; the limit must
+    // hold it near the cone (allow generous solver slack).
+    expect(maxRel).toBeLessThan(0.7);
+  });
+
+  it('keeps the feet on the ground (foot colliders, no poke-through)', async () => {
+    const sim = makeSim();
+    const model = await loadRealCharacterModel(new THREE.Group());
+    // Bind pose = legs straight down, feet pointing at the floor — the worst case
+    // for the foot mesh poking through (terrain is flat y=0 around the origin).
+    model.root.position.y += 1.0;
+    const ragdoll = new Ragdoll(model, 1, adaptRuntime(sim));
+    ragdoll.activate(new THREE.Vector3());
+
+    const toeBones = ['foot_l', 'ball_l', 'ball_leaf_l', 'foot_r', 'ball_r', 'ball_leaf_r']
+      .map((n) => model.root.getObjectByName(n))
+      .filter((b): b is THREE.Object3D => !!b);
+    const p = new THREE.Vector3();
+    let minY = Infinity;
+    for (let i = 0; i < 240; i++) {
+      sim.stepDynamics(1 / 60);
+      ragdoll.update();
+      model.root.updateMatrixWorld(true);
+      for (const b of toeBones) {
+        b.getWorldPosition(p);
+        minY = Math.min(minY, p.y);
+      }
+    }
+    // With the foot bodies the toes are caught at the surface (a few mm of collider
+    // margin). Without them the unsupported toe sank well below the floor.
+    expect(minY).toBeGreaterThan(-0.05);
+  });
+
+  it('stays stable even when activated from the raw bind/T-pose', async () => {
+    // The limb hinges (elbows/knees) align their frames to the death pose, so even
+    // the worst case — perfectly straight limbs in the bind/T-pose — must not
+    // explode. (Before that fix this blew the ragdoll thousands of metres apart.)
+    const sim = makeSim();
+    const model = await loadRealCharacterModel(new THREE.Group());
+    model.root.position.y += 1.2; // no posing: raw bind/T-pose
+    const ragdoll = new Ragdoll(model, 1, adaptRuntime(sim));
+    ragdoll.activate(new THREE.Vector3());
+
+    const ids = RAGDOLL_PARTS.map((p) => bodyId(1, PART_INDEX[p]));
+    for (let i = 0; i < 120; i++) {
+      sim.stepDynamics(1 / 60);
+      const pelvis = sim.getRagdollBodyState(ids[0]) as Float64Array;
+      for (const id of ids) {
+        const s = sim.getRagdollBodyState(id) as Float64Array;
+        expect(Number.isFinite(s[0]) && Number.isFinite(s[1]) && Number.isFinite(s[2])).toBe(true);
+        const d = Math.hypot(s[0] - pelvis[0], s[1] - pelvis[1], s[2] - pelvis[2]);
+        expect(d, `spread at step ${i}`).toBeLessThan(2.0);
+      }
+    }
+  });
+
+  it('collapses a full ragdoll into a coherent, settling pile', async () => {
+    const sim = makeSim();
+    const runtime = adaptRuntime(sim);
+    // Load the REAL shipped rig through the production CharacterModel pipeline, so
+    // this end-to-end collapse is exactly what /play and /practice run on death.
+    const model = await loadRealCharacterModel(new THREE.Group());
+    // A real animation pose, like production (also covered: the bind pose above).
+    poseWithClip(model, 'Death01', 0.7);
+
+    // CharacterModel builds at the capsule-centre frame (feet ~0.7 m below the
+    // root); lift it so the body starts above the y=0 terrain rather than sunk in.
+    model.root.position.y += 1.2;
+
+    const ragdoll = new Ragdoll(model, 1, runtime);
+    ragdoll.activate(new THREE.Vector3(0, 0, 0));
+
+    const ids = RAGDOLL_PARTS.map((p) => bodyId(1, PART_INDEX[p]));
+
+    const states = () => ids.map((id) => sim.getRagdollBodyState(id) as Float64Array);
+    const spreadFromPelvis = (ss: Float64Array[]) => {
+      const pelvis = ss[0];
+      let max = 0;
+      for (const s of ss) {
+        expect(
+          Number.isFinite(s[0]) && Number.isFinite(s[1]) && Number.isFinite(s[2]),
+          'body state must stay finite',
+        ).toBe(true);
+        max = Math.max(max, Math.hypot(s[0] - pelvis[0], s[1] - pelvis[1], s[2] - pelvis[2]));
+      }
+      return max;
+    };
+
+    let prev = states().map((s) => [s[0], s[1], s[2]] as [number, number, number]);
+    let maxLateJitter = 0;
+
+    for (let i = 0; i < 240; i++) {
+      sim.stepDynamics(1 / 60);
+      ragdoll.update();
+      const ss = states();
+      // A human ragdoll is <1.8m tall; no part should ever be more than ~2m from
+      // the pelvis. A flung limb or solver blow-up would exceed this.
+      expect(spreadFromPelvis(ss), `spread at step ${i}`).toBeLessThan(2.0);
+      if (i > 200) {
+        for (let k = 0; k < ids.length; k++) {
+          const s = ss[k];
+          const p = prev[k];
+          maxLateJitter = Math.max(
+            maxLateJitter,
+            Math.hypot(s[0] - p[0], s[1] - p[1], s[2] - p[2]),
+          );
+        }
+      }
+      prev = ss.map((s) => [s[0], s[1], s[2]] as [number, number, number]);
+    }
+
+    // Settled: per-step motion is tiny (no buzzing/jitter).
+    expect(maxLateJitter, 'late per-step jitter').toBeLessThan(0.02);
+
+    // Fell toward the ground rather than launching upward.
+    const pelvis = states()[0];
+    expect(pelvis[1]).toBeLessThan(1.5);
+    expect(pelvis[1]).toBeGreaterThan(-5);
+  });
+});

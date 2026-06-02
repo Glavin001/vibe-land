@@ -42,6 +42,8 @@ export interface RemotePlayerHandle {
   setVisible(visible: boolean): void;
   /** Play any clip by name (e.g. "OverhandThrow", "Death01"). */
   playOneShot(clipName: string): void;
+  /** Names of all animation clips available on the loaded rig (empty until ready). */
+  clipNames(): string[];
   /**
    * Toggle ragdoll physics mode.
    * Call with active=true when isDead transitions false→true.
@@ -201,6 +203,9 @@ export function createRemotePlayer(
     },
     playOneShot(clipName) {
       controller?.playOneShot(clipName);
+    },
+    clipNames() {
+      return model ? Array.from(model.clips.keys()) : [];
     },
     setRagdoll(active, seedVelocity) {
       if (active === ragdollActive) return;

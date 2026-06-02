@@ -246,6 +246,7 @@ export interface GameRuntimeClient {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void;
   createRagdollRevoluteJoint(
     jointId: number, b1Id: number, b2Id: number,
@@ -502,6 +503,7 @@ abstract class BaseGameRuntime implements GameRuntimeClient {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void;
   abstract createRagdollRevoluteJoint(
     jointId: number, b1Id: number, b2Id: number,
@@ -899,9 +901,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void {
     this.cosmeticWorld?.createRagdollSphericalJoint(
-      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z,
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z, swingLimit, twistLimit,
     );
   }
   createRagdollRevoluteJoint(
@@ -1744,8 +1747,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     jointId: number, b1Id: number, b2Id: number,
     a1x: number, a1y: number, a1z: number,
     a2x: number, a2y: number, a2z: number,
+    swingLimit: number, twistLimit: number,
   ): void {
-    this.cosmeticWorld?.createRagdollSphericalJoint(jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z);
+    this.cosmeticWorld?.createRagdollSphericalJoint(
+      jointId, b1Id, b2Id, a1x, a1y, a1z, a2x, a2y, a2z, swingLimit, twistLimit,
+    );
   }
 
   createRagdollRevoluteJoint(

@@ -87,6 +87,10 @@ export class Ragdoll {
     }
     const s = this.scale;
 
+    // World transform of each spawned body, used below to derive joint anchors
+    // from the real bone positions.
+    const bodyXf = new Map<RagdollPart, { pos: THREE.Vector3; quat: THREE.Quaternion }>();
+
     // Spawn one body per part.
     for (const part of RAGDOLL_PARTS) {
       const cfg = PART_CONFIG[part];
@@ -97,10 +101,13 @@ export class Ragdoll {
       }
       bone.updateWorldMatrix(true, false);
 
-      // Bone world position + quaternion.
-      bone.getWorldPosition(_v0);
+      // Bone world position + quaternion. Decompose (rather than
+      // setFromRotationMatrix) so the rig's uniform scale is stripped out and we
+      // get a true *unit* quaternion — setFromRotationMatrix on a scaled matrix
+      // yields a non-unit quaternion, which then corrupts the offset/rotOffset
+      // calibration below (THREE's invert/applyQuaternion assume unit length).
+      bone.matrixWorld.decompose(_v0, _q0, _v1);
       const boneWorldPos = _v0.clone();
-      _q0.setFromRotationMatrix(bone.matrixWorld);
       const boneWorldQuat = _q0.clone();
 
       // Tip position: defines body +Y axis direction.
@@ -138,40 +145,43 @@ export class Ragdoll {
 
       const bId = bodyId(this.playerId, PART_INDEX[part]);
 
+      // Every part inherits the player's last-frame linear velocity so the
+      // ragdoll hands off as one cohesive body (no "limbs left behind" jolt),
+      // then collapses under gravity + joint constraints. A small random spin
+      // adds natural tumble; the core (pelvis/torso) gets a slightly larger kick.
+      const spin = part === 'pelvis' || part === 'torso' ? 1.2 : 0.6;
       this.runtime.spawnRagdollBody(
         bId,
         cfg.hx * s, cfg.hy * s, cfg.hz * s,
         bodyWorldPos.x, bodyWorldPos.y, bodyWorldPos.z,
         bodyOrientQuat.x, bodyOrientQuat.y, bodyOrientQuat.z, bodyOrientQuat.w,
-        0, 0, 0,
-        0, 0, 0,
+        seedVelocity.x, seedVelocity.y, seedVelocity.z,
+        (Math.random() - 0.5) * 2 * spin,
+        (Math.random() - 0.5) * 2 * spin,
+        (Math.random() - 0.5) * 2 * spin,
       );
 
-      // Only the torso carries the player's last-frame velocity; limbs are
-      // dragged along by joints for a natural shot reaction.
-      if (part === 'torso') {
-        this.runtime.setRagdollBodyVelocity(
-          bId,
-          seedVelocity.x, seedVelocity.y, seedVelocity.z,
-          0, 0, 0,
-        );
-      } else if (part === 'pelvis') {
-        // Small random angular kick for natural tumble (no linear velocity).
-        this.runtime.setRagdollBodyVelocity(
-          bId,
-          0, 0, 0,
-          (Math.random() - 0.5) * 4,
-          (Math.random() - 0.5) * 2,
-          (Math.random() - 0.5) * 4,
-        );
-      }
-
+      bodyXf.set(part, { pos: bodyWorldPos, quat: bodyOrientQuat });
       this.calibrations.set(part, { bone: bone as THREE.Bone, posOffsetInBone, rotOffset, bId });
     }
 
-    // Create joints.
+    // Create joints. The pivot is the b1 bone's world origin (the anatomical
+    // joint); expressing it in each body's local frame makes the two anchors
+    // coincide exactly on whatever rig is loaded — no hand-tuned offsets.
+    const _aShared = new THREE.Vector3();
+    const _a1 = new THREE.Vector3();
+    const _a2 = new THREE.Vector3();
     for (let i = 0; i < JOINT_DEFS.length; i++) {
       const def = JOINT_DEFS[i];
+      const t1 = bodyXf.get(def.b1);
+      const t2 = bodyXf.get(def.b2);
+      const pivotBone = this._findBone(PART_CONFIG[def.b1].bone);
+      if (!t1 || !t2 || !pivotBone) continue;
+
+      pivotBone.getWorldPosition(_aShared);
+      _a1.copy(_aShared).sub(t1.pos).applyQuaternion(_q0.copy(t1.quat).invert());
+      _a2.copy(_aShared).sub(t2.pos).applyQuaternion(_q0.copy(t2.quat).invert());
+
       const jId = jointId(this.playerId, i);
       const b1Id = bodyId(this.playerId, PART_INDEX[def.b1]);
       const b2Id = bodyId(this.playerId, PART_INDEX[def.b2]);
@@ -179,14 +189,15 @@ export class Ragdoll {
       if (def.type === 'spherical') {
         this.runtime.createRagdollSphericalJoint(
           jId, b1Id, b2Id,
-          def.a1[0] * s, def.a1[1] * s, def.a1[2] * s,
-          def.a2[0] * s, def.a2[1] * s, def.a2[2] * s,
+          _a1.x, _a1.y, _a1.z,
+          _a2.x, _a2.y, _a2.z,
+          def.swing, def.twist,
         );
       } else {
         this.runtime.createRagdollRevoluteJoint(
           jId, b1Id, b2Id,
-          def.a1[0] * s, def.a1[1] * s, def.a1[2] * s,
-          def.a2[0] * s, def.a2[1] * s, def.a2[2] * s,
+          _a1.x, _a1.y, _a1.z,
+          _a2.x, _a2.y, _a2.z,
           def.axis[0], def.axis[1], def.axis[2],
           def.limits[0], def.limits[1],
         );
