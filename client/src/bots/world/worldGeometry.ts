@@ -22,11 +22,40 @@ export interface BotWorldGeometry {
   vertexCount: number;
 }
 
-export function buildWorldGeometry(world: WorldDocument): BotWorldGeometry {
+/**
+ * Full-resolution terrain + props (e.g. debug visualization). For navmesh
+ * generation use {@link buildWorldGeometry} which decimates terrain.
+ */
+export function buildWorldGeometryFullResolution(world: WorldDocument): BotWorldGeometry {
+  return buildWorldGeometryInner(world, 1);
+}
+
+/**
+ * Terrain decimation step along each axis (1 = full resolution). Values > 1
+ * shrink navmesh input dramatically on large heightmaps (e.g. 129² → 65²
+ * verts per tile when step is 2) while keeping tile edge vertices aligned.
+ */
+export type BuildWorldGeometryOptions = {
+  terrainVertexStep?: number;
+};
+
+export function buildWorldGeometry(
+  world: WorldDocument,
+  options?: BuildWorldGeometryOptions,
+): BotWorldGeometry {
+  const step = options?.terrainVertexStep ?? 2;
+  const terrainVertexStep = Math.max(1, Math.floor(step));
+  return buildWorldGeometryInner(world, terrainVertexStep);
+}
+
+function buildWorldGeometryInner(world: WorldDocument, terrainVertexStep: number): BotWorldGeometry {
   const tiles = sortTerrainTiles(world.terrain.tiles);
   const tileGridSize = world.terrain.tileGridSize;
-  const vertsPerTile = tileGridSize * tileGridSize;
-  const trisPerTile = Math.max(0, (tileGridSize - 1) * (tileGridSize - 1) * 2);
+  const decimatedGridSize = terrainVertexStep === 1
+    ? tileGridSize
+    : computeDecimatedAxisLength(tileGridSize, terrainVertexStep);
+  const vertsPerTile = decimatedGridSize * decimatedGridSize;
+  const trisPerTile = Math.max(0, (decimatedGridSize - 1) * (decimatedGridSize - 1) * 2);
 
   const terrainVerts = tiles.length * vertsPerTile;
   const terrainTris = tiles.length * trisPerTile;
@@ -53,7 +82,18 @@ export function buildWorldGeometry(world: WorldDocument): BotWorldGeometry {
 
   for (const tile of tiles) {
     const tileBaseVertex = vertexCursor;
-    writeTerrainTileVertices(world, tile, positions, vertexCursor);
+    if (terrainVertexStep <= 1) {
+      writeTerrainTileVertices(world, tile, positions, vertexCursor);
+    } else {
+      writeDecimatedTerrainTileVertices(
+        world,
+        tile,
+        terrainVertexStep,
+        decimatedGridSize,
+        positions,
+        vertexCursor,
+      );
+    }
 
     for (let i = 0; i < vertsPerTile; i += 1) {
       const px = positions[(tileBaseVertex + i) * 3];
@@ -67,12 +107,13 @@ export function buildWorldGeometry(world: WorldDocument): BotWorldGeometry {
       if (pz > maxZ) maxZ = pz;
     }
 
-    for (let row = 0; row < tileGridSize - 1; row += 1) {
-      for (let col = 0; col < tileGridSize - 1; col += 1) {
-        const a = tileBaseVertex + row * tileGridSize + col;
-        const b = tileBaseVertex + row * tileGridSize + col + 1;
-        const c = tileBaseVertex + (row + 1) * tileGridSize + col;
-        const d = tileBaseVertex + (row + 1) * tileGridSize + col + 1;
+    const rowStride = decimatedGridSize;
+    for (let row = 0; row < decimatedGridSize - 1; row += 1) {
+      for (let col = 0; col < decimatedGridSize - 1; col += 1) {
+        const a = tileBaseVertex + row * rowStride + col;
+        const b = tileBaseVertex + row * rowStride + col + 1;
+        const c = tileBaseVertex + (row + 1) * rowStride + col;
+        const d = tileBaseVertex + (row + 1) * rowStride + col + 1;
 
         indices[indexCursor + 0] = a;
         indices[indexCursor + 1] = c;
@@ -126,6 +167,21 @@ export function buildWorldGeometry(world: WorldDocument): BotWorldGeometry {
   };
 }
 
+function computeDecimatedAxisLength(tileGridSize: number, step: number): number {
+  if (tileGridSize < 2 || step <= 1) {
+    return tileGridSize;
+  }
+  const last = tileGridSize - 1;
+  let count = 0;
+  for (let i = 0; i < last; i += step) {
+    count += 1;
+  }
+  if ((count - 1) * step < last) {
+    count += 1;
+  }
+  return count;
+}
+
 function writeTerrainTileVertices(
   world: WorldDocument,
   tile: WorldTerrainTile,
@@ -143,6 +199,42 @@ function writeTerrainTileVertices(
       out[offset + 1] = height;
       out[offset + 2] = wz;
     }
+  }
+}
+
+function writeDecimatedTerrainTileVertices(
+  world: WorldDocument,
+  tile: WorldTerrainTile,
+  step: number,
+  decimatedGridSize: number,
+  out: Float32Array,
+  baseVertex: number,
+): void {
+  const tileGridSize = world.terrain.tileGridSize;
+  const last = tileGridSize - 1;
+  const rows: number[] = [];
+  for (let r = 0; r < last; r += step) {
+    rows.push(r);
+  }
+  if (rows.length === 0 || rows[rows.length - 1] !== last) {
+    rows.push(last);
+  }
+  const cols = rows;
+  let v = 0;
+  for (const row of rows) {
+    for (const col of cols) {
+      const vi = row * tileGridSize + col;
+      const [wx, wz] = getTerrainTileWorldPosition(world, tile, row, col);
+      const height = tile.heights[vi] ?? 0;
+      const offset = (baseVertex + v) * 3;
+      out[offset + 0] = wx;
+      out[offset + 1] = height;
+      out[offset + 2] = wz;
+      v += 1;
+    }
+  }
+  if (v !== decimatedGridSize * decimatedGridSize) {
+    throw new Error('Decimated terrain vertex count mismatch.');
   }
 }
 
