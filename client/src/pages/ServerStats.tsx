@@ -5,12 +5,15 @@ import {
   batterySyncSummary,
   describeBottleneck,
   describeTransport,
+  jitterThresholds,
   maxPendingInputs,
+  strictDropFailures,
   tickBudgetMs,
   tickHeadroomMs,
   totalPhysicsP95,
   webTransportSnapshotDatagramRatio,
   webTransportSnapshotFallbackRatio,
+  zeroToleranceFailures,
   type GlobalStatsSnapshot,
   type MatchStatsSnapshot,
   type PlayerStatsSnapshot,
@@ -384,12 +387,13 @@ function headroomSeverity(headroomMs: number, budgetMs: number): SeverityTone {
   return higherIsBetterSeverity(headroomMs, budgetMs * 0.45, budgetMs * 0.2, 0.01);
 }
 
-function playerPressureSeverity(player: PlayerStatsSnapshot): SeverityTone {
+function playerPressureSeverity(player: PlayerStatsSnapshot, simHz = 60): SeverityTone {
   const correction = player.has_debug_stats ? player.correction_m : 0;
+  const jitter = jitterThresholds(player, simHz);
   const worst = worstSeverity([
     lowerIsBetterSeverity(player.pending_inputs, 2, 8, 20),
     lowerIsBetterSeverity(player.one_way_ms, 25, 60, 100),
-    lowerIsBetterSeverity(player.input_jitter_ms, 4, 10, 20),
+    lowerIsBetterSeverity(player.input_jitter_ms, jitter.celebrateMax, jitter.goodMax, jitter.watchMax),
     player.has_debug_stats ? lowerIsBetterSeverity(correction, 0.03, 0.1, 0.5) : 'neutral',
   ]);
   if (worst !== 'neutral') {
@@ -536,7 +540,7 @@ function backlogSeverity(match: MatchStatsSnapshot): SeverityTone {
 
 function zeroToleranceSeverity(match: MatchStatsSnapshot): SeverityTone {
   return worstSeverity([
-    match.network.strict_snapshot_drops > 0 ? 'danger' : 'celebrate',
+    strictDropFailures(match) > 0 ? 'danger' : 'celebrate',
     match.network.dropped_outbound_snapshots > 0 ? 'danger' : 'celebrate',
     match.network.malformed_packets > 0 ? 'danger' : 'celebrate',
   ]);
@@ -651,9 +655,9 @@ function buildMatchFocusAreas(match: MatchStatsSnapshot, simHz: number): string[
     );
   }
 
-  if (match.network.strict_snapshot_drops > 0 || match.network.dropped_outbound_snapshots > 0 || match.network.malformed_packets > 0) {
+  if (zeroToleranceFailures(match) > 0) {
     focus.push(
-      `Zero-tolerance counters fired: strict drops ${match.network.strict_snapshot_drops}, dropped outbound snapshots ${match.network.dropped_outbound_snapshots}, malformed packets ${match.network.malformed_packets}.`,
+      `Zero-tolerance counters fired: strict drops ${strictDropFailures(match)}, dropped outbound snapshots ${match.network.dropped_outbound_snapshots}, malformed packets ${match.network.malformed_packets}.`,
     );
   }
 
@@ -704,7 +708,7 @@ function buildMatchOpportunities(match: MatchStatsSnapshot, simHz: number): stri
     opportunities.push(`Reduce queue spikes on the worst players: ${topPlayerPressureSummary(match)}.`);
   }
 
-  if (match.network.strict_snapshot_drops > 0 || match.network.dropped_outbound_snapshots > 0 || match.network.malformed_packets > 0) {
+  if (zeroToleranceFailures(match) > 0) {
     opportunities.push('Zero-tolerance counters should be driven to zero before trusting higher-scale benchmark runs.');
   }
 
@@ -730,8 +734,10 @@ function buildMatchWins(match: MatchStatsSnapshot, simHz: number): string[] {
   if (severityRank(backlogSeverity(match)) <= severityRank('good')) {
     wins.push(`Input queue is stable: max ${fmtInt(maxPendingInputs(match))}, avg ${fmt(avgPendingInputs(match), 1)}.`);
   }
-  if (match.network.strict_snapshot_drops === 0 && match.network.dropped_outbound_snapshots === 0 && match.network.malformed_packets === 0) {
-    wins.push('Zero-tolerance counters are clean: no strict drops, dropped outbound snapshots, or malformed packets.');
+  if (zeroToleranceFailures(match) === 0) {
+    const closed = match.network.strict_snapshot_drop_connection_closed;
+    const closedNote = closed > 0 ? ` (${closed} benign close-drop${closed === 1 ? '' : 's'} ignored)` : '';
+    wins.push(`Zero-tolerance counters are clean: no oversize/unsupported strict drops, no dropped outbound snapshots, no malformed packets${closedNote}.`);
   }
   if (match.battery_count > 0 && severityRank(snapshotPayloadSeverity(match)) <= severityRank('good')) {
     wins.push(`Battery gameplay is active without inflating snapshots: ${batterySyncSummary(match)}.`);
@@ -781,11 +787,7 @@ function buildGlobalFocusAreas(stats: GlobalStatsSnapshot): string[] {
 
 function buildGlobalWins(stats: GlobalStatsSnapshot): string[] {
   const wins: string[] = [];
-  const allZeroToleranceClean = stats.matches.every((match) => (
-    match.network.strict_snapshot_drops === 0
-    && match.network.dropped_outbound_snapshots === 0
-    && match.network.malformed_packets === 0
-  ));
+  const allZeroToleranceClean = stats.matches.every((match) => zeroToleranceFailures(match) === 0);
   const allTicksHealthy = stats.matches.every((match) => severityRank(tickSeverity(match, stats.sim_hz)) <= severityRank('good'));
   const allPayloadsHealthy = stats.matches.every((match) => severityRank(snapshotPayloadSeverity(match)) <= severityRank('good'));
   const bestWtMatch = stats.matches
@@ -854,10 +856,10 @@ function escapeMdCell(value: string): string {
   return value.replace(/\|/g, '\\|').replace(/\n/g, ' ');
 }
 
-function playerRowMarkdown(player: PlayerStatsSnapshot): string {
+function playerRowMarkdown(player: PlayerStatsSnapshot, simHz: number): string {
   const phys = player.has_debug_stats ? `${fmtMsDetailed(player.physics_ms)}ms` : 'n/a';
   const correction = player.has_debug_stats ? `${fmt(player.correction_m, 3)}m` : 'n/a';
-  return `| ${player.id} | ${severityVisual(playerPressureSeverity(player)).label} | ${player.transport === 'webtransport' ? 'WT' : 'WS'} | ${player.one_way_ms}ms | ${player.pending_inputs} | ${player.dead ? '—' : `${player.hp}`} | ${escapeMdCell(fmtPos(player.pos_m))} | ${escapeMdCell(fmtSpeed(player.vel_ms))} | ${statusStr(player)} | ±${fmt(player.input_jitter_ms)}ms | ${fmt(player.avg_bundle_size, 1)} | ${correction} | ${phys} |`;
+  return `| ${player.id} | ${severityVisual(playerPressureSeverity(player, simHz)).label} | ${player.transport === 'webtransport' ? 'WT' : 'WS'} | ${player.one_way_ms}ms | ${player.pending_inputs} | ${player.dead ? '—' : `${player.hp}`} | ${escapeMdCell(fmtPos(player.pos_m))} | ${escapeMdCell(fmtSpeed(player.vel_ms))} | ${statusStr(player)} | ±${fmt(player.input_jitter_ms)}ms | ${fmt(player.avg_bundle_size, 1)} | ${correction} | ${phys} |`;
 }
 
 function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
@@ -881,7 +883,7 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     `| WT payload / client | avg ${fmtBytes(match.network.snapshot_bytes_per_client.avg)} / p95 ${fmtBytes(match.network.snapshot_bytes_per_client.p95)} / max ${fmtBytes(match.network.snapshot_bytes_per_client.max)} | ${fmtBytes(WT_STRICT_DATAGRAM_TARGET_BYTES)} | ${severityVisual(payloadTone).label} | ${escapeMdCell(snapshotPressureDrivers(match))} |`,
     `| Pending inputs | avg ${fmt(avgPendingInputs(match), 1)} / max ${fmtInt(maxPendingInputs(match))} | ${SERVER_PENDING_INPUT_CAP} | ${severityVisual(queueTone).label} | worst players: ${escapeMdCell(topPlayerPressureSummary(match))} |`,
     `| WT delivery | datagram ${fmtPercent(webTransportSnapshotDatagramRatio(match))} / reliable ${fmtPercent(wtFallbackRatio)} | keep datagram dominant | ${severityVisual(transportTone).label} | WS players ${match.load.websocket_players}; WT players ${match.load.webtransport_players} |`,
-    `| Zero-tolerance errors | strict ${match.network.strict_snapshot_drops} / dropped ${match.network.dropped_outbound_snapshots} / malformed ${match.network.malformed_packets} | 0 | ${severityVisual(zeroTone).label} | any non-zero here invalidates a clean run |`,
+    `| Zero-tolerance errors | strict ${strictDropFailures(match)} (closed ${match.network.strict_snapshot_drop_connection_closed} benign) / dropped ${match.network.dropped_outbound_snapshots} / malformed ${match.network.malformed_packets} | 0 | ${severityVisual(zeroTone).label} | only oversize/unsupported/other strict drops or dropped/malformed counters invalidate a run |`,
     '',
     ...markdownBullets('What To Focus On', buildMatchFocusAreas(match, simHz)),
     ...markdownBullets('Improvement Opportunities', buildMatchOpportunities(match, simHz)),
@@ -897,7 +899,7 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     `- packets ${match.network.inbound_packets_per_sec}/${match.network.outbound_packets_per_sec} per sec`,
     `- ${describeTransport(match)}`,
     `- ws reliable ${match.network.websocket_snapshot_reliable_sent} | wt datagram ${match.network.webtransport_snapshot_datagram_sent} | wt reliable ${match.network.webtransport_snapshot_reliable_sent}`,
-    `- fallbacks ${match.network.datagram_fallbacks} | strict drops ${match.network.strict_snapshot_drops} | malformed ${match.network.malformed_packets}`,
+    `- fallbacks ${match.network.datagram_fallbacks} | strict drops ${strictDropFailures(match)} (closed ${match.network.strict_snapshot_drop_connection_closed}) | malformed ${match.network.malformed_packets}`,
     `- battery sync ${match.network.battery_sync_packets_sent} packets / ${fmtBytes(match.network.battery_sync_bytes_sent)} | local energy ${match.network.local_player_energy_packets_sent} packets / ${fmtBytes(match.network.local_player_energy_bytes_sent)}`,
     '',
     '### Snapshot Shape',
@@ -931,7 +933,7 @@ function matchMarkdown(match: MatchStatsSnapshot, simHz: number): string {
     '### Players',
     '| ID | Health | Transport | Latency | In-buf | HP | Position (m) | Speed | Status | Net-jitter | Bundle | Correction | Phys-ms |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-    ...(match.players.length > 0 ? match.players.map(playerRowMarkdown) : ['| — | — | — | — | — | — | — | — | — | — | — | — | — |']),
+    ...(match.players.length > 0 ? match.players.map((player) => playerRowMarkdown(player, simHz)) : ['| — | — | — | — | — | — | — | — | — | — | — | — | — |']),
   ];
   return lines.join('\n');
 }
@@ -1059,7 +1061,7 @@ function computeTransportSegments(match: MatchStatsSnapshot): BreakdownSegment[]
     { label: 'WS reliable', value: match.network.websocket_snapshot_reliable_sent, color: BLUE },
     { label: 'WT datagram', value: match.network.webtransport_snapshot_datagram_sent, color: GREEN },
     { label: 'WT reliable', value: match.network.webtransport_snapshot_reliable_sent, color: YELLOW },
-    { label: 'Strict drops', value: match.network.strict_snapshot_drops, color: RED },
+    { label: 'Strict drops', value: strictDropFailures(match), color: RED },
   ];
   return segments.filter((segment) => segment.value > 0);
 }
@@ -1120,10 +1122,15 @@ function buildConstraintAlerts(match: MatchStatsSnapshot, simHz: number): Constr
     });
   }
 
-  if (match.network.strict_snapshot_drops > 0) {
+  if (strictDropFailures(match) > 0) {
     alerts.push({
       tone: 'danger',
-      text: `Strict WT drops ${match.network.strict_snapshot_drops} (target 0)`,
+      text: `Strict WT drops ${strictDropFailures(match)} (target 0)`,
+    });
+  } else if (match.network.strict_snapshot_drop_connection_closed > 0) {
+    alerts.push({
+      tone: 'good',
+      text: `${match.network.strict_snapshot_drop_connection_closed} benign close-drops (target 0 failures)`,
     });
   }
 
@@ -1154,14 +1161,14 @@ function sortPlayers(players: PlayerStatsSnapshot[]): PlayerStatsSnapshot[] {
   );
 }
 
-function riskLabel(player: PlayerStatsSnapshot): string {
+function riskLabel(player: PlayerStatsSnapshot, simHz: number): string {
   if (player.pending_inputs >= 20) {
     return 'input backlog';
   }
   if (player.one_way_ms >= 100) {
     return 'high latency';
   }
-  if (player.input_jitter_ms >= 20) {
+  if (player.input_jitter_ms >= jitterThresholds(player, simHz).watchMax) {
     return 'high jitter';
   }
   if (player.has_debug_stats && player.correction_m >= 0.5) {
@@ -1170,7 +1177,7 @@ function riskLabel(player: PlayerStatsSnapshot): string {
   if (player.dead) {
     return 'dead';
   }
-  return playerPressureSeverity(player) === 'celebrate' ? 'clean link' : 'stable';
+  return playerPressureSeverity(player, simHz) === 'celebrate' ? 'clean link' : 'stable';
 }
 
 function OverviewStat({
@@ -1574,7 +1581,7 @@ function DistributionChart({
   );
 }
 
-function HotspotList({ players }: { players: PlayerStatsSnapshot[] }) {
+function HotspotList({ players, simHz }: { players: PlayerStatsSnapshot[]; simHz: number }) {
   const hotPlayers = sortPlayers(players).slice(0, 5);
   if (hotPlayers.length === 0) {
     return <div style={styles.emptyState}>No connected players.</div>;
@@ -1583,7 +1590,7 @@ function HotspotList({ players }: { players: PlayerStatsSnapshot[] }) {
   return (
     <div style={styles.hotspotList}>
       {hotPlayers.map((player) => {
-        const tone = playerPressureSeverity(player);
+        const tone = playerPressureSeverity(player, simHz);
         const visual = severityVisual(tone);
         return (
         <div
@@ -1597,7 +1604,7 @@ function HotspotList({ players }: { players: PlayerStatsSnapshot[] }) {
           <div>
             <div style={styles.hotspotTitleRow}>
               <SeverityBadge tone={tone} />
-              <div style={{ ...styles.hotspotTitle, color: visual.color }}>{`P${player.id} · ${riskLabel(player)}`}</div>
+              <div style={{ ...styles.hotspotTitle, color: visual.color }}>{`P${player.id} · ${riskLabel(player, simHz)}`}</div>
             </div>
             <div style={styles.hotspotMeta}>
               {`${player.transport === 'webtransport' ? 'WT' : 'WS'} · ${statusStr(player)} · ${fmtPos(player.pos_m)}`}
@@ -1639,7 +1646,7 @@ function MetricCell({
   );
 }
 
-function PlayersTable({ players }: { players: PlayerStatsSnapshot[] }) {
+function PlayersTable({ players, simHz }: { players: PlayerStatsSnapshot[]; simHz: number }) {
   const sorted = sortPlayers(players);
   if (sorted.length === 0) {
     return <div style={styles.emptyState}>No connected players.</div>;
@@ -1657,10 +1664,11 @@ function PlayersTable({ players }: { players: PlayerStatsSnapshot[] }) {
         </thead>
         <tbody>
           {sorted.map((player) => {
-            const rowSeverity = playerPressureSeverity(player);
+            const rowSeverity = playerPressureSeverity(player, simHz);
             const latencySeverity = lowerIsBetterSeverity(player.one_way_ms, 25, 60, 100);
             const pendingSeverity = lowerIsBetterSeverity(player.pending_inputs, 2, 8, 20);
-            const jitterSeverity = lowerIsBetterSeverity(player.input_jitter_ms, 4, 10, 20);
+            const jitterThresh = jitterThresholds(player, simHz);
+            const jitterSeverity = lowerIsBetterSeverity(player.input_jitter_ms, jitterThresh.celebrateMax, jitterThresh.goodMax, jitterThresh.watchMax);
             const correctionSeverity = player.has_debug_stats ? lowerIsBetterSeverity(player.correction_m, 0.03, 0.1, 0.5) : 'neutral';
             const physicsSeverity = player.has_debug_stats ? lowerIsBetterSeverity(player.physics_ms, 2, 4, 8) : 'neutral';
             const visual = severityVisual(rowSeverity);
@@ -1769,7 +1777,7 @@ function MatchPanel({
   const payloadTone = snapshotPayloadSeverity(match);
   const backlogTone = backlogSeverity(match);
   const transportTone = relevantTransportSeverity(match);
-  const playersTone = worstSeverity(match.players.map(playerPressureSeverity));
+  const playersTone = worstSeverity(match.players.map((player) => playerPressureSeverity(player, simHz)));
   const tickSegments = computeTickSegments(match, simHz);
   const playerSegments = computePlayerSegments(match);
   const transportSegments = computeTransportSegments(match);
@@ -1826,8 +1834,10 @@ function MatchPanel({
   const zeroIssueRows: ConstraintRow[] = [
     {
       label: 'strict drops',
-      value: match.network.strict_snapshot_drops,
-      display: fmtInt(match.network.strict_snapshot_drops),
+      value: strictDropFailures(match),
+      display: match.network.strict_snapshot_drop_connection_closed > 0
+        ? `${fmtInt(strictDropFailures(match))} (+${fmtInt(match.network.strict_snapshot_drop_connection_closed)} closed)`
+        : fmtInt(strictDropFailures(match)),
     },
     {
       label: 'dropped snapshots',
@@ -2111,12 +2121,12 @@ function MatchPanel({
         </DashboardCard>
 
         <DashboardCard title="Top Pressure Players" subtitle="Sorted by backlog, latency, jitter, and correction pressure" severity={playersTone}>
-          <HotspotList players={match.players} />
+          <HotspotList players={match.players} simHz={simHz} />
         </DashboardCard>
       </div>
 
       <DashboardCard title="Players" subtitle="Scrollable table, sorted by highest pressure first" severity={playersTone}>
-        <PlayersTable players={match.players} />
+        <PlayersTable players={match.players} simHz={simHz} />
       </DashboardCard>
     </section>
   );

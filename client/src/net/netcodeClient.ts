@@ -363,7 +363,7 @@ export class NetcodeClient {
     this.debugTelemetry.observeAcceptedSnapshot(
       source,
       packet.serverTick,
-      1 + packet.remotePlayers.length,
+      1 + packet.remotePlayers.length + packet.coldRemotePlayers.length,
       packet.sphereStates.length + packet.boxStates.length,
     );
 
@@ -426,6 +426,42 @@ export class NetcodeClient {
         pitch,
         hp: player.hp,
         flags: player.flags,
+      });
+    }
+
+    for (const cold of packet.coldRemotePlayers) {
+      const remotePlayerId = this.playerIdByHandle.get(cold.handle);
+      if (remotePlayerId == null || remotePlayerId === this.playerId) {
+        continue;
+      }
+      const prior = this.remotePlayers.get(remotePlayerId);
+      if (!prior) {
+        // No hot record yet to seed hp/pitch/velocity from; wait for the next
+        // refresh (server guarantees one within COLD_PLAYER_REFRESH_TICKS).
+        continue;
+      }
+      const position: [number, number, number] = [
+        anchorPos[0] + q2_5mmToMeters(cold.dxQ2_5mm),
+        anchorPos[1] + q2_5mmToMeters(cold.dyQ2_5mm),
+        anchorPos[2] + q2_5mmToMeters(cold.dzQ2_5mm),
+      ];
+      const yaw = (cold.yawI16 & 0xffff) / 65535 * Math.PI * 2;
+      this.interpolator.push(remotePlayerId, {
+        serverTimeUs: packet.serverTimeUs,
+        position,
+        velocity: [0, 0, 0],
+        yaw,
+        pitch: prior.pitch,
+        hp: prior.hp,
+        flags: cold.flags,
+      });
+      this.remotePlayers.set(remotePlayerId, {
+        id: remotePlayerId,
+        position,
+        yaw,
+        pitch: prior.pitch,
+        hp: prior.hp,
+        flags: cold.flags,
       });
     }
 

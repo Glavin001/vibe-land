@@ -77,6 +77,9 @@ const COLD_DYNAMIC_REFRESH_TICKS: u32 = SIM_HZ as u32;
 const HOT_LINEAR_SPEED_THRESHOLD_MPS: f32 = 0.05;
 const HOT_ANGULAR_SPEED_THRESHOLD_RADPS: f32 = 0.05;
 const HOT_DYNAMIC_NEAR_RADIUS_M: f32 = 12.0;
+const HOT_PLAYER_NEAR_RADIUS_M: f32 = 30.0;
+const HOT_PLAYER_SPEED_THRESHOLD_MPS: f32 = 2.0;
+const COLD_PLAYER_REFRESH_TICKS: u32 = SIM_HZ as u32;
 const MATCH_HEALTH_LOG_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 10;
 const STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES: usize = 1100;
 const SNAPSHOT_HEADER_BYTES: usize = 23;
@@ -84,9 +87,13 @@ const SNAPSHOT_PLAYER_STATE_BYTES: usize = 29;
 const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
-const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
+// V2 header now carries an extra byte for the cold-remote-player count.
+const SNAPSHOT_V2_HEADER_BYTES: usize = 24;
 const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 12;
 const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
+// Cold remote-player record: handle(1) + dx/dy/dz(6) + yaw(2) + flags(1).
+// Pitch, hp, and velocity are reused from the last hot packet on the client.
+const SNAPSHOT_V2_REMOTE_PLAYER_COLD_BYTES: usize = 10;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
 const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
 const SNAPSHOT_V2_VEHICLE_BYTES: usize = 30;
@@ -511,6 +518,7 @@ struct PlayerStatsSnapshot {
     dead: bool,
     // Server-observed network quality
     input_jitter_ms: f32,
+    input_period_ms: f32,
     avg_bundle_size: f32,
     // Client-reported experience metrics (1 Hz)
     correction_m: f32,
@@ -643,6 +651,7 @@ struct PlayerRuntime {
     last_sent_dynamic_body_pose: HashMap<u32, ([f32; 3], [f32; 4])>,
     last_sent_vehicle_tick: HashMap<u32, u32>,
     last_sent_dynamic_tick: HashMap<u32, u32>,
+    last_sent_remote_player_tick: HashMap<u32, u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -1446,6 +1455,7 @@ impl MatchState {
                         last_sent_dynamic_body_pose: HashMap::new(),
                         last_sent_vehicle_tick: HashMap::new(),
                         last_sent_dynamic_tick: HashMap::new(),
+                        last_sent_remote_player_tick: HashMap::new(),
                     },
                 );
                 self.activate_spawn_protection(conn.player_id);
@@ -1970,16 +1980,16 @@ impl MatchState {
             if let Some((pos, vel, _yaw, _pitch, hp, flags)) = self.arena.snapshot_player(player_id)
             {
                 positions.push(pos);
-                // Jitter = stddev of inter-arrival intervals
-                let input_jitter_ms = {
+                // Jitter = stddev of inter-arrival intervals; period = their mean.
+                let (input_jitter_ms, input_period_ms) = {
                     let ivs = &runtime.bundle_intervals_ms;
                     if ivs.len() >= 2 {
                         let mean = ivs.iter().sum::<f32>() / ivs.len() as f32;
                         let var =
                             ivs.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / ivs.len() as f32;
-                        var.sqrt()
+                        (var.sqrt(), mean)
                     } else {
-                        0.0
+                        (0.0, 0.0)
                     }
                 };
                 let avg_bundle_size = if runtime.bundle_sizes.is_empty() {
@@ -2003,6 +2013,7 @@ impl MatchState {
                     in_vehicle: (flags & 0x2) != 0,
                     dead: (flags & 0x4) != 0,
                     input_jitter_ms,
+                    input_period_ms,
                     avg_bundle_size,
                     correction_m: runtime.client_correction_m,
                     physics_ms: runtime.client_physics_ms,
@@ -3193,7 +3204,8 @@ impl MatchState {
                 .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
             budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
 
-            let mut remote_player_states = Vec::new();
+            let mut remote_hot: Vec<(u32, f32, protocol::RemotePlayerStateV2)> = Vec::new();
+            let mut remote_cold: Vec<(u32, f32, protocol::RemotePlayerColdStateV2)> = Vec::new();
             for (player_id, pos, state) in player_states.iter().filter(|(player_id, pos, _)| {
                 *player_id != recipient_id
                     && distance_sq(*pos, *recipient_pos)
@@ -3205,23 +3217,75 @@ impl MatchState {
                 let Some((dx, dy, dz)) = quantize_relative_vec_q2_5mm(*recipient_pos, *pos) else {
                     continue;
                 };
+                let dist_sq = distance_sq(*pos, *recipient_pos);
+                let moving = speed_sq3([
+                    cms_to_mps(state.vx_cms),
+                    cms_to_mps(state.vy_cms),
+                    cms_to_mps(state.vz_cms),
+                ]) > HOT_PLAYER_SPEED_THRESHOLD_MPS * HOT_PLAYER_SPEED_THRESHOLD_MPS;
+                let needs_refresh = runtime
+                    .last_sent_remote_player_tick
+                    .get(player_id)
+                    .map(|last| self.server_tick.saturating_sub(*last) >= COLD_PLAYER_REFRESH_TICKS)
+                    .unwrap_or(true);
+                let hot = moving
+                    || dist_sq <= HOT_PLAYER_NEAR_RADIUS_M * HOT_PLAYER_NEAR_RADIUS_M
+                    || needs_refresh;
+                if hot {
+                    remote_hot.push((
+                        *player_id,
+                        dist_sq,
+                        protocol::RemotePlayerStateV2 {
+                            handle,
+                            dx_q2_5mm: dx,
+                            dy_q2_5mm: dy,
+                            dz_q2_5mm: dz,
+                            vx_cms: state.vx_cms,
+                            vy_cms: state.vy_cms,
+                            vz_cms: state.vz_cms,
+                            yaw_i16: state.yaw_i16,
+                            pitch_i16: state.pitch_i16,
+                            hp: state.hp,
+                            flags: (state.flags & 0xff) as u8,
+                        },
+                    ));
+                } else {
+                    remote_cold.push((
+                        *player_id,
+                        dist_sq,
+                        protocol::RemotePlayerColdStateV2 {
+                            handle,
+                            dx_q2_5mm: dx,
+                            dy_q2_5mm: dy,
+                            dz_q2_5mm: dz,
+                            yaw_i16: state.yaw_i16,
+                            flags: (state.flags & 0xff) as u8,
+                        },
+                    ));
+                }
+            }
+            remote_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
+            remote_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+            let mut remote_player_states = Vec::new();
+            for (player_id, _, record) in remote_hot.into_iter() {
                 if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_BYTES {
                     break;
                 }
-                remote_player_states.push(protocol::RemotePlayerStateV2 {
-                    handle,
-                    dx_q2_5mm: dx,
-                    dy_q2_5mm: dy,
-                    dz_q2_5mm: dz,
-                    vx_cms: state.vx_cms,
-                    vy_cms: state.vy_cms,
-                    vz_cms: state.vz_cms,
-                    yaw_i16: state.yaw_i16,
-                    pitch_i16: state.pitch_i16,
-                    hp: state.hp,
-                    flags: (state.flags & 0xff) as u8,
-                });
+                runtime
+                    .last_sent_remote_player_tick
+                    .insert(player_id, self.server_tick);
+                remote_player_states.push(record);
                 budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_BYTES);
+            }
+            let mut remote_cold_states = Vec::new();
+            for (_, _, record) in remote_cold.into_iter() {
+                if budget_remaining < SNAPSHOT_V2_REMOTE_PLAYER_COLD_BYTES {
+                    break;
+                }
+                remote_cold_states.push(record);
+                budget_remaining =
+                    budget_remaining.saturating_sub(SNAPSHOT_V2_REMOTE_PLAYER_COLD_BYTES);
             }
 
             let mut selected_vehicle_states = Vec::new();
@@ -3471,6 +3535,7 @@ impl MatchState {
                 anchor_pz_mm: local_player_state.pz_mm,
                 self_state,
                 remote_players: remote_player_states,
+                cold_remote_players: remote_cold_states,
                 sphere_states,
                 box_states,
                 vehicle_states: selected_vehicle_states,
@@ -3659,7 +3724,9 @@ fn dynamic_body_within_aoi(was_visible: bool, body_pos: [f32; 3], recipient_pos:
 fn packet_player_count(packet: &ServerPacket) -> usize {
     match packet {
         ServerPacket::Snapshot(snapshot) => snapshot.player_states.len(),
-        ServerPacket::SnapshotV2(snapshot) => 1 + snapshot.remote_players.len(),
+        ServerPacket::SnapshotV2(snapshot) => {
+            1 + snapshot.remote_players.len() + snapshot.cold_remote_players.len()
+        }
         _ => 0,
     }
 }
@@ -3845,6 +3912,7 @@ mod tests {
             last_sent_dynamic_body_pose: HashMap::new(),
             last_sent_vehicle_tick: HashMap::new(),
             last_sent_dynamic_tick: HashMap::new(),
+            last_sent_remote_player_tick: HashMap::new(),
         }
     }
 

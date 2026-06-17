@@ -105,6 +105,7 @@ function makeMatch(overrides: Partial<MatchStatsSnapshot> = {}): MatchStatsSnaps
         in_vehicle: false,
         dead: false,
         input_jitter_ms: 2,
+        input_period_ms: 16.7,
         avg_bundle_size: 1,
         correction_m: 0,
         physics_ms: 0.1,
@@ -152,6 +153,7 @@ describe('benchmark evaluation', () => {
         ...makeMatch().network,
         datagram_fallbacks: 7,
         strict_snapshot_drops: 11,
+        strict_snapshot_drop_oversize: 11,
       },
       load: {
         ...makeMatch().load,
@@ -163,6 +165,7 @@ describe('benchmark evaluation', () => {
         ...base.network,
         datagram_fallbacks: 9,
         strict_snapshot_drops: 14,
+        strict_snapshot_drop_oversize: 14,
       },
       load: {
         ...base.load,

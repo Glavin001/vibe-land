@@ -1,4 +1,4 @@
-import { describeBottleneck, maxPendingInputs, totalPhysicsP95, webTransportSnapshotFallbackRatio, type MatchStatsSnapshot } from '../loadtest/serverStats';
+import { describeBottleneck, maxPendingInputs, strictDropFailures, totalPhysicsP95, webTransportSnapshotFallbackRatio, type MatchStatsSnapshot } from '../loadtest/serverStats';
 import type {
   BenchmarkMeasuredWindow,
   BenchmarkObservedMetrics,
@@ -48,7 +48,7 @@ export function buildMeasuredWindow(
     bodiesPerClientP95: maxValue(matches, (sample) => sample.network.snapshot_dynamic_bodies_per_client.p95),
     wtReliableRatio: maxValue(matches, (sample) => webTransportSnapshotFallbackRatio(sample)),
     datagramFallbacks: deltaValue(matches, (sample) => sample.network.datagram_fallbacks),
-    strictSnapshotDrops: deltaValue(matches, (sample) => sample.network.strict_snapshot_drops),
+    strictSnapshotDrops: deltaValue(matches, (sample) => strictDropFailures(sample)),
     maxPendingInputs: maxValue(matches, (sample) => maxPendingInputs(sample)),
     avgPendingInputs: maxValue(matches, (sample) =>
       sample.players.length > 0

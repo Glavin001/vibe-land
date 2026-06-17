@@ -98,6 +98,7 @@ export interface PlayerStatsSnapshot {
   in_vehicle: boolean;
   dead: boolean;
   input_jitter_ms: number;
+  input_period_ms: number;
   avg_bundle_size: number;
   correction_m: number;
   physics_ms: number;
@@ -145,6 +146,46 @@ export function maxPendingInputs(match: MatchStatsSnapshot): number {
 export function avgPendingInputs(match: MatchStatsSnapshot): number {
   if (match.players.length === 0) return 0;
   return match.players.reduce((sum, player) => sum + player.pending_inputs, 0) / match.players.length;
+}
+
+export function strictDropFailures(match: MatchStatsSnapshot): number {
+  return (
+    match.network.strict_snapshot_drop_oversize
+    + match.network.strict_snapshot_drop_unsupported_peer
+    + match.network.strict_snapshot_drop_other
+  );
+}
+
+export function zeroToleranceFailures(match: MatchStatsSnapshot): number {
+  return (
+    strictDropFailures(match)
+    + match.network.dropped_outbound_snapshots
+    + match.network.malformed_packets
+  );
+}
+
+export interface JitterThresholds {
+  celebrateMax: number;
+  goodMax: number;
+  watchMax: number;
+}
+
+export function jitterThresholds(
+  player: PlayerStatsSnapshot,
+  simHz: number,
+): JitterThresholds {
+  const simPeriodMs = tickBudgetMs(simHz);
+  const periodMs = Number.isFinite(player.input_period_ms) ? player.input_period_ms : 0;
+  // Clients sampling at or near the sim rate keep the tight 4/10/20 ms floor
+  // (real players). Slower clients (e.g. loadtest bots at 15 Hz vs 60 Hz sim)
+  // widen proportionally because observed stddev scales with the client period,
+  // not with network quality. Use the client period itself as the upper bound.
+  const baseline = Math.max(0, periodMs - simPeriodMs);
+  return {
+    celebrateMax: Math.max(4, baseline * 0.4),
+    goodMax: Math.max(10, baseline * 1.5),
+    watchMax: Math.max(20, baseline * 3.0),
+  };
 }
 
 export function webTransportSnapshotFallbackRatio(match: MatchStatsSnapshot): number {
@@ -228,13 +269,10 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
   if (budgetMs > 0 && headroomMs <= 4.0) {
     return `Near tick budget: ${timingLabel}, headroom ${headroomMs.toFixed(1)}ms`;
   }
-  if (match.load.webtransport_players > 0 && match.network.strict_snapshot_drops > 0) {
+  if (match.load.webtransport_players > 0 && strictDropFailures(match) > 0) {
     const dropSummary = [
       match.network.strict_snapshot_drop_oversize > 0
         ? `oversize ${match.network.strict_snapshot_drop_oversize}`
-        : null,
-      match.network.strict_snapshot_drop_connection_closed > 0
-        ? `closed ${match.network.strict_snapshot_drop_connection_closed}`
         : null,
       match.network.strict_snapshot_drop_unsupported_peer > 0
         ? `unsupported ${match.network.strict_snapshot_drop_unsupported_peer}`
@@ -245,7 +283,7 @@ export function describeBottleneck(match: MatchStatsSnapshot, simHz = 60): strin
     ]
       .filter((part): part is string => part != null)
       .join(', ');
-    return `WT strict drops: ${match.network.strict_snapshot_drops} dropped snapshots${dropSummary ? ` (${dropSummary})` : ''}, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms`;
+    return `WT strict drops: ${strictDropFailures(match)} dropped snapshots${dropSummary ? ` (${dropSummary})` : ''}, tick p95 ${match.timings.total_ms.p95.toFixed(1)}ms`;
   }
   if (match.load.webtransport_players > 0 && wtFallbackRatio >= 0.25) {
     return `WT datagram overflow: ${(wtFallbackRatio * 100).toFixed(1)}% reliable fallback, snapshot p95 ${(snapshotBytes / 1024).toFixed(1)} KiB/client`;
