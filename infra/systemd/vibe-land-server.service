@@ -1,0 +1,31 @@
+[Unit]
+Description=vibe-land Rust game server (Axum + WebTransport)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vibe-land
+Group=vibe-land
+WorkingDirectory=/var/www/vibe-land
+EnvironmentFile=/etc/vibe-land/server.env
+# BIND_ADDR, WT_BIND_ADDR, WT_PUBLIC_URL, WT_CERT_PEM, WT_KEY_PEM are read
+# from /etc/vibe-land/server.env. See .env.example.
+ExecStart=/var/www/vibe-land/target/release/server
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# The game server binds :4002 UDP for WebTransport. No extra caps needed
+# unless the port is <1024.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Let's Encrypt reads from /etc/letsencrypt/live (symlinks into archive).
+ReadOnlyPaths=/etc/letsencrypt
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
