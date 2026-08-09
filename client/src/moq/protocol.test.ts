@@ -11,6 +11,7 @@ import {
   encodeSubscribe,
   encodeUnsubscribe,
   readControlMessage,
+  readDatagramObject,
   readKeyValuePairs,
   readKeyValuePairsToEnd,
   readSubgroupHeader,
@@ -304,5 +305,23 @@ describe('subgroup data streams', () => {
     const header = await readSubgroupHeader(stream, headerType);
 
     expect(await readSubgroupObject(stream, header.shape, null)).toBeNull();
+  });
+
+  it('decodes an unreliable MoQ payload datagram', () => {
+    expect(readDatagramObject(bytesOf(0x00, 0x03, 0x04, 0x05, 0x07, 0xaa, 0xbb))).toEqual({
+      trackAlias: 3,
+      groupId: 4,
+      objectId: 5,
+      publisherPriority: 7,
+      status: ObjectStatus.Normal,
+      payload: bytesOf(0xaa, 0xbb),
+    });
+  });
+
+  it('rejects unsupported or empty MoQ datagrams', () => {
+    expect(() => readDatagramObject(bytesOf(0x01))).toThrow('unsupported MoQ datagram type');
+    expect(() => readDatagramObject(bytesOf(0x00, 0x00, 0x00, 0x00, 0x00))).toThrow(
+      'MoQ payload datagram was empty',
+    );
   });
 });

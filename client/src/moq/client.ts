@@ -19,6 +19,7 @@ import {
   encodeSubscribe,
   encodeUnsubscribe,
   readControlMessage,
+  readDatagramObject,
   readSubgroupHeader,
   readSubgroupObject,
   subgroupStreamShape,
@@ -168,6 +169,7 @@ export class MoqClient {
 
     void client.#runControlLoop();
     void client.#runDataLoop();
+    void client.#runDatagramLoop();
     void client.#watchForClose();
 
     return client;
@@ -175,6 +177,10 @@ export class MoqClient {
 
   get closed(): boolean {
     return this.#closed;
+  }
+
+  get maxDatagramSize(): number {
+    return this.#transport.datagrams.maxDatagramSize;
   }
 
   /**
@@ -313,6 +319,47 @@ export class MoqClient {
     } catch (error) {
       if (!this.#closed) {
         this.#log('error', `stopped accepting data streams: ${describeError(error)}`);
+      }
+    }
+  }
+
+  /** Receive unreliable MoQ object datagrams from the WebTransport session. */
+  async #runDatagramLoop(): Promise<void> {
+    const datagrams = this.#transport.datagrams.readable.getReader();
+
+    try {
+      while (!this.#closed) {
+        const { done, value } = await datagrams.read();
+        if (done) break;
+        await this.#readDatagram(value);
+      }
+    } catch (error) {
+      if (!this.#closed) {
+        this.#log('error', `stopped accepting datagrams: ${describeError(error)}`);
+      }
+    }
+  }
+
+  async #readDatagram(bytes: Uint8Array): Promise<void> {
+    try {
+      const object = readDatagramObject(bytes);
+      const subscription = await this.#resolveAlias(object.trackAlias);
+      if (!subscription || !subscription.active) return;
+
+      subscription.objectCount += 1;
+      subscription.byteCount += object.payload.length;
+      subscription.handler({
+        groupId: object.groupId,
+        subgroupId: 0,
+        objectId: object.objectId,
+        publisherPriority: object.publisherPriority,
+        status: object.status,
+        payload: object.payload,
+        receivedAt: performance.now(),
+      });
+    } catch (error) {
+      if (!this.#closed) {
+        this.#log('warn', `dropped malformed datagram: ${describeError(error)}`);
       }
     }
   }

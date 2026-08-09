@@ -8,27 +8,41 @@
 #   cf-relay.sh list                     list relays on the account
 #   cf-relay.sh create [name]            create a relay
 #   cf-relay.sh tokens <uid>             list a relay's tokens (no secrets)
-#   cf-relay.sh mint <uid> <op> [label]  mint a token; op is publish|subscribe
+#   cf-relay.sh mint <uid> <op> [label]  mint; op publish|subscribe|publish+subscribe
 #   cf-relay.sh revoke <uid> <jti>       revoke one token
 #   cf-relay.sh publish <uid> [args...]  run the publisher against the relay
 #   cf-relay.sh env <uid>                print .env lines for the /moq page
+#   cf-relay.sh hosted-demo <uid> [args] run publisher + Vite with one shared token
+#   cf-relay.sh hosted-bodies <uid> [args] run RBWT publisher + /bodies with one shared token
+#   cf-relay.sh benchmark <uid> [args]   run the staged hosted throughput benchmark
 #   cf-relay.sh delete <uid>             delete a relay
 #
 # Relay token secrets are returned by the API exactly once, at mint time — they
 # cannot be read back later. So `publish` mints a short-lived token, hands it to
 # the publisher, and revokes it on exit; nothing is left lying around and the
-# secret never reaches your shell history.
+# secret never reaches your shell history. `hosted-demo` is a temporary
+# workaround for Cloudflare's cross-token scope bug; see moq/README.md.
 
 set -euo pipefail
+
+# Non-interactive shells may find an older system Cargo before rustup's Cargo.
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env"
+fi
 
 API="https://api.cloudflare.com/client/v4"
 ENDPOINT="${MOQ_RELAY_ENDPOINT:-https://draft-16.cloudflare.mediaoverquic.com}"
 NAMESPACE="${MOQ_NAMESPACE:-vibe-land/demo}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUBLISHER="$HERE/../publisher"
+CLIENT="$HERE/../../client"
+BENCHMARK="$HERE/../bench/run-cloudflare.mjs"
+BODY_BACKEND="${BODY_BACKEND_DIR:-/root/workspace/webtransport}"
+BODY_BENCHMARK="$HERE/../bench/run-bodies.mjs"
 
 usage() {
-  sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '3,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -85,19 +99,19 @@ for issuer in result.get("issuers", []):
 # mint response, so a caller that needs to revoke the token later never has to
 # go looking for it by label.
 mint_token() {
-  local uid="$1" operation="$2" label="$3"
+  local uid="$1" operations="$2" label="$3"
   local body
   body=$(python3 -c '
 import json, sys
-print(json.dumps({"operations": [sys.argv[1]], "label": sys.argv[2]}))
-' "$operation" "$label")
+print(json.dumps({"operations": sys.argv[1].split("+"), "label": sys.argv[2]}))
+' "$operations" "$label")
 
   local minted
   minted=$(cf POST "/accounts/$CF_ACCOUNT_ID/moq/relays/$uid/tokens" "$body" \
     | flatten_tokens | awk -F'\t' 'NR == 1 { print $1 "\t" $5 }')
 
   if [ -z "$minted" ] || [ "${minted#*$'\t'}" = "" ]; then
-    echo "the API returned no secret for the new $operation token" >&2
+    echo "the API returned no secret for the new $operations token" >&2
     return 1
   fi
   printf '%s' "$minted"
@@ -119,15 +133,44 @@ jti_of() {
 # nothing and silently skips its work.
 EPHEMERAL_RELAY_UID=""
 EPHEMERAL_JTI=""
+HOSTED_DEMO_PUBLISHER_PID=""
+HOSTED_DEMO_CLIENT_PID=""
 
 revoke_ephemeral_token() {
   [ -n "$EPHEMERAL_JTI" ] || return 0
   local jti="$EPHEMERAL_JTI"
   EPHEMERAL_JTI=""
 
-  echo "revoking the ephemeral publish token ($jti)" >&2
+  echo "revoking the ephemeral relay token ($jti)" >&2
   cf DELETE "/accounts/$CF_ACCOUNT_ID/moq/relays/$EPHEMERAL_RELAY_UID/tokens/$jti" \
     > /dev/null 2>&1 || echo "warning: could not revoke $jti — revoke it by hand" >&2
+}
+
+stop_hosted_demo_processes() {
+  local pid
+  for pid in "$HOSTED_DEMO_PUBLISHER_PID" "$HOSTED_DEMO_CLIENT_PID"; do
+    [ -n "$pid" ] || continue
+    kill "$pid" > /dev/null 2>&1 || true
+  done
+  for pid in "$HOSTED_DEMO_PUBLISHER_PID" "$HOSTED_DEMO_CLIENT_PID"; do
+    [ -n "$pid" ] || continue
+    wait "$pid" > /dev/null 2>&1 || true
+  done
+  HOSTED_DEMO_PUBLISHER_PID=""
+  HOSTED_DEMO_CLIENT_PID=""
+}
+
+cleanup_hosted_demo() {
+  stop_hosted_demo_processes
+  revoke_ephemeral_token
+}
+
+hosted_demo_interrupt() {
+  exit 130
+}
+
+hosted_demo_terminate() {
+  exit 143
 }
 
 cmd_list() {
@@ -161,6 +204,7 @@ cmd_create() {
 The default tokens' secrets were shown only in that create response, which this
 script discards. Mint what you need instead:
 
+  $0 hosted-demo $uid
   $0 publish $uid
   $0 env $uid >> .env
 EOF
@@ -174,13 +218,13 @@ cmd_tokens() {
 }
 
 cmd_mint() {
-  local uid="${1:?usage: cf-relay.sh mint <relay-uid> <publish|subscribe> [label]}"
-  local operation="${2:?operation must be publish or subscribe}"
+  local uid="${1:?usage: cf-relay.sh mint <relay-uid> <publish|subscribe|publish+subscribe> [label]}"
+  local operation="${2:?operation must be publish, subscribe, or publish+subscribe}"
   local label="${3:-minted by cf-relay.sh}"
 
   case "$operation" in
-    publish | subscribe) ;;
-    *) echo "operation must be publish or subscribe" >&2; return 1 ;;
+    publish | subscribe | publish+subscribe) ;;
+    *) echo "operation must be publish, subscribe, or publish+subscribe" >&2; return 1 ;;
   esac
 
   local minted
@@ -229,6 +273,154 @@ VITE_MOQ_NAMESPACE=$NAMESPACE
 EOF
 }
 
+cmd_hosted_demo() {
+  local uid="${1:?usage: cf-relay.sh hosted-demo <relay-uid> [publisher args...]}"
+  shift || true
+
+  echo "building the publisher and browser assets before minting the shared token" >&2
+  ( cd "$PUBLISHER" && cargo build --release )
+  ( cd "$CLIENT" && npm run build:wasm )
+
+  local cargo_target_dir
+  cargo_target_dir=$(cd "$PUBLISHER" && cargo metadata --format-version 1 --no-deps \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+  local publisher_bin="$cargo_target_dir/release/vibe-moq-publisher"
+  [ -x "$publisher_bin" ] || {
+    echo "publisher binary was not created at $publisher_bin" >&2
+    return 1
+  }
+
+  local minted
+  minted=$(mint_token "$uid" publish+subscribe "cf-relay.sh hosted demo $$")
+
+  local token
+  token=$(secret_of "$minted")
+
+  EPHEMERAL_RELAY_UID="$uid"
+  EPHEMERAL_JTI=$(jti_of "$minted")
+  trap cleanup_hosted_demo EXIT
+  trap hosted_demo_interrupt INT
+  trap hosted_demo_terminate TERM
+  sleep "${MOQ_TOKEN_PROPAGATION_SECONDS:-10}"
+
+  cat >&2 <<EOF
+Cloudflare hosted-relay workaround enabled.
+The browser and publisher will share one short-lived publish+subscribe token.
+The browser therefore has publish permission until this command exits.
+The token will be revoked automatically.
+
+Starting publisher and Vite. Open the Vite URL at /moq and click Connect.
+EOF
+
+  (
+    cd "$PUBLISHER"
+    exec "$publisher_bin" "$ENDPOINT/$token" --namespace "$NAMESPACE" "$@"
+  ) &
+  HOSTED_DEMO_PUBLISHER_PID=$!
+
+  (
+    cd "$CLIENT"
+    export VITE_MOQ_RELAY_URL="$ENDPOINT"
+    export VITE_MOQ_SUBSCRIBE_TOKEN="$token"
+    export VITE_MOQ_NAMESPACE="$NAMESPACE"
+    exec "$CLIENT/node_modules/.bin/vite"
+  ) &
+  HOSTED_DEMO_CLIENT_PID=$!
+
+  local status=0
+  wait -n "$HOSTED_DEMO_PUBLISHER_PID" "$HOSTED_DEMO_CLIENT_PID" || status=$?
+  return "$status"
+}
+
+cmd_hosted_bodies() {
+  local uid="${1:?usage: cf-relay.sh hosted-bodies <relay-uid> [bodies-moq args...]}"
+  shift || true
+  local body_namespace="${MOQ_BODY_NAMESPACE:-vibe-land/bodies}"
+
+  echo "building the RBWT backend and browser assets before minting the shared token" >&2
+  ( cd "$BODY_BACKEND" && cargo build --release )
+  ( cd "$CLIENT" && npm run build:wasm )
+
+  local cargo_target_dir
+  cargo_target_dir=$(cd "$BODY_BACKEND" && cargo metadata --format-version 1 --no-deps \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+  local publisher_bin="$cargo_target_dir/release/wt-echo"
+  [ -x "$publisher_bin" ] || {
+    echo "RBWT publisher binary was not created at $publisher_bin" >&2
+    return 1
+  }
+
+  local minted token
+  minted=$(mint_token "$uid" publish+subscribe "cf-relay.sh hosted bodies $$")
+  token=$(secret_of "$minted")
+  EPHEMERAL_RELAY_UID="$uid"
+  EPHEMERAL_JTI=$(jti_of "$minted")
+  trap cleanup_hosted_demo EXIT
+  trap hosted_demo_interrupt INT
+  trap hosted_demo_terminate TERM
+  sleep "${MOQ_TOKEN_PROPAGATION_SECONDS:-10}"
+
+  cat >&2 <<EOF
+Starting the shared RBWT backend through Cloudflare MoQ.
+Open http://localhost:5555/bodies?transport=moq&autostart=1
+Namespace: $body_namespace
+The shared publish+subscribe token is revoked automatically on exit.
+EOF
+
+  (
+    cd "$BODY_BACKEND"
+    exec "$publisher_bin" bodies-moq \
+      --url "$ENDPOINT/$token" \
+      --namespace "$body_namespace" \
+      "$@"
+  ) &
+  HOSTED_DEMO_PUBLISHER_PID=$!
+
+  (
+    cd "$CLIENT"
+    export VITE_MOQ_RELAY_URL="$ENDPOINT"
+    export VITE_MOQ_SUBSCRIBE_TOKEN="$token"
+    export VITE_MOQ_NAMESPACE="$body_namespace"
+    export VITE_BODY_DIRECT_URL="${BODY_DIRECT_URL:-}"
+    export VITE_BODY_DIRECT_CERT_HASH="${BODY_DIRECT_CERT_HASH:-}"
+    exec "$CLIENT/node_modules/.bin/vite" --host 0.0.0.0
+  ) &
+  HOSTED_DEMO_CLIENT_PID=$!
+
+  if [ -n "${BODY_BENCH_VIEWERS:-}" ]; then
+    sleep "${BODY_DEMO_STARTUP_SECONDS:-2}"
+    local benchmark_status=0
+    MOQ_RELAY_URL="$ENDPOINT/$token" \
+      MOQ_NAMESPACE="$body_namespace" \
+      BODY_BENCH_TRANSPORT=moq \
+      BODY_LAB_URL="${BODY_LAB_URL:-http://127.0.0.1:5555/bodies}" \
+      node "$BODY_BENCHMARK" || benchmark_status=$?
+    return "$benchmark_status"
+  fi
+
+  local status=0
+  wait -n "$HOSTED_DEMO_PUBLISHER_PID" "$HOSTED_DEMO_CLIENT_PID" || status=$?
+  return "$status"
+}
+
+cmd_benchmark() {
+  local uid="${1:?usage: cf-relay.sh benchmark <relay-uid> [benchmark args...]}"
+  shift || true
+
+  local minted
+  minted=$(mint_token "$uid" publish+subscribe "cf-relay.sh benchmark $$")
+  local token
+  token=$(secret_of "$minted")
+
+  EPHEMERAL_RELAY_UID="$uid"
+  EPHEMERAL_JTI=$(jti_of "$minted")
+  trap revoke_ephemeral_token EXIT INT TERM
+  sleep "${MOQ_TOKEN_PROPAGATION_SECONDS:-10}"
+
+  echo "running staged Cloudflare MoQ benchmark; the shared token is revoked on exit" >&2
+  MOQ_RELAY_URL="$ENDPOINT/$token" node "$BENCHMARK" "$@"
+}
+
 cmd_delete() {
   local uid="${1:?usage: cf-relay.sh delete <relay-uid>}"
   cf DELETE "/accounts/$CF_ACCOUNT_ID/moq/relays/$uid" > /dev/null
@@ -241,9 +433,17 @@ main() {
   shift
 
   case "$command" in
-    list | create | tokens | mint | revoke | publish | env | delete)
+    list | create | tokens | mint | revoke | publish | env | benchmark | delete)
       require_credentials
       "cmd_$command" "$@"
+      ;;
+    hosted-demo)
+      require_credentials
+      cmd_hosted_demo "$@"
+      ;;
+    hosted-bodies)
+      require_credentials
+      cmd_hosted_bodies "$@"
       ;;
     -h | --help | help) usage 0 ;;
     *) echo "unknown command: $command" >&2; usage 1 ;;

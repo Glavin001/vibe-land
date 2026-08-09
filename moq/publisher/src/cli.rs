@@ -61,4 +61,20 @@ pub struct Cli {
     /// Seconds between throughput summaries on stderr. 0 disables them.
     #[arg(long, default_value_t = 5.0)]
     pub stats_seconds: f64,
+
+    /// Synthetic benchmark tracks. Zero runs the destruction simulation.
+    #[arg(long, default_value_t = 0)]
+    pub benchmark_tracks: usize,
+
+    /// Object rate per synthetic benchmark track.
+    #[arg(long, default_value_t = 20.0)]
+    pub benchmark_hz: f64,
+
+    /// Bytes in each synthetic benchmark object, including its 32-byte header.
+    #[arg(long, default_value_t = 4096)]
+    pub benchmark_payload_bytes: usize,
+
+    /// Send synthetic benchmark objects as unreliable MoQ datagrams.
+    #[arg(long, default_value_t = false)]
+    pub benchmark_datagrams: bool,
 }

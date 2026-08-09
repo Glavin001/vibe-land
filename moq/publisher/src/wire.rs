@@ -44,6 +44,8 @@ pub const KIND_META: u8 = 3;
 
 pub const HEADER_LEN: usize = 14;
 pub const CHUNK_LEN: usize = 12;
+pub const BENCHMARK_HEADER_LEN: usize = 32;
+pub const BENCHMARK_MAGIC: &[u8; 4] = b"VMB1";
 
 /// One destructible chunk as it goes on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,38 @@ pub fn encode_meta(
     buf.put_u8(headline.len() as u8);
     buf.put_slice(headline.as_bytes());
 
+    buf.freeze()
+}
+
+/// Synthetic load-test object. The timestamp uses microseconds so a browser on
+/// the same clock can measure sub-millisecond queueing through the hosted relay.
+///
+/// ```text
+/// 4 bytes magic "VMB1"
+/// u32 track_id
+/// u64 sequence
+/// u64 published_at_us (unix epoch)
+/// u32 payload_len
+/// u32 reserved
+/// remaining bytes are zero padding
+/// ```
+pub fn encode_benchmark(
+    track_id: u32,
+    sequence: u64,
+    published_at_us: u64,
+    payload_len: usize,
+) -> Bytes {
+    assert!(payload_len >= BENCHMARK_HEADER_LEN);
+    assert!(u32::try_from(payload_len).is_ok());
+
+    let mut buf = BytesMut::with_capacity(payload_len);
+    buf.put_slice(BENCHMARK_MAGIC);
+    buf.put_u32_le(track_id);
+    buf.put_u64_le(sequence);
+    buf.put_u64_le(published_at_us);
+    buf.put_u32_le(payload_len as u32);
+    buf.put_u32_le(0);
+    buf.resize(payload_len, 0);
     buf.freeze()
 }
 
@@ -215,6 +249,23 @@ mod tests {
     fn empty_delta_is_header_plus_three_bytes() {
         let bytes = encode_region(KIND_DELTA, 1, 2, 0, &[]);
         assert_eq!(bytes.len(), HEADER_LEN + 3);
+    }
+
+    #[test]
+    fn benchmark_payload_has_exact_requested_size_and_header() {
+        let encoded = encode_benchmark(7, 99, 123_456, 4096);
+        assert_eq!(encoded.len(), 4096);
+        assert_eq!(&encoded[0..4], BENCHMARK_MAGIC);
+        assert_eq!(u32::from_le_bytes(encoded[4..8].try_into().unwrap()), 7);
+        assert_eq!(u64::from_le_bytes(encoded[8..16].try_into().unwrap()), 99);
+        assert_eq!(
+            u64::from_le_bytes(encoded[16..24].try_into().unwrap()),
+            123_456
+        );
+        assert_eq!(
+            u32::from_le_bytes(encoded[24..28].try_into().unwrap()),
+            4096
+        );
     }
 
     fn hex(bytes: &[u8]) -> String {

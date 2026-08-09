@@ -362,3 +362,50 @@ export async function readSubgroupObject(
     extensions,
   };
 }
+
+/** Datagram object types used by the draft-16 publisher path. */
+export const DatagramType = {
+  ObjectIdPayload: 0x00,
+  ObjectIdPayloadEndOfGroup: 0x02,
+} as const;
+
+export interface MoqDatagramObject {
+  trackAlias: number;
+  groupId: number;
+  objectId: number;
+  publisherPriority: number;
+  status: number;
+  payload: Uint8Array;
+}
+
+/**
+ * Decode an unreliable MoQ object datagram. The current publisher emits the
+ * no-extension object-ID variants; extension-bearing and status-only variants
+ * remain unsupported until the application needs them.
+ */
+export function readDatagramObject(bytes: Uint8Array): MoqDatagramObject {
+  const reader = new ByteReader(bytes);
+  const type = reader.varint();
+  if (type !== DatagramType.ObjectIdPayload && type !== DatagramType.ObjectIdPayloadEndOfGroup) {
+    throw new Error(`unsupported MoQ datagram type 0x${type.toString(16)}`);
+  }
+
+  const trackAlias = reader.varint();
+  const groupId = reader.varint();
+  const objectId = reader.varint();
+  const publisherPriority = reader.u8();
+  const payload = reader.bytes(reader.remaining);
+  if (payload.length === 0) throw new Error('MoQ payload datagram was empty');
+
+  return {
+    trackAlias,
+    groupId,
+    objectId,
+    publisherPriority,
+    status:
+      type === DatagramType.ObjectIdPayloadEndOfGroup
+        ? ObjectStatus.EndOfGroup
+        : ObjectStatus.Normal,
+    payload,
+  };
+}

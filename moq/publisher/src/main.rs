@@ -31,8 +31,8 @@ use anyhow::Context;
 use clap::Parser;
 use moq_native_ietf::quic;
 use moq_transport::{
-    coding::{KeyValuePairs, TrackNamespace},
-    serve::{self, Subgroup, SubgroupsWriter, TracksReader},
+    coding::TrackNamespace,
+    serve::{self, Datagram, DatagramsWriter, Subgroup, SubgroupsWriter},
     session::Publisher,
 };
 use tokio::time::MissedTickBehavior;
@@ -48,6 +48,7 @@ const META_PRIORITY: u8 = 8;
 enum TrackKind {
     Region(u8),
     Meta,
+    Synthetic { track_id: u32, payload_bytes: usize },
 }
 
 struct TrackPlan {
@@ -82,6 +83,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Cli::parse();
+    if config.benchmark_tracks > 0
+        && !(wire::BENCHMARK_HEADER_LEN..=u32::MAX as usize)
+            .contains(&config.benchmark_payload_bytes)
+    {
+        anyhow::bail!(
+            "--benchmark-payload-bytes must be between {} and {}",
+            wire::BENCHMARK_HEADER_LEN,
+            u32::MAX
+        );
+    }
+    if config.benchmark_datagrams && config.benchmark_tracks == 0 {
+        anyhow::bail!("--benchmark-datagrams requires --benchmark-tracks");
+    }
     let tls = config.tls.load()?;
 
     let quic = quic::Endpoint::new(quic::Config::new(config.bind, None, tls)?)?;
@@ -93,17 +107,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to connect to the relay")?;
 
-    let (session, publisher) = Publisher::connect(session, transport)
+    let (session, mut publisher) = Publisher::connect(session, transport)
         .await
         .context("failed to establish the MoQ session")?;
     tracing::info!(connection_id, "session established");
-
-    // Cloudflare's hosted relay accepts PUBLISH_NAMESPACE, but subscribers only
-    // resolve tracks that were also pushed with draft-16 PUBLISH. Local
-    // moq-relay-ietf can fan SUBSCRIBE into the namespace publisher alone; the
-    // edge needs both. Same split moq-pub uses with `--publish`.
-    let mut namespace_publisher = publisher.clone();
-    let publish_publisher = publisher;
 
     let namespace = TrackNamespace::from_utf8_path(&config.namespace);
     let (mut tracks_writer, _tracks_request, tracks_reader) =
@@ -120,19 +127,14 @@ async fn main() -> anyhow::Result<()> {
 
     let mut tasks = tokio::task::JoinSet::new();
     let mut reported: Vec<(String, Arc<TrackStats>)> = Vec::new();
-    let mut track_names: Vec<String> = Vec::new();
 
     for plan in track_plans(&config) {
         let track_writer = tracks_writer
             .create(plan.name.as_str())
             .context("track namespace was already closed")?;
-        let subgroups = track_writer
-            .subgroups()
-            .context("failed to switch the track into subgroup mode")?;
 
         let stats = Arc::new(TrackStats::default());
         reported.push((plan.name.clone(), stats.clone()));
-        track_names.push(plan.name.clone());
 
         tracing::info!(
             track = %plan.name,
@@ -141,75 +143,57 @@ async fn main() -> anyhow::Result<()> {
             "publishing track"
         );
 
-        tasks.spawn(run_track(
-            subgroups,
-            plan,
-            world.clone(),
-            stats,
-            config.group_seconds,
-        ));
+        if config.benchmark_datagrams {
+            let datagrams = track_writer
+                .datagrams()
+                .context("failed to switch the track into datagram mode")?;
+            tasks.spawn(run_datagram_track(datagrams, plan, stats));
+        } else {
+            let subgroups = track_writer
+                .subgroups()
+                .context("failed to switch the track into subgroup mode")?;
+            tasks.spawn(run_track(
+                subgroups,
+                plan,
+                world.clone(),
+                stats,
+                config.group_seconds,
+            ));
+        }
     }
 
-    tasks.spawn(run_simulation(world.clone(), config.tick_hz));
+    if config.benchmark_tracks == 0 {
+        tasks.spawn(run_simulation(world.clone(), config.tick_hz));
+    }
 
     if config.stats_seconds > 0.0 {
         tasks.spawn(run_stats(reported, config.stats_seconds));
     }
 
-    let namespace_reader = tracks_reader.clone();
-    let publish_reader = tracks_reader;
-
     tokio::select! {
         res = session.run() => res.context("session error")?,
-        res = namespace_publisher.publish_namespace(namespace_reader) => {
-            res.context("failed to serve tracks")?
-        }
-        res = publish_tracks(publish_publisher, publish_reader, track_names) => {
-            res.context("failed to PUBLISH tracks")?
-        }
+        res = publisher.publish_namespace(tracks_reader) => res.context("failed to serve tracks")?,
         Some(res) = tasks.join_next() => res.context("task panicked")??,
     }
 
     Ok(())
 }
 
-/// Push each track with draft-16 PUBLISH so a hosted relay can serve subscribers
-/// without waiting for the first SUBSCRIBE to hairpin back to this process.
-async fn publish_tracks(
-    mut publisher: Publisher,
-    mut tracks: TracksReader,
-    track_names: Vec<String>,
-) -> anyhow::Result<()> {
-    let mut serve_tasks = tokio::task::JoinSet::new();
-    let namespace = tracks.namespace.clone();
-
-    for track_name in track_names {
-        let Some(track) = tracks.get_track_reader(&namespace, track_name.as_str()) else {
-            anyhow::bail!("track {track_name} was created but is missing from TracksReader");
-        };
-
-        tracing::info!(track = %track_name, "sending PUBLISH for track");
-        let published = publisher
-            .publish(track, KeyValuePairs::default())
-            .await
-            .with_context(|| format!("failed to send PUBLISH for {track_name}"))?;
-
-        serve_tasks.spawn(async move {
-            published
-                .serve()
-                .await
-                .with_context(|| "PUBLISH serve loop failed")
-        });
-    }
-
-    while let Some(res) = serve_tasks.join_next().await {
-        res.context("PUBLISH task panicked")??;
-    }
-
-    Ok(())
-}
-
 fn track_plans(config: &Cli) -> Vec<TrackPlan> {
+    if config.benchmark_tracks > 0 {
+        return (0..config.benchmark_tracks)
+            .map(|track_id| TrackPlan {
+                name: format!("benchmark-{track_id}"),
+                kind: TrackKind::Synthetic {
+                    track_id: track_id as u32,
+                    payload_bytes: config.benchmark_payload_bytes,
+                },
+                hz: config.benchmark_hz.max(0.01),
+                priority: u8::try_from(track_id).unwrap_or(u8::MAX),
+            })
+            .collect();
+    }
+
     let mut plans = Vec::with_capacity(REGION_COUNT + 1);
 
     for region in 0..REGION_COUNT {
@@ -317,6 +301,15 @@ async fn run_track(
                         world.destroyed_pct(),
                         &world.headline,
                     ),
+                    TrackKind::Synthetic {
+                        track_id,
+                        payload_bytes,
+                    } => wire::encode_benchmark(
+                        track_id,
+                        group_id * objects_per_group + object_index,
+                        now_us(),
+                        payload_bytes,
+                    ),
                 }
             };
 
@@ -329,6 +322,40 @@ async fn run_track(
         // Dropping the writer closes the QUIC stream, which is what marks the
         // end of the group for subscribers.
         group_id += 1;
+    }
+}
+
+async fn run_datagram_track(
+    mut datagrams: DatagramsWriter,
+    plan: TrackPlan,
+    stats: Arc<TrackStats>,
+) -> anyhow::Result<()> {
+    let TrackKind::Synthetic {
+        track_id,
+        payload_bytes,
+    } = plan.kind
+    else {
+        anyhow::bail!("datagram mode is only available for synthetic benchmark tracks");
+    };
+
+    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / plan.hz));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut sequence = 0_u64;
+
+    loop {
+        interval.tick().await;
+        let payload = wire::encode_benchmark(track_id, sequence, now_us(), payload_bytes);
+        stats.record(payload.len());
+        datagrams
+            .write(Datagram {
+                group_id: sequence,
+                object_id: 0,
+                priority: plan.priority,
+                payload,
+                extension_headers: Default::default(),
+            })
+            .with_context(|| format!("failed to write datagram on {}", plan.name))?;
+        sequence += 1;
     }
 }
 
@@ -375,6 +402,13 @@ fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn now_us() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as u64)
         .unwrap_or(0)
 }
 
@@ -425,12 +459,36 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_plan_uses_requested_shape() {
+        let config = cli(&[
+            "--benchmark-tracks",
+            "3",
+            "--benchmark-hz",
+            "60",
+            "--benchmark-payload-bytes",
+            "16000",
+        ]);
+        let plans = track_plans(&config);
+        assert_eq!(plans.len(), 3);
+        assert_eq!(plans[2].name, "benchmark-2");
+        assert_eq!(plans[2].hz, 60.0);
+        assert!(matches!(
+            plans[2].kind,
+            TrackKind::Synthetic {
+                track_id: 2,
+                payload_bytes: 16000
+            }
+        ));
+    }
+
+    #[test]
     fn region_tracks_outrank_meta_under_congestion() {
         let plans = track_plans(&cli(&[]));
         for plan in &plans {
             match plan.kind {
                 TrackKind::Region(_) => assert!(plan.priority < META_PRIORITY),
                 TrackKind::Meta => assert_eq!(plan.priority, META_PRIORITY),
+                TrackKind::Synthetic { .. } => panic!("default plan included benchmark track"),
             }
         }
     }

@@ -227,7 +227,6 @@ export function MoqDemoPage() {
     metaRef.current = null;
 
     const url = buildConnectUrl(endpoint, token);
-    const namespace = parseNamespace(namespaceText);
 
     try {
       const client = await MoqClient.connect(url, {
@@ -246,29 +245,13 @@ export function MoqDemoPage() {
       clientRef.current = client;
       setStatus('connected');
       appendLog('info', `connected to ${redact(url)}`);
-
-      for (const track of TRACKS) {
-        if (!wanted.has(track.name)) continue;
-        await subscribeTrack(client, track);
-      }
     } catch (error) {
       clientRef.current = null;
       setStatus('error');
       setStatusDetail(describeError(error));
       appendLog('error', `connect failed: ${describeError(error)}`);
     }
-
-    async function subscribeTrack(client: MoqClient, track: TrackDefinition) {
-      try {
-        const subscription = await client.subscribe(namespace, track.name, (object) =>
-          handleObject(track, object),
-        );
-        subscriptionsRef.current.set(track.name, subscription);
-      } catch (error) {
-        appendLog('error', `subscribe ${track.name} failed: ${describeError(error)}`);
-      }
-    }
-  }, [appendLog, certificateHash, endpoint, handleObject, namespaceText, token, wanted]);
+  }, [appendLog, certificateHash, endpoint, token]);
 
   /** Reconcile live subscriptions with the checkboxes while connected. */
   useEffect(() => {

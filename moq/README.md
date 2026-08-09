@@ -97,42 +97,55 @@ export CF_API_TOKEN=...    # API token with MoQ edit permission
 
 The dashboard equivalent is **Media → Realtime → MoQ Relay → Create relay**.
 
-### 2. Publish
+### 2. Run the hosted demo workaround
 
 ```sh
-./moq/scripts/cf-relay.sh publish <relay-uid>
+./moq/scripts/cf-relay.sh hosted-demo <relay-uid>
 ```
 
-That mints a publish token, runs the publisher with it, and revokes the token on
-exit. Throughput lands on stderr every five seconds:
+Cloudflare's hosted relay currently isolates sessions that use different token
+secrets, even when both tokens belong to the same provisioned relay. The
+workaround mints one short-lived publish+subscribe token, starts both the Rust
+publisher and Vite with it, and revokes it when the command exits. Full evidence
+and a support-ready reproduction are in
+[`CLOUDFLARE_HOSTED_RELAY_FINDINGS.md`](CLOUDFLARE_HOSTED_RELAY_FINDINGS.md).
+
+Open the Vite URL at `/moq` and click **Connect**. Press Ctrl-C when finished;
+both processes stop and the shared token is revoked.
+
+The browser temporarily receives publish permission. Use this only for
+controlled testing, never for an untrusted production browser.
+
+Publisher throughput lands on stderr every five seconds:
 
 ```
 region-0 10.0/s 1.1 kB/s  |  region-1 5.0/s 0.9 kB/s  |  region-2 2.0/s 0.8 kB/s
   |  region-3 1.0/s 0.8 kB/s  |  meta 0.5/s 0.0 kB/s   total_kb_per_second=3.6
 ```
 
-### 3. Subscribe
+### Intended least-privilege flow
 
 ```sh
+./moq/scripts/cf-relay.sh publish <relay-uid>
+
+# In another terminal:
 ./moq/scripts/cf-relay.sh env <relay-uid> >> .env
 cd client && npm run dev
 ```
 
-`env` mints a **subscribe-only** token and prints the three `VITE_MOQ_*` lines
-the page reads at build time. Only ever put the subscribe-only token there —
-`VITE_` variables are compiled into the browser bundle.
+`publish` mints an ephemeral publish-only token. `env` independently mints a
+subscribe-only token and prints the three `VITE_MOQ_*` lines the page reads at
+build time. This is the production design: a browser must not receive publish
+permission because `VITE_` variables are compiled into its bundle.
+
+The hosted relay's cross-token scope bug currently blocks this split-token flow.
+Keep it as the target configuration and switch back to it after Cloudflare fixes
+the relay.
 
 Open `/moq`. Every field is also overridable by query string (`?relay=`,
 `?token=`, `?ns=`, `?certhash=`), so a deployed build can be pointed at a
 different relay without a rebuild. With no token configured, paste one into the
 page.
-
-The publisher sends draft-16 `PUBLISH` for every track (in addition to
-`PUBLISH_NAMESPACE`). Cloudflare's hosted relay accepts the namespace announce
-alone, but subscribers only resolve tracks that were also pushed with
-`PUBLISH` — the same split `moq-pub --publish` uses. A self-hosted
-`moq-relay-ietf` can fan `SUBSCRIBE` into the namespace publisher without it;
-keeping both paths means one binary works against either.
 
 ### Token handling
 
@@ -143,14 +156,110 @@ secret back later, only to mint a new token or revoke an existing one:
 ```sh
 ./moq/scripts/cf-relay.sh tokens <relay-uid>          # metadata, no secrets
 ./moq/scripts/cf-relay.sh mint <relay-uid> subscribe  # print a fresh URL
+./moq/scripts/cf-relay.sh mint <relay-uid> publish+subscribe
 ./moq/scripts/cf-relay.sh revoke <relay-uid> <jti>
 ```
 
-Mint one token per consumer so you can revoke them independently.
+Outside the temporary `hosted-demo` workaround, mint one token per consumer so
+you can revoke them independently.
 
 `tokens` reads are eventually consistent — a listing taken immediately after a
 mint or revoke can still show the old set. Give it a few seconds before
 concluding anything from it.
+
+## Dual-transport rigid-body lab
+
+The `/bodies` React route consumes the same RBWT payload either from a direct
+WebTransport `/bodies` session or from MoQ datagram tracks `bodies-0..N`. Query
+parameters are:
+
+- `transport=direct|moq`, `bodies`, `hz`, `duration`, `mbps`, and `shards`;
+- `motion=wave|formation|collapse` selects the shared deterministic motion
+  source (`wave` is the default visual synchronization test);
+- `direct` plus `wthash` for direct WebTransport and the optional `/clock`
+  side channel;
+- `relay`, `token`, `ns`, and `certhash` for MoQ;
+- `autostart=1`, `pause=1`, and `norender=1` for automation/receiver-only runs.
+
+Start the hosted publisher and Vite with a short-lived shared token:
+
+```bash
+MOQ_BODY_NAMESPACE=vibe-land/bodies \
+./moq/scripts/cf-relay.sh hosted-bodies <relay-uid> \
+  --bodies 5000 --hz 20 --duration 120 --payload 900 --mbps 10 --shards 8
+```
+
+Open `http://localhost:5555/bodies?transport=moq&autostart=1`. Publisher-owned
+body/rate values in the page must match the launch arguments.
+
+The Motion control changes the publisher-owned mode for every connected viewer
+and restarts its phase at zero. Traveling wave gives each body a predictable
+diagonal phase offset, rigid formation moves the whole lattice as one object,
+and high collapse is the intentionally chaotic fall. A viewer showing a
+different wave crest or formation orientation is therefore visibly out of sync.
+
+For a multi-viewer proof, set `BODY_BENCH_VIEWERS` on the same command. This
+starts independent browser pages, compares frame IDs and sampled RBWT hashes,
+measures receive skew, checks every body becomes visible, and exits non-zero
+when the default delivery/timeline/skew criteria fail:
+
+```bash
+BODY_BENCH_VIEWERS=16 \
+BODY_BENCH_BODIES=5000 BODY_BENCH_HZ=20 \
+BODY_BENCH_SHARDS=8 BODY_BENCH_MBPS=10 \
+BODY_BENCH_WARMUP_MS=2000 BODY_BENCH_DURATION_MS=5000 \
+./moq/scripts/cf-relay.sh hosted-bodies <relay-uid> \
+  --bodies 5000 --hz 20 --duration 60 --payload 900 --mbps 10 --shards 8
+```
+
+The standalone runner is `node moq/bench/run-bodies.mjs`. Set
+`BODY_BENCH_TRANSPORT=direct` with `BODY_DIRECT_URL` and
+`BODY_DIRECT_CERT_HASH`, or set `MOQ_RELAY_URL` for MoQ. By default it disables
+the Three.js canvas so fan-out measures receiver plus relay capacity; set
+`BODY_BENCH_RENDER=1` for a rendered smoke test. `BODY_BENCH_OUTPUT` or
+`--output` writes the JSON report.
+
+For same-host runs, `publisherToLastViewerP50Ms/P95Ms/P99Ms` measure from the
+publisher's actual send timestamp to the last viewer receiving that frame.
+`interViewerSkewP*Ms` only measures the spread between first and last viewer;
+do not describe skew as network latency.
+
+The interactive UI's corrected one-way latency is reported only when the
+optional direct `/clock` side channel is reachable. Frame agreement, receive
+skew, and the runner's same-host publisher-to-viewer measurement do not require
+it.
+Same-host viewer tests include one machine receiving and decoding every stream;
+they are not a Cloudflare relay-wide viewer limit.
+
+## Hosted throughput benchmark
+
+The staged benchmark uses the real Rust publisher, Cloudflare relay, browser
+`MoqClient`, and one or more headless Chrome viewers. It ramps bytes/sec,
+viewer fan-out, track count, and object cadence while recording delivery ratio
+and publisher-to-browser latency percentiles. It supports both reliable subgroup
+streams and true unreliable MoQ object datagrams.
+
+```sh
+# Short calibration
+./moq/scripts/cf-relay.sh benchmark <relay-uid> --quick
+
+# Full default matrix
+./moq/scripts/cf-relay.sh benchmark <relay-uid>
+
+# Physics-delta path: unreliable 900-byte datagrams
+MOQ_BENCH_TRANSPORT=datagram \
+MOQ_BENCH_DATAGRAM_PAYLOAD_BYTES=900 \
+MOQ_BENCH_RAMP_MBPS=5,10,15,20,30 \
+./moq/scripts/cf-relay.sh benchmark <relay-uid>
+```
+
+Raw JSON is written under `moq/bench/results/`. The first measured report and
+its engineering recommendations are in
+[`bench/RESULTS-2026-08-09.md`](bench/RESULTS-2026-08-09.md).
+
+The helper uses the same short-lived shared-token workaround as `hosted-demo`,
+waits for token propagation and namespace acknowledgment, then revokes the token
+on exit.
 
 ## Running it against a local relay
 

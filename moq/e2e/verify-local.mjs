@@ -359,17 +359,22 @@ async function runDemoPage(fingerprint) {
       return colours.size > 4;
     });
 
-    return { state: connected, atUncheck, afterUncheck, canvasIsPainted };
+    const logText = await page.textContent('[data-testid="moq-log"]');
+
+    return { state: connected, atUncheck, afterUncheck, canvasIsPainted, logText };
   } finally {
     await browser.close();
   }
 }
 
-function assertPageReport({ state, atUncheck, afterUncheck, canvasIsPainted }) {
+function assertPageReport({ state, atUncheck, afterUncheck, canvasIsPainted, logText }) {
   const failures = [];
 
   if (state.status !== 'connected') failures.push(`page status was ${state.status}`);
   if (!canvasIsPainted) failures.push('the world canvas never rendered chunk state');
+  if (logText?.includes('duplicate subscription')) {
+    failures.push('the page sent duplicate SUBSCRIBE requests while connecting');
+  }
 
   for (const track of TRACKS) {
     const report = state.tracks?.[track];
