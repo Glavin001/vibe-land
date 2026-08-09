@@ -264,6 +264,10 @@ make moq-e2e                           # relay + publisher + headless Chromium
 - Relay tokens live in the URL path. `MOQ_RELAY_URL` carries the publish token;
   only the **subscribe-only** token may go in a `VITE_` variable, since those are
   compiled into the browser bundle.
+- `moq/scripts/cf-relay.sh` wraps the Cloudflare relay API (needs `CF_ACCOUNT_ID`
+  and `CF_API_TOKEN`). Token secrets are returned by the API only at mint time
+  and cannot be read back, so `publish` mints an ephemeral token and revokes it
+  on exit, and `env <uid>` mints a fresh subscribe-only token for the build.
 - The e2e check needs `moq-relay-ietf` built from `github.com/cloudflare/moq-rs`;
   point `MOQ_RELAY_BIN` at the binary. It binds IPv4 explicitly because sandboxes
   without an IPv6 stack fail on moq-rs's `[::]` default.

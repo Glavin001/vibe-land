@@ -80,31 +80,31 @@ same bytes, so they cannot drift apart silently.
 
 ## Running it against Cloudflare
 
+`moq/scripts/cf-relay.sh` wraps the relay API so token secrets go straight from
+the API into the process that needs them.
+
+```sh
+export CF_ACCOUNT_ID=...   # Cloudflare dashboard sidebar
+export CF_API_TOKEN=...    # API token with MoQ edit permission
+```
+
 ### 1. Provision a relay
 
 ```sh
-curl -X POST "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/moq/relays" \
-  -H "Authorization: Bearer $CF_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "vibe-land-demo"}'
+./moq/scripts/cf-relay.sh create vibe-land-demo
+# created relay <relay-uid> (vibe-land-demo)
 ```
 
-The response carries the relay ID and two tokens: one that can publish and
-subscribe, one that can only subscribe. The dashboard equivalent is
-**Media → Realtime → MoQ Relay → Create relay**.
-
-Tokens go in the URL path, which means they land in server access logs. Give the
-publisher the publish token and the browser the subscribe-only token, and set an
-expiry on both.
+The dashboard equivalent is **Media → Realtime → MoQ Relay → Create relay**.
 
 ### 2. Publish
 
 ```sh
-cd moq/publisher
-cargo run -- "https://draft-16.cloudflare.mediaoverquic.com/<publish-token>"
+./moq/scripts/cf-relay.sh publish <relay-uid>
 ```
 
-It prints a throughput summary every five seconds:
+That mints a publish token, runs the publisher with it, and revokes the token on
+exit. Throughput lands on stderr every five seconds:
 
 ```
 region-0 10.0/s 1.1 kB/s  |  region-1 5.0/s 0.9 kB/s  |  region-2 2.0/s 0.8 kB/s
@@ -113,24 +113,37 @@ region-0 10.0/s 1.1 kB/s  |  region-1 5.0/s 0.9 kB/s  |  region-2 2.0/s 0.8 kB/s
 
 ### 3. Subscribe
 
-Set the subscribe-only token where the client build can see it — it is read at
-build time and never committed:
-
 ```sh
-# .env at the repo root
-VITE_MOQ_RELAY_URL=https://draft-16.cloudflare.mediaoverquic.com
-VITE_MOQ_SUBSCRIBE_TOKEN=<subscribe-only-token>
-VITE_MOQ_NAMESPACE=vibe-land/demo
-```
-
-```sh
+./moq/scripts/cf-relay.sh env <relay-uid> >> .env
 cd client && npm run dev
 ```
 
-Open `/moq`. Every field on the page is also overridable by query string
-(`?relay=`, `?token=`, `?ns=`, `?certhash=`), so a deployed build can be pointed
-at a different relay without a rebuild. If no token is configured, paste one into
-the page.
+`env` mints a **subscribe-only** token and prints the three `VITE_MOQ_*` lines
+the page reads at build time. Only ever put the subscribe-only token there —
+`VITE_` variables are compiled into the browser bundle.
+
+Open `/moq`. Every field is also overridable by query string (`?relay=`,
+`?token=`, `?ns=`, `?certhash=`), so a deployed build can be pointed at a
+different relay without a rebuild. With no token configured, paste one into the
+page.
+
+### Token handling
+
+Relay tokens go in the **URL path**, so they land in server access logs. They are
+also returned by the API exactly once, at mint time — there is no way to read a
+secret back later, only to mint a new token or revoke an existing one:
+
+```sh
+./moq/scripts/cf-relay.sh tokens <relay-uid>          # metadata, no secrets
+./moq/scripts/cf-relay.sh mint <relay-uid> subscribe  # print a fresh URL
+./moq/scripts/cf-relay.sh revoke <relay-uid> <jti>
+```
+
+Mint one token per consumer so you can revoke them independently.
+
+`tokens` reads are eventually consistent — a listing taken immediately after a
+mint or revoke can still show the old set. Give it a few seconds before
+concluding anything from it.
 
 ## Running it against a local relay
 
