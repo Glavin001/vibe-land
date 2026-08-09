@@ -127,6 +127,13 @@ Open `/moq`. Every field is also overridable by query string (`?relay=`,
 different relay without a rebuild. With no token configured, paste one into the
 page.
 
+The publisher sends draft-16 `PUBLISH` for every track (in addition to
+`PUBLISH_NAMESPACE`). Cloudflare's hosted relay accepts the namespace announce
+alone, but subscribers only resolve tracks that were also pushed with
+`PUBLISH` — the same split `moq-pub --publish` uses. A self-hosted
+`moq-relay-ietf` can fan `SUBSCRIBE` into the namespace publisher without it;
+keeping both paths means one binary works against either.
+
 ### Token handling
 
 Relay tokens go in the **URL path**, so they land in server access logs. They are

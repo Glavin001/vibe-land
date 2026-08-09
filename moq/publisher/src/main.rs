@@ -31,8 +31,8 @@ use anyhow::Context;
 use clap::Parser;
 use moq_native_ietf::quic;
 use moq_transport::{
-    coding::TrackNamespace,
-    serve::{self, Subgroup, SubgroupsWriter},
+    coding::{KeyValuePairs, TrackNamespace},
+    serve::{self, Subgroup, SubgroupsWriter, TracksReader},
     session::Publisher,
 };
 use tokio::time::MissedTickBehavior;
@@ -93,10 +93,17 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to connect to the relay")?;
 
-    let (session, mut publisher) = Publisher::connect(session, transport)
+    let (session, publisher) = Publisher::connect(session, transport)
         .await
         .context("failed to establish the MoQ session")?;
     tracing::info!(connection_id, "session established");
+
+    // Cloudflare's hosted relay accepts PUBLISH_NAMESPACE, but subscribers only
+    // resolve tracks that were also pushed with draft-16 PUBLISH. Local
+    // moq-relay-ietf can fan SUBSCRIBE into the namespace publisher alone; the
+    // edge needs both. Same split moq-pub uses with `--publish`.
+    let mut namespace_publisher = publisher.clone();
+    let publish_publisher = publisher;
 
     let namespace = TrackNamespace::from_utf8_path(&config.namespace);
     let (mut tracks_writer, _tracks_request, tracks_reader) =
@@ -113,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut tasks = tokio::task::JoinSet::new();
     let mut reported: Vec<(String, Arc<TrackStats>)> = Vec::new();
+    let mut track_names: Vec<String> = Vec::new();
 
     for plan in track_plans(&config) {
         let track_writer = tracks_writer
@@ -124,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
 
         let stats = Arc::new(TrackStats::default());
         reported.push((plan.name.clone(), stats.clone()));
+        track_names.push(plan.name.clone());
 
         tracing::info!(
             track = %plan.name,
@@ -147,10 +156,54 @@ async fn main() -> anyhow::Result<()> {
         tasks.spawn(run_stats(reported, config.stats_seconds));
     }
 
+    let namespace_reader = tracks_reader.clone();
+    let publish_reader = tracks_reader;
+
     tokio::select! {
         res = session.run() => res.context("session error")?,
-        res = publisher.publish_namespace(tracks_reader) => res.context("failed to serve tracks")?,
+        res = namespace_publisher.publish_namespace(namespace_reader) => {
+            res.context("failed to serve tracks")?
+        }
+        res = publish_tracks(publish_publisher, publish_reader, track_names) => {
+            res.context("failed to PUBLISH tracks")?
+        }
         Some(res) = tasks.join_next() => res.context("task panicked")??,
+    }
+
+    Ok(())
+}
+
+/// Push each track with draft-16 PUBLISH so a hosted relay can serve subscribers
+/// without waiting for the first SUBSCRIBE to hairpin back to this process.
+async fn publish_tracks(
+    mut publisher: Publisher,
+    mut tracks: TracksReader,
+    track_names: Vec<String>,
+) -> anyhow::Result<()> {
+    let mut serve_tasks = tokio::task::JoinSet::new();
+    let namespace = tracks.namespace.clone();
+
+    for track_name in track_names {
+        let Some(track) = tracks.get_track_reader(&namespace, track_name.as_str()) else {
+            anyhow::bail!("track {track_name} was created but is missing from TracksReader");
+        };
+
+        tracing::info!(track = %track_name, "sending PUBLISH for track");
+        let published = publisher
+            .publish(track, KeyValuePairs::default())
+            .await
+            .with_context(|| format!("failed to send PUBLISH for {track_name}"))?;
+
+        serve_tasks.spawn(async move {
+            published
+                .serve()
+                .await
+                .with_context(|| "PUBLISH serve loop failed")
+        });
+    }
+
+    while let Some(res) = serve_tasks.join_next().await {
+        res.context("PUBLISH task panicked")??;
     }
 
     Ok(())
