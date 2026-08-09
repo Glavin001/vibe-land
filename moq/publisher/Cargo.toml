@@ -1,0 +1,28 @@
+[package]
+name = "vibe-moq-publisher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Publishes simulated vibe-land world state to a MoQ relay as one track per region"
+
+# Standalone workspace on purpose. The MoQ/QUIC dependency tree is large and
+# this binary is not part of the game build, so keeping it out of the root
+# workspace means `cargo check` / `make check` stay fast. Build it explicitly
+# with `make moq-publisher` (or `cargo run` from this directory).
+[workspace]
+
+[dependencies]
+# Cloudflare's MoQ Transport implementation — the same crate their relay speaks
+# (draft-ietf-moq-transport-16). Pinned by rev because the crates.io releases
+# lag behind the draft-16 work on main.
+moq-transport = { git = "https://github.com/cloudflare/moq-rs", rev = "933a443d98b65bc536f0b6753e51a17b5eeaba15" }
+moq-native-ietf = { git = "https://github.com/cloudflare/moq-rs", rev = "933a443d98b65bc536f0b6753e51a17b5eeaba15" }
+
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = { version = "1", features = ["backtrace"] }
+url = "2"
+bytes = "1"
+rand = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -28,6 +28,7 @@ The client now ships as one SPA build with multiple entry routes:
 - `/practice` firing range (browser-only single-player)
 - `/stats` server stats
 - `/loadtest` browser load test
+- `/moq` MoQ world-state streaming demo (see `moq/README.md`)
 
 To run the firing range entirely in one browser tab with no Rust server, WebSocket, or WebTransport dependency:
 
@@ -85,5 +86,20 @@ Production notes:
 - `WT_BIND_ADDR` controls the local UDP bind port. `WT_PUBLIC_URL` controls the public URL advertised to browsers.
 - An explicit WebTransport port such as `https://vibe-land.glavin.ca:4002` is the most predictable setup when your main HTTPS site is served separately on `TCP 443`.
 - If you use a custom hostname in `WT_PUBLIC_URL`, the certificate files in `.env` must cover that hostname.
+
+## Streaming world state over MoQ
+
+`moq/` holds a proof of concept for carrying world state over
+[Cloudflare's Media over QUIC relays](https://developers.cloudflare.com/moq/):
+a Rust publisher splits a destruction sim into one MoQ track per region, each at
+its own rate, and the `/moq` page subscribes to whichever tracks it wants.
+
+```bash
+make moq-publisher   # build the publisher
+make moq-e2e         # local relay + publisher + headless Chromium, end to end
+```
+
+See `moq/README.md` for the track layout, the wire format, how it splits against
+the existing WebTransport datagram path, and how to provision a Cloudflare relay.
 
 See `AGENTS.md` for full setup details, lint, and build instructions.
