@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, WorldDocument, WorldDocumentError, WorldMeta, WorldTerrain,
-    WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, StaticProp, StaticPropKind, WorldDocument,
+    WorldDocumentError, WorldMeta, WorldTerrain, WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -11,6 +11,10 @@ pub const FLAT_VEHICLE_TEST_MATCH_ID: &str = "flat_vehicle_test";
 pub const VEHICLE_BUMPS_TEST_MATCH_ID: &str = "vehicle_bumps_test";
 const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
+/// Solid ground slab under the city: covers the grid and the spawn ring with
+/// room to spare, and is far thicker than anything can travel in one step.
+const CITY_GROUND_HALF_EXTENT_M: f32 = 160.0;
+const CITY_GROUND_THICKNESS_M: f32 = 20.0;
 
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
     let world = WorldDocument::demo();
@@ -53,6 +57,32 @@ fn city_world() -> WorldDocument {
         BENCHMARK_TERRAIN_HALF_EXTENT_M,
         vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
     );
+    // Solid ground under the flat terrain.
+    //
+    // A PhysX heightfield is a surface, not a volume: anything that ends up
+    // beneath it keeps going. Debris from a collapse was doing exactly that,
+    // reaching -3627 m and still falling at the body velocity clamp, and
+    // bodies straddling the surface bounced in and out of it, which reads
+    // in-game as chunks vibrating up and down. Neither body ever comes to
+    // rest, so they also never sleep, and the match loop keeps simulating,
+    // snapshotting and encoding all of them.
+    //
+    // The city floor is perfectly flat, so a box is the honest collider for
+    // it: its top sits at y=0 with the terrain, and it is thick and wide
+    // enough that nothing can get underneath.
+    world.static_props.push(StaticProp {
+        id: 1,
+        kind: StaticPropKind::Cuboid,
+        position: [0.0, -CITY_GROUND_THICKNESS_M * 0.5, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        half_extents: [
+            CITY_GROUND_HALF_EXTENT_M,
+            CITY_GROUND_THICKNESS_M * 0.5,
+            CITY_GROUND_HALF_EXTENT_M,
+        ],
+        material: None,
+    });
+
     // Derived from the scene pack: a wider building pack widens the grid, and a
     // fixed ring would drop players inside a tower.
     let ring = crate::city::spawn_ring_radius_m();

@@ -355,89 +355,45 @@ impl CityDestruction {
         let snapshots = world
             .chunk_body_snapshots()
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
-        // Re-arm settling for anything that woke back up.
+        // Settling is the adapter's and PhysX's job; we only observe it.
         //
-        // `SettleTracker` drops a body once it settles, so a body woken again
-        // by the adapter or a neighbouring impact was never reconsidered and
-        // stayed awake in PhysX for the rest of the match. Measured: ~600 of
-        // ~735 chunk bodies still awake long after a collapse had visibly
-        // finished, with the match loop simulating, snapshotting and encoding
-        // all of them every tick.
-        let mut woke = Vec::new();
+        // Forcing sleep ourselves fought them: you cannot hold one body of an
+        // active contact island asleep, so PhysX woke it straight back and the
+        // cycle repeated ~650 times a second — which is what made debris judder
+        // visibly, and kept ~600 of ~735 bodies awake and being simulated,
+        // snapshotted and encoded every tick.
+        //
+        // A body the engine puts to sleep has genuinely come to rest, and that
+        // transition is the network-definitive "at rest now" moment the stream
+        // needs.
+        let mut settled = Vec::new();
         for snap in snapshots.iter() {
-            if snap.kinematic || snap.sleeping {
+            if snap.kinematic {
                 continue;
             }
-            if self.known_awake.get(&snap.entity_id) == Some(&false) {
-                woke.push(snap.entity_id);
-            }
-        }
-        for body in woke {
-            self.settle.wake(body, tick);
-            self.known_awake.insert(body, true);
-            self.stats.resettled_wakes += 1;
-        }
-
-        let samples: Vec<SettleSample> = snapshots
-            .iter()
-            .filter(|snap| !snap.kinematic && !snap.sleeping)
-            .map(|snap| SettleSample {
-                body_entity: snap.entity_id,
-                linear_speed: (snap.linear_velocity.x * snap.linear_velocity.x
-                    + snap.linear_velocity.y * snap.linear_velocity.y
-                    + snap.linear_velocity.z * snap.linear_velocity.z)
-                    .sqrt(),
-                angular_speed: (snap.angular_velocity.x * snap.angular_velocity.x
-                    + snap.angular_velocity.y * snap.angular_velocity.y
-                    + snap.angular_velocity.z * snap.angular_velocity.z)
-                    .sqrt(),
-            })
-            .collect();
-
-        // Forced sleep stays, even though the adapter gained its own settling.
-        // Handing settling entirely to `baseStepSleep` measured worse on this
-        // scene: without the brake the collapse cascaded much further (7393
-        // broken bonds vs 2755), leaving 1442 of 1819 bodies awake and the
-        // match loop at 34-38 ms. Keeping the policy and re-arming woken
-        // bodies measured best: 535 awake, 15-19 ms.
-        let mut settled = Vec::new();
-        for body in self.settle.update(tick, samples, self.settle_config) {
-            // A sleeping body gets no depenetration, so freezing one while it
-            // is still sunk in the ground would strand it there. Defer and let
-            // PhysX push it out first.
-            if let Some(snap) = snapshots.iter().find(|snap| snap.entity_id == body) {
-                if snap.position.y < GROUND_PENETRATION_FLOOR_M {
-                    self.settle.wake(body, tick);
-                    self.stats.settle_deferred_penetrating += 1;
-                    continue;
-                }
-            }
-            let (structure_id, serial) = ids::body_entity_parts(body);
-            let pose = snapshots
-                .iter()
-                .find(|snap| snap.entity_id == body)
-                .map(|snap| {
-                    (
-                        [snap.position.x, snap.position.y, snap.position.z],
-                        [
+            let previously = self.known_awake.get(&snap.entity_id).copied();
+            if snap.sleeping {
+                if previously != Some(false) {
+                    self.known_awake.insert(snap.entity_id, false);
+                    let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
+                    settled.push(SettleEvent {
+                        structure_id,
+                        island_id: serial as u32,
+                        position: [snap.position.x, snap.position.y, snap.position.z],
+                        rotation: [
                             snap.rotation.x,
                             snap.rotation.y,
                             snap.rotation.z,
                             snap.rotation.w,
                         ],
-                    )
-                })
-                .unwrap_or(([0.0; 3], [0.0, 0.0, 0.0, 1.0]));
-            if let Err(error) = world.sleep_chunk_body(body) {
-                eprintln!("sleep_chunk_body failed for {body}: {error}");
+                    });
+                }
+            } else {
+                if previously == Some(false) {
+                    self.stats.resettled_wakes += 1;
+                }
+                self.known_awake.insert(snap.entity_id, true);
             }
-            self.known_awake.insert(body, false);
-            settled.push(SettleEvent {
-                structure_id,
-                island_id: serial as u32,
-                position: pose.0,
-                rotation: pose.1,
-            });
         }
 
         if let Ok(bridge_stats) = world.destruction_stats() {

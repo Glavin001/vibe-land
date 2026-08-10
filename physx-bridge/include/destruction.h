@@ -97,6 +97,11 @@ private:
   std::unordered_map<const physx::PxShape *, std::pair<std::uint32_t, std::uint32_t>>
       shape_owners_; // shape -> (structure_id, node_index)
 
+  /// Last entity id stamped onto each body / shape. Re-stamping identical
+  /// data wakes a sleeping PhysX actor, so only changes are written.
+  std::unordered_map<const physx::PxRigidDynamic *, std::uint32_t> body_entity_stamp_;
+  std::unordered_map<const physx::PxShape *, std::uint32_t> shape_entity_stamp_;
+
   std::vector<FfiBrokenBondEvent> broken_bonds_;
   std::vector<FfiChunkMigrationEvent> migrations_;
   std::vector<FfiIslandBodyEvent> island_events_;

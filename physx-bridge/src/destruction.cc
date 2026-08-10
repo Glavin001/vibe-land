@@ -324,6 +324,19 @@ void DestructionManager::register_filters(Slot &slot) {
       serial = serial_it->second;
     }
     const std::uint32_t entity = pack_body_entity(slot.structure_id, serial);
+    // Only touch a body whose identity actually changed.
+    //
+    // Writing rigid-body properties or shape filter data wakes a sleeping
+    // PhysX actor. Re-stamping every body and every shape each tick therefore
+    // woke the entire city 60 times a second: ~600 of ~735 chunk bodies never
+    // stayed asleep, ~850 wake events a second, debris visibly juddering as it
+    // was repeatedly frozen and released, and the match loop paying to
+    // simulate, snapshot and encode all of it.
+    auto stamped = body_entity_stamp_.find(body.body);
+    if (stamped != body_entity_stamp_.end() && stamped->second == entity) {
+      continue;
+    }
+    body_entity_stamp_[body.body] = entity;
     tag_actor(*body.body, entity);
     if (!body.kinematic) {
       body.body->setContactReportThreshold(contact_report_threshold_);
@@ -356,8 +369,14 @@ void DestructionManager::register_filters(Slot &slot) {
     const std::uint16_t serial =
         serial_it != slot.body_to_serial.end() ? serial_it->second : 0;
     const std::uint32_t entity = pack_body_entity(slot.structure_id, serial);
-    configure_shape(*shape.shape, entity, slot.collision_group,
-                    slot.collision_mask);
+    // Same rule for shapes: re-stamping identical filter data is not free, it
+    // wakes the owning actor.
+    auto shape_stamped = shape_entity_stamp_.find(shape.shape);
+    if (shape_stamped == shape_entity_stamp_.end() || shape_stamped->second != entity) {
+      shape_entity_stamp_[shape.shape] = entity;
+      configure_shape(*shape.shape, entity, slot.collision_group,
+                      slot.collision_mask);
+    }
     shape_owners_[shape.shape] =
         std::make_pair(slot.structure_id, shape.nodeIndex);
   }
