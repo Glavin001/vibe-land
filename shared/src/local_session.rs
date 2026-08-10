@@ -2,12 +2,13 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::{
     constants::{
-        DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY,
-        HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE,
-        MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS,
-        MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE,
-        PKT_INPUT_BUNDLE, PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER,
-        PKT_VEHICLE_EXIT, PKT_WELCOME, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
+        CLIENT_MOVEMENT_FULL_PREDICTION, DYNAMIC_BODY_IMPULSE, FLAG_DEAD, FLAG_MELEEING,
+        HITSCAN_MAX_DISTANCE_M, HIT_ZONE_BODY, HIT_ZONE_HEAD, HIT_ZONE_NONE, MAX_PENDING_INPUTS,
+        MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST, MELEE_FLAG_DURATION_TICKS,
+        MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M, OUT_OF_BOUNDS_Y_M,
+        PHYSICS_BACKEND_RAPIER, PKT_DAMAGE_EVENT, PKT_DEBUG_STATS, PKT_FIRE, PKT_INPUT_BUNDLE,
+        PKT_MELEE, PKT_PING, PKT_SHOT_RESULT, PKT_SNAPSHOT, PKT_VEHICLE_ENTER, PKT_VEHICLE_EXIT,
+        PKT_WELCOME, PLAYER_EYE_HEIGHT_M, PROTOCOL_VERSION, RIFLE_BODY_DAMAGE,
         RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, SIM_HZ, SNAPSHOT_HZ_LOCAL,
     },
     debug_render::render_debug_buffers,
@@ -115,6 +116,9 @@ impl LocalSession {
         self.outbound_packets
             .push(encode_welcome_packet(&WelcomePacket {
                 player_id: LOCAL_PLAYER_ID,
+                protocol_version: PROTOCOL_VERSION,
+                physics_backend: PHYSICS_BACKEND_RAPIER,
+                client_movement_mode: CLIENT_MOVEMENT_FULL_PREDICTION,
                 sim_hz: SIM_HZ,
                 snapshot_hz: SNAPSHOT_HZ_LOCAL,
                 server_time_us,
@@ -1414,6 +1418,9 @@ fn encode_welcome_packet(pkt: &WelcomePacket) -> Vec<u8> {
     let mut out = BytesMut::with_capacity(19);
     out.put_u8(PKT_WELCOME);
     out.put_u32_le(pkt.player_id);
+    out.put_u16_le(pkt.protocol_version);
+    out.put_u8(pkt.physics_backend);
+    out.put_u8(pkt.client_movement_mode);
     out.put_u16_le(pkt.sim_hz);
     out.put_u16_le(pkt.snapshot_hz);
     out.put_u64_le(pkt.server_time_us);

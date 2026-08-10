@@ -44,6 +44,15 @@ export interface GameE2ESnapshot {
   cameraYaw: number;
   cameraPitch: number;
 
+  // Thin-authoritative movement diagnostics
+  movementTelemetry: {
+    renderedPosition: [number, number, number];
+    authoritativePosition: [number, number, number];
+    presentationOffset: [number, number, number];
+    authoritativeVelocity: [number, number, number];
+    frameDeltaMs: number;
+  };
+
   // Vehicle
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
@@ -74,6 +83,16 @@ export interface GameE2ESnapshot {
     shotsFired: number;
     lastShotOutcome: string;
     snapshotsPerSec: number;
+    serverTick: number;
+    datagramSnapshotsReceived: number;
+    reliableSnapshotsReceived: number;
+    lastSnapshotGapMs: number;
+    interpolationDelayMs: number;
+    jitterMs: number;
+    snapshotGapP95Ms: number;
+    snapshotGapMaxMs: number;
+    playerCorrectionMagnitude: number;
+    playerCorrectionPeak5sM: number;
   };
 }
 
@@ -97,6 +116,13 @@ const refs = {
   cameraPosition: [0, 0, 0] as [number, number, number],
   cameraYaw: 0,
   cameraPitch: 0,
+  movementTelemetry: {
+    renderedPosition: [0, 0, 0],
+    authoritativePosition: [0, 0, 0],
+    presentationOffset: [0, 0, 0],
+    authoritativeVelocity: [0, 0, 0],
+    frameDeltaMs: 0,
+  } as GameE2ESnapshot['movementTelemetry'],
   drivenVehicleId: null as number | null,
   nearestVehicleId: null as number | null,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
@@ -127,6 +153,7 @@ export function updateE2EBridgeFrameState(state: {
   cameraPosition: [number, number, number];
   cameraYaw: number;
   cameraPitch: number;
+  movementTelemetry: GameE2ESnapshot['movementTelemetry'];
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
   remotePlayers: Array<{ id: number; position: [number, number, number] }>;
@@ -135,6 +162,7 @@ export function updateE2EBridgeFrameState(state: {
   refs.cameraPosition = state.cameraPosition;
   refs.cameraYaw = state.cameraYaw;
   refs.cameraPitch = state.cameraPitch;
+  refs.movementTelemetry = state.movementTelemetry;
   refs.drivenVehicleId = state.drivenVehicleId;
   refs.nearestVehicleId = state.nearestVehicleId;
   refs.remotePlayers = state.remotePlayers;
@@ -162,6 +190,13 @@ function buildSnapshot(): GameE2ESnapshot {
     cameraPosition: [...refs.cameraPosition],
     cameraYaw: refs.cameraYaw,
     cameraPitch: refs.cameraPitch,
+    movementTelemetry: {
+      renderedPosition: [...refs.movementTelemetry.renderedPosition],
+      authoritativePosition: [...refs.movementTelemetry.authoritativePosition],
+      presentationOffset: [...refs.movementTelemetry.presentationOffset],
+      authoritativeVelocity: [...refs.movementTelemetry.authoritativeVelocity],
+      frameDeltaMs: refs.movementTelemetry.frameDeltaMs,
+    },
     drivenVehicleId: refs.drivenVehicleId,
     nearestVehicleId: refs.nearestVehicleId,
     remotePlayers: refs.remotePlayers.map((rp) => ({
@@ -185,6 +220,16 @@ function buildSnapshot(): GameE2ESnapshot {
       shotsFired: s.shotsFired,
       lastShotOutcome: s.lastShotOutcome,
       snapshotsPerSec: s.snapshotsPerSec,
+      serverTick: s.serverTick,
+      datagramSnapshotsReceived: s.datagramSnapshotsReceived,
+      reliableSnapshotsReceived: s.reliableSnapshotsReceived,
+      lastSnapshotGapMs: s.lastSnapshotGapMs,
+      interpolationDelayMs: s.interpolationDelayMs,
+      jitterMs: s.jitterMs,
+      snapshotGapP95Ms: s.snapshotGapP95Ms,
+      snapshotGapMaxMs: s.snapshotGapMaxMs,
+      playerCorrectionMagnitude: s.playerCorrectionMagnitude,
+      playerCorrectionPeak5sM: s.playerCorrectionPeak5sM,
     },
   };
 }

@@ -36,6 +36,8 @@ import {
   type ShotFiredPacket,
   type VehicleStateMeters,
   FLAG_IN_VEHICLE,
+  CLIENT_MOVEMENT_THIN_AUTHORITATIVE,
+  PHYSICS_BACKEND_RAPIER,
 } from './protocol';
 
 export type RemotePlayer = {
@@ -96,6 +98,20 @@ export class NetcodeClient {
   localPlayerHp = 100;
   localPlayerEnergy = 0;
   localPlayerFlags = 0;
+  protocolVersion = 1;
+  physicsBackend = PHYSICS_BACKEND_RAPIER;
+  clientMovementMode = 0;
+  localSupport: {
+    handle: number;
+    localPosition: [number, number, number];
+    velocity: [number, number, number];
+    angularVelocity: [number, number, number];
+    flags: number;
+  } | null = null;
+
+  get usesThinAuthoritativeMovement(): boolean {
+    return this.clientMovementMode === CLIENT_MOVEMENT_THIN_AUTHORITATIVE;
+  }
 
   private pushVehicleSample(
     vehicleId: number,
@@ -298,6 +314,10 @@ export class NetcodeClient {
     }
   }
 
+  getLocalDrivenVehicleId(): number | null {
+    return this.localDrivenVehicleId;
+  }
+
   private applyPlayerRoster(packet: PlayerRosterPacket): void {
     const nextByHandle = new Map<number, number>();
     const activePlayerIds = new Set<number>();
@@ -388,6 +408,27 @@ export class NetcodeClient {
     };
     this.localPlayerHp = localState.hp;
     this.localPlayerFlags = localState.flags;
+    this.localSupport = packet.selfState.supportHandle
+      ? {
+          handle: packet.selfState.supportHandle,
+          localPosition: packet.selfState.supportLocalPosition ?? [0, 0, 0],
+          velocity: packet.selfState.supportVelocity ?? [0, 0, 0],
+          angularVelocity: packet.selfState.supportAngularVelocity ?? [0, 0, 0],
+          flags: packet.selfState.supportFlags ?? 0,
+        }
+      : null;
+    if (this.usesThinAuthoritativeMovement) {
+      const meters = netStateToMeters(localState);
+      this.interpolator.push(this.playerId, {
+        serverTimeUs: packet.serverTimeUs,
+        position: meters.position,
+        velocity: meters.velocity,
+        yaw: meters.yaw,
+        pitch: meters.pitch,
+        hp: meters.hp,
+        flags: localState.flags,
+      });
+    }
     const localPlayerInVehicle = (localState.flags & FLAG_IN_VEHICLE) !== 0;
     if (!localPlayerInVehicle) {
       this.localDrivenVehicleId = null;
@@ -649,6 +690,9 @@ export class NetcodeClient {
     switch (packet.type) {
       case 'welcome':
         this.playerId = packet.playerId;
+        this.protocolVersion = packet.protocolVersion;
+        this.physicsBackend = packet.physicsBackend;
+        this.clientMovementMode = packet.clientMovementMode;
         this.baselineInterpolationDelayMs = packet.interpolationDelayMs;
         this.minRemoteInterpolationDelayMs =
           (1000 / Math.max(packet.snapshotHz, 1)) * NetcodeClient.REMOTE_PLAYER_BUFFER_RATIO;
@@ -739,6 +783,18 @@ export class NetcodeClient {
             this.localPlayerHp = ps.hp;
             this.localPlayerFlags = ps.flags;
             localPlayerState = ps;
+            if (this.usesThinAuthoritativeMovement) {
+              const m = netStateToMeters(ps);
+              this.interpolator.push(ps.id, {
+                serverTimeUs: packet.serverTimeUs,
+                position: m.position,
+                velocity: m.velocity,
+                yaw: m.yaw,
+                pitch: m.pitch,
+                hp: m.hp,
+                flags: ps.flags,
+              });
+            }
           } else {
             const m = netStateToMeters(ps);
             this.interpolator.push(ps.id, {

@@ -36,6 +36,15 @@ export interface GameE2ESnapshot {
   cameraYaw: number;
   cameraPitch: number;
 
+  // Thin-authoritative movement diagnostics
+  movementTelemetry: {
+    renderedPosition: [number, number, number];
+    authoritativePosition: [number, number, number];
+    presentationOffset: [number, number, number];
+    authoritativeVelocity: [number, number, number];
+    frameDeltaMs: number;
+  };
+
   // Vehicle
   drivenVehicleId: number | null;
   nearestVehicleId: number | null;
@@ -66,6 +75,16 @@ export interface GameE2ESnapshot {
     shotsFired: number;
     lastShotOutcome: string;
     snapshotsPerSec: number;
+    serverTick: number;
+    datagramSnapshotsReceived: number;
+    reliableSnapshotsReceived: number;
+    lastSnapshotGapMs: number;
+    interpolationDelayMs: number;
+    jitterMs: number;
+    snapshotGapP95Ms: number;
+    snapshotGapMaxMs: number;
+    playerCorrectionMagnitude: number;
+    playerCorrectionPeak5sM: number;
   };
 }
 

@@ -3,9 +3,14 @@ name = "web-fps-server"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+physx-gpu = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/gpu"]
+
 [dependencies]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
+vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 anyhow = "1"
 dotenvy = "0.15"
 axum = { version = "0.7", features = ["macros", "ws"] }

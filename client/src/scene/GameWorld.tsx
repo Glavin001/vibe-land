@@ -52,6 +52,7 @@ import {
   MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
+  VEHICLE_INTERACT_RADIUS_M,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
@@ -110,7 +111,7 @@ import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets'
 import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 
-const VEHICLE_INTERACT_RADIUS = 4.0;
+const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
@@ -2642,10 +2643,28 @@ export function GameWorld({
           position: sample?.position ?? rp.position,
         });
       }
+      const localAuthoritativeSample = state.playerId !== 0
+        ? state.remoteInterpolator.sample(
+            state.playerId,
+            state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+          )
+        : null;
+      const authoritativePosition = localAuthoritativeSample?.position ?? pos;
       updateE2EBridgeFrameState({
         cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
         cameraYaw: yawRef.current,
         cameraPitch: pitchRef.current,
+        movementTelemetry: {
+          renderedPosition: pos as [number, number, number],
+          authoritativePosition,
+          presentationOffset: [
+            pos[0] - authoritativePosition[0],
+            pos[1] - authoritativePosition[1],
+            pos[2] - authoritativePosition[2],
+          ],
+          authoritativeVelocity: localAuthoritativeSample?.velocity ?? physStats.velocity,
+          frameDeltaMs: frameDelta * 1000,
+        },
         drivenVehicleId: drivenVehicleId ?? null,
         nearestVehicleId: nearestVehicleIdRef.current,
         remotePlayers: remoteSummaries,

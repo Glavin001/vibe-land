@@ -1,6 +1,9 @@
+mod app_config;
 mod demo_world;
 mod lag_comp;
 mod movement;
+#[cfg(feature = "physx-gpu")]
+mod physx_runtime;
 mod protocol;
 mod voxel_world;
 
@@ -16,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -24,7 +27,7 @@ use axum::{
     },
     response::IntoResponse,
     routing::get,
-    Router,
+    Json, Router,
 };
 use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
@@ -38,13 +41,14 @@ use vibe_land_shared::constants::{
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
-    RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SIM_HZ,
-    SNAPSHOT_HZ_MULTIPLAYER, SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M,
-    VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
+    SPAWN_PROTECTION_MS, VEHICLE_AOI_RADIUS_M, VEHICLE_INPUT_CATCHUP_THRESHOLD,
+    VEHICLE_INTERACT_RADIUS_M,
 };
 use wtransport::{error::SendDatagramError, Connection, Endpoint, Identity, ServerConfig};
 
 use crate::{
+    app_config::PhysicsRuntimeConfig,
     demo_world::seed_world_for_match,
     lag_comp::{HistoricalCapsule, HistoricalDynamicBody, HitZone, LagCompHistory},
     movement::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
@@ -61,7 +65,6 @@ use crate::{
     },
     voxel_world::VoxelWorld,
 };
-const SNAPSHOT_HZ: u16 = SNAPSHOT_HZ_MULTIPLAYER;
 const CHUNK_RADIUS_ON_JOIN: i32 = 4;
 const SERVER_PING_INTERVAL_TICKS: u32 = SIM_HZ as u32;
 const MAX_LAG_COMP_MS: u32 = 250;
@@ -85,7 +88,7 @@ const SNAPSHOT_DYNAMIC_BODY_STATE_BYTES: usize = 43;
 const SNAPSHOT_VEHICLE_STATE_BYTES: usize = 50;
 const STRICT_SNAPSHOT_RESERVED_VEHICLES: usize = 2;
 const SNAPSHOT_V2_HEADER_BYTES: usize = 23;
-const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 12;
+const SNAPSHOT_V2_SELF_PLAYER_BYTES: usize = 33;
 const SNAPSHOT_V2_REMOTE_PLAYER_BYTES: usize = 19;
 const SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES: usize = 20;
 const SNAPSHOT_V2_DYNAMIC_BOX_BYTES: usize = 28;
@@ -522,6 +525,13 @@ struct PlayerStatsSnapshot {
 struct MatchStatsSnapshot {
     id: String,
     scenario_tag: String,
+    physics_backend: String,
+    physics_gpu_required: bool,
+    physics_gpu_active: bool,
+    physics_gpu_warning_count: u32,
+    physics_contact_pairs: u32,
+    physics_active_dynamic_bodies: u32,
+    physics_last_step_ms: f32,
     server_tick: u32,
     player_count: usize,
     dynamic_body_count: usize,
@@ -557,6 +567,7 @@ struct AppState {
     wt_base_url: String,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 }
@@ -591,6 +602,9 @@ struct SessionConfig {
     sim_hz: u16,
     snapshot_hz: u16,
     interpolation_delay_ms: u16,
+    protocol_version: u16,
+    physics_backend: u8,
+    client_movement_mode: u8,
 }
 
 struct PlayerConnection {
@@ -692,6 +706,7 @@ struct MatchState {
     void_kills: u64,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
@@ -711,6 +726,14 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     install_panic_hook();
+    let physics = PhysicsRuntimeConfig::from_env()?;
+    if physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        drop(
+            PhysicsArena::new(MoveConfig::default(), physics.backend)
+                .context("PhysX GPU startup validation failed")?,
+        );
+        info!("validated PhysX GPU and CUDA scene initialization");
+    }
     #[cfg(debug_assertions)]
     warn!(
         "running a debug server build; authoritative player/KCC performance numbers are not representative, use `cargo run --release -p web-fps-server` for perf validation"
@@ -752,6 +775,11 @@ async fn main() -> Result<()> {
         .ok()
         .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "off"))
         .unwrap_or(true);
+    anyhow::ensure!(
+        physics.backend != vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu
+            || strict_snapshot_datagrams,
+        "PhysX GPU sessions require WT_STRICT_SNAPSHOT_DATAGRAMS=1 for the V2 60 Hz stream"
+    );
     let respawn_delay_ms = parse_respawn_delay_ms(
         std::env::var("VIBE_SERVER_RESPAWN_DELAY_MS")
             .ok()
@@ -761,7 +789,10 @@ async fn main() -> Result<()> {
     info!(%wt_base_url, cert_hash = %cert_hash_hex, "WebTransport identity ready");
     info!(
         strict_snapshot_datagrams,
-        respawn_delay_ms, "WebTransport snapshot transport policy loaded"
+        respawn_delay_ms,
+        physics_backend = physics.backend.name(),
+        snapshot_hz = physics.snapshot_hz(),
+        "server runtime policy loaded"
     );
 
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
@@ -780,6 +811,7 @@ async fn main() -> Result<()> {
             wt_base_url,
             strict_snapshot_datagrams,
             respawn_delay_ms,
+            physics,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
         }),
@@ -828,7 +860,7 @@ async fn main() -> Result<()> {
     }
 
     let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
@@ -842,6 +874,25 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    physics_backend: &'static str,
+    physics_gpu_required: bool,
+    sim_hz: u16,
+    snapshot_hz: u16,
+}
+
+async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        physics_backend: state.inner.physics.backend.name(),
+        physics_gpu_required: state.inner.physics.capabilities.gpu_required,
+        sim_hz: state.inner.physics.sim_hz(),
+        snapshot_hz: state.inner.physics.snapshot_hz(),
+    })
 }
 
 fn load_repo_env() {
@@ -860,9 +911,12 @@ async fn session_config_handler(
         url: format!("{}/game", state.inner.wt_base_url),
         server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
         match_id: query.match_id,
-        sim_hz: SIM_HZ,
-        snapshot_hz: SNAPSHOT_HZ,
-        interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+        sim_hz: state.inner.physics.sim_hz(),
+        snapshot_hz: state.inner.physics.snapshot_hz(),
+        interpolation_delay_ms: state.inner.physics.interpolation_delay_ms(),
+        protocol_version: vibe_land_shared::constants::PROTOCOL_VERSION,
+        physics_backend: state.inner.physics.backend.wire_id(),
+        client_movement_mode: state.inner.physics.client_movement_mode(),
     };
     axum::Json(config)
 }
@@ -906,6 +960,19 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     let payload_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
     anyhow::ensure!(raw.len() >= 4 + payload_len, "ClientHello truncated");
     let hello = decode_client_hello(&raw[4..4 + payload_len])?;
+    if app.physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
+        anyhow::ensure!(
+            hello.protocol_version >= vibe_land_shared::constants::PROTOCOL_VERSION,
+            "PhysX GPU sessions require protocol version {}",
+            vibe_land_shared::constants::PROTOCOL_VERSION
+        );
+        anyhow::ensure!(
+            hello.movement_capabilities
+                & vibe_land_shared::constants::CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE
+                != 0,
+            "client does not support thin authoritative movement"
+        );
+    }
 
     let player_id = app.next_player_id.fetch_add(1, Ordering::Relaxed);
     let handle = get_or_create_match(app.clone(), hello.match_id.clone()).await;
@@ -1166,11 +1233,13 @@ async fn run_match_loop(
     mut rx: mpsc::UnboundedReceiver<MatchEvent>,
     strict_snapshot_datagrams: bool,
     respawn_delay_ms: u32,
+    physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
 ) {
-    let mut arena = PhysicsArena::new(MoveConfig::default());
+    let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
+        .expect("selected authoritative physics backend should initialize");
     let world = VoxelWorld::new();
     seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
     let dynamic_body_handles = arena
@@ -1178,10 +1247,12 @@ async fn run_match_loop(
         .into_iter()
         .enumerate()
         .map(|(index, (id, _, _, half_extents, _, _, shape_type))| {
+            let handle = u16::try_from(index + 1)
+                .expect("snapshot V2 supports at most 65,535 dynamic bodies per match");
             (
                 id,
                 DynamicBodyMetaRuntime {
-                    handle: (index as u16).saturating_add(1),
+                    handle,
                     shape_type,
                     half_extents_m: half_extents,
                 },
@@ -1192,7 +1263,13 @@ async fn run_match_loop(
         .snapshot_vehicles()
         .into_iter()
         .enumerate()
-        .map(|(index, state)| (state.id, (index as u8).saturating_add(1)))
+        .map(|(index, state)| {
+            (
+                state.id,
+                u8::try_from(index + 1)
+                    .expect("snapshot V2 supports at most 255 vehicles per match"),
+            )
+        })
         .collect();
 
     let mut state = MatchState {
@@ -1212,6 +1289,7 @@ async fn run_match_loop(
         void_kills: 0,
         strict_snapshot_datagrams,
         respawn_delay_ms,
+        physics,
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
@@ -1244,7 +1322,10 @@ async fn run_match_loop(
             .write()
             .expect("stats registry poisoned");
         registry.remove(&state.id);
-        let _ = state.stats_tx.send(global_stats_from_registry(&registry));
+        let _ = state.stats_tx.send(global_stats_from_registry(
+            &registry,
+            state.physics.snapshot_hz(),
+        ));
     }
 }
 
@@ -1256,52 +1337,65 @@ fn spawn_match_loop(
     telemetry: Arc<MatchIoTelemetry>,
 ) {
     info!(%match_id, "spawning match loop");
-    tokio::spawn(async move {
-        let outcome = std::panic::AssertUnwindSafe(run_match_loop(
-            match_id.clone(),
-            rx,
-            app.strict_snapshot_datagrams,
-            app.respawn_delay_ms,
-            app.stats_tx.clone(),
-            telemetry,
-            app.stats_registry.clone(),
-        ))
-        .catch_unwind()
-        .await;
+    std::thread::Builder::new()
+        .name(format!("match-{match_id}"))
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("match runtime should initialize");
+            runtime.block_on(async move {
+                let outcome = std::panic::AssertUnwindSafe(run_match_loop(
+                    match_id.clone(),
+                    rx,
+                    app.strict_snapshot_datagrams,
+                    app.respawn_delay_ms,
+                    app.physics,
+                    app.stats_tx.clone(),
+                    telemetry,
+                    app.stats_registry.clone(),
+                ))
+                .catch_unwind()
+                .await;
 
-        match outcome {
-            Ok(()) => {
-                warn!(%match_id, "match loop exited");
-            }
-            Err(payload) => {
-                error!(
-                    %match_id,
-                    panic = %describe_panic_payload(&payload),
-                    "match loop panicked"
-                );
-            }
-        }
+                match outcome {
+                    Ok(()) => {
+                        warn!(%match_id, "match loop exited");
+                    }
+                    Err(payload) => {
+                        error!(
+                            %match_id,
+                            panic = %describe_panic_payload(&payload),
+                            "match loop panicked"
+                        );
+                    }
+                }
 
-        let removed = {
-            let mut matches = app.matches.write().await;
-            matches
-                .get(&match_id)
-                .map(|existing| existing.tx.same_channel(&handle.tx))
-                .unwrap_or(false)
-                .then(|| matches.remove(&match_id))
-                .flatten()
-                .is_some()
-        };
-        if removed {
-            warn!(%match_id, "removed dead match handle after match loop termination");
-        }
+                let removed = {
+                    let mut matches = app.matches.write().await;
+                    matches
+                        .get(&match_id)
+                        .map(|existing| existing.tx.same_channel(&handle.tx))
+                        .unwrap_or(false)
+                        .then(|| matches.remove(&match_id))
+                        .flatten()
+                        .is_some()
+                };
+                if removed {
+                    warn!(%match_id, "removed dead match handle after match loop termination");
+                }
 
-        {
-            let mut registry = app.stats_registry.write().expect("stats registry poisoned");
-            registry.remove(&match_id);
-            let _ = app.stats_tx.send(global_stats_from_registry(&registry));
-        }
-    });
+                {
+                    let mut registry = app.stats_registry.write().expect("stats registry poisoned");
+                    registry.remove(&match_id);
+                    let _ = app.stats_tx.send(global_stats_from_registry(
+                        &registry,
+                        app.physics.snapshot_hz(),
+                    ));
+                }
+            });
+        })
+        .expect("match simulation thread should start");
 }
 
 impl MatchState {
@@ -1310,7 +1404,7 @@ impl MatchState {
     }
 
     fn resolve_vehicle_runtime_id(&self, wire_vehicle_id: u32) -> Option<u32> {
-        if self.arena.vehicles.contains_key(&wire_vehicle_id) {
+        if self.arena.vehicle_exists(wire_vehicle_id) {
             return Some(wire_vehicle_id);
         }
         let handle = u8::try_from(wire_vehicle_id).ok()?;
@@ -1461,10 +1555,13 @@ impl MatchState {
                 let server_time_us = (self.server_tick as u64) * (1_000_000 / SIM_HZ as u64);
                 let welcome = ServerPacket::Welcome(WelcomePacket {
                     player_id: conn.player_id,
+                    protocol_version: vibe_land_shared::constants::PROTOCOL_VERSION,
+                    physics_backend: self.physics.backend.wire_id(),
+                    client_movement_mode: self.physics.client_movement_mode(),
                     sim_hz: SIM_HZ,
-                    snapshot_hz: SNAPSHOT_HZ,
+                    snapshot_hz: self.physics.snapshot_hz(),
                     server_time_us,
-                    interpolation_delay_ms: (1000 / SNAPSHOT_HZ) * 2,
+                    interpolation_delay_ms: self.physics.interpolation_delay_ms(),
                 });
                 let _ = try_queue_packet(&conn.tx, encode_server_packet(&welcome), &self.io);
                 self.send_initial_metadata(&conn.tx);
@@ -1542,12 +1639,7 @@ impl MatchState {
                 let Some(runtime) = self.players.get_mut(&player_id) else {
                     return;
                 };
-                let is_dead = self
-                    .arena
-                    .players
-                    .get(&player_id)
-                    .map(|state| state.dead)
-                    .unwrap_or(false);
+                let is_dead = self.arena.player_is_dead(player_id);
                 match packet {
                     ClientPacket::InputBundle(cmds) => {
                         // Track inter-arrival timing for jitter measurement
@@ -1627,9 +1719,33 @@ impl MatchState {
                             if let Some(vehicle_id) =
                                 self.resolve_vehicle_runtime_id(cmd.vehicle_id)
                             {
-                                self.arena.enter_vehicle(player_id, vehicle_id);
-                                if self.arena.vehicle_of_player.get(&player_id) == Some(&vehicle_id)
-                                {
+                                let can_enter = self
+                                    .arena
+                                    .player_state(player_id)
+                                    .and_then(|player| {
+                                        self.arena
+                                            .snapshot_vehicles()
+                                            .into_iter()
+                                            .find(|vehicle| vehicle.id == vehicle_id)
+                                            .map(|vehicle| {
+                                                let dx = player.position.x as f32
+                                                    - mm_to_meters(vehicle.px_mm);
+                                                let dy = player.position.y as f32
+                                                    - mm_to_meters(vehicle.py_mm);
+                                                let dz = player.position.z as f32
+                                                    - mm_to_meters(vehicle.pz_mm);
+                                                (vehicle.driver_id == 0
+                                                    || vehicle.driver_id == player_id)
+                                                    && dx * dx + dy * dy + dz * dz
+                                                        <= VEHICLE_INTERACT_RADIUS_M
+                                                            * VEHICLE_INTERACT_RADIUS_M
+                                            })
+                                    })
+                                    .unwrap_or(false);
+                                if can_enter {
+                                    self.arena.enter_vehicle(player_id, vehicle_id);
+                                }
+                                if self.arena.player_vehicle_id(player_id) == Some(vehicle_id) {
                                     if let Some(runtime) = self.players.get_mut(&player_id) {
                                         clear_runtime_inputs_for_vehicle_entry(runtime);
                                     }
@@ -1637,9 +1753,15 @@ impl MatchState {
                             }
                         }
                     }
-                    ClientPacket::VehicleExit(_cmd) => {
+                    ClientPacket::VehicleExit(cmd) => {
                         if !is_dead {
-                            self.arena.exit_vehicle(player_id);
+                            if self.resolve_vehicle_runtime_id(cmd.vehicle_id).is_some_and(
+                                |vehicle_id| {
+                                    self.arena.player_vehicle_id(player_id) == Some(vehicle_id)
+                                },
+                            ) {
+                                self.arena.exit_vehicle(player_id);
+                            }
                         }
                     }
                     ClientPacket::DebugStats {
@@ -1694,22 +1816,16 @@ impl MatchState {
         let mut player_centers = Vec::with_capacity(ids.len());
         let mut on_foot_energy_drains = Vec::with_capacity(ids.len());
         for player_id in ids.iter().copied() {
-            if self.arena.vehicle_of_player.contains_key(&player_id) {
+            if self.arena.is_player_in_vehicle(player_id) {
                 players_in_vehicles += 1.0;
             }
-            if self
-                .arena
-                .players
-                .get(&player_id)
-                .is_some_and(|state| state.dead)
-            {
+            if self.arena.player_is_dead(player_id) {
                 dead_players_skipped += 1.0;
             }
             let (previous_input, was_on_ground) = self
                 .arena
-                .players
-                .get(&player_id)
-                .map(|state| (state.last_input.clone(), state.on_ground))
+                .player_state(player_id)
+                .map(|state| (state.last_input, state.on_ground))
                 .unwrap_or_default();
             let input = self
                 .players
@@ -1721,7 +1837,7 @@ impl MatchState {
                     // steering/throttle for hundreds of milliseconds.
                     take_input_for_tick_with_vehicle_catchup(
                         runtime,
-                        self.arena.vehicle_of_player.contains_key(&player_id),
+                        self.arena.is_player_in_vehicle(player_id),
                     )
                 })
                 .unwrap_or_default();
@@ -1883,12 +1999,7 @@ impl MatchState {
         self.timings.dynamics_ms.record(dynamics_ms);
         self.timings.vehicle_ms.record(vehicle_ms);
 
-        let alive_player_ids: Vec<u32> = self
-            .arena
-            .players
-            .iter()
-            .filter_map(|(&player_id, state)| (!state.dead).then_some(player_id))
-            .collect();
+        let alive_player_ids = self.arena.alive_player_ids();
         for &player_id in &alive_player_ids {
             let gained_energy: f32 = self
                 .arena
@@ -1897,9 +2008,7 @@ impl MatchState {
                 .map(|(_, energy)| energy)
                 .sum();
             if gained_energy > 0.0 {
-                if let Some(state) = self.arena.players.get_mut(&player_id) {
-                    state.energy += gained_energy;
-                }
+                let _ = self.arena.add_player_energy(player_id, gained_energy);
             }
         }
         for (player_id, previous_input, input, was_on_ground) in on_foot_energy_drains {
@@ -1926,7 +2035,7 @@ impl MatchState {
 
         self.sync_reliable_world_state();
 
-        if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ as u32) == 0 {
+        if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
             self.broadcast_snapshot();
         }
 
@@ -2052,14 +2161,23 @@ impl MatchState {
                 (0, 0, 0, 0)
             };
 
+        let (dynamic_body_count, vehicle_count, battery_count) = self.arena.counts();
+        let physics_health = self.arena.health();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
+            physics_backend: self.physics.backend.name().to_string(),
+            physics_gpu_required: self.physics.capabilities.gpu_required,
+            physics_gpu_active: physics_health.gpu_active,
+            physics_gpu_warning_count: physics_health.gpu_warning_count,
+            physics_contact_pairs: physics_health.contact_pairs,
+            physics_active_dynamic_bodies: physics_health.active_dynamic_bodies,
+            physics_last_step_ms: physics_health.last_step_ms,
             server_tick: self.server_tick,
             player_count: self.players.len(),
-            dynamic_body_count: self.arena.dynamic.dynamic_bodies.len(),
-            vehicle_count: self.arena.vehicles.len(),
-            battery_count: self.arena.batteries.len(),
+            dynamic_body_count,
+            vehicle_count,
+            battery_count,
             chunk_count: self.world.chunks.len(),
             load: MatchLoadSnapshot {
                 nearby_radius_m: NEARBY_PLAYER_RADIUS_M,
@@ -2204,7 +2322,7 @@ impl MatchState {
                 .write()
                 .expect("stats registry poisoned");
             registry.insert(self.id.clone(), match_stats.clone());
-            global_stats_from_registry(&registry)
+            global_stats_from_registry(&registry, self.physics.snapshot_hz())
         };
 
         let datagram_fallbacks = self.io.datagram_fallbacks.load(Ordering::Relaxed);
@@ -2371,7 +2489,7 @@ impl MatchState {
 
     fn kill_player_with_cause(&mut self, player_id: u32, server_time_ms: u32, cause: DeathCause) {
         let battery_drop = if matches!(cause, DeathCause::HpDamage | DeathCause::VehicleCollision) {
-            self.arena.players.get(&player_id).and_then(|state| {
+            self.arena.player_state(player_id).and_then(|state| {
                 if !state.dead && state.energy > 0.0 {
                     Some((state.position, state.energy))
                 } else {
@@ -2396,9 +2514,7 @@ impl MatchState {
                 DEFAULT_BATTERY_HEIGHT_M,
             );
         }
-        if let Some(state) = self.arena.players.get_mut(&player_id) {
-            state.energy = 0.0;
-        }
+        let _ = self.arena.add_player_energy(player_id, -f32::MAX);
         if let Some(runtime) = self.players.get_mut(&player_id) {
             runtime.respawn_at_ms = Some(server_time_ms.saturating_add(self.respawn_delay_ms));
             runtime.pending_inputs.clear();
@@ -2573,20 +2689,17 @@ impl MatchState {
                 continue;
             }
 
-            let Some(shooter_state) = self.arena.players.get(&queued.player_id) else {
+            let Some(shooter_state) = self.arena.player_state(queued.player_id) else {
                 continue;
             };
-            if shooter_state.dead || self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+            if shooter_state.dead || self.arena.is_player_in_vehicle(queued.player_id) {
                 continue;
             }
 
-            let mut shooter_depleted = false;
-            if let Some(shooter_state) = self.arena.players.get_mut(&queued.player_id) {
-                shooter_state.energy = (shooter_state.energy - RIFLE_SHOT_ENERGY_COST).max(0.0);
-                if shooter_state.energy <= 0.0 {
-                    shooter_depleted = true;
-                }
-            }
+            let shooter_depleted = self
+                .arena
+                .add_player_energy(queued.player_id, -RIFLE_SHOT_ENERGY_COST)
+                .is_some_and(|energy| energy <= 0.0);
             if shooter_depleted {
                 self.kill_player_with_cause(
                     queued.player_id,
@@ -2683,21 +2796,11 @@ impl MatchState {
             };
 
             let result = if let Some(hit) = player_hit {
-                let prev_hp = self
-                    .arena
-                    .players
-                    .get(&hit.victim_id)
-                    .map(|s| s.hp)
-                    .unwrap_or(0);
+                let prev_hp = self.arena.player_hp(hit.victim_id);
                 let damage_outcome = self
                     .arena
                     .apply_player_damage(hit.victim_id, rifle_damage(hit.zone));
-                let new_hp = self
-                    .arena
-                    .players
-                    .get(&hit.victim_id)
-                    .map(|s| s.hp)
-                    .unwrap_or(0);
+                let new_hp = self.arena.player_hp(hit.victim_id);
                 let applied_damage = prev_hp.saturating_sub(new_hp);
                 if matches!(
                     damage_outcome,
@@ -2864,7 +2967,7 @@ impl MatchState {
                 continue;
             }
 
-            if self.arena.vehicle_of_player.contains_key(&queued.player_id) {
+            if self.arena.is_player_in_vehicle(queued.player_id) {
                 continue;
             }
             let Some((attacker_pos, _, _, _, attacker_hp, attacker_flags)) =
@@ -2876,13 +2979,10 @@ impl MatchState {
                 continue;
             }
 
-            let mut depleted = false;
-            if let Some(attacker_state) = self.arena.players.get_mut(&queued.player_id) {
-                attacker_state.energy = (attacker_state.energy - MELEE_ENERGY_COST).max(0.0);
-                if attacker_state.energy <= 0.0 {
-                    depleted = true;
-                }
-            }
+            let depleted = self
+                .arena
+                .add_player_energy(queued.player_id, -MELEE_ENERGY_COST)
+                .is_some_and(|energy| energy <= 0.0);
             if depleted {
                 self.kill_player_with_cause(
                     queued.player_id,
@@ -2913,13 +3013,12 @@ impl MatchState {
                 let mut best: Option<(u32, f32)> = None;
                 let victim_ids: Vec<u32> = self
                     .arena
-                    .players
-                    .keys()
-                    .copied()
+                    .player_ids()
+                    .into_iter()
                     .filter(|id| *id != queued.player_id)
                     .collect();
                 for victim_id in victim_ids {
-                    if self.arena.vehicle_of_player.contains_key(&victim_id) {
+                    if self.arena.is_player_in_vehicle(victim_id) {
                         continue;
                     }
                     let Some((victim_pos, _, _, _, victim_hp, victim_flags)) =
@@ -2948,25 +3047,29 @@ impl MatchState {
                         }
                     }
                     let dist = dist_sq.sqrt();
+                    if dist > 1e-4 {
+                        let direction = [dx / dist, dy / dist, dz / dist];
+                        let blocked_by_static = self
+                            .arena
+                            .cast_static_world_ray(eye, direction, dist, Some(queued.player_id))
+                            .is_some_and(|toi| toi < dist - 0.1);
+                        let blocked_by_dynamic = self
+                            .arena
+                            .cast_dynamic_body_ray(eye, direction, dist, Some(queued.player_id))
+                            .is_some_and(|(_, toi, _)| toi < dist - 0.1);
+                        if blocked_by_static || blocked_by_dynamic {
+                            continue;
+                        }
+                    }
                     if best.map(|(_, d)| dist < d).unwrap_or(true) {
                         best = Some((victim_id, dist));
                     }
                 }
 
                 if let Some((victim_id, _)) = best {
-                    let prev_hp = self
-                        .arena
-                        .players
-                        .get(&victim_id)
-                        .map(|s| s.hp)
-                        .unwrap_or(0);
+                    let prev_hp = self.arena.player_hp(victim_id);
                     let damage_outcome = self.arena.apply_player_damage(victim_id, MELEE_DAMAGE);
-                    let new_hp = self
-                        .arena
-                        .players
-                        .get(&victim_id)
-                        .map(|s| s.hp)
-                        .unwrap_or(0);
+                    let new_hp = self.arena.player_hp(victim_id);
                     let applied_damage = prev_hp.saturating_sub(new_hp);
                     if matches!(
                         damage_outcome,
@@ -3174,6 +3277,43 @@ impl MatchState {
             let mut budget_remaining =
                 STRICT_SNAPSHOT_DATAGRAM_TARGET_BYTES.saturating_sub(SNAPSHOT_V2_HEADER_BYTES);
 
+            let support_state = self.arena.player_support(recipient_id);
+            let support_dynamic_id = support_state
+                .filter(|support| !support.is_vehicle)
+                .map(|support| support.entity_id);
+            let support_vehicle_id = support_state
+                .filter(|support| support.is_vehicle)
+                .map(|support| support.entity_id);
+            let support = support_state.and_then(|support| {
+                let handle = if support.is_vehicle {
+                    self.vehicle_handles
+                        .get(&support.entity_id)
+                        .map(|handle| 0x8000 | u16::from(*handle))
+                } else {
+                    self.dynamic_body_handles
+                        .get(&support.entity_id)
+                        .map(|entry| entry.handle)
+                }?;
+                Some((
+                    handle,
+                    support.local_position.map(|value| {
+                        (value * 400.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.velocity.map(|value| {
+                        (value * 100.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.angular_velocity.map(|value| {
+                        (value * 1000.0)
+                            .round()
+                            .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+                    }),
+                    support.flags,
+                ))
+            });
             let self_state = protocol::SelfPlayerStateV2 {
                 vx_cms: local_player_state.vx_cms,
                 vy_cms: local_player_state.vy_cms,
@@ -3182,23 +3322,52 @@ impl MatchState {
                 pitch_i16: local_player_state.pitch_i16,
                 hp: local_player_state.hp,
                 flags: (local_player_state.flags & 0xff) as u8,
+                support_handle: support.map_or(0, |value| value.0),
+                support_local_q2_5mm: support.map_or([0; 3], |value| value.1),
+                support_velocity_cms: support.map_or([0; 3], |value| value.2),
+                support_angular_velocity_mrads: support.map_or([0; 3], |value| value.3),
+                support_flags: support.map_or(0, |value| value.4),
             };
             budget_remaining = budget_remaining.saturating_sub(SNAPSHOT_V2_SELF_PLAYER_BYTES);
 
-            let reserved_vehicle_budget = vehicle_states
+            let mut reserved_vehicle_ids: HashSet<u32> = vehicle_states
                 .iter()
                 .filter(|(_, _, state)| state.driver_id == recipient_id)
                 .take(STRICT_SNAPSHOT_RESERVED_VEHICLES)
-                .count()
+                .map(|(vehicle_id, _, _)| *vehicle_id)
+                .collect();
+            if let Some(vehicle_id) = support_vehicle_id {
+                reserved_vehicle_ids.insert(vehicle_id);
+            }
+            let reserved_vehicle_budget = reserved_vehicle_ids
+                .len()
                 .saturating_mul(SNAPSHOT_V2_VEHICLE_BYTES);
             budget_remaining = budget_remaining.saturating_sub(reserved_vehicle_budget);
+            let reserved_support_dynamic_bytes = support_dynamic_id
+                .and_then(|body_id| self.dynamic_body_handles.get(&body_id))
+                .map(|meta| {
+                    if meta.shape_type == SHAPE_SPHERE {
+                        SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES
+                    } else {
+                        SNAPSHOT_V2_DYNAMIC_BOX_BYTES
+                    }
+                })
+                .unwrap_or(0);
+            budget_remaining = budget_remaining.saturating_sub(reserved_support_dynamic_bytes);
 
             let mut remote_player_states = Vec::new();
-            for (player_id, pos, state) in player_states.iter().filter(|(player_id, pos, _)| {
-                *player_id != recipient_id
-                    && distance_sq(*pos, *recipient_pos)
-                        <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
-            }) {
+            let mut remote_player_candidates: Vec<_> = player_states
+                .iter()
+                .filter(|(player_id, pos, _)| {
+                    *player_id != recipient_id
+                        && distance_sq(*pos, *recipient_pos)
+                            <= PLAYER_AOI_RADIUS_M * PLAYER_AOI_RADIUS_M
+                })
+                .collect();
+            remote_player_candidates.sort_by(|a, b| {
+                distance_sq(a.1, *recipient_pos).total_cmp(&distance_sq(b.1, *recipient_pos))
+            });
+            for (player_id, pos, state) in remote_player_candidates {
                 let Some(handle) = self.player_handles.get(player_id).copied() else {
                     continue;
                 };
@@ -3225,10 +3394,9 @@ impl MatchState {
             }
 
             let mut selected_vehicle_states = Vec::new();
-            let mut reserved_vehicle_ids = HashSet::new();
             for (vehicle_id, pos, state) in vehicle_states
                 .iter()
-                .filter(|(_, _, state)| state.driver_id == recipient_id)
+                .filter(|(vehicle_id, _, _)| reserved_vehicle_ids.contains(vehicle_id))
             {
                 let Some(handle) = self.vehicle_handles.get(vehicle_id).copied() else {
                     continue;
@@ -3260,14 +3428,12 @@ impl MatchState {
                     wy_mrads: state.wy_mrads,
                     wz_mrads: state.wz_mrads,
                 });
-                reserved_vehicle_ids.insert(*vehicle_id);
                 runtime
                     .last_sent_vehicle_tick
                     .insert(*vehicle_id, self.server_tick);
             }
 
             let mut vehicle_hot = Vec::new();
-            let mut vehicle_cold = Vec::new();
             for (vehicle_id, pos, state) in vehicle_states.iter().filter(|(_, pos, state)| {
                 state.driver_id == recipient_id
                     || distance_sq(*pos, *recipient_pos)
@@ -3318,23 +3484,18 @@ impl MatchState {
                         state.wy_mrads as f32 / 1000.0,
                         state.wz_mrads as f32 / 1000.0,
                     ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS
-                    || runtime
-                        .last_sent_vehicle_tick
-                        .get(vehicle_id)
-                        .map(|last| {
-                            self.server_tick.saturating_sub(*last) >= COLD_VEHICLE_REFRESH_TICKS
-                        })
-                        .unwrap_or(true);
+                    || periodic_refresh_due(
+                        runtime.last_sent_vehicle_tick.get(vehicle_id).copied(),
+                        self.server_tick,
+                        COLD_VEHICLE_REFRESH_TICKS,
+                    );
                 if hot {
                     vehicle_hot.push((*vehicle_id, distance_sq(*pos, *recipient_pos), record));
-                } else {
-                    vehicle_cold.push((*vehicle_id, distance_sq(*pos, *recipient_pos), record));
                 }
             }
             vehicle_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
-            vehicle_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
 
-            for (vehicle_id, _, record) in vehicle_hot.into_iter().chain(vehicle_cold.into_iter()) {
+            for (vehicle_id, _, record) in vehicle_hot {
                 if budget_remaining < SNAPSHOT_V2_VEHICLE_BYTES {
                     break;
                 }
@@ -3376,15 +3537,13 @@ impl MatchState {
                         state.wy_mrads as f32 / 1000.0,
                         state.wz_mrads as f32 / 1000.0,
                     ]) > HOT_ANGULAR_SPEED_THRESHOLD_RADPS * HOT_ANGULAR_SPEED_THRESHOLD_RADPS;
-                let needs_refresh = runtime
-                    .last_sent_dynamic_tick
-                    .get(body_id)
-                    .map(|last| {
-                        self.server_tick.saturating_sub(*last) >= COLD_DYNAMIC_REFRESH_TICKS
-                    })
-                    .unwrap_or(true);
+                let needs_refresh = periodic_refresh_due(
+                    runtime.last_sent_dynamic_tick.get(body_id).copied(),
+                    self.server_tick,
+                    COLD_DYNAMIC_REFRESH_TICKS,
+                );
 
-                if meta.shape_type == 1 {
+                if meta.shape_type == SHAPE_SPHERE {
                     let record = protocol::DynamicSphereStateV2 {
                         handle: meta.handle,
                         dx_q2_5mm: dx,
@@ -3397,12 +3556,13 @@ impl MatchState {
                         wy_mrads: state.wy_mrads,
                         wz_mrads: state.wz_mrads,
                     };
-                    if moving
+                    if support_dynamic_id == Some(*body_id)
+                        || moving
                         || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
                         || needs_refresh
                     {
                         dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Sphere(record)));
-                    } else {
+                    } else if needs_refresh {
                         dynamic_cold.push((
                             *body_id,
                             dist_sq,
@@ -3426,12 +3586,13 @@ impl MatchState {
                         wy_mrads: state.wy_mrads,
                         wz_mrads: state.wz_mrads,
                     };
-                    if moving
+                    if support_dynamic_id == Some(*body_id)
+                        || moving
                         || dist_sq <= HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M
                         || needs_refresh
                     {
                         dynamic_hot.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
-                    } else {
+                    } else if needs_refresh {
                         dynamic_cold.push((*body_id, dist_sq, DynamicBodySelection::Box(record)));
                     }
                 }
@@ -3442,6 +3603,10 @@ impl MatchState {
             runtime.visible_dynamic_bodies = all_visible_dynamic_bodies;
             dynamic_hot.sort_by(|a, b| a.1.total_cmp(&b.1));
             dynamic_cold.sort_by(|a, b| a.1.total_cmp(&b.1));
+            if let Some(support_body_id) = support_dynamic_id {
+                dynamic_hot.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
+                dynamic_cold.sort_by_key(|(body_id, _, _)| *body_id != support_body_id);
+            }
 
             let mut sphere_states = Vec::new();
             let mut box_states = Vec::new();
@@ -3450,7 +3615,8 @@ impl MatchState {
                     DynamicBodySelection::Sphere(_) => SNAPSHOT_V2_DYNAMIC_SPHERE_BYTES,
                     DynamicBodySelection::Box(_) => SNAPSHOT_V2_DYNAMIC_BOX_BYTES,
                 };
-                if budget_remaining < record_size {
+                let reserved_support = support_dynamic_id == Some(body_id);
+                if !reserved_support && budget_remaining < record_size {
                     continue;
                 }
                 match selection {
@@ -3460,7 +3626,9 @@ impl MatchState {
                 runtime
                     .last_sent_dynamic_tick
                     .insert(body_id, self.server_tick);
-                budget_remaining = budget_remaining.saturating_sub(record_size);
+                if !reserved_support {
+                    budget_remaining = budget_remaining.saturating_sub(record_size);
+                }
             }
 
             let packet = ServerPacket::SnapshotV2(protocol::SnapshotV2Packet {
@@ -3594,30 +3762,7 @@ fn compute_density_metrics(positions: &[[f32; 3]]) -> (f32, u32) {
 }
 
 fn awake_dynamic_body_counts(arena: &PhysicsArena, player_centers: &[[f32; 3]]) -> (u32, u32) {
-    let near_radius_sq = HOT_DYNAMIC_NEAR_RADIUS_M * HOT_DYNAMIC_NEAR_RADIUS_M;
-    let mut awake_total = 0u32;
-    let mut awake_near_players = 0u32;
-
-    for dynamic_body in arena.dynamic.dynamic_bodies.values() {
-        let Some(rb) = arena.dynamic.sim.rigid_bodies.get(dynamic_body.body_handle) else {
-            continue;
-        };
-        if rb.is_sleeping() {
-            continue;
-        }
-        awake_total += 1;
-
-        let pos = rb.translation();
-        let body_center = [pos.x, pos.y, pos.z];
-        if player_centers
-            .iter()
-            .any(|player_center| distance_sq(body_center, *player_center) <= near_radius_sq)
-        {
-            awake_near_players += 1;
-        }
-    }
-
-    (awake_total, awake_near_players)
+    arena.awake_dynamic_body_counts(player_centers, HOT_DYNAMIC_NEAR_RADIUS_M)
 }
 
 fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -3645,6 +3790,12 @@ fn quantize_relative_vec_q2_5mm(origin: [f32; 3], target: [f32; 3]) -> Option<(i
 
 fn speed_sq3(v: [f32; 3]) -> f32 {
     v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
+}
+
+fn periodic_refresh_due(last_sent_tick: Option<u32>, current_tick: u32, interval: u32) -> bool {
+    last_sent_tick
+        .map(|last| current_tick.saturating_sub(last) >= interval)
+        .unwrap_or(true)
 }
 
 fn dynamic_body_within_aoi(was_visible: bool, body_pos: [f32; 3], recipient_pos: [f32; 3]) -> bool {
@@ -3762,13 +3913,14 @@ fn describe_panic_payload(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 fn global_stats_from_registry(
     registry: &HashMap<String, MatchStatsSnapshot>,
+    snapshot_hz: u16,
 ) -> GlobalStatsSnapshot {
     let mut matches: Vec<_> = registry.values().cloned().collect();
     matches.sort_by(|a, b| a.id.cmp(&b.id));
     GlobalStatsSnapshot {
         server_build_profile: server_build_profile().to_string(),
         sim_hz: SIM_HZ,
-        snapshot_hz: SNAPSHOT_HZ,
+        snapshot_hz,
         matches,
     }
 }
@@ -3801,7 +3953,7 @@ mod tests {
     use super::{
         classify_outbound_delivery, clear_runtime_inputs_for_vehicle_entry,
         compute_density_metrics, dynamic_body_within_aoi, enqueue_inputs, is_snapshot_packet_kind,
-        parse_respawn_delay_ms, rifle_damage, server_build_profile,
+        parse_respawn_delay_ms, periodic_refresh_due, rifle_damage, server_build_profile,
         strict_snapshot_drop_cause_from_send_error, take_input_for_tick,
         take_input_for_tick_with_vehicle_catchup, try_queue_packet, HitZone, InputCmd,
         MatchIoTelemetry, OutboundDelivery, PlayerRuntime, StrictSnapshotDropCause, BTN_RELOAD,
@@ -4101,7 +4253,10 @@ mod tests {
             },
         );
 
-        let global = super::global_stats_from_registry(&registry);
+        let global = super::global_stats_from_registry(
+            &registry,
+            vibe_land_shared::constants::SNAPSHOT_HZ_MULTIPLAYER,
+        );
         let ids: Vec<_> = global
             .matches
             .into_iter()
@@ -4132,5 +4287,12 @@ mod tests {
             [super::DYNAMIC_BODY_AOI_RADIUS_M + 0.1, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ));
+    }
+
+    #[test]
+    fn unchanged_state_recovers_after_periodic_refresh_window() {
+        assert!(!periodic_refresh_due(Some(100), 159, 60));
+        assert!(periodic_refresh_due(Some(100), 160, 60));
+        assert!(periodic_refresh_due(None, 1, 60));
     }
 }

@@ -87,6 +87,33 @@ Production notes:
 - An explicit WebTransport port such as `https://vibe-land.glavin.ca:4002` is the most predictable setup when your main HTTPS site is served separately on `TCP 443`.
 - If you use a custom hostname in `WT_PUBLIC_URL`, the certificate files in `.env` must cover that hostname.
 
+## PhysX GPU authoritative server
+
+PhysX is a process-start backend, not a per-match toggle. Build and run it on
+an NVIDIA host with the PhysX GPU SDK and CUDA driver available:
+
+```bash
+PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
+  cargo build --release -p web-fps-server --features physx-gpu
+VIBE_PHYSICS_BACKEND=physx_gpu \
+WT_STRICT_SNAPSHOT_DATAGRAMS=1 \
+  ./target/release/web-fps-server
+```
+
+Startup fails if the CUDA context or GPU scene cannot execute a validation
+step. `/healthz` reports the selected backend and required GPU status. PhysX
+sessions negotiate 60 Hz snapshots and thin-authoritative client movement;
+incompatible clients are rejected.
+
+Set `VITE_THIN_PRESENTATION_PREDICTION=0` when building the client to render
+the interpolated authoritative local-player pose with no presentation offset.
+This is the correctness baseline for thin-predictor tuning.
+
+`scripts/package-physx-server.sh` creates a runtime bundle containing the
+server and `libPhysXGpu_64.so`. Build `Dockerfile.physx-gpu` from that bundle
+and run it with the NVIDIA container runtime. Switching back to Rapier requires
+draining and restarting the process with `VIBE_PHYSICS_BACKEND=rapier`.
+
 ## Streaming world state over MoQ
 
 `moq/` holds a proof of concept for carrying world state over

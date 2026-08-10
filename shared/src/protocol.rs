@@ -140,6 +140,9 @@ pub struct ChunkDiffPacket {
 #[derive(Clone, Debug)]
 pub struct WelcomePacket {
     pub player_id: u32,
+    pub protocol_version: u16,
+    pub physics_backend: u8,
+    pub client_movement_mode: u8,
     pub sim_hz: u16,
     pub snapshot_hz: u16,
     pub server_time_us: u64,

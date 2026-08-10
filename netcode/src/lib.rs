@@ -1,7 +1,9 @@
 pub mod clock_sync;
+pub mod destruction_backend;
 pub mod lag_comp;
 pub mod movement;
 pub mod physics_arena;
+pub mod physics_backend;
 /// Generic physics-enabled netcode library for vibe-land.
 ///
 /// Provides reusable building blocks:

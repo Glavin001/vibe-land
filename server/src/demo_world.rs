@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, SpawnArea, WorldDocument, WorldDocumentError, WorldMeta,
-    WorldTerrain, WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, WorldDocument, WorldDocumentError, WorldMeta, WorldTerrain,
+    WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -123,37 +123,37 @@ fn vehicle_bumps_benchmark_world() -> WorldDocument {
 mod tests {
     use super::*;
     use crate::movement::MoveConfig;
+    use vibe_land_shared::world_document::SpawnArea;
 
     #[test]
     fn default_world_bootstrap_matches_expected_multiplayer_counts() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
-        assert_eq!(arena.vehicles.len(), 2);
-        assert_eq!(arena.batteries.len(), 4);
+        assert_eq!(arena.counts(), (51, 2, 4));
     }
 
     #[test]
     fn default_world_stays_within_multiplayer_dynamic_budget() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
+        let (dynamic_count, vehicle_count, _) = arena.counts();
         assert!(
-            arena.dynamic.dynamic_bodies.len() <= 51,
+            dynamic_count <= 51,
             "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 51 to match the authored default world",
-            arena.dynamic.dynamic_bodies.len()
+            dynamic_count
         );
         assert!(
-            arena.vehicles.len() <= 2,
+            vehicle_count <= 2,
             "default multiplayer world spawned {} vehicles; keep it at or under 2",
-            arena.vehicles.len()
+            vehicle_count
         );
     }
 
     #[test]
     fn default_world_keeps_entities_supported_after_settling() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
         for _ in 0..300 {
@@ -185,12 +185,12 @@ mod tests {
 
     #[test]
     fn flat_vehicle_benchmark_world_keeps_single_vehicle_supported() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, FLAT_VEHICLE_TEST_MATCH_ID)
             .expect("instantiate flat vehicle benchmark world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 0);
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().0, 0);
+        assert_eq!(arena.counts().1, 1);
 
         for _ in 0..300 {
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
@@ -203,25 +203,25 @@ mod tests {
 
     #[test]
     fn benchmark_world_prefixes_create_isolated_vehicle_worlds() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, "flat_vehicle_test__run_123")
             .expect("instantiate isolated flat benchmark world");
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().1, 1);
 
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, "vehicle_bumps_test__run_123")
             .expect("instantiate isolated bumps benchmark world");
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().1, 1);
     }
 
     #[test]
     fn vehicle_bumps_benchmark_world_keeps_single_vehicle_supported() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, VEHICLE_BUMPS_TEST_MATCH_ID)
             .expect("instantiate vehicle bumps benchmark world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 0);
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().0, 0);
+        assert_eq!(arena.counts().1, 1);
 
         for _ in 0..300 {
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
@@ -261,12 +261,12 @@ mod tests {
             spawn_areas: vec![area],
         };
 
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         world.instantiate(&mut arena).expect("instantiate");
         arena.set_spawn_areas(world.spawn_areas.clone());
 
         assert_eq!(
-            arena.spawn_areas.len(),
+            arena.spawn_areas().len(),
             1,
             "spawn area should be registered on arena"
         );
@@ -285,10 +285,10 @@ mod tests {
     #[test]
     fn default_world_spawn_areas_are_loaded_and_player_lands_within_one() {
         // trail.world.json defines authored spawn areas; players must spawn inside one.
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
         assert!(
-            !arena.spawn_areas.is_empty(),
+            !arena.spawn_areas().is_empty(),
             "default world should load spawn areas from trail.world.json"
         );
         let spawn = arena.spawn_player(42);
@@ -297,7 +297,7 @@ mod tests {
             "spawn should land above ground, got y={:.2}",
             spawn.y
         );
-        let inside_any_area = arena.spawn_areas.iter().any(|area| {
+        let inside_any_area = arena.spawn_areas().iter().any(|area| {
             let dx = spawn.x as f32 - area.position[0];
             let dz = spawn.z as f32 - area.position[2];
             dx * dx + dz * dz <= area.radius * area.radius
@@ -307,7 +307,7 @@ mod tests {
             "player spawn ({:.1}, {:.1}) not inside any of the {} spawn areas",
             spawn.x,
             spawn.z,
-            arena.spawn_areas.len(),
+            arena.spawn_areas().len(),
         );
     }
 }

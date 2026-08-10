@@ -41,6 +41,15 @@ pub const PKT_BATTERY_SYNC: u8 = 116;
 pub const PKT_SHOT_FIRED: u8 = 117;
 pub const PKT_DAMAGE_EVENT: u8 = 118;
 
+// ── Protocol/runtime capabilities ───────────────
+pub const PROTOCOL_VERSION: u16 = 2;
+pub const PHYSICS_BACKEND_RAPIER: u8 = 0;
+pub const PHYSICS_BACKEND_PHYSX_GPU: u8 = 1;
+pub const CLIENT_MOVEMENT_FULL_PREDICTION: u8 = 0;
+pub const CLIENT_MOVEMENT_THIN_AUTHORITATIVE: u8 = 1;
+pub const CLIENT_MOVEMENT_CAP_FULL_PREDICTION: u8 = 1 << 0;
+pub const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE: u8 = 1 << 1;
+
 // ── Weapon types ────────────────────────────────
 pub const WEAPON_HITSCAN: u8 = 1;
 pub const WEAPON_ROCKET: u8 = 2;
@@ -57,6 +66,9 @@ pub const BLOCK_REMOVE: u8 = 2;
 // ── Shape types ─────────────────────────────────
 pub const SHAPE_BOX: u8 = 0;
 pub const SHAPE_SPHERE: u8 = 1;
+
+// ── Vehicle interaction ─────────────────────────
+pub const VEHICLE_INTERACT_RADIUS_M: f32 = 4.0;
 
 // ── Area-of-interest (AOI) radii ────────────────
 // The server uses these to decide which players, dynamic bodies, and vehicles

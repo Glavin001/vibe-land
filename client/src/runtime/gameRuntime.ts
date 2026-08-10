@@ -31,11 +31,21 @@ import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionManager';
 import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
-import type { RenderBlock } from '../world/voxelWorld';
+import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
+import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
+import { fetchSessionConfig } from '../net/webTransportClient';
+import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
+import {
+  shouldCreateGameplayWasmWorld,
+  usesThinAuthoritativeRuntime,
+} from './movementRuntimeStrategy';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
+const THIN_PRESENTATION_PREDICTION_ENABLED =
+  import.meta.env.VITE_THIN_PRESENTATION_PREDICTION !== '0';
 
 export type RuntimeDebugStats = {
   pendingInputs: number;
@@ -977,6 +987,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   private pendingWorldPackets: ServerWorldPacket[] = [];
   private lastPredictedDynamicShot: { bodyId: number; atMs: number } | null = null;
   private readonly knownVehicleIds = new Set<number>();
+  private readonly authoritativeInputBundler = new FixedInputBundler(
+    FIXED_DT,
+    CLIENT_MAX_CATCHUP_STEPS,
+  );
+  private readonly thinPredictor = new ThinAuthoritativePredictor();
+  private thinAuthoritative = false;
+  private thinPosition: [number, number, number] | null = null;
+  private thinVoxelWorld: ClientVoxelWorld | null = null;
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -1053,25 +1071,39 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
-    await initSharedPhysics();
+    const sessionConfig = await fetchSessionConfig(
+      this.matchId,
+      this.backend.sessionConfigEndpoint,
+    );
+    this.thinAuthoritative = usesThinAuthoritativeRuntime(sessionConfig);
 
-    const sim = new WasmSimWorld();
-    if (this.worldJson) {
-      sim.loadWorldDocument(this.worldJson);
-    } else {
-      sim.seedDemoTerrain();
+    let sim: WasmSimWorldInstance | null = null;
+    if (shouldCreateGameplayWasmWorld(sessionConfig)) {
+      await initSharedPhysics();
+      sim = new WasmSimWorld();
+      if (this.worldJson) {
+        sim.loadWorldDocument(this.worldJson);
+      } else {
+        sim.seedDemoTerrain();
+      }
+      sim.spawnPlayer(0, 2, 0);
+      sim.rebuildBroadPhase();
+      this.sim = sim;
     }
-    sim.spawnPlayer(0, 2, 0);
-    sim.rebuildBroadPhase();
-    this.sim = sim;
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
 
     try {
-      this.prediction = new PredictionManager(sim);
-      this.prediction.enableTerrainWorld();
-      this.vehiclePrediction = new VehiclePredictionManager(sim);
-      this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
-      this.setRenderBlocks(this.prediction.getRenderBlocks());
+      if (sim) {
+        this.prediction = new PredictionManager(sim);
+        this.prediction.enableTerrainWorld();
+        this.vehiclePrediction = new VehiclePredictionManager(sim);
+        this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
+        this.setRenderBlocks(this.prediction.getRenderBlocks());
+      } else {
+        this.authoritativeInputBundler.reset();
+        this.thinPredictor.reset();
+        this.thinVoxelWorld = new ClientVoxelWorld(null, false);
+      }
 
       const client = new NetcodeClient({
         onWelcome: (playerId) => {
@@ -1156,6 +1188,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.cosmeticWorld = null;
     this.sim = null;
     this.knownVehicleIds.clear();
+    this.thinAuthoritative = false;
+    this.thinPosition = null;
+    this.thinPredictor.reset();
+    this.authoritativeInputBundler.reset();
+    this.thinVoxelWorld = null;
   }
 
   resetInputState(): void {
@@ -1163,6 +1200,35 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
+    if (this.thinAuthoritative) {
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec, input);
+      if (cmds.length > 0) {
+        this.sendInputs(cmds);
+      }
+      const client = this.client;
+      if (client && client.playerId !== 0) {
+        const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+        const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+        if (sample) {
+          if (THIN_PRESENTATION_PREDICTION_ENABLED) {
+            this.thinPredictor.observeAuthoritative(
+              {
+                position: sample.position,
+                velocity: sample.velocity,
+                grounded: (sample.flags & FLAG_ON_GROUND) !== 0,
+                supportVelocity: client.localSupport?.velocity,
+              },
+              frameDeltaSec,
+            );
+            this.thinPosition = this.thinPredictor.update(sample.position, frameDeltaSec, input);
+          } else {
+            this.thinPosition = sample.position;
+          }
+          this.setLocalPosition(this.thinPosition);
+        }
+      }
+      return;
+    }
     if (this.isInVehicle()) {
       this.updateVehicle(frameDeltaSec, input, (cmds) => this.sendInputs(cmds));
       return;
@@ -1171,7 +1237,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   peekNextInputSeq(): number {
-    return this.prediction?.getNextSeq() ?? 0;
+    return this.thinAuthoritative
+      ? this.authoritativeInputBundler.peekNextSeq()
+      : (this.prediction?.getNextSeq() ?? 0);
   }
 
   supportsBlockEditing(): boolean {
@@ -1315,6 +1383,17 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyWorldPacket(packet: ServerWorldPacket): void {
+    if (this.thinAuthoritative) {
+      const world = this.thinVoxelWorld;
+      if (!world) return;
+      if (packet.type === 'chunkFull') {
+        world.applyFullChunk(packet);
+      } else {
+        world.applyChunkDiff(packet);
+      }
+      this.setRenderBlocks(world.getRenderBlocks());
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       this.pendingWorldPackets.push(packet);
@@ -1344,6 +1423,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getPosition(): [number, number, number] | null {
+    if (this.thinAuthoritative) {
+      return this.thinPosition ?? this.state.localPosition;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       return null;
@@ -1438,6 +1520,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   buildBlockEdit(cell: [number, number, number], op: number, material: number): BlockEditCmd | null {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.buildEditRequest(cell[0], cell[1], cell[2], op, material) ?? null;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return null;
@@ -1446,6 +1531,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyOptimisticEdit(cmd: BlockEditCmd): void {
+    if (this.thinAuthoritative) {
+      this.thinVoxelWorld?.applyOptimisticEdit(cmd);
+      if (this.thinVoxelWorld) {
+        this.setRenderBlocks(this.thinVoxelWorld.getRenderBlocks());
+      }
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return;
@@ -1455,6 +1547,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getBlockMaterial(cell: [number, number, number]): number {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.getMaterial(cell[0], cell[1], cell[2]) ?? 0;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return 0;
@@ -1467,11 +1562,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   advanceDynamicBodies(frameDeltaSec: number, allowProxyStep: boolean): void {
-    this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    if (!this.thinAuthoritative) {
+      this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    }
     this.cosmeticWorld?.advance(frameDeltaSec);
   }
 
   getDynamicBodyRenderState(id: number): DynamicBodyStateMeters | null {
+    if (this.thinAuthoritative) {
+      const renderTimeUs = this.client?.getDynamicBodyRenderTimeUs();
+      const sample = this.client?.sampleRemoteDynamicBody(id, renderTimeUs);
+      const authoritative = this.dynamicBodies.get(id);
+      if (!authoritative) return null;
+      return sample
+        ? {
+            ...authoritative,
+            position: sample.position,
+            quaternion: sample.quaternion,
+            velocity: sample.velocity,
+            angularVelocity: sample.angularVelocity,
+          }
+        : authoritative;
+    }
     return this.dynamicBodiesPrediction?.getRenderedBodyState(id) ?? null;
   }
 
@@ -1634,7 +1746,21 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   getDebugStats(): RuntimeDebugStats {
     const prediction = this.prediction;
     if (!prediction) {
-      return defaultDebugStats();
+      const stats = defaultDebugStats();
+      if (this.thinAuthoritative) {
+        stats.playerCorrectionMagnitude = THIN_PRESENTATION_PREDICTION_ENABLED
+          ? this.thinPredictor.correctionMagnitude()
+          : 0;
+        const client = this.client;
+        if (client && client.playerId !== 0) {
+          const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+          const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+          if (sample) {
+            stats.velocity = sample.velocity;
+          }
+        }
+      }
+      return stats;
     }
     const offset = prediction.getCorrectionOffset();
     const playerPosition = prediction.getPosition();
@@ -1811,10 +1937,22 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    if (this.thinAuthoritative) {
+      const vehicleId = this.client?.getLocalDrivenVehicleId();
+      if (vehicleId == null) return null;
+      const renderTimeUs = this.serverClock.renderTimeUs(this.interpolationDelayMs * 1000);
+      const sample = this.client?.sampleRemoteVehicle(vehicleId, renderTimeUs);
+      return sample
+        ? { position: sample.position, quaternion: sample.quaternion }
+        : null;
+    }
     return this.vehiclePrediction?.getInterpolatedChassisPose() ?? null;
   }
 
   getDrivenVehicleId(): number | null {
+    if (this.thinAuthoritative) {
+      return this.client?.getLocalDrivenVehicleId() ?? null;
+    }
     return this.vehiclePrediction?.getVehicleId() ?? null;
   }
 
@@ -1823,6 +1961,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   isInVehicle(): boolean {
+    if (this.thinAuthoritative) {
+      return (this.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
+    }
     return this.vehiclePrediction?.isActive() ?? false;
   }
 

@@ -261,13 +261,17 @@ make moq-e2e                           # relay + publisher + headless Chromium
 - It pins `moq-transport` / `moq-native-ietf` to a `cloudflare/moq-rs` commit, so
   the first build fetches from GitHub. The draft is still moving; re-test when
   bumping the pin.
-- Relay tokens live in the URL path. `MOQ_RELAY_URL` carries the publish token;
-  only the **subscribe-only** token may go in a `VITE_` variable, since those are
-  compiled into the browser bundle.
+- Relay tokens live in the URL path. The production design keeps publisher and
+  browser credentials separate, and only a **subscribe-only** token may go in a
+  `VITE_` variable because those are compiled into the browser bundle. The
+  temporary `cf-relay.sh hosted-demo` workaround is the explicit exception: it
+  gives both local processes one short-lived publish+subscribe token to work
+  around Cloudflare's hosted cross-token scope bug, then revokes it on exit.
 - `moq/scripts/cf-relay.sh` wraps the Cloudflare relay API (needs `CF_ACCOUNT_ID`
   and `CF_API_TOKEN`). Token secrets are returned by the API only at mint time
   and cannot be read back, so `publish` mints an ephemeral token and revokes it
-  on exit, and `env <uid>` mints a fresh subscribe-only token for the build.
+  on exit, `env <uid>` mints a fresh subscribe-only token for the build, and
+  `hosted-demo <uid>` runs publisher + Vite with the shared workaround token.
 - The e2e check needs `moq-relay-ietf` built from `github.com/cloudflare/moq-rs`;
   point `MOQ_RELAY_BIN` at the binary. It binds IPv4 explicitly because sandboxes
   without an IPv6 stack fail on moq-rs's `[::]` default.

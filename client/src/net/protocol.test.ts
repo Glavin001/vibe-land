@@ -444,6 +444,35 @@ describe('snapshot V2 decode', () => {
     expect(packet.vehicleStates[0].handle).toBe(3);
     expect(packet.vehicleStates[0].driverHandle).toBe(2);
   });
+
+  it('decodes authoritative moving-support metadata', () => {
+    const legacy = buildSnapshotV2Binary();
+    const selfStateEnd = 35;
+    const binary = new Uint8Array(legacy.length + 21);
+    binary.set(legacy.subarray(0, selfStateEnd), 0);
+    binary.set(legacy.subarray(selfStateEnd), selfStateEnd + 21);
+    const view = new DataView(binary.buffer);
+    let o = selfStateEnd;
+    view.setUint16(o, 0x8003, true); o += 2;
+    view.setInt16(o, 400, true); o += 2;
+    view.setInt16(o, -200, true); o += 2;
+    view.setInt16(o, 100, true); o += 2;
+    view.setInt16(o, 150, true); o += 2;
+    view.setInt16(o, 0, true); o += 2;
+    view.setInt16(o, -50, true); o += 2;
+    view.setUint8(o++, 1);
+    view.setInt16(o, 250, true); o += 2;
+    view.setInt16(o, -500, true); o += 2;
+    view.setInt16(o, 750, true); o += 2;
+
+    const packet = decodeServerDatagramPacket(binary);
+    expect(packet.type).toBe('snapshotV2');
+    expect(packet.selfState.supportHandle).toBe(0x8003);
+    expect(packet.selfState.supportLocalPosition).toEqual([1, -0.5, 0.25]);
+    expect(packet.selfState.supportVelocity).toEqual([1.5, 0, -0.5]);
+    expect(packet.selfState.supportAngularVelocity).toEqual([0.25, -0.5, 0.75]);
+    expect(packet.selfState.supportFlags).toBe(1);
+  });
 });
 
 function buildPlayerRosterBinary(): Uint8Array {

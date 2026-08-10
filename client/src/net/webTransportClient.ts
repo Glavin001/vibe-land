@@ -59,6 +59,9 @@ export type SessionConfigResponse = {
   sim_hz: number;
   snapshot_hz: number;
   interpolation_delay_ms: number;
+  protocol_version: number;
+  physics_backend: number;
+  client_movement_mode: number;
 };
 
 export type WebTransportGameClientOptions = {
@@ -329,7 +332,7 @@ export class WebTransportGameClient {
   }
 }
 
-async function fetchSessionConfig(matchId: string, endpoint = '/session-config'): Promise<SessionConfigResponse> {
+export async function fetchSessionConfig(matchId: string, endpoint = '/session-config'): Promise<SessionConfigResponse> {
   const url = new URL(endpoint, window.location.href);
   url.searchParams.set('match_id', matchId);
   console.info('[webtransport] GET', url.toString());

@@ -24,7 +24,8 @@ if (fs.existsSync(envPath)) {
 
 const CLIENT_PORT = Number(process.env.CLIENT_PORT) || 5555;
 const SERVER_PORT = Number(process.env.SERVER_PORT) || 4001;
-const BASE_URL = `http://localhost:${CLIENT_PORT}`;
+const BASE_URL = `http://127.0.0.1:${CLIENT_PORT}`;
+const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 // Allow skipping webServer when servers are already running externally
 const SKIP_WEB_SERVER = process.env.E2E_SKIP_WEB_SERVER === '1';
@@ -47,12 +48,18 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: 'on-first-retry',
     video: 'on-first-retry',
+    ignoreHTTPSErrors: true,
     // Use Chromium (Playwright's bundled Chrome) for WebTransport compat
     browserName: 'chromium',
     launchOptions: {
+      ...(CHROMIUM_EXECUTABLE_PATH
+        ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+        : {}),
       args: [
         '--enable-quic',
         '--no-sandbox',
+        '--ignore-certificate-errors',
+        '--allow-insecure-localhost',
         // Use GPU when available for full-speed WebGL rendering.
         // CI environments without a GPU will fall back to swiftshader automatically.
         '--use-gl=angle',
@@ -64,6 +71,19 @@ export default defineConfig({
       name: 'e2e',
       use: {
         browserName: 'chromium',
+        ignoreHTTPSErrors: true,
+        launchOptions: {
+          ...(CHROMIUM_EXECUTABLE_PATH
+            ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
+            : {}),
+          args: [
+            '--enable-quic',
+            '--no-sandbox',
+            '--ignore-certificate-errors',
+            '--allow-insecure-localhost',
+            '--use-gl=angle',
+          ],
+        },
       },
     },
   ],
