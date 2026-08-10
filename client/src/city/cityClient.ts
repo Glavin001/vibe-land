@@ -51,7 +51,16 @@ interface BodyStreamState {
   track: PresentationTrack;
   lastTick: number;
   settledHint: boolean;
+  /** Last pose handed to the renderer, for skipping motionless bodies. */
+  lastPresented?: { position: Vec3; rotation: Quat };
 }
+
+/**
+ * Motion below this is not worth re-composing a matrix for. Well under the
+ * codec's own ~5 mm quantisation step, so a body that is genuinely moving is
+ * never mistaken for a still one.
+ */
+const PRESENTATION_EPSILON_M = 1e-4;
 
 export class CityClient {
   readonly topology: CityTopology;
@@ -226,6 +235,22 @@ export class CityClient {
    * presented pose into the ledger. Returns the set of body keys with live
    * presentation (the render layer recomposes those chunks each frame).
    */
+  /**
+   * Returns the bodies that actually moved this frame.
+   *
+   * Every body is sampled, but a body whose presented pose has not changed is
+   * left out of the returned set, so the render layer writes it once more and
+   * then stops touching it. Previously every body ever created was reported
+   * live every frame: the renderer's dirty set only drops a body when it is
+   * absent from this set, so nothing was ever dropped and each frame
+   * re-composed the matrix and colour of every chunk of every island in the
+   * match. Frame time grew with cumulative destruction and never recovered
+   * (measured: 16.7 ms -> 333 ms after four towers, still 333 ms once
+   * everything had settled).
+   *
+   * Tracks are normally closed by SETTLE events, but a body the server never
+   * settles must not cost anything per frame either.
+   */
   samplePresentation(nowMs: number): Set<number> {
     const live = new Set<number>();
     if (this.latestSimTickAtMs === 0) {
@@ -235,6 +260,28 @@ export class CityClient {
     const renderTick = this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * 60;
     for (const [key, state] of this.bodies) {
       const presented = state.track.sample(renderTick);
+      const previous = state.lastPresented;
+      if (
+        previous
+        && Math.abs(previous.position[0] - presented.position[0]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.position[1] - presented.position[1]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.position[2] - presented.position[2]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.rotation[0] - presented.rotation[0]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.rotation[1] - presented.rotation[1]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.rotation[2] - presented.rotation[2]) < PRESENTATION_EPSILON_M
+        && Math.abs(previous.rotation[3] - presented.rotation[3]) < PRESENTATION_EPSILON_M
+      ) {
+        continue;
+      }
+      state.lastPresented = {
+        position: [presented.position[0], presented.position[1], presented.position[2]],
+        rotation: [
+          presented.rotation[0],
+          presented.rotation[1],
+          presented.rotation[2],
+          presented.rotation[3],
+        ],
+      };
       this.topology.updateBodyPose(key, presented.position, presented.rotation);
       live.add(key);
     }
