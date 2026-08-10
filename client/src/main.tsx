@@ -49,7 +49,7 @@ switch (route.kind) {
     root.render(<LoadTestPage />);
     break;
   case 'game':
-    root.render(<App mode={route.mode} />);
+    root.render(<App mode={route.mode} matchFallback={route.matchFallback} />);
     break;
   case 'sharedPractice':
     root.render(<SharedPracticePage id={route.id} />);

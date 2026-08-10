@@ -94,6 +94,21 @@ export interface GameE2ESnapshot {
     playerCorrectionMagnitude: number;
     playerCorrectionPeak5sM: number;
   };
+
+  // Destructible city (null outside city-* matches)
+  city: CityE2EStats | null;
+}
+
+export interface CityE2EStats {
+  chunksTotal: number;
+  chunksAwake: number;
+  chunksSettled: number;
+  brokenBonds: number;
+  liveIslands: number;
+  topoSeqGaps: number;
+  datagramsReceived: number;
+  bytesPerSecond: number;
+  manifestHash: string;
 }
 
 export interface VibeE2EBridge {
@@ -127,7 +142,13 @@ const refs = {
   nearestVehicleId: null as number | null,
   remotePlayers: [] as Array<{ id: number; position: [number, number, number] }>,
   statsSnapshot: { ...DEFAULT_STATS } as DebugStats,
+  city: null as CityE2EStats | null,
 };
+
+/** Update destructible-city stats. Called by CityChunksLayer (throttled). */
+export function updateCityE2E(stats: CityE2EStats | null): void {
+  refs.city = stats;
+}
 
 /** Update bridge refs. Called by App component on state changes. */
 export function updateE2EBridgeAppState(state: {
@@ -231,6 +252,7 @@ function buildSnapshot(): GameE2ESnapshot {
       playerCorrectionMagnitude: s.playerCorrectionMagnitude,
       playerCorrectionPeak5sM: s.playerCorrectionPeak5sM,
     },
+    city: refs.city ? { ...refs.city } : null,
   };
 }
 

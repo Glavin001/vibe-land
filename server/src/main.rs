@@ -1,4 +1,5 @@
 mod app_config;
+mod city;
 mod demo_world;
 mod lag_comp;
 mod movement;
@@ -59,9 +60,10 @@ use crate::{
         make_net_shot_fired, meters_to_mm, mm_to_meters, BatterySyncPacket, ClientPacket,
         DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
         ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY,
-        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_LOCAL_PLAYER_ENERGY, PKT_PING,
-        PKT_SNAPSHOT, PKT_SNAPSHOT_V2, SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC,
-        SHOT_RESOLUTION_MISS, SHOT_RESOLUTION_PLAYER,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS,
+        PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
+        SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
+        SHOT_RESOLUTION_PLAYER,
     },
     voxel_world::VoxelWorld,
 };
@@ -605,6 +607,9 @@ struct SessionConfig {
     protocol_version: u16,
     physics_backend: u8,
     client_movement_mode: u8,
+    city_world: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    city_manifest_hash: Option<String>,
 }
 
 struct PlayerConnection {
@@ -716,6 +721,7 @@ struct MatchState {
     player_handles: HashMap<u32, u8>,
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
+    city: Option<city::CityRuntime>,
 }
 
 #[tokio::main]
@@ -862,6 +868,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
+        .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -907,6 +914,12 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    let city_world = city::is_city_match(&query.match_id);
+    let city_manifest_hash = if city_world {
+        city::manifest_asset().map(|(hash, _, _)| hash.clone())
+    } else {
+        None
+    };
     let config = SessionConfig {
         url: format!("{}/game", state.inner.wt_base_url),
         server_certificate_hash_hex: state.inner.cert_hash_hex.clone(),
@@ -917,8 +930,32 @@ async fn session_config_handler(
         protocol_version: vibe_land_shared::constants::PROTOCOL_VERSION,
         physics_backend: state.inner.physics.backend.wire_id(),
         client_movement_mode: state.inner.physics.client_movement_mode(),
+        city_world: city_world && city_manifest_hash.is_some(),
+        city_manifest_hash,
     };
     axum::Json(config)
+}
+
+/// Content-addressed city manifest: gzip-encoded canonical JSON, immutable.
+async fn city_manifest_handler(
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+    match city::manifest_asset() {
+        Some((expected_hash, _, gzipped)) if *expected_hash == hash => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/json"),
+                (header::CONTENT_ENCODING, "gzip"),
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            gzipped.clone(),
+        )
+            .into_response(),
+        Some(_) => (StatusCode::NOT_FOUND, "unknown manifest hash").into_response(),
+        None => (StatusCode::NOT_FOUND, "city manifest unavailable").into_response(),
+    }
 }
 
 async fn ws_stats_handler(
@@ -1272,6 +1309,27 @@ async fn run_match_loop(
         })
         .collect();
 
+    let city = if city::is_city_match(&match_id) {
+        match city::CityRuntime::synthetic(SIM_HZ as u32) {
+            Ok(runtime) => {
+                info!(
+                    %match_id,
+                    structures = runtime.manifest.structures.len(),
+                    chunks = runtime.manifest.total_chunks(),
+                    bonds = runtime.manifest.total_bonds(),
+                    "destructible city initialized (synthetic backend)"
+                );
+                Some(runtime)
+            }
+            Err(error) => {
+                warn!(%match_id, %error, "destructible city unavailable for this match");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut state = MatchState {
         id: match_id,
         arena,
@@ -1299,6 +1357,7 @@ async fn run_match_loop(
         player_handles: HashMap::new(),
         dynamic_body_handles,
         vehicle_handles,
+        city,
     };
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / SIM_HZ as f64));
@@ -1567,6 +1626,11 @@ impl MatchState {
                 self.send_initial_metadata(&conn.tx);
                 self.queue_roster_sync();
 
+                if let Some(city) = self.city.as_mut() {
+                    city.add_client(u64::from(conn.player_id));
+                    let _ = try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                }
+
                 if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
                     for key in self.world.visible_chunks_around(pos, CHUNK_RADIUS_ON_JOIN) {
                         if let Some(full) = self.world.chunk_full_packet(key) {
@@ -1580,6 +1644,9 @@ impl MatchState {
                 }
             }
             MatchEvent::Disconnect { player_id } => {
+                if let Some(city) = self.city.as_mut() {
+                    city.remove_client(u64::from(player_id));
+                }
                 let disconnect_runtime = self.players.get(&player_id).map(|runtime| {
                     (
                         runtime.transport.as_str().to_string(),
@@ -1771,6 +1838,18 @@ impl MatchState {
                         runtime.client_correction_m = correction_m;
                         runtime.client_physics_ms = physics_ms;
                         runtime.client_debug_seen = true;
+                    }
+                    ClientPacket::CityResyncRequest { last_topo_seq } => {
+                        if let Some(city) = self.city.as_mut() {
+                            info!(
+                                match_id = %self.id,
+                                player_id,
+                                last_topo_seq,
+                                "city topology resync requested; sending bootstrap"
+                            );
+                            let bootstrap = city.bootstrap(self.server_tick);
+                            let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                        }
                     }
                 }
             }
@@ -2026,6 +2105,8 @@ impl MatchState {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::EnergyDepletion);
         }
 
+        self.route_city_shots();
+
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
         self.timings
@@ -2034,6 +2115,8 @@ impl MatchState {
         self.process_melee(server_time_ms);
 
         self.sync_reliable_world_state();
+
+        self.tick_city(dt);
 
         if self.server_tick % (SIM_HZ as u32 / self.physics.snapshot_hz() as u32) == 0 {
             self.broadcast_snapshot();
@@ -2046,11 +2129,132 @@ impl MatchState {
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
             self.send_server_latency_pings();
             self.publish_stats();
+            self.log_city_telemetry();
         }
 
         self.timings
             .total_ms
             .record(tick_started.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// Route queued hitscan shots into city destruction before
+    /// `process_hitscan` drains them (players/vehicles still take the same
+    /// hitscan resolution afterwards).
+    fn route_city_shots(&mut self) {
+        let Some(city) = self.city.as_mut() else {
+            return;
+        };
+        for queued in &self.queued_shots {
+            let Some(state) = self.arena.player_state(queued.player_id) else {
+                continue;
+            };
+            if state.dead {
+                continue;
+            }
+            let origin = glam::Vec3::new(
+                state.position.x as f32,
+                state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                state.position.z as f32,
+            );
+            let direction = glam::Vec3::from_array(queued.cmd.dir);
+            city.apply_shot_ray(origin, direction);
+        }
+    }
+
+    /// Camera used for per-client interest: player eye + aim direction, using
+    /// the same yaw/pitch convention as the client's aimDirectionFromAngles.
+    fn city_camera_for_player(&self, player_id: u32) -> Option<vibe_land_destruction::types::Camera> {
+        let state = self.arena.player_state(player_id)?;
+        let yaw = state.last_input.yaw;
+        let pitch = state.last_input.pitch;
+        let cos_pitch = pitch.cos();
+        Some(vibe_land_destruction::types::Camera {
+            eye: glam::Vec3::new(
+                state.position.x as f32,
+                state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                state.position.z as f32,
+            ),
+            direction: glam::Vec3::new(
+                yaw.sin() * cos_pitch,
+                pitch.sin(),
+                yaw.cos() * cos_pitch,
+            ),
+            fov_degrees: 80.0,
+        })
+    }
+
+    fn tick_city(&mut self, dt: f32) {
+        let Some(send_interval) = self.city.as_ref().map(|city| city.send_interval_ticks())
+        else {
+            return;
+        };
+        let send_due = self.server_tick % send_interval == 0 && !self.players.is_empty();
+        // Cameras are precomputed so the arena borrow ends before the city
+        // runtime is borrowed mutably.
+        let cameras: Vec<(u32, vibe_land_destruction::types::Camera)> = if send_due {
+            self.players
+                .keys()
+                .filter_map(|&id| self.city_camera_for_player(id).map(|camera| (id, camera)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let city = self.city.as_mut().expect("checked above");
+        // 60 Hz: destruction step + reliable topology/baseline broadcast
+        // (byte-identical for every client — encode once, clone the buffer).
+        let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0]);
+        for packet in &reliable {
+            for runtime in self.players.values() {
+                let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+            }
+        }
+        // Chunk stream cadence: shared encode once, per-client interest +
+        // ceiling selection, own datagram sequence space per client.
+        if send_due {
+            let shared = city.encode_shared(self.server_tick);
+            if !shared.records.is_empty() {
+                for (player_id, camera) in cameras {
+                    let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
+                    if let Some(runtime) = self.players.get(&player_id) {
+                        for packet in packets {
+                            let _ = try_queue_packet(&runtime.tx, packet, &self.io);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 1 Hz destructible-city telemetry: stream volume, encode cost, and the
+    /// live/awake body split. Silent on non-city matches.
+    fn log_city_telemetry(&mut self) {
+        let players = self.players.len();
+        let Some(city) = self.city.as_mut() else {
+            return;
+        };
+        let (records, bytes, packets) = city.take_stream_counters();
+        let stats = city.stats();
+        let encoder = city.encoder_stats();
+        if bytes == 0 && stats.chunk_bodies == 0 {
+            return;
+        }
+        info!(
+            match_id = %self.id,
+            players,
+            chunk_bodies = stats.chunk_bodies,
+            awake_bodies = stats.awake_chunk_bodies,
+            encoder_awake = encoder.awake_bodies,
+            broken_bonds = stats.broken_bonds,
+            packets_per_sec = packets,
+            records_per_sec = records,
+            kbytes_per_sec = bytes / 1024,
+            mbps = (bytes as f32 * 8.0 / 1_000_000.0),
+            encode_ms = city.last_encode_ms,
+            topo_seq = encoder.topo_seq,
+            baseline_id = encoder.baseline_id,
+            "city stream"
+        );
     }
 
     fn send_server_latency_pings(&mut self) {
@@ -3838,7 +4042,7 @@ fn is_snapshot_packet_kind(kind: u8) -> bool {
 }
 
 fn wants_unreliable_delivery(kind: u8) -> bool {
-    is_snapshot_packet_kind(kind) || kind == PKT_PING
+    is_snapshot_packet_kind(kind) || kind == PKT_PING || kind == PKT_CITY_CHUNKS
 }
 
 fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {
@@ -3872,7 +4076,11 @@ fn try_queue_packet(
     telemetry: &MatchIoTelemetry,
 ) -> bool {
     let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
-    let is_droppable = is_snapshot || packet.first().copied().is_some_and(|kind| kind == PKT_PING);
+    let is_droppable = is_snapshot
+        || packet
+            .first()
+            .copied()
+            .is_some_and(|kind| kind == PKT_PING || kind == PKT_CITY_CHUNKS);
     match tx.try_send(packet) {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {

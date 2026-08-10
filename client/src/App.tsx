@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { isTouchDevice } from './device';
-import { buildMatchHref, resolveRequestedMatchId } from './app/matchId';
+import { buildMatchHref, defaultMatchIdForPath, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
   DEFAULT_INPUT_BINDINGS,
@@ -71,6 +71,8 @@ type AppProps = {
   sessionKey?: number;
   hideTopNav?: boolean;
   hideStatusBanner?: boolean;
+  /** Default match id when none is in the query (e.g. 'city-default' for /city). */
+  matchFallback?: string;
 };
 
 type BenchmarkConfig = {
@@ -139,10 +141,14 @@ export function App({
   sessionKey = 0,
   hideTopNav = false,
   hideStatusBanner = false,
+  matchFallback,
 }: AppProps) {
   const practiceMode = isPracticeMode(mode);
   const modeLabel = gameModeLabel(mode);
-  const multiplayerMatchId = resolveRequestedMatchId(window.location.search);
+  const multiplayerMatchId = resolveRequestedMatchId(
+    window.location.search,
+    matchFallback ?? defaultMatchIdForPath(window.location.pathname),
+  );
   const benchmarkConfig = useMemo<BenchmarkConfig | null>(() => {
     if (practiceMode) {
       return null;

@@ -38,6 +38,9 @@ export default defineConfig(({ mode }) => {
         '/session-config': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        '/city-manifest': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
       },
     },
     optimizeDeps: {

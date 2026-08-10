@@ -25,6 +25,9 @@ pub enum ClientPacket {
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
     DebugStats { correction_m: f32, physics_ms: f32 },
+    /// City topology stream gap detected client-side; server replies with a
+    /// fresh PKT_CITY_BOOTSTRAP.
+    CityResyncRequest { last_topo_seq: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +58,7 @@ pub enum ClientDatagram {
     VehicleExit(VehicleExitCmd),
     Ping(u32),
     DebugStats { correction_m: f32, physics_ms: f32 },
+    CityResyncRequest { last_topo_seq: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -330,6 +334,12 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 physics_ms,
             }
         }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync datagram");
+            ClientDatagram::CityResyncRequest {
+                last_topo_seq: buf.get_u32_le(),
+            }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
 }
@@ -351,6 +361,9 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             correction_m,
             physics_ms,
         },
+        ClientDatagram::CityResyncRequest { last_topo_seq } => {
+            ClientPacket::CityResyncRequest { last_topo_seq }
+        }
     }
 }
 
@@ -728,6 +741,12 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             ClientPacket::DebugStats {
                 correction_m,
                 physics_ms,
+            }
+        }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync packet");
+            ClientPacket::CityResyncRequest {
+                last_topo_seq: buf.get_u32_le(),
             }
         }
         other => bail!("unknown client packet kind {other}"),

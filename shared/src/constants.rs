@@ -41,8 +41,20 @@ pub const PKT_BATTERY_SYNC: u8 = 116;
 pub const PKT_SHOT_FIRED: u8 = 117;
 pub const PKT_DAMAGE_EVENT: u8 = 118;
 
+// ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
+pub const PKT_CITY_RESYNC_REQUEST: u8 = 9;
+pub const PKT_CITY_CHUNKS: u8 = 119;
+pub const PKT_CITY_TOPOLOGY: u8 = 120;
+pub const PKT_CITY_BASELINE: u8 = 121;
+pub const PKT_CITY_BOOTSTRAP: u8 = 122;
+// Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
+pub const CITY_CHUNK_STREAM_HZ: u16 = 30;
+pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;
+// Per-client byte ceiling per 30 Hz send (~2.5 Mbps); a cap, never a fill target.
+pub const CITY_CLIENT_CEILING_BYTES_PER_SEND: u16 = 10400;
+
 // ── Protocol/runtime capabilities ───────────────
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const PHYSICS_BACKEND_RAPIER: u8 = 0;
 pub const PHYSICS_BACKEND_PHYSX_GPU: u8 = 1;
 pub const CLIENT_MOVEMENT_FULL_PREDICTION: u8 = 0;

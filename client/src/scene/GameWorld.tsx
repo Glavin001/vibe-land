@@ -110,6 +110,7 @@ import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets';
 import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
+import { CityChunksLayer } from './CityChunksLayer';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -3172,6 +3173,9 @@ export function GameWorld({
 
       {/* Dynamic body group */}
       <group ref={dynamicBodyGroupRef} />
+
+      {/* Destructible city chunks (instanced; only active in city-* matches) */}
+      <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
       {/* Battery group */}
       <group ref={batteryGroupRef} />

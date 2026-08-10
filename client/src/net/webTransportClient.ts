@@ -21,6 +21,7 @@ import {
   type ServerReliablePacket,
   type WelcomePacket,
 } from './protocol';
+import { isCityPacketKind } from '../city/wire';
 
 type WebTransportHash = {
   algorithm: string;
@@ -62,6 +63,8 @@ export type SessionConfigResponse = {
   protocol_version: number;
   physics_backend: number;
   client_movement_mode: number;
+  city_world?: boolean;
+  city_manifest_hash?: string;
 };
 
 export type WebTransportGameClientOptions = {
@@ -69,6 +72,8 @@ export type WebTransportGameClientOptions = {
   sessionConfigEndpoint?: string;
   onReliablePacket?: (packet: ServerReliablePacket) => void;
   onDatagramPacket?: (packet: ServerDatagramPacket, receivedLocalUs: number) => void;
+  /** Raw city destruction packets (kinds 119-122), reliable or datagram. */
+  onCityPacket?: (bytes: Uint8Array) => void;
   onWelcome?: (packet: WelcomePacket) => void;
   onClose?: (reason?: unknown) => void;
 };
@@ -159,6 +164,13 @@ export class WebTransportGameClient {
       return;
     }
     this.writeLatestInputDatagram(encodeInputBundle(frames));
+  }
+
+  sendCityResync(bytes: Uint8Array): void {
+    if (this.closed || !this.datagramWriter) {
+      return;
+    }
+    void this.datagramWriter.write(bytes).catch((error) => this.handleClosed(error));
   }
 
   sendFire(command: FireCmd): void {
@@ -265,6 +277,10 @@ export class WebTransportGameClient {
           const parsed = parseFramedReliablePackets(buffer, value);
           buffer = parsed.buffer;
           for (const packetBytes of parsed.packets) {
+            if (packetBytes.length > 0 && isCityPacketKind(packetBytes[0])) {
+              this.options.onCityPacket?.(packetBytes);
+              continue;
+            }
             const packet = decodeServerReliablePacket(packetBytes);
             if (packet.type === 'welcome') {
               console.info('[webtransport] Welcome received — playerId:', packet.playerId, {
@@ -298,6 +314,11 @@ export class WebTransportGameClient {
           if (value[0] === PKT_PING && value.length >= 5) {
             const nonce = new DataView(value.buffer, value.byteOffset, value.byteLength).getUint32(1, true);
             void this.datagramWriter?.write(encodePingPacket(nonce))?.catch(() => {});
+            continue;
+          }
+
+          if (isCityPacketKind(value[0])) {
+            this.options.onCityPacket?.(value);
             continue;
           }
 

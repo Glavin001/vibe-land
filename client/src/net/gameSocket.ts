@@ -14,12 +14,15 @@ import {
   type MeleeCmd,
   type ServerPacket,
 } from './protocol';
+import { isCityPacketKind } from '../city/wire';
 
 export type GameSocketHandlers = {
   onOpen?: () => void;
   onClose?: (event: CloseEvent) => void;
   onError?: (event: Event) => void;
   onPacket?: (packet: ServerPacket) => void;
+  /** Raw city destruction packets (kinds 119-122). */
+  onCityPacket?: (bytes: Uint8Array) => void;
   onRttUpdated?: (rttMs: number) => void;
 };
 
@@ -115,6 +118,11 @@ export class GameSocket {
   }
 
   private handleArrayBuffer(buffer: ArrayBuffer): void {
+    const bytes = new Uint8Array(buffer);
+    if (bytes.length > 0 && isCityPacketKind(bytes[0])) {
+      this.handlers.onCityPacket?.(bytes);
+      return;
+    }
     const packet = decodeServerPacket(buffer);
 
     if (packet.type === 'serverPing') {

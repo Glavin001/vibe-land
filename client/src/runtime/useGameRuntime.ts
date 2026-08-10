@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { isPracticeMode, type GameMode } from '../app/gameMode';
-import { resolveRequestedMatchId } from '../app/matchId';
+import { defaultMatchIdForPath, resolveRequestedMatchId } from '../app/matchId';
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
 import type { DamageEventPacket, ShotFiredPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
@@ -24,7 +24,14 @@ export function useGameRuntime(
 ) {
   const practiceMode = isPracticeMode(mode);
   const multiplayerBackend = useMemo(() => resolveMultiplayerBackend(), []);
-  const multiplayerMatchId = useMemo(() => resolveRequestedMatchId(window.location.search), []);
+  const multiplayerMatchId = useMemo(
+    () =>
+      resolveRequestedMatchId(
+        window.location.search,
+        defaultMatchIdForPath(window.location.pathname),
+      ),
+    [],
+  );
   const runtimeRef = useRef<GameRuntimeClient | null>(null);
   const onWelcomeRef = useRef(onWelcome);
   const onDisconnectRef = useRef(onDisconnect);

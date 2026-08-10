@@ -60,6 +60,8 @@ export type NetcodeClientConfig = {
   onDamageEvent?: (packet: DamageEventPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
+  /** Raw city destruction packets (kinds 119-122). WebTransport only. */
+  onCityPacket?: (bytes: Uint8Array) => void;
 };
 
 /**
@@ -145,6 +147,23 @@ export class NetcodeClient {
 
   private socket: GameSocket | null = null;
   private wtClient: WebTransportGameClient | null = null;
+
+  sendCityResync(bytes: Uint8Array): void {
+    if (this.wtClient) {
+      this.wtClient.sendCityResync(bytes);
+    } else {
+      this.socket?.sendRaw(bytes);
+    }
+  }
+
+  citySessionConfig(): { cityWorld: boolean; manifestHash?: string; baseUrl: string } {
+    const config = this.wtClient?.sessionConfig;
+    return {
+      cityWorld: Boolean(config?.city_world && config?.city_manifest_hash),
+      manifestHash: config?.city_manifest_hash,
+      baseUrl: '',
+    };
+  }
   private config: NetcodeClientConfig;
   private closedByClient = false;
 
@@ -173,6 +192,7 @@ export class NetcodeClient {
     this.closedByClient = false;
     this.socket = new GameSocket({
       onPacket: (packet: ServerPacket) => this.handlePacket(packet, 'websocket'),
+      onCityPacket: (bytes) => this.config.onCityPacket?.(bytes),
       onClose: (event) => {
         this.notifyDisconnect(
           `websocket closed (code=${event.code}${event.reason ? `, reason=${event.reason}` : ''})`,
@@ -202,6 +222,7 @@ export class NetcodeClient {
           sessionConfigEndpoint,
           onReliablePacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-reliable'),
           onDatagramPacket: (packet) => this.handlePacket(packet as ServerPacket, 'wt-datagram'),
+          onCityPacket: (bytes) => this.config.onCityPacket?.(bytes),
           onClose: (reason) => { this.notifyDisconnect(describeDisconnectReason('webtransport', reason)); },
         });
         this.wtClient = wt;

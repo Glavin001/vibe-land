@@ -34,9 +34,40 @@ fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {
         Some(flat_vehicle_benchmark_world())
     } else if match_id.starts_with(VEHICLE_BUMPS_TEST_MATCH_ID) {
         Some(vehicle_bumps_benchmark_world())
+    } else if match_id.starts_with(crate::city::CITY_MATCH_PREFIX) {
+        Some(city_world())
     } else {
         None
     }
+}
+
+/// Open flat terrain for the destructible city. The buildings themselves live
+/// in the destruction runtime (PhysX/Blast or synthetic), not the movement
+/// arena; spawn areas ring the 4×4 grid (half extent 27 m + tallest building
+/// footprint) so players never spawn inside a structure.
+fn city_world() -> WorldDocument {
+    let mut world = benchmark_vehicle_world(
+        "Destructible City",
+        "Flat open world hosting the destructible mini-city grid.",
+        BENCHMARK_TERRAIN_GRID_SIZE,
+        BENCHMARK_TERRAIN_HALF_EXTENT_M,
+        vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
+    );
+    world.spawn_areas = [
+        [45.0_f32, 0.0],
+        [-45.0, 0.0],
+        [0.0, 45.0],
+        [0.0, -45.0],
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, [x, z])| vibe_land_shared::world_document::SpawnArea {
+        id: index as u32 + 1,
+        position: [x, 0.5, z],
+        radius: 6.0,
+    })
+    .collect();
+    world
 }
 
 fn benchmark_vehicle_world(

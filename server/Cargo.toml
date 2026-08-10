@@ -10,6 +10,9 @@ physx-gpu = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/gpu"]
 [dependencies]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
+vibe-land-destruction = { path = "../destruction" }
+flate2 = "1"
+glam = "0.27"
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
 anyhow = "1"
 dotenvy = "0.15"

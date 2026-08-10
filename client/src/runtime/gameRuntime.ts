@@ -37,6 +37,8 @@ import { FixedInputBundler } from './fixedInputBundler';
 import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig } from '../net/webTransportClient';
+import { CityClient } from '../city/cityClient';
+import { fetchCityManifest } from '../city/manifest';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
   shouldCreateGameplayWasmWorld,
@@ -128,6 +130,8 @@ export interface GameRuntimeClient {
   connect(): Promise<void>;
   disconnect(): void;
   resetInputState(): void;
+  /** Destructible-city client, when the match is a city world (server-authoritative). */
+  getCityClient?(): CityClient | null;
   submitInput(frameDeltaSec: number, input: SemanticInputState): void;
   peekNextInputSeq(): number;
   supportsBlockEditing(): boolean;
@@ -979,6 +983,8 @@ export class LocalGameRuntime extends BaseGameRuntime {
 
 export class MultiplayerGameRuntime extends BaseGameRuntime {
   private client: NetcodeClient | null = null;
+  private cityClient: CityClient | null = null;
+  private pendingCityPackets: Uint8Array[] = [];
   private sim: WasmSimWorldInstance | null = null;
   private cosmeticWorld: CosmeticPhysicsWorld | null = null;
   private prediction: PredictionManager | null = null;
@@ -995,6 +1001,48 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   private thinAuthoritative = false;
   private thinPosition: [number, number, number] | null = null;
   private thinVoxelWorld: ClientVoxelWorld | null = null;
+
+  getCityClient(): CityClient | null {
+    return this.cityClient;
+  }
+
+  /** After connect: if the session is a city world, fetch the manifest and
+   * bring up the city client, then drain any buffered city packets. */
+  private async initCityClient(client: NetcodeClient): Promise<void> {
+    try {
+      let { cityWorld, manifestHash } = client.citySessionConfig();
+      if (!cityWorld) {
+        // WebSocket fallback has no cached WT session config — ask directly.
+        try {
+          const config = await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint);
+          cityWorld = Boolean(config.city_world && config.city_manifest_hash);
+          manifestHash = config.city_manifest_hash;
+        } catch {
+          /* not a city match or config unavailable */
+        }
+      }
+      if (!cityWorld || !manifestHash) {
+        this.pendingCityPackets = [];
+        return;
+      }
+      const manifest = await fetchCityManifest('', manifestHash);
+      console.info('[city] manifest loaded', {
+        hash: manifest.hashHex,
+        structures: manifest.manifest.structures.length,
+        chunks: manifest.totalChunks,
+        bonds: manifest.totalBonds,
+      });
+      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes));
+      this.cityClient = cityClient;
+      const pending = this.pendingCityPackets.splice(0);
+      for (const bytes of pending) {
+        cityClient.handlePacket(bytes);
+      }
+    } catch (error) {
+      console.warn('[city] disabled — manifest unavailable', error);
+      this.pendingCityPackets = [];
+    }
+  }
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -1141,6 +1189,17 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.callbacks.onSnapshot?.();
           }
         },
+        onCityPacket: (bytes) => {
+          if (this.cityClient) {
+            this.cityClient.handlePacket(bytes);
+          } else {
+            // Buffer until the manifest fetch finishes after welcome.
+            this.pendingCityPackets.push(bytes);
+            if (this.pendingCityPackets.length > 256) {
+              this.pendingCityPackets.shift();
+            }
+          }
+        },
       });
 
       this.client = client;
@@ -1159,6 +1218,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const token = 'mvp-token';
       const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
       await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
+      void this.initCityClient(client);
     } catch (error) {
       this.client?.disconnect();
       this.client = null;
