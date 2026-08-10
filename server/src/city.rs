@@ -329,6 +329,19 @@ impl CityRuntime {
         };
         // City towers have ~150–200 chunks; the synthetic default of 48
         // truncates island promotions mid-collapse.
+        // Stress-solve cost is the dominant term once a city is heavily
+        // fractured: measured 17.8 ms of a ~30 ms city step at ~6000 broken
+        // bonds. Iterations trade convergence for time, and graph reduction
+        // coarsens the solved graph. Both are overridable while tuning.
+        settings.max_solver_iterations_per_frame = std::env::var("VIBE_CITY_SOLVER_ITERATIONS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(8);
+        settings.graph_reduction_level = std::env::var("VIBE_CITY_GRAPH_REDUCTION")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
         settings.maximum_bodies = 512;
         settings.maximum_fractures_per_actor_per_tick = 32;
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)

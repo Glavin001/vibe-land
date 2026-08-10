@@ -86,6 +86,8 @@ private:
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;
   void register_filters(Slot &slot);
+  /// Single GPU->CPU readback of body and shape state for one structure.
+  void refresh_snapshots(Slot &slot) const;
   void collect_events(Slot &slot);
 
   physx::PxPhysics &physics_;

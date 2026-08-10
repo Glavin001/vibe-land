@@ -85,6 +85,17 @@ struct DestructionManager::Slot {
   std::vector<ExtStressPhysXNodeDesc> node_descs;
   std::vector<ExtStressPhysXBondDesc> bond_descs;
 
+  // One GPU->CPU readback per tick, shared by every consumer.
+  //
+  // With GPU rigid bodies, each per-actor pose read is a device readback. We
+  // were doing four body passes and two shape passes per structure per tick
+  // (collect_events, register_filters, and chunk_body_snapshots twice from
+  // Rust), which is the per-actor pattern the Direct GPU API exists to avoid.
+  std::vector<ExtStressPhysXBodySnapshot> body_cache;
+  std::vector<ExtStressPhysXShapeSnapshot> shape_cache;
+  std::uint32_t body_cache_count = 0;
+  std::uint32_t shape_cache_count = 0;
+
   // Tracking for event diffs.
   std::unordered_map<ExtStressPhysXId, std::uint16_t> body_to_serial;
   std::unordered_map<std::uint32_t, ExtStressPhysXId> node_to_body; // node -> bodyId
@@ -298,17 +309,17 @@ void DestructionManager::create_destructible(
 /// adapter applies to its own bodies.
 constexpr float kMaxChunkLinearVelocity = 12.0f;
 constexpr float kMaxChunkAngularVelocity = 10.0f;
+/// Mass-normalised kinetic energy below which a chunk body may sleep
+/// (0.5 * v^2, so ~0.32 m/s), and the stabilisation threshold that lets a
+/// resting pile stop jittering.
+constexpr float kChunkSleepThreshold = 0.05f;
+constexpr float kChunkStabilizationThreshold = 0.02f;
 
 void DestructionManager::register_filters(Slot &slot) {
   require(slot.dest != nullptr, "missing destructible");
-  std::vector<ExtStressPhysXBodySnapshot> bodies(slot.node_descs.size() + 64);
-  std::uint32_t body_count = slot.dest->getBodySnapshots(
-      bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-  if (body_count > bodies.size()) {
-    bodies.resize(body_count);
-    body_count = slot.dest->getBodySnapshots(
-        bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-  }
+  // Shared readback from refresh_snapshots(); no second device read.
+  const auto &bodies = slot.body_cache;
+  const std::uint32_t body_count = slot.body_cache_count;
 
   for (std::uint32_t i = 0; i < body_count; ++i) {
     const auto &body = bodies[i];
@@ -348,17 +359,25 @@ void DestructionManager::register_filters(Slot &slot) {
       // Clamping at the body bounds every impulse source at once.
       body.body->setMaxLinearVelocity(kMaxChunkLinearVelocity);
       body.body->setMaxAngularVelocity(kMaxChunkAngularVelocity);
+      // Let debris go to sleep.
+      //
+      // PhysX's default sleep threshold is tuned for gameplay objects that
+      // should stay responsive. Rubble is not that: a collapsed tower leaves
+      // hundreds of bodies in a pile trading micro-contacts, all of which stay
+      // above the default threshold indefinitely. Measured at ~1200 bodies,
+      // ~1000 of them never slept, and simulating, snapshotting and encoding
+      // them held the match loop at 26-30 ms against a 16.67 ms budget.
+      //
+      // The threshold is mass-normalised kinetic energy, so this sleeps
+      // anything drifting slower than roughly 0.3 m/s — well below the speed
+      // at which debris motion is still worth streaming.
+      body.body->setSleepThreshold(kChunkSleepThreshold);
+      body.body->setStabilizationThreshold(kChunkStabilizationThreshold);
     }
   }
 
-  std::vector<ExtStressPhysXShapeSnapshot> shapes(slot.node_descs.size() + 64);
-  std::uint32_t shape_count = slot.dest->getShapeSnapshots(
-      shapes.data(), static_cast<std::uint32_t>(shapes.size()));
-  if (shape_count > shapes.size()) {
-    shapes.resize(shape_count);
-    shape_count = slot.dest->getShapeSnapshots(
-        shapes.data(), static_cast<std::uint32_t>(shapes.size()));
-  }
+  const auto &shapes = slot.shape_cache;
+  const std::uint32_t shape_count = slot.shape_cache_count;
 
   for (std::uint32_t i = 0; i < shape_count; ++i) {
     const auto &shape = shapes[i];
@@ -390,14 +409,9 @@ void DestructionManager::collect_events(Slot &slot) {
   const auto previous_node_to_body = slot.node_to_body;
   const auto previous_node_to_serial = slot.node_to_serial;
 
-  std::vector<ExtStressPhysXBodySnapshot> bodies(slot.node_descs.size() + 64);
-  std::uint32_t body_count = slot.dest->getBodySnapshots(
-      bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-  if (body_count > bodies.size()) {
-    bodies.resize(body_count);
-    body_count = slot.dest->getBodySnapshots(
-        bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-  }
+  // Shared readback from refresh_snapshots(); no second device read.
+  const auto &bodies = slot.body_cache;
+  const std::uint32_t body_count = slot.body_cache_count;
 
   std::unordered_map<ExtStressPhysXId, const ExtStressPhysXBodySnapshot *>
       body_by_id;
@@ -445,14 +459,8 @@ void DestructionManager::collect_events(Slot &slot) {
     slot.body_to_serial.erase(id);
   }
 
-  std::vector<ExtStressPhysXShapeSnapshot> shapes(slot.node_descs.size() + 64);
-  std::uint32_t shape_count = slot.dest->getShapeSnapshots(
-      shapes.data(), static_cast<std::uint32_t>(shapes.size()));
-  if (shape_count > shapes.size()) {
-    shapes.resize(shape_count);
-    shape_count = slot.dest->getShapeSnapshots(
-        shapes.data(), static_cast<std::uint32_t>(shapes.size()));
-  }
+  const auto &shapes = slot.shape_cache;
+  const std::uint32_t shape_count = slot.shape_cache_count;
 
   for (std::uint32_t i = 0; i < shape_count; ++i) {
     const auto &shape = shapes[i];
@@ -514,6 +522,25 @@ void DestructionManager::collect_events(Slot &slot) {
   }
 }
 
+void DestructionManager::refresh_snapshots(Slot &slot) const {
+  slot.body_cache.resize(slot.node_descs.size() + 64);
+  slot.body_cache_count = slot.dest->getBodySnapshots(
+      slot.body_cache.data(), static_cast<std::uint32_t>(slot.body_cache.size()));
+  if (slot.body_cache_count > slot.body_cache.size()) {
+    slot.body_cache.resize(slot.body_cache_count);
+    slot.body_cache_count = slot.dest->getBodySnapshots(
+        slot.body_cache.data(), static_cast<std::uint32_t>(slot.body_cache.size()));
+  }
+  slot.shape_cache.resize(slot.node_descs.size() + 64);
+  slot.shape_cache_count = slot.dest->getShapeSnapshots(
+      slot.shape_cache.data(), static_cast<std::uint32_t>(slot.shape_cache.size()));
+  if (slot.shape_cache_count > slot.shape_cache.size()) {
+    slot.shape_cache.resize(slot.shape_cache_count);
+    slot.shape_cache_count = slot.dest->getShapeSnapshots(
+        slot.shape_cache.data(), static_cast<std::uint32_t>(slot.shape_cache.size()));
+  }
+}
+
 void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   const PxVec3 g = to_px(gravity);
   const auto started = std::chrono::steady_clock::now();
@@ -525,6 +552,8 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     require(slot.dest->beginTick(dt, g), "beginTick failed");
     require(slot.dest->solveTick(), "solveTick failed");
     require(slot.dest->endTick(), "endTick failed");
+    // One readback, then every consumer works off it.
+    refresh_snapshots(slot);
     // Diff membership first (assigns serials for new bodies), then stamp
     // filter/contact data onto every live shape/actor.
     collect_events(slot);
@@ -758,14 +787,9 @@ DestructionManager::chunk_body_snapshots() const {
       continue;
     }
     const Slot &slot = *slot_ptr;
-    std::vector<ExtStressPhysXBodySnapshot> bodies(slot.node_descs.size() + 64);
-    std::uint32_t body_count = slot.dest->getBodySnapshots(
-        bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-    if (body_count > bodies.size()) {
-      bodies.resize(body_count);
-      body_count = slot.dest->getBodySnapshots(
-          bodies.data(), static_cast<std::uint32_t>(bodies.size()));
-    }
+    // Reuse this tick's readback. Called twice per tick from Rust.
+    const auto &bodies = slot.body_cache;
+    const std::uint32_t body_count = slot.body_cache_count;
     for (std::uint32_t i = 0; i < body_count; ++i) {
       const auto &body = bodies[i];
       if (body.kinematic) {
