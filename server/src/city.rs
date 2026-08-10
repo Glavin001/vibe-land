@@ -342,7 +342,20 @@ impl CityRuntime {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(0);
-        settings.maximum_bodies = 512;
+        // Hard cap on live bodies per structure — the one supported lever that
+        // bounds the debris field rather than making each body cheaper.
+        //
+        // Both dominant tick costs scale with live bodies: the PhysX step and
+        // the stress solve. At ~1700 awake bodies the PhysX step alone is
+        // 16.6 ms, i.e. the entire 60 Hz budget, so no amount of shaving the
+        // city step gets the tick back under. Past the cap the adapter stops
+        // splitting, leaving fewer, larger pieces: a visual-quality tradeoff,
+        // so it stays tunable rather than being silently lowered.
+        settings.maximum_bodies = std::env::var("VIBE_CITY_MAX_BODIES")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(512);
         settings.maximum_fractures_per_actor_per_tick = 32;
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
