@@ -41,6 +41,13 @@ export interface CityTopologyStats {
   liveIslands: number;
   settledIslands: number;
   topoSeqGaps: number;
+  /**
+   * Chunks whose owning body is no longer in the ledger. Must stay 0: an
+   * orphaned chunk has no world transform, so anything it renders is a guess.
+   */
+  orphanedChunks: number;
+  /** Cumulative chunks orphaned by a retire, including transient windows. */
+  orphanedByRetire: number;
 }
 
 export class CityTopology {
@@ -54,10 +61,25 @@ export class CityTopology {
   readonly chunkBody: Float64Array;
   private readonly localPos: Float32Array;
   private readonly localRot: Float32Array;
+  /**
+   * Manifest rest offset per chunk, in its structure's frame.
+   *
+   * The adapter builds every chunk shape at its authored local pose and reuses
+   * the same shape across body migrations, so an island body's pose is a full
+   * transform from structure-rest coordinates to world:
+   *   chunkWorld = bodyPose ∘ restLocal
+   * That is the canonical body-frame invariant documented in
+   * netcode/src/destruction_backend.rs, and it is exactly what
+   * `applyBootstrap` uses to rebuild a damaged city for a late joiner.
+   */
+  private readonly restPos: Float32Array;
+  /** Manifest mass per chunk, for reconstructing an island's centre of mass. */
+  private readonly restMass: Float32Array;
 
   private readonly bodies: Map<number, LedgerBody> = new Map();
   private readonly aliveBonds: Map<number, Uint8Array> = new Map();
   private brokenBonds = 0;
+  private orphanedByRetire = 0;
   private lastTopoSeq = 0;
   private topoSeqGaps = 0;
   /** Set when a gap was detected; cleared by bootstrap. */
@@ -75,6 +97,14 @@ export class CityTopology {
     this.chunkBody = new Float64Array(total);
     this.localPos = new Float32Array(total * 3);
     this.localRot = new Float32Array(total * 4);
+    this.restPos = new Float32Array(total * 3);
+    this.restMass = new Float32Array(total);
+    for (const structure of manifest.structures) {
+      const base = this.slotBase.get(structure.structureId)!;
+      for (const chunk of structure.chunks) {
+        this.restMass[base + chunk.nodeIndex] = chunk.mass;
+      }
+    }
     this.reset();
   }
 
@@ -96,6 +126,9 @@ export class CityTopology {
         this.localPos[slot * 3] = chunk.centroid[0];
         this.localPos[slot * 3 + 1] = chunk.centroid[1];
         this.localPos[slot * 3 + 2] = chunk.centroid[2];
+        this.restPos[slot * 3] = chunk.centroid[0];
+        this.restPos[slot * 3 + 1] = chunk.centroid[1];
+        this.restPos[slot * 3 + 2] = chunk.centroid[2];
         this.localRot[slot * 4] = 0;
         this.localRot[slot * 4 + 1] = 0;
         this.localRot[slot * 4 + 2] = 0;
@@ -123,6 +156,11 @@ export class CityTopology {
 
   slotOf(structureId: number, nodeIndex: number): number {
     return (this.slotBase.get(structureId) ?? 0) + nodeIndex;
+  }
+
+  /** Ledger body key currently owning this chunk (diagnostics). */
+  chunkBodyKey(slot: number): number {
+    return this.chunkBody[slot];
   }
 
   body(key: number): LedgerBody | undefined {
@@ -171,11 +209,19 @@ export class CityTopology {
         settled += 1;
       }
     }
+    let orphaned = 0;
+    for (let slot = 0; slot < this.chunkCount; slot += 1) {
+      if (!this.bodies.has(this.chunkBody[slot])) {
+        orphaned += 1;
+      }
+    }
     return {
       brokenBonds: this.brokenBonds,
       liveIslands: live,
       settledIslands: settled,
       topoSeqGaps: this.topoSeqGaps,
+      orphanedChunks: orphaned,
+      orphanedByRetire: this.orphanedByRetire,
     };
   }
 
@@ -246,6 +292,76 @@ export class CityTopology {
     }
   }
 
+  /**
+   * Re-parent `nodes` onto an island body and set their body-local offsets.
+   *
+   * Offsets come from the island's own rest geometry, never from where this
+   * client currently believes a chunk is. The adapter re-centres a split child
+   * on its centre of mass, so an island body's frame is the structure rest
+   * frame translated by the COM of its members — which the manifest pins down
+   * exactly (mass + rest centroid per chunk).
+   *
+   * The old promote path derived offsets as
+   * `inverse(promotionPose) ∘ chunkWorldPose(slot)`, which folded in however
+   * stale this client's view happened to be. Topology is reliable and
+   * immediate, but the parent's kinematic poses are unreliable, rate limited
+   * and interest culled, and a chunk re-parented by the physics without a
+   * promotion is not tracked at all. A chunk still believed to be resting on
+   * its structure (world y ≈ 1.2) while the server had it in an island 10 m up
+   * produced a −10.3 m offset; islands are rigid, so that error was frozen in
+   * for the rest of the match and the chunk rendered under the floor.
+   *
+   * Bootstrap and live promotion share this so a late joiner and a client that
+   * watched the collapse agree chunk for chunk.
+   */
+  private adoptIslandMembers(
+    structureId: number,
+    key: number,
+    nodes: number[],
+  ): number[] {
+    let comX = 0;
+    let comY = 0;
+    let comZ = 0;
+    let totalWeight = 0;
+    for (const node of nodes) {
+      const slot = this.slotOf(structureId, node);
+      // Support chunks carry mass 0; weight them uniformly so an all-support
+      // island still resolves to its geometric centre instead of NaN.
+      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
+      comX += this.restPos[slot * 3] * weight;
+      comY += this.restPos[slot * 3 + 1] * weight;
+      comZ += this.restPos[slot * 3 + 2] * weight;
+      totalWeight += weight;
+    }
+    if (totalWeight > 0) {
+      comX /= totalWeight;
+      comY /= totalWeight;
+      comZ /= totalWeight;
+    }
+
+    const slots: number[] = [];
+    for (const node of nodes) {
+      const slot = this.slotOf(structureId, node);
+      slots.push(slot);
+      const previousBody = this.bodies.get(this.chunkBody[slot]);
+      if (previousBody) {
+        const index = previousBody.chunkSlots.indexOf(slot);
+        if (index >= 0) {
+          previousBody.chunkSlots.splice(index, 1);
+        }
+      }
+      this.chunkBody[slot] = key;
+      this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
+      this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
+      this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
+      this.localRot[slot * 4] = 0;
+      this.localRot[slot * 4 + 1] = 0;
+      this.localRot[slot * 4 + 2] = 0;
+      this.localRot[slot * 4 + 3] = 1;
+    }
+    return slots;
+  }
+
   private promote(
     structureId: number,
     islandId: number,
@@ -254,32 +370,7 @@ export class CityTopology {
     rotation: Quat,
   ): void {
     const key = bodyKey(structureId, islandId);
-    const slots: number[] = [];
-    for (const node of nodes) {
-      const slot = this.slotOf(structureId, node);
-      slots.push(slot);
-      // Chunk world pose under its previous body, then re-express relative to
-      // the new island body's promotion pose.
-      const previousKey = this.chunkBody[slot];
-      const world = this.chunkWorldPose(slot);
-      const local = relativePose(position, rotation, world.position, world.rotation);
-      this.chunkBody[slot] = key;
-      this.localPos[slot * 3] = local.position[0];
-      this.localPos[slot * 3 + 1] = local.position[1];
-      this.localPos[slot * 3 + 2] = local.position[2];
-      this.localRot[slot * 4] = local.rotation[0];
-      this.localRot[slot * 4 + 1] = local.rotation[1];
-      this.localRot[slot * 4 + 2] = local.rotation[2];
-      this.localRot[slot * 4 + 3] = local.rotation[3];
-      // Remove from the previous body's membership.
-      const previousBody = this.bodies.get(previousKey);
-      if (previousBody) {
-        const index = previousBody.chunkSlots.indexOf(slot);
-        if (index >= 0) {
-          previousBody.chunkSlots.splice(index, 1);
-        }
-      }
-    }
+    const slots = this.adoptIslandMembers(structureId, key, nodes);
     this.bodies.set(key, {
       key,
       structureId,
@@ -295,6 +386,15 @@ export class CityTopology {
     const body = this.bodies.get(key);
     if (!body) {
       return;
+    }
+    // Chunks still pointing at this body become orphans: `chunkWorldPose`
+    // has no transform for them. Count every one, cumulatively — a 2 Hz
+    // sample of the instantaneous orphan set misses short windows, and a
+    // short window is still enough to freeze a wrong matrix on screen.
+    for (const slot of body.chunkSlots) {
+      if (this.chunkBody[slot] === key) {
+        this.orphanedByRetire += 1;
+      }
     }
     this.bodies.delete(key);
   }
@@ -330,21 +430,7 @@ export class CityTopology {
     }
     for (const island of message.islands) {
       const key = bodyKey(island.structureId, island.islandId);
-      const slots: number[] = [];
-      for (const node of island.nodes) {
-        const slot = this.slotOf(island.structureId, node);
-        slots.push(slot);
-        // Rest local offsets are already in place from reset(); just
-        // re-parent the chunk and fix the support body's membership.
-        const previousBody = this.bodies.get(this.chunkBody[slot]);
-        if (previousBody) {
-          const index = previousBody.chunkSlots.indexOf(slot);
-          if (index >= 0) {
-            previousBody.chunkSlots.splice(index, 1);
-          }
-        }
-        this.chunkBody[slot] = key;
-      }
+      const slots = this.adoptIslandMembers(island.structureId, key, island.nodes);
       this.bodies.set(key, {
         key,
         structureId: island.structureId,

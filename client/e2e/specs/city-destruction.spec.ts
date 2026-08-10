@@ -94,6 +94,9 @@ test.describe('destructible city', () => {
       brokenBonds: samples.at(-1)!.brokenBonds,
       awake: samples.at(-1)!.chunksAwake,
       settled: samples.at(-1)!.chunksSettled,
+      minChunkY: +samples.at(-1)!.minChunkY.toFixed(3),
+      chunksBelowGround: samples.at(-1)!.chunksBelowGround,
+      orphanedChunks: samples.at(-1)!.orphanedChunks,
     });
 
     expect(samples.at(-1)!.datagramsReceived).toBeGreaterThan(0);
@@ -105,6 +108,25 @@ test.describe('destructible city', () => {
     const peakAwake = Math.max(...samples.map((s) => s.chunksAwake));
     expect(peakAwake).toBeGreaterThan(0);
     expect(samples.at(-1)!.chunksAwake).toBeLessThanOrEqual(peakAwake);
+
+    // 5. Client-side reconstruction must be sound: every chunk owned by a body
+    // that exists. Island offsets used to be derived from this client's own
+    // (possibly stale) view at the promotion instant and frozen in, which put
+    // chunks metres below the floor. That is fixed and pinned here.
+    const final = samples.at(-1)!;
+    expect(final.orphanedChunks).toBe(0);
+    expect(final.orphanedByRetire).toBe(0);
+
+    // NOT asserted yet: chunksBelowGround === 0. On large collapses a few
+    // island bodies escape under the world server-side — the server reports
+    // min_body_y descending past -700 m at exactly the 12 m/s body velocity
+    // clamp, i.e. unobstructed free fall with nothing stopping them. The
+    // client renders that faithfully. Blocked on the server-side ground fix;
+    // logged here so the number stays visible.
+    console.log('[city e2e] ground', {
+      minChunkY: +final.minChunkY.toFixed(3),
+      chunksBelowGround: final.chunksBelowGround,
+    });
   });
 
   test('one player destroys, every player sees it', async ({ browser }) => {
@@ -153,10 +175,23 @@ test.describe('destructible city', () => {
         ),
       );
 
-      // Let the collapse finish, then require the clients to converge on the
-      // same authoritative topology.
-      await pages[0].waitForTimeout(12_000);
-      const finals = await Promise.all(pages.map((p) => cityStats(p)));
+      // Topology is eventually consistent, so poll for convergence rather than
+      // comparing one instantaneous sample per client: a single sample can be
+      // taken mid-collapse and see three different (correct) prefixes of the
+      // same reliable stream.
+      let finals = await Promise.all(pages.map((p) => cityStats(p)));
+      const deadline = Date.now() + 60_000;
+      let previous = -1;
+      while (Date.now() < deadline) {
+        await pages[0].waitForTimeout(2_000);
+        finals = await Promise.all(pages.map((p) => cityStats(p)));
+        const agreed = finals.every((f) => f.brokenBonds === finals[0].brokenBonds);
+        const quiescent = finals[0].brokenBonds === previous;
+        if (agreed && quiescent && finals[0].brokenBonds > 0) {
+          break;
+        }
+        previous = finals[0].brokenBonds;
+      }
       console.log(
         '[city e2e] multiplayer convergence',
         finals.map((f) => ({
@@ -171,6 +206,10 @@ test.describe('destructible city', () => {
         expect(stats.topoSeqGaps).toBe(0);
         expect(stats.brokenBonds).toBe(finals[0].brokenBonds);
         expect(stats.liveIslands).toBe(finals[0].liveIslands);
+        // Clients 2 and 3 joined an already-damaged city, so this also covers
+        // the bootstrap rebuild path: a late joiner must place chunks the same
+        // way a client that watched the collapse does.
+        expect(stats.orphanedChunks).toBe(0);
       }
     } finally {
       await Promise.all(contexts.map((c) => c.close()));

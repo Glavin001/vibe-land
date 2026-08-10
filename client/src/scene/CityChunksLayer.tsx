@@ -171,6 +171,8 @@ export function CityChunksLayer({
         rendered: stateRef.current != null,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         chunksBelowGround,
+        orphanedChunks: stats.orphanedChunks,
+        orphanedByRetire: stats.orphanedByRetire,
       });
     }
 

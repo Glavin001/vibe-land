@@ -107,6 +107,10 @@ export interface CityE2EStats {
   minChunkY: number;
   /** Chunks whose centroid has sunk below the ground plane. */
   chunksBelowGround: number;
+  /** Chunks whose owning body vanished from the ledger. Must be 0. */
+  orphanedChunks: number;
+  /** Cumulative chunks orphaned by a retire, including transient windows. */
+  orphanedByRetire: number;
 }
 
 export interface VibeE2EBridge {

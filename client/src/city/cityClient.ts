@@ -35,6 +35,8 @@ export interface CityClientStats {
   chunksAwake: number;
   chunksSettled: number;
   brokenBonds: number;
+  orphanedChunks: number;
+  orphanedByRetire: number;
   liveIslands: number;
   topoSeqGaps: number;
   datagramsReceived: number;
@@ -268,6 +270,8 @@ export class CityClient {
       brokenBonds: topologyStats.brokenBonds,
       liveIslands: topologyStats.liveIslands,
       topoSeqGaps: topologyStats.topoSeqGaps,
+      orphanedChunks: topologyStats.orphanedChunks,
+      orphanedByRetire: topologyStats.orphanedByRetire,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
       recordsBuffered: this.recordsBuffered,
