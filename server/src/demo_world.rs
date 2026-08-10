@@ -53,12 +53,10 @@ fn city_world() -> WorldDocument {
         BENCHMARK_TERRAIN_HALF_EXTENT_M,
         vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
     );
-    world.spawn_areas = [
-        [45.0_f32, 0.0],
-        [-45.0, 0.0],
-        [0.0, 45.0],
-        [0.0, -45.0],
-    ]
+    // Derived from the scene pack: a wider building pack widens the grid, and a
+    // fixed ring would drop players inside a tower.
+    let ring = crate::city::spawn_ring_radius_m();
+    world.spawn_areas = [[ring, 0.0], [-ring, 0.0], [0.0, ring], [0.0, -ring]]
     .into_iter()
     .enumerate()
     .map(|(index, [x, z])| vibe_land_shared::world_document::SpawnArea {

@@ -124,6 +124,9 @@ pub struct EncoderStats {
     pub staged_topology_messages: usize,
     pub baseline_id: u16,
     pub topo_seq: u32,
+    /// Records dropped because two bodies claimed the same entity id. Any
+    /// non-zero value is a physics-side id-allocation bug.
+    pub duplicate_body_records: u64,
 }
 
 pub struct ChunkStreamEncoder {
@@ -140,6 +143,7 @@ pub struct ChunkStreamEncoder {
     topo_seq: u32,
     staged_topology: Vec<Vec<u8>>,
     clients: HashMap<u64, ClientState>,
+    duplicate_body_records: u64,
 }
 
 impl ChunkStreamEncoder {
@@ -171,6 +175,7 @@ impl ChunkStreamEncoder {
             topo_seq: 0,
             staged_topology: Vec::new(),
             clients: HashMap::new(),
+            duplicate_body_records: 0,
         }
     }
 
@@ -184,6 +189,7 @@ impl ChunkStreamEncoder {
             staged_topology_messages: self.staged_topology.len(),
             baseline_id: self.baseline_id,
             topo_seq: self.topo_seq,
+            duplicate_body_records: self.duplicate_body_records,
         }
     }
 
@@ -330,6 +336,16 @@ impl ChunkStreamEncoder {
             );
         }
         self.active_order.sort_unstable();
+        // `active_order` drives both the awake-body count and the baseline
+        // record list, and the baseline wire format needs strictly increasing
+        // ids just like the datagram one. One snapshot batch carrying the same
+        // entity twice (a physics-side id-aliasing bug) would otherwise inflate
+        // the count and make the baseline unencodable, killing the match loop.
+        let before = self.active_order.len();
+        self.active_order.dedup();
+        if self.active_order.len() != before {
+            self.duplicate_body_records += (before - self.active_order.len()) as u64;
+        }
     }
 
     /// 30 Hz encode-once: build the shared candidate set (record contents are
@@ -490,6 +506,17 @@ impl ChunkStreamEncoder {
             .map(|&index| shared.records[index].record)
             .collect();
         selected.sort_unstable_by_key(|record| record.body_entity);
+        // The wire format LEB128-encodes strictly increasing body-id gaps, so a
+        // duplicate entity is unencodable. A physics-side id-aliasing bug used
+        // to send duplicates here, which tripped the encoder's debug assertion
+        // and killed the whole match loop (and in release would have emitted a
+        // zero gap that desyncs every client's record stream). Never let a bad
+        // id upstream take the match down: drop the duplicate and carry on.
+        let before = selected.len();
+        selected.dedup_by_key(|record| record.body_entity);
+        if selected.len() != before {
+            self.duplicate_body_records += (before - selected.len()) as u64;
+        }
 
         for record in &selected {
             state
@@ -660,6 +687,45 @@ mod tests {
             direction: Vec3::Z,
             fov_degrees: 70.0,
         }
+    }
+
+    /// A physics-side id-allocation bug once handed the encoder two records
+    /// with the same body entity. The wire format LEB128-encodes strictly
+    /// increasing id gaps, so that tripped `encode_chunks_datagrams`'s sorted
+    /// assertion and took the entire match loop down with it. Duplicates must
+    /// be dropped and counted, never fatal.
+    #[test]
+    fn duplicate_body_entities_are_dropped_not_fatal() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let _ = encoder.take_topology_messages();
+        let _ = encoder.maybe_emit_baseline(10);
+
+        // Same entity twice in one tick, as the aliasing bug produced.
+        let duplicated = [snapshot(1.0), snapshot(1.0)];
+        assert_eq!(duplicated[0].body_entity, duplicated[1].body_entity);
+        encoder.ingest_tick(12, &duplicated, &DestructionTickOutput::default(), &[]);
+
+        // The baseline path has the same strictly-increasing requirement.
+        let baseline = encoder.maybe_emit_baseline(12 + 60).expect("baseline");
+        assert!(!baseline.is_empty());
+
+        let shared = encoder.encode_send(12);
+        let packets = encoder.client_datagrams(1, close_camera(), &shared);
+        for packet in &packets {
+            let decoded = crate::wire::decode_chunks_datagram(packet).expect("decodable");
+            let entities: Vec<u32> = decoded.records.iter().map(|r| r.body_entity).collect();
+            let mut sorted = entities.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(entities.len(), sorted.len(), "duplicate entity reached the wire");
+        }
+        assert!(
+            encoder.stats().duplicate_body_records > 0,
+            "the dropped duplicate should be counted so the physics bug stays visible"
+        );
     }
 
     #[test]

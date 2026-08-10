@@ -10,6 +10,7 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -1880,6 +1881,7 @@ export function GameWorld({
       && botBrainRef.current
       && !isDrivingNow,
     );
+    const agentDriveActive = isAgentDriveActive();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -1890,6 +1892,7 @@ export function GameWorld({
       isDrivingNow,
       localDead,
       botAutopilotEnabled,
+      agentDriveActive,
     );
     const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
@@ -1906,7 +1909,7 @@ export function GameWorld({
       if (updatedCamera.hadLookInput) {
         lastVehicleLookAtMsRef.current = now;
       }
-    } else {
+    } else if (!agentDriveActive) {
       const look = advanceLookAngles(
         yawRef.current,
         pitchRef.current,
@@ -1929,7 +1932,14 @@ export function GameWorld({
       onScopeActiveChangeRef.current?.(isAiming);
     }
 
-    const autopilotInput = vehicleBenchmarkEnabled
+    const driveInput = sampleAgentDrive(now, yawRef.current, pitchRef.current);
+    if (driveInput) {
+      yawRef.current = driveInput.yaw;
+      pitchRef.current = driveInput.pitch;
+    }
+    const autopilotInput = driveInput
+      ? null
+      : vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
           now,
@@ -1966,7 +1976,7 @@ export function GameWorld({
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
         })()
         : null;
-    const resolvedInput = autopilotInput ?? (isDrivingNow
+    const resolvedInput = driveInput ?? autopilotInput ?? (isDrivingNow
       ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
       : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
 

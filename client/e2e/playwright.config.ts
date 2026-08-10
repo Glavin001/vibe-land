@@ -24,7 +24,12 @@ if (fs.existsSync(envPath)) {
 
 const CLIENT_PORT = Number(process.env.CLIENT_PORT) || 5555;
 const SERVER_PORT = Number(process.env.SERVER_PORT) || 4001;
-const BASE_URL = `http://127.0.0.1:${CLIENT_PORT}`;
+// The dev server switches to HTTPS whenever WT_CERT_PEM/WT_KEY_PEM are set
+// (WebTransport needs a secure context), so the scheme is not fixed.
+const BASE_URL = process.env.E2E_BASE_URL
+  || (process.env.WT_CERT_PEM && process.env.WT_KEY_PEM
+    ? `https://127.0.0.1:${CLIENT_PORT}`
+    : `http://127.0.0.1:${CLIENT_PORT}`);
 const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 // Allow skipping webServer when servers are already running externally

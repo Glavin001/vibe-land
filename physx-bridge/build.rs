@@ -5,11 +5,17 @@ use std::{env, path::PathBuf};
 const DEFAULT_PHYSX_ROOT: &str = "/root/PhysX/physx/install/linux-clang/PhysX";
 
 #[cfg(feature = "gpu")]
+const DEFAULT_BLAST_ROOT: &str = "/root/workspace/blast-stress-solver/blast";
+
+#[cfg(feature = "gpu")]
 fn main() {
     println!("cargo:rerun-if-env-changed=PHYSX_ROOT");
+    println!("cargo:rerun-if-env-changed=BLAST_ROOT");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/physx_bridge.cc");
+    println!("cargo:rerun-if-changed=src/destruction.cc");
     println!("cargo:rerun-if-changed=include/physx_bridge.h");
+    println!("cargo:rerun-if-changed=include/destruction.h");
 
     let root =
         PathBuf::from(env::var_os("PHYSX_ROOT").unwrap_or_else(|| DEFAULT_PHYSX_ROOT.into()));
@@ -43,15 +49,69 @@ fn main() {
         );
     }
 
-    cxx_build::bridge("src/lib.rs")
+    let mut build = cxx_build::bridge("src/lib.rs");
+    build
         .file("src/physx_bridge.cc")
         .include(&include)
         .include("include")
         .define("PX_PHYSX_STATIC_LIB", None)
         .flag_if_supported("-std=c++17")
         .flag_if_supported("-Wall")
-        .flag_if_supported("-Wextra")
-        .compile("vibe_land_physx_bridge");
+        .flag_if_supported("-Wextra");
+
+    if cfg!(feature = "destruction") {
+        let blast =
+            PathBuf::from(env::var_os("BLAST_ROOT").unwrap_or_else(|| DEFAULT_BLAST_ROOT.into()));
+        let blast_sources = [
+            "rust_stress_example/ffi/ext_stress_bridge.cpp",
+            "source/shared/stress_solver/stress.cpp",
+            "source/sdk/common/NvBlastAssert.cpp",
+            "source/sdk/common/NvBlastAtomic.cpp",
+            "source/sdk/common/NvBlastTime.cpp",
+            "source/sdk/common/NvBlastTimers.cpp",
+            "source/sdk/globals/NvBlastGlobals.cpp",
+            "source/sdk/globals/NvBlastInternalProfiler.cpp",
+            "source/sdk/lowlevel/NvBlastAsset.cpp",
+            "source/sdk/lowlevel/NvBlastAssetHelper.cpp",
+            "source/sdk/lowlevel/NvBlastFamily.cpp",
+            "source/sdk/lowlevel/NvBlastFamilyGraph.cpp",
+            "source/sdk/lowlevel/NvBlastActor.cpp",
+            "source/sdk/lowlevel/NvBlastActorSerializationBlock.cpp",
+            "source/sdk/extensions/stress/NvBlastExtStressSolver.cpp",
+            "source/sdk/extensions/stressphysx/NvBlastExtStressPhysX.cpp",
+            "source/sdk/extensions/stressphysx/NvBlastExtStressPhysXResim.cpp",
+        ];
+        for relative in blast_sources {
+            let path = blast.join(relative);
+            assert!(
+                path.is_file(),
+                "required Blast source missing under BLAST_ROOT={}: {}",
+                blast.display(),
+                path.display()
+            );
+            build.file(path);
+        }
+        build
+            .file("src/destruction.cc")
+            .define("VIBE_LAND_DESTRUCTION", None)
+            .define("NDEBUG", None)
+            .flag_if_supported("-mavx")
+            .flag_if_supported("-mfma")
+            .include(blast.join("include"))
+            .include(blast.join("include/globals"))
+            .include(blast.join("include/lowlevel"))
+            .include(blast.join("include/extensions/stress"))
+            .include(blast.join("include/extensions/stressphysx"))
+            .include(blast.join("include/shared/NvFoundation"))
+            .include(blast.join("source/shared"))
+            .include(blast.join("source/shared/stress_solver"))
+            .include(blast.join("source/sdk/common"))
+            .include(blast.join("source/sdk/lowlevel"))
+            .include(blast.join("source/shared/NsFoundation/include"))
+            .include(blast.join("rust_stress_example/ffi"));
+    }
+
+    build.compile("vibe_land_physx_bridge");
 
     println!("cargo:rustc-link-search=native={}", lib.display());
     for library in [

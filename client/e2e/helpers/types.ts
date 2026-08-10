@@ -86,6 +86,27 @@ export interface GameE2ESnapshot {
     playerCorrectionMagnitude: number;
     playerCorrectionPeak5sM: number;
   };
+
+  /** Destructible-city stats; null outside `city-*` matches. */
+  city: CityE2EStats | null;
+}
+
+export interface CityE2EStats {
+  chunksTotal: number;
+  chunksAwake: number;
+  chunksSettled: number;
+  brokenBonds: number;
+  liveIslands: number;
+  topoSeqGaps: number;
+  datagramsReceived: number;
+  bytesPerSecond: number;
+  manifestHash: string;
+  /** False when the chunk mesh failed to build — streaming but invisible. */
+  rendered: boolean;
+  /** Lowest chunk centroid, in metres. The city ground is a flat plane at y=0. */
+  minChunkY: number;
+  /** Chunks whose centroid has sunk below the ground plane. */
+  chunksBelowGround: number;
 }
 
 export interface VibeE2EBridge {

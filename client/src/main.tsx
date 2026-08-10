@@ -15,6 +15,8 @@ import { BodiesTransportLabPage } from './pages/BodiesTransportLab';
 // E2E bridge: always-on read-only introspection for Playwright tests.
 // Importing the module installs window.__VIBE_E2E__ immediately.
 import './e2eBridge';
+// Agent drive: mutating look/move/shoot surface for browser agents.
+import './agentDrive';
 
 const root = createRoot(document.getElementById('root')!);
 

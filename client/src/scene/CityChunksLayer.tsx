@@ -5,6 +5,10 @@
 // Follows the BodiesTransportLab instanced path (never GameWorld's per-body
 // Mesh map): intact/settled chunks are written once and frozen; only chunks
 // belonging to live streaming bodies are recomposed each frame.
+//
+// Note: chunk.size is the authored AABB, so fractured Voronoi pieces can look
+// overlapping as boxes. Physics still uses convex hulls; a convex render path
+// can replace this once it is cheap enough for ~2k chunks.
 
 import { useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
@@ -18,6 +22,12 @@ const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_SCALE = new THREE.Vector3();
 const TMP_COLOR = new THREE.Color();
+
+/**
+ * Centroid depth below the flat city ground (y=0) that counts as "sunk".
+ * Generous: a big slab lying flat still has its centroid above -0.25 m.
+ */
+const CHUNK_SUNK_Y_M = -0.25;
 
 type CityMeshState = {
   mesh: THREE.InstancedMesh;
@@ -52,7 +62,7 @@ function buildMesh(client: CityClient): CityMeshState {
       baseColors[slot * 3] = color.r;
       baseColors[slot * 3 + 1] = color.g;
       baseColors[slot * 3 + 2] = color.b;
-      writeInstance(mesh, client, slot, sizes, 1);
+      writeInstance(mesh, client, slot, sizes);
       mesh.setColorAt(slot, color);
     }
   }
@@ -60,6 +70,10 @@ function buildMesh(client: CityClient): CityMeshState {
   if (mesh.instanceColor) {
     mesh.instanceColor.needsUpdate = true;
   }
+  console.info('[city] instanced chunk mesh ready', {
+    chunks: count,
+    structures: manifest.structures.length,
+  });
   return { mesh, sizes, baseColors };
 }
 
@@ -68,7 +82,6 @@ function writeInstance(
   client: CityClient,
   slot: number,
   sizes: Float32Array,
-  _tint: number,
 ): void {
   const pose = client.topology.chunkWorldPose(slot);
   TMP_POSITION.set(pose.position[0], pose.position[1], pose.position[2]);
@@ -88,6 +101,7 @@ export function CityChunksLayer({
   const clientRef = useRef<CityClient | null>(null);
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
+  const buildFailedForRef = useRef<CityClient | null>(null);
 
   useFrame(() => {
     const client = getCityClient();
@@ -96,26 +110,54 @@ export function CityChunksLayer({
       return;
     }
     if (clientRef.current !== client) {
-      // New session/manifest: rebuild the instanced mesh.
       if (stateRef.current) {
         group.remove(stateRef.current.mesh);
         stateRef.current.mesh.geometry.dispose();
         (stateRef.current.mesh.material as THREE.Material).dispose();
+        stateRef.current = null;
       }
-      stateRef.current = buildMesh(client);
       clientRef.current = client;
-      group.add(stateRef.current.mesh);
+      buildFailedForRef.current = null;
       dirtyBodiesRef.current.clear();
     }
-    const state = stateRef.current;
-    if (!state) {
-      return;
+    if (!stateRef.current && buildFailedForRef.current !== client) {
+      // A mesh build failure must not kill the frame loop or hide telemetry:
+      // remember the failure, keep publishing stats, and let the session run
+      // headless rather than retrying a throwing build every frame.
+      try {
+        stateRef.current = buildMesh(client);
+        group.add(stateRef.current.mesh);
+      } catch (error) {
+        buildFailedForRef.current = client;
+        console.error('[city] chunk mesh build failed; city will not render', error);
+      }
     }
 
-    // Publish stats to the e2e bridge (~2 Hz).
+    // Telemetry is published before the mesh gate on purpose. It is the only
+    // window E2E/QA has into decode, topology and bandwidth, and it must stay
+    // observable even when rendering is broken.
     frameCounterRef.current += 1;
     if (frameCounterRef.current % 30 === 0) {
       const stats = client.stats();
+      const prevBroken = (window as unknown as { __VIBE_CITY_BROKEN__?: number }).__VIBE_CITY_BROKEN__ ?? 0;
+      if (stats.brokenBonds > prevBroken) {
+        console.info('[city] brokenBonds', prevBroken, '→', stats.brokenBonds, {
+          awake: stats.chunksAwake,
+          settled: stats.chunksSettled,
+        });
+      }
+      (window as unknown as { __VIBE_CITY_BROKEN__?: number }).__VIBE_CITY_BROKEN__ = stats.brokenBonds;
+      // Ground-penetration probe: the server world is a flat plane at y=0, so
+      // any chunk whose centroid sits below it has sunk into the floor. Cheap
+      // enough at ~2 Hz over a few thousand chunks, and the only way to see
+      // this without eyeballing a screenshot.
+      let minChunkY = Infinity;
+      let chunksBelowGround = 0;
+      for (let slot = 0; slot < client.topology.chunkCount; slot += 1) {
+        const y = client.topology.chunkWorldPose(slot).position[1];
+        if (y < minChunkY) minChunkY = y;
+        if (y < CHUNK_SUNK_Y_M) chunksBelowGround += 1;
+      }
       updateCityE2E({
         chunksTotal: stats.chunksTotal,
         chunksAwake: stats.chunksAwake,
@@ -126,12 +168,18 @@ export function CityChunksLayer({
         datagramsReceived: stats.datagramsReceived,
         bytesPerSecond: stats.bytesPerSecond,
         manifestHash: stats.manifestHash,
+        rendered: stateRef.current != null,
+        minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
+        chunksBelowGround,
       });
     }
 
+    const state = stateRef.current;
+    if (!state) {
+      return;
+    }
+
     const live = client.samplePresentation(performance.now());
-    // Bodies that streamed last frame but not this one need one final write
-    // (their settle pose landed via topology).
     const dirty = dirtyBodiesRef.current;
     for (const key of live) {
       dirty.add(key);
@@ -148,7 +196,7 @@ export function CityChunksLayer({
       }
       const settledTint = body.settled ? 0.75 : 1;
       for (const slot of body.chunkSlots) {
-        writeInstance(state.mesh, client, slot, state.sizes, settledTint);
+        writeInstance(state.mesh, client, slot, state.sizes);
         TMP_COLOR.setRGB(
           state.baseColors[slot * 3] * settledTint,
           state.baseColors[slot * 3 + 1] * settledTint,
@@ -157,7 +205,7 @@ export function CityChunksLayer({
         state.mesh.setColorAt(slot, TMP_COLOR);
       }
       if (!live.has(key)) {
-        dirty.delete(key); // final settle write done
+        dirty.delete(key);
       }
       wrote = true;
     }

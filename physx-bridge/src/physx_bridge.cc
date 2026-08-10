@@ -2,6 +2,10 @@
 
 #include "PxPhysicsAPI.h"
 
+#ifdef VIBE_LAND_DESTRUCTION
+#include "destruction.h"
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -386,6 +390,10 @@ public:
     const std::uint32_t entity_b = actor_entity_id(header.actors[1]);
     for (PxU32 pair_index = 0; pair_index < pair_count; ++pair_index) {
       const PxContactPair &pair = pairs[pair_index];
+      if (pair.flags & (PxContactPairFlag::eREMOVED_SHAPE_0 |
+                        PxContactPairFlag::eREMOVED_SHAPE_1)) {
+        continue;
+      }
       const PxU32 contact_count = pair.contactCount;
       if (contact_count == 0) {
         continue;
@@ -402,6 +410,15 @@ public:
         total_impulse += point.impulse;
         weighted_point += point.position * magnitude;
         total_magnitude += magnitude;
+#ifdef VIBE_LAND_DESTRUCTION
+        if (destruction_) {
+          const FfiVec3 position = from_px(point.position);
+          const FfiVec3 impulse = from_px(point.impulse);
+          const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
+          destruction_->route_contact_shape(pair.shapes[0], position, impulse);
+          destruction_->route_contact_shape(pair.shapes[1], position, neg);
+        }
+#endif
       }
       if (total_magnitude > 0.0f) {
         weighted_point /= total_magnitude;
@@ -898,6 +915,160 @@ public:
     return output;
   }
 
+  void create_destructible(std::uint32_t structure_id, const FfiPose &pose,
+                           rust::Slice<const FfiChunkNodeDesc> nodes,
+                           rust::Slice<const FfiChunkBondDesc> bonds,
+                           const FfiDestructibleSettings &settings,
+                           std::uint32_t collision_group,
+                           std::uint32_t collision_mask) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    destruction_->create_destructible(structure_id, pose, nodes, bonds, settings,
+                                      collision_group, collision_mask);
+#else
+    (void)structure_id;
+    (void)pose;
+    (void)nodes;
+    (void)bonds;
+    (void)settings;
+    (void)collision_group;
+    (void)collision_mask;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  void destruction_tick(float dt, FfiVec3 gravity) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    destruction_->destruction_tick(dt, gravity);
+#else
+    (void)dt;
+    (void)gravity;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  void queue_chunk_damage(std::uint32_t structure_id, std::uint32_t chunk_id,
+                          FfiVec3 impulse, FfiVec3 point) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    destruction_->queue_chunk_damage(structure_id, chunk_id, impulse, point);
+#else
+    (void)structure_id;
+    (void)chunk_id;
+    (void)impulse;
+    (void)point;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  std::uint32_t apply_destruction_explosion(FfiVec3 center, float radius,
+                                            float impulse_magnitude) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->apply_destruction_explosion(center, radius,
+                                                     impulse_magnitude);
+#else
+    (void)center;
+    (void)radius;
+    (void)impulse_magnitude;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  std::uint32_t apply_destruction_blast(FfiVec3 center, FfiVec3 direction,
+                                        float radius, float stress_impulse,
+                                        float push_impulse) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->apply_destruction_blast(
+        center, direction, radius, stress_impulse, push_impulse);
+#else
+    (void)center;
+    (void)direction;
+    (void)radius;
+    (void)stress_impulse;
+    (void)push_impulse;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  rust::Vec<FfiBrokenBondEvent> take_broken_bonds() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_broken_bonds();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_chunk_migrations();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  rust::Vec<FfiIslandBodyEvent> take_island_events() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_island_events();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->chunk_body_snapshots();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  void sleep_chunk_body(std::uint32_t entity_id) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    destruction_->sleep_chunk_body(entity_id);
+#else
+    (void)entity_id;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  FfiDestructionStats destruction_stats() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->destruction_stats();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  bool validate_destruction_mappings() const {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->validate_destruction_mappings();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
 private:
   void initialize(const FfiWorldConfig &config) {
     require(config.cpu_threads > 0, "cpu_threads must be non-zero");
@@ -973,6 +1144,10 @@ private:
     controller_manager_ = PxCreateControllerManager(*scene_);
     require(controller_manager_ != nullptr,
             "failed to create controller manager");
+#ifdef VIBE_LAND_DESTRUCTION
+    destruction_ = std::make_unique<DestructionManager>(
+        physics, *scene_, *material_, contact_report_threshold_);
+#endif
 
     // Dispatch one real empty GPU frame so constructor success means more than
     // merely loading the shared library and allocating a CUDA context.
@@ -982,6 +1157,9 @@ private:
   }
 
   void teardown() noexcept {
+#ifdef VIBE_LAND_DESTRUCTION
+    destruction_.reset();
+#endif
     if (scene_ != nullptr) {
       for (auto &entry : records_) {
         Record &record = entry.second;
@@ -1085,6 +1263,9 @@ private:
   float contact_report_threshold_ = 50.0f;
   float last_step_ms_ = 0.0f;
   std::uint64_t completed_steps_ = 0;
+#ifdef VIBE_LAND_DESTRUCTION
+  std::unique_ptr<DestructionManager> destruction_;
+#endif
 };
 
 World::World(const FfiWorldConfig &config)
@@ -1170,6 +1351,66 @@ FfiWorldStats World::stats() const { return impl_->stats(); }
 
 rust::Vec<FfiContactEvent> World::take_contact_events() {
   return impl_->take_contact_events();
+}
+
+void World::create_destructible(std::uint32_t structure_id, const FfiPose &pose,
+                                rust::Slice<const FfiChunkNodeDesc> nodes,
+                                rust::Slice<const FfiChunkBondDesc> bonds,
+                                const FfiDestructibleSettings &settings,
+                                std::uint32_t collision_group,
+                                std::uint32_t collision_mask) {
+  impl_->create_destructible(structure_id, pose, nodes, bonds, settings,
+                             collision_group, collision_mask);
+}
+
+void World::destruction_tick(float dt, FfiVec3 gravity) {
+  impl_->destruction_tick(dt, gravity);
+}
+
+void World::queue_chunk_damage(std::uint32_t structure_id,
+                               std::uint32_t chunk_id, FfiVec3 impulse,
+                               FfiVec3 point) {
+  impl_->queue_chunk_damage(structure_id, chunk_id, impulse, point);
+}
+
+std::uint32_t World::apply_destruction_explosion(FfiVec3 center, float radius,
+                                                 float impulse_magnitude) {
+  return impl_->apply_destruction_explosion(center, radius, impulse_magnitude);
+}
+
+std::uint32_t World::apply_destruction_blast(FfiVec3 center, FfiVec3 direction,
+                                             float radius, float stress_impulse,
+                                             float push_impulse) {
+  return impl_->apply_destruction_blast(center, direction, radius,
+                                        stress_impulse, push_impulse);
+}
+
+rust::Vec<FfiBrokenBondEvent> World::take_broken_bonds() {
+  return impl_->take_broken_bonds();
+}
+
+rust::Vec<FfiChunkMigrationEvent> World::take_chunk_migrations() {
+  return impl_->take_chunk_migrations();
+}
+
+rust::Vec<FfiIslandBodyEvent> World::take_island_events() {
+  return impl_->take_island_events();
+}
+
+rust::Vec<FfiChunkBodySnapshot> World::chunk_body_snapshots() const {
+  return impl_->chunk_body_snapshots();
+}
+
+void World::sleep_chunk_body(std::uint32_t entity_id) {
+  impl_->sleep_chunk_body(entity_id);
+}
+
+FfiDestructionStats World::destruction_stats() const {
+  return impl_->destruction_stats();
+}
+
+bool World::validate_destruction_mappings() const {
+  return impl_->validate_destruction_mappings();
 }
 
 std::unique_ptr<World> new_world(const FfiWorldConfig &config) {

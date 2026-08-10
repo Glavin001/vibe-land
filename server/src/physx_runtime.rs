@@ -28,7 +28,9 @@ const GROUP_DYNAMIC: u32 = 1 << 1;
 const GROUP_PLAYER: u32 = 1 << 2;
 const GROUP_VEHICLE: u32 = 1 << 3;
 const GROUP_BATTERY: u32 = 1 << 4;
-const ALL_GROUPS: u32 = GROUP_STATIC | GROUP_DYNAMIC | GROUP_PLAYER | GROUP_VEHICLE | GROUP_BATTERY;
+const GROUP_CHUNK: u32 = 1 << 5;
+const ALL_GROUPS: u32 =
+    GROUP_STATIC | GROUP_DYNAMIC | GROUP_PLAYER | GROUP_VEHICLE | GROUP_BATTERY | GROUP_CHUNK;
 
 const NS_STATIC: u32 = 0x1000_0000;
 const NS_DYNAMIC: u32 = 0x2000_0000;
@@ -162,6 +164,16 @@ impl PhysxPhysicsArena {
         &self.config
     }
 
+    #[cfg(feature = "destruction")]
+    pub fn world_mut(&mut self) -> &mut bridge::World {
+        &mut self.world
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn world(&self) -> &bridge::World {
+        &self.world
+    }
+
     pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {
         self.spawn_areas = areas;
     }
@@ -200,7 +212,7 @@ impl PhysxPhysicsArena {
             contact_offset: self.config.collision_offset.max(0.01),
             slope_limit_radians: self.config.max_slope_radians,
             collision_group: GROUP_PLAYER,
-            collision_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_VEHICLE,
+            collision_mask: GROUP_STATIC | GROUP_DYNAMIC | GROUP_VEHICLE | GROUP_CHUNK,
         })?;
         Ok(())
     }

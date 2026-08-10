@@ -289,6 +289,117 @@ pub struct ContactEvent {
     pub point: Vec3,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DestructibleSettings {
+    pub max_solver_iterations_per_frame: u32,
+    pub graph_reduction_level: u32,
+    pub compression_elastic: f32,
+    pub compression_fatal: f32,
+    pub tension_elastic: f32,
+    pub tension_fatal: f32,
+    pub shear_elastic: f32,
+    pub shear_fatal: f32,
+    pub maximum_bodies: u32,
+    pub maximum_fractures_per_actor_per_tick: u32,
+    pub protect_support_bonds: bool,
+    pub support_peel_max_mass: f32,
+    pub apply_excess_forces: bool,
+    pub excess_force_scale: f32,
+}
+
+impl Default for DestructibleSettings {
+    fn default() -> Self {
+        Self {
+            max_solver_iterations_per_frame: 25,
+            graph_reduction_level: 0,
+            compression_elastic: 0.008,
+            compression_fatal: 0.01,
+            tension_elastic: -1.0,
+            tension_fatal: -1.0,
+            shear_elastic: -1.0,
+            shear_fatal: -1.0,
+            maximum_bodies: 48,
+            maximum_fractures_per_actor_per_tick: 8,
+            protect_support_bonds: true,
+            support_peel_max_mass: 1000.0,
+            apply_excess_forces: true,
+            excess_force_scale: 0.012,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkNodeDesc {
+    pub node_index: u32,
+    pub centroid: Vec3,
+    pub mass: f32,
+    pub volume: f32,
+    pub geom_kind: u32,
+    pub half_extents: Vec3,
+    pub convex_points: Vec<Vec3>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChunkBondDesc {
+    pub bond_index: u32,
+    pub node0: u32,
+    pub node1: u32,
+    pub centroid: Vec3,
+    pub normal: Vec3,
+    pub area: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrokenBondEvent {
+    pub structure_id: u32,
+    pub bond_id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChunkMigrationEvent {
+    pub structure_id: u32,
+    pub chunk_id: u32,
+    pub from_island: u32,
+    pub to_island: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IslandBodyEvent {
+    pub structure_id: u32,
+    pub island_id: u32,
+    pub kind: u32,
+    pub mass: f32,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub chunk_ids: Vec<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChunkBodySnapshot {
+    pub entity_id: u32,
+    pub structure_id: u32,
+    pub island_id: u32,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub linear_velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub sleeping: bool,
+    pub kinematic: bool,
+    pub node_count: u32,
+    pub flags: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DestructionStats {
+    pub structures: u32,
+    pub chunk_bodies: u32,
+    pub awake_chunk_bodies: u32,
+    pub broken_bonds: u32,
+    pub stress_solve_ms: f32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BridgeError {
     Unavailable(String),
@@ -659,6 +770,159 @@ impl World {
             Err(stub_unavailable())
         }
     }
+
+    #[cfg(feature = "destruction")]
+    pub fn create_destructible(
+        &mut self,
+        structure_id: u32,
+        pose: Pose,
+        nodes: &[ChunkNodeDesc],
+        bonds: &[ChunkBondDesc],
+        settings: DestructibleSettings,
+        collision_group: u32,
+        collision_mask: u32,
+    ) -> Result<(), BridgeError> {
+        let ffi_nodes: Vec<ffi::FfiChunkNodeDesc> = nodes.iter().cloned().map(Into::into).collect();
+        let ffi_bonds: Vec<ffi::FfiChunkBondDesc> = bonds.iter().cloned().map(Into::into).collect();
+        self.inner
+            .pin_mut()
+            .create_destructible(
+                structure_id,
+                &pose.into(),
+                &ffi_nodes,
+                &ffi_bonds,
+                &settings.into(),
+                collision_group,
+                collision_mask,
+            )
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn destruction_tick(&mut self, dt: f32, gravity: Vec3) -> Result<(), BridgeError> {
+        self.inner
+            .pin_mut()
+            .destruction_tick(dt, gravity.into())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn queue_chunk_damage(
+        &mut self,
+        structure_id: u32,
+        chunk_id: u32,
+        impulse: Vec3,
+        point: Vec3,
+    ) -> Result<(), BridgeError> {
+        self.inner
+            .pin_mut()
+            .queue_chunk_damage(structure_id, chunk_id, impulse.into(), point.into())
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn apply_destruction_explosion(
+        &mut self,
+        center: Vec3,
+        radius: f32,
+        impulse_magnitude: f32,
+    ) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .apply_destruction_explosion(center.into(), radius, impulse_magnitude)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn apply_destruction_blast(
+        &mut self,
+        center: Vec3,
+        direction: Vec3,
+        radius: f32,
+        stress_impulse: f32,
+        push_impulse: f32,
+    ) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .apply_destruction_blast(
+                center.into(),
+                direction.into(),
+                radius,
+                stress_impulse,
+                push_impulse,
+            )
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn take_broken_bonds(&mut self) -> Result<Vec<BrokenBondEvent>, BridgeError> {
+        Ok(self
+            .inner
+            .pin_mut()
+            .take_broken_bonds()
+            .map_err(operation_error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn take_chunk_migrations(&mut self) -> Result<Vec<ChunkMigrationEvent>, BridgeError> {
+        Ok(self
+            .inner
+            .pin_mut()
+            .take_chunk_migrations()
+            .map_err(operation_error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn take_island_events(&mut self) -> Result<Vec<IslandBodyEvent>, BridgeError> {
+        Ok(self
+            .inner
+            .pin_mut()
+            .take_island_events()
+            .map_err(operation_error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn chunk_body_snapshots(&self) -> Result<Vec<ChunkBodySnapshot>, BridgeError> {
+        Ok(self
+            .inner
+            .chunk_body_snapshots()
+            .map_err(operation_error)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn sleep_chunk_body(&mut self, entity_id: u32) -> Result<(), BridgeError> {
+        self.inner
+            .pin_mut()
+            .sleep_chunk_body(entity_id)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
+        self.inner
+            .destruction_stats()
+            .map(Into::into)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn validate_destruction_mappings(&self) -> Result<bool, BridgeError> {
+        self.inner
+            .validate_destruction_mappings()
+            .map_err(operation_error)
+    }
 }
 
 #[cfg(not(feature = "gpu"))]
@@ -844,6 +1108,94 @@ mod ffi {
         point: FfiVec3,
     }
 
+    struct FfiDestructibleSettings {
+        max_solver_iterations_per_frame: u32,
+        graph_reduction_level: u32,
+        compression_elastic: f32,
+        compression_fatal: f32,
+        tension_elastic: f32,
+        tension_fatal: f32,
+        shear_elastic: f32,
+        shear_fatal: f32,
+        maximum_bodies: u32,
+        maximum_fractures_per_actor_per_tick: u32,
+        protect_support_bonds: bool,
+        support_peel_max_mass: f32,
+        apply_excess_forces: bool,
+        excess_force_scale: f32,
+    }
+
+    struct FfiChunkNodeDesc {
+        node_index: u32,
+        centroid: FfiVec3,
+        mass: f32,
+        volume: f32,
+        /// 0 = cuboid, 1 = convex hull
+        geom_kind: u32,
+        half_extents: FfiVec3,
+        convex_points: Vec<FfiVec3>,
+    }
+
+    struct FfiChunkBondDesc {
+        bond_index: u32,
+        node0: u32,
+        node1: u32,
+        centroid: FfiVec3,
+        normal: FfiVec3,
+        area: f32,
+    }
+
+    struct FfiBrokenBondEvent {
+        structure_id: u32,
+        bond_id: u32,
+    }
+
+    struct FfiChunkMigrationEvent {
+        structure_id: u32,
+        chunk_id: u32,
+        from_island: u32,
+        to_island: u32,
+    }
+
+    struct FfiIslandBodyEvent {
+        structure_id: u32,
+        island_id: u32,
+        /// 0 = promoted, 1 = retired
+        kind: u32,
+        mass: f32,
+        position: FfiVec3,
+        rotation: FfiQuat,
+        linear_velocity: FfiVec3,
+        angular_velocity: FfiVec3,
+        chunk_ids: Vec<u32>,
+    }
+
+    struct FfiChunkBodySnapshot {
+        entity_id: u32,
+        structure_id: u32,
+        island_id: u32,
+        position: FfiVec3,
+        rotation: FfiQuat,
+        linear_velocity: FfiVec3,
+        angular_velocity: FfiVec3,
+        sleeping: bool,
+        kinematic: bool,
+        node_count: u32,
+        flags: u32,
+    }
+
+    struct FfiDestructionStats {
+        structures: u32,
+        chunk_bodies: u32,
+        awake_chunk_bodies: u32,
+        broken_bonds: u32,
+        stress_solve_ms: f32,
+        /// Dynamic bodies dropped from snapshots for lacking an island serial.
+        /// Non-zero means the serial tables disagree with the adapter's live
+        /// bodies, which previously aliased ids and killed the match loop.
+        unmapped_body_skips: u32,
+    }
+
     unsafe extern "C++" {
         include!("physx_bridge.h");
 
@@ -892,6 +1244,46 @@ mod ffi {
         fn vehicle_snapshots(self: &World) -> Result<Vec<FfiVehicleSnapshot>>;
         fn stats(self: &World) -> Result<FfiWorldStats>;
         fn take_contact_events(self: Pin<&mut World>) -> Result<Vec<FfiContactEvent>>;
+
+        fn create_destructible(
+            self: Pin<&mut World>,
+            structure_id: u32,
+            pose: &FfiPose,
+            nodes: &[FfiChunkNodeDesc],
+            bonds: &[FfiChunkBondDesc],
+            settings: &FfiDestructibleSettings,
+            collision_group: u32,
+            collision_mask: u32,
+        ) -> Result<()>;
+        fn destruction_tick(self: Pin<&mut World>, dt: f32, gravity: FfiVec3) -> Result<()>;
+        fn queue_chunk_damage(
+            self: Pin<&mut World>,
+            structure_id: u32,
+            chunk_id: u32,
+            impulse: FfiVec3,
+            point: FfiVec3,
+        ) -> Result<()>;
+        fn apply_destruction_explosion(
+            self: Pin<&mut World>,
+            center: FfiVec3,
+            radius: f32,
+            impulse_magnitude: f32,
+        ) -> Result<u32>;
+        fn apply_destruction_blast(
+            self: Pin<&mut World>,
+            center: FfiVec3,
+            direction: FfiVec3,
+            radius: f32,
+            stress_impulse: f32,
+            push_impulse: f32,
+        ) -> Result<u32>;
+        fn take_broken_bonds(self: Pin<&mut World>) -> Result<Vec<FfiBrokenBondEvent>>;
+        fn take_chunk_migrations(self: Pin<&mut World>) -> Result<Vec<FfiChunkMigrationEvent>>;
+        fn take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
+        fn chunk_body_snapshots(self: &World) -> Result<Vec<FfiChunkBodySnapshot>>;
+        fn sleep_chunk_body(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
+        fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
+        fn validate_destruction_mappings(self: &World) -> Result<bool>;
     }
 }
 
@@ -1144,6 +1536,132 @@ impl From<ffi::FfiContactEvent> for ContactEvent {
             entity_b: value.entity_b,
             impulse: value.impulse.into(),
             point: value.point.into(),
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
+    fn from(value: DestructibleSettings) -> Self {
+        Self {
+            max_solver_iterations_per_frame: value.max_solver_iterations_per_frame,
+            graph_reduction_level: value.graph_reduction_level,
+            compression_elastic: value.compression_elastic,
+            compression_fatal: value.compression_fatal,
+            tension_elastic: value.tension_elastic,
+            tension_fatal: value.tension_fatal,
+            shear_elastic: value.shear_elastic,
+            shear_fatal: value.shear_fatal,
+            maximum_bodies: value.maximum_bodies,
+            maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
+            protect_support_bonds: value.protect_support_bonds,
+            support_peel_max_mass: value.support_peel_max_mass,
+            apply_excess_forces: value.apply_excess_forces,
+            excess_force_scale: value.excess_force_scale,
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ChunkNodeDesc> for ffi::FfiChunkNodeDesc {
+    fn from(value: ChunkNodeDesc) -> Self {
+        Self {
+            node_index: value.node_index,
+            centroid: value.centroid.into(),
+            mass: value.mass,
+            volume: value.volume,
+            geom_kind: value.geom_kind,
+            half_extents: value.half_extents.into(),
+            convex_points: value
+                .convex_points
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ChunkBondDesc> for ffi::FfiChunkBondDesc {
+    fn from(value: ChunkBondDesc) -> Self {
+        Self {
+            bond_index: value.bond_index,
+            node0: value.node0,
+            node1: value.node1,
+            centroid: value.centroid.into(),
+            normal: value.normal.into(),
+            area: value.area,
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ffi::FfiBrokenBondEvent> for BrokenBondEvent {
+    fn from(value: ffi::FfiBrokenBondEvent) -> Self {
+        Self {
+            structure_id: value.structure_id,
+            bond_id: value.bond_id,
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ffi::FfiChunkMigrationEvent> for ChunkMigrationEvent {
+    fn from(value: ffi::FfiChunkMigrationEvent) -> Self {
+        Self {
+            structure_id: value.structure_id,
+            chunk_id: value.chunk_id,
+            from_island: value.from_island,
+            to_island: value.to_island,
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ffi::FfiIslandBodyEvent> for IslandBodyEvent {
+    fn from(value: ffi::FfiIslandBodyEvent) -> Self {
+        Self {
+            structure_id: value.structure_id,
+            island_id: value.island_id,
+            kind: value.kind,
+            mass: value.mass,
+            position: value.position.into(),
+            rotation: value.rotation.into(),
+            linear_velocity: value.linear_velocity.into(),
+            angular_velocity: value.angular_velocity.into(),
+            chunk_ids: value.chunk_ids.into_iter().collect(),
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ffi::FfiChunkBodySnapshot> for ChunkBodySnapshot {
+    fn from(value: ffi::FfiChunkBodySnapshot) -> Self {
+        Self {
+            entity_id: value.entity_id,
+            structure_id: value.structure_id,
+            island_id: value.island_id,
+            position: value.position.into(),
+            rotation: value.rotation.into(),
+            linear_velocity: value.linear_velocity.into(),
+            angular_velocity: value.angular_velocity.into(),
+            sleeping: value.sleeping,
+            kinematic: value.kinematic,
+            node_count: value.node_count,
+            flags: value.flags,
+        }
+    }
+}
+
+#[cfg(feature = "destruction")]
+impl From<ffi::FfiDestructionStats> for DestructionStats {
+    fn from(value: ffi::FfiDestructionStats) -> Self {
+        Self {
+            structures: value.structures,
+            chunk_bodies: value.chunk_bodies,
+            awake_chunk_bodies: value.awake_chunk_bodies,
+            broken_bonds: value.broken_bonds,
+            stress_solve_ms: value.stress_solve_ms,
         }
     }
 }

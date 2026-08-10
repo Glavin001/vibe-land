@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
 import { isTouchDevice } from './device';
-import { buildMatchHref, defaultMatchIdForPath, resolveRequestedMatchId } from './app/matchId';
+import { buildMatchHref, defaultMatchIdForPath, isCityMatchId, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
 import {
   DEFAULT_INPUT_BINDINGS,
@@ -39,6 +39,7 @@ import { DEFAULT_WORLD_DOCUMENT, type WorldDocument } from './world/worldDocumen
 import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
+import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -263,7 +264,16 @@ export function App({
       : worldDocument,
     [benchmarkConfig, worldDocument],
   );
-  const effectiveWorldDocument = calibrationOpen ? CALIBRATION_WORLD_DOCUMENT : benchmarkWorldDocument;
+  // A city match runs on the server's flat world, not the Demo World. The
+  // document drives client prediction as well as rendering, so using the
+  // default here desynced movement from the server and buried the towers in
+  // terrain the server does not simulate.
+  const cityWorld = !practiceMode && isCityMatchId(multiplayerMatchId);
+  const effectiveWorldDocument = calibrationOpen
+    ? CALIBRATION_WORLD_DOCUMENT
+    : cityWorld
+      ? CITY_WORLD_DOCUMENT
+      : benchmarkWorldDocument;
 
   // E2E bridge: keep App-level state in sync for snapshot reads.
   useEffect(() => {

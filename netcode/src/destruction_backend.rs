@@ -178,6 +178,16 @@ pub struct DestructionStats {
     pub broken_bonds: u32,
     pub stress_solve_ms: f32,
     pub migration_ms: f32,
+    /// Settles deferred because the body was still sunk in the ground. A
+    /// sleeping body gets no depenetration, so freezing one mid-penetration
+    /// strands it below the floor permanently.
+    pub settle_deferred_penetrating: u64,
+    /// Lowest awake chunk-body origin this tick, in metres. The city ground is
+    /// a flat plane at y=0, so a negative value means physics itself has a body
+    /// under the floor (as opposed to the client reconstructing one there).
+    pub min_body_y: f32,
+    /// Dynamic bodies the bridge dropped for lacking an island serial.
+    pub unmapped_body_skips: u32,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

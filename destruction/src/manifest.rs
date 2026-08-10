@@ -53,10 +53,19 @@ pub struct ChunkDef {
     pub support: bool,
 }
 
+/// Collider geometry as served to clients.
+///
+/// `rename_all` on the enum only renames the *variant tags*; each variant needs
+/// its own `rename_all` or its fields stay snake_case. Without the per-variant
+/// attribute `Cuboid` serialized as `half_extents`, which the TypeScript client
+/// reads as `halfExtents` — it destructured `undefined` and aborted the whole
+/// chunk mesh build. `manifest_geometry_keys_are_camel_case` pins this.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ChunkGeometry {
+    #[serde(rename_all = "camelCase")]
     Cuboid { half_extents: [f32; 3] },
+    #[serde(rename_all = "camelCase")]
     ConvexHull { points: Vec<f32> },
 }
 
@@ -237,5 +246,71 @@ mod tests {
         let back: DestructionManifest = serde_json::from_slice(&bytes).expect("round trip");
         assert_eq!(manifest, back);
         assert_eq!(back.total_chunks(), 16);
+    }
+
+    /// Rust-only round-tripping cannot catch a snake_case field leaking into
+    /// the wire, because serde reads back whatever it wrote. The TypeScript
+    /// client cannot: it reads `halfExtents` literally. Pin the key names.
+    #[test]
+    fn manifest_geometry_keys_are_camel_case() {
+        let cuboid = serde_json::to_value(ChunkGeometry::Cuboid {
+            half_extents: [0.5, 1.0, 1.5],
+        })
+        .expect("serialize cuboid");
+        assert_eq!(cuboid["kind"], "cuboid");
+        assert_eq!(cuboid["halfExtents"], serde_json::json!([0.5, 1.0, 1.5]));
+        assert!(
+            cuboid.get("half_extents").is_none(),
+            "snake_case half_extents leaked to the wire: {cuboid}"
+        );
+
+        let hull = serde_json::to_value(ChunkGeometry::ConvexHull {
+            points: vec![0.0, 1.0, 2.0],
+        })
+        .expect("serialize hull");
+        assert_eq!(hull["kind"], "convexHull");
+        assert_eq!(hull["points"], serde_json::json!([0.0, 1.0, 2.0]));
+    }
+
+    /// Every key the client can observe on a real manifest must be camelCase.
+    /// Guards the whole document, not just the enum that regressed.
+    #[test]
+    fn served_manifest_has_no_snake_case_keys() {
+        let pack = tiny_pack();
+        let desc = CitySceneDesc {
+            grid: 2,
+            pitch_m: 10.0,
+            varied_heights: true,
+        };
+        let manifest = DestructionManifest::from_city(&build_city_scene(&pack, desc).unwrap());
+        let value: serde_json::Value =
+            serde_json::from_slice(&manifest.to_json_bytes()).expect("parse");
+
+        fn walk(value: &serde_json::Value, path: &str, offenders: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, child) in map {
+                        if key.contains('_') {
+                            offenders.push(format!("{path}.{key}"));
+                        }
+                        walk(child, &format!("{path}.{key}"), offenders);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    // Index 0 is representative; arrays here are homogeneous.
+                    if let Some(first) = items.first() {
+                        walk(first, &format!("{path}[0]"), offenders);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut offenders = Vec::new();
+        walk(&value, "$", &mut offenders);
+        assert!(
+            offenders.is_empty(),
+            "snake_case keys reached the client wire: {offenders:?}"
+        );
     }
 }

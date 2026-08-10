@@ -16,8 +16,9 @@ vibe-netcode = { path = "../netcode" }
 default = []
 # Native PhysX-backed runtime (CityDestruction). Gated so the crate core stays
 # pure Rust and CI-safe on machines without PhysX/CUDA.
-physx = ["dep:vibe-land-physx-bridge"]
+physx = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/destruction"]
 
 [dependencies.vibe-land-physx-bridge]
 path = "../physx-bridge"
 optional = true
+features = ["destruction"]

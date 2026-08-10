@@ -12,12 +12,13 @@ if [[ "${target_dir}" != /* ]]; then
 fi
 
 cd "${repo_root}"
-"${cargo_bin}" build --locked --release -p web-fps-server --features physx-gpu
+"${cargo_bin}" build --locked --release -p web-fps-server --features destruction
 
 rm -rf "${output_dir}"
-mkdir -p "${output_dir}/bin" "${output_dir}/lib"
+mkdir -p "${output_dir}/bin" "${output_dir}/lib" "${output_dir}/assets/scenes"
 cp "${target_dir}/release/web-fps-server" "${output_dir}/bin/"
 cp "${physx_lib_dir}/libPhysXGpu_64.so" "${output_dir}/lib/"
+cp "${repo_root}"/destruction/assets/scenes/*.json "${output_dir}/assets/scenes/"
 
 cat >"${output_dir}/run.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -26,12 +27,14 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LD_LIBRARY_PATH="${root}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export VIBE_PHYSICS_BACKEND=physx_gpu
 export WT_STRICT_SNAPSHOT_DATAGRAMS=1
+export VIBE_DESTRUCTION_ASSET_DIR="${root}/assets/scenes"
 exec "${root}/bin/web-fps-server" "$@"
 EOF
 chmod +x "${output_dir}/run.sh"
 
 cat >"${output_dir}/manifest.txt" <<EOF
 physics_backend=physx_gpu
+destruction=true
 gpu_required=true
 sim_hz=60
 snapshot_hz=60

@@ -1,0 +1,111 @@
+#pragma once
+
+#include "rust/cxx.h"
+
+#include <cstdint>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+namespace physx {
+class PxMaterial;
+class PxPhysics;
+class PxRigidDynamic;
+class PxScene;
+class PxShape;
+} // namespace physx
+
+namespace Nv {
+namespace Blast {
+class ExtStressPhysXDestructible;
+}
+} // namespace Nv
+
+namespace vibe_land::physx_bridge {
+
+struct FfiVec3;
+struct FfiPose;
+struct FfiDestructibleSettings;
+struct FfiChunkNodeDesc;
+struct FfiChunkBondDesc;
+struct FfiBrokenBondEvent;
+struct FfiChunkMigrationEvent;
+struct FfiIslandBodyEvent;
+struct FfiChunkBodySnapshot;
+struct FfiDestructionStats;
+
+/// Owns ExtStressPhysXDestructible slots for one PxScene / World.
+class DestructionManager final {
+public:
+  DestructionManager(physx::PxPhysics &physics, physx::PxScene &scene,
+                     physx::PxMaterial &material,
+                     float contact_report_threshold);
+  ~DestructionManager();
+
+  DestructionManager(const DestructionManager &) = delete;
+  DestructionManager &operator=(const DestructionManager &) = delete;
+
+  void create_destructible(std::uint32_t structure_id, const FfiPose &pose,
+                           rust::Slice<const FfiChunkNodeDesc> nodes,
+                           rust::Slice<const FfiChunkBondDesc> bonds,
+                           const FfiDestructibleSettings &settings,
+                           std::uint32_t collision_group,
+                           std::uint32_t collision_mask);
+
+  void destruction_tick(float dt, FfiVec3 gravity);
+
+  void queue_chunk_damage(std::uint32_t structure_id, std::uint32_t chunk_id,
+                          FfiVec3 impulse, FfiVec3 point);
+
+  std::uint32_t apply_destruction_explosion(FfiVec3 center, float radius,
+                                            float impulse_magnitude);
+
+  /// Rocket-style hit: directed stress contacts at the impact point (to break
+  /// bonds) plus PhysX impulses on nearby dynamic debris (to push them).
+  /// `direction` should be the unit shot direction (into the surface).
+  std::uint32_t apply_destruction_blast(FfiVec3 center, FfiVec3 direction,
+                                        float radius, float stress_impulse,
+                                        float push_impulse);
+
+  /// Route a PhysX contact pair into the owning destructible(s).
+  void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
+                           FfiVec3 impulse);
+
+  rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
+  rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
+  rust::Vec<FfiIslandBodyEvent> take_island_events();
+  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const;
+
+  void sleep_chunk_body(std::uint32_t entity_id);
+  FfiDestructionStats destruction_stats() const;
+  bool validate_destruction_mappings() const;
+
+private:
+  struct Slot;
+
+  Slot *find_slot(std::uint32_t structure_id);
+  const Slot *find_slot(std::uint32_t structure_id) const;
+  void register_filters(Slot &slot);
+  void collect_events(Slot &slot);
+
+  physx::PxPhysics &physics_;
+  physx::PxScene &scene_;
+  physx::PxMaterial &material_;
+  float contact_report_threshold_;
+
+  std::vector<std::unique_ptr<Slot>> slots_;
+  std::unordered_map<const physx::PxShape *, std::pair<std::uint32_t, std::uint32_t>>
+      shape_owners_; // shape -> (structure_id, node_index)
+
+  std::vector<FfiBrokenBondEvent> broken_bonds_;
+  std::vector<FfiChunkMigrationEvent> migrations_;
+  std::vector<FfiIslandBodyEvent> island_events_;
+
+  std::uint32_t total_broken_bonds_ = 0;
+  float last_stress_solve_ms_ = 0.0f;
+  /// Dynamic bodies dropped from snapshots because they had no island serial.
+  /// Non-zero means the serial tables and the adapter's live bodies disagree.
+  mutable std::uint32_t unmapped_body_skips_ = 0;
+};
+
+} // namespace vibe_land::physx_bridge

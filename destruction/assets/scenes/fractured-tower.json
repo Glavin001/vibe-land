@@ -19,7 +19,15 @@
     },
     "solver": {
       "gravity": -9.81,
-      "materialScale": 10000000000
+      "materialScale": 10000000000,
+      "limits": {
+        "compressionElastic": 12000000,
+        "compressionFatal": 30000000,
+        "tensionElastic": 1200000,
+        "tensionFatal": 3000000,
+        "shearElastic": 1600000,
+        "shearFatal": 4000000
+      }
     },
     "physics": {
       "debrisCollisionMode": "noDebrisPairs",

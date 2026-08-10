@@ -109,6 +109,12 @@ export interface CityE2EStats {
   datagramsReceived: number;
   bytesPerSecond: number;
   manifestHash: string;
+  /** False when the chunk mesh failed to build — the city is streaming but invisible. */
+  rendered: boolean;
+  /** Lowest chunk centroid, in metres. The city ground is a flat plane at y=0. */
+  minChunkY: number;
+  /** Chunks whose centroid has sunk below the ground plane. */
+  chunksBelowGround: number;
 }
 
 export interface VibeE2EBridge {

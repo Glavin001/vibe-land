@@ -22,6 +22,15 @@ struct FfiPlayerSnapshot;
 struct FfiVehicleSnapshot;
 struct FfiWorldStats;
 struct FfiContactEvent;
+struct FfiPose;
+struct FfiDestructibleSettings;
+struct FfiChunkNodeDesc;
+struct FfiChunkBondDesc;
+struct FfiBrokenBondEvent;
+struct FfiChunkMigrationEvent;
+struct FfiIslandBodyEvent;
+struct FfiChunkBodySnapshot;
+struct FfiDestructionStats;
 
 class World final {
 public:
@@ -56,6 +65,28 @@ public:
   rust::Vec<FfiVehicleSnapshot> vehicle_snapshots() const;
   FfiWorldStats stats() const;
   rust::Vec<FfiContactEvent> take_contact_events();
+
+  void create_destructible(std::uint32_t structure_id, const FfiPose &pose,
+                           rust::Slice<const FfiChunkNodeDesc> nodes,
+                           rust::Slice<const FfiChunkBondDesc> bonds,
+                           const FfiDestructibleSettings &settings,
+                           std::uint32_t collision_group,
+                           std::uint32_t collision_mask);
+  void destruction_tick(float dt, FfiVec3 gravity);
+  void queue_chunk_damage(std::uint32_t structure_id, std::uint32_t chunk_id,
+                          FfiVec3 impulse, FfiVec3 point);
+  std::uint32_t apply_destruction_explosion(FfiVec3 center, float radius,
+                                            float impulse_magnitude);
+  std::uint32_t apply_destruction_blast(FfiVec3 center, FfiVec3 direction,
+                                        float radius, float stress_impulse,
+                                        float push_impulse);
+  rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
+  rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
+  rust::Vec<FfiIslandBodyEvent> take_island_events();
+  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const;
+  void sleep_chunk_body(std::uint32_t entity_id);
+  FfiDestructionStats destruction_stats() const;
+  bool validate_destruction_mappings() const;
 
 private:
   class Impl;

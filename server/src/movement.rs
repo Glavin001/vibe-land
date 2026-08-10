@@ -98,6 +98,14 @@ impl PhysicsArena {
         }
     }
 
+    #[cfg(feature = "destruction")]
+    pub fn physx_world_mut(&mut self) -> Option<&mut vibe_land_physx_bridge::World> {
+        match &mut self.backend {
+            PhysicsBackend::Rapier(_) => None,
+            PhysicsBackend::Physx(arena) => Some(arena.world_mut()),
+        }
+    }
+
     pub fn set_spawn_areas(&mut self, areas: Vec<SpawnArea>) {
         match &mut self.backend {
             PhysicsBackend::Rapier(arena) => arena.set_spawn_areas(areas),

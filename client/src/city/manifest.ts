@@ -5,13 +5,45 @@
 // JSON bytes, so the decompressed body hashes to the URL hash.
 
 export interface ChunkGeometryCuboid {
-  kind: 'Cuboid';
+  // Server serde emits camelCase enum tags ("cuboid"); accept both.
+  kind: 'Cuboid' | 'cuboid';
   halfExtents: [number, number, number];
+  /** Legacy snake_case spelling from servers before the serde variant fix. */
+  half_extents?: [number, number, number];
 }
 
 export interface ChunkGeometryConvexHull {
-  kind: 'ConvexHull';
+  kind: 'ConvexHull' | 'convexHull';
   points: number[];
+}
+
+export type ChunkGeometry = ChunkGeometryCuboid | ChunkGeometryConvexHull;
+
+export function isCuboidGeometry(geometry: ChunkGeometry): geometry is ChunkGeometryCuboid {
+  return geometry.kind === 'Cuboid' || geometry.kind === 'cuboid';
+}
+
+export function isConvexHullGeometry(
+  geometry: ChunkGeometry,
+): geometry is ChunkGeometryConvexHull {
+  return geometry.kind === 'ConvexHull' || geometry.kind === 'convexHull';
+}
+
+/**
+ * Half extents of a cuboid chunk, or null for any other geometry.
+ *
+ * Never destructure `geometry.halfExtents` directly: a server that has not
+ * picked up the serde per-variant `rename_all` fix serves `half_extents`, and
+ * destructuring `undefined` throws and aborts the entire chunk mesh build.
+ */
+export function cuboidHalfExtents(
+  geometry: ChunkGeometry,
+): [number, number, number] | null {
+  if (!isCuboidGeometry(geometry)) {
+    return null;
+  }
+  const extents = geometry.halfExtents ?? geometry.half_extents;
+  return Array.isArray(extents) && extents.length === 3 ? extents : null;
 }
 
 export interface ManifestChunk {

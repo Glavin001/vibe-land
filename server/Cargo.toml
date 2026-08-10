@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 physx-gpu = ["dep:vibe-land-physx-bridge", "vibe-land-physx-bridge/gpu"]
+destruction = ["physx-gpu", "vibe-land-physx-bridge/destruction", "vibe-land-destruction/physx"]
 
 [dependencies]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }

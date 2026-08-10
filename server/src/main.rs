@@ -756,8 +756,12 @@ async fn main() -> Result<()> {
         (Some(cert_path), Some(key_path)) => {
             let identity = Identity::load_pemfiles(&cert_path, &key_path).await?;
             info!(%cert_path, "WebTransport: loaded CA-signed certificate");
-            // Empty hash signals the client to skip certificate pinning
-            (identity, String::new())
+            // Still publish the leaf SHA-256 so browsers that do not trust the
+            // issuing CA (agent webviews, local tunnels) can pin via
+            // serverCertificateHashes. Trusted CA clients ignore the pin.
+            let cert_der = identity.certificate_chain().as_slice()[0].der().to_vec();
+            let cert_hash_hex = hex::encode(Sha256::digest(&cert_der));
+            (identity, cert_hash_hex)
         }
         _ => {
             let identity = Identity::self_signed(["localhost", "127.0.0.1", "::1"])?;
@@ -1310,14 +1314,19 @@ async fn run_match_loop(
         .collect();
 
     let city = if city::is_city_match(&match_id) {
-        match city::CityRuntime::synthetic(SIM_HZ as u32) {
+        #[cfg(feature = "destruction")]
+        let world = arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        match city::CityRuntime::open(SIM_HZ as u32, world) {
             Ok(runtime) => {
                 info!(
                     %match_id,
                     structures = runtime.manifest.structures.len(),
                     chunks = runtime.manifest.total_chunks(),
                     bonds = runtime.manifest.total_bonds(),
-                    "destructible city initialized (synthetic backend)"
+                    physx = runtime.is_physx(),
+                    "destructible city initialized"
                 );
                 Some(runtime)
             }
@@ -2141,24 +2150,50 @@ impl MatchState {
     /// `process_hitscan` drains them (players/vehicles still take the same
     /// hitscan resolution afterwards).
     fn route_city_shots(&mut self) {
-        let Some(city) = self.city.as_mut() else {
+        if self.city.is_none() {
             return;
-        };
-        for queued in &self.queued_shots {
-            let Some(state) = self.arena.player_state(queued.player_id) else {
-                continue;
-            };
-            if state.dead {
-                continue;
-            }
-            let origin = glam::Vec3::new(
-                state.position.x as f32,
-                state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
-                state.position.z as f32,
-            );
-            let direction = glam::Vec3::from_array(queued.cmd.dir);
-            city.apply_shot_ray(origin, direction);
         }
+        let shots: Vec<(glam::Vec3, glam::Vec3)> = self
+            .queued_shots
+            .iter()
+            .filter_map(|queued| {
+                let state = self.arena.player_state(queued.player_id)?;
+                if state.dead {
+                    return None;
+                }
+                Some((
+                    glam::Vec3::new(
+                        state.position.x as f32,
+                        state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                        state.position.z as f32,
+                    ),
+                    glam::Vec3::from_array(queued.cmd.dir),
+                ))
+            })
+            .collect();
+        let shot_count = shots.len();
+        let mut city = self.city.take().expect("checked above");
+        let broken_before = city.stats().broken_bonds;
+        let mut hits = 0u32;
+        for (origin, direction) in shots {
+            #[cfg(feature = "destruction")]
+            let world = self.arena.physx_world_mut();
+            #[cfg(not(feature = "destruction"))]
+            let world = None;
+            if city.apply_shot_ray(origin, direction, world) {
+                hits += 1;
+            }
+        }
+        if shot_count > 0 {
+            tracing::info!(
+                match_id = %self.id,
+                shots = shot_count,
+                hits,
+                broken_bonds_before = broken_before,
+                "city shot routing"
+            );
+        }
+        self.city = Some(city);
     }
 
     /// Camera used for per-client interest: player eye + aim direction, using
@@ -2200,10 +2235,30 @@ impl MatchState {
             Vec::new()
         };
 
-        let city = self.city.as_mut().expect("checked above");
+        let mut city = self.city.take().expect("checked above");
+        #[cfg(feature = "destruction")]
+        let world = self.arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        let broken_before = city.stats().broken_bonds;
+        let awake_before = city.stats().awake_chunk_bodies;
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
-        let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0]);
+        let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0], world);
+        let broken_after = city.stats().broken_bonds;
+        let awake_after = city.stats().awake_chunk_bodies;
+        if broken_after > broken_before || awake_after > awake_before {
+            tracing::info!(
+                match_id = %self.id,
+                tick = self.server_tick,
+                broken_bonds_before = broken_before,
+                broken_bonds_after = broken_after,
+                delta_broken = broken_after.saturating_sub(broken_before),
+                awake_before,
+                awake_after,
+                "city stress fracture (queueContact → broken bonds)"
+            );
+        }
         for packet in &reliable {
             for runtime in self.players.values() {
                 let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
@@ -2224,6 +2279,7 @@ impl MatchState {
                 }
             }
         }
+        self.city = Some(city);
     }
 
     /// 1 Hz destructible-city telemetry: stream volume, encode cost, and the
@@ -2253,6 +2309,12 @@ impl MatchState {
             encode_ms = city.last_encode_ms,
             topo_seq = encoder.topo_seq,
             baseline_id = encoder.baseline_id,
+            // Non-zero means two island bodies claimed the same network id;
+            // the encoder drops the duplicate rather than failing the match.
+            duplicate_body_records = encoder.duplicate_body_records,
+            min_body_y = stats.min_body_y,
+            settle_deferred = stats.settle_deferred_penetrating,
+            unmapped_body_skips = stats.unmapped_body_skips,
             "city stream"
         );
     }
