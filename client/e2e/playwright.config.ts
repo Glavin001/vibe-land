@@ -32,6 +32,24 @@ const BASE_URL = process.env.E2E_BASE_URL
     : `http://127.0.0.1:${CLIENT_PORT}`);
 const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
+// Real GPU rendering. Without `--use-angle=vulkan` Chromium silently picks
+// SwiftShader even on a machine with a discrete GPU, and every frame-time
+// number then measures software rasterisation instead of the product: a city
+// collapse read 133 ms/frame under SwiftShader and 16.7 ms on the same box
+// through ANGLE/Vulkan. Hosts without a GPU still fall back automatically.
+const GPU_ARGS = [
+  '--enable-quic',
+  '--no-sandbox',
+  '--disable-gpu-sandbox',
+  '--ignore-certificate-errors',
+  '--allow-insecure-localhost',
+  '--use-gl=angle',
+  '--use-angle=vulkan',
+  '--enable-features=Vulkan',
+  '--ignore-gpu-blocklist',
+  '--enable-gpu-rasterization',
+];
+
 // Allow skipping webServer when servers are already running externally
 const SKIP_WEB_SERVER = process.env.E2E_SKIP_WEB_SERVER === '1';
 
@@ -60,15 +78,7 @@ export default defineConfig({
       ...(CHROMIUM_EXECUTABLE_PATH
         ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
         : {}),
-      args: [
-        '--enable-quic',
-        '--no-sandbox',
-        '--ignore-certificate-errors',
-        '--allow-insecure-localhost',
-        // Use GPU when available for full-speed WebGL rendering.
-        // CI environments without a GPU will fall back to swiftshader automatically.
-        '--use-gl=angle',
-      ],
+      args: GPU_ARGS,
     },
   },
   projects: [
@@ -81,13 +91,7 @@ export default defineConfig({
           ...(CHROMIUM_EXECUTABLE_PATH
             ? { executablePath: CHROMIUM_EXECUTABLE_PATH }
             : {}),
-          args: [
-            '--enable-quic',
-            '--no-sandbox',
-            '--ignore-certificate-errors',
-            '--allow-insecure-localhost',
-            '--use-gl=angle',
-          ],
+          args: GPU_ARGS,
         },
       },
     },

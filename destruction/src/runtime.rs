@@ -80,8 +80,6 @@ impl CityDestruction {
             shear_fatal: settings.material.shear_fatal_mpa,
             maximum_bodies: settings.maximum_bodies,
             maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
-            protect_support_bonds: settings.protect_support_bonds,
-            support_peel_max_mass: settings.support_peel_max_mass,
             apply_excess_forces: settings.apply_excess_forces,
             excess_force_scale: settings.excess_force_scale,
         };
@@ -357,6 +355,29 @@ impl CityDestruction {
         let snapshots = world
             .chunk_body_snapshots()
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
+        // Re-arm settling for anything that woke back up.
+        //
+        // `SettleTracker` drops a body once it settles, so a body woken again
+        // by the adapter or a neighbouring impact was never reconsidered and
+        // stayed awake in PhysX for the rest of the match. Measured: ~600 of
+        // ~735 chunk bodies still awake long after a collapse had visibly
+        // finished, with the match loop simulating, snapshotting and encoding
+        // all of them every tick.
+        let mut woke = Vec::new();
+        for snap in snapshots.iter() {
+            if snap.kinematic || snap.sleeping {
+                continue;
+            }
+            if self.known_awake.get(&snap.entity_id) == Some(&false) {
+                woke.push(snap.entity_id);
+            }
+        }
+        for body in woke {
+            self.settle.wake(body, tick);
+            self.known_awake.insert(body, true);
+            self.stats.resettled_wakes += 1;
+        }
+
         let samples: Vec<SettleSample> = snapshots
             .iter()
             .filter(|snap| !snap.kinematic && !snap.sleeping)
@@ -373,13 +394,17 @@ impl CityDestruction {
             })
             .collect();
 
+        // Forced sleep stays, even though the adapter gained its own settling.
+        // Handing settling entirely to `baseStepSleep` measured worse on this
+        // scene: without the brake the collapse cascaded much further (7393
+        // broken bonds vs 2755), leaving 1442 of 1819 bodies awake and the
+        // match loop at 34-38 ms. Keeping the policy and re-arming woken
+        // bodies measured best: 535 awake, 15-19 ms.
         let mut settled = Vec::new();
         for body in self.settle.update(tick, samples, self.settle_config) {
             // A sleeping body gets no depenetration, so freezing one while it
-            // is still sunk in the ground leaves it there permanently — this is
-            // the "chunks fall through the floor" bug. Defer the settle and let
-            // PhysX push it out first; `SettleTracker` re-arms it because the
-            // body stays awake and keeps producing samples.
+            // is still sunk in the ground would strand it there. Defer and let
+            // PhysX push it out first.
             if let Some(snap) = snapshots.iter().find(|snap| snap.entity_id == body) {
                 if snap.position.y < GROUND_PENETRATION_FLOOR_M {
                     self.settle.wake(body, tick);
@@ -415,14 +440,6 @@ impl CityDestruction {
             });
         }
 
-        self.stats.min_body_y = snapshots
-            .iter()
-            .filter(|snap| !snap.kinematic)
-            .map(|snap| snap.position.y)
-            .fold(f32::INFINITY, f32::min);
-        if !self.stats.min_body_y.is_finite() {
-            self.stats.min_body_y = 0.0;
-        }
         if let Ok(bridge_stats) = world.destruction_stats() {
             self.stats.chunk_bodies = bridge_stats.chunk_bodies;
             self.stats.awake_chunk_bodies = bridge_stats.awake_chunk_bodies;

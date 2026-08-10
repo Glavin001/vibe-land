@@ -64,7 +64,6 @@ fn destruction_tower_settles_and_fractures() {
     // Soft limits so a large impulse fractures quickly in the smoke test.
     settings.compression_elastic = 1.0e-4;
     settings.compression_fatal = 5.0e-4;
-    settings.protect_support_bonds = true;
     settings.maximum_bodies = 16;
     settings.maximum_fractures_per_actor_per_tick = 8;
 
@@ -173,7 +172,6 @@ fn chunk_raycast_resolves_the_real_surface_and_misses_are_real() {
     ];
     let bonds = vec![bond(0, 0, 1, 1.0), bond(1, 1, 2, 2.0)];
     let mut settings = DestructibleSettings::default();
-    settings.protect_support_bonds = true;
     settings.maximum_bodies = 16;
     world
         .create_destructible(

@@ -45,8 +45,6 @@ pub struct StressSolverSettings {
     pub maximum_fractures_per_actor_per_tick: u32,
     /// Drop fracture commands touching support nodes unless the partner is a
     /// light peelable chunk (facades peel, structure stays locked).
-    pub protect_support_bonds: bool,
-    pub support_peel_max_mass: f32,
     pub apply_excess_forces: bool,
     pub excess_force_scale: f32,
 }
@@ -59,8 +57,6 @@ impl Default for StressSolverSettings {
             material: StressMaterial::default(),
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
-            protect_support_bonds: true,
-            support_peel_max_mass: 1000.0,
             apply_excess_forces: true,
             excess_force_scale: 0.012,
         }
@@ -188,6 +184,9 @@ pub struct DestructionStats {
     pub min_body_y: f32,
     /// Dynamic bodies the bridge dropped for lacking an island serial.
     pub unmapped_body_skips: u32,
+    /// Bodies re-armed for settling after waking back up. Without this they
+    /// stayed awake for the rest of the match.
+    pub resettled_wakes: u64,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

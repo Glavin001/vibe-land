@@ -301,8 +301,6 @@ pub struct DestructibleSettings {
     pub shear_fatal: f32,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
-    pub protect_support_bonds: bool,
-    pub support_peel_max_mass: f32,
     pub apply_excess_forces: bool,
     pub excess_force_scale: f32,
 }
@@ -320,8 +318,6 @@ impl Default for DestructibleSettings {
             shear_fatal: -1.0,
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
-            protect_support_bonds: true,
-            support_peel_max_mass: 1000.0,
             apply_excess_forces: true,
             excess_force_scale: 0.012,
         }
@@ -398,6 +394,9 @@ pub struct DestructionStats {
     pub awake_chunk_bodies: u32,
     pub broken_bonds: u32,
     pub stress_solve_ms: f32,
+    /// Dynamic bodies dropped from snapshots for lacking an island serial.
+    /// Non-zero means the serial tables and the adapter's live bodies disagree.
+    pub unmapped_body_skips: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1119,8 +1118,6 @@ mod ffi {
         shear_fatal: f32,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
-        protect_support_bonds: bool,
-        support_peel_max_mass: f32,
         apply_excess_forces: bool,
         excess_force_scale: f32,
     }
@@ -1554,8 +1551,6 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             shear_fatal: value.shear_fatal,
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
-            protect_support_bonds: value.protect_support_bonds,
-            support_peel_max_mass: value.support_peel_max_mass,
             apply_excess_forces: value.apply_excess_forces,
             excess_force_scale: value.excess_force_scale,
         }
@@ -1662,6 +1657,7 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             awake_chunk_bodies: value.awake_chunk_bodies,
             broken_bonds: value.broken_bonds,
             stress_solve_ms: value.stress_solve_ms,
+            unmapped_body_skips: value.unmapped_body_skips,
         }
     }
 }

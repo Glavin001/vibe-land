@@ -220,6 +220,7 @@ pub struct CityRuntime {
     sent_records: u64,
     sent_bytes: u64,
     sent_packets: u64,
+    last_stream_counters: (u64, u64, u64),
     /// Blasts that need a post-fracture PhysX push (first hit on kinematic
     /// support promotes islands only during `step`, so we re-apply push then).
     pending_pushes: Vec<(Vec3, Vec3, f32, f32)>,
@@ -267,6 +268,7 @@ impl CityRuntime {
             sent_records: 0,
             sent_bytes: 0,
             sent_packets: 0,
+            last_stream_counters: (0, 0, 0),
             pending_pushes: Vec::new(),
         }
     }
@@ -622,9 +624,24 @@ impl CityRuntime {
 
     pub fn take_stream_counters(&mut self) -> (u64, u64, u64) {
         let counters = (self.sent_records, self.sent_bytes, self.sent_packets);
+        self.last_stream_counters = counters;
         self.sent_records = 0;
         self.sent_bytes = 0;
         self.sent_packets = 0;
         counters
+    }
+
+    /// Last completed 1 Hz window, for read-only telemetry consumers (the
+    /// in-page debug overlay) that must not reset the counters.
+    pub fn last_stream_counters(&self) -> (u64, u64, u64) {
+        self.last_stream_counters
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        match &self.backend {
+            CityBackend::Synthetic(_) => false,
+            #[cfg(feature = "destruction")]
+            CityBackend::Physx(backend) => backend.degraded(),
+        }
     }
 }

@@ -189,6 +189,7 @@ void DestructionManager::create_destructible(
     dst.area = src.area > 0.0f ? src.area : 1.0f;
     dst.node0 = src.node0;
     dst.node1 = src.node1;
+    dst.material = 0;
     require(dst.node0 < nodes.size() && dst.node1 < nodes.size(),
             "bond node index out of range");
   }
@@ -206,12 +207,6 @@ void DestructionManager::create_destructible(
   desc.settings.maxSolverIterationsPerFrame =
       settings.max_solver_iterations_per_frame;
   desc.settings.graphReductionLevel = settings.graph_reduction_level;
-  desc.settings.compressionElasticLimit = settings.compression_elastic;
-  desc.settings.compressionFatalLimit = settings.compression_fatal;
-  desc.settings.tensionElasticLimit = settings.tension_elastic;
-  desc.settings.tensionFatalLimit = settings.tension_fatal;
-  desc.settings.shearElasticLimit = settings.shear_elastic;
-  desc.settings.shearFatalLimit = settings.shear_fatal;
   desc.settings.islandAware = true;
   desc.settings.skipSettledIslands = true;
   desc.settings.gpuStressSolver = false;
@@ -221,16 +216,40 @@ void DestructionManager::create_destructible(
   desc.settings.maximumBodies = settings.maximum_bodies;
   desc.settings.maximumFracturesPerActorPerTick =
       settings.maximum_fractures_per_actor_per_tick;
-  desc.settings.protectSupportBonds = settings.protect_support_bonds;
-  desc.settings.supportPeelMaxMass = settings.support_peel_max_mass;
-  desc.settings.fatalizeImpactContactBonds = true;
-  desc.settings.maximumLinearVelocity = 12.0f;
-  desc.settings.maximumAngularVelocity = 10.0f;
+  // Upstream removed protectSupportBonds, supportPeelMaxMass,
+  // fatalizeImpactContactBonds and the per-body velocity caps (blast commit
+  // 19245a62). Its contract is now "joint strength is authored: bond area =
+  // geometry, material limits = strength; anything the solver says breaks,
+  // breaks", so those knobs are no longer ours to set.
+  //
+  // Let the adapter settle its own bodies. Without this the debris from a
+  // collapse never sleeps: 654 of 792 chunk bodies stayed awake indefinitely,
+  // and the per-tick cost of simulating, snapshotting and encoding them pushed
+  // the match loop to 21-29 ms against a 16.67 ms budget.
+  desc.settings.baseStepSleep = true;
+  desc.settings.settledLinearSpeed = 0.15f;
+  desc.settings.settledAngularSpeed = 0.15f;
+  desc.settings.idleSkip = true;
   // Keep a tiny peel impulse so new islands don't stick, but not the old 4 m/s
   // "inflate then collapse" puff that made shots look like overlapping chunks.
   desc.settings.minimumSeparationVelocity =
       settings.apply_excess_forces ? 0.35f : 0.0f;
   desc.errorCallback = adapter_error;
+
+  // Stress limits moved from settings onto a per-material table indexed by
+  // each bond (upstream's multi-material work). One entry is enough here: the
+  // city pack authors a single concrete, so index 0 is the structure default
+  // and every bond references it. Per-bond materials can be read from the
+  // ScenePack later without touching this call site.
+  std::vector<ExtStressPhysXMaterial> stress_materials(1);
+  stress_materials[0].compressionElasticLimit = settings.compression_elastic;
+  stress_materials[0].compressionFatalLimit = settings.compression_fatal;
+  stress_materials[0].tensionElasticLimit = settings.tension_elastic;
+  stress_materials[0].tensionFatalLimit = settings.tension_fatal;
+  stress_materials[0].shearElasticLimit = settings.shear_elastic;
+  stress_materials[0].shearFatalLimit = settings.shear_fatal;
+  desc.stressMaterials = stress_materials.data();
+  desc.stressMaterialCount = static_cast<std::uint32_t>(stress_materials.size());
 
   ExtStressPhysXTelemetry failure;
   ExtStressPhysXDestructible *dest =

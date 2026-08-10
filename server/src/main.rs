@@ -26,6 +26,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
+    http::StatusCode,
     response::IntoResponse,
     routing::get,
     Json, Router,
@@ -210,6 +211,30 @@ struct MatchTimingStats {
     dynamics_ms: RollingSamples,
     hitscan_ms: RollingSamples,
     snapshot_ms: RollingSamples,
+}
+
+/// Destructible-city telemetry, surfaced to the in-page debug overlay so the
+/// sim cost and the render cost can be told apart while playing.
+#[derive(serde::Serialize, Clone, Default)]
+struct CityStatsSnapshot {
+    structures: u32,
+    chunk_bodies: u32,
+    awake_bodies: u32,
+    broken_bonds: u32,
+    /// Whole city step (physics tick + encode) in ms, not codec time alone.
+    step_ms: f32,
+    stress_solve_ms: f32,
+    packets_per_sec: u64,
+    records_per_sec: u64,
+    bytes_per_sec: u64,
+    topo_seq: u32,
+    baseline_id: u16,
+    min_body_y: f32,
+    resettled_wakes: u64,
+    settle_deferred_penetrating: u64,
+    unmapped_body_skips: u32,
+    duplicate_body_records: u64,
+    degraded: bool,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -544,6 +569,8 @@ struct MatchStatsSnapshot {
     timings: MatchTimingSnapshot,
     network: MatchNetworkSnapshot,
     players: Vec<PlayerStatsSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    city: Option<CityStatsSnapshot>,
 }
 
 #[derive(serde::Serialize, Clone, Default)]
@@ -873,6 +900,7 @@ async fn main() -> Result<()> {
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))
+        .route("/match-stats/:match_id", get(match_stats_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -941,6 +969,26 @@ async fn session_config_handler(
 }
 
 /// Content-addressed city manifest: gzip-encoded canonical JSON, immutable.
+/// Per-match telemetry for the in-page debug overlay: sim tick cost, body
+/// counts, and city stream volume, so client-side and server-side slowness can
+/// be told apart while playing.
+async fn match_stats_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    let snapshot = state
+        .inner
+        .stats_registry
+        .read()
+        .expect("stats registry poisoned")
+        .get(&match_id)
+        .cloned();
+    match snapshot {
+        Some(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
+    }
+}
+
 async fn city_manifest_handler(
     axum::extract::Path(hash): axum::extract::Path<String>,
 ) -> axum::response::Response {
@@ -2315,6 +2363,7 @@ impl MatchState {
             min_body_y = stats.min_body_y,
             settle_deferred = stats.settle_deferred_penetrating,
             unmapped_body_skips = stats.unmapped_body_skips,
+            resettled_wakes = stats.resettled_wakes,
             "city stream"
         );
     }
@@ -2580,6 +2629,30 @@ impl MatchState {
                 dead_players_skipped: self.snapshot_stats.dead_players_skipped.snapshot(),
             },
             players: player_snapshots,
+            city: self.city.as_ref().map(|city| {
+                let stats = city.stats();
+                let encoder = city.encoder_stats();
+                let (records, bytes, packets) = city.last_stream_counters();
+                CityStatsSnapshot {
+                    structures: stats.structures,
+                    chunk_bodies: stats.chunk_bodies,
+                    awake_bodies: stats.awake_chunk_bodies,
+                    broken_bonds: stats.broken_bonds,
+                    step_ms: city.last_encode_ms,
+                    stress_solve_ms: stats.stress_solve_ms,
+                    packets_per_sec: packets,
+                    records_per_sec: records,
+                    bytes_per_sec: bytes,
+                    topo_seq: encoder.topo_seq,
+                    baseline_id: encoder.baseline_id,
+                    min_body_y: stats.min_body_y,
+                    resettled_wakes: stats.resettled_wakes,
+                    settle_deferred_penetrating: stats.settle_deferred_penetrating,
+                    unmapped_body_skips: stats.unmapped_body_skips,
+                    duplicate_body_records: encoder.duplicate_body_records,
+                    degraded: city.is_degraded(),
+                }
+            }),
         };
 
         let global = {

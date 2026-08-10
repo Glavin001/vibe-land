@@ -40,6 +40,7 @@ import { CalibrationOverlay } from './calibration/CalibrationOverlay';
 import { FirstRunPrompt } from './calibration/FirstRunPrompt';
 import { CALIBRATION_WORLD_DOCUMENT } from './calibration/calibrationWorld';
 import { CITY_WORLD_DOCUMENT } from './world/cityWorld';
+import { CityStatsOverlay } from './city/CityStatsOverlay';
 import {
   getInputSettings,
   hasStoredInputSettings,
@@ -1109,6 +1110,14 @@ export function App({
         visible={connected}
       />
       <MeleeHUD visible={connected} />
+      {cityWorld && connected && (
+        <CityStatsOverlay
+          matchId={multiplayerMatchId}
+          getCityStats={() => window.__VIBE_E2E__?.snapshot().city ?? null}
+          transport={displayStats.transport}
+          pingMs={displayStats.pingMs}
+        />
+      )}
       <DebugOverlay
         stats={displayStats}
         visible={debugVisible}

@@ -41,6 +41,9 @@ export default defineConfig(({ mode }) => {
         '/city-manifest': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        '/match-stats': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
       },
     },
     optimizeDeps: {
