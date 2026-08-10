@@ -110,6 +110,11 @@ private:
 
   std::uint32_t total_broken_bonds_ = 0;
   float last_stress_solve_ms_ = 0.0f;
+  /// Per-phase breakdown of destruction_tick.
+  float last_solve_ms_ = 0.0f;
+  float last_readback_ms_ = 0.0f;
+  float last_events_ms_ = 0.0f;
+  float last_filters_ms_ = 0.0f;
   /// Dynamic bodies dropped from snapshots because they had no island serial.
   /// Non-zero means the serial tables and the adapter's live bodies disagree.
   mutable std::uint32_t unmapped_body_skips_ = 0;

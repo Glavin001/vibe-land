@@ -41,6 +41,7 @@ use vibe_land_shared::constants::{
     DEFAULT_BATTERY_HEIGHT_M, DEFAULT_BATTERY_RADIUS_M, DYNAMIC_BODY_AOI_EXIT_RADIUS_M,
     DYNAMIC_BODY_AOI_RADIUS_M, DYNAMIC_BODY_IMPULSE, FLAG_MELEEING, HITSCAN_MAX_DISTANCE_M,
     MAX_PENDING_INPUTS, MELEE_COOLDOWN_MS, MELEE_DAMAGE, MELEE_ENERGY_COST,
+    PLAYER_INPUT_CATCHUP_THRESHOLD,
     MELEE_FLAG_DURATION_TICKS, MELEE_HALF_CONE_COS, MELEE_HIT_RECOVERY_MS, MELEE_RANGE_M,
     OUT_OF_BOUNDS_Y_M, PLAYER_AOI_RADIUS_M, PLAYER_EYE_HEIGHT_M, RIFLE_BODY_DAMAGE,
     RIFLE_FIRE_INTERVAL_MS, RIFLE_HEAD_DAMAGE, RIFLE_SHOT_ENERGY_COST, SHAPE_SPHERE, SIM_HZ,
@@ -60,7 +61,8 @@ use crate::{
         make_net_battery_state, make_net_dynamic_body_state, make_net_player_state,
         make_net_shot_fired, meters_to_mm, mm_to_meters, BatterySyncPacket, ClientPacket,
         DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
-        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_RELOAD, HIT_ZONE_BODY,
+        ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_JUMP, BTN_RELOAD,
+        HIT_ZONE_BODY,
         HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS,
         PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
@@ -224,6 +226,13 @@ struct CityStatsSnapshot {
     /// Whole city step (physics tick + encode) in ms, not codec time alone.
     step_ms: f32,
     stress_solve_ms: f32,
+    /// Sub-phases of the native tick: solve, GPU readback, event diffing,
+    /// filter stamping. `stress_solve_ms` is their sum.
+    solve_ms: f32,
+    readback_ms: f32,
+    events_ms: f32,
+    filters_ms: f32,
+    sleeping_bodies: u32,
     packets_per_sec: u64,
     records_per_sec: u64,
     bytes_per_sec: u64,
@@ -662,6 +671,8 @@ struct PlayerRuntime {
     transport: ClientTransport,
     tx: mpsc::Sender<Vec<u8>>,
     pending_inputs: VecDeque<InputCmd>,
+    /// Inputs dropped to stay current. Non-zero means the loop is behind.
+    inputs_skipped_for_catchup: u64,
     last_applied_input: InputCmd,
     last_received_input_seq: Option<u16>,
     last_ack_input_seq: u16,
@@ -1631,6 +1642,7 @@ impl MatchState {
                         transport: conn.transport,
                         tx: conn.tx.clone(),
                         pending_inputs: VecDeque::new(),
+                        inputs_skipped_for_catchup: 0,
                         last_applied_input: InputCmd::default(),
                         last_received_input_seq: None,
                         last_ack_input_seq: 0,
@@ -2364,6 +2376,11 @@ impl MatchState {
             settle_deferred = stats.settle_deferred_penetrating,
             unmapped_body_skips = stats.unmapped_body_skips,
             resettled_wakes = stats.resettled_wakes,
+            solve_ms = stats.solve_ms,
+            readback_ms = stats.readback_ms,
+            events_ms = stats.events_ms,
+            filters_ms = stats.filters_ms,
+            sleeping_bodies = stats.sleeping_chunk_bodies,
             "city stream"
         );
     }
@@ -2640,6 +2657,11 @@ impl MatchState {
                     broken_bonds: stats.broken_bonds,
                     step_ms: city.last_encode_ms,
                     stress_solve_ms: stats.stress_solve_ms,
+                    solve_ms: stats.solve_ms,
+                    readback_ms: stats.readback_ms,
+                    events_ms: stats.events_ms,
+                    filters_ms: stats.filters_ms,
+                    sleeping_bodies: stats.sleeping_chunk_bodies,
                     packets_per_sec: packets,
                     records_per_sec: records,
                     bytes_per_sec: bytes,
@@ -4007,7 +4029,40 @@ impl MatchState {
     }
 }
 
+/// Edge-triggered buttons: a press must survive a backlog collapse, because
+/// skipping the frame it arrived on would swallow the action entirely.
+/// Movement and hold-style buttons are level-triggered, so the newest frame
+/// already carries the correct state and OR-ing them would fabricate input.
+const LATCHED_BUTTONS: u16 = BTN_JUMP | BTN_RELOAD;
+
 fn take_input_for_tick(runtime: &mut PlayerRuntime) -> InputCmd {
+    // Stay current instead of draining a backlog.
+    //
+    // Clients send at a fixed 60 Hz. If the match loop falls behind (a heavy
+    // city collapse pushed it to ~30-45 Hz), popping one frame per tick
+    // consumes fewer than arrive, so the queue grows until it saturates at
+    // MAX_PENDING_INPUTS = 120 — two seconds of input. Steady state is then
+    // the server applying two-second-old movement and *yaw*, which feels like
+    // walking in a direction you were facing a moment ago rather than like
+    // lag. Vehicles already collapsed their backlog; on foot did not.
+    //
+    // Whatever else degrades, the player's own body should track their input,
+    // so jump to the newest frame and keep only the latched presses from the
+    // ones skipped.
+    if runtime.pending_inputs.len() >= PLAYER_INPUT_CATCHUP_THRESHOLD {
+        if let Some(mut newest) = runtime.pending_inputs.pop_back() {
+            let mut latched = 0u16;
+            for skipped in runtime.pending_inputs.iter() {
+                latched |= skipped.buttons & LATCHED_BUTTONS;
+            }
+            runtime.inputs_skipped_for_catchup += runtime.pending_inputs.len() as u64;
+            runtime.pending_inputs.clear();
+            newest.buttons |= latched;
+            runtime.last_ack_input_seq = newest.seq;
+            runtime.last_applied_input = newest.clone();
+            return newest;
+        }
+    }
     if let Some(input) = runtime.pending_inputs.pop_front() {
         runtime.last_ack_input_seq = input.seq;
         runtime.last_applied_input = input.clone();

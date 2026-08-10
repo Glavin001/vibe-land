@@ -401,6 +401,11 @@ impl CityDestruction {
             self.stats.awake_chunk_bodies = bridge_stats.awake_chunk_bodies;
             self.stats.stress_solve_ms = bridge_stats.stress_solve_ms;
             self.stats.unmapped_body_skips = bridge_stats.unmapped_body_skips;
+            self.stats.solve_ms = bridge_stats.solve_ms;
+            self.stats.readback_ms = bridge_stats.readback_ms;
+            self.stats.events_ms = bridge_stats.events_ms;
+            self.stats.filters_ms = bridge_stats.filters_ms;
+            self.stats.sleeping_chunk_bodies = bridge_stats.sleeping_chunk_bodies;
         }
 
         Ok(DestructionTickOutput {

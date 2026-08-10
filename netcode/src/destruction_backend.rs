@@ -187,6 +187,12 @@ pub struct DestructionStats {
     /// Bodies re-armed for settling after waking back up. Without this they
     /// stayed awake for the rest of the match.
     pub resettled_wakes: u64,
+    /// Per-phase breakdown of the native destruction tick.
+    pub solve_ms: f32,
+    pub readback_ms: f32,
+    pub events_ms: f32,
+    pub filters_ms: f32,
+    pub sleeping_chunk_bodies: u32,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

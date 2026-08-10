@@ -397,6 +397,11 @@ pub struct DestructionStats {
     /// Dynamic bodies dropped from snapshots for lacking an island serial.
     /// Non-zero means the serial tables and the adapter's live bodies disagree.
     pub unmapped_body_skips: u32,
+    pub solve_ms: f32,
+    pub readback_ms: f32,
+    pub events_ms: f32,
+    pub filters_ms: f32,
+    pub sleeping_chunk_bodies: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1191,6 +1196,15 @@ mod ffi {
         /// Non-zero means the serial tables disagree with the adapter's live
         /// bodies, which previously aliased ids and killed the match loop.
         unmapped_body_skips: u32,
+        /// beginTick + solveTick + endTick (the actual stress solve).
+        solve_ms: f32,
+        /// GPU->CPU snapshot readback.
+        readback_ms: f32,
+        /// Membership diffing and event collection.
+        events_ms: f32,
+        /// Filter/property stamping for new or migrated bodies and shapes.
+        filters_ms: f32,
+        sleeping_chunk_bodies: u32,
     }
 
     unsafe extern "C++" {
@@ -1658,6 +1672,11 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             broken_bonds: value.broken_bonds,
             stress_solve_ms: value.stress_solve_ms,
             unmapped_body_skips: value.unmapped_body_skips,
+            solve_ms: value.solve_ms,
+            readback_ms: value.readback_ms,
+            events_ms: value.events_ms,
+            filters_ms: value.filters_ms,
+            sleeping_chunk_bodies: value.sleeping_chunk_bodies,
         }
     }
 }

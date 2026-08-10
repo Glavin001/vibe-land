@@ -543,26 +543,49 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
 
 void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   const PxVec3 g = to_px(gravity);
-  const auto started = std::chrono::steady_clock::now();
+  using clock = std::chrono::steady_clock;
+  const auto ms_since = [](clock::time_point from) {
+    return static_cast<float>(
+        std::chrono::duration<double, std::milli>(clock::now() - from).count());
+  };
+  const auto started = clock::now();
+  // Per-phase attribution. The old single number covered this whole function,
+  // so "stress solve" was really solve + GPU readback + event diffing.
+  float solve_ms = 0.0f;
+  float readback_ms = 0.0f;
+  float events_ms = 0.0f;
+  float filters_ms = 0.0f;
   for (auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
     }
     Slot &slot = *slot_ptr;
+    auto phase = clock::now();
     require(slot.dest->beginTick(dt, g), "beginTick failed");
     require(slot.dest->solveTick(), "solveTick failed");
     require(slot.dest->endTick(), "endTick failed");
+    solve_ms += ms_since(phase);
+
     // One readback, then every consumer works off it.
+    phase = clock::now();
     refresh_snapshots(slot);
+    readback_ms += ms_since(phase);
+
     // Diff membership first (assigns serials for new bodies), then stamp
     // filter/contact data onto every live shape/actor.
+    phase = clock::now();
     collect_events(slot);
+    events_ms += ms_since(phase);
+
+    phase = clock::now();
     register_filters(slot);
+    filters_ms += ms_since(phase);
   }
-  last_stress_solve_ms_ = static_cast<float>(
-      std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - started)
-          .count());
+  last_solve_ms_ = solve_ms;
+  last_readback_ms_ = readback_ms;
+  last_events_ms_ = events_ms;
+  last_filters_ms_ = filters_ms;
+  last_stress_solve_ms_ = ms_since(started);
 }
 
 void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
@@ -856,6 +879,19 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.broken_bonds = total_broken_bonds_;
   stats.stress_solve_ms = last_stress_solve_ms_;
   stats.unmapped_body_skips = unmapped_body_skips_;
+  stats.solve_ms = last_solve_ms_;
+  stats.readback_ms = last_readback_ms_;
+  stats.events_ms = last_events_ms_;
+  stats.filters_ms = last_filters_ms_;
+  std::uint32_t sleeping = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (!slot_ptr) continue;
+    for (std::uint32_t i = 0; i < slot_ptr->body_cache_count; ++i) {
+      const auto &body = slot_ptr->body_cache[i];
+      if (!body.kinematic && body.sleeping) ++sleeping;
+    }
+  }
+  stats.sleeping_chunk_bodies = sleeping;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
