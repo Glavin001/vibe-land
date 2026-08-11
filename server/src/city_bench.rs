@@ -77,6 +77,80 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
     values[((values.len() as f32 * p) as usize).min(values.len() - 1)]
 }
 
+/// Cut one tower clean in half and check the severed top reconstructs.
+///
+/// This is the reported reproduction: shooting horizontally until the top is
+/// fully disconnected. It matters as its own test because the general
+/// destruction bench sprays damage and mostly creates *new* actors, which are
+/// positioned at their centre of mass and reconstruct correctly. A clean
+/// severing is what leaves a piece holding the reused parent actor, whose pose
+/// is the parent's frame rather than its centre of mass.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn severed_upper_half_reconstructs_in_com_frame() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(160.0, 10.0, 160.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    // Rake one height band around a single tower until the cut goes through.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let cut_y = 12.0f32;
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..48 {
+        let sweep = -3.0 + (shot % 13) as f32 * 0.5;
+        let target = Vec3::new(tx + sweep, cut_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..14 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+    }
+    for _ in 0..600 {
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        tick += 1;
+    }
+
+    let stats = city.stats();
+    println!("\n=== severed upper half ===");
+    println!("broken bonds   {}", stats.broken_bonds);
+    println!("chunk bodies   {}", stats.chunk_bodies);
+    println!("min body y     {:.2} m", stats.min_body_y);
+
+    // Without this the test can pass vacuously: if the cut never severed
+    // anything, no body ever holds the reused parent actor and the convention
+    // under test is never exercised. That is exactly how an earlier check was
+    // mistaken for a disproof.
+    assert!(
+        stats.broken_bonds > 200,
+        "cut did not sever the tower ({} broken bonds); the reused-parent path \
+         is not exercised and this test proves nothing",
+        stats.broken_bonds
+    );
+    assert!(
+        stats.min_body_y > -2.0,
+        "island body at y={:.1} m after severing: a body whose pose is not its \
+         centre of mass places its chunks a centre-of-mass height too low",
+        stats.min_body_y
+    );
+}
+
 #[test]
 #[ignore = "benchmark: needs a GPU, takes ~30s"]
 fn city_destruction_cost_is_stable() {

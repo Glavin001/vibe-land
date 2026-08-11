@@ -125,13 +125,23 @@ pub struct IslandPromotion {
     pub mass: f32,
     pub center_of_mass: [f32; 3],
     pub inertia_diagonal: [f32; 3],
-    /// Body pose at promotion, in the canonical body frame: the wire pose of
-    /// every island body maps structure-rest coordinates to world
-    /// (`chunk_world = body_pose ∘ manifest_rest_local`). Backends guarantee
-    /// this by making each promotion pose equal the parent body's pose at the
-    /// split instant. Clients then use manifest rest poses as body-local
-    /// offsets — including late joiners with no split history — and the
-    /// kinematic stream only ever moves island bodies.
+    /// Body pose at promotion, in the canonical body frame: the **centre of
+    /// mass** frame. The wire pose of every island body maps structure-rest
+    /// coordinates *minus that island's centre of mass* to world
+    /// (`chunk_world = body_pose ∘ (manifest_rest_local - island_com)`).
+    ///
+    /// This is a convention backends must normalise to, not one they get for
+    /// free. PhysX bodies the Blast adapter creates for a split are positioned
+    /// at their centre of mass, so their raw pose already satisfies it; the one
+    /// child per split that reuses the parent actor does not, since it keeps
+    /// the parent's frame and stores its new centre of mass as a local offset.
+    /// Emitting that body's raw pose draws its chunks one centre-of-mass height
+    /// too low and makes them orbit as it tumbles. The PhysX backend composes
+    /// the local centre of mass in before emitting (see `com_world_position`).
+    ///
+    /// Clients use manifest rest poses minus the island centre of mass as
+    /// body-local offsets — including late joiners with no split history — and
+    /// the kinematic stream only ever moves island bodies.
     pub position: [f32; 3],
     pub rotation: [f32; 4],
     pub linear_velocity: [f32; 3],

@@ -173,7 +173,9 @@ private:
   mutable std::uint64_t aliased_body_entities_ = 0;
   /// Bodies re-issued a serial after going kinematic -> dynamic.
   std::uint64_t support_promotions_ = 0;
-  std::uint32_t promotion_diagnostics_ = 0;
+  /// Promotions whose body reuses the parent actor, so its centre of mass is a
+  /// local offset rather than its origin.
+  std::uint64_t reused_parent_promotions_ = 0;
   std::uint32_t max_island_serial_ = 0;
 
   std::vector<FfiBrokenBondEvent> broken_bonds_;

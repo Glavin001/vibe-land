@@ -30,6 +30,26 @@ constexpr std::uint32_t kNsChunk = 0x8000'0000u;
 /// Reserved for a structure's intact kinematic support actor.
 constexpr std::uint32_t kSupportIslandSerial = 0;
 
+/// World pose of a body's centre-of-mass frame.
+///
+/// Bodies reach clients under one convention: the pose maps structure-rest
+/// coordinates, minus the island's centre of mass, to world. That holds
+/// trivially for actors the adapter creates for a split, which it positions at
+/// their centre of mass -- but NOT for the one child per split that reuses the
+/// parent PxRigidDynamic (NvBlastExtStressPhysX.cpp:1080). That actor keeps the
+/// parent's frame and takes its new centre of mass as a *local* offset via
+/// setCMassLocalPose (:1348), so its globalPose is still wherever the parent
+/// was -- for a severed upper half, the structure origin at ground level.
+///
+/// Emitting globalPose raw for that body draws every one of its chunks one
+/// centre-of-mass height too low, and makes them orbit the origin as the body
+/// tumbles about its centre of mass. Composing the local centre of mass in
+/// normalises both cases: it is a no-op for a created actor whose centre of
+/// mass is already at its origin.
+inline physx::PxVec3 com_world_position(const ExtStressPhysXBodySnapshot &body) {
+  return body.globalPose.transform(body.centerOfMassLocalPose.p);
+}
+
 std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint32_t serial) {
   return kNsChunk | (structure_id << 22) | (serial & 0x003F'FFFFu);
 }
@@ -600,28 +620,15 @@ void DestructionManager::collect_events(Slot &slot) {
         event.kind = 0; // promoted
         event.mass =
             bodies[i].body != nullptr ? bodies[i].body->getMass() : 0.0f;
-        event.position = from_px(bodies[i].globalPose.p);
+        event.position = from_px(com_world_position(bodies[i]));
         event.rotation = from_px(bodies[i].globalPose.q);
         event.linear_velocity = from_px(bodies[i].linearVelocity);
         event.angular_velocity = from_px(bodies[i].angularVelocity);
-        // A promoted island's chunk offsets are computed client-side as
-        // rest-position minus centre of mass, which is only right if the body
-        // pose IS the centre of mass. Report when it is not: a body that
-        // reuses the parent actor on a split keeps the parent's pose, so its
-        // chunks would be drawn one centre-of-mass offset away -- downwards for
-        // an upper half, which is the reported symptom.
-        if (promotion_diagnostics_ < 6) {
-          const PxVec3 &cm = bodies[i].centerOfMassLocalPose.p;
-          if (cm.magnitude() > 0.05f) {
-            ++promotion_diagnostics_;
-            std::fprintf(stderr,
-                         "[destruction] promoted island %u: body pose (%.2f, "
-                         "%.2f, %.2f) but centre of mass is local (%.2f, %.2f, "
-                         "%.2f) -- pose is NOT the centre of mass\n",
-                         serial, bodies[i].globalPose.p.x,
-                         bodies[i].globalPose.p.y, bodies[i].globalPose.p.z,
-                         cm.x, cm.y, cm.z);
-          }
+        // Bodies that reuse the parent actor on a split carry a non-zero
+        // local centre of mass; com_world_position() normalises their pose.
+        // Counted so the frequency of that path stays visible.
+        if (bodies[i].centerOfMassLocalPose.p.magnitude() > 0.05f) {
+          ++reused_parent_promotions_;
         }
         promo_event_index[serial] = island_events_.size();
         island_events_.push_back(std::move(event));
@@ -1184,7 +1191,7 @@ DestructionManager::chunk_body_snapshots() const {
       snap.entity_id = pack_body_entity(slot.structure_id, serial);
       snap.structure_id = slot.structure_id;
       snap.island_id = serial;
-      snap.position = from_px(body.globalPose.p);
+      snap.position = from_px(com_world_position(body));
       snap.rotation = from_px(body.globalPose.q);
       snap.linear_velocity = from_px(body.linearVelocity);
       snap.angular_velocity = from_px(body.angularVelocity);
