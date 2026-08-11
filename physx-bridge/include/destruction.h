@@ -2,10 +2,16 @@
 
 #include "rust/cxx.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
-#include <string>
+#include <exception>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -37,6 +43,46 @@ struct FfiChunkBodySnapshot;
 struct FfiDestructionStats;
 
 /// Owns ExtStressPhysXDestructible slots for one PxScene / World.
+/// Fixed pool that runs one indexed task across several threads and blocks
+/// until every index is done.
+///
+/// Exists for the stress solve: `solveTick` is pure computation over one
+/// structure's own graph, so 16 structures can solve concurrently, while
+/// `beginTick` (contact/gravity injection) and `endTick` (fracture, PhysX
+/// actor edits) mutate shared state and stay serial. Mirrors the upstream
+/// demo's StressExecutor. Worker exceptions are captured and rethrown on the
+/// calling thread so a solver failure still surfaces as a hard error.
+class StressExecutor final {
+public:
+  explicit StressExecutor(unsigned workers);
+  ~StressExecutor();
+
+  StressExecutor(const StressExecutor &) = delete;
+  StressExecutor &operator=(const StressExecutor &) = delete;
+
+  /// Number of threads doing work, including the calling thread.
+  unsigned parallelism() const {
+    return static_cast<unsigned>(threads_.size()) + 1;
+  }
+
+  void run(std::size_t count, const std::function<void(std::size_t)> &task);
+
+private:
+  void drain();
+
+  std::vector<std::thread> threads_;
+  std::mutex mutex_;
+  std::condition_variable start_;
+  std::condition_variable done_;
+  const std::function<void(std::size_t)> *task_ = nullptr;
+  std::size_t count_ = 0;
+  std::atomic<std::size_t> next_{0};
+  std::size_t active_ = 0;
+  std::uint64_t generation_ = 0;
+  bool stop_ = false;
+  std::exception_ptr error_;
+};
+
 class DestructionManager final {
 public:
   DestructionManager(physx::PxPhysics &physics, physx::PxScene &scene,
@@ -102,6 +148,10 @@ private:
       || std::string(std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS")) != "0";
 
   std::vector<std::unique_ptr<Slot>> slots_;
+  std::unique_ptr<StressExecutor> stress_executor_;
+  /// Live structures for the current tick; a member so the per-tick gather
+  /// does not reallocate, and so the parallel phase can index it.
+  std::vector<Slot *> live_slots_;
   std::unordered_map<const physx::PxShape *, std::pair<std::uint32_t, std::uint32_t>>
       shape_owners_; // shape -> (structure_id, node_index)
 

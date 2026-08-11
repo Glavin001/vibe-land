@@ -108,7 +108,22 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
                                        PxMaterial &material,
                                        float contact_report_threshold)
     : physics_(physics), scene_(scene), material_(material),
-      contact_report_threshold_(contact_report_threshold) {}
+      contact_report_threshold_(contact_report_threshold) {
+  // Total parallelism for the stress solve, calling thread included.
+  // VIBE_CITY_STRESS_WORKERS=1 forces the old fully-serial behaviour.
+  unsigned workers = 8;
+  if (const char *value = std::getenv("VIBE_CITY_STRESS_WORKERS")) {
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed > 0 && parsed <= 64) {
+      workers = static_cast<unsigned>(parsed);
+    }
+  }
+  const unsigned hardware = std::thread::hardware_concurrency();
+  if (hardware > 0) {
+    workers = std::min(workers, hardware);
+  }
+  stress_executor_ = std::make_unique<StressExecutor>(workers);
+}
 
 DestructionManager::~DestructionManager() {
   for (auto &slot : slots_) {
@@ -551,6 +566,102 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
   }
 }
 
+StressExecutor::StressExecutor(unsigned workers) {
+  // `workers` counts total parallelism; the calling thread is one of them.
+  const unsigned extra = workers > 1 ? workers - 1 : 0;
+  threads_.reserve(extra);
+  for (unsigned i = 0; i < extra; ++i) {
+    threads_.emplace_back([this] {
+      std::uint64_t seen = 0;
+      for (;;) {
+        {
+          std::unique_lock<std::mutex> lock(mutex_);
+          start_.wait(lock, [this, seen] { return stop_ || generation_ != seen; });
+          if (stop_) {
+            return;
+          }
+          seen = generation_;
+        }
+        drain();
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (--active_ == 0) {
+            done_.notify_one();
+          }
+        }
+      }
+    });
+  }
+}
+
+StressExecutor::~StressExecutor() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stop_ = true;
+    ++generation_;
+  }
+  start_.notify_all();
+  for (auto &thread : threads_) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+}
+
+void StressExecutor::drain() {
+  for (;;) {
+    const std::size_t index = next_.fetch_add(1, std::memory_order_relaxed);
+    if (index >= count_) {
+      return;
+    }
+    try {
+      (*task_)(index);
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!error_) {
+        error_ = std::current_exception();
+      }
+    }
+  }
+}
+
+void StressExecutor::run(std::size_t count,
+                         const std::function<void(std::size_t)> &task) {
+  if (count == 0) {
+    return;
+  }
+  // One item, or no helper threads: no point paying for a handoff.
+  if (threads_.empty() || count == 1) {
+    for (std::size_t i = 0; i < count; ++i) {
+      task(i);
+    }
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    task_ = &task;
+    count_ = count;
+    next_.store(0, std::memory_order_relaxed);
+    active_ = threads_.size();
+    error_ = nullptr;
+    ++generation_;
+  }
+  start_.notify_all();
+
+  // The caller works too rather than idling while the pool runs.
+  drain();
+
+  std::unique_lock<std::mutex> lock(mutex_);
+  done_.wait(lock, [this] { return active_ == 0; });
+  task_ = nullptr;
+  if (error_) {
+    std::exception_ptr error = error_;
+    error_ = nullptr;
+    std::rethrow_exception(error);
+  }
+}
+
 void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   const PxVec3 g = to_px(gravity);
   using clock = std::chrono::steady_clock;
@@ -565,17 +676,32 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   float readback_ms = 0.0f;
   float events_ms = 0.0f;
   float filters_ms = 0.0f;
+  // Live structures, gathered once so the parallel phase can index them.
+  live_slots_.clear();
   for (auto &slot_ptr : slots_) {
-    if (!slot_ptr || slot_ptr->dest == nullptr) {
-      continue;
+    if (slot_ptr && slot_ptr->dest != nullptr) {
+      live_slots_.push_back(slot_ptr.get());
     }
-    Slot &slot = *slot_ptr;
-    auto phase = clock::now();
-    require(slot.dest->beginTick(dt, g), "beginTick failed");
-    require(slot.dest->solveTick(), "solveTick failed");
-    require(slot.dest->endTick(), "endTick failed");
-    solve_ms += ms_since(phase);
+  }
 
+  // Three phases, because only the middle one is safely concurrent.
+  // beginTick injects contacts and gravity, endTick fractures and edits PhysX
+  // actors -- both touch shared state. solveTick is pure computation over one
+  // structure's own graph, so structures solve independently.
+  auto phase = clock::now();
+  for (Slot *slot : live_slots_) {
+    require(slot->dest->beginTick(dt, g), "beginTick failed");
+  }
+  stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
+    require(live_slots_[index]->dest->solveTick(), "solveTick failed");
+  });
+  for (Slot *slot : live_slots_) {
+    require(slot->dest->endTick(), "endTick failed");
+  }
+  solve_ms += ms_since(phase);
+
+  for (Slot *slot_ptr : live_slots_) {
+    Slot &slot = *slot_ptr;
     // One readback, then every consumer works off it.
     phase = clock::now();
     refresh_snapshots(slot);
