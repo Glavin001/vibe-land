@@ -1,5 +1,7 @@
 mod app_config;
 mod city;
+#[cfg(all(test, feature = "destruction"))]
+mod city_bench;
 mod demo_world;
 mod lag_comp;
 mod movement;
@@ -4381,6 +4383,7 @@ mod tests {
             transport: super::ClientTransport::WebSocket,
             tx,
             pending_inputs: VecDeque::new(),
+            inputs_skipped_for_catchup: 0,
             last_applied_input: InputCmd::default(),
             last_received_input_seq: None,
             last_ack_input_seq: 0,
