@@ -116,7 +116,13 @@ std::uint32_t gpu_stress_min_bonds() {
         return static_cast<std::uint32_t>(parsed);
       }
     }
-    return 3000u; // upstream guidance for high-rise graphs
+    // 0 = every structure solves on the GPU. A non-zero crossover splits the
+    // scene across two solvers that do NOT agree at a shared iteration budget,
+    // so neighbouring towers in one city fracture by different physics --
+    // measured 6-of-16 on GPU giving 4855 broken bonds against 821 with all 16
+    // on GPU, same scene, same settings. Uniformity matters more than winning
+    // a few microseconds on the smallest graphs.
+    return 0u;
   }();
   return bonds;
 }
@@ -297,7 +303,13 @@ void DestructionManager::create_destructible(
     const char *value = std::getenv("VIBE_CITY_ISLAND_AWARE");
     return value == nullptr || std::string(value) != "0";
   }();
-  desc.settings.skipSettledIslands = true;
+  // VIBE_CITY_SKIP_SETTLED=0 forces every island to be re-solved each tick.
+  // Skipping freezes an island's impulses; if they froze while still
+  // under-converged, that stale (inflated) stress keeps breaking bonds.
+  desc.settings.skipSettledIslands = [] {
+    const char *value = std::getenv("VIBE_CITY_SKIP_SETTLED");
+    return value == nullptr || std::string(value) != "0";
+  }();
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
   // The CUDA solver borrows PhysX's own CUDA context (the adapter fetches it
   // from the scene), runs on a private non-blocking stream and replays a
