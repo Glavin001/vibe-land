@@ -74,6 +74,17 @@ void adapter_error(ExtStressPhysXError error, std::uint32_t node,
 
 } // namespace
 
+/// VIBE_CITY_QUIET_SKIP=0 forces the event diff to run every tick, so the
+/// quiet-tick optimisation can be ruled in or out as a source of stale body
+/// identity.
+bool quiet_skip_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_QUIET_SKIP");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
 /// Whether to request the CUDA stress solver (VIBE_CITY_GPU_STRESS=0 disables).
 ///
@@ -402,7 +413,7 @@ void DestructionManager::create_destructible(
       const auto &body = bodies[i];
       std::uint16_t serial = 0;
       if (!body.kinematic) {
-        serial = slot->next_island_serial++;
+        serial = next_serial(*slot);
       }
       slot->body_to_serial[body.bodyId] = serial;
     }
@@ -449,7 +460,7 @@ void DestructionManager::register_filters(Slot &slot) {
     auto serial_it = slot.body_to_serial.find(body.bodyId);
     std::uint16_t serial = 0;
     if (serial_it == slot.body_to_serial.end()) {
-      serial = body.kinematic ? 0 : slot.next_island_serial++;
+      serial = body.kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[body.bodyId] = serial;
     } else {
       serial = serial_it->second;
@@ -552,7 +563,7 @@ void DestructionManager::collect_events(Slot &slot) {
     if (previous_body_to_serial.find(bodies[i].bodyId) ==
         previous_body_to_serial.end()) {
       const std::uint16_t serial =
-          bodies[i].kinematic ? 0 : slot.next_island_serial++;
+          bodies[i].kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[bodies[i].bodyId] = serial;
       if (!bodies[i].kinematic) {
         FfiIslandBodyEvent event{};
@@ -655,6 +666,14 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
   slot.body_cache.resize(slot.node_descs.size() + 64);
   slot.body_cache_count = slot.dest->getBodySnapshots(
       slot.body_cache.data(), static_cast<std::uint32_t>(slot.body_cache.size()));
+  // The snapshot is sorted by bodyId, so a repeat is adjacent. A repeated id
+  // maps two snapshot rows onto one island serial, which is exactly how two
+  // distinct bodies end up sharing a network id downstream.
+  for (std::uint32_t i = 1; i < slot.body_cache_count && i < slot.body_cache.size(); ++i) {
+    if (slot.body_cache[i].bodyId == slot.body_cache[i - 1].bodyId) {
+      ++repeated_body_snapshots_;
+    }
+  }
   if (slot.body_cache_count > slot.body_cache.size()) {
     slot.body_cache.resize(slot.body_cache_count);
     slot.body_cache_count = slot.dest->getBodySnapshots(
@@ -766,6 +785,26 @@ void StressExecutor::run(std::size_t count,
   }
 }
 
+std::uint16_t DestructionManager::next_serial(Slot &slot) {
+  if (slot.next_island_serial == 0xFFFF) {
+    ++serial_wraps_;
+    std::fprintf(stderr,
+                 "[destruction] structure %u exhausted its 16-bit island serial "
+                 "space (wrap #%llu): ids are about to be reused while still "
+                 "live, which aliases distinct bodies onto one network id\n",
+                 slot.structure_id,
+                 static_cast<unsigned long long>(serial_wraps_));
+  }
+  const std::uint16_t serial = slot.next_island_serial++;
+  if (slot.next_island_serial == 0) {
+    slot.next_island_serial = 1; // 0 is the kinematic-support sentinel
+  }
+  if (serial > max_island_serial_) {
+    max_island_serial_ = serial;
+  }
+  return serial;
+}
+
 void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   const PxVec3 g = to_px(gravity);
   using clock = std::chrono::steady_clock;
@@ -821,7 +860,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         !slot.topology_primed || telemetry.splits != slot.last_splits ||
         telemetry.bodiesCreated != slot.last_bodies_created ||
         telemetry.shapesMigrated != slot.last_shapes_migrated;
-    if (!topology_changed) {
+    if (!topology_changed && quiet_skip_enabled()) {
       ++quiet_slot_ticks_;
       continue;
     }
@@ -1164,7 +1203,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     if (slot_ptr->dest->usesGpuStressSolver()) {
       stats.gpu_stress_structures += 1;
     }
-    stats.gpu_stress_solve_ms +=
+    stats.repeated_body_snapshots = repeated_body_snapshots_;
+  stats.gpu_stress_solve_ms +=
         static_cast<float>(telemetry.gpuStressSolveMilliseconds);
   }
   return stats;

@@ -156,6 +156,11 @@ fn city_destruction_cost_is_stable() {
     println!("awake  (peak)  {peak_awake}");
     println!("broken bonds   {}", stats.broken_bonds);
     println!(
+        "duplicate ids  {}   unmapped skips {}",
+        city.encoder_stats().duplicate_body_records,
+        stats.unmapped_body_skips
+    );
+    println!(
         "gpu stress     {} of {} structures, {:.2} ms accumulated",
         stats.gpu_stress_structures, stats.structures, stats.gpu_stress_solve_ms
     );
@@ -181,6 +186,31 @@ fn city_destruction_cost_is_stable() {
             per_body(p50)
         );
     }
+
+    // Body identity must be unique. A duplicate means two distinct physics
+    // bodies claimed one network id, so the client renders both sets of chunks
+    // with one pose -- the reported symptom of "the walls are gone but the
+    // pillars all move together as one piece". The encoder drops duplicates to
+    // keep the match alive, which makes this counter the only evidence.
+    let duplicates = city.encoder_stats().duplicate_body_records;
+    println!(
+        "repeated snapshot rows {}",
+        world.destruction_stats().map(|s| s.repeated_body_snapshots).unwrap_or(0)
+    );
+    let mappings_ok = world
+        .validate_destruction_mappings()
+        .expect("mapping validation runs");
+    assert!(
+        mappings_ok,
+        "adapter body/shape mappings are inconsistent after {} broken bonds",
+        stats.broken_bonds
+    );
+    assert_eq!(
+        duplicates, 0,
+        "{duplicates} duplicate body ids across the run ({} peak bodies): \
+         distinct bodies are aliasing onto one network id",
+        peak_bodies
+    );
 
     // The gate. Tolerance defaults to 20% — measured run-to-run spread on this
     // GPU is ~12%, so anything tighter fails on noise, and anything looser

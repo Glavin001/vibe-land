@@ -410,6 +410,7 @@ pub struct DestructionStats {
     /// Structures currently solved on the GPU. Zero while the CUDA solver is
     /// compiled in means every graph fell below the bond crossover, or CUDA
     /// init failed and the adapter silently fell back to the CPU solver.
+    pub repeated_body_snapshots: u64,
     pub gpu_stress_structures: u32,
     pub gpu_stress_solve_ms: f32,
 }
@@ -1252,6 +1253,7 @@ mod ffi {
         /// Filter/property stamping for new or migrated bodies and shapes.
         filters_ms: f32,
         sleeping_chunk_bodies: u32,
+        repeated_body_snapshots: u64,
         gpu_stress_structures: u32,
         gpu_stress_solve_ms: f32,
     }
@@ -1733,6 +1735,7 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             events_ms: value.events_ms,
             filters_ms: value.filters_ms,
             sleeping_chunk_bodies: value.sleeping_chunk_bodies,
+            repeated_body_snapshots: value.repeated_body_snapshots,
             gpu_stress_structures: value.gpu_stress_structures,
             gpu_stress_solve_ms: value.gpu_stress_solve_ms,
         }
