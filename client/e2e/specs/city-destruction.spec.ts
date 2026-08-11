@@ -14,6 +14,7 @@ import { expect, test } from '@playwright/test';
 import { join, snapshot, waitForSnapshot } from '../helpers/toolkit';
 import {
   aimAnglesTo,
+  allStructureTargets,
   cityStats,
   fireAt,
   openCity,
@@ -135,6 +136,61 @@ test.describe('destructible city', () => {
       `${final.chunksBelowGround} chunks drawn below the ground plane `
         + `(lowest ${final.minChunkY.toFixed(1)} m). Server physics keeps bodies `
         + `at y>=0, so this is client-side chunk-to-body reconstruction.`,
+    ).toBe(0);
+  });
+
+  /**
+   * Levels most of the city rather than one tower.
+   *
+   * The other specs top out near 300 islands; reported reconstruction faults
+   * (chunks drawn hundreds of metres below the world, parts of a building
+   * appearing to vanish mid-collapse) show up around 2000+. Without a test
+   * that reaches that scale the failure can only be found by playing.
+   */
+  test('heavy destruction keeps every chunk on a live body', async ({ page }) => {
+    test.setTimeout(600_000);
+    await openCity(page);
+    await join(page);
+    await waitForCityRendered(page);
+
+    const targets = await allStructureTargets(page);
+    let worst = { chunksBelowGround: 0, minChunkY: 0, islands: 0, bonds: 0 };
+
+    for (const target of targets.slice(0, 8)) {
+      await walkToward(page, target, STAND_OFF_M, { maxSteps: 30 });
+      await fireAt(page, target, 16, { intervalMs: 140 });
+      // Sample while debris is still in flight: a binding fault is visible
+      // during the collapse and can be masked once everything settles.
+      for (const stats of await sampleCity(page, 4)) {
+        if (stats.chunksBelowGround > worst.chunksBelowGround) {
+          worst = {
+            chunksBelowGround: stats.chunksBelowGround,
+            minChunkY: stats.minChunkY,
+            islands: stats.liveIslands,
+            bonds: stats.brokenBonds,
+          };
+        }
+      }
+    }
+
+    const final = await cityStats(page);
+    console.log('[city e2e] heavy destruction', {
+      islands: final.liveIslands,
+      brokenBonds: final.brokenBonds,
+      chunksAwake: final.chunksAwake,
+      worstBelowGround: worst.chunksBelowGround,
+      worstMinChunkY: +worst.minChunkY.toFixed(1),
+    });
+
+    expect(final.topoSeqGaps).toBe(0);
+    expect(final.orphanedChunks).toBe(0);
+    expect(final.orphanedByRetire).toBe(0);
+    expect(
+      worst.chunksBelowGround,
+      `${worst.chunksBelowGround} chunks drawn below ground (lowest `
+        + `${worst.minChunkY.toFixed(1)} m) at ${worst.islands} islands / `
+        + `${worst.bonds} broken bonds. Server physics holds bodies at y>=0, so `
+        + `this is client-side chunk-to-body reconstruction.`,
     ).toBe(0);
   });
 

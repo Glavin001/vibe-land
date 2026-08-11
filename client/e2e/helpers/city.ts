@@ -44,6 +44,37 @@ export async function tallestStructureTarget(
 }
 
 /**
+ * Every structure's aim point, biggest first.
+ *
+ * The single-tower helper caps out around 300 islands, which is far below the
+ * scale where reconstruction faults have been reported (2000+). Levelling many
+ * towers is what gets there.
+ */
+export async function allStructureTargets(
+  page: Page,
+  aimHeightFraction = 0.35,
+): Promise<Array<[number, number, number]>> {
+  const { manifestHash } = await cityStats(page);
+  const targets = await page.evaluate(async (hash) => {
+    const response = await fetch(`/city-manifest/${hash}`);
+    if (!response.ok) throw new Error(`manifest fetch failed: ${response.status}`);
+    const manifest = await response.json();
+    return manifest.structures
+      .map((structure: any) => ({
+        chunks: structure.chunks.length,
+        pos: structure.worldPosition,
+        top: Math.max(...structure.chunks.map((c: any) => c.centroid[1])),
+      }))
+      .sort((a: any, b: any) => b.chunks - a.chunks)
+      .map((s: any) => [s.pos[0], s.pos[1] + s.top, s.pos[2]] as [number, number, number]);
+  }, manifestHash);
+  return targets.map(
+    (t: [number, number, number]) =>
+      [t[0], t[1] * aimHeightFraction, t[2]] as [number, number, number],
+  );
+}
+
+/**
  * Point the WebTransport endpoint at a locally reachable address.
  *
  * The server advertises its public URL in `/session-config`. A test runner on
