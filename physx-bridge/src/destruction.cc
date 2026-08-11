@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -350,7 +351,16 @@ void DestructionManager::register_filters(Slot &slot) {
     body_entity_stamp_[body.body] = entity;
     tag_actor(*body.body, entity);
     if (!body.kinematic) {
-      body.body->setContactReportThreshold(contact_report_threshold_);
+      // Contact reports are what let a falling chunk damage what it lands on:
+      // onContact routes the impulse into the stress solver. They are not
+      // free — the scene filter requests eNOTIFY_THRESHOLD_FORCE_PERSISTS and
+      // eNOTIFY_CONTACT_POINTS, so every reporting pair extracts and copies
+      // full contact data back to the host every tick, and a settled rubble
+      // pile is nothing but persistent pairs. VIBE_CITY_CHUNK_CONTACT_REPORTS=0
+      // disables them so the cost can be measured against the gameplay they buy.
+      body.body->setContactReportThreshold(
+          chunk_contact_reports_ ? contact_report_threshold_
+                                 : std::numeric_limits<float>::max());
       // Debris runs without CCD, so a body must never move more than roughly
       // its own thickness per step or it tunnels through the ground. External
       // impulses (the hitscan blast push) bypass the adapter's own

@@ -120,6 +120,14 @@ void tag_actor(PxActor &actor, std::uint32_t entity_id) {
       reinterpret_cast<void *>(static_cast<std::uintptr_t>(entity_id) + 1);
 }
 
+bool contact_persists_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
 PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
                                 PxFilterData filter0,
                                 PxFilterObjectAttributes attributes1,
@@ -134,10 +142,17 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
       (filter1.word0 & filter0.word1) == 0) {
     return PxFilterFlag::eSUPPRESS;
   }
+  // FOUND fires when a contact first exceeds the threshold; PERSISTS re-fires
+  // every tick for as long as it stays there. Impact damage only needs the
+  // former — the latter means a settled rubble pile extracts and copies full
+  // contact data for every resting pair, every tick, and keeps those bodies
+  // awake. VIBE_PHYSX_CONTACT_PERSISTS=1 restores it for comparison.
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
-               PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS |
                PxPairFlag::eNOTIFY_CONTACT_POINTS;
+  if (contact_persists_enabled()) {
+    pair_flags |= PxPairFlag::eNOTIFY_THRESHOLD_FORCE_PERSISTS;
+  }
   return PxFilterFlag::eDEFAULT;
 }
 

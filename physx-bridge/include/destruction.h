@@ -3,6 +3,8 @@
 #include "rust/cxx.h"
 
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -94,6 +96,10 @@ private:
   physx::PxScene &scene_;
   physx::PxMaterial &material_;
   float contact_report_threshold_;
+  /// Whether chunk bodies report contacts at all (VIBE_CITY_CHUNK_CONTACT_REPORTS).
+  bool chunk_contact_reports_ =
+      std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS") == nullptr
+      || std::string(std::getenv("VIBE_CITY_CHUNK_CONTACT_REPORTS")) != "0";
 
   std::vector<std::unique_ptr<Slot>> slots_;
   std::unordered_map<const physx::PxShape *, std::pair<std::uint32_t, std::uint32_t>>
