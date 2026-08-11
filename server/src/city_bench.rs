@@ -155,6 +155,7 @@ fn city_destruction_cost_is_stable() {
     println!("bodies (peak)  {peak_bodies}");
     println!("awake  (peak)  {peak_awake}");
     println!("broken bonds   {}", stats.broken_bonds);
+    println!("min body y     {:.2} m", stats.min_body_y);
     println!(
         "duplicate ids  {}   unmapped skips {}",
         city.encoder_stats().duplicate_body_records,
@@ -210,6 +211,23 @@ fn city_destruction_cost_is_stable() {
         "{duplicates} duplicate body ids across the run ({} peak bodies): \
          distinct bodies are aliasing onto one network id",
         peak_bodies
+    );
+
+    // Bodies must stay on top of the world. The ground is a solid box whose
+    // top face is y=0, so anything materially below that fell *through* it --
+    // it is not settled debris, it is a body with no working collision against
+    // the floor. The client renders those faithfully, which is why they read
+    // as building parts vanishing mid-collapse rather than as a physics fault.
+    //
+    // This was previously observed and logged but never asserted (see
+    // client/e2e/specs/city-destruction.spec.ts), so it could recur silently.
+    const GROUND_TOP_M: f32 = 0.0;
+    const MAX_SINK_M: f32 = 2.0;
+    assert!(
+        stats.min_body_y > GROUND_TOP_M - MAX_SINK_M,
+        "island body at y={:.1} m is below the ground box top ({GROUND_TOP_M} m): \
+         bodies are falling through the floor, not resting on it",
+        stats.min_body_y
     );
 
     // The gate. Tolerance defaults to 20% — measured run-to-run spread on this

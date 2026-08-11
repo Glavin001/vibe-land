@@ -117,16 +117,25 @@ test.describe('destructible city', () => {
     expect(final.orphanedChunks).toBe(0);
     expect(final.orphanedByRetire).toBe(0);
 
-    // NOT asserted yet: chunksBelowGround === 0. On large collapses a few
-    // island bodies escape under the world server-side — the server reports
-    // min_body_y descending past -700 m at exactly the 12 m/s body velocity
-    // clamp, i.e. unobstructed free fall with nothing stopping them. The
-    // client renders that faithfully. Blocked on the server-side ground fix;
-    // logged here so the number stays visible.
+    // Chunks must be drawn on top of the world. This was previously logged but
+    // not asserted, on the theory that island bodies were escaping under the
+    // world server-side and the client was rendering that faithfully. That
+    // theory is now contradicted: the server-side bench asserts min_body_y and
+    // it holds at 0.00 m through 1636 bodies (server/src/city_bench.rs), so
+    // physics is keeping bodies on the floor. A chunk drawn hundreds of metres
+    // down is therefore this client's own reconstruction going wrong —
+    // chunkWorld = bodyPose ∘ localOffset with a stale or wrong binding — and
+    // it reads in game as parts of a building vanishing mid-collapse.
     console.log('[city e2e] ground', {
       minChunkY: +final.minChunkY.toFixed(3),
       chunksBelowGround: final.chunksBelowGround,
     });
+    expect(
+      final.chunksBelowGround,
+      `${final.chunksBelowGround} chunks drawn below the ground plane `
+        + `(lowest ${final.minChunkY.toFixed(1)} m). Server physics keeps bodies `
+        + `at y>=0, so this is client-side chunk-to-body reconstruction.`,
+    ).toBe(0);
   });
 
   test('one player destroys, every player sees it', async ({ browser }) => {
