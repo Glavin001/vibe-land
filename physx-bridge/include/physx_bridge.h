@@ -58,6 +58,10 @@ public:
   void move_player(std::uint32_t entity_id, FfiVec3 displacement,
                    float elapsed_time);
   void step();
+  /// Dispatch the simulation without waiting; pair with end_step().
+  void begin_step();
+  /// Wait for and fetch the dispatched simulation's results.
+  void end_step();
 
   FfiRaycastHit raycast(const FfiRaycastRequest &request) const;
   rust::Vec<FfiBodySnapshot> body_snapshots() const;

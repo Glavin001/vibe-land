@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -758,30 +759,64 @@ public:
         flags.isSet(PxControllerCollisionFlag::eCOLLISION_DOWN);
   }
 
-  void step() {
-    // Split the phases: with GPU dynamics `simulate()` only dispatches work,
-    // so it should return almost immediately, while `fetchResults(true)`
-    // blocks on GPU compute plus the result readback. If simulate is the
-    // expensive half the cost is CPU-side (broadphase, controller
-    // interactions); if fetchResults is, it is GPU compute or transfer.
-    const auto start = std::chrono::steady_clock::now();
+  /// Dispatch the simulation. With GPU dynamics this only enqueues work and
+  /// returns immediately, so the caller can do CPU work before `end_step()`.
+  void begin_step() {
+    require(!step_in_flight_, "begin_step called twice without end_step");
+    step_start_ = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
     const auto after_controllers = std::chrono::steady_clock::now();
     scene_->simulate(kFixedTimestep);
     const auto after_simulate = std::chrono::steady_clock::now();
-    const bool succeeded = scene_->fetchResults(true);
-    require(succeeded, "PhysX fetchResults failed");
-    const auto end = std::chrono::steady_clock::now();
     last_controller_ms_ =
-        std::chrono::duration<float, std::milli>(after_controllers - start).count();
+        std::chrono::duration<float, std::milli>(after_controllers - step_start_)
+            .count();
     last_simulate_ms_ =
         std::chrono::duration<float, std::milli>(after_simulate - after_controllers)
             .count();
+    step_in_flight_ = true;
+  }
+
+  /// Wait for the simulation and fetch its results.
+  ///
+  /// `VIBE_PHYSX_PROFILE_FETCH=1` polls instead of blocking, which separates
+  /// two costs that `fetchResults(true)` reports as one: time spent waiting on
+  /// the GPU, versus the cost of the call that actually copies results back.
+  /// Polling burns a core, so it is opt-in and off by default.
+  void end_step() {
+    require(step_in_flight_, "end_step called without begin_step");
+    const auto fetch_start = std::chrono::steady_clock::now();
+    if (profile_fetch_) {
+      auto last_call_start = fetch_start;
+      bool ready = false;
+      while (!ready) {
+        last_call_start = std::chrono::steady_clock::now();
+        ready = scene_->fetchResults(false);
+      }
+      const auto end = std::chrono::steady_clock::now();
+      last_gpu_wait_ms_ =
+          std::chrono::duration<float, std::milli>(last_call_start - fetch_start)
+              .count();
+      last_fetch_copy_ms_ =
+          std::chrono::duration<float, std::milli>(end - last_call_start).count();
+    } else {
+      const bool succeeded = scene_->fetchResults(true);
+      require(succeeded, "PhysX fetchResults failed");
+      last_gpu_wait_ms_ = 0.0f;
+      last_fetch_copy_ms_ = 0.0f;
+    }
+    const auto end = std::chrono::steady_clock::now();
     last_fetch_ms_ =
-        std::chrono::duration<float, std::milli>(end - after_simulate).count();
+        std::chrono::duration<float, std::milli>(end - fetch_start).count();
     last_step_ms_ =
-        std::chrono::duration<float, std::milli>(end - start).count();
+        std::chrono::duration<float, std::milli>(end - step_start_).count();
+    step_in_flight_ = false;
     ++completed_steps_;
+  }
+
+  void step() {
+    begin_step();
+    end_step();
   }
 
   FfiRaycastHit raycast(const FfiRaycastRequest &request) const {
@@ -917,6 +952,8 @@ public:
         last_controller_ms_,
         last_simulate_ms_,
         last_fetch_ms_,
+        last_gpu_wait_ms_,
+        last_fetch_copy_ms_,
         completed_steps_,
         runtime_->warning_count(),
     };
@@ -1282,6 +1319,11 @@ private:
   float last_controller_ms_ = 0.0f;
   float last_simulate_ms_ = 0.0f;
   float last_fetch_ms_ = 0.0f;
+  float last_gpu_wait_ms_ = 0.0f;
+  float last_fetch_copy_ms_ = 0.0f;
+  bool step_in_flight_ = false;
+  bool profile_fetch_ = std::getenv("VIBE_PHYSX_PROFILE_FETCH") != nullptr;
+  std::chrono::steady_clock::time_point step_start_{};
   std::uint64_t completed_steps_ = 0;
 #ifdef VIBE_LAND_DESTRUCTION
   std::unique_ptr<DestructionManager> destruction_;
@@ -1350,6 +1392,8 @@ void World::move_player(std::uint32_t entity_id, FfiVec3 displacement,
 }
 
 void World::step() { impl_->step(); }
+void World::begin_step() { impl_->begin_step(); }
+void World::end_step() { impl_->end_step(); }
 
 FfiRaycastHit World::raycast(const FfiRaycastRequest &request) const {
   return impl_->raycast(request);

@@ -279,6 +279,8 @@ pub struct WorldStats {
     pub last_controller_ms: f32,
     pub last_simulate_ms: f32,
     pub last_fetch_ms: f32,
+    pub last_gpu_wait_ms: f32,
+    pub last_fetch_copy_ms: f32,
     pub completed_steps: u64,
     pub gpu_warning_count: u32,
 }
@@ -667,6 +669,34 @@ impl World {
         #[cfg(not(feature = "gpu"))]
         {
             let _ = (entity_id, displacement);
+            Err(stub_unavailable())
+        }
+    }
+
+    /// Dispatches the simulation without waiting for it.
+    ///
+    /// With GPU dynamics this only enqueues work, so the caller can run CPU
+    /// work before calling `end_step`. Every `begin_step` must be paired with
+    /// exactly one `end_step` before the scene is read or mutated.
+    pub fn begin_step(&mut self) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner.pin_mut().begin_step().map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Err(stub_unavailable())
+        }
+    }
+
+    /// Waits for the dispatched simulation and fetches its results.
+    pub fn end_step(&mut self) -> Result<(), BridgeError> {
+        #[cfg(feature = "gpu")]
+        {
+            self.inner.pin_mut().end_step().map_err(operation_error)
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
             Err(stub_unavailable())
         }
     }
@@ -1109,6 +1139,10 @@ mod ffi {
         last_controller_ms: f32,
         last_simulate_ms: f32,
         last_fetch_ms: f32,
+        /// Only populated when VIBE_PHYSX_PROFILE_FETCH=1: time waiting on the
+        /// GPU versus the cost of the call that copies results back.
+        last_gpu_wait_ms: f32,
+        last_fetch_copy_ms: f32,
         completed_steps: u64,
         gpu_warning_count: u32,
     }
@@ -1256,6 +1290,8 @@ mod ffi {
             elapsed_time: f32,
         ) -> Result<()>;
         fn step(self: Pin<&mut World>) -> Result<()>;
+        fn begin_step(self: Pin<&mut World>) -> Result<()>;
+        fn end_step(self: Pin<&mut World>) -> Result<()>;
 
         fn raycast(self: &World, request: &FfiRaycastRequest) -> Result<FfiRaycastHit>;
         fn body_snapshots(self: &World) -> Result<Vec<FfiBodySnapshot>>;
@@ -1544,6 +1580,8 @@ impl From<ffi::FfiWorldStats> for WorldStats {
             last_controller_ms: value.last_controller_ms,
             last_simulate_ms: value.last_simulate_ms,
             last_fetch_ms: value.last_fetch_ms,
+            last_gpu_wait_ms: value.last_gpu_wait_ms,
+            last_fetch_copy_ms: value.last_fetch_copy_ms,
             completed_steps: value.completed_steps,
             gpu_warning_count: value.gpu_warning_count,
         }
