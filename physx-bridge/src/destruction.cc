@@ -27,6 +27,9 @@ constexpr std::uint32_t kNsChunk = 0x8000'0000u;
 /// Must match destruction/src/ids.rs body_entity: 6 bits of structure, 22 of
 /// island serial. The serial is monotonic and never reused, so it is consumed
 /// by cumulative body creation and a 16-bit field exhausts in a long session.
+/// Reserved for a structure's intact kinematic support actor.
+constexpr std::uint32_t kSupportIslandSerial = 0;
+
 std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint32_t serial) {
   return kNsChunk | (structure_id << 22) | (serial & 0x003F'FFFFu);
 }
@@ -467,6 +470,14 @@ void DestructionManager::register_filters(Slot &slot) {
       slot.body_to_serial[body.bodyId] = serial;
     } else {
       serial = serial_it->second;
+      // Serial 0 is the structure's kinematic support. A body keeps whatever
+      // serial it was given the first time it was seen, so one that has since
+      // become dynamic would hold 0 forever and alias onto the support -- and
+      // onto every other such body. Re-issue a real serial when that happens.
+      if (serial == kSupportIslandSerial && !body.kinematic) {
+        serial = next_serial(slot);
+        slot.body_to_serial[body.bodyId] = serial;
+      }
     }
     const std::uint32_t entity = pack_body_entity(slot.structure_id, serial);
     // Only touch a body whose identity actually changed.
@@ -563,8 +574,18 @@ void DestructionManager::collect_events(Slot &slot) {
   for (std::uint32_t i = 0; i < body_count; ++i) {
     body_by_id[bodies[i].bodyId] = &bodies[i];
     live_bodies.insert(bodies[i].bodyId);
-    if (previous_body_to_serial.find(bodies[i].bodyId) ==
-        previous_body_to_serial.end()) {
+    // A body already mapped to the support sentinel but no longer kinematic
+    // has become an independent island since we last looked. Treat it as new:
+    // it needs its own serial, and clients need the promotion event, or its
+    // chunks stay bound to the support body and move as one piece with it.
+    const auto mapped = previous_body_to_serial.find(bodies[i].bodyId);
+    const bool became_dynamic = mapped != previous_body_to_serial.end()
+                                && mapped->second == kSupportIslandSerial
+                                && !bodies[i].kinematic;
+    if (became_dynamic) {
+      ++support_promotions_;
+    }
+    if (mapped == previous_body_to_serial.end() || became_dynamic) {
       const std::uint32_t serial =
           bodies[i].kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[bodies[i].bodyId] = serial;
@@ -1106,6 +1127,11 @@ rust::Vec<FfiIslandBodyEvent> DestructionManager::take_island_events() {
 rust::Vec<FfiChunkBodySnapshot>
 DestructionManager::chunk_body_snapshots() const {
   rust::Vec<FfiChunkBodySnapshot> out;
+  // Which body produced each entity this tick. Two bodies landing on one
+  // entity is the aliasing bug; recording both sides of the collision names
+  // the mechanism (same structure or cross-structure, and which serials).
+  std::unordered_map<std::uint32_t, std::pair<std::uint32_t, ExtStressPhysXId>>
+      emitted;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -1143,6 +1169,22 @@ DestructionManager::chunk_body_snapshots() const {
       snap.kinematic = body.kinematic;
       snap.node_count = body.nodeCount;
       snap.flags = 0;
+      auto claim = emitted.emplace(snap.entity_id,
+                                   std::make_pair(slot.structure_id, body.bodyId));
+      if (!claim.second) {
+        ++aliased_body_entities_;
+        if (aliased_body_entities_ <= 8) {
+          std::fprintf(
+              stderr,
+              "[destruction] entity %#x claimed twice in one tick: "
+              "structure %u body %llu serial %u  VS  structure %u body %llu\n",
+              snap.entity_id, slot.structure_id,
+              static_cast<unsigned long long>(body.bodyId), serial,
+              claim.first->second.first,
+              static_cast<unsigned long long>(claim.first->second.second));
+        }
+        continue;
+      }
       out.push_back(snap);
     }
   }
@@ -1151,9 +1193,9 @@ DestructionManager::chunk_body_snapshots() const {
 
 void DestructionManager::sleep_chunk_body(std::uint32_t entity_id) {
   require((entity_id & 0xf000'0000u) == kNsChunk, "not a chunk entity");
-  const std::uint32_t structure_id = (entity_id & 0x0fff'ffffu) >> 16;
-  const std::uint16_t serial =
-      static_cast<std::uint16_t>(entity_id & 0xffffu);
+  // Must mirror pack_body_entity: 6 bits structure, 22 bits serial.
+  const std::uint32_t structure_id = (entity_id & 0x0fff'ffffu) >> 22;
+  const std::uint32_t serial = entity_id & 0x003f'ffffu;
   Slot *slot = find_slot(structure_id);
   require(slot != nullptr && slot->dest != nullptr, "unknown structure");
   std::vector<ExtStressPhysXBodySnapshot> bodies(slot->node_descs.size() + 64);

@@ -169,6 +169,10 @@ private:
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;
+  /// Times two distinct bodies produced the same body entity in one tick.
+  mutable std::uint64_t aliased_body_entities_ = 0;
+  /// Bodies re-issued a serial after going kinematic -> dynamic.
+  std::uint64_t support_promotions_ = 0;
   std::uint32_t max_island_serial_ = 0;
 
   std::vector<FfiBrokenBondEvent> broken_bonds_;
