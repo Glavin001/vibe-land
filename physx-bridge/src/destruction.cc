@@ -290,7 +290,13 @@ void DestructionManager::create_destructible(
   desc.settings.maxSolverIterationsPerFrame =
       settings.max_solver_iterations_per_frame;
   desc.settings.graphReductionLevel = settings.graph_reduction_level;
-  desc.settings.islandAware = true;
+  // VIBE_CITY_ISLAND_AWARE=0 forces the CPU solver to treat the whole graph as
+  // one system, which is what the GPU path does. Used to test whether global
+  // versus per-island conjugate gradient explains the CPU/GPU divergence.
+  desc.settings.islandAware = [] {
+    const char *value = std::getenv("VIBE_CITY_ISLAND_AWARE");
+    return value == nullptr || std::string(value) != "0";
+  }();
   desc.settings.skipSettledIslands = true;
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
   // The CUDA solver borrows PhysX's own CUDA context (the adapter fetches it
