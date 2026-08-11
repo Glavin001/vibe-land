@@ -604,6 +604,25 @@ void DestructionManager::collect_events(Slot &slot) {
         event.rotation = from_px(bodies[i].globalPose.q);
         event.linear_velocity = from_px(bodies[i].linearVelocity);
         event.angular_velocity = from_px(bodies[i].angularVelocity);
+        // A promoted island's chunk offsets are computed client-side as
+        // rest-position minus centre of mass, which is only right if the body
+        // pose IS the centre of mass. Report when it is not: a body that
+        // reuses the parent actor on a split keeps the parent's pose, so its
+        // chunks would be drawn one centre-of-mass offset away -- downwards for
+        // an upper half, which is the reported symptom.
+        if (promotion_diagnostics_ < 6) {
+          const PxVec3 &cm = bodies[i].centerOfMassLocalPose.p;
+          if (cm.magnitude() > 0.05f) {
+            ++promotion_diagnostics_;
+            std::fprintf(stderr,
+                         "[destruction] promoted island %u: body pose (%.2f, "
+                         "%.2f, %.2f) but centre of mass is local (%.2f, %.2f, "
+                         "%.2f) -- pose is NOT the centre of mass\n",
+                         serial, bodies[i].globalPose.p.x,
+                         bodies[i].globalPose.p.y, bodies[i].globalPose.p.z,
+                         cm.x, cm.y, cm.z);
+          }
+        }
         promo_event_index[serial] = island_events_.size();
         island_events_.push_back(std::move(event));
       }
