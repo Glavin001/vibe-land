@@ -342,21 +342,35 @@ impl CityRuntime {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(0);
-        // Hard cap on live bodies per structure — the one supported lever that
-        // bounds the debris field rather than making each body cheaper.
+        // No body cap. The adapter treats maximumBodies as an opt-in quality
+        // degradation (0 = unlimited): once a structure's live body count
+        // reaches the cap, fracture() silently drops EVERY further fracture
+        // command for it (NvBlastExtStressPhysX.cpp:1573) — the building still
+        // takes impulses, so shots shove it around, but it never breaks again.
+        // Presented in play as an indestructible severed slab.
         //
-        // Both dominant tick costs scale with live bodies: the PhysX step and
-        // the stress solve. At ~1700 awake bodies the PhysX step alone is
-        // 16.6 ms, i.e. the entire 60 Hz budget, so no amount of shaving the
-        // city step gets the tick back under. Past the cap the adapter stops
-        // splitting, leaving fewer, larger pieces: a visual-quality tradeoff,
-        // so it stays tunable rather than being silently lowered.
+        // The 512 default this used to carry was a perf mitigation from when
+        // 1700 awake bodies cost 16.6 ms of PhysX step. That cost was the
+        // PERSISTS contact-report bug, since fixed: PhysX now simulates 4000
+        // bodies in ~2-4 ms, so the cap's premise is gone and what remained
+        // was only its failure mode. VIBE_CITY_MAX_BODIES stays as an escape
+        // hatch for weaker hardware; unset or 0 means unlimited.
         settings.maximum_bodies = std::env::var("VIBE_CITY_MAX_BODIES")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(512);
-        settings.maximum_fractures_per_actor_per_tick = 32;
+            .unwrap_or(0);
+        if settings.maximum_bodies > 0 {
+            tracing::warn!(
+                cap = settings.maximum_bodies,
+                "VIBE_CITY_MAX_BODIES set: structures at the cap silently stop \
+                 fracturing (adapter drops fracture commands with no telemetry)"
+            );
+        }
+        // Same class of knob: caps how many bonds may break per actor per tick
+        // (upstream default 0 = unlimited). At 32 a sustained beam visibly
+        // stalled large fractures; the per-tick cost it guarded against is now
+        // covered by the parallel + CUDA solve.
+        settings.maximum_fractures_per_actor_per_tick = 0;
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok(Self::from_parts(CityBackend::Physx(backend), manifest, sim_hz))

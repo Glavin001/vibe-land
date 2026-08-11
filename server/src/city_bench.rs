@@ -77,6 +77,73 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
     values[((values.len() as f32 * p) as usize).min(values.len() - 1)]
 }
 
+/// Sustained fire on one tower must never stop fracturing it.
+///
+/// The adapter's maximumBodies is an opt-in cap: at the cap, fracture()
+/// silently drops every further fracture command for that structure, while
+/// impulses still apply -- so the building stops breaking and just gets shoved.
+/// We shipped with a per-structure cap of 512, and a single 10-floor tower has
+/// ~1032 chunks, so concentrated fire hit the cap mid-fight and the remaining
+/// slab became indestructible. This drives one tower far past 512 bodies and
+/// asserts fracture kept going.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn sustained_fire_never_stops_fracturing() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(160.0, 10.0, 160.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    // Rake one tower at several heights until it is thoroughly demolished.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..120 {
+        let sweep = -4.0 + (shot % 17) as f32 * 0.5;
+        let aim_y = 2.0 + (shot % 11) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+    }
+    for _ in 0..300 {
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        tick += 1;
+    }
+
+    let stats = city.stats();
+    println!("\n=== sustained fire on one tower ===");
+    println!("chunk bodies   {}", stats.chunk_bodies);
+    println!("broken bonds   {}", stats.broken_bonds);
+
+    // 16 structures contribute one support body each, so anything well past
+    // 512 total proves the targeted structure alone exceeded the old cap and
+    // was still fracturing when it did.
+    assert!(
+        stats.chunk_bodies > 560,
+        "{} bodies: the targeted tower did not get past the old 512-body cap, \
+         so this run does not prove the cap is gone",
+        stats.chunk_bodies
+    );
+}
+
 /// Cut one tower clean in half and check the severed top reconstructs.
 ///
 /// This is the reported reproduction: shooting horizontally until the top is
