@@ -324,6 +324,20 @@ void DestructionManager::create_destructible(
   // 10-floor structures (3624), so they would all silently stay on CPU.
   desc.settings.gpuStressSolver = gpu_stress_enabled();
   desc.settings.gpuStressMinimumBondCount = gpu_stress_min_bonds();
+  // Converged stress means authored material strength is finally what decides
+  // destruction -- and these packs were authored against an under-converged
+  // solver, so at full strength they barely fracture (the e2e's "debris comes
+  // to rest" check fails with peakAwake == 0). Warn once, rather than let a
+  // silently indestructible city look like a bug somewhere else.
+  static bool warned = false;
+  if (!warned && gpu_stress_enabled()) {
+    warned = true;
+    std::fprintf(stderr,
+                 "[destruction] CUDA stress solver active: stress is solved to "
+                 "convergence, so scenes authored against the CPU solver need "
+                 "weaker materials to fracture as before "
+                 "(VIBE_CITY_STRESS_LIMIT_SCALE ~0.06-0.12).\n");
+  }
 #else
   desc.settings.gpuStressSolver = false;
 #endif
