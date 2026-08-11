@@ -340,6 +340,11 @@ export class CityTopology {
     }
 
     const slots: number[] = [];
+    // Bodies that lost members to this island. Their centre of mass moves when
+    // membership shrinks, and the server's pose for them moves with it, so
+    // their remaining chunks must be re-offset in the same breath or every one
+    // of them jumps by the centre-of-mass delta at the instant of fracture.
+    const drained = new Set<LedgerBody>();
     for (const node of nodes) {
       const slot = this.slotOf(structureId, node);
       slots.push(slot);
@@ -348,6 +353,7 @@ export class CityTopology {
         const index = previousBody.chunkSlots.indexOf(slot);
         if (index >= 0) {
           previousBody.chunkSlots.splice(index, 1);
+          drained.add(previousBody);
         }
       }
       this.chunkBody[slot] = key;
@@ -359,7 +365,51 @@ export class CityTopology {
       this.localRot[slot * 4 + 2] = 0;
       this.localRot[slot * 4 + 3] = 1;
     }
+    for (const body of drained) {
+      this.reoffsetBody(body);
+    }
     return slots;
+  }
+
+  /**
+   * Recompute a body's chunk offsets against its current membership.
+   *
+   * An island body's wire pose is its centre of mass, so when it sheds chunks
+   * its pose moves even though the rigid body itself did not: the centre of
+   * mass of what remains is somewhere else. Leaving the offsets on the old
+   * centre of mass displaces every surviving chunk by that delta the moment a
+   * split lands, which reads as the building translating as it fractures.
+   *
+   * The support body is exempt and must stay exempt: it is never streamed (it
+   * is kinematic), so it keeps the structure-origin pose and plain rest
+   * offsets that `reset()` gave it.
+   */
+  private reoffsetBody(body: LedgerBody): void {
+    if (body.islandSerial === SUPPORT_SERIAL || body.chunkSlots.length === 0) {
+      return;
+    }
+    let comX = 0;
+    let comY = 0;
+    let comZ = 0;
+    let totalWeight = 0;
+    for (const slot of body.chunkSlots) {
+      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
+      comX += this.restPos[slot * 3] * weight;
+      comY += this.restPos[slot * 3 + 1] * weight;
+      comZ += this.restPos[slot * 3 + 2] * weight;
+      totalWeight += weight;
+    }
+    if (totalWeight <= 0) {
+      return;
+    }
+    comX /= totalWeight;
+    comY /= totalWeight;
+    comZ /= totalWeight;
+    for (const slot of body.chunkSlots) {
+      this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
+      this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
+      this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
+    }
   }
 
   private promote(

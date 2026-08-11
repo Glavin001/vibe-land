@@ -143,6 +143,89 @@ describe('CityTopology', () => {
     expect(topology.chunkWorldPose(2).position[1]).toBeCloseTo(2.5, 5);
   });
 
+  // The bug this pins: an island body's chunks were re-offset only when
+  // GAINED, never when LOST. A body's wire pose is its centre of mass
+  // (com_world_position in physx-bridge/src/destruction.cc), so shedding a
+  // member moves that pose even though the rigid body itself did not -- and
+  // leaving the remaining chunks' offsets keyed on the old centre of mass
+  // displaced them by exactly that delta the instant a further split landed.
+  // Reported as "the building translates as it fractures".
+  it('re-offsets a body\'s surviving chunks when it sheds a member', () => {
+    const topology = new CityTopology(manifest());
+    // Stage 1: break bond 0, promoting nodes 1 and 2 (equal mass) together.
+    // COM y = 2.0, so node 1 (rest y 1.5) sits at local offset -0.5 within
+    // this body.
+    topology.apply({
+      topoSeq: 1,
+      simTick: 10,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [0],
+          promotions: [
+            {
+              structureId: 0,
+              islandId: 1,
+              nodes: [1, 2],
+              position: [10, 2, 0],
+              rotation: [0, 0, 0, 1],
+              linearVelocity: [0, 0, 0],
+              angularVelocity: [0, 0, 0],
+            },
+          ],
+          retiredIslandIds: [],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    });
+    const before = topology.body(bodyKey(0, 1))!;
+    expect(before.chunkSlots).toEqual([1, 2]);
+
+    // Stage 2: bond 1 (node 1 - node 2) breaks, and node 2 secedes into a new
+    // island. Body 1 keeps only node 1. The server now reports body 1's pose
+    // as node 1's own rest centroid (its centre of mass with one member),
+    // not the stale two-node COM.
+    topology.apply({
+      topoSeq: 2,
+      simTick: 20,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [1],
+          promotions: [
+            {
+              structureId: 0,
+              islandId: 2,
+              nodes: [2],
+              position: [10, 2.5, 0],
+              rotation: [0, 0, 0, 1],
+              linearVelocity: [0, 0, 0],
+              angularVelocity: [0, 0, 0],
+            },
+          ],
+          retiredIslandIds: [],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    });
+
+    const shrunk = topology.body(bodyKey(0, 1))!;
+    expect(shrunk.chunkSlots).toEqual([1]);
+
+    // If body 1 now reports its pose as node 1's rest centroid (origin +
+    // (0, 1.5, 0)) -- the only physically consistent pose for a one-member
+    // body -- node 1 must land exactly on its rest position. Before the fix
+    // this failed by 0.5 m: the stale offset (-0.5) was still applied on top
+    // of the new pose.
+    topology.updateBodyPose(bodyKey(0, 1), [10, 1.5, 0], [0, 0, 0, 1]);
+    const pose = topology.chunkWorldPose(1).position;
+    expect(pose[0]).toBeCloseTo(10, 5);
+    expect(pose[1]).toBeCloseTo(1.5, 5);
+    expect(pose[2]).toBeCloseTo(0, 5);
+  });
+
   it('bootstrap and live promotion agree chunk for chunk', () => {
     // A late joiner rebuilding from bootstrap must land on the same world
     // poses as a client that watched the collapse happen.
