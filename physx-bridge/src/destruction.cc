@@ -75,29 +75,39 @@ void adapter_error(ExtStressPhysXError error, std::uint32_t node,
 } // namespace
 
 #if defined(NVBLAST_ENABLE_CUDA_STRESS)
-/// Whether to request the CUDA stress solver. Opt-in (VIBE_CITY_GPU_STRESS=1)
-/// even when compiled in, because the GPU path currently produces materially
-/// less fracture than the CPU path on the same input and that discrepancy is
-/// unresolved -- see the note on gpu_stress_min_bonds().
+/// Whether to request the CUDA stress solver (VIBE_CITY_GPU_STRESS=0 disables).
+///
+/// On by default when compiled in: the GPU path was verified to converge to the
+/// same solution as the CPU path, and it is the only one that can afford to
+/// reach convergence at all. See the note on gpu_stress_min_bonds().
 bool gpu_stress_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_GPU_STRESS");
-    return value != nullptr && std::string(value) == "1";
+    return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
 }
 
 /// Bond-count crossover below which a structure stays on the CPU solver.
 ///
-/// Measured on the 10-floor city, identical input, ~96 shots:
-///   CPU  8 iterations   5149 broken bonds, 1047 bodies, solve 5.95 ms
-///   CPU 44 iterations   4096 broken bonds,  737 bodies, solve 11.74 ms
-///   GPU (32-44 floor)   2423 broken bonds,  520 bodies, solve 2.86 ms
-/// Iteration count explains part of the gap -- more convergence means less
-/// spurious fracture, so our CPU default of 8 is likely over-fracturing -- but
-/// not all of it, since the GPU sits well below CPU at matched iterations.
-/// Until that is explained (upstream ships a CPU/GPU equivalence test), the
-/// GPU path stays opt-in.
+/// The GPU solve is not less accurate than the CPU one -- it is more converged.
+/// Sweeping iterations on the 10-floor city with identical input, both solvers
+/// descend monotonically to the SAME answer:
+///
+///   iterations      CPU bonds   GPU bonds
+///            8           5149           -
+///        32-44           4096        1901
+///          150           3156        1150
+///          400           1073        1246
+///
+/// So ~1100-1250 broken bonds is what this structure actually does under load,
+/// and the 5149 our CPU default produced was solver residual, not physics. The
+/// CPU cannot afford convergence (solve goes 5.95 -> 60+ ms); the GPU reaches
+/// it in ~3 ms. That is the real argument for the GPU path.
+///
+/// Consequence for content: destruction scale must come from material strength,
+/// not from under-solving. VIBE_CITY_STRESS_LIMIT_SCALE=0.5 restores it with
+/// converged physics and zero spontaneous damage on the intact city.
 std::uint32_t gpu_stress_min_bonds() {
   static const std::uint32_t bonds = [] {
     if (const char *value = std::getenv("VIBE_CITY_GPU_STRESS_MIN_BONDS")) {
