@@ -570,7 +570,11 @@ void DestructionManager::collect_events(Slot &slot) {
   std::unordered_map<ExtStressPhysXId, const ExtStressPhysXBodySnapshot *>
       body_by_id;
   std::unordered_set<ExtStressPhysXId> live_bodies;
-  std::unordered_map<std::uint16_t, std::size_t> promo_event_index;
+  // Keyed by island serial, which is 22 bits. Narrowing this to uint16 silently
+  // fails the lookup below for any serial past 65535, which means a promoted
+  // island is announced to clients with no chunks attached -- the island exists
+  // but nothing is bound to it, so it renders as nothing at all.
+  std::unordered_map<std::uint32_t, std::size_t> promo_event_index;
   for (std::uint32_t i = 0; i < body_count; ++i) {
     body_by_id[bodies[i].bodyId] = &bodies[i];
     live_bodies.insert(bodies[i].bodyId);
@@ -634,11 +638,11 @@ void DestructionManager::collect_events(Slot &slot) {
     const ExtStressPhysXId old_body =
         old_body_it != previous_node_to_body.end() ? old_body_it->second : 0;
     auto old_serial_it = previous_node_to_serial.find(node);
-    const std::uint16_t old_serial =
+    const std::uint32_t old_serial =
         old_serial_it != previous_node_to_serial.end() ? old_serial_it->second
                                                        : 0;
     auto new_serial_it = slot.body_to_serial.find(new_body);
-    const std::uint16_t new_serial =
+    const std::uint32_t new_serial =
         new_serial_it != slot.body_to_serial.end() ? new_serial_it->second : 0;
 
     if (old_body != 0 && old_body != new_body) {
