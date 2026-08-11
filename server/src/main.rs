@@ -233,6 +233,10 @@ struct CityStatsSnapshot {
     solve_ms: f32,
     readback_ms: f32,
     events_ms: f32,
+    /// Structures whose stress solve is running on the GPU, so a silent
+    /// fallback to the CPU solver is visible rather than merely slower.
+    gpu_stress_structures: u32,
+    gpu_stress_solve_ms: f32,
     filters_ms: f32,
     sleeping_bodies: u32,
     packets_per_sec: u64,
@@ -2670,6 +2674,8 @@ impl MatchState {
                     solve_ms: stats.solve_ms,
                     readback_ms: stats.readback_ms,
                     events_ms: stats.events_ms,
+                    gpu_stress_structures: stats.gpu_stress_structures,
+                    gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     packets_per_sec: packets,

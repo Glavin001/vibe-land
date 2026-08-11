@@ -28,6 +28,8 @@ interface CityServerStats {
   baseline_id: number;
   min_body_y: number;
   resettled_wakes: number;
+  gpu_stress_structures: number;
+  gpu_stress_solve_ms: number;
   settle_deferred_penetrating: number;
   unmapped_body_skips: number;
   duplicate_body_records: number;
@@ -270,6 +272,17 @@ export function CityStatsOverlay({
         warn={(city?.step_ms ?? 0) > TICK_BUDGET_MS / 2}
       />
       <Stat label="stress solve" value={`${(city?.stress_solve_ms ?? 0).toFixed(1)} ms`} />
+      <Stat
+        label="stress solver"
+        value={
+          city == null
+            ? '?'
+            : city.gpu_stress_structures > 0
+              ? `CUDA ${city.gpu_stress_structures}/${city.structures}`
+              : 'CPU'
+        }
+        warn={city != null && city.gpu_stress_structures < city.structures}
+      />
 
       {(city?.degraded
         || (city?.duplicate_body_records ?? 0) > 0
