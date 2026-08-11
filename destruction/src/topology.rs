@@ -32,7 +32,7 @@ struct LedgerStructure {
     bond_count: u32,
     /// Bit `i` set = bond index `i` alive.
     alive_bonds: Vec<u8>,
-    islands: HashMap<u16, LedgerIsland>,
+    islands: HashMap<u32, LedgerIsland>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -76,7 +76,7 @@ impl CityLedger {
         self.structures.values().map(|s| s.islands.len()).sum()
     }
 
-    pub fn island(&self, structure_id: u32, serial: u16) -> Option<&LedgerIsland> {
+    pub fn island(&self, structure_id: u32, serial: u32) -> Option<&LedgerIsland> {
         self.structures.get(&structure_id)?.islands.get(&serial)
     }
 
@@ -103,7 +103,7 @@ impl CityLedger {
                 .collect();
             nodes.sort_unstable();
             structure.islands.insert(
-                promotion.island_id as u16,
+                promotion.island_id,
                 LedgerIsland {
                     nodes,
                     pose: Pose {
@@ -117,7 +117,7 @@ impl CityLedger {
             );
         }
         for &retired in &batch.retired_island_ids {
-            structure.islands.remove(&(retired as u16));
+            structure.islands.remove(&retired);
         }
     }
 
@@ -125,7 +125,7 @@ impl CityLedger {
         if let Some(island) = self
             .structures
             .get_mut(&settle.structure_id)
-            .and_then(|s| s.islands.get_mut(&(settle.island_id as u16)))
+            .and_then(|s| s.islands.get_mut(&settle.island_id))
         {
             island.settled = true;
             island.pose = Pose {
@@ -137,7 +137,7 @@ impl CityLedger {
         }
     }
 
-    pub fn apply_wake(&mut self, structure_id: u32, serial: u16) {
+    pub fn apply_wake(&mut self, structure_id: u32, serial: u32) {
         if let Some(island) = self
             .structures
             .get_mut(&structure_id)
@@ -186,7 +186,7 @@ impl CityLedger {
                 bond_count: structure.bond_count,
                 alive_bonds: structure.alive_bonds.clone(),
             });
-            let mut serials: Vec<u16> = structure.islands.keys().copied().collect();
+            let mut serials: Vec<u32> = structure.islands.keys().copied().collect();
             serials.sort_unstable();
             for serial in serials {
                 let island = &structure.islands[&serial];

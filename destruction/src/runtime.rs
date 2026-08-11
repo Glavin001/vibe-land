@@ -313,7 +313,7 @@ impl CityDestruction {
                 ..FractureBatch::default()
             });
             if event.kind == 0 {
-                let body = ids::body_entity(event.structure_id, event.island_id as u16);
+                let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.promote(body, tick);
                 self.known_awake.insert(body, true);
                 batch.promoted_islands.push(IslandPromotion {
@@ -345,7 +345,7 @@ impl CityDestruction {
                     ..IslandPromotion::default()
                 });
             } else {
-                let body = ids::body_entity(event.structure_id, event.island_id as u16);
+                let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.retire(body);
                 self.known_awake.remove(&body);
                 batch.retired_island_ids.push(event.island_id);

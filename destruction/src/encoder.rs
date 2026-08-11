@@ -236,7 +236,7 @@ impl ChunkStreamEncoder {
         sim_tick: u32,
         active: &[BodySnapshotInput],
         output: &DestructionTickOutput,
-        wakes: &[(u32, u16)],
+        wakes: &[(u32, u32)],
     ) {
         // Ledger + staged topology.
         if !output.batches.is_empty() || !output.settled.is_empty() || !wakes.is_empty() {
@@ -244,7 +244,7 @@ impl ChunkStreamEncoder {
                 self.ledger.apply_batch(batch);
                 for promotion in &batch.promoted_islands {
                     let entity =
-                        ids::body_entity(batch.structure_id, promotion.island_id as u16);
+                        ids::body_entity(batch.structure_id, u32::from(promotion.island_id));
                     let nodes: Vec<u32> = promotion
                         .chunks
                         .iter()
@@ -265,7 +265,7 @@ impl ChunkStreamEncoder {
                     );
                 }
                 for &retired in &batch.retired_island_ids {
-                    let entity = ids::body_entity(batch.structure_id, retired as u16);
+                    let entity = ids::body_entity(batch.structure_id, retired);
                     self.bodies.remove(&entity);
                     for client in self.clients.values_mut() {
                         client.tracks.remove(&entity);
@@ -277,7 +277,7 @@ impl ChunkStreamEncoder {
             }
             for settle in &output.settled {
                 self.ledger.apply_settle(settle);
-                let entity = ids::body_entity(settle.structure_id, settle.island_id as u16);
+                let entity = ids::body_entity(settle.structure_id, u32::from(settle.island_id));
                 if let Some(track) = self.bodies.get_mut(&entity) {
                     track.settled_hint = true;
                 }

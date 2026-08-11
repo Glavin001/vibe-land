@@ -139,7 +139,7 @@ private:
   void collect_events(Slot &slot);
   /// Allocates the next island serial for a structure, reporting exhaustion of
   /// the 16-bit space rather than silently aliasing live bodies.
-  std::uint16_t next_serial(Slot &slot);
+  std::uint32_t next_serial(Slot &slot);
 
   physx::PxPhysics &physics_;
   physx::PxScene &scene_;
@@ -169,7 +169,7 @@ private:
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;
-  std::uint16_t max_island_serial_ = 0;
+  std::uint32_t max_island_serial_ = 0;
 
   std::vector<FfiBrokenBondEvent> broken_bonds_;
   std::vector<FfiChunkMigrationEvent> migrations_;

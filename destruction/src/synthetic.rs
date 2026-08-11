@@ -77,9 +77,9 @@ struct SynthStructure {
     bonds: Vec<(u32, u32, Vec3)>,
     alive: Vec<bool>,
     /// 0 = still part of the supported static structure.
-    node_island: Vec<u16>,
-    islands: HashMap<u16, SynthIsland>,
-    next_serial: u16,
+    node_island: Vec<u32>,
+    islands: HashMap<u32, SynthIsland>,
+    next_serial: u32,
 }
 
 pub struct SyntheticDestruction {
@@ -197,7 +197,7 @@ impl SyntheticDestruction {
         structure_ids.sort_unstable();
         for structure_id in structure_ids {
             let structure = &self.structures[&structure_id];
-            let mut serials: Vec<u16> = structure.islands.keys().copied().collect();
+            let mut serials: Vec<u32> = structure.islands.keys().copied().collect();
             serials.sort_unstable();
             for serial in serials {
                 let island = &structure.islands[&serial];
@@ -299,7 +299,7 @@ impl DestructionBackend for SyntheticDestruction {
                         island.linear_velocity += impulse / island.total_mass.max(1.0);
                         island.settled = false;
                         self.settle
-                            .wake(ids::body_entity(contact.structure_id, serial), tick);
+                            .wake(ids::body_entity(contact.structure_id, u32::from(serial)), tick);
                     }
                     continue;
                 }
@@ -393,7 +393,7 @@ impl DestructionBackend for SyntheticDestruction {
                     },
                 );
                 self.settle
-                    .promote(ids::body_entity(structure_id, serial), tick);
+                    .promote(ids::body_entity(structure_id, u32::from(serial)), tick);
                 promotions.push(IslandPromotion {
                     structure_id,
                     island_id: serial as u32,
@@ -447,7 +447,7 @@ impl DestructionBackend for SyntheticDestruction {
                     island.on_ground = true;
                 }
                 settle_samples.push(SettleSample {
-                    body_entity: ids::body_entity(structure.structure_id, serial),
+                    body_entity: ids::body_entity(structure.structure_id, u32::from(serial)),
                     linear_speed: island.linear_velocity.length(),
                     angular_speed: island.angular_velocity.length(),
                 });

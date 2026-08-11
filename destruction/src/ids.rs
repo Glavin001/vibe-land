@@ -5,21 +5,29 @@
 //!
 //! - chunk id     = (structure_id << 12) | node_index      (≤ 4096 nodes/structure)
 //! - bond id      = (structure_id << 16) | bond_index      (≤ 65536 bonds/structure)
-//! - body entity  = NS_CHUNK | (structure_id << 16) | island_serial
+//! - body entity  = NS_CHUNK | (structure_id << 22) | island_serial
 //!
 //! Island serials are monotonic per structure and never reused within a match,
 //! so retired ids stay dead. Serial 0 is reserved for the intact support actor.
+//!
+//! Never reused means the serial space is consumed by *cumulative* body
+//! creation, not by how many bodies are live. At 16 bits a long session with
+//! continuous destruction can exhaust it, and past the wrap every new body
+//! aliases onto a live one -- distinct bodies sharing a network id, so the
+//! client draws both their chunk sets with a single pose. Hence 22 bits
+//! (4.19M) for the serial and 6 for the structure: we place 16 structures and
+//! will never place 64, whereas cumulative serials are genuinely unbounded.
 
 pub const NS_CHUNK: u32 = 0x8000_0000;
 pub const ID_MASK: u32 = 0x0fff_ffff;
 
 pub const MAX_NODES_PER_STRUCTURE: u32 = 1 << 12;
 pub const MAX_BONDS_PER_STRUCTURE: u32 = 1 << 16;
-pub const MAX_ISLAND_SERIALS: u32 = 1 << 16;
-/// Body entities pack the structure into 28 - 16 = 12 bits.
-pub const MAX_STRUCTURES: u32 = 1 << 12;
+pub const MAX_ISLAND_SERIALS: u32 = 1 << 22;
+/// Body entities pack the structure into 28 - 22 = 6 bits.
+pub const MAX_STRUCTURES: u32 = 1 << 6;
 
-pub const SUPPORT_ISLAND_SERIAL: u16 = 0;
+pub const SUPPORT_ISLAND_SERIAL: u32 = 0;
 
 #[inline]
 pub fn chunk_id(structure_id: u32, node_index: u32) -> u32 {
@@ -46,9 +54,10 @@ pub fn bond_id_parts(bond_id: u32) -> (u32, u32) {
 }
 
 #[inline]
-pub fn body_entity(structure_id: u32, island_serial: u16) -> u32 {
+pub fn body_entity(structure_id: u32, island_serial: u32) -> u32 {
     debug_assert!(structure_id < MAX_STRUCTURES);
-    NS_CHUNK | (structure_id << 16) | island_serial as u32
+    debug_assert!(island_serial < MAX_ISLAND_SERIALS);
+    NS_CHUNK | (structure_id << 22) | island_serial
 }
 
 #[inline]
@@ -57,12 +66,9 @@ pub fn is_chunk_entity(entity: u32) -> bool {
 }
 
 #[inline]
-pub fn body_entity_parts(entity: u32) -> (u32, u16) {
+pub fn body_entity_parts(entity: u32) -> (u32, u32) {
     debug_assert!(is_chunk_entity(entity));
-    (
-        (entity & ID_MASK) >> 16,
-        (entity & (MAX_ISLAND_SERIALS - 1)) as u16,
-    )
+    ((entity & ID_MASK) >> 22, entity & (MAX_ISLAND_SERIALS - 1))
 }
 
 #[cfg(test)]

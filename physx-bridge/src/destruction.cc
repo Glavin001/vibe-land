@@ -24,8 +24,11 @@ using namespace Nv::Blast;
 
 constexpr std::uint32_t kNsChunk = 0x8000'0000u;
 
-std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint16_t serial) {
-  return kNsChunk | (structure_id << 16) | static_cast<std::uint32_t>(serial);
+/// Must match destruction/src/ids.rs body_entity: 6 bits of structure, 22 of
+/// island serial. The serial is monotonic and never reused, so it is consumed
+/// by cumulative body creation and a 16-bit field exhausts in a long session.
+std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint32_t serial) {
+  return kNsChunk | (structure_id << 22) | (serial & 0x003F'FFFFu);
 }
 
 std::uint32_t pack_chunk_id(std::uint32_t structure_id, std::uint32_t node_index) {
@@ -142,7 +145,7 @@ std::uint32_t gpu_stress_min_bonds() {
 struct DestructionManager::Slot {
   std::uint32_t structure_id = 0;
   ExtStressPhysXDestructible *dest = nullptr;
-  std::uint16_t next_island_serial = 1;
+  std::uint32_t next_island_serial = 1;
   std::uint32_t collision_group = 0;
   std::uint32_t collision_mask = 0;
 
@@ -163,9 +166,9 @@ struct DestructionManager::Slot {
   std::uint32_t shape_cache_count = 0;
 
   // Tracking for event diffs.
-  std::unordered_map<ExtStressPhysXId, std::uint16_t> body_to_serial;
+  std::unordered_map<ExtStressPhysXId, std::uint32_t> body_to_serial;
   std::unordered_map<std::uint32_t, ExtStressPhysXId> node_to_body; // node -> bodyId
-  std::unordered_map<std::uint32_t, std::uint16_t> node_to_serial;
+  std::unordered_map<std::uint32_t, std::uint32_t> node_to_serial;
   std::vector<std::uint8_t> bond_alive; // 1 = alive
 
   // Topology counters as of the last diff. The adapter only mutates topology
@@ -411,7 +414,7 @@ void DestructionManager::create_destructible(
         dest->getBodySnapshots(bodies.data(), static_cast<std::uint32_t>(bodies.size()));
     for (std::uint32_t i = 0; i < body_count; ++i) {
       const auto &body = bodies[i];
-      std::uint16_t serial = 0;
+      std::uint32_t serial = 0;
       if (!body.kinematic) {
         serial = next_serial(*slot);
       }
@@ -458,7 +461,7 @@ void DestructionManager::register_filters(Slot &slot) {
       continue;
     }
     auto serial_it = slot.body_to_serial.find(body.bodyId);
-    std::uint16_t serial = 0;
+    std::uint32_t serial = 0;
     if (serial_it == slot.body_to_serial.end()) {
       serial = body.kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[body.bodyId] = serial;
@@ -525,7 +528,7 @@ void DestructionManager::register_filters(Slot &slot) {
       continue;
     }
     auto serial_it = slot.body_to_serial.find(shape.bodyId);
-    const std::uint16_t serial =
+    const std::uint32_t serial =
         serial_it != slot.body_to_serial.end() ? serial_it->second : 0;
     const std::uint32_t entity = pack_body_entity(slot.structure_id, serial);
     // Same rule for shapes: re-stamping identical filter data is not free, it
@@ -562,7 +565,7 @@ void DestructionManager::collect_events(Slot &slot) {
     live_bodies.insert(bodies[i].bodyId);
     if (previous_body_to_serial.find(bodies[i].bodyId) ==
         previous_body_to_serial.end()) {
-      const std::uint16_t serial =
+      const std::uint32_t serial =
           bodies[i].kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[bodies[i].bodyId] = serial;
       if (!bodies[i].kinematic) {
@@ -785,8 +788,8 @@ void StressExecutor::run(std::size_t count,
   }
 }
 
-std::uint16_t DestructionManager::next_serial(Slot &slot) {
-  if (slot.next_island_serial == 0xFFFF) {
+std::uint32_t DestructionManager::next_serial(Slot &slot) {
+  if (slot.next_island_serial >= 0x003F'FFFFu) {
     ++serial_wraps_;
     std::fprintf(stderr,
                  "[destruction] structure %u exhausted its 16-bit island serial "
@@ -795,8 +798,8 @@ std::uint16_t DestructionManager::next_serial(Slot &slot) {
                  slot.structure_id,
                  static_cast<unsigned long long>(serial_wraps_));
   }
-  const std::uint16_t serial = slot.next_island_serial++;
-  if (slot.next_island_serial == 0) {
+  const std::uint32_t serial = slot.next_island_serial++;
+  if (slot.next_island_serial >= 0x0040'0000u) {
     slot.next_island_serial = 1; // 0 is the kinematic-support sentinel
   }
   if (serial > max_island_serial_) {
@@ -1127,7 +1130,7 @@ DestructionManager::chunk_body_snapshots() const {
         ++unmapped_body_skips_;
         continue;
       }
-      const std::uint16_t serial = serial_it->second;
+      const std::uint32_t serial = serial_it->second;
       FfiChunkBodySnapshot snap{};
       snap.entity_id = pack_body_entity(slot.structure_id, serial);
       snap.structure_id = slot.structure_id;

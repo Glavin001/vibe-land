@@ -17,11 +17,11 @@ export const SUPPORT_SERIAL = 0;
 
 /** Stable key for a body across the ledger and kinematic stream. */
 export const bodyKey = (structureId: number, islandSerial: number): number =>
-  0x8000_0000 + structureId * 0x1_0000 + islandSerial;
+  0x8000_0000 + structureId * 0x40_0000 + islandSerial;
 
 export const bodyKeyParts = (key: number): { structureId: number; islandSerial: number } => ({
-  structureId: Math.floor((key - 0x8000_0000) / 0x1_0000),
-  islandSerial: (key - 0x8000_0000) % 0x1_0000,
+  structureId: Math.floor((key - 0x8000_0000) / 0x40_0000),
+  islandSerial: (key - 0x8000_0000) % 0x40_0000,
 });
 
 export interface LedgerBody {

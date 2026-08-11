@@ -430,7 +430,7 @@ pub struct TopologyMessage {
     pub batches: Vec<FractureBatch>,
     pub settled: Vec<SettleEvent>,
     /// (structure_id, island_serial) pairs that woke back up.
-    pub wakes: Vec<(u32, u16)>,
+    pub wakes: Vec<(u32, u32)>,
 }
 
 pub fn encode_topology(message: &TopologyMessage) -> Vec<u8> {
@@ -612,7 +612,7 @@ pub fn decode_topology(data: &[u8]) -> Result<TopologyMessage, WireError> {
                 let count = reader.leb128()?;
                 for _ in 0..count {
                     let structure_id = reader.leb128()?;
-                    let serial = reader.leb128()? as u16;
+                    let serial = reader.leb128()?;
                     message.wakes.push((structure_id, serial));
                 }
             }
