@@ -156,6 +156,10 @@ fn city_destruction_cost_is_stable() {
     println!("awake  (peak)  {peak_awake}");
     println!("broken bonds   {}", stats.broken_bonds);
     println!(
+        "gpu stress     {} of {} structures, {:.2} ms accumulated",
+        stats.gpu_stress_structures, stats.structures, stats.gpu_stress_solve_ms
+    );
+    println!(
         "\n{:>12}  {:>8}  {:>8}  {:>8}  {:>12}",
         "phase", "p50", "p95", "max", "us/body p50"
     );

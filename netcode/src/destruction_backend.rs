@@ -191,6 +191,12 @@ pub struct DestructionStats {
     pub solve_ms: f32,
     pub readback_ms: f32,
     pub events_ms: f32,
+    /// Structures whose stress solve is actually running on the GPU. The
+    /// adapter falls back to the CPU solver silently when a graph is below the
+    /// bond crossover or CUDA init failed, so this distinguishes "GPU
+    /// requested" from "GPU running".
+    pub gpu_stress_structures: u32,
+    pub gpu_stress_solve_ms: f32,
     pub filters_ms: f32,
     pub sleeping_chunk_bodies: u32,
 }

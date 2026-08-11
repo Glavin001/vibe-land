@@ -9,9 +9,15 @@ publish = false
 default = []
 gpu = ["dep:cxx", "dep:cxx-build"]
 destruction = ["gpu"]
+# CUDA stress solver. Needs nvcc and a CUDA-capable GPU; the CPU solver is used
+# when this is off, and the adapter hard-fails if gpuStressSolver is requested
+# without it, so the runtime flag is gated on this feature.
+cuda-stress = ["destruction", "dep:cc"]
 
 [dependencies]
 cxx = { version = "1", optional = true }
 
 [build-dependencies]
 cxx-build = { version = "1", optional = true }
+# Only used to drive nvcc for the CUDA stress solver.
+cc = { version = "1", optional = true }

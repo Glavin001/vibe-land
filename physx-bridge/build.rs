@@ -109,6 +109,16 @@ fn main() {
             .include(blast.join("source/sdk/lowlevel"))
             .include(blast.join("source/shared/NsFoundation/include"))
             .include(blast.join("rust_stress_example/ffi"));
+
+        // NvBlastExtStressSolver.cpp only reaches for the CUDA solver when this
+        // is defined; without it the GPU path is compiled out and requesting
+        // gpuStressSolver fails destructible creation outright.
+        #[cfg(feature = "cuda-stress")]
+        {
+            build.define("NVBLAST_ENABLE_CUDA_STRESS", None);
+            build.include(blast.join("include/extensions/stressgpu"));
+            compile_cuda_stress(&blast);
+        }
     }
 
     build.compile("vibe_land_physx_bridge");
@@ -128,10 +138,86 @@ fn main() {
     }
     println!("cargo:rustc-link-lib=dylib=PhysXGpu_64");
     println!("cargo:rustc-link-lib=dylib=cuda");
+    // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
+    #[cfg(feature = "cuda-stress")]
+    if let Some(dir) = cuda_lib_dir() {
+        println!("cargo:rustc-link-lib=dylib=cudart");
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+    }
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-link-lib=dylib=pthread");
     println!("cargo:rustc-link-lib=dylib=rt");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+}
+
+/// Where libcudart lives, so the linker and loader can find it.
+#[cfg(feature = "cuda-stress")]
+fn cuda_lib_dir() -> Option<PathBuf> {
+    let root = env::var_os("CUDA_PATH")
+        .or_else(|| env::var_os("CUDA_HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/local/cuda"));
+    for candidate in ["lib64", "lib"] {
+        let dir = root.join(candidate);
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
+/// Compiles the one CUDA translation unit the Blast stress solver needs.
+///
+/// Kept as its own static library because it is the only file that must go
+/// through nvcc; everything else stays on the host compiler.
+#[cfg(feature = "cuda-stress")]
+fn compile_cuda_stress(blast: &std::path::Path) {
+    let source = blast.join("source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu");
+    assert!(
+        source.is_file(),
+        "cuda-stress feature enabled but the CUDA solver source is missing: {}",
+        source.display()
+    );
+
+    // The 4090 is sm_89. Overridable because this is the one flag that has to
+    // match whatever GPU the server actually runs on.
+    let arch = env::var("VIBE_CUDA_ARCH").unwrap_or_else(|_| "sm_89".to_string());
+
+    let mut cuda = cc::Build::new();
+    if let Some(dir) = cuda_lib_dir() {
+        if let Some(root) = dir.parent() {
+            let nvcc = root.join("bin/nvcc");
+            if nvcc.is_file() {
+                cuda.compiler(nvcc);
+            }
+            cuda.include(root.join("include"));
+        }
+    }
+    // cc-rs otherwise forwards host-compiler flags (-ffunction-sections and
+    // friends) that nvcc rejects outright, so the flag set is given explicitly.
+    cuda.cuda(true)
+        .cpp(true)
+        .no_default_flags(true)
+        .warnings(false)
+        .flag("-std=c++17")
+        .flag("-O2")
+        .flag("-m64")
+        .flag(format!("-arch={arch}"))
+        .flag("-Xcompiler")
+        .flag("-fPIC")
+        .define("NVBLAST_ENABLE_CUDA_STRESS", None)
+        .file(source)
+        .include(blast.join("include"))
+        .include(blast.join("include/globals"))
+        .include(blast.join("include/lowlevel"))
+        .include(blast.join("include/extensions/stress"))
+        .include(blast.join("include/extensions/stressgpu"))
+        .include(blast.join("include/shared/NvFoundation"))
+        .include(blast.join("source/shared"))
+        .include(blast.join("source/shared/stress_solver"))
+        .include(blast.join("source/sdk/common"))
+        .compile("vibe_land_blast_stress_gpu");
 }
 
 #[cfg(not(feature = "gpu"))]

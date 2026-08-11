@@ -407,6 +407,11 @@ pub struct DestructionStats {
     pub events_ms: f32,
     pub filters_ms: f32,
     pub sleeping_chunk_bodies: u32,
+    /// Structures currently solved on the GPU. Zero while the CUDA solver is
+    /// compiled in means every graph fell below the bond crossover, or CUDA
+    /// init failed and the adapter silently fell back to the CPU solver.
+    pub gpu_stress_structures: u32,
+    pub gpu_stress_solve_ms: f32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1247,6 +1252,8 @@ mod ffi {
         /// Filter/property stamping for new or migrated bodies and shapes.
         filters_ms: f32,
         sleeping_chunk_bodies: u32,
+        gpu_stress_structures: u32,
+        gpu_stress_solve_ms: f32,
     }
 
     unsafe extern "C++" {
@@ -1726,6 +1733,8 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             events_ms: value.events_ms,
             filters_ms: value.filters_ms,
             sleeping_chunk_bodies: value.sleeping_chunk_bodies,
+            gpu_stress_structures: value.gpu_stress_structures,
+            gpu_stress_solve_ms: value.gpu_stress_solve_ms,
         }
     }
 }

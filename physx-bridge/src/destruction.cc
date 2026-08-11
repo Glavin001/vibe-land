@@ -74,6 +74,44 @@ void adapter_error(ExtStressPhysXError error, std::uint32_t node,
 
 } // namespace
 
+#if defined(NVBLAST_ENABLE_CUDA_STRESS)
+/// Whether to request the CUDA stress solver. Opt-in (VIBE_CITY_GPU_STRESS=1)
+/// even when compiled in, because the GPU path currently produces materially
+/// less fracture than the CPU path on the same input and that discrepancy is
+/// unresolved -- see the note on gpu_stress_min_bonds().
+bool gpu_stress_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_GPU_STRESS");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
+/// Bond-count crossover below which a structure stays on the CPU solver.
+///
+/// Measured on the 10-floor city, identical input, ~96 shots:
+///   CPU  8 iterations   5149 broken bonds, 1047 bodies, solve 5.95 ms
+///   CPU 44 iterations   4096 broken bonds,  737 bodies, solve 11.74 ms
+///   GPU (32-44 floor)   2423 broken bonds,  520 bodies, solve 2.86 ms
+/// Iteration count explains part of the gap -- more convergence means less
+/// spurious fracture, so our CPU default of 8 is likely over-fracturing -- but
+/// not all of it, since the GPU sits well below CPU at matched iterations.
+/// Until that is explained (upstream ships a CPU/GPU equivalence test), the
+/// GPU path stays opt-in.
+std::uint32_t gpu_stress_min_bonds() {
+  static const std::uint32_t bonds = [] {
+    if (const char *value = std::getenv("VIBE_CITY_GPU_STRESS_MIN_BONDS")) {
+      const long parsed = std::strtol(value, nullptr, 10);
+      if (parsed >= 0) {
+        return static_cast<std::uint32_t>(parsed);
+      }
+    }
+    return 3000u; // upstream guidance for high-rise graphs
+  }();
+  return bonds;
+}
+#endif
+
 struct DestructionManager::Slot {
   std::uint32_t structure_id = 0;
   ExtStressPhysXDestructible *dest = nullptr;
@@ -244,7 +282,23 @@ void DestructionManager::create_destructible(
   desc.settings.graphReductionLevel = settings.graph_reduction_level;
   desc.settings.islandAware = true;
   desc.settings.skipSettledIslands = true;
+#if defined(NVBLAST_ENABLE_CUDA_STRESS)
+  // The CUDA solver borrows PhysX's own CUDA context (the adapter fetches it
+  // from the scene), runs on a private non-blocking stream and replays a
+  // captured CUDA graph, so it shares the GPU with rigid-body simulation
+  // without a second context. Sleeping is unaffected.
+  //
+  // The crossover is latency vs throughput: each GPU solve pays a fixed
+  // upload/launch/sync cost per structure per frame, so small graphs are
+  // genuinely faster in cache on the CPU. It is re-evaluated per structure on
+  // every fracture resync, so a structure migrates back to the CPU as its
+  // graph shrinks. Upstream defaults to 4096 bonds, which is above our
+  // 10-floor structures (3624), so they would all silently stay on CPU.
+  desc.settings.gpuStressSolver = gpu_stress_enabled();
+  desc.settings.gpuStressMinimumBondCount = gpu_stress_min_bonds();
+#else
   desc.settings.gpuStressSolver = false;
+#endif
   desc.settings.recordSplitContinuity = true;
   desc.settings.applyExcessForces = settings.apply_excess_forces;
   desc.settings.excessForceScale = settings.excess_force_scale;
@@ -1062,6 +1116,14 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const auto &telemetry = slot_ptr->dest->getTelemetry();
     stats.chunk_bodies += telemetry.bodyCount;
     stats.awake_chunk_bodies += telemetry.awakeDynamicBodyCount;
+    // Whether the CUDA solver is actually running, not merely requested: the
+    // adapter falls back to CPU silently if the graph is under the crossover
+    // or CUDA init failed, and that must not look like a GPU solve.
+    if (slot_ptr->dest->usesGpuStressSolver()) {
+      stats.gpu_stress_structures += 1;
+    }
+    stats.gpu_stress_solve_ms +=
+        static_cast<float>(telemetry.gpuStressSolveMilliseconds);
   }
   return stats;
 }
