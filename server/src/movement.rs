@@ -48,6 +48,11 @@ pub struct PhysicsHealth {
     pub contact_pairs: u32,
     pub active_dynamic_bodies: u32,
     pub last_step_ms: f32,
+    /// Step phases. `simulate` only dispatches under GPU dynamics, so `fetch`
+    /// carries GPU compute plus the result readback.
+    pub last_controller_ms: f32,
+    pub last_simulate_ms: f32,
+    pub last_fetch_ms: f32,
 }
 
 enum PhysicsBackend {

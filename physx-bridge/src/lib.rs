@@ -276,6 +276,9 @@ pub struct WorldStats {
     pub gpu_rigid_contact_high_water: u32,
     pub gpu_rigid_patch_high_water: u32,
     pub last_step_ms: f32,
+    pub last_controller_ms: f32,
+    pub last_simulate_ms: f32,
+    pub last_fetch_ms: f32,
     pub completed_steps: u64,
     pub gpu_warning_count: u32,
 }
@@ -1101,6 +1104,11 @@ mod ffi {
         gpu_rigid_contact_high_water: u32,
         gpu_rigid_patch_high_water: u32,
         last_step_ms: f32,
+        /// Phases of the step. With GPU dynamics `simulate` only dispatches,
+        /// so `fetch` carries GPU compute plus result readback.
+        last_controller_ms: f32,
+        last_simulate_ms: f32,
+        last_fetch_ms: f32,
         completed_steps: u64,
         gpu_warning_count: u32,
     }
@@ -1533,6 +1541,9 @@ impl From<ffi::FfiWorldStats> for WorldStats {
             gpu_rigid_contact_high_water: value.gpu_rigid_contact_high_water,
             gpu_rigid_patch_high_water: value.gpu_rigid_patch_high_water,
             last_step_ms: value.last_step_ms,
+            last_controller_ms: value.last_controller_ms,
+            last_simulate_ms: value.last_simulate_ms,
+            last_fetch_ms: value.last_fetch_ms,
             completed_steps: value.completed_steps,
             gpu_warning_count: value.gpu_warning_count,
         }

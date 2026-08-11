@@ -759,12 +759,26 @@ public:
   }
 
   void step() {
+    // Split the phases: with GPU dynamics `simulate()` only dispatches work,
+    // so it should return almost immediately, while `fetchResults(true)`
+    // blocks on GPU compute plus the result readback. If simulate is the
+    // expensive half the cost is CPU-side (broadphase, controller
+    // interactions); if fetchResults is, it is GPU compute or transfer.
     const auto start = std::chrono::steady_clock::now();
     controller_manager_->computeInteractions(kFixedTimestep);
+    const auto after_controllers = std::chrono::steady_clock::now();
     scene_->simulate(kFixedTimestep);
+    const auto after_simulate = std::chrono::steady_clock::now();
     const bool succeeded = scene_->fetchResults(true);
     require(succeeded, "PhysX fetchResults failed");
     const auto end = std::chrono::steady_clock::now();
+    last_controller_ms_ =
+        std::chrono::duration<float, std::milli>(after_controllers - start).count();
+    last_simulate_ms_ =
+        std::chrono::duration<float, std::milli>(after_simulate - after_controllers)
+            .count();
+    last_fetch_ms_ =
+        std::chrono::duration<float, std::milli>(end - after_simulate).count();
     last_step_ms_ =
         std::chrono::duration<float, std::milli>(end - start).count();
     ++completed_steps_;
@@ -900,6 +914,9 @@ public:
         statistics.gpuDynamicsMemoryConfigStatistics.rigidContactCount,
         statistics.gpuDynamicsMemoryConfigStatistics.rigidPatchCount,
         last_step_ms_,
+        last_controller_ms_,
+        last_simulate_ms_,
+        last_fetch_ms_,
         completed_steps_,
         runtime_->warning_count(),
     };
@@ -1262,6 +1279,9 @@ private:
   PxVec3 pending_player_velocity_{0.0f};
   float contact_report_threshold_ = 50.0f;
   float last_step_ms_ = 0.0f;
+  float last_controller_ms_ = 0.0f;
+  float last_simulate_ms_ = 0.0f;
+  float last_fetch_ms_ = 0.0f;
   std::uint64_t completed_steps_ = 0;
 #ifdef VIBE_LAND_DESTRUCTION
   std::unique_ptr<DestructionManager> destruction_;

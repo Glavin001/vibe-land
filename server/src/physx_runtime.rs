@@ -1016,6 +1016,9 @@ impl PhysxPhysicsArena {
             contact_pairs: stats.contact_pairs,
             active_dynamic_bodies: stats.active_dynamic_bodies,
             last_step_ms: stats.last_step_ms,
+            last_controller_ms: stats.last_controller_ms,
+            last_simulate_ms: stats.last_simulate_ms,
+            last_fetch_ms: stats.last_fetch_ms,
         }
     }
 
