@@ -102,6 +102,14 @@ struct DestructionManager::Slot {
   std::unordered_map<std::uint32_t, ExtStressPhysXId> node_to_body; // node -> bodyId
   std::unordered_map<std::uint32_t, std::uint16_t> node_to_serial;
   std::vector<std::uint8_t> bond_alive; // 1 = alive
+
+  // Topology counters as of the last diff. The adapter only mutates topology
+  // inside endTick, and only when bonds were overstressed, so when these are
+  // unchanged the whole diff is provably a no-op and is skipped.
+  std::uint64_t last_splits = 0;
+  std::uint64_t last_bodies_created = 0;
+  std::uint64_t last_shapes_migrated = 0;
+  bool topology_primed = false;
 };
 
 DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
@@ -702,10 +710,29 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
 
   for (Slot *slot_ptr : live_slots_) {
     Slot &slot = *slot_ptr;
-    // One readback, then every consumer works off it.
+    // One readback, then every consumer works off it. This always runs: poses
+    // change every tick even when topology does not.
     phase = clock::now();
     refresh_snapshots(slot);
     readback_ms += ms_since(phase);
+
+    // Topology can only change inside endTick, and only when bonds were
+    // overstressed. When these counters have not moved, nothing was split,
+    // created or migrated, so the diff below would walk every body, every
+    // shape and every bond only to conclude that nothing changed. Skip it.
+    const ExtStressPhysXTelemetry &telemetry = slot.dest->getTelemetry();
+    const bool topology_changed =
+        !slot.topology_primed || telemetry.splits != slot.last_splits ||
+        telemetry.bodiesCreated != slot.last_bodies_created ||
+        telemetry.shapesMigrated != slot.last_shapes_migrated;
+    if (!topology_changed) {
+      ++quiet_slot_ticks_;
+      continue;
+    }
+    slot.last_splits = telemetry.splits;
+    slot.last_bodies_created = telemetry.bodiesCreated;
+    slot.last_shapes_migrated = telemetry.shapesMigrated;
+    slot.topology_primed = true;
 
     // Diff membership first (assigns serials for new bodies), then stamp
     // filter/contact data onto every live shape/actor.

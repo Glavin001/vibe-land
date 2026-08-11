@@ -160,6 +160,9 @@ private:
   std::unordered_map<const physx::PxRigidDynamic *, std::uint32_t> body_entity_stamp_;
   std::unordered_map<const physx::PxShape *, std::uint32_t> shape_entity_stamp_;
 
+  /// Slot-ticks where topology was unchanged and the event diff was skipped.
+  std::uint64_t quiet_slot_ticks_ = 0;
+
   std::vector<FfiBrokenBondEvent> broken_bonds_;
   std::vector<FfiChunkMigrationEvent> migrations_;
   std::vector<FfiIslandBodyEvent> island_events_;
