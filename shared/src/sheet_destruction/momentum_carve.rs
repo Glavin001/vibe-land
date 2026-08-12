@@ -5,10 +5,11 @@
 //!
 //! 1. Sheet colliders opt into `ActiveHooks::MODIFY_SOLVER_CONTACTS`.
 //! 2. During the dynamics step, [`SoftSheetHook`] recognizes breaker↔sheet
-//!    pairs that can cut, records impact data, then
+//!    pairs that can cut, records impact + drag samples, then
 //!    `solver_contacts.clear()` so that pair is sensor-like for the solve.
-//! 3. After the step, the same deterministic [`CarveEvent`] path as bullets
-//!    opens the hole (and rebuilds coarse collision).
+//! 3. After the step, a mild drag impulse (penetration × local remaining solid)
+//!    resists the pass-through without re-wedging, then the same deterministic
+//!    [`CarveEvent`] path as bullets opens the hole (and rebuilds coarse collision).
 //!
 //! A short velocity ray sweep remains only as a tunneling fallback when a
 //! discrete step never produces a contact manifold through a ~16 cm wall.
@@ -29,10 +30,21 @@ use crate::physics_arena::TerrainMaterialHook;
 use crate::world_document::TerrainMaterialField;
 
 use super::carve::CarveEvent;
+use super::coarse_collision::occupancy_in_rect;
 use super::registry::{SheetInstance, SheetRegistry};
 
 /// Built-in default. Flip to `false` to disable at source.
 pub const SHEET_MOMENTUM_CARVE: bool = true;
+
+/// Soft drag while overlapping a sheet (not a hard stop).
+/// `strength = min(MAX, K * penetration_m * local_solid)`.
+pub const SOFT_SHEET_DRAG_K: f32 = 1.2;
+/// Cap on through-normal speed removed per tick (once, after all substeps).
+pub const SOFT_SHEET_DRAG_MAX_SPEED_FRAC: f32 = 0.07;
+/// Ignore grazing / numeric contacts below this penetration.
+pub const SOFT_SHEET_DRAG_MIN_PEN_M: f32 = 0.002;
+/// UV half-extent (m) for local remaining-solid sampling around the contact.
+pub const SOFT_SHEET_DRAG_SAMPLE_RADIUS_M: f32 = 0.35;
 
 /// High bit on sheet collider `user_data` (bit 126). Terrain uses bit 127.
 /// Low 32 bits remain the sheet id.
@@ -114,6 +126,25 @@ pub struct MomentumSheetImpact {
     pub normal_speed: f32,
     pub mass_or_energy: f32,
     pub footprint_radius: f32,
+}
+
+/// Soft-pass drag sample recorded while breaker↔sheet contacts are cleared.
+#[derive(Clone, Copy, Debug)]
+pub struct SoftSheetDragSample {
+    pub body: RigidBodyHandle,
+    pub sheet_id: u32,
+    pub point: [f32; 3],
+    pub normal_sheet_out: [f32; 3],
+    pub velocity: [f32; 3],
+    /// Max contact penetration this manifold (`max(0, -dist)`).
+    pub penetration: f32,
+}
+
+/// Shared collector for soft-sheet carve impacts + drag samples in one step.
+#[derive(Default)]
+pub struct SoftSheetStepCollector {
+    pub impacts: Vec<MomentumSheetImpact>,
+    pub drags: Vec<SoftSheetDragSample>,
 }
 
 pub struct MomentumCarveCooldown {
@@ -226,11 +257,11 @@ fn striker_params(kind: MomentumStrikerKind) -> (f32, f32, f32) {
 }
 
 /// Clears solver contacts for breaker↔sheet pairs that can cut, recording
-/// carve inputs. Compose with [`TerrainAndSoftSheetHook`] when a terrain
-/// material field is present.
+/// carve inputs + soft-drag samples. Compose with [`TerrainAndSoftSheetHook`]
+/// when a terrain material field is present.
 pub struct SoftSheetHook<'a> {
     pub breakers: &'a HashMap<ColliderHandle, StrikerRef>,
-    pub impacts: &'a Mutex<Vec<MomentumSheetImpact>>,
+    pub collector: &'a Mutex<SoftSheetStepCollector>,
 }
 
 impl PhysicsHooks for SoftSheetHook<'_> {
@@ -265,6 +296,11 @@ impl PhysicsHooks for SoftSheetHook<'_> {
         let speed = vel.norm();
         let (min_speed, mass, footprint) = striker_params(striker.kind);
         let penetrating = context.solver_contacts.iter().any(|c| c.dist < 0.0);
+        let penetration = context
+            .solver_contacts
+            .iter()
+            .map(|c| (-c.dist).max(0.0))
+            .fold(0.0_f32, f32::max);
 
         let mut n = *context.normal;
         if !sheet_is_c1 {
@@ -306,9 +342,9 @@ impl PhysicsHooks for SoftSheetHook<'_> {
         } else {
             0.0
         };
-        if normal_speed > 0.0 {
-            if let Ok(mut impacts) = self.impacts.lock() {
-                impacts.push(MomentumSheetImpact {
+        if let Ok(mut collector) = self.collector.lock() {
+            if normal_speed > 0.0 {
+                collector.impacts.push(MomentumSheetImpact {
                     sheet_id,
                     striker_kind: striker.kind,
                     striker_id: striker.id,
@@ -318,6 +354,22 @@ impl PhysicsHooks for SoftSheetHook<'_> {
                     normal_speed,
                     mass_or_energy: mass,
                     footprint_radius: footprint,
+                });
+            }
+            // Drag samples even when below smash/carve speed — resistance while
+            // embedded is what makes soft-pass feel like material, not air.
+            if penetrating || penetration > SOFT_SHEET_DRAG_MIN_PEN_M || speed > 0.25 {
+                collector.drags.push(SoftSheetDragSample {
+                    body: striker.body,
+                    sheet_id,
+                    point,
+                    normal_sheet_out: [n.x, n.y, n.z],
+                    velocity: [vel.x, vel.y, vel.z],
+                    penetration: penetration.max(if penetrating {
+                        SOFT_SHEET_DRAG_MIN_PEN_M
+                    } else {
+                        0.0
+                    }),
                 });
             }
         }
@@ -338,11 +390,14 @@ impl<'a> TerrainAndSoftSheetHook<'a> {
     pub fn new(
         field: Option<&'a TerrainMaterialField>,
         breakers: &'a HashMap<ColliderHandle, StrikerRef>,
-        impacts: &'a Mutex<Vec<MomentumSheetImpact>>,
+        collector: &'a Mutex<SoftSheetStepCollector>,
     ) -> Self {
         Self {
             terrain: field.map(TerrainMaterialHook::new),
-            soft: SoftSheetHook { breakers, impacts },
+            soft: SoftSheetHook {
+                breakers,
+                collector,
+            },
         }
     }
 }
@@ -367,7 +422,7 @@ pub fn finalize_soft_sheet_impacts(
     let mut out = Vec::new();
     let mut seen: HashSet<(u8, u32, u32)> = HashSet::new();
     for impact in raw {
-        if !sheets.contains(impact.sheet_id) {
+        if impact.normal_speed <= 0.0 || !sheets.contains(impact.sheet_id) {
             continue;
         }
         let key = (
@@ -392,6 +447,101 @@ pub fn finalize_soft_sheet_impacts(
         }
     }
     out
+}
+
+/// Local remaining solid near a world contact (max of outer/inner skins).
+pub fn local_sheet_solid_fraction(sheet: &SheetInstance, point: [f32; 3], radius_m: f32) -> f32 {
+    let uv = sheet.frame.world_to_uv(point);
+    let r = radius_m
+        .max(sheet.mask.cell_size)
+        .max(SOFT_SHEET_DRAG_MIN_PEN_M);
+    let outer = occupancy_in_rect(
+        &sheet.mask,
+        uv[0] - r,
+        uv[1] - r,
+        uv[0] + r,
+        uv[1] + r,
+    );
+    let inner = occupancy_in_rect(
+        &sheet.inner_mask,
+        uv[0] - r,
+        uv[1] - r,
+        uv[0] + r,
+        uv[1] + r,
+    );
+    outer.max(inner).clamp(0.0, 1.0)
+}
+
+/// Apply mild soft-pass resistance after contacts were cleared in the solver.
+///
+/// Dedupes to one sample per rigid body (max penetration), scales by local
+/// remaining solid, and removes a capped fraction of through-normal speed.
+/// Never hard-stops — hole carving + soft clear still let breakers drive through.
+pub fn apply_soft_sheet_drag(
+    sim: &mut SimWorld,
+    sheets: &SheetRegistry,
+    samples: &[SoftSheetDragSample],
+) {
+    if samples.is_empty() {
+        return;
+    }
+    // body → best sample (deepest penetration; prefer solid-facing normals).
+    let mut best: HashMap<RigidBodyHandle, SoftSheetDragSample> = HashMap::new();
+    for &sample in samples {
+        best
+            .entry(sample.body)
+            .and_modify(|cur| {
+                if sample.penetration > cur.penetration {
+                    *cur = sample;
+                }
+            })
+            .or_insert(sample);
+    }
+
+    for sample in best.into_values() {
+        let Some(sheet) = sheets.get(sample.sheet_id) else {
+            continue;
+        };
+        let pen = sample.penetration;
+        if pen < SOFT_SHEET_DRAG_MIN_PEN_M {
+            continue;
+        }
+        let solid = local_sheet_solid_fraction(
+            sheet,
+            sample.point,
+            SOFT_SHEET_DRAG_SAMPLE_RADIUS_M,
+        );
+        if solid < 0.02 {
+            continue;
+        }
+        let strength =
+            (SOFT_SHEET_DRAG_K * pen * solid).clamp(0.0, SOFT_SHEET_DRAG_MAX_SPEED_FRAC);
+        if strength <= 1e-5 {
+            continue;
+        }
+        let Some(rb) = sim.rigid_bodies.get_mut(sample.body) else {
+            continue;
+        };
+        let vel = *rb.linvel();
+        let n = Vector3::new(
+            sample.normal_sheet_out[0],
+            sample.normal_sheet_out[1],
+            sample.normal_sheet_out[2],
+        );
+        let n_len = n.norm();
+        if n_len < 1e-5 {
+            continue;
+        }
+        let n = n / n_len;
+        let vn = vel.dot(&n);
+        if vn.abs() < 1e-4 {
+            continue;
+        }
+        // Oppose the through-sheet normal velocity only — keep tangential slide.
+        let dv_n = -vn * strength;
+        let mass = rb.mass().max(1.0);
+        rb.apply_impulse(n * (dv_n * mass), true);
+    }
 }
 
 /// Tunneling fallback: velocity ray when soft contacts never fired for a
@@ -547,5 +697,53 @@ mod tests {
         assert!(is_sheet_soft_collider(ud));
         assert_eq!(sheet_id_from_user_data(ud), 42);
         assert!(!is_sheet_soft_collider(42));
+    }
+
+    #[test]
+    fn local_solid_fraction_drops_after_carve_hole() {
+        use crate::sheet_destruction::{apply_carve, lookup_sheet_material};
+
+        let mut sheet = drywall_sheet();
+        let center = sheet
+            .frame
+            .uv_to_world([sheet.frame.size_u * 0.5, sheet.frame.size_v * 0.5]);
+        let before = local_sheet_solid_fraction(&sheet, center, 0.4);
+        assert!(
+            before > 0.9,
+            "intact sheet should be solid near center ({before})"
+        );
+
+        let mat = lookup_sheet_material(sheet.material_id);
+        let event = CarveEvent {
+            sheet_id: sheet.id,
+            seq: 1,
+            uv: [sheet.frame.size_u * 0.5, sheet.frame.size_v * 0.5],
+            dir_uv: [0.0, 0.0],
+            normal_speed: 12.0,
+            mass_or_energy: VEHICLE_CARVE_EFF_MASS_KG,
+            footprint_radius: VEHICLE_CARVE_FOOTPRINT_M,
+            seed: 1,
+        };
+        let _ = apply_carve(&mut sheet.mask, mat, &event);
+        let mut exit = event.clone();
+        exit.seq = 2;
+        let _ = apply_carve(&mut sheet.inner_mask, mat, &exit);
+
+        let after = local_sheet_solid_fraction(&sheet, center, 0.4);
+        assert!(
+            after < before * 0.5,
+            "carved hole should cut local solid (before={before} after={after})"
+        );
+    }
+
+    #[test]
+    fn soft_drag_strength_scales_with_pen_and_solid() {
+        // Document the intended scale: 5 cm into intact material ≈ ~6% cap.
+        let pen = 0.05;
+        let solid = 1.0;
+        let strength = (SOFT_SHEET_DRAG_K * pen * solid).clamp(0.0, SOFT_SHEET_DRAG_MAX_SPEED_FRAC);
+        assert!(strength > 0.04 && strength <= SOFT_SHEET_DRAG_MAX_SPEED_FRAC);
+        let weak = (SOFT_SHEET_DRAG_K * pen * 0.1).clamp(0.0, SOFT_SHEET_DRAG_MAX_SPEED_FRAC);
+        assert!(weak < strength * 0.25);
     }
 }

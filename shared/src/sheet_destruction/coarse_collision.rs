@@ -56,7 +56,8 @@ pub fn sheet_coarse_collision_enabled() -> bool {
     })
 }
 
-fn occupancy_in_rect(mask: &SheetMask, u0: f32, v0: f32, u1: f32, v1: f32) -> f32 {
+/// Fine-mask solid fraction inside a UV-axis-aligned rect (inclusive cell cover).
+pub fn occupancy_in_rect(mask: &SheetMask, u0: f32, v0: f32, u1: f32, v1: f32) -> f32 {
     let cell = mask.cell_size;
     if cell <= 0.0 || mask.width == 0 || mask.height == 0 {
         return 0.0;

@@ -15,14 +15,14 @@ use crate::{
     protocol::*,
     seq::seq_is_newer,
         sheet_destruction::{
-        carve_event_to_packet, debris_spawns_from_islands, encode_carve_event_packet,
-        finalize_soft_sheet_impacts, impact_to_carve_event, lookup_sheet_material,
-        sample_tunnel_sheet_impacts, sheet_coarse_collision_enabled, sheet_collider_index,
-        sheet_falling_debris_enabled, sheet_momentum_carve_enabled, CarveEvent,
-        MomentumCarveCooldown, MomentumSheetImpact, MomentumStrikerKind, OrientedWorldCuboid,
-        SheetMaterialId, SheetRegistry, StrikerRef, DEBRIS_MAX_CONCURRENT, DEBRIS_SPAWN_NUDGE_M,
-        DEBRIS_TTL_SEC, MOMENTUM_CARVE_MAX_PER_TICK, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
-        RIFLE_BULLET_SPEED_MPS,
+        apply_soft_sheet_drag, carve_event_to_packet, debris_spawns_from_islands,
+        encode_carve_event_packet, finalize_soft_sheet_impacts, impact_to_carve_event,
+        lookup_sheet_material, sample_tunnel_sheet_impacts, sheet_coarse_collision_enabled,
+        sheet_collider_index, sheet_falling_debris_enabled, sheet_momentum_carve_enabled,
+        CarveEvent, MomentumCarveCooldown, MomentumStrikerKind, OrientedWorldCuboid,
+        SheetMaterialId, SheetRegistry, SoftSheetStepCollector, StrikerRef,
+        DEBRIS_MAX_CONCURRENT, DEBRIS_SPAWN_NUDGE_M, DEBRIS_TTL_SEC, MOMENTUM_CARVE_MAX_PER_TICK,
+        RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,
     },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
@@ -821,14 +821,15 @@ impl LocalSession {
         }
 
         let (breakers, strikers) = self.collect_sheet_strikers();
-        let raw_impacts = std::sync::Mutex::new(Vec::<MomentumSheetImpact>::new());
+        let collector = std::sync::Mutex::new(SoftSheetStepCollector::default());
         let timings = self
             .arena
-            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &raw_impacts);
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &collector);
 
-        let raw = raw_impacts
+        let SoftSheetStepCollector { impacts: raw, drags } = collector
             .into_inner()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply_soft_sheet_drag(&mut self.arena.dynamic.sim, &self.sheets, &drags);
         let mut impacts = finalize_soft_sheet_impacts(
             raw,
             &self.sheets,
@@ -3077,6 +3078,81 @@ mod tests {
             .drain_packets()
             .iter()
             .any(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT)));
+    }
+
+    #[test]
+    fn soft_sheet_drag_slows_breaker_but_still_passes() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.4, 0.4, 0.4],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        let v0 = 16.0;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, v0], true);
+            rb.wake_up(true);
+        }
+
+        let mut min_speed = f32::MAX;
+        let mut saw_drag_window = false;
+        for _ in 0..40 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+            let speed = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.linvel().norm())
+                .unwrap_or(0.0);
+            let z = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.translation().z)
+                .unwrap_or(0.0);
+            // While overlapping the south wall band, soft drag should bite.
+            if (-13.85..-13.35).contains(&z) {
+                saw_drag_window = true;
+                min_speed = min_speed.min(speed);
+            }
+        }
+
+        let z1 = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(-14.2);
+        assert!(saw_drag_window, "breaker should transit the sheet band");
+        assert!(
+            min_speed < v0 * 0.97,
+            "soft drag should remove some through-speed (min={min_speed})"
+        );
+        assert!(
+            min_speed > 6.0,
+            "soft drag must not hard-stop the breaker (min={min_speed})"
+        );
+        assert!(
+            z1 > -13.2,
+            "breaker should finish passing through (z1={z1})"
+        );
     }
 
     #[test]

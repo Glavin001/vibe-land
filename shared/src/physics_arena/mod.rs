@@ -345,11 +345,11 @@ impl PhysicsArena {
         &mut self,
         dt: f32,
         breakers: &HashMap<ColliderHandle, crate::sheet_destruction::StrikerRef>,
-        impacts: &std::sync::Mutex<Vec<crate::sheet_destruction::MomentumSheetImpact>>,
+        collector: &std::sync::Mutex<crate::sheet_destruction::SoftSheetStepCollector>,
     ) {
         use crate::sheet_destruction::TerrainAndSoftSheetHook;
         let hook =
-            TerrainAndSoftSheetHook::new(self.material_field.as_ref(), breakers, impacts);
+            TerrainAndSoftSheetHook::new(self.material_field.as_ref(), breakers, collector);
         self.dynamic.step_dynamics_with_hooks(dt, &hook);
     }
 
@@ -358,13 +358,13 @@ impl PhysicsArena {
         &mut self,
         dt: f32,
         breakers: &HashMap<ColliderHandle, crate::sheet_destruction::StrikerRef>,
-        impacts: &std::sync::Mutex<Vec<crate::sheet_destruction::MomentumSheetImpact>>,
+        collector: &std::sync::Mutex<crate::sheet_destruction::SoftSheetStepCollector>,
     ) -> (f32, f32) {
         use crate::vehicle::VEHICLE_CONTROLLER_SUBSTEPS;
 
         if self.vehicles.is_empty() {
             let dynamics_started = now_marker();
-            self.step_dynamics_soft_sheets(dt, breakers, impacts);
+            self.step_dynamics_soft_sheets(dt, breakers, collector);
             return (0.0, elapsed_ms(dynamics_started));
         }
 
@@ -377,7 +377,7 @@ impl PhysicsArena {
             vehicle_ms += elapsed_ms(vehicle_started);
 
             let dynamics_started = now_marker();
-            self.step_dynamics_soft_sheets(substep_dt, breakers, impacts);
+            self.step_dynamics_soft_sheets(substep_dt, breakers, collector);
             dynamics_ms += elapsed_ms(dynamics_started);
         }
         self.dynamic.sim.integration_parameters.dt = dt;

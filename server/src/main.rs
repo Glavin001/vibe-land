@@ -2926,9 +2926,9 @@ impl MatchState {
 
         use rapier3d::prelude::ColliderHandle;
         use vibe_land_shared::sheet_destruction::{
-            finalize_soft_sheet_impacts, impact_to_carve_event, sample_tunnel_sheet_impacts,
-            sheet_collider_index, sheet_momentum_carve_enabled, MomentumSheetImpact,
-            MomentumStrikerKind, StrikerRef, MOMENTUM_CARVE_MAX_PER_TICK,
+            apply_soft_sheet_drag, finalize_soft_sheet_impacts, impact_to_carve_event,
+            sample_tunnel_sheet_impacts, sheet_collider_index, sheet_momentum_carve_enabled,
+            MomentumStrikerKind, SoftSheetStepCollector, StrikerRef, MOMENTUM_CARVE_MAX_PER_TICK,
         };
 
         if !sheet_momentum_carve_enabled() || self.sheet_colliders.is_empty() {
@@ -2958,14 +2958,15 @@ impl MatchState {
             strikers.push(s);
         }
 
-        let raw_impacts = Mutex::new(Vec::<MomentumSheetImpact>::new());
+        let collector = Mutex::new(SoftSheetStepCollector::default());
         let timings = self
             .arena
-            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &raw_impacts);
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &collector);
 
-        let raw = raw_impacts
+        let SoftSheetStepCollector { impacts: raw, drags } = collector
             .into_inner()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply_soft_sheet_drag(&mut self.arena.dynamic.sim, &self.sheets, &drags);
         let mut impacts = finalize_soft_sheet_impacts(
             raw,
             &self.sheets,
