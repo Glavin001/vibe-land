@@ -680,7 +680,7 @@ struct MatchState {
     arena: PhysicsArena,
     world: VoxelWorld,
     sheets: vibe_land_shared::sheet_destruction::SheetRegistry,
-    sheet_colliders: HashMap<u32, rapier3d::prelude::ColliderHandle>,
+    sheet_colliders: HashMap<u32, Vec<rapier3d::prelude::ColliderHandle>>,
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
@@ -1182,7 +1182,7 @@ async fn run_match_loop(
     let mut sheet_colliders = HashMap::new();
     for (&sheet_id, _) in sheets.iter() {
         if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
-            sheet_colliders.insert(sheet_id, handle);
+            sheet_colliders.insert(sheet_id, vec![handle]);
         }
     }
     let dynamic_body_handles = arena
@@ -2931,26 +2931,83 @@ impl MatchState {
             return;
         }
 
-        if let Some(sheet) = self.sheets.get(sheet_id) {
-            let (verts, tris) = sheet.build_world_trimesh();
-            if let Some(old) = self.sheet_colliders.get(&sheet_id).copied() {
-                if verts.is_empty() {
-                    self.arena.remove_collider(old);
-                    self.sheet_colliders.remove(&sheet_id);
-                    self.arena.rebuild_broad_phase();
-                } else {
-                    let new_handle =
-                        self.arena
-                            .swap_static_trimesh(old, verts, tris, sheet_id as u128);
-                    self.sheet_colliders.insert(sheet_id, new_handle);
-                }
-            }
-        }
+        self.sync_sheet_collision(sheet_id);
 
         let pkt = carve_event_to_packet(&event);
         let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));
         for player in self.players.values() {
             let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
+        }
+    }
+
+    fn sync_sheet_collision(&mut self, sheet_id: u32) {
+        use vibe_land_shared::sheet_destruction::sheet_coarse_collision_enabled;
+        let old = self
+            .sheet_colliders
+            .get(&sheet_id)
+            .cloned()
+            .unwrap_or_default();
+        if sheet_coarse_collision_enabled() {
+            let cuboids = {
+                let Some(sheet) = self.sheets.get_mut(sheet_id) else {
+                    return;
+                };
+                sheet.take_collision_cuboids_if_dirty()
+            };
+            let Some(cuboids) = cuboids else {
+                return;
+            };
+            if cuboids.is_empty() {
+                for h in &old {
+                    self.arena.remove_collider(*h);
+                }
+                self.sheet_colliders.remove(&sheet_id);
+                self.arena.rebuild_broad_phase();
+            } else {
+                let payload: Vec<_> = cuboids
+                    .iter()
+                    .map(|c| {
+                        (
+                            nalgebra::Vector3::new(c.center[0], c.center[1], c.center[2]),
+                            c.rotation_xyzw,
+                            nalgebra::Vector3::new(
+                                c.half_extents[0],
+                                c.half_extents[1],
+                                c.half_extents[2],
+                            ),
+                        )
+                    })
+                    .collect();
+                let handles =
+                    self.arena
+                        .swap_static_cuboid_set(&old, &payload, sheet_id as u128);
+                self.sheet_colliders.insert(sheet_id, handles);
+            }
+            return;
+        }
+        let (verts, tris) = {
+            let Some(sheet) = self.sheets.get(sheet_id) else {
+                return;
+            };
+            sheet.build_world_trimesh()
+        };
+        if old.is_empty() {
+            return;
+        }
+        if verts.is_empty() {
+            for h in &old {
+                self.arena.remove_collider(*h);
+            }
+            self.sheet_colliders.remove(&sheet_id);
+            self.arena.rebuild_broad_phase();
+        } else {
+            for h in old.iter().skip(1) {
+                self.arena.remove_collider(*h);
+            }
+            let new_handle =
+                self.arena
+                    .swap_static_trimesh(old[0], verts, tris, sheet_id as u128);
+            self.sheet_colliders.insert(sheet_id, vec![new_handle]);
         }
     }
 

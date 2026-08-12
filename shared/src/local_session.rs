@@ -15,8 +15,9 @@ use crate::{
     protocol::*,
     seq::seq_is_newer,
     sheet_destruction::{
-        carve_event_to_packet, encode_carve_event_packet, CarveEvent, SheetRegistry,
-        RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,
+        carve_event_to_packet, encode_carve_event_packet, sheet_coarse_collision_enabled,
+        CarveEvent, SheetRegistry, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
+        RIFLE_BULLET_SPEED_MPS,
     },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
@@ -62,7 +63,7 @@ enum LocalDeathCause {
 pub struct LocalSession {
     arena: PhysicsArena,
     sheets: SheetRegistry,
-    sheet_colliders: HashMap<u32, ColliderHandle>,
+    sheet_colliders: HashMap<u32, Vec<ColliderHandle>>,
     connected: bool,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<(u32, FireCmd)>,
@@ -96,7 +97,7 @@ impl LocalSession {
         let mut sheet_colliders = HashMap::new();
         for (&sheet_id, _) in sheets.iter() {
             if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
-                sheet_colliders.insert(sheet_id, handle);
+                sheet_colliders.insert(sheet_id, vec![handle]);
             }
         }
 
@@ -758,26 +759,83 @@ impl LocalSession {
             return;
         }
         if result.carved_cells > 0 {
-            if let Some(sheet) = self.sheets.get(sheet_id) {
-                let (verts, tris) = sheet.build_world_trimesh();
-                if let Some(old) = self.sheet_colliders.get(&sheet_id).copied() {
-                    if verts.is_empty() {
-                        self.arena.remove_collider(old);
-                        self.sheet_colliders.remove(&sheet_id);
-                        self.arena.rebuild_broad_phase();
-                    } else {
-                        let new_handle =
-                            self.arena
-                                .swap_static_trimesh(old, verts, tris, sheet_id as u128);
-                        self.sheet_colliders.insert(sheet_id, new_handle);
-                    }
-                }
-            }
+            self.sync_sheet_collision(sheet_id);
         }
         if result.carved_cells > 0 || result.damaged_cells > 0 {
             let pkt = carve_event_to_packet(&event);
             self.outbound_packets
                 .push(encode_carve_event_packet(&pkt));
+        }
+    }
+
+    fn sync_sheet_collision(&mut self, sheet_id: u32) {
+        let old = self
+            .sheet_colliders
+            .get(&sheet_id)
+            .cloned()
+            .unwrap_or_default();
+        if sheet_coarse_collision_enabled() {
+            let cuboids = {
+                let Some(sheet) = self.sheets.get_mut(sheet_id) else {
+                    return;
+                };
+                sheet.take_collision_cuboids_if_dirty()
+            };
+            let Some(cuboids) = cuboids else {
+                return;
+            };
+            if cuboids.is_empty() {
+                for h in &old {
+                    self.arena.remove_collider(*h);
+                }
+                self.sheet_colliders.remove(&sheet_id);
+                self.arena.rebuild_broad_phase();
+            } else {
+                let payload: Vec<_> = cuboids
+                    .iter()
+                    .map(|c| {
+                        (
+                            nalgebra::Vector3::new(c.center[0], c.center[1], c.center[2]),
+                            c.rotation_xyzw,
+                            nalgebra::Vector3::new(
+                                c.half_extents[0],
+                                c.half_extents[1],
+                                c.half_extents[2],
+                            ),
+                        )
+                    })
+                    .collect();
+                let handles =
+                    self.arena
+                        .swap_static_cuboid_set(&old, &payload, sheet_id as u128);
+                self.sheet_colliders.insert(sheet_id, handles);
+            }
+            return;
+        }
+        // Legacy path: remesh visual trimesh into Rapier every carve.
+        let (verts, tris) = {
+            let Some(sheet) = self.sheets.get(sheet_id) else {
+                return;
+            };
+            sheet.build_world_trimesh()
+        };
+        if old.is_empty() {
+            return;
+        }
+        if verts.is_empty() {
+            for h in &old {
+                self.arena.remove_collider(*h);
+            }
+            self.sheet_colliders.remove(&sheet_id);
+            self.arena.rebuild_broad_phase();
+        } else {
+            for h in old.iter().skip(1) {
+                self.arena.remove_collider(*h);
+            }
+            let new_handle =
+                self.arena
+                    .swap_static_trimesh(old[0], verts, tris, sheet_id as u128);
+            self.sheet_colliders.insert(sheet_id, vec![new_handle]);
         }
     }
 

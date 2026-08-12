@@ -8,6 +8,9 @@ use nalgebra::{UnitQuaternion, Vector3};
 use crate::world_document::StaticProp;
 
 use super::carve::{apply_carve, CarveApplyResult, CarveEvent};
+use super::coarse_collision::{
+    take_collision_rebuild, CoarseCollisionSnapshot, OrientedWorldCuboid,
+};
 use super::islands::cull_dual_skin_islands;
 use super::materials::{lookup_sheet_material, SheetMaterial, SheetMaterialId};
 use super::mask::SheetMask;
@@ -65,6 +68,8 @@ pub struct SheetInstance {
     pub inner_mask: SheetMask,
     pub event_log: Vec<CarveEvent>,
     mesh_cache: RefCell<Option<MeshCache>>,
+    /// Last coarse-collision snapshot used for a physics rebuild.
+    pub collision_snapshot: Option<CoarseCollisionSnapshot>,
 }
 
 impl SheetInstance {
@@ -74,6 +79,16 @@ impl SheetInstance {
 
     pub fn invalidate_mesh_cache(&self) {
         *self.mesh_cache.borrow_mut() = None;
+    }
+
+    /// If usefulness changed enough, return greedy world cuboids for Rapier.
+    pub fn take_collision_cuboids_if_dirty(&mut self) -> Option<Vec<OrientedWorldCuboid>> {
+        take_collision_rebuild(
+            &self.mask,
+            &self.inner_mask,
+            &self.frame,
+            &mut self.collision_snapshot,
+        )
     }
 
     pub fn build_mesh(&self) -> SheetMesh {
@@ -340,6 +355,7 @@ fn sheet_from_prop(prop: &StaticProp, mat_id: SheetMaterialId) -> Option<SheetIn
         inner_mask,
         event_log: Vec::new(),
         mesh_cache: RefCell::new(None),
+        collision_snapshot: None,
     })
 }
 

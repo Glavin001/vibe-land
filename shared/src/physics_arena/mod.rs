@@ -252,6 +252,29 @@ impl PhysicsArena {
         handle
     }
 
+    /// Replace one-or-more sheet colliders with a greedy oriented cuboid set.
+    pub fn swap_static_cuboid_set(
+        &mut self,
+        old_handles: &[ColliderHandle],
+        cuboids: &[(Vec3, [f32; 4], Vec3)],
+        user_data: u128,
+    ) -> Vec<ColliderHandle> {
+        for &h in old_handles {
+            self.dynamic.remove_collider(h);
+        }
+        let mut out = Vec::with_capacity(cuboids.len());
+        for &(center, rotation, half_extents) in cuboids {
+            out.push(self.dynamic.add_static_cuboid_rotated(
+                center,
+                rotation,
+                half_extents,
+                user_data,
+            ));
+        }
+        self.dynamic.rebuild_broad_phase();
+        out
+    }
+
     pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
         self.dynamic.wake_bodies_near(center, radius);
     }
