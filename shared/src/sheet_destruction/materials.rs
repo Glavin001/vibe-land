@@ -55,7 +55,7 @@ pub struct SheetMaterial {
 const DRYWALL: SheetMaterial = SheetMaterial {
     id: SheetMaterialId::Drywall,
     // Finer grid + marching-squares remesh → rounder, less blocky holes.
-    cell_size: 0.012,
+    cell_size: 0.01,
     // Calibrated so a 10 g rifle round at ~720 m/s carves a multi-cell hole.
     break_flux: 1.0,
     break_flux_reinforced: 20.0,
@@ -78,7 +78,7 @@ const DRYWALL: SheetMaterial = SheetMaterial {
 
 const WOOD: SheetMaterial = SheetMaterial {
     id: SheetMaterialId::Wood,
-    cell_size: 0.012,
+    cell_size: 0.01,
     break_flux: 2.8,
     break_flux_reinforced: 40.0,
     damage_flux_min: 0.6,
@@ -99,7 +99,7 @@ const WOOD: SheetMaterial = SheetMaterial {
 
 const PLASTER: SheetMaterial = SheetMaterial {
     id: SheetMaterialId::Plaster,
-    cell_size: 0.012,
+    cell_size: 0.01,
     break_flux: 1.8,
     break_flux_reinforced: 25.0,
     damage_flux_min: 0.35,

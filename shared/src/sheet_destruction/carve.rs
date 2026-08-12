@@ -2,6 +2,7 @@
 
 use crate::protocol::CarveEventPacket;
 
+use super::islands::cull_sheet_islands;
 use super::materials::SheetMaterial;
 use super::mask::SheetMask;
 use super::stamp::{bullet_flux_at, generate_stamp_mask};
@@ -191,6 +192,11 @@ pub fn apply_carve(
                 }
             }
         }
+    }
+
+    // Drop floating patches cut free of the perimeter, and tiny crumbs.
+    if carved > 0 {
+        carved += cull_sheet_islands(mask, mat);
     }
 
     // Auto-collapse near-empty sheets.

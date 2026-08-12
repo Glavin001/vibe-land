@@ -280,6 +280,56 @@ mod tests {
         assert!(sheet.mask.occupancy_count() < before);
     }
 
+    #[test]
+    fn carve_ring_drops_disconnected_middle() {
+        let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);
+        let sheet = reg.get_mut(1).unwrap();
+        let mat = sheet.material();
+        let cell = sheet.mask.cell_size;
+        // Manually cut a ring in the interior, then run one noop-seq carve that
+        // still triggers island cull via a tiny real carve at the ring.
+        let cx = (sheet.mask.width / 2) as i32;
+        let cy = (sheet.mask.height / 2) as i32;
+        let outer = 18i32;
+        let inner = 10i32;
+        for dy in -outer..=outer {
+            for dx in -outer..=outer {
+                let adx = dx.abs();
+                let ady = dy.abs();
+                let on_ring = adx <= outer && ady <= outer && (adx >= inner || ady >= inner);
+                if !on_ring {
+                    continue;
+                }
+                // Clear only the ring corridor (not the center and not the outside).
+                let in_outer = adx <= outer && ady <= outer;
+                let in_inner = adx < inner && ady < inner;
+                if in_outer && !in_inner {
+                    let x = (cx + dx) as u16;
+                    let y = (cy + dy) as u16;
+                    if sheet.mask.in_bounds(x as i32, y as i32) {
+                        sheet.mask.set_occupied(x, y, false);
+                    }
+                }
+            }
+        }
+        assert!(
+            sheet.mask.occupied(cx as u16, cy as u16),
+            "center island should exist before cull"
+        );
+        // Apply a real carve elsewhere so apply_carve runs island cull.
+        let event = bullet_event(
+            1,
+            1,
+            [(cx as f32 + outer as f32 + 4.0) * cell, (cy as f32) * cell],
+            7,
+        );
+        let _ = apply_carve(&mut sheet.mask, mat, &event);
+        assert!(
+            !sheet.mask.occupied(cx as u16, cy as u16),
+            "disconnected middle should be culled after carve"
+        );
+    }
+
 
     #[test]
     fn wood_and_drywall_stamps_differ() {

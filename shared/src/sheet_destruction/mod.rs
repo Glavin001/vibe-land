@@ -5,6 +5,7 @@
 
 pub mod carve;
 pub mod demo_huts;
+pub mod islands;
 pub mod materials;
 pub mod mask;
 pub mod registry;
