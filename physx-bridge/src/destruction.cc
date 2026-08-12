@@ -865,7 +865,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   const auto started = clock::now();
   // Per-phase attribution. The old single number covered this whole function,
   // so "stress solve" was really solve + GPU readback + event diffing.
+  float begin_ms = 0.0f;
   float solve_ms = 0.0f;
+  float end_ms = 0.0f;
   float readback_ms = 0.0f;
   float events_ms = 0.0f;
   float filters_ms = 0.0f;
@@ -881,17 +883,29 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // beginTick injects contacts and gravity, endTick fractures and edits PhysX
   // actors -- both touch shared state. solveTick is pure computation over one
   // structure's own graph, so structures solve independently.
+  //
+  // Timed separately, because reporting them as one number ("stress solve")
+  // hid where the cost actually was: begin and end are SERIAL walks that scale
+  // with total nodes, while solve is the parallel/CUDA part that scales with
+  // the graph. Optimising the wrong one of the three is the failure mode this
+  // split exists to prevent.
   auto phase = clock::now();
   for (Slot *slot : live_slots_) {
     require(slot->dest->beginTick(dt, g), "beginTick failed");
   }
+  begin_ms += ms_since(phase);
+
+  phase = clock::now();
   stress_executor_->run(live_slots_.size(), [this](std::size_t index) {
     require(live_slots_[index]->dest->solveTick(), "solveTick failed");
   });
+  solve_ms += ms_since(phase);
+
+  phase = clock::now();
   for (Slot *slot : live_slots_) {
     require(slot->dest->endTick(), "endTick failed");
   }
-  solve_ms += ms_since(phase);
+  end_ms += ms_since(phase);
 
   for (Slot *slot_ptr : live_slots_) {
     Slot &slot = *slot_ptr;
@@ -962,7 +976,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     register_filters(slot);
     filters_ms += ms_since(phase);
   }
+  last_begin_ms_ = begin_ms;
   last_solve_ms_ = solve_ms;
+  last_end_ms_ = end_ms;
   last_readback_ms_ = readback_ms;
   last_events_ms_ = events_ms;
   last_filters_ms_ = filters_ms;
@@ -1293,7 +1309,9 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.broken_bonds = total_broken_bonds_;
   stats.stress_solve_ms = last_stress_solve_ms_;
   stats.unmapped_body_skips = unmapped_body_skips_;
+  stats.begin_ms = last_begin_ms_;
   stats.solve_ms = last_solve_ms_;
+  stats.end_ms = last_end_ms_;
   stats.readback_ms = last_readback_ms_;
   stats.events_ms = last_events_ms_;
   stats.filters_ms = last_filters_ms_;

@@ -174,16 +174,21 @@ pub struct DestructionTickOutput {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// Every field here must be assigned from a real measurement.
+///
+/// `min_body_y` was declared, logged, shown in the overlay and asserted on in
+/// two tests while never being assigned anywhere -- it read its f32 Default of
+/// 0.0 forever, which is what made "the server holds every body above ground"
+/// look measured when it was not. Four more fields (awake_families,
+/// solved_nodes, solved_bonds, migration_ms) had the same defect with no
+/// consumers at all and were removed. A stat that cannot be produced is worse
+/// than no stat: it is a confident wrong answer.
 pub struct DestructionStats {
     pub structures: u32,
-    pub awake_families: u32,
     pub chunk_bodies: u32,
     pub awake_chunk_bodies: u32,
-    pub solved_nodes: u32,
-    pub solved_bonds: u32,
     pub broken_bonds: u32,
     pub stress_solve_ms: f32,
-    pub migration_ms: f32,
     /// Settles deferred because the body was still sunk in the ground. A
     /// sleeping body gets no depenetration, so freezing one mid-penetration
     /// strands it below the floor permanently.
@@ -204,7 +209,22 @@ pub struct DestructionStats {
     /// stayed awake for the rest of the match.
     pub resettled_wakes: u64,
     /// Per-phase breakdown of the native destruction tick.
+    /// Serial beginTick across structures (contact/gravity injection).
+    pub begin_ms: f32,
+    /// Parallel/CUDA solveTick only.
     pub solve_ms: f32,
+    /// Serial endTick across structures (fracture + PhysX actor edits).
+    pub end_ms: f32,
+    /// Host-side stages of the city step, measured in Rust. Previously these
+    /// were one undifferentiated "city step" number ~19 ms wide.
+    pub post_step_ms: f32,
+    /// post_step internals: the snapshot FFI + Vec rebuild, the settle scan,
+    /// and the separate destruction_stats FFI call.
+    pub readback_ms_host: f32,
+    pub settle_ms: f32,
+    pub stats_ffi_ms: f32,
+    pub snapshot_ms: f32,
+    pub ingest_ms: f32,
     pub readback_ms: f32,
     pub events_ms: f32,
     /// Structures whose stress solve is actually running on the GPU. The

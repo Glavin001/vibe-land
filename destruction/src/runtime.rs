@@ -352,9 +352,12 @@ impl CityDestruction {
             }
         }
 
+        let readback_started = std::time::Instant::now();
         let snapshots = world
             .chunk_body_snapshots()
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
+        let readback_ms_host = readback_started.elapsed().as_secs_f32() * 1000.0;
+        let settle_started = std::time::Instant::now();
         // Settling is the adapter's and PhysX's job; we only observe it.
         //
         // Forcing sleep ourselves fought them: you cannot hold one body of an
@@ -426,6 +429,9 @@ impl CityDestruction {
             }
         }
 
+        let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
+        let stats_ffi_started = std::time::Instant::now();
+
         self.stats.min_body_y = if min_body_y.is_finite() { min_body_y } else { 0.0 };
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
@@ -437,7 +443,12 @@ impl CityDestruction {
             self.stats.awake_chunk_bodies = bridge_stats.awake_chunk_bodies;
             self.stats.stress_solve_ms = bridge_stats.stress_solve_ms;
             self.stats.unmapped_body_skips = bridge_stats.unmapped_body_skips;
+            self.stats.readback_ms_host = readback_ms_host;
+            self.stats.settle_ms = settle_ms;
+            self.stats.stats_ffi_ms = stats_ffi_started.elapsed().as_secs_f32() * 1000.0;
+            self.stats.begin_ms = bridge_stats.begin_ms;
             self.stats.solve_ms = bridge_stats.solve_ms;
+            self.stats.end_ms = bridge_stats.end_ms;
             self.stats.readback_ms = bridge_stats.readback_ms;
             self.stats.events_ms = bridge_stats.events_ms;
             self.stats.gpu_stress_structures = bridge_stats.gpu_stress_structures;
@@ -488,6 +499,16 @@ impl CityDestruction {
                 flags: 0,
             })
             .collect())
+    }
+
+    /// Record host-side stage timings measured by the caller.
+    ///
+    /// These are Rust-side wall times around the FFI boundary, so they belong
+    /// to whoever calls them, not to the bridge.
+    pub fn record_host_timings(&mut self, post_step_ms: f32, snapshot_ms: f32, ingest_ms: f32) {
+        self.stats.post_step_ms = post_step_ms;
+        self.stats.snapshot_ms = snapshot_ms;
+        self.stats.ingest_ms = ingest_ms;
     }
 
     pub fn stats(&self) -> DestructionStats {

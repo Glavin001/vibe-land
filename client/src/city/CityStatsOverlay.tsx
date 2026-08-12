@@ -28,6 +28,9 @@ interface CityServerStats {
   baseline_id: number;
   min_body_y: number;
   resettled_wakes: number;
+  solve_ms: number;
+  begin_ms: number;
+  end_ms: number;
   gpu_stress_structures: number;
   gpu_stress_solve_ms: number;
   settle_deferred_penetrating: number;
@@ -271,7 +274,13 @@ export function CityStatsOverlay({
         value={`${(city?.step_ms ?? 0).toFixed(1)} ms`}
         warn={(city?.step_ms ?? 0) > TICK_BUDGET_MS / 2}
       />
-      <Stat label="stress solve" value={`${(city?.stress_solve_ms ?? 0).toFixed(1)} ms`} />
+      <Stat
+        label="blast begin"
+        value={`${(city?.begin_ms ?? 0).toFixed(1)} ms`}
+        warn={(city?.begin_ms ?? 0) > 4}
+      />
+      <Stat label="blast solve" value={`${(city?.solve_ms ?? 0).toFixed(1)} ms`} />
+      <Stat label="blast end" value={`${(city?.end_ms ?? 0).toFixed(1)} ms`} />
       <Stat
         label="stress solver"
         value={

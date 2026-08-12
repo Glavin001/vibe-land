@@ -77,6 +77,141 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
     values[((values.len() as f32 * p) as usize).min(values.len() - 1)]
 }
 
+/// Reproduce the reported demo: demolish the whole city, ~8k bodies.
+///
+/// The general bench peaks near 3.8k bodies; the user's session reached 8495
+/// (8183 awake) at 53.4 ms/tick, and the interesting costs only appear at that
+/// scale. This rakes every tower at several heights, then reports a per-phase
+/// table that must account for the tick -- the previous single "stress solve"
+/// number bundled serial beginTick, the CUDA solve and serial endTick
+/// together, which is why the cost was attributed to the GPU for so long.
+#[test]
+#[ignore = "benchmark: needs a GPU, takes ~2 min"]
+fn full_demolition_cost() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    let towers: Vec<(f32, f32)> = [-36.0f32, -12.0, 12.0, 36.0]
+        .iter()
+        .flat_map(|&x| [-36.0f32, -12.0, 12.0, 36.0].iter().map(move |&z| (x, z)))
+        .collect();
+
+    let (mut tick_ms, mut begin_ms, mut solve_ms, mut end_ms) =
+        (vec![], vec![], vec![], vec![]);
+    let (mut post_ms, mut snap_ms, mut ing_ms, mut dyn_ms) =
+        (vec![], vec![], vec![], vec![]);
+    let (mut rb_ms, mut set_ms, mut sf_ms) = (vec![], vec![], vec![]);
+    let (mut peak_bodies, mut peak_awake) = (0u32, 0u32);
+    let mut tick = 0u32;
+
+    for (round, &(tx, tz)) in towers.iter().enumerate() {
+        let origin = Vec3::new(tx, 1.6, tz - 26.0);
+        for shot in 0..26 {
+            let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+            let aim_y = 2.0 + (shot % 12) as f32 * 2.4;
+            let target = Vec3::new(tx + sweep, aim_y, tz);
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+            for _ in 0..7 {
+                let started = std::time::Instant::now();
+                world.step().expect("step");
+                let dynamics = world.stats().map(|s| s.last_step_ms).unwrap_or(0.0);
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                let stats = city.stats();
+                peak_bodies = peak_bodies.max(stats.chunk_bodies);
+                peak_awake = peak_awake.max(stats.awake_chunk_bodies);
+                // Measure only once the city is genuinely large; early ticks
+                // would drag the percentiles toward an empty scene.
+                if round >= 4 {
+                    tick_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+                    dyn_ms.push(dynamics);
+                    begin_ms.push(stats.begin_ms);
+                    solve_ms.push(stats.solve_ms);
+                    end_ms.push(stats.end_ms);
+                    post_ms.push(stats.post_step_ms);
+                    snap_ms.push(stats.snapshot_ms);
+                    ing_ms.push(stats.ingest_ms);
+                    rb_ms.push(stats.readback_ms_host);
+                    set_ms.push(stats.settle_ms);
+                    sf_ms.push(stats.stats_ffi_ms);
+                }
+                tick += 1;
+            }
+        }
+    }
+
+    let stats = city.stats();
+    println!("\n=== full demolition ===");
+    println!("bodies (peak)  {peak_bodies}");
+    println!("awake  (peak)  {peak_awake}");
+    println!(
+        "asleep now     {} of {} ({:.0}%)",
+        stats.sleeping_chunk_bodies,
+        stats.chunk_bodies,
+        100.0 * stats.sleeping_chunk_bodies as f32 / stats.chunk_bodies.max(1) as f32
+    );
+    println!("broken bonds   {}", stats.broken_bonds);
+    println!(
+        "\n{:>14}  {:>8}  {:>8}  {:>8}",
+        "phase", "p50", "p95", "max"
+    );
+    let mut accounted = 0.0f32;
+    for (name, values) in [
+        ("tick", &mut tick_ms),
+        ("physx step", &mut dyn_ms),
+        ("blast begin", &mut begin_ms),
+        ("blast solve", &mut solve_ms),
+        ("blast end", &mut end_ms),
+        ("post_step", &mut post_ms),
+        ("  readback", &mut rb_ms),
+        ("  settle scan", &mut set_ms),
+        ("  stats ffi", &mut sf_ms),
+        ("snapshots", &mut snap_ms),
+        ("encoder ingest", &mut ing_ms),
+    ] {
+        let p50 = pct(values, 0.5);
+        if name != "tick" && name != "post_step" {
+            accounted += p50;
+        }
+        println!(
+            "{:>14}  {:>8.2}  {:>8.2}  {:>8.2}",
+            name,
+            p50,
+            pct(values, 0.95),
+            pct(values, 1.0)
+        );
+    }
+    // post_step contains blast begin/solve/end plus the readback, so the sum
+    // uses post_step's own children rather than double counting it.
+    let tick_p50 = pct(&mut tick_ms, 0.5);
+    println!(
+        "\naccounted      {:.2} of {:.2} ms ({:.0}%)",
+        accounted,
+        tick_p50,
+        100.0 * accounted / tick_p50.max(0.001)
+    );
+
+    assert!(
+        peak_bodies >= 6000,
+        "only reached {peak_bodies} bodies; this scenario is meant to reproduce \
+         the reported ~8k-body demo"
+    );
+}
+
 /// Sustained fire on one tower must never stop fracturing it.
 ///
 /// The adapter's maximumBodies is an opt-in cap: at the cap, fracture()

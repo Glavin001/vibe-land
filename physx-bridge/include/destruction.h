@@ -189,7 +189,12 @@ private:
   std::uint32_t total_broken_bonds_ = 0;
   float last_stress_solve_ms_ = 0.0f;
   /// Per-phase breakdown of destruction_tick.
+  /// Serial beginTick (contact/gravity injection) across all structures.
+  float last_begin_ms_ = 0.0f;
+  /// Parallel/CUDA solveTick only.
   float last_solve_ms_ = 0.0f;
+  /// Serial endTick (fracture + PhysX actor edits) across all structures.
+  float last_end_ms_ = 0.0f;
   float last_readback_ms_ = 0.0f;
   float last_events_ms_ = 0.0f;
   float last_filters_ms_ = 0.0f;

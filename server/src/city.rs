@@ -617,7 +617,10 @@ impl CityRuntime {
                     tracing::error!("physx city step missing World");
                     return reliable;
                 };
-                match backend.post_step(world, dt, gravity) {
+                let post_step_started = std::time::Instant::now();
+                let post_step_result = backend.post_step(world, dt, gravity);
+                let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
+                match post_step_result {
                     Ok(output) => {
                         // Re-apply debris pushes now that islands may have been
                         // promoted from kinematic → dynamic by this tick.
@@ -633,10 +636,20 @@ impl CityRuntime {
                                 tracing::warn!(%error, "city post-fracture push failed");
                             }
                         }
-                        match backend.body_snapshots(world) {
+                        let snapshot_started = std::time::Instant::now();
+                        let snapshot_result = backend.body_snapshots(world);
+                        let snapshot_ms =
+                            snapshot_started.elapsed().as_secs_f32() * 1000.0;
+                        match snapshot_result {
                             Ok(snapshots) => {
+                                let ingest_started = std::time::Instant::now();
                                 self.encoder.ingest_tick(sim_tick, &snapshots, &output, &[]);
                                 reliable.extend(self.encoder.take_topology_messages());
+                                backend.record_host_timings(
+                                    post_step_ms,
+                                    snapshot_ms,
+                                    ingest_started.elapsed().as_secs_f32() * 1000.0,
+                                );
                             }
                             Err(error) => {
                                 tracing::error!(%error, "city body snapshot failed");

@@ -229,10 +229,17 @@ struct CityStatsSnapshot {
     step_ms: f32,
     stress_solve_ms: f32,
     /// Sub-phases of the native tick: solve, GPU readback, event diffing,
-    /// filter stamping. `stress_solve_ms` is their sum.
+    /// filter stamping. `stress_solve_ms` is their sum. `solve_ms` is now the
+    /// CUDA/parallel solveTick ALONE -- `begin_ms` and `end_ms` carry the
+    /// serial injection and fracture walks that used to be folded into it.
     solve_ms: f32,
     readback_ms: f32,
     events_ms: f32,
+    /// Serial beginTick / parallel-CUDA solveTick / serial endTick, split
+    /// apart: reporting them as one "stress solve" number hid that the serial
+    /// injection walk costs more than the GPU solve.
+    begin_ms: f32,
+    end_ms: f32,
     /// Structures whose stress solve is running on the GPU, so a silent
     /// fallback to the CPU solver is visible rather than merely slower.
     gpu_stress_structures: u32,
@@ -2674,6 +2681,8 @@ impl MatchState {
                     solve_ms: stats.solve_ms,
                     readback_ms: stats.readback_ms,
                     events_ms: stats.events_ms,
+                    begin_ms: stats.begin_ms,
+                    end_ms: stats.end_ms,
                     gpu_stress_structures: stats.gpu_stress_structures,
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,
