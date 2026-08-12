@@ -2353,6 +2353,20 @@ impl WasmSheetRegistry {
             .into_boxed_slice()
     }
 
+    #[wasm_bindgen(js_name = meshColors)]
+    pub fn mesh_colors(&self, sheet_id: u32) -> Box<[f32]> {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return Box::new([]);
+        };
+        sheet
+            .build_mesh()
+            .colors
+            .into_iter()
+            .flat_map(|c| [c[0], c[1], c[2]])
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+
     #[wasm_bindgen(js_name = meshIndices)]
     pub fn mesh_indices(&self, sheet_id: u32) -> Box<[u32]> {
         let Some(sheet) = self.inner.get(sheet_id) else {
@@ -2363,5 +2377,14 @@ impl WasmSheetRegistry {
             .flat_map(|t| [t[0], t[1], t[2]])
             .collect::<Vec<_>>()
             .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = carvedCellCount)]
+    pub fn carved_cell_count(&self, sheet_id: u32) -> u32 {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return 0;
+        };
+        let total = sheet.mask.cell_count() as u32;
+        total.saturating_sub(sheet.mask.occupancy_count() as u32)
     }
 }

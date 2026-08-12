@@ -21,7 +21,9 @@ type WasmSheetRegistry = {
     seed: number,
   ): number;
   meshPositions(sheetId: number): Float32Array | number[];
+  meshColors(sheetId: number): Float32Array | number[];
   meshIndices(sheetId: number): Uint32Array | number[];
+  carvedCellCount(sheetId: number): number;
 };
 
 type DestructibleSheetsProps = {
@@ -77,8 +79,12 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
         const color = isSheetMaterial(matName) ? MATERIAL_COLORS[matName] : 0xaaaaaa;
         const geometry = new THREE.BufferGeometry();
         const positions = toFloat32(registry.meshPositions(id));
+        const colors = toFloat32(registry.meshColors(id));
         const indices = toUint32(registry.meshIndices(id));
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        if (colors.length === positions.length) {
+          geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        }
         geometry.setIndex(new THREE.BufferAttribute(indices, 1));
         geometry.computeVertexNormals();
         const material = new THREE.MeshStandardMaterial({
@@ -86,6 +92,7 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
           roughness: matName === 'wood' ? 0.85 : 0.92,
           metalness: 0.02,
           side: THREE.DoubleSide,
+          vertexColors: colors.length === positions.length,
         });
         const mesh = new THREE.Mesh(geometry, material);
         mesh.castShadow = true;
@@ -96,6 +103,18 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
       }
       appliedSeqRef.current = 0;
       setReady(true);
+      const qa = (window as Window & { __VIBE_SHEET_QA__?: Record<string, unknown> }).__VIBE_SHEET_QA__;
+      if (qa) {
+        qa.getSheetMeshStats = () => {
+          const reg = registryRef.current;
+          if (!reg) return [];
+          return Array.from(reg.sheetIds()).map((sheetId) => ({
+            sheetId,
+            indexCount: toUint32(reg.meshIndices(sheetId)).length,
+            carvedCells: reg.carvedCellCount(sheetId),
+          }));
+        };
+      }
     })().catch((err) => {
       console.error('DestructibleSheets init failed', err);
     });
@@ -136,9 +155,13 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
       const mesh = meshesRef.current.get(evt.sheetId);
       if (!mesh) continue;
       const positions = toFloat32(registry.meshPositions(evt.sheetId));
+      const colors = toFloat32(registry.meshColors(evt.sheetId));
       const indices = toUint32(registry.meshIndices(evt.sheetId));
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      if (colors.length === positions.length) {
+        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      }
       geometry.setIndex(new THREE.BufferAttribute(indices, 1));
       geometry.computeVertexNormals();
       mesh.geometry.dispose();

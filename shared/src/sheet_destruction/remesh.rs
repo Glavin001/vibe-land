@@ -7,6 +7,9 @@ pub struct SheetMesh {
     /// XYZ positions in sheet-local space (U, thickness-centered V extruded, V).
     /// Convention: X = u, Y = ±thickness/2, Z = v.
     pub positions: Vec<[f32; 3]>,
+    /// RGB vertex colors in 0..1. Front faces stay bright; back/rim faces are
+    /// darkened so holes read as openings instead of matching the opposite wall.
+    pub colors: Vec<[f32; 3]>,
     pub indices: Vec<u32>,
 }
 
@@ -22,8 +25,12 @@ pub fn remesh_sheet(mask: &SheetMask, thickness: f32) -> SheetMesh {
     // Collect solid quads (one quad per occupied cell) and extrude.
     // Simple, robust, and deterministic — triangle count is fine for hut walls.
     let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut colors: Vec<[f32; 3]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let half_t = thickness * 0.5;
+    let front_c = [1.0, 1.0, 1.0];
+    let back_c = [0.22, 0.2, 0.18];
+    let rim_c = [0.45, 0.4, 0.35];
 
     for y in 0..mask.height {
         for x in 0..mask.width {
@@ -41,6 +48,7 @@ pub fn remesh_sheet(mask: &SheetMask, thickness: f32) -> SheetMesh {
             positions.push([u1, half_t, v0]);
             positions.push([u1, half_t, v1]);
             positions.push([u0, half_t, v1]);
+            colors.extend_from_slice(&[front_c, front_c, front_c, front_c]);
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 
             // Back face ( -Y )
@@ -49,6 +57,7 @@ pub fn remesh_sheet(mask: &SheetMask, thickness: f32) -> SheetMesh {
             positions.push([u0, -half_t, v1]);
             positions.push([u1, -half_t, v1]);
             positions.push([u1, -half_t, v0]);
+            colors.extend_from_slice(&[back_c, back_c, back_c, back_c]);
             indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
 
             // Side walls only on boundaries / hole edges.
@@ -69,12 +78,17 @@ pub fn remesh_sheet(mask: &SheetMask, thickness: f32) -> SheetMesh {
                 positions.push(p1);
                 positions.push(p2);
                 positions.push(p3);
+                colors.extend_from_slice(&[rim_c, rim_c, rim_c, rim_c]);
                 indices.extend_from_slice(&[s, s + 1, s + 2, s, s + 2, s + 3]);
             }
         }
     }
 
-    SheetMesh { positions, indices }
+    SheetMesh {
+        positions,
+        colors,
+        indices,
+    }
 }
 
 /// Convert sheet-local mesh into world-space vertices using a frame.

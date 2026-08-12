@@ -2579,4 +2579,68 @@ mod tests {
         );
         assert_eq!(session.sheets.len(), session.sheet_colliders.len());
     }
+
+    #[test]
+    fn firing_at_demo_hut_wall_emits_carve_event() {
+        use crate::constants::{PKT_CARVE_EVENT, WEAPON_HITSCAN};
+
+        let mut session = LocalSession::new();
+        session.connect();
+
+        // Drywall hut south wall center (see sheet_destruction::demo_huts).
+        let wall = [4.0_f32, 1.4, -13.6];
+        let eye = [4.0_f32, 1.4, -10.0];
+        place_player_at(
+            &mut session,
+            LOCAL_PLAYER_ID,
+            eye[0] as f64,
+            eye[1] as f64 - PLAYER_EYE_HEIGHT_M as f64,
+            eye[2] as f64,
+        );
+        let dir = [
+            wall[0] - eye[0],
+            wall[1] - eye[1],
+            wall[2] - eye[2],
+        ];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        let dir = [dir[0] / len, dir[1] / len, dir[2] / len];
+
+        let before_occ: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        session.queue_fire_cmd(FireCmd {
+            seq: 1,
+            shot_id: 42,
+            weapon: WEAPON_HITSCAN,
+            client_fire_time_us: session.server_time_us(),
+            client_interp_ms: 0,
+            client_dynamic_interp_ms: 0,
+            dir,
+        });
+        session.process_hitscan(session.server_time_ms());
+
+        let after_occ: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+        assert!(
+            after_occ < before_occ,
+            "shot at hut wall should carve cells (before={before_occ} after={after_occ})"
+        );
+
+        let packets = session.drain_packets();
+        let carve_count = packets
+            .iter()
+            .filter(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT))
+            .count();
+        assert!(
+            carve_count >= 1,
+            "expected at least one CarveEvent packet, got {}",
+            packets.len()
+        );
+    }
 }

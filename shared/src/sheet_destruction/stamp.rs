@@ -216,18 +216,21 @@ pub fn bullet_flux_at(event: &CarveEvent, mat: &SheetMaterial, cell_x: u16, cell
     let dx = cx - event.uv[0];
     let dy = cy - event.uv[1];
     let base_r = event.footprint_radius.max(cell_size * 0.5);
-    let dilated_r = (base_r * mat.dilation_factor * (1.0 + mat.noise_amplitude)).max(cell_size);
+    let stamp_r = (base_r * mat.dilation_factor * (1.0 + mat.noise_amplitude)).max(cell_size);
     let dist2 = dx * dx + dy * dy;
-    if dist2 > dilated_r * dilated_r {
+    if dist2 > stamp_r * stamp_r {
         return 0.0;
     }
-    // Momentum p = m * |v_n|. Concentrate on a small cell count so pistol/rifle
-    // rounds exceed drywall breakFlux (calibrated for ~1 cell effective core).
+    // Momentum is concentrated on a small core (~base footprint), not the full
+    // dilated stamp — dilation expands the carved region without diluting energy
+    // below breakFlux.
     let p = event.mass_or_energy * event.normal_speed;
-    let area = std::f32::consts::PI * dilated_r * dilated_r;
-    let cells = (area / (cell_size * cell_size)).max(1.0);
-    // Peak flux at center is higher than the uniform average so the core carves
-    // while the fringe only damages.
-    let falloff = 1.0 - (dist2.sqrt() / dilated_r);
-    (p / cells) * (0.5 + 1.5 * falloff)
+    let core_r = base_r.max(cell_size);
+    let core_area = std::f32::consts::PI * core_r * core_r;
+    let core_cells = (core_area / (cell_size * cell_size)).max(1.0);
+    let dist = dist2.sqrt();
+    let falloff = (1.0 - dist / stamp_r).max(0.0);
+    // Core gets full peak; outer stamp fringe still exceeds damageFluxMin.
+    let peak = (p / core_cells) * 2.0;
+    peak * (0.35 + 0.65 * falloff)
 }
