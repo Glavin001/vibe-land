@@ -143,7 +143,7 @@ fn demolished_tower_comes_to_rest() {
             stats.chunk_bodies,
             stats.max_body_speed,
             stats.resettled_wakes,
-            stats.max_speed_body_pos[1],
+            stats.max_speed_body_pos,
             stats.max_speed_body_entity,
         ));
     }
@@ -156,19 +156,21 @@ fn demolished_tower_comes_to_rest() {
     println!("broken bonds   {}", stats.broken_bonds);
     println!(
         "{:>5}  {:>8}  {:>6}  {:>9}  {:>10}  {:>10}",
-        "sec", "asleep", "pct", "maxspeed", "rewakes", "fastest y / entity"
+        "sec", "asleep", "pct", "maxspeed", "rewakes", "fastest body pos / entity"
     );
     for (second, asleep, total, speed, wakes, fast_y, entity) in &asleep_trace {
         println!(
-            "{:>5}  {:>8}  {:>5.0}%  {:>9.2}  {:>10}  {:>10.1}",
+            "{:>5}  {:>8}  {:>5.0}%  {:>9.2}  {:>8}  {}",
             second,
             asleep,
             100.0 * *asleep as f32 / (*total).max(1) as f32,
             speed,
             wakes,
-            fast_y
+            format!(
+                "({:.1}, {:.1}, {:.1}) #{}",
+                fast_y[0], fast_y[1], fast_y[2], entity
+            )
         );
-        let _ = entity;
     }
 
     // Motion bound: with no input for 20 s, nothing should still be moving at

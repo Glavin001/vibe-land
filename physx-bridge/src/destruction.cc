@@ -494,6 +494,20 @@ void DestructionManager::create_destructible(
 /// (0.5 * v^2, so ~0.32 m/s), and the stabilisation threshold that lets a
 /// resting pile stop jittering.
 constexpr float kChunkSleepThreshold = 0.05f;
+
+/// VIBE_CITY_SLEEP_THRESHOLD: mass-normalised kinetic energy below which a
+/// chunk may sleep. This declares when a body counts as at rest; it does not
+/// alter any trajectory, which is why it is a legitimate knob where a velocity
+/// clamp was not.
+float chunk_sleep_threshold() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SLEEP_THRESHOLD")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return kChunkSleepThreshold;
+  }();
+  return value;
+}
 constexpr float kChunkStabilizationThreshold = 0.02f;
 
 void DestructionManager::register_filters(Slot &slot) {
@@ -561,7 +575,7 @@ void DestructionManager::register_filters(Slot &slot) {
       // The threshold is mass-normalised kinetic energy, so this sleeps
       // anything drifting slower than roughly 0.3 m/s — well below the speed
       // at which debris motion is still worth streaming.
-      body.body->setSleepThreshold(kChunkSleepThreshold);
+      body.body->setSleepThreshold(chunk_sleep_threshold());
       body.body->setStabilizationThreshold(kChunkStabilizationThreshold);
     }
   }

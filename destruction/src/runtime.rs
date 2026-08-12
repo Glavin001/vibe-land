@@ -447,7 +447,18 @@ impl CityDestruction {
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();
 
+        // Assigned unconditionally, NOT inside the `if let Ok(bridge_stats)`
+        // block below: these are measured here from the snapshot, and burying
+        // them behind an FFI call that can fail (or that an edit can miss)
+        // is how a field ends up reporting its Default forever.
         self.stats.min_body_y = if min_body_y.is_finite() { min_body_y } else { 0.0 };
+        self.stats.max_body_speed = max_speed;
+        self.stats.max_body_angular_speed = max_angular;
+        self.stats.max_speed_body_pos = max_speed_pos;
+        self.stats.max_speed_body_entity = max_speed_entity;
+        self.stats.peak_body_speed = self.stats.peak_body_speed.max(max_speed);
+        self.stats.peak_body_angular_speed =
+            self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
         self.stats.max_body_speed = self.stats.max_body_speed.max(max_speed);
