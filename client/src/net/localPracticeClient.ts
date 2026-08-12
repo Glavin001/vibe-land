@@ -12,6 +12,7 @@ import {
   netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
+  type CarveEventPacket,
   type DamageEventPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
@@ -40,6 +41,7 @@ export type LocalPracticeClientConfig = {
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
+  onCarveEvent?: (packet: CarveEventPacket) => void;
   worldJson?: string;
 };
 
@@ -537,6 +539,8 @@ export class LocalPracticeClient implements PracticeBotHost {
       }
       if (decoded.type === 'damageEvent') {
         this.config.onDamageEvent?.(decoded);
+      } else if (decoded.type === 'carveEvent') {
+        this.config.onCarveEvent?.(decoded);
       }
     }
   }

@@ -12,21 +12,21 @@ pub const VEHICLE_BUMPS_TEST_MATCH_ID: &str = "vehicle_bumps_test";
 const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
 
-pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
+pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<WorldDocument, WorldDocumentError> {
     let world = WorldDocument::demo();
     world.instantiate(arena)?;
     arena.set_spawn_areas(world.spawn_areas.clone());
-    Ok(())
+    Ok(world)
 }
 
 pub fn seed_world_for_match(
     arena: &mut PhysicsArena,
     match_id: &str,
-) -> Result<(), WorldDocumentError> {
+) -> Result<WorldDocument, WorldDocumentError> {
     let world = benchmark_world_document(match_id).unwrap_or_else(WorldDocument::demo);
     world.instantiate(arena)?;
     arena.set_spawn_areas(world.spawn_areas.clone());
-    Ok(())
+    Ok(world)
 }
 
 fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {

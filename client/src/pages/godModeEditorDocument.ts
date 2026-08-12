@@ -245,6 +245,23 @@ export function updateSelectedTargetPosition(
   };
 }
 
+export function updateSelectedTargetMaterial(
+  current: WorldDocument,
+  selected: SelectedTarget,
+  material: string,
+): WorldDocument {
+  if (!selected || selected.kind !== 'static') {
+    return current;
+  }
+  const idx = current.staticProps.findIndex((p) => p.id === selected.id);
+  if (idx < 0) {
+    return current;
+  }
+  const nextProps = [...current.staticProps];
+  nextProps[idx] = { ...nextProps[idx], material };
+  return { ...current, staticProps: nextProps };
+}
+
 export function updateSelectedTargetHalfExtents(
   current: WorldDocument,
   selected: SelectedTarget,

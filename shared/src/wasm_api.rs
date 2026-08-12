@@ -2266,3 +2266,102 @@ impl WasmClockSync {
         self.estimator.rtt_ms()
     }
 }
+
+/// Deterministic sheet-destruction registry for client remesh / practice sync.
+#[wasm_bindgen]
+pub struct WasmSheetRegistry {
+    inner: crate::sheet_destruction::SheetRegistry,
+}
+
+#[wasm_bindgen]
+impl WasmSheetRegistry {
+    #[wasm_bindgen(constructor)]
+    pub fn new(world_json: &str) -> Result<WasmSheetRegistry, JsValue> {
+        let world: WorldDocument = serde_json::from_str(world_json)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        Ok(Self {
+            inner: crate::sheet_destruction::SheetRegistry::from_static_props(&world.static_props),
+        })
+    }
+
+    #[wasm_bindgen(js_name = sheetCount)]
+    pub fn sheet_count(&self) -> u32 {
+        self.inner.len() as u32
+    }
+
+    #[wasm_bindgen(js_name = sheetIds)]
+    pub fn sheet_ids(&self) -> Box<[u32]> {
+        let mut ids: Vec<u32> = self.inner.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = materialName)]
+    pub fn material_name(&self, sheet_id: u32) -> Option<String> {
+        self.inner
+            .get(sheet_id)
+            .map(|s| s.material_id.as_str().to_string())
+    }
+
+    /// Apply a carve event packet fields. Returns carved cell count (0 if no-op).
+    #[wasm_bindgen(js_name = applyCarve)]
+    pub fn apply_carve(
+        &mut self,
+        sheet_id: u32,
+        seq: u32,
+        uv_u: u16,
+        uv_v: u16,
+        dir_u: i16,
+        dir_v: i16,
+        normal_speed_cms: u16,
+        mass_or_energy_grams: u16,
+        footprint_radius_mm: u16,
+        seed: u32,
+    ) -> u32 {
+        use crate::protocol::CarveEventPacket;
+        use crate::sheet_destruction::carve_event_from_packet;
+        let pkt = CarveEventPacket {
+            sheet_id,
+            seq,
+            uv_u,
+            uv_v,
+            dir_u,
+            dir_v,
+            normal_speed_cms,
+            mass_or_energy_grams,
+            footprint_radius_mm,
+            seed,
+        };
+        let event = carve_event_from_packet(&pkt);
+        self.inner
+            .apply_event(&event)
+            .map(|r| r.carved_cells)
+            .unwrap_or(0)
+    }
+
+    /// World-space mesh for a sheet: flat [x,y,z,...] positions + [i0,i1,i2,...] indices.
+    #[wasm_bindgen(js_name = meshPositions)]
+    pub fn mesh_positions(&self, sheet_id: u32) -> Box<[f32]> {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return Box::new([]);
+        };
+        let (verts, _) = sheet.build_world_trimesh();
+        verts
+            .into_iter()
+            .flat_map(|v| [v[0], v[1], v[2]])
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = meshIndices)]
+    pub fn mesh_indices(&self, sheet_id: u32) -> Box<[u32]> {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return Box::new([]);
+        };
+        let (_, tris) = sheet.build_world_trimesh();
+        tris.into_iter()
+            .flat_map(|t| [t[0], t[1], t[2]])
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    }
+}

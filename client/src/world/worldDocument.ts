@@ -1,4 +1,5 @@
 import defaultWorldDocumentJson from '../../../worlds/trail.world.json';
+import { appendDestructibleDemoHuts } from './destructibleDemoHuts';
 import { getSharedVehicleDefinition } from '../wasm/sharedVehicleDefinitions';
 
 export const WORLD_DOCUMENT_VERSION = 2;
@@ -127,7 +128,9 @@ export type WorldDraftRevision = {
   world: WorldDocument;
 };
 
-export const DEFAULT_WORLD_DOCUMENT: WorldDocument = parseWorldDocument(defaultWorldDocumentJson);
+export const DEFAULT_WORLD_DOCUMENT: WorldDocument = appendDestructibleDemoHuts(
+  parseWorldDocument(defaultWorldDocumentJson),
+);
 
 export function createDefaultWorldDocument(): WorldDocument {
   return cloneWorldDocument(DEFAULT_WORLD_DOCUMENT);

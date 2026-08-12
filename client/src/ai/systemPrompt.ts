@@ -159,7 +159,7 @@ Call \`execute_js\` one step at a time — wait for each result before issuing t
 Each write helper returns \`{ changed: boolean, reason?: string }\`.
 Terrain write helpers also return when changed: \`samplesAffected, deltaMin, deltaMax, heightMin, heightMax\` — useful for verifying the sculpt.
 
-- \`ctx.addStaticCuboid({ position, halfExtents, rotation?, material? })\`
+- \`ctx.addStaticCuboid({ position, halfExtents, rotation?, material? })\` — for destructible thin walls set \`material\` to \`'drywall'\`, \`'wood'\`, or \`'plaster'\` (thickness ≤ 15 cm on the thin axis). Other materials stay solid.
 - \`ctx.addDynamicEntity({ kind: 'box'|'ball'|'vehicle', position, halfExtents?, radius?, rotation?, vehicleType? })\`
 - \`ctx.removeEntity(id)\`
 - \`ctx.updateEntity(id, patch)\` — patch fields: \`position\`, \`rotation\`, \`halfExtents\`, \`radius\`, \`vehicleType\` (vehicles only), \`material\` (static cuboids only).

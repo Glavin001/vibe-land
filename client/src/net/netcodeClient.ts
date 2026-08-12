@@ -13,6 +13,7 @@ import {
 import {
   type BatteryStateMeters,
   type BatterySyncPacket,
+  type CarveEventPacket,
   type DamageEventPacket,
   encodeDebugStatsPacket,
   netDynamicBodyStateToMeters,
@@ -57,6 +58,7 @@ export type NetcodeClientConfig = {
   onShotResult?: (packet: ServerPacket) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
+  onCarveEvent?: (packet: CarveEventPacket) => void;
   onPacket?: (packet: ServerPacket) => void;
 };
 
@@ -831,6 +833,9 @@ export class NetcodeClient {
         break;
       case 'shotFired':
         this.config.onShotFired?.(packet);
+        break;
+      case 'carveEvent':
+        this.config.onCarveEvent?.(packet);
         break;
       default:
         break;

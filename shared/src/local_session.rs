@@ -14,6 +14,10 @@ use crate::{
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
+    sheet_destruction::{
+        carve_event_to_packet, encode_carve_event_packet, CarveEvent, SheetRegistry,
+        RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,
+    },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
@@ -22,8 +26,8 @@ use bytes::{Buf, BufMut, BytesMut};
 use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
 use rapier3d::pipeline::DebugRenderPipeline;
 use rapier3d::prelude::{
-    ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
-    RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
+    ColliderBuilder, ColliderHandle, Group, ImpulseJointHandle, InteractionGroups,
+    RevoluteJointBuilder, RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
 };
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
@@ -57,6 +61,8 @@ enum LocalDeathCause {
 
 pub struct LocalSession {
     arena: PhysicsArena,
+    sheets: SheetRegistry,
+    sheet_colliders: HashMap<u32, ColliderHandle>,
     connected: bool,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<(u32, FireCmd)>,
@@ -86,9 +92,18 @@ impl LocalSession {
             .instantiate(&mut arena)
             .map_err(|error| error.to_string())?;
         arena.set_spawn_areas(world.spawn_areas.clone());
+        let sheets = SheetRegistry::from_static_props(&world.static_props);
+        let mut sheet_colliders = HashMap::new();
+        for (&sheet_id, _) in sheets.iter() {
+            if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
+                sheet_colliders.insert(sheet_id, handle);
+            }
+        }
 
         Ok(Self {
             arena,
+            sheets,
+            sheet_colliders,
             connected: false,
             players: HashMap::new(),
             queued_shots: Vec::new(),
@@ -580,12 +595,13 @@ impl LocalSession {
             }
 
             let origin = [pos[0], pos[1] + PLAYER_EYE_HEIGHT_M, pos[2]];
-            let world_toi = self.arena.cast_static_world_ray(
+            let world_hit = self.arena.cast_static_world_ray_detailed(
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE_M,
                 Some(shooter_id),
             );
+            let world_toi = world_hit.map(|h| h.toi);
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
@@ -675,12 +691,87 @@ impl LocalSession {
                         .clamp(0.0, u16::MAX as f32)
                         as u16;
                 }
-            } else if world_toi.is_some() {
+            } else if let Some(hit) = world_hit {
                 result.server_resolution = SHOT_RESOLUTION_BLOCKED_BY_WORLD;
+                if world_toi
+                    .map(|toi| (toi - nearest_toi).abs() <= 1e-3)
+                    .unwrap_or(false)
+                {
+                    self.try_carve_sheet_from_hitscan(shooter_id, shot.shot_id, origin, shot.dir, hit);
+                }
             }
 
             self.outbound_packets
                 .push(encode_shot_result_packet(&result));
+        }
+    }
+
+    fn try_carve_sheet_from_hitscan(
+        &mut self,
+        shooter_id: u32,
+        shot_id: u32,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        hit: vibe_netcode::sim_world::RayHitDetailed,
+    ) {
+        let sheet_id = hit.user_data as u32;
+        if !self.sheets.contains(sheet_id) {
+            return;
+        }
+        let Some(sheet) = self.sheets.get(sheet_id) else {
+            return;
+        };
+        let impact = [
+            origin[0] + dir[0] * hit.toi,
+            origin[1] + dir[1] * hit.toi,
+            origin[2] + dir[2] * hit.toi,
+        ];
+        let uv = sheet.frame.world_to_uv(impact);
+        let n = hit.normal;
+        let normal_speed =
+            (dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2]).abs() * RIFLE_BULLET_SPEED_MPS;
+        let seq = sheet.mask.seq.saturating_add(1);
+        let seed = shooter_id
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(shot_id)
+            .wrapping_add(sheet_id);
+        let event = CarveEvent {
+            sheet_id,
+            seq,
+            uv,
+            dir_uv: [0.0, 0.0],
+            normal_speed,
+            mass_or_energy: RIFLE_BULLET_MASS_KG,
+            footprint_radius: RIFLE_BULLET_RADIUS_M,
+            seed,
+        };
+        let Some(result) = self.sheets.apply_event(&event) else {
+            return;
+        };
+        if !result.applied {
+            return;
+        }
+        if result.carved_cells > 0 {
+            if let Some(sheet) = self.sheets.get(sheet_id) {
+                let (verts, tris) = sheet.build_world_trimesh();
+                if let Some(old) = self.sheet_colliders.get(&sheet_id).copied() {
+                    if verts.is_empty() {
+                        self.arena.remove_collider(old);
+                        self.sheet_colliders.remove(&sheet_id);
+                        self.arena.rebuild_broad_phase();
+                    } else {
+                        let new_handle =
+                            self.arena
+                                .swap_static_trimesh(old, verts, tris, sheet_id as u128);
+                        self.sheet_colliders.insert(sheet_id, new_handle);
+                    }
+                }
+            }
+        }
+        if result.carved_cells > 0 || result.damaged_cells > 0 {
+            let pkt = carve_event_to_packet(&event);
+            self.outbound_packets
+                .push(encode_carve_event_packet(&pkt));
         }
     }
 

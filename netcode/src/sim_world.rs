@@ -373,6 +373,14 @@ impl SimWorld {
         self.colliders.get(handle).map(|c| c.user_data)
     }
 
+    /// Find the first collider whose `user_data` equals `user_data`.
+    pub fn find_collider_by_user_data(&self, user_data: u128) -> Option<ColliderHandle> {
+        self.colliders
+            .iter()
+            .find(|(_, c)| c.user_data == user_data)
+            .map(|(h, _)| h)
+    }
+
     /// Flush pending collider changes into the broad-phase BVH.
     pub fn sync_broad_phase(&mut self) {
         if self.modified_colliders.is_empty() && self.removed_colliders.is_empty() {
@@ -816,23 +824,8 @@ impl SimWorld {
         max_toi: f32,
         exclude_collider: Option<ColliderHandle>,
     ) -> Option<f32> {
-        let ray = Ray::new(
-            nalgebra::point![origin[0], origin[1], origin[2]],
-            vector![dir[0], dir[1], dir[2]],
-        );
-        let mut filter = QueryFilter::default();
-        if let Some(handle) = exclude_collider {
-            filter = filter.exclude_collider(handle);
-        }
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
-        query_pipeline
-            .cast_ray(&ray, max_toi, true)
-            .map(|(_handle, toi)| toi)
+        self.cast_ray_detailed(origin, dir, max_toi, exclude_collider)
+            .map(|hit| hit.toi)
     }
 
     /// Cast a ray and return both the time-of-impact and the surface normal.
@@ -843,6 +836,18 @@ impl SimWorld {
         max_toi: f32,
         exclude_collider: Option<ColliderHandle>,
     ) -> Option<(f32, [f32; 3])> {
+        self.cast_ray_detailed(origin, dir, max_toi, exclude_collider)
+            .map(|hit| (hit.toi, hit.normal))
+    }
+
+    /// Cast a ray and return toi, normal, collider user_data, and handle.
+    pub fn cast_ray_detailed(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_toi: f32,
+        exclude_collider: Option<ColliderHandle>,
+    ) -> Option<RayHitDetailed> {
         let ray = Ray::new(
             nalgebra::point![origin[0], origin[1], origin[2]],
             vector![dir[0], dir[1], dir[2]],
@@ -857,13 +862,26 @@ impl SimWorld {
             &self.colliders,
             filter,
         );
-        query_pipeline
-            .cast_ray_and_get_normal(&ray, max_toi, true)
-            .map(|(_handle, intersection)| {
-                let n = intersection.normal;
-                (intersection.time_of_impact, [n.x, n.y, n.z])
-            })
+        let (handle, intersection) =
+            query_pipeline.cast_ray_and_get_normal(&ray, max_toi, true)?;
+        let n = intersection.normal;
+        let user_data = self.colliders.get(handle).map(|c| c.user_data).unwrap_or(0);
+        Some(RayHitDetailed {
+            toi: intersection.time_of_impact,
+            normal: [n.x, n.y, n.z],
+            user_data,
+            handle,
+        })
     }
+}
+
+/// Detailed static-world raycast result.
+#[derive(Clone, Copy, Debug)]
+pub struct RayHitDetailed {
+    pub toi: f32,
+    pub normal: [f32; 3],
+    pub user_data: u128,
+    pub handle: ColliderHandle,
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ pub mod movement;
 pub mod physics_arena;
 pub mod protocol;
 pub mod seq;
+pub mod sheet_destruction;
 pub mod simulation;
 pub mod terrain;
 pub mod unit_conv;

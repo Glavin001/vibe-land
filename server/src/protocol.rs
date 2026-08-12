@@ -33,6 +33,7 @@ pub enum ServerPacket {
     ShotResult(ShotResultPacket),
     ShotFired(ShotFiredPacket),
     DamageEvent(DamageEventPacket),
+    CarveEvent(CarveEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -61,6 +62,7 @@ pub enum ServerReliablePacket {
     ShotResult(ShotResultPacket),
     ShotFired(ShotFiredPacket),
     DamageEvent(DamageEventPacket),
+    CarveEvent(CarveEventPacket),
     LocalPlayerEnergy(LocalPlayerEnergyPacket),
     BatterySync(BatterySyncPacket),
     ChunkFull(ChunkFullPacket),
@@ -379,6 +381,9 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
             out.put_i32_le(pkt.attacker_py_mm);
             out.put_i32_le(pkt.attacker_pz_mm);
             out.put_u32_le(pkt.server_time_ms);
+        }
+        ServerReliablePacket::CarveEvent(pkt) => {
+            return vibe_land_shared::sheet_destruction::encode_carve_event_packet(pkt);
         }
         ServerReliablePacket::LocalPlayerEnergy(pkt) => {
             out.put_u8(PKT_LOCAL_PLAYER_ENERGY);
@@ -820,6 +825,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         }
         ServerPacket::DamageEvent(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::DamageEvent(*pkt))
+        }
+        ServerPacket::CarveEvent(pkt) => {
+            return encode_server_reliable(&ServerReliablePacket::CarveEvent(*pkt))
         }
         ServerPacket::LocalPlayerEnergy(pkt) => {
             return encode_server_reliable(&ServerReliablePacket::LocalPlayerEnergy(pkt.clone()))

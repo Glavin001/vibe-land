@@ -230,6 +230,28 @@ impl PhysicsArena {
         self.dynamic.collider_user_data(handle)
     }
 
+    pub fn find_collider_by_user_data(&self, user_data: u128) -> Option<ColliderHandle> {
+        self.dynamic.sim.find_collider_by_user_data(user_data)
+    }
+
+    /// Replace a sheet's collider with a remeshed trimesh (same user_data).
+    pub fn swap_static_trimesh(
+        &mut self,
+        old_handle: ColliderHandle,
+        vertices: Vec<[f32; 3]>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+    ) -> ColliderHandle {
+        self.dynamic.remove_collider(old_handle);
+        let points: Vec<Point3<f32>> = vertices
+            .into_iter()
+            .map(|v| Point3::new(v[0], v[1], v[2]))
+            .collect();
+        let handle = self.dynamic.add_static_trimesh(points, indices, user_data);
+        self.dynamic.rebuild_broad_phase();
+        handle
+    }
+
     pub fn wake_bodies_near(&mut self, center: Vec3, radius: f32) {
         self.dynamic.wake_bodies_near(center, radius);
     }

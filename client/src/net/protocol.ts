@@ -22,6 +22,7 @@ import {
   PKT_LOCAL_PLAYER_ENERGY,
   PKT_BATTERY_SYNC,
   PKT_DAMAGE_EVENT,
+  PKT_CARVE_EVENT,
   PKT_PING,
   PKT_PONG,
   BTN_FORWARD,
@@ -340,6 +341,20 @@ export type DamageEventPacket = {
   serverTimeMs: number;
 };
 
+export type CarveEventPacket = {
+  type: 'carveEvent';
+  sheetId: number;
+  seq: number;
+  uvU: number;
+  uvV: number;
+  dirU: number;
+  dirV: number;
+  normalSpeedCms: number;
+  massOrEnergyGrams: number;
+  footprintRadiusMm: number;
+  seed: number;
+};
+
 export type LocalPlayerEnergyPacket = {
   type: 'localPlayerEnergy';
   energyCenti: number;
@@ -357,6 +372,7 @@ export type ServerReliablePacket =
   | ShotResultPacket
   | ShotFiredPacket
   | DamageEventPacket
+  | CarveEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -378,6 +394,7 @@ export type ServerPacket =
   | ShotResultPacket
   | ShotFiredPacket
   | DamageEventPacket
+  | CarveEventPacket
   | LocalPlayerEnergyPacket
   | BatterySyncPacket
   | ChunkFullPacket
@@ -607,6 +624,8 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return decodeBatterySyncPacket(view, o);
     case PKT_DAMAGE_EVENT:
       return decodeDamageEventPacket(view, o);
+    case PKT_CARVE_EVENT:
+      return decodeCarveEventPacket(view, o);
     case PKT_SNAPSHOT:
       // Snapshots fall back to the reliable stream when too large for a QUIC datagram
       return decodeSnapshotPacket(view, o);
@@ -926,6 +945,32 @@ function decodeDamageEventPacket(view: DataView, o: number): DamageEventPacket {
       attackerPzMm / 1000,
     ],
     serverTimeMs,
+  };
+}
+
+function decodeCarveEventPacket(view: DataView, o: number): CarveEventPacket {
+  const sheetId = view.getUint32(o, true); o += 4;
+  const seq = view.getUint32(o, true); o += 4;
+  const uvU = view.getUint16(o, true); o += 2;
+  const uvV = view.getUint16(o, true); o += 2;
+  const dirU = view.getInt16(o, true); o += 2;
+  const dirV = view.getInt16(o, true); o += 2;
+  const normalSpeedCms = view.getUint16(o, true); o += 2;
+  const massOrEnergyGrams = view.getUint16(o, true); o += 2;
+  const footprintRadiusMm = view.getUint16(o, true); o += 2;
+  const seed = view.getUint32(o, true); o += 4;
+  return {
+    type: 'carveEvent',
+    sheetId,
+    seq,
+    uvU,
+    uvV,
+    dirU,
+    dirV,
+    normalSpeedCms,
+    massOrEnergyGrams,
+    footprintRadiusMm,
+    seed,
   };
 }
 
@@ -1281,6 +1326,8 @@ export function decodeServerPacket(data: ArrayBuffer | Uint8Array): ServerPacket
       return decodeBatterySyncPacket(view, 1);
     case PKT_DAMAGE_EVENT:
       return decodeDamageEventPacket(view, 1);
+    case PKT_CARVE_EVENT:
+      return decodeCarveEventPacket(view, 1);
     case PKT_PING:
       return { type: 'serverPing', value: view.getUint32(1, true) };
     case PKT_PONG:

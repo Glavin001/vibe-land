@@ -11,6 +11,7 @@ import {
 } from '../net/interpolation';
 import {
   type BatteryStateMeters,
+  type CarveEventPacket,
   type DamageEventPacket,
   DYNAMIC_BODY_IMPULSE,
   type BlockEditCmd,
@@ -93,6 +94,7 @@ export type GameRuntimeCallbacks = {
   onRenderBlocksChanged?: (blocks: RenderBlock[]) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
   onShotFired?: (packet: ShotFiredPacket) => void;
+  onCarveEvent?: (packet: CarveEventPacket) => void;
 };
 
 export interface GameRuntimeClient {
@@ -623,6 +625,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
         onDamageEvent: (packet) => {
           this.callbacks.onDamageEvent?.(packet);
         },
+        onCarveEvent: (packet) => {
+          this.callbacks.onCarveEvent?.(packet);
+        },
       });
       this.client = client;
       this.state.remoteInterpolator = client.interpolator;
@@ -1102,6 +1107,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         },
         onShotFired: (packet) => {
           this.callbacks.onShotFired?.(packet);
+        },
+        onCarveEvent: (packet) => {
+          this.callbacks.onCarveEvent?.(packet);
         },
         onPacket: (packet) => {
           this.syncState();

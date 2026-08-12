@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
+import { useRef, useEffect, useMemo, useState, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -55,6 +55,7 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
+  CarveEventPacket,
   DamageEventPacket,
   NetVehicleState,
   ShotFiredPacket,
@@ -84,6 +85,7 @@ import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { Portals } from './Portals';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { DestructibleSheets, filterNonSheetStaticProps } from './DestructibleSheets';
 import {
   DEFAULT_WORLD_DOCUMENT,
   removeVehicleEntitiesFromWorldDocument,
@@ -1178,6 +1180,8 @@ export function GameWorld({
       expiresAtMs,
     });
   }).current;
+  const [carveEvents, setCarveEvents] = useState<CarveEventPacket[]>([]);
+  const solidStaticWorld = useMemo(() => filterNonSheetStaticProps(worldDocument), [worldDocument]);
   const { ready, renderBlocks, runtimeRef } = useGameRuntime(
     mode,
     worldJson,
@@ -1188,6 +1192,9 @@ export function GameWorld({
     localRenderSmoothingEnabled,
     (packet) => damageEventHandlerRef.current(packet),
     handleServerShotFired,
+    (packet) => {
+      setCarveEvents((prev) => [...prev, packet]);
+    },
   );
   runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
@@ -3130,7 +3137,8 @@ export function GameWorld({
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
-      <WorldStaticProps world={worldDocument} />
+      <WorldStaticProps world={solidStaticWorld} />
+      <DestructibleSheets world={worldDocument} carveEvents={carveEvents} />
       <Portals runtimeRef={runtimeRef} />
 
       {renderBlocks.map((block) => (
