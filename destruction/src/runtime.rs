@@ -367,9 +367,19 @@ impl CityDestruction {
         // transition is the network-definitive "at rest now" moment the stream
         // needs.
         let mut settled = Vec::new();
+        // Lowest body this tick, over EVERY dynamic body -- sleeping included.
+        // This field existed, was logged, asserted on and shown in the overlay,
+        // but was never actually computed: it sat at its Default of 0.0
+        // forever. That made "the server has every body at y >= 0" a reading of
+        // an uninitialised field rather than a measurement, and it is the basis
+        // on which below-ground chunks were attributed to the client.
+        let mut min_body_y = f32::INFINITY;
         for snap in snapshots.iter() {
             if snap.kinematic {
                 continue;
+            }
+            if snap.position.y < min_body_y {
+                min_body_y = snap.position.y;
             }
             let previously = self.known_awake.get(&snap.entity_id).copied();
             if snap.sleeping {
@@ -395,6 +405,8 @@ impl CityDestruction {
                 self.known_awake.insert(snap.entity_id, true);
             }
         }
+
+        self.stats.min_body_y = if min_body_y.is_finite() { min_body_y } else { 0.0 };
 
         if let Ok(bridge_stats) = world.destruction_stats() {
             self.stats.chunk_bodies = bridge_stats.chunk_bodies;
