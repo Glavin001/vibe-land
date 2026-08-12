@@ -6,6 +6,7 @@
 pub mod carve;
 pub mod coarse_collision;
 pub mod demo_huts;
+pub mod falling_debris;
 pub mod islands;
 pub mod materials;
 pub mod mask;
@@ -23,7 +24,12 @@ pub use coarse_collision::{
     COARSE_CELL_M, USEFULNESS_REBUILD_ALPHA,
 };
 pub use demo_huts::append_destructible_demo_huts;
-pub use islands::{cull_dual_skin_islands, cull_sheet_islands};
+pub use falling_debris::{
+    debris_spawns_from_islands, dropped_island_world_cuboid, is_debris_worthy,
+    sheet_falling_debris_enabled, DEBRIS_MAX_CONCURRENT, DEBRIS_MIN_AREA_M2, DEBRIS_SPAWN_NUDGE_M,
+    DEBRIS_TTL_SEC, SHEET_FALLING_DEBRIS,
+};
+pub use islands::{cull_dual_skin_islands, cull_sheet_islands, DroppedIsland};
 pub use materials::{
     is_sheet_material, lookup_sheet_material, SheetMaterial, SheetMaterialId, SHEET_MATERIAL_IDS,
     RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,

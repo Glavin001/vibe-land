@@ -11,7 +11,7 @@ use super::carve::{apply_carve, CarveApplyResult, CarveEvent};
 use super::coarse_collision::{
     take_collision_rebuild, CoarseCollisionSnapshot, OrientedWorldCuboid,
 };
-use super::islands::cull_dual_skin_islands;
+use super::islands::{cull_dual_skin_islands, DroppedIsland};
 use super::materials::{lookup_sheet_material, SheetMaterial, SheetMaterialId};
 use super::mask::SheetMask;
 use super::remesh::{remesh_sheet_skins, transform_mesh_to_world, SheetMesh};
@@ -89,6 +89,19 @@ impl SheetInstance {
             &self.frame,
             &mut self.collision_snapshot,
         )
+    }
+
+    /// Always rebuild greedy cuboids (used when a falling cutout needs the
+    /// parent hole opened before the debris body is spawned).
+    pub fn take_collision_cuboids_forced(&mut self) -> Vec<OrientedWorldCuboid> {
+        use super::coarse_collision::{
+            build_greedy_collision_cuboids, compute_collision_snapshot,
+        };
+        let boxes =
+            build_greedy_collision_cuboids(&self.mask, &self.inner_mask, &self.frame);
+        self.collision_snapshot =
+            Some(compute_collision_snapshot(&self.mask, &self.inner_mask, &self.frame));
+        boxes
     }
 
     pub fn build_mesh(&self) -> SheetMesh {
@@ -257,8 +270,11 @@ pub fn apply_carve_skins(
 
     // Coupled island cull — must run even if only the outer skin carved, so a
     // ring-cut front cannot leave an intact back "cap" suspended in the hole.
+    let mut dropped_islands: Vec<DroppedIsland> = Vec::new();
     if carved > 0 || outer_result.carved_cells > 0 {
-        carved += cull_dual_skin_islands(outer, inner, mat);
+        let (cleared, dropped) = cull_dual_skin_islands(outer, inner, mat);
+        carved += cleared;
+        dropped_islands = dropped;
         // Collapse either skin if almost gone.
         for mask in [&mut *outer, &mut *inner] {
             if mask.occupancy_ratio() < 0.05 {
@@ -280,6 +296,7 @@ pub fn apply_carve_skins(
         carved_cells: carved,
         damaged_cells: damaged,
         applied: true,
+        dropped_islands,
     }
 }
 
@@ -492,7 +509,7 @@ mod tests {
             ],
             7,
         );
-        let _ = reg.apply_event(&event).unwrap();
+        let result = reg.apply_event(&event).unwrap();
         let sheet = reg.get(1).unwrap();
         assert!(
             !sheet.mask.occupied(cx as u16, cy as u16),
@@ -502,6 +519,38 @@ mod tests {
             !sheet.inner_mask.occupied(cx as u16, cy as u16),
             "inner cap under fallen outer island must drop too"
         );
+        assert!(
+            !result.dropped_islands.is_empty(),
+            "cull should report dropped island AABBs"
+        );
+    }
+
+    #[test]
+    fn doorway_sized_island_is_debris_worthy() {
+        use super::super::falling_debris::{debris_spawns_from_islands, is_debris_worthy};
+        let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);
+        let sheet = reg.get_mut(1).unwrap();
+        // Cut a free rectangular door panel (~1.2 x 2.0 m).
+        let u0 = ((1.4 / sheet.mask.cell_size) as u16).max(1);
+        let u1 = ((2.6 / sheet.mask.cell_size) as u16).min(sheet.mask.width - 2);
+        let v0 = 1u16;
+        let v1 = ((2.0 / sheet.mask.cell_size) as u16).min(sheet.mask.height - 2);
+        // Ring: clear a one-cell frame around the panel on both skins.
+        for y in v0.saturating_sub(1)..=(v1 + 1).min(sheet.mask.height - 1) {
+            for x in u0.saturating_sub(1)..=(u1 + 1).min(sheet.mask.width - 1) {
+                let on_ring = x == u0 - 1 || x == u1 + 1 || y == v0.saturating_sub(1) || y == v1 + 1;
+                if on_ring {
+                    sheet.mask.set_occupied(x, y, false);
+                    sheet.inner_mask.set_occupied(x, y, false);
+                }
+            }
+        }
+        let event = bullet_event(1, 1, [2.0, 1.0], 11);
+        let result = reg.apply_event(&event).unwrap();
+        assert!(result.dropped_islands.iter().any(is_debris_worthy));
+        let sheet = reg.get(1).unwrap();
+        let spawns = debris_spawns_from_islands(&result.dropped_islands, &sheet.frame);
+        assert!(!spawns.is_empty(), "doorway cutout should spawn debris cuboids");
     }
 
 

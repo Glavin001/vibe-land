@@ -86,6 +86,7 @@ import { Portals } from './Portals';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
 import { DestructibleSheets, filterNonSheetStaticProps } from './DestructibleSheets';
+import { SheetFallingDebris } from './SheetFallingDebris';
 import {
   DEFAULT_WORLD_DOCUMENT,
   removeVehicleEntitiesFromWorldDocument,
@@ -3176,7 +3177,12 @@ export function GameWorld({
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={solidStaticWorld} />
-      <DestructibleSheets world={worldDocument} carveEvents={carveEvents} />
+      <DestructibleSheets
+        world={worldDocument}
+        carveEvents={carveEvents}
+        spawnVisualDebris={!practiceMode}
+      />
+      {practiceMode && <SheetFallingDebris runtimeRef={runtimeRef} />}
       <Portals runtimeRef={runtimeRef} />
 
       {renderBlocks.map((block) => (

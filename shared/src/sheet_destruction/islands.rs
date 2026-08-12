@@ -18,23 +18,57 @@ struct Island {
     area: f32,
 }
 
+/// UV-space AABB of a culled island (meters on the sheet face).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroppedIsland {
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+    pub area: f32,
+}
+
+fn island_to_dropped(island: &Island, cell: f32) -> DroppedIsland {
+    let mut min_x = u16::MAX;
+    let mut max_x = 0u16;
+    let mut min_y = u16::MAX;
+    let mut max_y = 0u16;
+    for &(x, y) in &island.cells {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    DroppedIsland {
+        u0: min_x as f32 * cell,
+        v0: min_y as f32 * cell,
+        u1: (max_x as f32 + 1.0) * cell,
+        v1: (max_y as f32 + 1.0) * cell,
+        area: island.area,
+    }
+}
+
 /// Remove unsupported / undersized components on one mask. Returns cleared cells.
 pub fn cull_sheet_islands(mask: &mut SheetMask, mat: &SheetMaterial) -> u32 {
-    let cleared = collect_islands_to_drop(mask, mat);
-    let n = cleared.len() as u32;
-    for (x, y) in cleared {
+    let (cells, _) = collect_islands_to_drop(mask, mat);
+    let n = cells.len() as u32;
+    for (x, y) in cells {
         mask.set_occupied(x, y, false);
     }
     n
 }
 
-fn collect_islands_to_drop(mask: &SheetMask, mat: &SheetMaterial) -> Vec<(u16, u16)> {
+fn collect_islands_to_drop(
+    mask: &SheetMask,
+    mat: &SheetMaterial,
+) -> (Vec<(u16, u16)>, Vec<DroppedIsland>) {
     let w = mask.width;
     let h = mask.height;
     if w == 0 || h == 0 {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
-    let cell_area = mask.cell_size * mask.cell_size;
+    let cell = mask.cell_size;
+    let cell_area = cell * cell;
     let n = mask.cell_count();
     let mut visited = vec![false; n];
     let mut stack: Vec<(u16, u16)> = Vec::new();
@@ -95,6 +129,7 @@ fn collect_islands_to_drop(mask: &SheetMask, mat: &SheetMaterial) -> Vec<(u16, u
         .fold(0.0_f32, f32::max);
 
     let mut to_clear = Vec::new();
+    let mut dropped = Vec::new();
     for island in &islands {
         let drop = if !island.anchored {
             true
@@ -103,24 +138,27 @@ fn collect_islands_to_drop(mask: &SheetMask, mat: &SheetMaterial) -> Vec<(u16, u
         };
         if drop {
             to_clear.extend_from_slice(&island.cells);
+            dropped.push(island_to_dropped(island, cell));
         }
     }
-    to_clear
+    (to_clear, dropped)
 }
 
 /// Cull islands on both skins, propagating drops so a fallen front patch also
-/// clears the back (and vice versa). Iterates until stable.
+/// clears the back (and vice versa). Returns (cleared cell count, unique UV drops).
 pub fn cull_dual_skin_islands(
     outer: &mut SheetMask,
     inner: &mut SheetMask,
     mat: &SheetMaterial,
-) -> u32 {
+) -> (u32, Vec<DroppedIsland>) {
     let mut total = 0u32;
+    let mut dropped: Vec<DroppedIsland> = Vec::new();
     // A few passes cover cascade: clearing the other skin can free new islands.
     for _ in 0..4 {
         let mut pass = 0u32;
 
-        let drop_outer = collect_islands_to_drop(outer, mat);
+        let (drop_outer, outer_islands) = collect_islands_to_drop(outer, mat);
+        dropped.extend(outer_islands);
         for &(x, y) in &drop_outer {
             if outer.occupied(x, y) {
                 outer.set_occupied(x, y, false);
@@ -132,7 +170,17 @@ pub fn cull_dual_skin_islands(
             }
         }
 
-        let drop_inner = collect_islands_to_drop(inner, mat);
+        let (drop_inner, inner_islands) = collect_islands_to_drop(inner, mat);
+        // Only record inner islands that weren't already implied by outer clears
+        // (avoid double debris for coupled dual-skin drops).
+        for island in inner_islands {
+            let overlap = dropped.iter().any(|d| {
+                island.u0 < d.u1 && island.u1 > d.u0 && island.v0 < d.v1 && island.v1 > d.v0
+            });
+            if !overlap {
+                dropped.push(island);
+            }
+        }
         for &(x, y) in &drop_inner {
             if inner.occupied(x, y) {
                 inner.set_occupied(x, y, false);
@@ -149,7 +197,7 @@ pub fn cull_dual_skin_islands(
             break;
         }
     }
-    total
+    (total, dropped)
 }
 
 #[cfg(test)]
@@ -237,8 +285,9 @@ mod tests {
         }
         assert!(outer.occupied(10, 10));
         assert!(inner.occupied(10, 10));
-        let cleared = cull_dual_skin_islands(&mut outer, &mut inner, mat);
+        let (cleared, dropped) = cull_dual_skin_islands(&mut outer, &mut inner, mat);
         assert!(cleared > 0);
+        assert!(!dropped.is_empty());
         assert!(!outer.occupied(10, 10), "outer island should drop");
         assert!(
             !inner.occupied(10, 10),

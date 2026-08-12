@@ -107,6 +107,19 @@ pub struct CarveApplyResult {
     pub carved_cells: u32,
     pub damaged_cells: u32,
     pub applied: bool,
+    /// UV islands culled this apply (empty for single-mask `apply_carve`).
+    pub dropped_islands: Vec<super::islands::DroppedIsland>,
+}
+
+impl CarveApplyResult {
+    pub fn empty(applied: bool) -> Self {
+        Self {
+            carved_cells: 0,
+            damaged_cells: 0,
+            applied,
+            dropped_islands: Vec::new(),
+        }
+    }
 }
 
 /// Apply a carve event to a mask. Idempotent for seq ≤ mask.seq.
@@ -116,11 +129,7 @@ pub fn apply_carve(
     event: &CarveEvent,
 ) -> CarveApplyResult {
     if event.seq <= mask.seq {
-        return CarveApplyResult {
-            carved_cells: 0,
-            damaged_cells: 0,
-            applied: false,
-        };
+        return CarveApplyResult::empty(false);
     }
 
     // Quantize UV for determinism across peers.
@@ -132,11 +141,7 @@ pub fn apply_carve(
     if !stamp.any {
         mask.seq = event.seq;
         mask.mix_event_hash(&event.to_hash_bytes());
-        return CarveApplyResult {
-            carved_cells: 0,
-            damaged_cells: 0,
-            applied: true,
-        };
+        return CarveApplyResult::empty(true);
     }
 
     let mut max_flux = 0.0_f32;
@@ -160,11 +165,7 @@ pub fn apply_carve(
         mask.seq = event.seq;
         mask.mix_event_hash(&event.to_hash_bytes());
         // No geometry change, but seq advances so peers stay ordered.
-        return CarveApplyResult {
-            carved_cells: 0,
-            damaged_cells: 0,
-            applied: true,
-        };
+        return CarveApplyResult::empty(true);
     }
 
     for y in stamp.min_y..=stamp.max_y {
@@ -223,5 +224,6 @@ pub fn apply_carve(
         carved_cells: carved,
         damaged_cells: damaged,
         applied: true,
+        dropped_islands: Vec::new(),
     }
 }

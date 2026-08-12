@@ -2931,7 +2931,16 @@ impl MatchState {
             return;
         }
 
-        self.sync_sheet_collision(sheet_id);
+        // Force parent hole open when a debris-sized island drops so the cutout
+        // volume is empty (cosmetic debris is client/practice-local only).
+        let force_hole = {
+            use vibe_land_shared::sheet_destruction::{
+                is_debris_worthy, sheet_falling_debris_enabled,
+            };
+            sheet_falling_debris_enabled()
+                && result.dropped_islands.iter().any(is_debris_worthy)
+        };
+        self.sync_sheet_collision(sheet_id, force_hole);
 
         let pkt = carve_event_to_packet(&event);
         let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));
@@ -2940,7 +2949,7 @@ impl MatchState {
         }
     }
 
-    fn sync_sheet_collision(&mut self, sheet_id: u32) {
+    fn sync_sheet_collision(&mut self, sheet_id: u32, force: bool) {
         use vibe_land_shared::sheet_destruction::sheet_coarse_collision_enabled;
         let old = self
             .sheet_colliders
@@ -2952,7 +2961,11 @@ impl MatchState {
                 let Some(sheet) = self.sheets.get_mut(sheet_id) else {
                     return;
                 };
-                sheet.take_collision_cuboids_if_dirty()
+                if force {
+                    Some(sheet.take_collision_cuboids_forced())
+                } else {
+                    sheet.take_collision_cuboids_if_dirty()
+                }
             };
             let Some(cuboids) = cuboids else {
                 return;

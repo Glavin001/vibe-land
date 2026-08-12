@@ -15,8 +15,10 @@ use crate::{
     protocol::*,
     seq::seq_is_newer,
     sheet_destruction::{
-        carve_event_to_packet, encode_carve_event_packet, sheet_coarse_collision_enabled,
-        CarveEvent, SheetRegistry, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
+        carve_event_to_packet, debris_spawns_from_islands, encode_carve_event_packet,
+        lookup_sheet_material, sheet_coarse_collision_enabled, sheet_falling_debris_enabled,
+        CarveEvent, OrientedWorldCuboid, SheetMaterialId, SheetRegistry, DEBRIS_MAX_CONCURRENT,
+        DEBRIS_SPAWN_NUDGE_M, DEBRIS_TTL_SEC, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
         RIFLE_BULLET_SPEED_MPS,
     },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
@@ -32,9 +34,27 @@ use rapier3d::prelude::{
 };
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
 
+fn sheet_material_rgb(id: SheetMaterialId) -> (f32, f32, f32) {
+    match id {
+        SheetMaterialId::Drywall => (0xD8 as f32 / 255.0, 0xD0 as f32 / 255.0, 0xC0 as f32 / 255.0),
+        SheetMaterialId::Wood => (0x8B as f32 / 255.0, 0x5A as f32 / 255.0, 0x2B as f32 / 255.0),
+        SheetMaterialId::Plaster => (0xCF as f32 / 255.0, 0xC6 as f32 / 255.0, 0xB8 as f32 / 255.0),
+    }
+}
+
 pub const LOCAL_PLAYER_ID: u32 = 1;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
+/// Local-only sheet debris body ids (not networked / not in dynamic snapshots).
+const SHEET_DEBRIS_ID_BASE: u32 = 900_000;
+const SHEET_DEBRIS_STATE_STRIDE: usize = 14;
+
+struct SheetDebrisMeta {
+    id: u32,
+    half_extents: [f32; 3],
+    material_id: SheetMaterialId,
+    expires_tick: u32,
+}
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -74,6 +94,9 @@ pub struct LocalSession {
     // same physics world as terrain/vehicles so they collide naturally.
     ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
     ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
+    /// Cosmetic falling sheet cutouts (ragdoll-style local bodies + TTL).
+    sheet_debris: HashMap<u32, SheetDebrisMeta>,
+    next_sheet_debris_id: u32,
 }
 
 impl LocalSession {
@@ -113,6 +136,8 @@ impl LocalSession {
             server_tick: 0,
             ragdoll_bodies: HashMap::new(),
             ragdoll_joint_handles: HashMap::new(),
+            sheet_debris: HashMap::new(),
+            next_sheet_debris_id: SHEET_DEBRIS_ID_BASE,
         })
     }
 
@@ -439,6 +464,7 @@ impl LocalSession {
 
         self.process_hitscan(server_time_ms);
         self.process_melee(server_time_ms);
+        self.expire_sheet_debris();
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
@@ -758,8 +784,34 @@ impl LocalSession {
         if !result.applied {
             return;
         }
+        let debris_cuboids = {
+            let sheet = self.sheets.get(sheet_id);
+            sheet
+                .map(|s| debris_spawns_from_islands(&result.dropped_islands, &s.frame))
+                .unwrap_or_default()
+        };
+        let force_hole = sheet_falling_debris_enabled() && !debris_cuboids.is_empty();
         if result.carved_cells > 0 {
-            self.sync_sheet_collision(sheet_id);
+            self.sync_sheet_collision(sheet_id, force_hole);
+        }
+        if force_hole {
+            let material_id = self
+                .sheets
+                .get(sheet_id)
+                .map(|s| s.material_id)
+                .unwrap_or(SheetMaterialId::Drywall);
+            let thickness_axis = self
+                .sheets
+                .get(sheet_id)
+                .map(|s| s.frame.axis_thickness)
+                .unwrap_or([0.0, 1.0, 0.0]);
+            self.spawn_sheet_debris_cuboids(
+                &debris_cuboids,
+                material_id,
+                thickness_axis,
+                dir,
+                event.seed,
+            );
         }
         if result.carved_cells > 0 || result.damaged_cells > 0 {
             let pkt = carve_event_to_packet(&event);
@@ -768,7 +820,7 @@ impl LocalSession {
         }
     }
 
-    fn sync_sheet_collision(&mut self, sheet_id: u32) {
+    fn sync_sheet_collision(&mut self, sheet_id: u32, force: bool) {
         let old = self
             .sheet_colliders
             .get(&sheet_id)
@@ -779,7 +831,11 @@ impl LocalSession {
                 let Some(sheet) = self.sheets.get_mut(sheet_id) else {
                     return;
                 };
-                sheet.take_collision_cuboids_if_dirty()
+                if force {
+                    Some(sheet.take_collision_cuboids_forced())
+                } else {
+                    sheet.take_collision_cuboids_if_dirty()
+                }
             };
             let Some(cuboids) = cuboids else {
                 return;
@@ -837,6 +893,168 @@ impl LocalSession {
                     .swap_static_trimesh(old[0], verts, tris, sheet_id as u128);
             self.sheet_colliders.insert(sheet_id, vec![new_handle]);
         }
+    }
+
+    fn spawn_sheet_debris_cuboids(
+        &mut self,
+        cuboids: &[OrientedWorldCuboid],
+        material_id: SheetMaterialId,
+        thickness_axis: [f32; 3],
+        shot_dir: [f32; 3],
+        seed: u32,
+    ) {
+        if cuboids.is_empty() || !sheet_falling_debris_enabled() {
+            return;
+        }
+        let density = lookup_sheet_material(material_id).island_density;
+        let side = {
+            let d = shot_dir[0] * thickness_axis[0]
+                + shot_dir[1] * thickness_axis[1]
+                + shot_dir[2] * thickness_axis[2];
+            if d >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let ttl_ticks = (DEBRIS_TTL_SEC * SIM_HZ as f32).round().max(1.0) as u32;
+        let expires_tick = self.server_tick.saturating_add(ttl_ticks);
+
+        for (i, c) in cuboids.iter().enumerate() {
+            while self.sheet_debris.len() >= DEBRIS_MAX_CONCURRENT {
+                let oldest = self
+                    .sheet_debris
+                    .values()
+                    .min_by_key(|m| m.expires_tick)
+                    .map(|m| m.id);
+                if let Some(id) = oldest {
+                    self.remove_sheet_debris(id);
+                } else {
+                    break;
+                }
+            }
+            let id = self.next_sheet_debris_id;
+            self.next_sheet_debris_id = self.next_sheet_debris_id.wrapping_add(1).max(SHEET_DEBRIS_ID_BASE);
+            let jitter = ((seed.wrapping_add(i as u32 * 97)) & 0xff) as f32 / 255.0 - 0.5;
+            let center = [
+                c.center[0] + thickness_axis[0] * side * DEBRIS_SPAWN_NUDGE_M,
+                c.center[1] + thickness_axis[1] * side * DEBRIS_SPAWN_NUDGE_M,
+                c.center[2] + thickness_axis[2] * side * DEBRIS_SPAWN_NUDGE_M,
+            ];
+            let vx = thickness_axis[0] * side * 1.4 + jitter * 0.3;
+            let vy = thickness_axis[1] * side * 1.4 - 0.35;
+            let vz = thickness_axis[2] * side * 1.4 + jitter * 0.25;
+            let wx = jitter * 2.5;
+            let wy = (0.5 - jitter) * 1.8;
+            let wz = jitter * -2.0;
+            self.spawn_sheet_debris_body(
+                id,
+                c.half_extents,
+                center,
+                c.rotation_xyzw,
+                [vx, vy, vz],
+                [wx, wy, wz],
+                density,
+            );
+            self.sheet_debris.insert(
+                id,
+                SheetDebrisMeta {
+                    id,
+                    half_extents: c.half_extents,
+                    material_id,
+                    expires_tick,
+                },
+            );
+        }
+    }
+
+    fn spawn_sheet_debris_body(
+        &mut self,
+        id: u32,
+        half_extents: [f32; 3],
+        center: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        linvel: [f32; 3],
+        angvel: [f32; 3],
+        density: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(
+            rotation_xyzw[3],
+            rotation_xyzw[0],
+            rotation_xyzw[1],
+            rotation_xyzw[2],
+        ));
+        let body = RigidBodyBuilder::dynamic()
+            .position(Isometry3::from_parts(
+                Translation3::new(center[0], center[1], center[2]),
+                iso,
+            ))
+            .linvel(vector![linvel[0], linvel[1], linvel[2]])
+            .angvel(vector![angvel[0], angvel[1], angvel[2]])
+            .linear_damping(0.04)
+            .angular_damping(0.08)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.arena.dynamic.sim.rigid_bodies.insert(body);
+        // Same groups as ragdolls: collide with static world + other dynamics.
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(half_extents[0], half_extents[1], half_extents[2])
+            .density(density.max(1.0))
+            .restitution(0.15)
+            .friction(0.7)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let _ = self.arena.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.arena.dynamic.sim.rigid_bodies,
+        );
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    fn remove_sheet_debris(&mut self, id: u32) {
+        self.sheet_debris.remove(&id);
+        self.remove_ragdoll_body(id);
+    }
+
+    fn expire_sheet_debris(&mut self) {
+        let tick = self.server_tick;
+        let expired: Vec<u32> = self
+            .sheet_debris
+            .values()
+            .filter(|m| m.expires_tick <= tick)
+            .map(|m| m.id)
+            .collect();
+        for id in expired {
+            self.remove_sheet_debris(id);
+        }
+    }
+
+    /// Packed `[id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, cr, cg, cb] * N`.
+    pub fn sheet_debris_states(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.sheet_debris.len() * SHEET_DEBRIS_STATE_STRIDE);
+        let mut ids: Vec<u32> = self.sheet_debris.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(meta) = self.sheet_debris.get(&id) else {
+                continue;
+            };
+            let Some(state) = self.ragdoll_body_state(id) else {
+                continue;
+            };
+            let (cr, cg, cb) = sheet_material_rgb(meta.material_id);
+            out.push(id as f32);
+            out.extend_from_slice(&meta.half_extents);
+            out.extend_from_slice(&state);
+            out.push(cr);
+            out.push(cg);
+            out.push(cb);
+        }
+        out
     }
 
     // TODO: lag-compensate melee

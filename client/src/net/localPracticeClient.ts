@@ -323,6 +323,12 @@ export class LocalPracticeClient implements PracticeBotHost {
     return s;
   }
 
+  getSheetDebrisStates(): Float32Array | null {
+    const s = this.session?.getSheetDebrisStates?.();
+    if (!s || s.length === 0) return null;
+    return s instanceof Float32Array ? s : new Float32Array(s);
+  }
+
   setRagdollBodyVelocity(
     id: number,
     vx: number, vy: number, vz: number,

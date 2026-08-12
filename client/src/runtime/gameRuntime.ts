@@ -239,6 +239,8 @@ export interface GameRuntimeClient {
   ): void;
   removeRagdollBody(id: number): void;
   getRagdollBodyState(id: number): Float64Array | null;
+  /** Practice: packed local-only falling sheet cutouts. */
+  getSheetDebrisStates?(): Float32Array | null;
   setRagdollBodyVelocity(
     id: number,
     vx: number, vy: number, vz: number,
@@ -894,6 +896,9 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
   getRagdollBodyState(id: number): Float64Array | null {
     return this.cosmeticWorld?.getRagdollBodyState(id) ?? null;
+  }
+  getSheetDebrisStates(): Float32Array | null {
+    return this.client?.getSheetDebrisStates() ?? null;
   }
   setRagdollBodyVelocity(
     id: number,

@@ -1997,6 +1997,12 @@ impl WasmLocalSession {
         self.inner.remove_ragdoll_body(id);
     }
 
+    /// Packed sheet-debris states: `[id,hx,hy,hz,px,py,pz,qx,qy,qz,qw,cr,cg,cb]*N`.
+    #[wasm_bindgen(js_name = getSheetDebrisStates)]
+    pub fn get_sheet_debris_states(&self) -> Box<[f32]> {
+        self.inner.sheet_debris_states().into_boxed_slice()
+    }
+
     #[wasm_bindgen(js_name = getRagdollBodyState)]
     pub fn get_ragdoll_body_state(&self, id: u32) -> Box<[f64]> {
         match self.inner.ragdoll_body_state(id) {
@@ -2280,6 +2286,8 @@ struct WasmSheetFlatMesh {
 pub struct WasmSheetRegistry {
     inner: crate::sheet_destruction::SheetRegistry,
     flat_cache: std::cell::RefCell<HashMap<u32, WasmSheetFlatMesh>>,
+    /// Packed visual debris from the most recent `applyCarve`.
+    last_debris_spawns: std::cell::RefCell<Vec<f32>>,
 }
 
 impl WasmSheetRegistry {
@@ -2331,6 +2339,7 @@ impl WasmSheetRegistry {
         Ok(Self {
             inner: crate::sheet_destruction::SheetRegistry::from_static_props(&world.static_props),
             flat_cache: std::cell::RefCell::new(HashMap::new()),
+            last_debris_spawns: std::cell::RefCell::new(Vec::new()),
         })
     }
 
@@ -2382,16 +2391,47 @@ impl WasmSheetRegistry {
             footprint_radius_mm,
             seed,
         };
+        use crate::sheet_destruction::{
+            debris_spawns_from_islands, sheet_falling_debris_enabled, SheetMaterialId,
+        };
         let event = carve_event_from_packet(&pkt);
-        let carved = self
-            .inner
-            .apply_event(&event)
-            .map(|r| r.carved_cells)
-            .unwrap_or(0);
+        let result = self.inner.apply_event(&event);
+        let carved = result.as_ref().map(|r| r.carved_cells).unwrap_or(0);
+        self.last_debris_spawns.borrow_mut().clear();
+        if let Some(result) = result.as_ref() {
+            if sheet_falling_debris_enabled() {
+                if let Some(sheet) = self.inner.get(sheet_id) {
+                    let cuboids =
+                        debris_spawns_from_islands(&result.dropped_islands, &sheet.frame);
+                    let (cr, cg, cb) = match sheet.material_id {
+                        SheetMaterialId::Drywall => (216.0 / 255.0, 208.0 / 255.0, 192.0 / 255.0),
+                        SheetMaterialId::Wood => (139.0 / 255.0, 90.0 / 255.0, 43.0 / 255.0),
+                        SheetMaterialId::Plaster => (207.0 / 255.0, 198.0 / 255.0, 184.0 / 255.0),
+                    };
+                    let mut packed = Vec::with_capacity(cuboids.len() * 13);
+                    for c in cuboids {
+                        packed.extend_from_slice(&c.half_extents);
+                        packed.extend_from_slice(&c.center);
+                        packed.extend_from_slice(&c.rotation_xyzw);
+                        packed.push(cr);
+                        packed.push(cg);
+                        packed.push(cb);
+                    }
+                    *self.last_debris_spawns.borrow_mut() = packed;
+                }
+            }
+        }
         if carved > 0 {
             self.flat_cache.borrow_mut().remove(&sheet_id);
         }
         carved
+    }
+
+    /// After the latest `applyCarve`, return packed debris cuboids for visual FX:
+    /// `[hx,hy,hz, px,py,pz, qx,qy,qz,qw, cr,cg,cb] * N` (empty if flag off / freckles).
+    #[wasm_bindgen(js_name = takeLastDebrisSpawns)]
+    pub fn take_last_debris_spawns(&self) -> Box<[f32]> {
+        std::mem::take(&mut *self.last_debris_spawns.borrow_mut()).into_boxed_slice()
     }
 
     /// World-space mesh for a sheet: flat [x,y,z,...] positions + [i0,i1,i2,...] indices.
