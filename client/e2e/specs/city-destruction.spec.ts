@@ -144,8 +144,9 @@ test.describe('destructible city', () => {
     expect(
       final.minChunkY,
       `lowest chunk at ${final.minChunkY.toFixed(1)} m `
-        + `(${final.chunksBelowGround} below the plane). Server physics keeps `
-        + `bodies at y>=0, so metres of sink is client-side reconstruction.`,
+        + `(${final.chunksBelowGround} below the plane). Compare the body pose `
+        + `against the chunk's local offset to tell a genuinely fallen body `
+        + `from a reconstruction fault.`,
     ).toBeGreaterThan(-MAX_CHUNK_SINK_M);
   });
 
@@ -164,7 +165,13 @@ test.describe('destructible city', () => {
     await waitForCityRendered(page);
 
     const targets = await allStructureTargets(page);
-    let worst = { chunksBelowGround: 0, minChunkY: 0, islands: 0, bonds: 0 };
+    let worst = {
+      chunksBelowGround: 0,
+      minChunkY: 0,
+      islands: 0,
+      bonds: 0,
+      deepest: null as unknown,
+    };
 
     for (const target of targets.slice(0, 8)) {
       await walkToward(page, target, STAND_OFF_M, { maxSteps: 30 });
@@ -178,6 +185,7 @@ test.describe('destructible city', () => {
             minChunkY: stats.minChunkY,
             islands: stats.liveIslands,
             bonds: stats.brokenBonds,
+            deepest: (stats as { deepest?: unknown }).deepest ?? null,
           };
         }
       }
@@ -190,6 +198,7 @@ test.describe('destructible city', () => {
       chunksAwake: final.chunksAwake,
       worstBelowGround: worst.chunksBelowGround,
       worstMinChunkY: +worst.minChunkY.toFixed(1),
+      deepest: worst.deepest,
     });
 
     expect(final.topoSeqGaps).toBe(0);
@@ -199,8 +208,10 @@ test.describe('destructible city', () => {
       worst.minChunkY,
       `lowest chunk at ${worst.minChunkY.toFixed(1)} m `
         + `(${worst.chunksBelowGround} below the plane) at ${worst.islands} `
-        + `islands / ${worst.bonds} broken bonds. Server physics holds bodies at `
-        + `y>=0, so metres of sink is client-side reconstruction.`,
+        + `islands / ${worst.bonds} broken bonds. Check the reported deepest `
+        + `chunk: a zero localOffset with a sunk bodyPos means the body really `
+        + `is down there (it left the ground slab and is free-falling), while a `
+        + `large localOffset means client-side reconstruction.`,
     ).toBeGreaterThan(-MAX_CHUNK_SINK_M);
   });
 

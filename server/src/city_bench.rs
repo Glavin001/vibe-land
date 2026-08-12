@@ -98,7 +98,7 @@ fn sustained_fire_never_stops_fracturing() {
                 position: BridgeVec3::new(0.0, -10.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
-            half_extents: BridgeVec3::new(160.0, 10.0, 160.0),
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
             collision_group: GROUP_STATIC,
             collision_mask: ALL_GROUPS,
         })
@@ -164,7 +164,7 @@ fn severed_upper_half_reconstructs_in_com_frame() {
                 position: BridgeVec3::new(0.0, -10.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
-            half_extents: BridgeVec3::new(160.0, 10.0, 160.0),
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
             collision_group: GROUP_STATIC,
             collision_mask: ALL_GROUPS,
         })
@@ -232,7 +232,7 @@ fn city_destruction_cost_is_stable() {
                 position: BridgeVec3::new(0.0, -10.0, 0.0),
                 rotation: Quat::IDENTITY,
             },
-            half_extents: BridgeVec3::new(160.0, 10.0, 160.0),
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
             collision_group: GROUP_STATIC,
             collision_mask: ALL_GROUPS,
         })

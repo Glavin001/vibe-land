@@ -905,6 +905,32 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     refresh_snapshots(slot);
     readback_ms += ms_since(phase);
 
+    // Velocity clamp, applied exactly once per body, independently of the
+    // event diff.
+    //
+    // The clamp is what bounds external blast impulses -- the adapter's own
+    // maximumLinearVelocity does not see them, and a 4e5 N-s impulse on a
+    // ~1.6 t slab is ~240 m/s. It used to live inside register_filters, behind
+    // both the entity stamp and the quiet-tick gate, so it was missed whenever
+    // a body turned dynamic on a tick with no split: the gate skips when
+    // splits/bodiesCreated/shapesMigrated are all unchanged, and a body losing
+    // its last anchor moves none of them. An unclamped body took the full
+    // impulse and left the map -- one was measured at x=14757 m, y=-1773 m,
+    // implying ~776 m/s, which is what "chunks below ground" was reporting.
+    //
+    // Keyed on the body pointer and applied once, so it neither depends on the
+    // serial nor re-writes properties on a sleeping actor.
+    for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
+      const auto &body = slot.body_cache[i];
+      if (body.body == nullptr || body.kinematic) {
+        continue;
+      }
+      if (velocity_clamped_.insert(body.body).second) {
+        body.body->setMaxLinearVelocity(kMaxChunkLinearVelocity);
+        body.body->setMaxAngularVelocity(kMaxChunkAngularVelocity);
+      }
+    }
+
     // Topology can only change inside endTick, and only when bonds were
     // overstressed. When these counters have not moved, nothing was split,
     // created or migrated, so the diff below would walk every body, every

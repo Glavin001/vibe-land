@@ -16,6 +16,7 @@ import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
 import { updateCityE2E } from '../e2eBridge';
+import type { CityE2EStats } from '../e2eBridge';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -153,10 +154,37 @@ export function CityChunksLayer({
       // this without eyeballing a screenshot.
       let minChunkY = Infinity;
       let chunksBelowGround = 0;
+      let deepestSlot = -1;
       for (let slot = 0; slot < client.topology.chunkCount; slot += 1) {
         const y = client.topology.chunkWorldPose(slot).position[1];
-        if (y < minChunkY) minChunkY = y;
+        if (y < minChunkY) {
+          minChunkY = y;
+          deepestSlot = slot;
+        }
         if (y < CHUNK_SUNK_Y_M) chunksBelowGround += 1;
+      }
+      // Name the offending chunk rather than only counting it. The server is
+      // measured to hold every body at y >= 0, so a chunk drawn hundreds of
+      // metres down is this client composing a body pose with a local offset
+      // wrongly -- and which of the two is wrong is only visible by reporting
+      // both.
+      let deepest: CityE2EStats['deepest'] = null;
+      if (deepestSlot >= 0 && minChunkY < -5) {
+        const key = client.topology.bodyKeyOf(deepestSlot);
+        const body = client.topology.body(key);
+        const offset = client.topology.chunkLocalOffset(deepestSlot).position;
+        deepest = {
+          slot: deepestSlot,
+          structure: client.topology.chunkStructure(deepestSlot),
+          node: client.topology.chunkNode(deepestSlot),
+          worldY: minChunkY,
+          islandSerial: body ? body.islandSerial : null,
+          bodyPos: body
+            ? [body.position[0], body.position[1], body.position[2]]
+            : null,
+          bodyMembers: body ? body.chunkSlots.length : 0,
+          localOffset: [offset[0], offset[1], offset[2]],
+        };
       }
       updateCityE2E({
         chunksTotal: stats.chunksTotal,
@@ -173,6 +201,7 @@ export function CityChunksLayer({
         chunksBelowGround,
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
+        deepest,
       });
     }
 

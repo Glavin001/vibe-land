@@ -119,6 +119,23 @@ export interface CityE2EStats {
   orphanedChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
+  /**
+   * Provenance of the lowest chunk, when it is genuinely sunk.
+   *
+   * Counting sunk chunks says a fault exists; this says which one and what it
+   * was composed from, so the body pose and the local offset can be told
+   * apart without guessing which of the two is wrong.
+   */
+  deepest?: {
+    slot: number;
+    structure: number;
+    node: number;
+    worldY: number;
+    islandSerial: number | null;
+    bodyPos: [number, number, number] | null;
+    bodyMembers: number;
+    localOffset: [number, number, number];
+  } | null;
 }
 
 export interface VibeE2EBridge {

@@ -171,6 +171,11 @@ export class CityTopology {
     return this.bodies.values();
   }
 
+  /** Which body a chunk is currently bound to. */
+  bodyKeyOf(slot: number): number {
+    return this.chunkBody[slot];
+  }
+
   chunkLocalOffset(slot: number): { position: Vec3; rotation: Quat } {
     return {
       position: [

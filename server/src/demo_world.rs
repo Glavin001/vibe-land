@@ -11,9 +11,20 @@ pub const FLAT_VEHICLE_TEST_MATCH_ID: &str = "flat_vehicle_test";
 pub const VEHICLE_BUMPS_TEST_MATCH_ID: &str = "vehicle_bumps_test";
 const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
-/// Solid ground slab under the city: covers the grid and the spawn ring with
-/// room to spare, and is far thicker than anything can travel in one step.
-const CITY_GROUND_HALF_EXTENT_M: f32 = 160.0;
+/// Solid ground slab under the city.
+///
+/// Sized for where debris actually goes, not for where the buildings are. The
+/// grid is only ~36 m half-extent, but a chunk that reaches the slab's edge
+/// falls off it and then free-falls forever: nothing slows it, because friction
+/// only acts on contact. A measured escapee was at x=-46, z=+1052, y=-2280 --
+/// a kilometre out and 2.3 km down, still travelling. The client renders that
+/// faithfully, which is what "chunks below ground" has been reporting.
+///
+/// A static box costs one collider and no per-tick work, so the cheap fix is to
+/// make the floor bigger than anything can cross in a match rather than to
+/// catch escapees afterwards. Retiring out-of-bounds bodies is still the
+/// principled fix and needs the retirement path, which is dead code today.
+const CITY_GROUND_HALF_EXTENT_M: f32 = 2000.0;
 const CITY_GROUND_THICKNESS_M: f32 = 20.0;
 
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
