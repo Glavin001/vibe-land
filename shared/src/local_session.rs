@@ -2569,4 +2569,14 @@ mod tests {
         let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100, "victim should be out of melee range");
     }
+
+    #[test]
+    fn demo_local_session_registers_sheet_colliders() {
+        let session = LocalSession::new();
+        assert!(
+            !session.sheets.is_empty(),
+            "demo world should include destructible hut sheets"
+        );
+        assert_eq!(session.sheets.len(), session.sheet_colliders.len());
+    }
 }
