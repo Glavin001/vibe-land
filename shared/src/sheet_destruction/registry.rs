@@ -9,12 +9,13 @@ use crate::world_document::StaticProp;
 use super::carve::{apply_carve, CarveApplyResult, CarveEvent};
 use super::materials::{lookup_sheet_material, SheetMaterial, SheetMaterialId};
 use super::mask::SheetMask;
-use super::remesh::{remesh_sheet, transform_mesh_to_world, SheetMesh};
+use super::remesh::{remesh_sheet_skins, transform_mesh_to_world, SheetMesh};
 
 /// Local UV frame for a sheet. Positions in UV meters map onto the prop face.
 #[derive(Clone, Debug)]
 pub struct SheetUvFrame {
     /// World-space origin of UV (0,0) — min corner of the sheet face.
+    /// Lies on the mid-plane; skins sit at ±thickness/2 along `axis_thickness`.
     pub origin: [f32; 3],
     pub axis_u: [f32; 3],
     pub axis_v: [f32; 3],
@@ -49,7 +50,10 @@ pub struct SheetInstance {
     pub id: u32,
     pub material_id: SheetMaterialId,
     pub frame: SheetUvFrame,
+    /// Entry skin (facing +thickness).
     pub mask: SheetMask,
+    /// Exit skin (facing -thickness). Through-holes require both open.
+    pub inner_mask: SheetMask,
     pub event_log: Vec<CarveEvent>,
 }
 
@@ -59,7 +63,7 @@ impl SheetInstance {
     }
 
     pub fn build_mesh(&self) -> SheetMesh {
-        remesh_sheet(&self.mask, self.frame.thickness)
+        remesh_sheet_skins(&self.mask, &self.inner_mask, self.frame.thickness)
     }
 
     pub fn build_world_trimesh(&self) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
@@ -128,7 +132,14 @@ impl SheetRegistry {
     pub fn apply_event(&mut self, event: &CarveEvent) -> Option<CarveApplyResult> {
         let sheet = self.sheets.get_mut(&event.sheet_id)?;
         let mat = lookup_sheet_material(sheet.material_id);
-        let result = apply_carve(&mut sheet.mask, mat, event);
+        let thickness = sheet.frame.thickness;
+        let result = apply_carve_skins(
+            &mut sheet.mask,
+            &mut sheet.inner_mask,
+            mat,
+            event,
+            thickness,
+        );
         if result.applied {
             sheet.event_log.push(event.clone());
         }
@@ -142,11 +153,65 @@ impl SheetRegistry {
         ids.sort_unstable();
         for id in ids {
             let sheet = &self.sheets[&id];
-            if sheet.mask.rev > 0 {
+            if sheet.mask.rev > 0 || sheet.inner_mask.rev > 0 {
                 events.extend(sheet.event_log.iter().cloned());
             }
         }
         events
+    }
+}
+
+/// Carve outer skin, then spend penetration energy to carve a (usually smaller /
+/// UV-offset) exit hole on the inner skin.
+pub fn apply_carve_skins(
+    outer: &mut SheetMask,
+    inner: &mut SheetMask,
+    mat: &SheetMaterial,
+    event: &CarveEvent,
+    thickness: f32,
+) -> CarveApplyResult {
+    let outer_result = apply_carve(outer, mat, event);
+    if !outer_result.applied {
+        return outer_result;
+    }
+
+    let momentum = (event.mass_or_energy * event.normal_speed).max(0.0);
+    let cost = mat.penetration_cost_per_meter * thickness.max(mat.thickness);
+    let remaining = (momentum - cost).max(0.0);
+    let factor = if momentum > 1e-6 {
+        (remaining / momentum).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    // Always advance inner seq with the same event when outer applied, even if
+    // no exit carve — keeps dual masks ordered for replay.
+    if factor < 0.05 || outer_result.carved_cells == 0 {
+        if inner.seq < event.seq {
+            inner.seq = event.seq;
+            inner.mix_event_hash(&event.to_hash_bytes());
+        }
+        return outer_result;
+    }
+
+    // Skew exit UV along in-plane travel through the slab.
+    let dir_len = (event.dir_uv[0] * event.dir_uv[0] + event.dir_uv[1] * event.dir_uv[1]).sqrt();
+    let path = thickness / 0.65; // assume ~50°+ incidence; dir_uv carries the rest
+    let mut exit = event.clone();
+    if dir_len > 1e-4 {
+        exit.uv[0] += event.dir_uv[0] / dir_len * path * dir_len.clamp(0.05, 1.0);
+        exit.uv[1] += event.dir_uv[1] / dir_len * path * dir_len.clamp(0.05, 1.0);
+    }
+    // Smaller, weaker exit stamp.
+    exit.footprint_radius = (event.footprint_radius * (0.35 + 0.65 * factor)).max(event.footprint_radius * 0.35);
+    exit.mass_or_energy = event.mass_or_energy * factor;
+    exit.seed = event.seed.wrapping_add(0xA5A5_A5A5);
+
+    let inner_result = apply_carve(inner, mat, &exit);
+    CarveApplyResult {
+        carved_cells: outer_result.carved_cells + inner_result.carved_cells,
+        damaged_cells: outer_result.damaged_cells + inner_result.damaged_cells,
+        applied: true,
     }
 }
 
@@ -212,11 +277,14 @@ fn sheet_from_prop(prop: &StaticProp, mat_id: SheetMaterialId) -> Option<SheetIn
         thickness: (half_t * 2.0).max(mat.thickness),
     };
 
+    let mask = SheetMask::new(width, height, cell);
+    let inner_mask = SheetMask::new(width, height, cell);
     Some(SheetInstance {
         id: prop.id,
         material_id: mat_id,
         frame,
-        mask: SheetMask::new(width, height, cell),
+        mask,
+        inner_mask,
         event_log: Vec::new(),
     })
 }
@@ -278,6 +346,44 @@ mod tests {
         assert!(result.applied);
         assert!(result.carved_cells > 0);
         assert!(sheet.mask.occupancy_count() < before);
+    }
+
+    #[test]
+    fn rifle_round_punches_through_drywall_both_skins() {
+        let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);
+        let sheet = reg.get_mut(1).unwrap();
+        let uv = [2.0, 1.5];
+        let event = bullet_event(1, 1, uv, 11);
+        let before_inner = sheet.inner_mask.occupancy_count();
+        let result = reg.apply_event(&event).unwrap();
+        assert!(result.carved_cells > 0);
+        let sheet = reg.get(1).unwrap();
+        assert!(sheet.mask.occupancy_count() < sheet.mask.cell_count());
+        assert!(
+            sheet.inner_mask.occupancy_count() < before_inner,
+            "exit skin should also carve for a rifle round on drywall"
+        );
+    }
+
+    #[test]
+    fn weak_hit_leaves_blind_pocket() {
+        let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "wood")]);
+        let event = CarveEvent {
+            sheet_id: 1,
+            seq: 1,
+            uv: [2.0, 1.5],
+            dir_uv: [0.0, 0.0],
+            // Low momentum — should break outer wood cells only barely / not exit.
+            normal_speed: 80.0,
+            mass_or_energy: 0.01,
+            footprint_radius: 0.006,
+            seed: 3,
+        };
+        let before_inner = reg.get(1).unwrap().inner_mask.occupancy_count();
+        let _ = reg.apply_event(&event).unwrap();
+        let sheet = reg.get(1).unwrap();
+        // Either no outer carve, or outer carved with inner intact (blind).
+        assert_eq!(sheet.inner_mask.occupancy_count(), before_inner);
     }
 
     #[test]

@@ -23,5 +23,5 @@ pub use materials::{
 };
 pub use mask::SheetMask;
 pub use registry::{SheetInstance, SheetRegistry, SheetUvFrame};
-pub use remesh::{remesh_sheet, SheetMesh};
+pub use remesh::{remesh_sheet, remesh_sheet_skins, SheetMesh};
 pub use stamp::generate_stamp_mask;

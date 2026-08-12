@@ -2384,7 +2384,10 @@ impl WasmSheetRegistry {
         let Some(sheet) = self.inner.get(sheet_id) else {
             return 0;
         };
-        let total = sheet.mask.cell_count() as u32;
-        total.saturating_sub(sheet.mask.occupancy_count() as u32)
+        let outer = sheet.mask.cell_count() as u32
+            - sheet.mask.occupancy_count() as u32;
+        let inner = sheet.inner_mask.cell_count() as u32
+            - sheet.inner_mask.occupancy_count() as u32;
+        outer.saturating_add(inner)
     }
 }

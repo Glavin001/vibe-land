@@ -727,6 +727,12 @@ impl LocalSession {
             origin[2] + dir[2] * hit.toi,
         ];
         let uv = sheet.frame.world_to_uv(impact);
+        let au = sheet.frame.axis_u;
+        let av = sheet.frame.axis_v;
+        let dir_uv = [
+            dir[0] * au[0] + dir[1] * au[1] + dir[2] * au[2],
+            dir[0] * av[0] + dir[1] * av[1] + dir[2] * av[2],
+        ];
         let n = hit.normal;
         let normal_speed =
             (dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2]).abs() * RIFLE_BULLET_SPEED_MPS;
@@ -739,7 +745,7 @@ impl LocalSession {
             sheet_id,
             seq,
             uv,
-            dir_uv: [0.0, 0.0],
+            dir_uv,
             normal_speed,
             mass_or_energy: RIFLE_BULLET_MASS_KG,
             footprint_radius: RIFLE_BULLET_RADIUS_M,

@@ -23,7 +23,8 @@ function pushHut(
   wallMaterial: string,
 ): void {
   const wallHalfH = 1.4;
-  const thick = 0.06;
+  // ~16 cm thick so tunnel sleeves read as a solid cutout, not paper.
+  const thick = 0.08;
   const halfW = 2.0;
   const halfD = 1.6;
   const floorY = origin[1] + wallHalfH;

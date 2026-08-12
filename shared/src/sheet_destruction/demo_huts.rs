@@ -33,7 +33,8 @@ fn push_hut(
 ) {
     let wall_h = 1.4_f32;
     let wall_half_h = wall_h;
-    let thick = 0.06_f32;
+    // ~16 cm thick so tunnel sleeves read as a solid cutout, not paper.
+    let thick = 0.08_f32;
     let half_w = 2.0_f32;
     let half_d = 1.6_f32;
     let floor_y = origin[1] + wall_half_h;
