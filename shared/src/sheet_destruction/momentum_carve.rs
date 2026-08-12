@@ -42,15 +42,17 @@ pub const SHEET_SOFT_USER_DATA_FLAG: u128 = 1u128 << 126;
 /// car at ~8–15 m/s punches a doorway-sized hole in drywall without needing
 /// true chassis mass on the protocol.
 pub const VEHICLE_CARVE_EFF_MASS_KG: f32 = 48.0;
-pub const VEHICLE_CARVE_FOOTPRINT_M: f32 = 0.28;
+/// ~chassis half-width (0.9 m) + margin so the collision hole fits the car.
+pub const VEHICLE_CARVE_FOOTPRINT_M: f32 = 1.05;
 pub const VEHICLE_CARVE_MIN_SPEED_MPS: f32 = 4.0;
 
 pub const DYNAMIC_CARVE_EFF_MASS_KG: f32 = 28.0;
-pub const DYNAMIC_CARVE_FOOTPRINT_M: f32 = 0.16;
+pub const DYNAMIC_CARVE_FOOTPRINT_M: f32 = 0.35;
 pub const DYNAMIC_CARVE_MIN_SPEED_MPS: f32 = 5.0;
 
 /// Ticks between carves for the same (striker, sheet) pair @ 60 Hz.
-pub const MOMENTUM_CARVE_COOLDOWN_TICKS: u32 = 6;
+/// Short enough that a slowing car still enlarges the hole while overlapping.
+pub const MOMENTUM_CARVE_COOLDOWN_TICKS: u32 = 3;
 /// Hard cap per sim tick (map-scale spam guard).
 pub const MOMENTUM_CARVE_MAX_PER_TICK: usize = 6;
 
@@ -262,24 +264,25 @@ impl PhysicsHooks for SoftSheetHook<'_> {
         let vel = *rb.linvel();
         let speed = vel.norm();
         let (min_speed, mass, footprint) = striker_params(striker.kind);
-        if speed < min_speed {
-            return;
-        }
+        let penetrating = context.solver_contacts.iter().any(|c| c.dist < 0.0);
 
         let mut n = *context.normal;
         if !sheet_is_c1 {
             n = -n;
         }
         let n_len = n.norm();
-        if n_len < 1e-5 {
+        let n = if n_len > 1e-5 {
+            n / n_len
+        } else if speed > 1e-3 {
+            -vel / speed
+        } else {
+            // Sensor-like even without a stable normal — never hard-wedge a
+            // breaker inside a lane-A sheet.
+            context.solver_contacts.clear();
             return;
-        }
-        let n = n / n_len;
-        let normal_speed = vel.dot(&n).abs().max(speed * 0.35);
-        if normal_speed < min_speed {
-            return;
-        }
+        };
 
+        let approach = vel.dot(&n).abs().max(speed * 0.35);
         let sheet_id = sheet_id_from_user_data(sheet_ud);
         let point = context
             .solver_contacts
@@ -291,26 +294,36 @@ impl PhysicsHooks for SoftSheetHook<'_> {
             })
             .map(|sc| [sc.point.x, sc.point.y, sc.point.z])
             .unwrap_or_else(|| {
-                // Degenerate: still soft-pass using body translation.
                 let p = *rb.translation();
                 [p.x, p.y, p.z]
             });
-
-        if let Ok(mut impacts) = self.impacts.lock() {
-            impacts.push(MomentumSheetImpact {
-                sheet_id,
-                striker_kind: striker.kind,
-                striker_id: striker.id,
-                point,
-                normal_sheet_out: [n.x, n.y, n.z],
-                velocity: [vel.x, vel.y, vel.z],
-                normal_speed,
-                mass_or_energy: mass,
-                footprint_radius: footprint,
-            });
+        // Fast smash uses real approach speed; slow/embedded contacts still
+        // get enough stamp energy to open a driveable hole (cooldown-limited).
+        let normal_speed = if speed >= min_speed {
+            approach.max(min_speed)
+        } else if penetrating || speed > 0.5 {
+            min_speed
+        } else {
+            0.0
+        };
+        if normal_speed > 0.0 {
+            if let Ok(mut impacts) = self.impacts.lock() {
+                impacts.push(MomentumSheetImpact {
+                    sheet_id,
+                    striker_kind: striker.kind,
+                    striker_id: striker.id,
+                    point,
+                    normal_sheet_out: [n.x, n.y, n.z],
+                    velocity: [vel.x, vel.y, vel.z],
+                    normal_speed,
+                    mass_or_energy: mass,
+                    footprint_radius: footprint,
+                });
+            }
         }
 
-        // Sensor-like for this pair only: no hard stop this substep.
+        // Lane A: breakers never hard-block on soft sheets. Clearing even when
+        // below smash speed prevents the "wedged halfway through" failure mode.
         context.solver_contacts.clear();
     }
 }

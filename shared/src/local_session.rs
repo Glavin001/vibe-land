@@ -887,8 +887,14 @@ impl LocalSession {
                 .unwrap_or_default()
         };
         let force_hole = sheet_falling_debris_enabled() && !debris_cuboids.is_empty();
+        // Vehicle/crate blunt carves must open collision immediately — the soft
+        // pass already let the body through, and a deferred usefulness rebuild
+        // leaves a solid wall that re-wedges the chassis as it slows.
+        // Any blunt momentum carve (≥ crate footprint); bullets stay on the
+        // usefulness gate.
+        let force_collision = force_hole || event.footprint_radius >= 0.12;
         if result.carved_cells > 0 {
-            self.sync_sheet_collision(sheet_id, force_hole);
+            self.sync_sheet_collision(sheet_id, force_collision);
         }
         if force_hole {
             let material_id = self
@@ -3131,6 +3137,84 @@ mod tests {
         assert!(
             min_speed_after_impact > 8.0,
             "breaker should keep most of its speed through soft sheet contacts (min={min_speed_after_impact})"
+        );
+    }
+
+    #[test]
+    fn slowing_breaker_inside_sheet_keeps_soft_and_opens_driveable_hole() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        // Smash into the drywall south wall, then scrub speed while still inside
+        // — the failure mode from the drive-through wedge screenshot.
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.7, 0.35, 1.2],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 16.0], true);
+            rb.wake_up(true);
+        }
+
+        let before: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        for _ in 0..8 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+        }
+        // Scrub speed while overlapping / mid-transit through the wall.
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 1.2], true);
+            rb.wake_up(true);
+        }
+        let z_mid = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(0.0);
+
+        for _ in 0..40 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+        }
+
+        let after: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+        let z1 = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(z_mid);
+
+        assert!(
+            after + 80 < before,
+            "drive-through should open a hole even after slowing (before={before} after={after})"
+        );
+        assert!(
+            z1 > z_mid + 0.1,
+            "breaker should keep advancing after slowdown, not wedge (z_mid={z_mid} z1={z1})"
         );
     }
 

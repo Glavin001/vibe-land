@@ -3032,9 +3032,12 @@ impl MatchState {
 
         // Force parent hole open when a debris-sized island drops so the cutout
         // volume is empty (cosmetic debris is client/practice-local only).
+        // Also force on blunt vehicle/crate carves so soft-pass bodies are not
+        // re-wedged by stale solid cuboids after they slow down.
         let force_hole = sheet_falling_debris_enabled()
             && result.dropped_islands.iter().any(is_debris_worthy);
-        self.sync_sheet_collision(sheet_id, force_hole);
+        let force_collision = force_hole || event.footprint_radius >= 0.12;
+        self.sync_sheet_collision(sheet_id, force_collision);
 
         let pkt = carve_event_to_packet(&event);
         let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));

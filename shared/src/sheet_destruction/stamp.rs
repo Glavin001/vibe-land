@@ -141,12 +141,21 @@ pub fn generate_stamp_mask(
 
     // Base footprint radius (bullet disc). Clamp so tiny calibers still cover ≥1 cell
     // after dilation — sub-cell fidelity is explicitly out of scope.
+    // Blunt vehicle/crate footprints already encode the desired hole size; do NOT
+    // apply the bullet dilation factor (×6–10) or a 1 m smash becomes a 10 m stamp.
     let base_r = event.footprint_radius.max(cell * 0.5);
-    let dilated_r = (base_r * mat.dilation_factor).max(cell);
+    let blunt = base_r >= 0.15;
+    let dilated_r = if blunt {
+        (base_r * 1.12).max(cell)
+    } else {
+        (base_r * mat.dilation_factor).max(cell)
+    };
 
     // Sample boundary as a polygon, perturb, then rasterize.
     let circumference = std::f32::consts::TAU * dilated_r;
-    let samples = ((circumference / cell).ceil() as i32).clamp(12, 96) as usize;
+    // Blunt doorway stamps need denser boundaries than bullet freckles.
+    let sample_cap = if blunt { 256 } else { 96 };
+    let samples = ((circumference / cell).ceil() as i32).clamp(12, sample_cap) as usize;
     let grain = mat.grain_dir;
     let grain_len = (grain[0] * grain[0] + grain[1] * grain[1]).sqrt().max(1e-6);
     let gdir = [grain[0] / grain_len, grain[1] / grain_len];
@@ -249,11 +258,19 @@ pub fn bullet_flux_at(event: &CarveEvent, mat: &SheetMaterial, cell_x: u16, cell
     // below breakFlux.
     let p = event.mass_or_energy * event.normal_speed;
     let core_r = base_r.max(cell_size);
-    let core_area = std::f32::consts::PI * core_r * core_r;
-    let core_cells = (core_area / (cell_size * cell_size)).max(1.0);
     let dist = dist2.sqrt();
     let falloff = (1.0 - dist / stamp_r).max(0.0);
-    // Core gets full peak; outer stamp fringe still exceeds damageFluxMin.
-    let peak = (p / core_cells) * 2.0;
+    let peak = if base_r >= 0.15 {
+        // Blunt smash: contact pressure stays above breakFlux across the hole.
+        // Spreading vehicle momentum over πr² cells would drop below damageFluxMin
+        // and carve nothing — which left cars soft-passing then wedging in solid
+        // collision.
+        (p * 0.05).max(mat.break_flux * 1.25)
+    } else {
+        let core_area = std::f32::consts::PI * core_r * core_r;
+        let core_cells = (core_area / (cell_size * cell_size)).max(1.0);
+        // Core gets full peak; outer stamp fringe still exceeds damageFluxMin.
+        (p / core_cells) * 2.0
+    };
     peak * (0.35 + 0.65 * falloff)
 }
