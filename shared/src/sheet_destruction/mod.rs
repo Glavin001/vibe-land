@@ -32,10 +32,13 @@ pub use falling_debris::{
 };
 pub use islands::{cull_dual_skin_islands, cull_sheet_islands, DroppedIsland};
 pub use momentum_carve::{
-    impact_to_carve_event, sample_momentum_sheet_impacts, sheet_collider_index,
-    sheet_momentum_carve_enabled, MomentumCarveCooldown, MomentumSheetImpact, MomentumStrikerKind,
-    StrikerRef, SHEET_MOMENTUM_CARVE, VEHICLE_CARVE_EFF_MASS_KG, VEHICLE_CARVE_FOOTPRINT_M,
-    VEHICLE_CARVE_MIN_SPEED_MPS,
+    finalize_soft_sheet_impacts, impact_to_carve_event, is_sheet_soft_collider,
+    sample_tunnel_sheet_impacts, sheet_collider_index, sheet_id_from_user_data,
+    sheet_momentum_carve_enabled, tag_sheet_soft_user_data, MomentumCarveCooldown,
+    MomentumSheetImpact, MomentumStrikerKind, SoftSheetHook, StrikerRef,
+    TerrainAndSoftSheetHook, MOMENTUM_CARVE_MAX_PER_TICK, SHEET_MOMENTUM_CARVE,
+    SHEET_SOFT_ACTIVE_HOOKS, SHEET_SOFT_USER_DATA_FLAG, VEHICLE_CARVE_EFF_MASS_KG,
+    VEHICLE_CARVE_FOOTPRINT_M, VEHICLE_CARVE_MIN_SPEED_MPS,
 };
 pub use materials::{
     is_sheet_material, lookup_sheet_material, SheetMaterial, SheetMaterialId, SHEET_MATERIAL_IDS,

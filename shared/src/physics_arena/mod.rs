@@ -234,7 +234,18 @@ impl PhysicsArena {
         self.dynamic.sim.find_collider_by_user_data(user_data)
     }
 
-    /// Replace a sheet's collider with a remeshed trimesh (same user_data).
+    /// Stamp soft-sheet user_data + `MODIFY_SOLVER_CONTACTS` on a world collider.
+    pub fn enable_soft_sheet_collider(&mut self, handle: ColliderHandle, sheet_id: u32) {
+        use crate::sheet_destruction::{SHEET_SOFT_ACTIVE_HOOKS, SHEET_SOFT_USER_DATA_FLAG};
+        self.dynamic.configure_soft_sheet_collider(
+            handle,
+            sheet_id,
+            SHEET_SOFT_USER_DATA_FLAG,
+            SHEET_SOFT_ACTIVE_HOOKS,
+        );
+    }
+
+    /// Replace a sheet's collider with a remeshed trimesh (soft-sheet tagged).
     pub fn swap_static_trimesh(
         &mut self,
         old_handle: ColliderHandle,
@@ -242,33 +253,49 @@ impl PhysicsArena {
         indices: Vec<[u32; 3]>,
         user_data: u128,
     ) -> ColliderHandle {
+        use crate::sheet_destruction::{
+            sheet_id_from_user_data, tag_sheet_soft_user_data, SHEET_SOFT_ACTIVE_HOOKS,
+        };
         self.dynamic.remove_collider(old_handle);
         let points: Vec<Point3<f32>> = vertices
             .into_iter()
             .map(|v| Point3::new(v[0], v[1], v[2]))
             .collect();
-        let handle = self.dynamic.add_static_trimesh(points, indices, user_data);
+        let sheet_id = sheet_id_from_user_data(user_data);
+        let handle = self.dynamic.add_static_trimesh_with_hooks(
+            points,
+            indices,
+            tag_sheet_soft_user_data(sheet_id),
+            SHEET_SOFT_ACTIVE_HOOKS,
+        );
         self.dynamic.rebuild_broad_phase();
         handle
     }
 
-    /// Replace one-or-more sheet colliders with a greedy oriented cuboid set.
+    /// Replace one-or-more sheet colliders with a greedy oriented cuboid set
+    /// (soft-sheet tagged + `MODIFY_SOLVER_CONTACTS`).
     pub fn swap_static_cuboid_set(
         &mut self,
         old_handles: &[ColliderHandle],
         cuboids: &[(Vec3, [f32; 4], Vec3)],
         user_data: u128,
     ) -> Vec<ColliderHandle> {
+        use crate::sheet_destruction::{
+            sheet_id_from_user_data, tag_sheet_soft_user_data, SHEET_SOFT_ACTIVE_HOOKS,
+        };
         for &h in old_handles {
             self.dynamic.remove_collider(h);
         }
+        let sheet_id = sheet_id_from_user_data(user_data);
+        let tagged = tag_sheet_soft_user_data(sheet_id);
         let mut out = Vec::with_capacity(cuboids.len());
         for &(center, rotation, half_extents) in cuboids {
-            out.push(self.dynamic.add_static_cuboid_rotated(
+            out.push(self.dynamic.add_static_cuboid_rotated_with_hooks(
                 center,
                 rotation,
                 half_extents,
-                user_data,
+                tagged,
+                SHEET_SOFT_ACTIVE_HOOKS,
             ));
         }
         self.dynamic.rebuild_broad_phase();
@@ -311,6 +338,50 @@ impl PhysicsArena {
             }
             None => self.dynamic.step_dynamics(dt),
         }
+    }
+
+    /// Dynamics step with terrain friction + soft breaker↔sheet pass-through.
+    pub fn step_dynamics_soft_sheets(
+        &mut self,
+        dt: f32,
+        breakers: &HashMap<ColliderHandle, crate::sheet_destruction::StrikerRef>,
+        impacts: &std::sync::Mutex<Vec<crate::sheet_destruction::MomentumSheetImpact>>,
+    ) {
+        use crate::sheet_destruction::TerrainAndSoftSheetHook;
+        let hook =
+            TerrainAndSoftSheetHook::new(self.material_field.as_ref(), breakers, impacts);
+        self.dynamic.step_dynamics_with_hooks(dt, &hook);
+    }
+
+    /// Vehicle controller substeps + soft-sheet dynamics (terrain composed in).
+    pub fn step_vehicles_and_dynamics_soft_sheets(
+        &mut self,
+        dt: f32,
+        breakers: &HashMap<ColliderHandle, crate::sheet_destruction::StrikerRef>,
+        impacts: &std::sync::Mutex<Vec<crate::sheet_destruction::MomentumSheetImpact>>,
+    ) -> (f32, f32) {
+        use crate::vehicle::VEHICLE_CONTROLLER_SUBSTEPS;
+
+        if self.vehicles.is_empty() {
+            let dynamics_started = now_marker();
+            self.step_dynamics_soft_sheets(dt, breakers, impacts);
+            return (0.0, elapsed_ms(dynamics_started));
+        }
+
+        let substep_dt = dt / VEHICLE_CONTROLLER_SUBSTEPS as f32;
+        let mut vehicle_ms = 0.0;
+        let mut dynamics_ms = 0.0;
+        for _ in 0..VEHICLE_CONTROLLER_SUBSTEPS {
+            let vehicle_started = now_marker();
+            self.step_vehicles(substep_dt);
+            vehicle_ms += elapsed_ms(vehicle_started);
+
+            let dynamics_started = now_marker();
+            self.step_dynamics_soft_sheets(substep_dt, breakers, impacts);
+            dynamics_ms += elapsed_ms(dynamics_started);
+        }
+        self.dynamic.sim.integration_parameters.dt = dt;
+        (vehicle_ms, dynamics_ms)
     }
 
     pub fn snapshot_dynamic_bodies(

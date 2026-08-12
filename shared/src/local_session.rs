@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     constants::{
@@ -14,13 +14,14 @@ use crate::{
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
-    sheet_destruction::{
+        sheet_destruction::{
         carve_event_to_packet, debris_spawns_from_islands, encode_carve_event_packet,
-        impact_to_carve_event, lookup_sheet_material, sample_momentum_sheet_impacts,
-        sheet_coarse_collision_enabled, sheet_collider_index, sheet_falling_debris_enabled,
-        sheet_momentum_carve_enabled, CarveEvent, MomentumCarveCooldown, MomentumStrikerKind,
-        OrientedWorldCuboid, SheetMaterialId, SheetRegistry, StrikerRef, DEBRIS_MAX_CONCURRENT,
-        DEBRIS_SPAWN_NUDGE_M, DEBRIS_TTL_SEC, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
+        finalize_soft_sheet_impacts, impact_to_carve_event, lookup_sheet_material,
+        sample_tunnel_sheet_impacts, sheet_coarse_collision_enabled, sheet_collider_index,
+        sheet_falling_debris_enabled, sheet_momentum_carve_enabled, CarveEvent,
+        MomentumCarveCooldown, MomentumSheetImpact, MomentumStrikerKind, OrientedWorldCuboid,
+        SheetMaterialId, SheetRegistry, StrikerRef, DEBRIS_MAX_CONCURRENT, DEBRIS_SPAWN_NUDGE_M,
+        DEBRIS_TTL_SEC, MOMENTUM_CARVE_MAX_PER_TICK, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
         RIFLE_BULLET_SPEED_MPS,
     },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
@@ -124,6 +125,7 @@ impl LocalSession {
         let mut sheet_colliders = HashMap::new();
         for (&sheet_id, _) in sheets.iter() {
             if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
+                arena.enable_soft_sheet_collider(handle, sheet_id);
                 sheet_colliders.insert(sheet_id, vec![handle]);
             }
         }
@@ -425,7 +427,7 @@ impl LocalSession {
             }
             self.arena.simulate_player_tick(id, &input, dt);
         }
-        self.arena.step_vehicles_and_dynamics(dt);
+        self.step_vehicles_dynamics_and_soft_sheet_carves(dt);
 
         let vehicle_killed = self.arena.apply_vehicle_player_collisions();
         for killed_id in vehicle_killed {
@@ -437,8 +439,6 @@ impl LocalSession {
                 }
             }
         }
-
-        self.process_momentum_sheet_carves();
 
         let gained_energy: f32 = self
             .arena
@@ -788,43 +788,75 @@ impl LocalSession {
         self.apply_and_emit_sheet_carve(event, dir);
     }
 
-    fn process_momentum_sheet_carves(&mut self) {
-        if !sheet_momentum_carve_enabled() {
-            return;
-        }
-        let mut strikers: Vec<StrikerRef> = self
-            .arena
-            .vehicles
-            .iter()
-            .map(|(&id, v)| StrikerRef {
+    fn collect_sheet_strikers(&self) -> (HashMap<ColliderHandle, StrikerRef>, Vec<StrikerRef>) {
+        let mut by_collider = HashMap::new();
+        let mut list = Vec::new();
+        for (&id, v) in &self.arena.vehicles {
+            let s = StrikerRef {
                 kind: MomentumStrikerKind::Vehicle,
                 id,
                 collider: v.chassis_collider,
                 body: v.chassis_body,
-            })
-            .collect();
+            };
+            by_collider.insert(s.collider, s);
+            list.push(s);
+        }
         for (&id, body) in &self.arena.dynamic.dynamic_bodies {
-            strikers.push(StrikerRef {
+            let s = StrikerRef {
                 kind: MomentumStrikerKind::Dynamic,
                 id,
                 collider: body.collider_handle,
                 body: body.body_handle,
-            });
+            };
+            by_collider.insert(s.collider, s);
+            list.push(s);
         }
-        if strikers.is_empty() {
-            return;
+        (by_collider, list)
+    }
+
+    /// Soft breaker↔sheet pass-through during the dynamics solve, then carve.
+    fn step_vehicles_dynamics_and_soft_sheet_carves(&mut self, dt: f32) -> (f32, f32) {
+        if !sheet_momentum_carve_enabled() || self.sheet_colliders.is_empty() {
+            return self.arena.step_vehicles_and_dynamics(dt);
         }
-        let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
-        let dt = 1.0 / SIM_HZ as f32;
-        let impacts = sample_momentum_sheet_impacts(
-            &self.arena.dynamic.sim,
-            &sheet_by_handle,
-            &strikers,
+
+        let (breakers, strikers) = self.collect_sheet_strikers();
+        let raw_impacts = std::sync::Mutex::new(Vec::<MomentumSheetImpact>::new());
+        let timings = self
+            .arena
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &raw_impacts);
+
+        let raw = raw_impacts
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut impacts = finalize_soft_sheet_impacts(
+            raw,
             &self.sheets,
             &mut self.sheet_momentum_cooldown,
             self.server_tick,
-            dt,
         );
+
+        let budget = MOMENTUM_CARVE_MAX_PER_TICK.saturating_sub(impacts.len());
+        if budget > 0 && !strikers.is_empty() {
+            let already: HashSet<_> = impacts
+                .iter()
+                .map(|i| (i.striker_kind as u8, i.striker_id, i.sheet_id))
+                .collect();
+            let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
+            let tunnel = sample_tunnel_sheet_impacts(
+                &self.arena.dynamic.sim,
+                &sheet_by_handle,
+                &strikers,
+                &self.sheets,
+                &already,
+                &mut self.sheet_momentum_cooldown,
+                self.server_tick,
+                dt,
+                budget,
+            );
+            impacts.extend(tunnel);
+        }
+
         for impact in impacts {
             let Some(sheet) = self.sheets.get(impact.sheet_id) else {
                 continue;
@@ -837,6 +869,7 @@ impl LocalSession {
             ];
             self.apply_and_emit_sheet_carve(event, debris_dir);
         }
+        timings
     }
 
     fn apply_and_emit_sheet_carve(&mut self, event: CarveEvent, debris_dir: [f32; 3]) {
@@ -3021,8 +3054,7 @@ mod tests {
             .sum();
 
         for _ in 0..30 {
-            session.arena.step_vehicles_and_dynamics(1.0 / 60.0);
-            session.process_momentum_sheet_carves();
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
             session.server_tick = session.server_tick.saturating_add(1);
         }
 
@@ -3039,6 +3071,67 @@ mod tests {
             .drain_packets()
             .iter()
             .any(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT)));
+    }
+
+    #[test]
+    fn soft_sheet_hook_preserves_breaker_speed_while_carving() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        // Approach the drywall south face from -Z (outside → through).
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.4, 0.4, 0.4],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 18.0], true);
+            rb.wake_up(true);
+        }
+
+        let before: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        let mut min_speed_after_impact = f32::MAX;
+        let mut saw_carve = false;
+        for _ in 0..45 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+            let speed = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.linvel().norm())
+                .unwrap_or(0.0);
+            let occ: u32 = session
+                .sheets
+                .iter()
+                .map(|(_, s)| s.mask.occupancy_count() as u32)
+                .sum();
+            if occ < before {
+                saw_carve = true;
+                min_speed_after_impact = min_speed_after_impact.min(speed);
+            }
+        }
+
+        assert!(saw_carve, "soft sheet path should carve the demo hut wall");
+        assert!(
+            min_speed_after_impact > 8.0,
+            "breaker should keep most of its speed through soft sheet contacts (min={min_speed_after_impact})"
+        );
     }
 
     #[test]

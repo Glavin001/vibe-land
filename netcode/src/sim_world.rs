@@ -284,6 +284,23 @@ impl SimWorld {
         half_extents: Vector3<f32>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_cuboid_rotated_with_hooks(
+            center,
+            rotation,
+            half_extents,
+            user_data,
+            ActiveHooks::empty(),
+        )
+    }
+
+    pub fn add_static_cuboid_rotated_with_hooks(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
         let orientation = UnitQuaternion::from_quaternion(Quaternion::new(
             rotation[3],
             rotation[0],
@@ -298,6 +315,7 @@ impl SimWorld {
                 ))
                 .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
                 .user_data(user_data)
+                .active_hooks(active_hooks)
                 .build(),
         )
     }
@@ -347,6 +365,16 @@ impl SimWorld {
         indices: Vec<[u32; 3]>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_trimesh_with_hooks(vertices, indices, user_data, ActiveHooks::empty())
+    }
+
+    pub fn add_static_trimesh_with_hooks(
+        &mut self,
+        vertices: Vec<Point3<f32>>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::trimesh_with_flags(
                 vertices,
@@ -356,8 +384,25 @@ impl SimWorld {
             .expect("terrain trimesh should be valid")
             .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
             .user_data(user_data)
+            .active_hooks(active_hooks)
             .build(),
         )
+    }
+
+    /// Stamp soft-sheet `user_data` + `MODIFY_SOLVER_CONTACTS` on an existing collider.
+    pub fn configure_soft_sheet_collider(
+        &mut self,
+        handle: ColliderHandle,
+        sheet_id: u32,
+        soft_flag: u128,
+        active_hooks: ActiveHooks,
+    ) -> bool {
+        let Some(collider) = self.colliders.get_mut(handle) else {
+            return false;
+        };
+        collider.user_data = (sheet_id as u128) | soft_flag;
+        collider.set_active_hooks(active_hooks);
+        true
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {

@@ -1183,6 +1183,7 @@ async fn run_match_loop(
     let mut sheet_colliders = HashMap::new();
     for (&sheet_id, _) in sheets.iter() {
         if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
+            arena.enable_soft_sheet_collider(handle, sheet_id);
             sheet_colliders.insert(sheet_id, vec![handle]);
         }
     }
@@ -1869,11 +1870,10 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
-        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        let (vehicle_ms, dynamics_ms) = self.step_vehicles_dynamics_and_soft_sheet_carves(dt);
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
-        self.process_momentum_sheet_carves();
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -2921,47 +2921,79 @@ impl MatchState {
         self.apply_and_emit_sheet_carve(event);
     }
 
-    fn process_momentum_sheet_carves(&mut self) {
+    fn step_vehicles_dynamics_and_soft_sheet_carves(&mut self, dt: f32) -> (f32, f32) {
+        use std::sync::Mutex;
+
+        use rapier3d::prelude::ColliderHandle;
         use vibe_land_shared::sheet_destruction::{
-            impact_to_carve_event, sample_momentum_sheet_impacts, sheet_collider_index,
-            sheet_momentum_carve_enabled, MomentumStrikerKind, StrikerRef,
+            finalize_soft_sheet_impacts, impact_to_carve_event, sample_tunnel_sheet_impacts,
+            sheet_collider_index, sheet_momentum_carve_enabled, MomentumSheetImpact,
+            MomentumStrikerKind, StrikerRef, MOMENTUM_CARVE_MAX_PER_TICK,
         };
-        if !sheet_momentum_carve_enabled() {
-            return;
+
+        if !sheet_momentum_carve_enabled() || self.sheet_colliders.is_empty() {
+            return self.arena.step_vehicles_and_dynamics(dt);
         }
-        let mut strikers: Vec<StrikerRef> = self
-            .arena
-            .vehicles
-            .iter()
-            .map(|(&id, v)| StrikerRef {
+
+        let mut breakers: HashMap<ColliderHandle, StrikerRef> = HashMap::new();
+        let mut strikers: Vec<StrikerRef> = Vec::new();
+        for (&id, v) in &self.arena.vehicles {
+            let s = StrikerRef {
                 kind: MomentumStrikerKind::Vehicle,
                 id,
                 collider: v.chassis_collider,
                 body: v.chassis_body,
-            })
-            .collect();
+            };
+            breakers.insert(s.collider, s);
+            strikers.push(s);
+        }
         for (&id, body) in &self.arena.dynamic.dynamic_bodies {
-            strikers.push(StrikerRef {
+            let s = StrikerRef {
                 kind: MomentumStrikerKind::Dynamic,
                 id,
                 collider: body.collider_handle,
                 body: body.body_handle,
-            });
+            };
+            breakers.insert(s.collider, s);
+            strikers.push(s);
         }
-        if strikers.is_empty() {
-            return;
-        }
-        let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
-        let dt = 1.0 / SIM_HZ as f32;
-        let impacts = sample_momentum_sheet_impacts(
-            &self.arena.dynamic.sim,
-            &sheet_by_handle,
-            &strikers,
+
+        let raw_impacts = Mutex::new(Vec::<MomentumSheetImpact>::new());
+        let timings = self
+            .arena
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &raw_impacts);
+
+        let raw = raw_impacts
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut impacts = finalize_soft_sheet_impacts(
+            raw,
             &self.sheets,
             &mut self.sheet_momentum_cooldown,
             self.server_tick,
-            dt,
         );
+
+        let budget = MOMENTUM_CARVE_MAX_PER_TICK.saturating_sub(impacts.len());
+        if budget > 0 && !strikers.is_empty() {
+            let already: HashSet<_> = impacts
+                .iter()
+                .map(|i| (i.striker_kind as u8, i.striker_id, i.sheet_id))
+                .collect();
+            let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
+            let tunnel = sample_tunnel_sheet_impacts(
+                &self.arena.dynamic.sim,
+                &sheet_by_handle,
+                &strikers,
+                &self.sheets,
+                &already,
+                &mut self.sheet_momentum_cooldown,
+                self.server_tick,
+                dt,
+                budget,
+            );
+            impacts.extend(tunnel);
+        }
+
         for impact in impacts {
             let Some(sheet) = self.sheets.get(impact.sheet_id) else {
                 continue;
@@ -2969,6 +3001,7 @@ impl MatchState {
             let event = impact_to_carve_event(sheet, &impact);
             self.apply_and_emit_sheet_carve(event);
         }
+        timings
     }
 
     fn apply_and_emit_sheet_carve(
