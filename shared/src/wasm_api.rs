@@ -2267,10 +2267,59 @@ impl WasmClockSync {
     }
 }
 
+struct WasmSheetFlatMesh {
+    outer_rev: u32,
+    inner_rev: u32,
+    positions: Vec<f32>,
+    colors: Vec<f32>,
+    indices: Vec<u32>,
+}
+
 /// Deterministic sheet-destruction registry for client remesh / practice sync.
 #[wasm_bindgen]
 pub struct WasmSheetRegistry {
     inner: crate::sheet_destruction::SheetRegistry,
+    flat_cache: std::cell::RefCell<HashMap<u32, WasmSheetFlatMesh>>,
+}
+
+impl WasmSheetRegistry {
+    fn ensure_flat_mesh(&self, sheet_id: u32) -> bool {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return false;
+        };
+        let outer_rev = sheet.mask.rev;
+        let inner_rev = sheet.inner_mask.rev;
+        {
+            let cache = self.flat_cache.borrow();
+            if let Some(hit) = cache.get(&sheet_id) {
+                if hit.outer_rev == outer_rev && hit.inner_rev == inner_rev {
+                    return true;
+                }
+            }
+        }
+        let mesh = sheet.build_mesh();
+        let (verts, tris) = crate::sheet_destruction::remesh::transform_mesh_to_world(
+            &mesh,
+            sheet.frame.origin,
+            sheet.frame.axis_u,
+            sheet.frame.axis_thickness,
+            sheet.frame.axis_v,
+        );
+        let positions: Vec<f32> = verts.into_iter().flat_map(|v| [v[0], v[1], v[2]]).collect();
+        let colors: Vec<f32> = mesh.colors.into_iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
+        let indices: Vec<u32> = tris.into_iter().flat_map(|t| [t[0], t[1], t[2]]).collect();
+        self.flat_cache.borrow_mut().insert(
+            sheet_id,
+            WasmSheetFlatMesh {
+                outer_rev,
+                inner_rev,
+                positions,
+                colors,
+                indices,
+            },
+        );
+        true
+    }
 }
 
 #[wasm_bindgen]
@@ -2281,6 +2330,7 @@ impl WasmSheetRegistry {
             .map_err(|error| JsValue::from_str(&error.to_string()))?;
         Ok(Self {
             inner: crate::sheet_destruction::SheetRegistry::from_static_props(&world.static_props),
+            flat_cache: std::cell::RefCell::new(HashMap::new()),
         })
     }
 
@@ -2333,50 +2383,52 @@ impl WasmSheetRegistry {
             seed,
         };
         let event = carve_event_from_packet(&pkt);
-        self.inner
+        let carved = self
+            .inner
             .apply_event(&event)
             .map(|r| r.carved_cells)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        if carved > 0 {
+            self.flat_cache.borrow_mut().remove(&sheet_id);
+        }
+        carved
     }
 
     /// World-space mesh for a sheet: flat [x,y,z,...] positions + [i0,i1,i2,...] indices.
     #[wasm_bindgen(js_name = meshPositions)]
     pub fn mesh_positions(&self, sheet_id: u32) -> Box<[f32]> {
-        let Some(sheet) = self.inner.get(sheet_id) else {
+        if !self.ensure_flat_mesh(sheet_id) {
             return Box::new([]);
-        };
-        let (verts, _) = sheet.build_world_trimesh();
-        verts
-            .into_iter()
-            .flat_map(|v| [v[0], v[1], v[2]])
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.positions.clone().into_boxed_slice())
+            .unwrap_or_default()
     }
 
     #[wasm_bindgen(js_name = meshColors)]
     pub fn mesh_colors(&self, sheet_id: u32) -> Box<[f32]> {
-        let Some(sheet) = self.inner.get(sheet_id) else {
+        if !self.ensure_flat_mesh(sheet_id) {
             return Box::new([]);
-        };
-        sheet
-            .build_mesh()
-            .colors
-            .into_iter()
-            .flat_map(|c| [c[0], c[1], c[2]])
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.colors.clone().into_boxed_slice())
+            .unwrap_or_default()
     }
 
     #[wasm_bindgen(js_name = meshIndices)]
     pub fn mesh_indices(&self, sheet_id: u32) -> Box<[u32]> {
-        let Some(sheet) = self.inner.get(sheet_id) else {
+        if !self.ensure_flat_mesh(sheet_id) {
             return Box::new([]);
-        };
-        let (_, tris) = sheet.build_world_trimesh();
-        tris.into_iter()
-            .flat_map(|t| [t[0], t[1], t[2]])
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.indices.clone().into_boxed_slice())
+            .unwrap_or_default()
     }
 
     #[wasm_bindgen(js_name = carvedCellCount)]

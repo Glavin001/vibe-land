@@ -75,6 +75,12 @@ pub struct StampBitMask {
     pub width: u16,
     pub height: u16,
     bits: Vec<u8>,
+    /// Inclusive stamped bounds; empty when nothing set.
+    pub min_x: u16,
+    pub min_y: u16,
+    pub max_x: u16,
+    pub max_y: u16,
+    pub any: bool,
 }
 
 impl StampBitMask {
@@ -84,6 +90,11 @@ impl StampBitMask {
             width,
             height,
             bits: vec![0u8; (cells + 7) / 8],
+            min_x: width,
+            min_y: height,
+            max_x: 0,
+            max_y: 0,
+            any: false,
         }
     }
 
@@ -93,6 +104,18 @@ impl StampBitMask {
         }
         let idx = y as usize * self.width as usize + x as usize;
         self.bits[idx / 8] |= 1u8 << (idx % 8);
+        if !self.any {
+            self.any = true;
+            self.min_x = x;
+            self.max_x = x;
+            self.min_y = y;
+            self.max_y = y;
+        } else {
+            self.min_x = self.min_x.min(x);
+            self.max_x = self.max_x.max(x);
+            self.min_y = self.min_y.min(y);
+            self.max_y = self.max_y.max(y);
+        }
     }
 
     pub fn get(&self, x: u16, y: u16) -> bool {

@@ -45,6 +45,25 @@ function toUint32(data: Uint32Array | number[]): Uint32Array {
   return data instanceof Uint32Array ? data : new Uint32Array(data);
 }
 
+function uploadSheetGeometry(mesh: THREE.Mesh, registry: WasmSheetRegistry, sheetId: number) {
+  const positions = toFloat32(registry.meshPositions(sheetId));
+  const colors = toFloat32(registry.meshColors(sheetId));
+  const indices = toUint32(registry.meshIndices(sheetId));
+
+  const geometry = mesh.geometry as THREE.BufferGeometry;
+  geometry.dispose();
+  const next = new THREE.BufferGeometry();
+  next.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  if (colors.length === positions.length) {
+    next.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  }
+  next.setIndex(new THREE.BufferAttribute(indices, 1));
+  // Flat shading from non-indexed unique verts — skip expensive smooth normals.
+  next.computeVertexNormals();
+  mesh.geometry = next;
+  mesh.visible = positions.length > 0;
+}
+
 export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsProps) {
   const groupRef = useRef<THREE.Group>(null);
   const registryRef = useRef<WasmSheetRegistry | null>(null);
@@ -78,28 +97,23 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
         const matName = registry.materialName(id) ?? 'drywall';
         const color = isSheetMaterial(matName) ? MATERIAL_COLORS[matName] : 0xaaaaaa;
         const geometry = new THREE.BufferGeometry();
-        const positions = toFloat32(registry.meshPositions(id));
-        const colors = toFloat32(registry.meshColors(id));
-        const indices = toUint32(registry.meshIndices(id));
-        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        if (colors.length === positions.length) {
-          geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-        }
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-        geometry.computeVertexNormals();
         const material = new THREE.MeshStandardMaterial({
           color,
           roughness: matName === 'wood' ? 0.85 : 0.92,
           metalness: 0.02,
           side: THREE.DoubleSide,
-          vertexColors: colors.length === positions.length,
+          vertexColors: true,
+          flatShading: true,
         });
         const mesh = new THREE.Mesh(geometry, material);
-        mesh.castShadow = true;
+        // Shadows on high-damage sheets dominate GPU time; keep receive only.
+        mesh.castShadow = false;
         mesh.receiveShadow = true;
+        mesh.frustumCulled = true;
         mesh.userData.sheetId = id;
         group.add(mesh);
         meshesRef.current.set(id, mesh);
+        uploadSheetGeometry(mesh, registry, id);
       }
       appliedSeqRef.current = 0;
       setReady(true);
@@ -138,9 +152,11 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
     if (!registry) return;
     if (carveEvents.length <= appliedSeqRef.current) return;
 
+    // Apply all new events first, then remesh each dirty sheet once.
+    const dirty = new Set<number>();
     for (let i = appliedSeqRef.current; i < carveEvents.length; i += 1) {
       const evt = carveEvents[i];
-      registry.applyCarve(
+      const carved = registry.applyCarve(
         evt.sheetId,
         evt.seq,
         evt.uvU,
@@ -152,21 +168,15 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
         evt.footprintRadiusMm,
         evt.seed,
       );
-      const mesh = meshesRef.current.get(evt.sheetId);
-      if (!mesh) continue;
-      const positions = toFloat32(registry.meshPositions(evt.sheetId));
-      const colors = toFloat32(registry.meshColors(evt.sheetId));
-      const indices = toUint32(registry.meshIndices(evt.sheetId));
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-      if (colors.length === positions.length) {
-        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      if (carved > 0) {
+        dirty.add(evt.sheetId);
       }
-      geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-      geometry.computeVertexNormals();
-      mesh.geometry.dispose();
-      mesh.geometry = geometry;
-      mesh.visible = positions.length > 0;
+    }
+    for (const sheetId of dirty) {
+      const mesh = meshesRef.current.get(sheetId);
+      if (mesh) {
+        uploadSheetGeometry(mesh, registry, sheetId);
+      }
     }
     appliedSeqRef.current = carveEvents.length;
   }, [carveEvents, ready]);

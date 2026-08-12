@@ -130,14 +130,23 @@ pub fn apply_carve(
     event.uv[1] = dequantize_uv(quantize_uv(event.uv[1]));
 
     let stamp = generate_stamp_mask(&event, mat, mask);
+    if !stamp.any {
+        mask.seq = event.seq;
+        mask.mix_event_hash(&event.to_hash_bytes());
+        return CarveApplyResult {
+            carved_cells: 0,
+            damaged_cells: 0,
+            applied: true,
+        };
+    }
 
     let mut max_flux = 0.0_f32;
     let mut carved = 0u32;
     let mut damaged = 0u32;
 
-    // First pass: find max flux for early-out.
-    for y in 0..mask.height {
-        for x in 0..mask.width {
+    // First pass: find max flux for early-out (stamp bbox only).
+    for y in stamp.min_y..=stamp.max_y {
+        for x in stamp.min_x..=stamp.max_x {
             if !stamp.get(x, y) {
                 continue;
             }
@@ -159,8 +168,8 @@ pub fn apply_carve(
         };
     }
 
-    for y in 0..mask.height {
-        for x in 0..mask.width {
+    for y in stamp.min_y..=stamp.max_y {
+        for x in stamp.min_x..=stamp.max_x {
             if !stamp.get(x, y) || !mask.occupied(x, y) {
                 continue;
             }

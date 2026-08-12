@@ -1,5 +1,6 @@
 //! Registry of destructible sheets derived from authored static props.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use nalgebra::{UnitQuaternion, Vector3};
@@ -10,6 +11,13 @@ use super::carve::{apply_carve, CarveApplyResult, CarveEvent};
 use super::materials::{lookup_sheet_material, SheetMaterial, SheetMaterialId};
 use super::mask::SheetMask;
 use super::remesh::{remesh_sheet_skins, transform_mesh_to_world, SheetMesh};
+
+#[derive(Clone, Debug)]
+struct MeshCache {
+    outer_rev: u32,
+    inner_rev: u32,
+    mesh: SheetMesh,
+}
 
 /// Local UV frame for a sheet. Positions in UV meters map onto the prop face.
 #[derive(Clone, Debug)]
@@ -55,6 +63,7 @@ pub struct SheetInstance {
     /// Exit skin (facing -thickness). Through-holes require both open.
     pub inner_mask: SheetMask,
     pub event_log: Vec<CarveEvent>,
+    mesh_cache: RefCell<Option<MeshCache>>,
 }
 
 impl SheetInstance {
@@ -62,8 +71,25 @@ impl SheetInstance {
         lookup_sheet_material(self.material_id)
     }
 
+    pub fn invalidate_mesh_cache(&self) {
+        *self.mesh_cache.borrow_mut() = None;
+    }
+
     pub fn build_mesh(&self) -> SheetMesh {
-        remesh_sheet_skins(&self.mask, &self.inner_mask, self.frame.thickness)
+        let outer_rev = self.mask.rev;
+        let inner_rev = self.inner_mask.rev;
+        if let Some(cache) = self.mesh_cache.borrow().as_ref() {
+            if cache.outer_rev == outer_rev && cache.inner_rev == inner_rev {
+                return cache.mesh.clone();
+            }
+        }
+        let mesh = remesh_sheet_skins(&self.mask, &self.inner_mask, self.frame.thickness);
+        *self.mesh_cache.borrow_mut() = Some(MeshCache {
+            outer_rev,
+            inner_rev,
+            mesh: mesh.clone(),
+        });
+        mesh
     }
 
     pub fn build_world_trimesh(&self) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
@@ -141,6 +167,7 @@ impl SheetRegistry {
             thickness,
         );
         if result.applied {
+            sheet.invalidate_mesh_cache();
             sheet.event_log.push(event.clone());
         }
         Some(result)
@@ -286,6 +313,7 @@ fn sheet_from_prop(prop: &StaticProp, mat_id: SheetMaterialId) -> Option<SheetIn
         mask,
         inner_mask,
         event_log: Vec::new(),
+        mesh_cache: RefCell::new(None),
     })
 }
 

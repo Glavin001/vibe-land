@@ -91,15 +91,40 @@ impl SheetMask {
     }
 
     pub fn occupancy_count(&self) -> usize {
+        let cells = self.cell_count();
+        let full_bytes = cells / 8;
         let mut count = 0usize;
-        for y in 0..self.height {
-            for x in 0..self.width {
-                if self.occupied(x, y) {
-                    count += 1;
-                }
-            }
+        for b in &self.occupancy[..full_bytes] {
+            count += b.count_ones() as usize;
+        }
+        let rem = cells % 8;
+        if rem != 0 {
+            let last = self.occupancy[full_bytes];
+            let mask = (1u8 << rem) - 1;
+            count += (last & mask).count_ones() as usize;
         }
         count
+    }
+
+    pub fn is_fully_solid(&self) -> bool {
+        let cells = self.cell_count();
+        if cells == 0 {
+            return true;
+        }
+        let full_bytes = cells / 8;
+        for b in &self.occupancy[..full_bytes] {
+            if *b != 0xFF {
+                return false;
+            }
+        }
+        let rem = cells % 8;
+        if rem != 0 {
+            let mask = (1u8 << rem) - 1;
+            if self.occupancy[full_bytes] & mask != mask {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn occupancy_ratio(&self) -> f32 {
