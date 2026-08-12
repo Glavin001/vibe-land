@@ -526,6 +526,34 @@ mod tests {
     }
 
     #[test]
+    fn vehicle_blunt_carve_punches_drywall() {
+        use crate::sheet_destruction::momentum_carve::{
+            VEHICLE_CARVE_EFF_MASS_KG, VEHICLE_CARVE_FOOTPRINT_M,
+        };
+        let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);
+        let before = reg.get(1).unwrap().mask.occupancy_count();
+        let event = CarveEvent {
+            sheet_id: 1,
+            seq: 1,
+            uv: [2.0, 1.5],
+            dir_uv: [0.0, 0.0],
+            normal_speed: 12.0,
+            mass_or_energy: VEHICLE_CARVE_EFF_MASS_KG,
+            footprint_radius: VEHICLE_CARVE_FOOTPRINT_M,
+            seed: 42,
+        };
+        let result = reg.apply_event(&event).unwrap();
+        assert!(result.applied);
+        assert!(
+            result.carved_cells > 50,
+            "vehicle blunt carve should remove many cells, got {}",
+            result.carved_cells
+        );
+        let after = reg.get(1).unwrap().mask.occupancy_count();
+        assert!(after < before);
+    }
+
+    #[test]
     fn doorway_sized_island_is_debris_worthy() {
         use super::super::falling_debris::{debris_spawns_from_islands, is_debris_worthy};
         let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);

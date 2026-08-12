@@ -681,6 +681,7 @@ struct MatchState {
     world: VoxelWorld,
     sheets: vibe_land_shared::sheet_destruction::SheetRegistry,
     sheet_colliders: HashMap<u32, Vec<rapier3d::prelude::ColliderHandle>>,
+    sheet_momentum_cooldown: vibe_land_shared::sheet_destruction::MomentumCarveCooldown,
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
@@ -1213,6 +1214,7 @@ async fn run_match_loop(
         world,
         sheets,
         sheet_colliders,
+        sheet_momentum_cooldown: vibe_land_shared::sheet_destruction::MomentumCarveCooldown::default(),
         history: LagCompHistory::new(1000),
         players: HashMap::new(),
         queued_shots: Vec::new(),
@@ -1871,6 +1873,7 @@ impl MatchState {
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
+        self.process_momentum_sheet_carves();
         let (awake_dynamic_bodies_total, awake_dynamic_bodies_near_players) =
             awake_dynamic_body_counts(&self.arena, &player_centers);
         self.snapshot_stats
@@ -2915,13 +2918,76 @@ impl MatchState {
             footprint_radius: RIFLE_BULLET_RADIUS_M,
             seed,
         };
+        self.apply_and_emit_sheet_carve(event);
+    }
 
+    fn process_momentum_sheet_carves(&mut self) {
+        use vibe_land_shared::sheet_destruction::{
+            impact_to_carve_event, sample_momentum_sheet_impacts, sheet_collider_index,
+            sheet_momentum_carve_enabled, MomentumStrikerKind, StrikerRef,
+        };
+        if !sheet_momentum_carve_enabled() {
+            return;
+        }
+        let mut strikers: Vec<StrikerRef> = self
+            .arena
+            .vehicles
+            .iter()
+            .map(|(&id, v)| StrikerRef {
+                kind: MomentumStrikerKind::Vehicle,
+                id,
+                collider: v.chassis_collider,
+                body: v.chassis_body,
+            })
+            .collect();
+        for (&id, body) in &self.arena.dynamic.dynamic_bodies {
+            strikers.push(StrikerRef {
+                kind: MomentumStrikerKind::Dynamic,
+                id,
+                collider: body.collider_handle,
+                body: body.body_handle,
+            });
+        }
+        if strikers.is_empty() {
+            return;
+        }
+        let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
+        let dt = 1.0 / SIM_HZ as f32;
+        let impacts = sample_momentum_sheet_impacts(
+            &self.arena.dynamic.sim,
+            &sheet_by_handle,
+            &strikers,
+            &self.sheets,
+            &mut self.sheet_momentum_cooldown,
+            self.server_tick,
+            dt,
+        );
+        for impact in impacts {
+            let Some(sheet) = self.sheets.get(impact.sheet_id) else {
+                continue;
+            };
+            let event = impact_to_carve_event(sheet, &impact);
+            self.apply_and_emit_sheet_carve(event);
+        }
+    }
+
+    fn apply_and_emit_sheet_carve(
+        &mut self,
+        event: vibe_land_shared::sheet_destruction::CarveEvent,
+    ) {
+        use vibe_land_shared::sheet_destruction::{
+            carve_event_to_packet, is_debris_worthy, sheet_falling_debris_enabled,
+        };
+        let sheet_id = event.sheet_id;
         let Some(result) = self.sheets.apply_event(&event) else {
             return;
         };
-        if !result.applied || result.carved_cells == 0 {
+        if !result.applied {
+            return;
+        }
+        if result.carved_cells == 0 {
             // Still broadcast damage-only events so clients accumulate dents.
-            if result.applied && result.damaged_cells > 0 {
+            if result.damaged_cells > 0 {
                 let pkt = carve_event_to_packet(&event);
                 let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));
                 for player in self.players.values() {
@@ -2933,13 +2999,8 @@ impl MatchState {
 
         // Force parent hole open when a debris-sized island drops so the cutout
         // volume is empty (cosmetic debris is client/practice-local only).
-        let force_hole = {
-            use vibe_land_shared::sheet_destruction::{
-                is_debris_worthy, sheet_falling_debris_enabled,
-            };
-            sheet_falling_debris_enabled()
-                && result.dropped_islands.iter().any(is_debris_worthy)
-        };
+        let force_hole = sheet_falling_debris_enabled()
+            && result.dropped_islands.iter().any(is_debris_worthy);
         self.sync_sheet_collision(sheet_id, force_hole);
 
         let pkt = carve_event_to_packet(&event);

@@ -10,6 +10,7 @@ pub mod falling_debris;
 pub mod islands;
 pub mod materials;
 pub mod mask;
+pub mod momentum_carve;
 pub mod registry;
 pub mod remesh;
 pub mod stamp;
@@ -30,6 +31,12 @@ pub use falling_debris::{
     DEBRIS_TTL_SEC, SHEET_FALLING_DEBRIS,
 };
 pub use islands::{cull_dual_skin_islands, cull_sheet_islands, DroppedIsland};
+pub use momentum_carve::{
+    impact_to_carve_event, sample_momentum_sheet_impacts, sheet_collider_index,
+    sheet_momentum_carve_enabled, MomentumCarveCooldown, MomentumSheetImpact, MomentumStrikerKind,
+    StrikerRef, SHEET_MOMENTUM_CARVE, VEHICLE_CARVE_EFF_MASS_KG, VEHICLE_CARVE_FOOTPRINT_M,
+    VEHICLE_CARVE_MIN_SPEED_MPS,
+};
 pub use materials::{
     is_sheet_material, lookup_sheet_material, SheetMaterial, SheetMaterialId, SHEET_MATERIAL_IDS,
     RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,

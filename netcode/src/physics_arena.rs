@@ -188,6 +188,7 @@ impl DynamicArena {
             ))
             .linear_damping(0.3)
             .angular_damping(0.5)
+            .ccd_enabled(true)
             .build();
         let body_handle = self.sim.rigid_bodies.insert(body);
 
