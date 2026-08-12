@@ -97,13 +97,17 @@ export function DestructibleSheets({ world, carveEvents }: DestructibleSheetsPro
         const matName = registry.materialName(id) ?? 'drywall';
         const color = isSheetMaterial(matName) ? MATERIAL_COLORS[matName] : 0xaaaaaa;
         const geometry = new THREE.BufferGeometry();
-        const material = new THREE.MeshStandardMaterial({
+        // Lambert (not Standard): specular on jagged sleeve tris looked like a
+        // fuzzy/animated material. DoubleSide kept for tunnel visibility;
+        // z-fight is avoided in remesh (single sleeve pass + inset caps).
+        const material = new THREE.MeshLambertMaterial({
           color,
-          roughness: matName === 'wood' ? 0.85 : 0.92,
-          metalness: 0.02,
           side: THREE.DoubleSide,
           vertexColors: true,
           flatShading: true,
+          polygonOffset: true,
+          polygonOffsetFactor: 1,
+          polygonOffsetUnits: 1,
         });
         const mesh = new THREE.Mesh(geometry, material);
         // Shadows on high-damage sheets dominate GPU time; keep receive only.

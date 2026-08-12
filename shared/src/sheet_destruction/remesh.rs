@@ -413,11 +413,18 @@ pub fn remesh_sheet_skins(outer: &SheetMask, inner: &SheetMask, thickness: f32) 
         return SheetMesh::default();
     }
 
+    // Flat matte vertex colors — lighting (not a texture) must stay stable on
+    // small sleeve triangles; avoid high-contrast "dirt" tones that sparkle.
     let front_c = [1.0, 1.0, 1.0];
-    let back_c = [0.22, 0.2, 0.18];
-    let sleeve_c = [0.38, 0.34, 0.30];
-    let pocket_c = [0.16, 0.14, 0.12];
+    let back_c = [0.55, 0.52, 0.48];
+    let sleeve_c = [0.42, 0.40, 0.37];
+    let pocket_c = [0.32, 0.30, 0.28];
     let half_t = thickness * 0.5;
+    // Inset caps so they never share a plane with the exterior back/front face
+    // (coplanar opposite faces z-fight and look fuzzy/animated).
+    let pocket_inset = (thickness * 0.04).clamp(0.0015, 0.006);
+    let pocket_from_front = -half_t + pocket_inset;
+    let pocket_from_back = half_t - pocket_inset;
 
     let mut buf = MeshBuf::with_capacity(outer, 64);
 
@@ -432,6 +439,9 @@ pub fn remesh_sheet_skins(outer: &SheetMask, inner: &SheetMask, thickness: f32) 
     }
 
     // Front: greedy interior + MS fringe.
+    // Sleeves are emitted ONLY from the outer skin spanning full thickness.
+    // Emitting a second sleeve from the inner skin when holes nearly match
+    // creates coplanar double walls (z-fight / "moving" look).
     let (full_o, dw, dh) = build_full_square_mask(outer);
     buf.emit_greedy_full_squares(&full_o, dw, dh, half_t, front_c, false);
     buf.emit_ms_partial_and_sleeves(
@@ -445,11 +455,9 @@ pub fn remesh_sheet_skins(outer: &SheetMask, inner: &SheetMask, thickness: f32) 
         None,
     );
 
-    // Back.
+    // Back face (no sleeves).
     if masks_identical(outer, inner) {
-        // Reuse dual mask; flip to back.
         buf.emit_greedy_full_squares(&full_o, dw, dh, -half_t, back_c, true);
-        // Sleeves already emitted from outer; only add back fringe faces (no sleeves).
         buf.emit_ms_partial_and_sleeves(
             inner,
             -half_t,
@@ -470,13 +478,13 @@ pub fn remesh_sheet_skins(outer: &SheetMask, inner: &SheetMask, thickness: f32) 
             back_c,
             sleeve_c,
             true,
-            true,
+            false,
             None,
         );
-        // Blind / step caps (usually small regions).
+        // Blind / step caps — inset off the exterior plane to avoid z-fight.
         buf.emit_ms_partial_and_sleeves(
             inner,
-            -half_t,
+            pocket_from_front,
             half_t,
             pocket_c,
             sleeve_c,
@@ -486,7 +494,7 @@ pub fn remesh_sheet_skins(outer: &SheetMask, inner: &SheetMask, thickness: f32) 
         );
         buf.emit_ms_partial_and_sleeves(
             outer,
-            half_t,
+            pocket_from_back,
             -half_t,
             pocket_c,
             sleeve_c,
@@ -601,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn blind_hole_has_pocket_cap_not_through() {
+    fn blind_hole_has_inset_pocket_cap() {
         let mut outer = SheetMask::new(10, 10, 0.02);
         let inner = SheetMask::new(10, 10, 0.02);
         for y in 4..7 {
@@ -609,15 +617,17 @@ mod tests {
                 outer.set_occupied(x, y, false);
             }
         }
-        let mesh = remesh_sheet_skins(&outer, &inner, 0.12);
-        let half = 0.06;
+        let thickness = 0.12_f32;
+        let half = thickness * 0.5;
+        let inset = (thickness * 0.04).clamp(0.0015_f32, 0.006_f32);
+        let mesh = remesh_sheet_skins(&outer, &inner, thickness);
         let mut pocket_verts = 0u32;
         for p in &mesh.positions {
             let in_crater = p[0] > 0.08 && p[0] < 0.14 && p[2] > 0.08 && p[2] < 0.14;
-            if in_crater && (p[1] + half).abs() < 1e-4 {
+            if in_crater && (p[1] - (-half + inset)).abs() < 1e-4 {
                 pocket_verts += 1;
             }
         }
-        assert!(pocket_verts > 0);
+        assert!(pocket_verts > 0, "expected inset pocket cap verts");
     }
 }
