@@ -167,10 +167,9 @@ private:
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
   std::uint64_t serial_wraps_ = 0;
-  /// Bodies already given a max-velocity clamp. Applied once per body,
-  /// outside the event diff, so a body that turns dynamic on a quiet tick
-  /// cannot escape it.
-  std::unordered_set<const physx::PxRigidDynamic *> velocity_clamped_;
+  /// Bodies with speculative CCD enabled. Applied once per body, outside the
+  /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
+  std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;
   /// Times getBodySnapshots returned one bodyId more than once in a tick.
   /// Mutable because refresh_snapshots is const; this is pure observation.
   mutable std::uint64_t repeated_body_snapshots_ = 0;

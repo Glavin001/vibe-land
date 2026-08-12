@@ -464,8 +464,12 @@ void DestructionManager::create_destructible(
 /// Matches `ExtStressPhysXSettings::maximumLinearVelocity` set in
 /// create_destructible, so externally-applied impulses obey the same bound the
 /// adapter applies to its own bodies.
-constexpr float kMaxChunkLinearVelocity = 12.0f;
-constexpr float kMaxChunkAngularVelocity = 10.0f;
+// No velocity caps. setMaxLinearVelocity is not physics -- it silently
+// falsifies every fast trajectory (debris free-falling off a 30 m tower should
+// pass 24 m/s; a 12 m/s cap forbade it). It existed to stop fast bodies
+// tunnelling through the floor between 60 Hz steps; the principled mechanism
+// for that is speculative CCD, which widens contact generation by the body's
+// velocity and changes no trajectory that wasn't about to hit something.
 /// Mass-normalised kinetic energy below which a chunk body may sleep
 /// (0.5 * v^2, so ~0.32 m/s), and the stabilisation threshold that lets a
 /// resting pile stop jittering.
@@ -525,14 +529,6 @@ void DestructionManager::register_filters(Slot &slot) {
       body.body->setContactReportThreshold(
           chunk_contact_reports_ ? contact_report_threshold_
                                  : std::numeric_limits<float>::max());
-      // Debris runs without CCD, so a body must never move more than roughly
-      // its own thickness per step or it tunnels through the ground. External
-      // impulses (the hitscan blast push) bypass the adapter's own
-      // `maximumLinearVelocity`, and a 4e5 N-s impulse on a ~1.6 t slab is
-      // ~240 m/s — 4 m per 60 Hz step, straight through the heightfield.
-      // Clamping at the body bounds every impulse source at once.
-      body.body->setMaxLinearVelocity(kMaxChunkLinearVelocity);
-      body.body->setMaxAngularVelocity(kMaxChunkAngularVelocity);
       // Let debris go to sleep.
       //
       // PhysX's default sleep threshold is tuned for gameplay objects that
@@ -905,29 +901,36 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     refresh_snapshots(slot);
     readback_ms += ms_since(phase);
 
-    // Velocity clamp, applied exactly once per body, independently of the
-    // event diff.
+    // Speculative CCD, enabled exactly once per dynamic body, independently of
+    // the event diff (a body can turn dynamic on a tick with no split, which
+    // the quiet-tick gate skips -- one escaped that way at ~776 m/s and left
+    // the map). Speculative CCD is the GPU-compatible continuous-collision
+    // mode: it widens contact generation by the body's velocity so a fast body
+    // cannot pass through the floor between steps, without altering any
+    // trajectory that wasn't about to hit something. This replaces the old
+    // setMaxLinearVelocity(12) clamp, which prevented tunnelling by falsifying
+    // physics for every body all the time.
     //
-    // The clamp is what bounds external blast impulses -- the adapter's own
-    // maximumLinearVelocity does not see them, and a 4e5 N-s impulse on a
-    // ~1.6 t slab is ~240 m/s. It used to live inside register_filters, behind
-    // both the entity stamp and the quiet-tick gate, so it was missed whenever
-    // a body turned dynamic on a tick with no split: the gate skips when
-    // splits/bodiesCreated/shapesMigrated are all unchanged, and a body losing
-    // its last anchor moves none of them. An unclamped body took the full
-    // impulse and left the map -- one was measured at x=14757 m, y=-1773 m,
-    // implying ~776 m/s, which is what "chunks below ground" was reporting.
-    //
-    // Keyed on the body pointer and applied once, so it neither depends on the
-    // serial nor re-writes properties on a sleeping actor.
+    // Applied on first sight, when the body is freshly created or split and
+    // therefore awake, so it never rewrites properties on a sleeping actor.
     for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
       const auto &body = slot.body_cache[i];
       if (body.body == nullptr || body.kinematic) {
         continue;
       }
-      if (velocity_clamped_.insert(body.body).second) {
-        body.body->setMaxLinearVelocity(kMaxChunkLinearVelocity);
-        body.body->setMaxAngularVelocity(kMaxChunkAngularVelocity);
+      if (ccd_enabled_.insert(body.body).second) {
+        body.body->setRigidBodyFlag(
+            physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
+        // Bound the solver's depenetration response. Split children start
+        // life overlapping their siblings (they shared faces one tick ago),
+        // and PhysX's default depenetration velocity is unbounded. This is
+        // not clamping physics: interpenetration is a numerical artifact of
+        // discrete stepping, and this bounds only how fast the solver
+        // corrects that unreal state. (It was once suspected as the source of
+        // kilometre-scale escapes; measurement pinned those on the adapter's
+        // unbounded excess-force injection instead -- see city.rs -- but the
+        // bound remains correct on its own terms.)
+        body.body->setMaxDepenetrationVelocity(3.0f);
       }
     }
 
@@ -1141,9 +1144,21 @@ std::uint32_t DestructionManager::apply_destruction_blast(
       } else {
         push_dir.normalize();
       }
-      const PxVec3 impulse = push_dir * (push_impulse * falloff * falloff);
-      physx::PxRigidBodyExt::addForceAtPos(*rigid, impulse, c,
-                                           physx::PxForceMode::eIMPULSE, true);
+      // Velocity change at the centre of mass, not an impulse at the blast
+      // point.
+      //
+      // An impulse divides by mass, so a blast tuned to nudge a 5 t slab gave
+      // a 5 kg fragment 4000 m/s. And addForceAtPos with eVELOCITY_CHANGE is
+      // worse than wrong: the helper turns the lever arm (blast centre - COM)
+      // times the velocity change directly into rad/s of spin, so a 4 m lever
+      // with a 12 m/s kick injected ~48 rad/s per shot -- measured stacking to
+      // 448 rad/s, whose rim velocity became 900 m/s fragments at the next
+      // split. An impulse physically acts on the body's surface, not at a
+      // point in space beside it; rather than approximate that, the kick is a
+      // bounded velocity change at the centre of mass and spin comes from
+      // real contacts, which debris has no shortage of.
+      const PxVec3 kick = push_dir * (push_impulse * falloff * falloff);
+      rigid->addForce(kick, physx::PxForceMode::eVELOCITY_CHANGE, true);
       ++affected;
     }
   }

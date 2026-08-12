@@ -374,12 +374,32 @@ impl CityDestruction {
         // an uninitialised field rather than a measurement, and it is the basis
         // on which below-ground chunks were attributed to the client.
         let mut min_body_y = f32::INFINITY;
+        let mut min_pos = [0.0f32; 3];
+        let mut min_vel = [0.0f32; 3];
+        let mut max_speed = 0.0f32;
+        let mut max_angular = 0.0f32;
         for snap in snapshots.iter() {
             if snap.kinematic {
                 continue;
             }
+            let speed = (snap.linear_velocity.x.powi(2)
+                + snap.linear_velocity.y.powi(2)
+                + snap.linear_velocity.z.powi(2))
+            .sqrt();
+            let angular = (snap.angular_velocity.x.powi(2)
+                + snap.angular_velocity.y.powi(2)
+                + snap.angular_velocity.z.powi(2))
+            .sqrt();
+            max_speed = max_speed.max(speed);
+            max_angular = max_angular.max(angular);
             if snap.position.y < min_body_y {
                 min_body_y = snap.position.y;
+                min_pos = [snap.position.x, snap.position.y, snap.position.z];
+                min_vel = [
+                    snap.linear_velocity.x,
+                    snap.linear_velocity.y,
+                    snap.linear_velocity.z,
+                ];
             }
             let previously = self.known_awake.get(&snap.entity_id).copied();
             if snap.sleeping {
@@ -407,6 +427,10 @@ impl CityDestruction {
         }
 
         self.stats.min_body_y = if min_body_y.is_finite() { min_body_y } else { 0.0 };
+        self.stats.min_body_pos = min_pos;
+        self.stats.min_body_vel = min_vel;
+        self.stats.max_body_speed = self.stats.max_body_speed.max(max_speed);
+        self.stats.max_body_angular_speed = self.stats.max_body_angular_speed.max(max_angular);
 
         if let Ok(bridge_stats) = world.destruction_stats() {
             self.stats.chunk_bodies = bridge_stats.chunk_bodies;

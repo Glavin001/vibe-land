@@ -194,6 +194,12 @@ pub struct DestructionStats {
     pub min_body_y: f32,
     /// Dynamic bodies the bridge dropped for lacking an island serial.
     pub unmapped_body_skips: u32,
+    /// Full state of the lowest body, for diagnosing escapes: position,
+    /// velocity, and the peak speeds seen anywhere this tick.
+    pub min_body_pos: [f32; 3],
+    pub min_body_vel: [f32; 3],
+    pub max_body_speed: f32,
+    pub max_body_angular_speed: f32,
     /// Bodies re-armed for settling after waking back up. Without this they
     /// stayed awake for the rest of the match.
     pub resettled_wakes: u64,

@@ -42,15 +42,23 @@ fn physx_shot_stress_impulse() -> f32 {
         // hit opens a local crater instead of shredding every bond in radius.
         .unwrap_or(1.2e7)
 }
-/// Rigid-body push on dynamic debris after / during a hit (rocket feel).
-/// Override with VIBE_CITY_SHOT_PUSH_IMPULSE.
+/// Rigid-body push on dynamic debris after / during a hit (rocket feel), as a
+/// velocity change in m/s at the blast centre, falling off quadratically.
+/// Override with VIBE_CITY_SHOT_PUSH_SPEED.
+///
+/// This replaced an impulse (VIBE_CITY_SHOT_PUSH_IMPULSE, 4.0e5 N-s). An
+/// impulse divides by mass, so a blast tuned to nudge a 5 t slab handed a 5 kg
+/// fragment 4000 m/s -- and a global 12 m/s velocity clamp then existed to hide
+/// that, which also forbade ordinary debris from free-falling faster than
+/// 12 m/s. A bounded kick speed is a property of the weapon; everything past it
+/// is unmodified physics, with speculative CCD (not clamps) keeping fast bodies
+/// from tunnelling.
 fn physx_shot_push_impulse() -> f32 {
-    std::env::var("VIBE_CITY_SHOT_PUSH_IMPULSE")
+    std::env::var("VIBE_CITY_SHOT_PUSH_SPEED")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| *value > 0.0)
-        // Strong enough to kick multi-chunk islands (~1–5 t) a few m/s.
-        .unwrap_or(4.0e5)
+        .unwrap_or(12.0)
 }
 const SHOT_BLAST_RADIUS_M: f32 = 2.5;
 /// Slightly larger than the stress radius so post-fracture debris near the
@@ -371,6 +379,27 @@ impl CityRuntime {
         // stalled large fractures; the per-tick cost it guarded against is now
         // covered by the parallel + CUDA solve.
         settings.maximum_fractures_per_actor_per_tick = 0;
+        // Excess forces off by default. The adapter's excess-force path applies
+        // an UNBOUNDED impulse and torque at split time
+        // (NvBlastExtStressPhysX.cpp:1914, addTorque(..., eIMPULSE)): the
+        // leftover overstress is handed to the fragment as momentum with no cap
+        // on the resulting velocity, and a small chunk has tiny inertia, so it
+        // diverges. Measured A/B on the deterministic bench, identical input:
+        //
+        //   on   peak 946 m/s linear / 682 rad/s angular, bodies at -5605 m
+        //   off  peak  24 m/s linear /  25 rad/s angular, min body y 0.05 m
+        //
+        // 24 m/s is free-fall from tower height -- with this path off, nothing
+        // in the simulation exceeds plain physics. This unbounded injection is
+        // what the old 12 m/s velocity clamp existed to suppress; real
+        // fracture ejection is modest (fracture dissipates most energy), so
+        // until the upstream path bounds the delivered velocity physically,
+        // off is the physically accurate setting. VIBE_CITY_EXCESS_FORCES=1
+        // re-enables for comparison. Fracture itself is unaffected (14.3k vs
+        // 17.3k broken bonds on the bench run).
+        settings.apply_excess_forces = std::env::var("VIBE_CITY_EXCESS_FORCES")
+            .map(|value| value == "1")
+            .unwrap_or(false);
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok(Self::from_parts(CityBackend::Physx(backend), manifest, sim_hz))

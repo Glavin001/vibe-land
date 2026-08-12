@@ -298,6 +298,15 @@ fn city_destruction_cost_is_stable() {
     println!("broken bonds   {}", stats.broken_bonds);
     println!("min body y     {:.2} m", stats.min_body_y);
     println!(
+        "worst body     pos ({:.0}, {:.0}, {:.0})  vel ({:.0}, {:.0}, {:.0})",
+        stats.min_body_pos[0], stats.min_body_pos[1], stats.min_body_pos[2],
+        stats.min_body_vel[0], stats.min_body_vel[1], stats.min_body_vel[2]
+    );
+    println!(
+        "peak speeds    linear {:.0} m/s  angular {:.0} rad/s",
+        stats.max_body_speed, stats.max_body_angular_speed
+    );
+    println!(
         "duplicate ids  {}   unmapped skips {}",
         city.encoder_stats().duplicate_body_records,
         stats.unmapped_body_skips
