@@ -1,9 +1,8 @@
 //! Flood-fill island culling for thin sheets.
 //!
-//! After a carve, any occupied component that is not anchored to the sheet
-//! perimeter is cleared — the "cut around a patch and the middle drops" behavior.
-//! Tiny perimeter-anchored crumbs smaller than `min_island_area` are also cleared
-//! when a larger anchored piece still remains.
+//! Dual-skin walls cull **coupled**: if a patch falls off the outer skin, the
+//! inner skin at those UVs falls too (and vice versa). Otherwise cutting free
+//! the front leaves a suspended "back cap" that reads as a floating island.
 
 use super::materials::SheetMaterial;
 use super::mask::SheetMask;
@@ -19,12 +18,21 @@ struct Island {
     area: f32,
 }
 
-/// Remove unsupported / undersized connected components. Returns cells cleared.
+/// Remove unsupported / undersized components on one mask. Returns cleared cells.
 pub fn cull_sheet_islands(mask: &mut SheetMask, mat: &SheetMaterial) -> u32 {
+    let cleared = collect_islands_to_drop(mask, mat);
+    let n = cleared.len() as u32;
+    for (x, y) in cleared {
+        mask.set_occupied(x, y, false);
+    }
+    n
+}
+
+fn collect_islands_to_drop(mask: &SheetMask, mat: &SheetMaterial) -> Vec<(u16, u16)> {
     let w = mask.width;
     let h = mask.height;
     if w == 0 || h == 0 {
-        return 0;
+        return Vec::new();
     }
     let cell_area = mask.cell_size * mask.cell_size;
     let n = mask.cell_count();
@@ -50,7 +58,6 @@ pub fn cull_sheet_islands(mask: &mut SheetMask, mat: &SheetMaterial) -> u32 {
                 if is_perimeter(x, y, w, h) {
                     anchored = true;
                 }
-                // 4-connected: diagonal-only contact is not enough to hold.
                 let neighbors = [
                     (x as i32 - 1, y as i32),
                     (x as i32 + 1, y as i32),
@@ -87,26 +94,62 @@ pub fn cull_sheet_islands(mask: &mut SheetMask, mat: &SheetMaterial) -> u32 {
         .map(|i| i.area)
         .fold(0.0_f32, f32::max);
 
-    let mut cleared = 0u32;
+    let mut to_clear = Vec::new();
     for island in &islands {
         let drop = if !island.anchored {
-            // Cut free of the frame — always falls away.
             true
         } else {
-            // Anchored crumb: only drop when a larger anchored body remains,
-            // so small authored sheets aren't wiped on first hit.
             island.area < mat.min_island_area && island.area + 1e-6 < max_anchored_area
         };
-        if !drop {
-            continue;
-        }
-        for (x, y) in &island.cells {
-            mask.set_occupied(*x, *y, false);
-            cleared += 1;
+        if drop {
+            to_clear.extend_from_slice(&island.cells);
         }
     }
+    to_clear
+}
 
-    cleared
+/// Cull islands on both skins, propagating drops so a fallen front patch also
+/// clears the back (and vice versa). Iterates until stable.
+pub fn cull_dual_skin_islands(
+    outer: &mut SheetMask,
+    inner: &mut SheetMask,
+    mat: &SheetMaterial,
+) -> u32 {
+    let mut total = 0u32;
+    // A few passes cover cascade: clearing the other skin can free new islands.
+    for _ in 0..4 {
+        let mut pass = 0u32;
+
+        let drop_outer = collect_islands_to_drop(outer, mat);
+        for &(x, y) in &drop_outer {
+            if outer.occupied(x, y) {
+                outer.set_occupied(x, y, false);
+                pass += 1;
+            }
+            if inner.occupied(x, y) {
+                inner.set_occupied(x, y, false);
+                pass += 1;
+            }
+        }
+
+        let drop_inner = collect_islands_to_drop(inner, mat);
+        for &(x, y) in &drop_inner {
+            if inner.occupied(x, y) {
+                inner.set_occupied(x, y, false);
+                pass += 1;
+            }
+            if outer.occupied(x, y) {
+                outer.set_occupied(x, y, false);
+                pass += 1;
+            }
+        }
+
+        total += pass;
+        if pass == 0 {
+            break;
+        }
+    }
+    total
 }
 
 #[cfg(test)]
@@ -118,7 +161,6 @@ mod tests {
     fn unsupported_middle_island_is_removed() {
         let mat = lookup_sheet_material(SheetMaterialId::Drywall);
         let mut mask = SheetMask::new(20, 20, mat.cell_size);
-        // Carve a ring so the center 4x4 is disconnected from the perimeter.
         for y in 6..14 {
             for x in 6..14 {
                 let on_ring = x == 6 || x == 13 || y == 6 || y == 13;
@@ -127,12 +169,10 @@ mod tests {
                 }
             }
         }
-        // Center should still be occupied before cull.
         assert!(mask.occupied(10, 10));
         let cleared = cull_sheet_islands(&mut mask, mat);
         assert!(cleared > 0);
         assert!(!mask.occupied(10, 10));
-        // Outer frame still attached to perimeter.
         assert!(mask.occupied(0, 0));
         assert!(mask.occupied(19, 19));
     }
@@ -141,7 +181,6 @@ mod tests {
     fn perimeter_connected_sheet_is_kept() {
         let mat = lookup_sheet_material(SheetMaterialId::Drywall);
         let mut mask = SheetMask::new(16, 16, mat.cell_size);
-        // Punch a simple hole — remaining sheet still perimeter-anchored.
         for y in 6..10 {
             for x in 6..10 {
                 mask.set_occupied(x, y, false);
@@ -156,9 +195,7 @@ mod tests {
     #[test]
     fn tiny_anchored_crumb_is_removed_when_main_body_remains() {
         let mat = lookup_sheet_material(SheetMaterialId::Drywall);
-        // Large enough that the main body exceeds min_island_area.
         let mut mask = SheetMask::new(80, 80, mat.cell_size);
-        // Clear a corridor so a 2x2 crumb on the border is disconnected.
         for y in 0..80 {
             for x in 0..80 {
                 let in_crumb = x < 2 && y < 2;
@@ -182,5 +219,32 @@ mod tests {
         let cleared = cull_sheet_islands(&mut mask, mat);
         assert_eq!(cleared, 0);
         assert_eq!(mask.occupancy_count(), before);
+    }
+
+    #[test]
+    fn outer_island_drop_clears_inner_cap() {
+        let mat = lookup_sheet_material(SheetMaterialId::Drywall);
+        let mut outer = SheetMask::new(20, 20, mat.cell_size);
+        let mut inner = SheetMask::new(20, 20, mat.cell_size);
+        // Ring-cut only the outer skin — classic "front falls, back remains" bug.
+        for y in 6..14 {
+            for x in 6..14 {
+                let on_ring = x == 6 || x == 13 || y == 6 || y == 13;
+                if on_ring {
+                    outer.set_occupied(x, y, false);
+                }
+            }
+        }
+        assert!(outer.occupied(10, 10));
+        assert!(inner.occupied(10, 10));
+        let cleared = cull_dual_skin_islands(&mut outer, &mut inner, mat);
+        assert!(cleared > 0);
+        assert!(!outer.occupied(10, 10), "outer island should drop");
+        assert!(
+            !inner.occupied(10, 10),
+            "inner cap under a fallen outer island must drop too"
+        );
+        assert!(outer.occupied(0, 0));
+        assert!(inner.occupied(0, 0));
     }
 }

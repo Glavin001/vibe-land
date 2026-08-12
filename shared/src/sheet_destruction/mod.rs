@@ -17,6 +17,7 @@ pub use carve::{
     quantize_uv, CarveApplyResult, CarveEvent,
 };
 pub use demo_huts::append_destructible_demo_huts;
+pub use islands::{cull_dual_skin_islands, cull_sheet_islands};
 pub use materials::{
     is_sheet_material, lookup_sheet_material, SheetMaterial, SheetMaterialId, SHEET_MATERIAL_IDS,
     RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,

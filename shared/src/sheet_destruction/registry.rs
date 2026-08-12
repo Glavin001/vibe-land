@@ -8,6 +8,7 @@ use nalgebra::{UnitQuaternion, Vector3};
 use crate::world_document::StaticProp;
 
 use super::carve::{apply_carve, CarveApplyResult, CarveEvent};
+use super::islands::cull_dual_skin_islands;
 use super::materials::{lookup_sheet_material, SheetMaterial, SheetMaterialId};
 use super::mask::SheetMask;
 use super::remesh::{remesh_sheet_skins, transform_mesh_to_world, SheetMesh};
@@ -189,7 +190,8 @@ impl SheetRegistry {
 }
 
 /// Carve outer skin, then spend penetration energy to carve a (usually smaller /
-/// UV-offset) exit hole on the inner skin.
+/// UV-offset) exit hole on the inner skin. Island drops are coupled so a fallen
+/// front patch never leaves a floating back cap.
 pub fn apply_carve_skins(
     outer: &mut SheetMask,
     inner: &mut SheetMask,
@@ -211,33 +213,57 @@ pub fn apply_carve_skins(
         0.0
     };
 
-    // Always advance inner seq with the same event when outer applied, even if
-    // no exit carve — keeps dual masks ordered for replay.
-    if factor < 0.05 || outer_result.carved_cells == 0 {
-        if inner.seq < event.seq {
-            inner.seq = event.seq;
-            inner.mix_event_hash(&event.to_hash_bytes());
+    let mut carved = outer_result.carved_cells;
+    let mut damaged = outer_result.damaged_cells;
+
+    if factor >= 0.05 && outer_result.carved_cells > 0 {
+        // Skew exit UV along in-plane travel through the slab.
+        let dir_len =
+            (event.dir_uv[0] * event.dir_uv[0] + event.dir_uv[1] * event.dir_uv[1]).sqrt();
+        let path = thickness / 0.65;
+        let mut exit = event.clone();
+        if dir_len > 1e-4 {
+            exit.uv[0] += event.dir_uv[0] / dir_len * path * dir_len.clamp(0.05, 1.0);
+            exit.uv[1] += event.dir_uv[1] / dir_len * path * dir_len.clamp(0.05, 1.0);
         }
-        return outer_result;
+        exit.footprint_radius = (event.footprint_radius * (0.35 + 0.65 * factor))
+            .max(event.footprint_radius * 0.35);
+        exit.mass_or_energy = event.mass_or_energy * factor;
+        exit.seed = event.seed.wrapping_add(0xA5A5_A5A5);
+
+        let inner_result = apply_carve(inner, mat, &exit);
+        carved += inner_result.carved_cells;
+        damaged += inner_result.damaged_cells;
+    } else if inner.seq < event.seq {
+        // Keep dual masks ordered for replay when there is no exit carve.
+        inner.seq = event.seq;
+        inner.mix_event_hash(&event.to_hash_bytes());
     }
 
-    // Skew exit UV along in-plane travel through the slab.
-    let dir_len = (event.dir_uv[0] * event.dir_uv[0] + event.dir_uv[1] * event.dir_uv[1]).sqrt();
-    let path = thickness / 0.65; // assume ~50°+ incidence; dir_uv carries the rest
-    let mut exit = event.clone();
-    if dir_len > 1e-4 {
-        exit.uv[0] += event.dir_uv[0] / dir_len * path * dir_len.clamp(0.05, 1.0);
-        exit.uv[1] += event.dir_uv[1] / dir_len * path * dir_len.clamp(0.05, 1.0);
+    // Coupled island cull — must run even if only the outer skin carved, so a
+    // ring-cut front cannot leave an intact back "cap" suspended in the hole.
+    if carved > 0 || outer_result.carved_cells > 0 {
+        carved += cull_dual_skin_islands(outer, inner, mat);
+        // Collapse either skin if almost gone.
+        for mask in [&mut *outer, &mut *inner] {
+            if mask.occupancy_ratio() < 0.05 {
+                for y in 0..mask.height {
+                    for x in 0..mask.width {
+                        if mask.occupied(x, y) {
+                            mask.set_occupied(x, y, false);
+                            carved += 1;
+                        }
+                    }
+                }
+            }
+        }
+        outer.rev = outer.rev.wrapping_add(1);
+        inner.rev = inner.rev.wrapping_add(1);
     }
-    // Smaller, weaker exit stamp.
-    exit.footprint_radius = (event.footprint_radius * (0.35 + 0.65 * factor)).max(event.footprint_radius * 0.35);
-    exit.mass_or_energy = event.mass_or_energy * factor;
-    exit.seed = event.seed.wrapping_add(0xA5A5_A5A5);
 
-    let inner_result = apply_carve(inner, mat, &exit);
     CarveApplyResult {
-        carved_cells: outer_result.carved_cells + inner_result.carved_cells,
-        damaged_cells: outer_result.damaged_cells + inner_result.damaged_cells,
+        carved_cells: carved,
+        damaged_cells: damaged,
         applied: true,
     }
 }
@@ -415,28 +441,21 @@ mod tests {
     }
 
     #[test]
-    fn carve_ring_drops_disconnected_middle() {
+    fn carve_ring_drops_disconnected_middle_on_both_skins() {
         let mut reg = SheetRegistry::from_static_props(&[wall_prop(1, "drywall")]);
         let sheet = reg.get_mut(1).unwrap();
-        let mat = sheet.material();
         let cell = sheet.mask.cell_size;
-        // Manually cut a ring in the interior, then run one noop-seq carve that
-        // still triggers island cull via a tiny real carve at the ring.
+        // Ring-cut only the outer skin — inner stays solid until coupled cull.
         let cx = (sheet.mask.width / 2) as i32;
         let cy = (sheet.mask.height / 2) as i32;
-        let outer = 18i32;
-        let inner = 10i32;
-        for dy in -outer..=outer {
-            for dx in -outer..=outer {
+        let ring_outer = 18i32;
+        let ring_inner = 10i32;
+        for dy in -ring_outer..=ring_outer {
+            for dx in -ring_outer..=ring_outer {
                 let adx = dx.abs();
                 let ady = dy.abs();
-                let on_ring = adx <= outer && ady <= outer && (adx >= inner || ady >= inner);
-                if !on_ring {
-                    continue;
-                }
-                // Clear only the ring corridor (not the center and not the outside).
-                let in_outer = adx <= outer && ady <= outer;
-                let in_inner = adx < inner && ady < inner;
+                let in_outer = adx <= ring_outer && ady <= ring_outer;
+                let in_inner = adx < ring_inner && ady < ring_inner;
                 if in_outer && !in_inner {
                     let x = (cx + dx) as u16;
                     let y = (cy + dy) as u16;
@@ -446,21 +465,26 @@ mod tests {
                 }
             }
         }
-        assert!(
-            sheet.mask.occupied(cx as u16, cy as u16),
-            "center island should exist before cull"
-        );
-        // Apply a real carve elsewhere so apply_carve runs island cull.
+        assert!(sheet.mask.occupied(cx as u16, cy as u16));
+        assert!(sheet.inner_mask.occupied(cx as u16, cy as u16));
         let event = bullet_event(
             1,
             1,
-            [(cx as f32 + outer as f32 + 4.0) * cell, (cy as f32) * cell],
+            [
+                (cx as f32 + ring_outer as f32 + 4.0) * cell,
+                (cy as f32) * cell,
+            ],
             7,
         );
-        let _ = apply_carve(&mut sheet.mask, mat, &event);
+        let _ = reg.apply_event(&event).unwrap();
+        let sheet = reg.get(1).unwrap();
         assert!(
             !sheet.mask.occupied(cx as u16, cy as u16),
-            "disconnected middle should be culled after carve"
+            "outer island should drop"
+        );
+        assert!(
+            !sheet.inner_mask.occupied(cx as u16, cy as u16),
+            "inner cap under fallen outer island must drop too"
         );
     }
 
