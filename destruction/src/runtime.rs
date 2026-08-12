@@ -380,6 +380,8 @@ impl CityDestruction {
         let mut min_pos = [0.0f32; 3];
         let mut min_vel = [0.0f32; 3];
         let mut max_speed = 0.0f32;
+        let mut max_speed_pos = [0.0f32; 3];
+        let mut max_speed_entity = 0u32;
         let mut max_angular = 0.0f32;
         for snap in snapshots.iter() {
             if snap.kinematic {
@@ -393,8 +395,21 @@ impl CityDestruction {
                 + snap.angular_velocity.y.powi(2)
                 + snap.angular_velocity.z.powi(2))
             .sqrt();
-            max_speed = max_speed.max(speed);
-            max_angular = max_angular.max(angular);
+            // Speed is measured over AWAKE bodies only: a sleeping body keeps
+            // its last velocity in the snapshot, so including them pins the
+            // maximum at whatever the last thing to fall was doing -- a frozen
+            // constant that reads as perpetual motion and says nothing about
+            // whether the pile is at rest. Position, below, still covers every
+            // body: a sleeping body stranded underground is precisely the case
+            // min_body_y exists to catch.
+            if !snap.sleeping {
+                if speed > max_speed {
+                    max_speed = speed;
+                    max_speed_pos = [snap.position.x, snap.position.y, snap.position.z];
+                    max_speed_entity = snap.entity_id;
+                }
+                max_angular = max_angular.max(angular);
+            }
             if snap.position.y < min_body_y {
                 min_body_y = snap.position.y;
                 min_pos = [snap.position.x, snap.position.y, snap.position.z];

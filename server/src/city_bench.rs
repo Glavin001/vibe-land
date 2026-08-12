@@ -77,6 +77,119 @@ fn pct(values: &mut Vec<f32>, p: f32) -> f32 {
     values[((values.len() as f32 * p) as usize).min(values.len() - 1)]
 }
 
+/// Debris must actually come to rest: shoot a tower down, then leave it alone.
+///
+/// The user reported destroying a building, moving on, and it never settling --
+/// plus chunks that appeared to vibrate or bob rather than rest. A full
+/// demolition measured only 4% of bodies asleep. Sleep is not cosmetic here:
+/// every per-awake-body cost in the pipeline (gravity injection, readback,
+/// settle scan, encoder ingest) scales with the awake set, so a pile that
+/// never sleeps multiplies the whole tick.
+///
+/// Two assertions, because "awake" and "moving" are different failures:
+///   - a settle fraction, catching bodies denied sleep;
+///   - a motion bound over the same window, catching bodies genuinely still
+///     oscillating (which would make sleep incorrect rather than missing).
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn demolished_tower_comes_to_rest() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    // Demolish one tower.
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+    }
+
+    // Then walk away: 20 s of simulation with no further input.
+    const SETTLE_SECONDS: u32 = 20;
+    let mut asleep_trace = Vec::new();
+    for second in 0..SETTLE_SECONDS {
+        for _ in 0..60 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+        let stats = city.stats();
+        asleep_trace.push((
+            second + 1,
+            stats.sleeping_chunk_bodies,
+            stats.chunk_bodies,
+            stats.max_body_speed,
+            stats.resettled_wakes,
+            stats.max_speed_body_pos[1],
+            stats.max_speed_body_entity,
+        ));
+    }
+
+    let stats = city.stats();
+    let bodies = stats.chunk_bodies.max(1);
+    let asleep_pct = 100.0 * stats.sleeping_chunk_bodies as f32 / bodies as f32;
+    println!("\n=== settle after demolition ===");
+    println!("bodies         {}", stats.chunk_bodies);
+    println!("broken bonds   {}", stats.broken_bonds);
+    println!(
+        "{:>5}  {:>8}  {:>6}  {:>9}  {:>10}  {:>10}",
+        "sec", "asleep", "pct", "maxspeed", "rewakes", "fastest y / entity"
+    );
+    for (second, asleep, total, speed, wakes, fast_y, entity) in &asleep_trace {
+        println!(
+            "{:>5}  {:>8}  {:>5.0}%  {:>9.2}  {:>10}  {:>10.1}",
+            second,
+            asleep,
+            100.0 * *asleep as f32 / (*total).max(1) as f32,
+            speed,
+            wakes,
+            fast_y
+        );
+        let _ = entity;
+    }
+
+    // Motion bound: with no input for 20 s, nothing should still be moving at
+    // a speed that implies active simulation rather than residual creep.
+    let resting_speed = stats.max_body_speed;
+    println!("peak speed now {resting_speed:.2} m/s");
+
+    assert!(
+        resting_speed < 1.0,
+        "bodies still moving at {resting_speed:.1} m/s after {SETTLE_SECONDS}s of \
+         no input: the pile is oscillating, not settling"
+    );
+    assert!(
+        asleep_pct >= 80.0,
+        "only {asleep_pct:.0}% of {} bodies asleep after {SETTLE_SECONDS}s of no \
+         input (want >=80%). Debris that never sleeps multiplies every \
+         per-awake-body cost in the tick",
+        stats.chunk_bodies
+    );
+}
+
 /// Reproduce the reported demo: demolish the whole city, ~8k bodies.
 ///
 /// The general bench peaks near 3.8k bodies; the user's session reached 8495
@@ -439,7 +552,7 @@ fn city_destruction_cost_is_stable() {
     );
     println!(
         "peak speeds    linear {:.0} m/s  angular {:.0} rad/s",
-        stats.max_body_speed, stats.max_body_angular_speed
+        stats.peak_body_speed, stats.peak_body_angular_speed
     );
     println!(
         "duplicate ids  {}   unmapped skips {}",

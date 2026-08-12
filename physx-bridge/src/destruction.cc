@@ -103,6 +103,26 @@ void adapter_error(ExtStressPhysXError error, std::uint32_t node,
 /// VIBE_CITY_QUIET_SKIP=0 forces the event diff to run every tick, so the
 /// quiet-tick optimisation can be ruled in or out as a source of stale body
 /// identity.
+/// VIBE_CITY_CCD=0 disables speculative CCD (A/B for settling behaviour).
+bool speculative_ccd_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_CCD");
+    return value == nullptr || std::string(value) != "0";
+  }();
+  return enabled;
+}
+
+/// VIBE_CITY_DEPEN_VELOCITY: max depenetration velocity; 0 = PhysX default.
+float depenetration_velocity() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_DEPEN_VELOCITY")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 3.0f;
+  }();
+  return value;
+}
+
 bool quiet_skip_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_QUIET_SKIP");
@@ -933,8 +953,10 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         continue;
       }
       if (ccd_enabled_.insert(body.body).second) {
-        body.body->setRigidBodyFlag(
-            physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
+        if (speculative_ccd_enabled()) {
+          body.body->setRigidBodyFlag(
+              physx::PxRigidBodyFlag::eENABLE_SPECULATIVE_CCD, true);
+        }
         // Bound the solver's depenetration response. Split children start
         // life overlapping their siblings (they shared faces one tick ago),
         // and PhysX's default depenetration velocity is unbounded. This is
@@ -944,7 +966,10 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         // kilometre-scale escapes; measurement pinned those on the adapter's
         // unbounded excess-force injection instead -- see city.rs -- but the
         // bound remains correct on its own terms.)
-        body.body->setMaxDepenetrationVelocity(3.0f);
+        const float depen = depenetration_velocity();
+        if (depen > 0.0f) {
+          body.body->setMaxDepenetrationVelocity(depen);
+        }
       }
     }
 

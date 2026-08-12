@@ -203,8 +203,18 @@ pub struct DestructionStats {
     /// velocity, and the peak speeds seen anywhere this tick.
     pub min_body_pos: [f32; 3],
     pub min_body_vel: [f32; 3],
+    /// Fastest body THIS TICK. Lifetime peaks are kept separately: a running
+    /// maximum can never come back down, so it cannot answer "is anything
+    /// still moving now", which is the question a settle check asks.
     pub max_body_speed: f32,
     pub max_body_angular_speed: f32,
+    /// Where the fastest awake body is, so "moving" can be told from "stale
+    /// velocity on a body that never changes position".
+    pub max_speed_body_pos: [f32; 3],
+    pub max_speed_body_entity: u32,
+    /// Fastest body seen at any point, for spotting escapes after the fact.
+    pub peak_body_speed: f32,
+    pub peak_body_angular_speed: f32,
     /// Bodies re-armed for settling after waking back up. Without this they
     /// stayed awake for the rest of the match.
     pub resettled_wakes: u64,
