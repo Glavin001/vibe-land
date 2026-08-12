@@ -353,4 +353,20 @@ mod tests {
         assert!(!mesh.positions.is_empty());
         assert!(!mesh.indices.is_empty());
     }
+
+    #[test]
+    fn demo_world_has_destructible_huts() {
+        use crate::world_document::WorldDocument;
+        let world = WorldDocument::demo();
+        let reg = SheetRegistry::from_static_props(&world.static_props);
+        assert!(reg.len() >= 12, "expected 3 huts × 4 walls, got {}", reg.len());
+        let mats: std::collections::HashSet<_> = reg
+            .iter()
+            .map(|(_, s)| s.material_id)
+            .collect();
+        assert!(mats.contains(&SheetMaterialId::Drywall));
+        assert!(mats.contains(&SheetMaterialId::Wood));
+        assert!(mats.contains(&SheetMaterialId::Plaster));
+    }
+
 }
