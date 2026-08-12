@@ -2,8 +2,8 @@
 //!
 //! Hitscan bullets remain the primary path; this samples Rapier contact pairs
 //! after dynamics and emits the same deterministic `CarveEvent`s. Thin sheets
-//! are also swept with a short velocity ray so fast movers don't tunnel through
-//! without generating contacts.
+//! are primarily detected with a short velocity ray sweep (contacts alone miss
+//! when a fast body steps through a ~16 cm wall in one tick).
 //!
 //! Feature flag: built-in `SHEET_MOMENTUM_CARVE` (default **on**). Set env
 //! `SHEET_MOMENTUM_CARVE=0`/`false`/`off` to disable.
@@ -216,7 +216,7 @@ pub fn sample_momentum_sheet_impacts(
             continue;
         }
 
-        // 1) Contact pairs (works when CCD / thick contacts register).
+        // 1) Contact pairs when the solver happened to register an overlap.
         for pair in sim.narrow_phase.contact_pairs_with(striker.collider) {
             let other = if pair.collider1 == striker.collider {
                 pair.collider2

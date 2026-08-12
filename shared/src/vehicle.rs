@@ -197,7 +197,6 @@ pub fn create_vehicle_physics(
         .angular_damping(0.5)
         .sleeping(false)
         .can_sleep(false)
-        .ccd_enabled(true)
         .build();
     let chassis_body = sim.rigid_bodies.insert(body);
 
