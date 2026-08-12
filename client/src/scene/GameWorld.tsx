@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
+import { useRef, useEffect, useMemo, useState, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -55,6 +55,7 @@ import {
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
+  CarveEventPacket,
   DamageEventPacket,
   NetVehicleState,
   ShotFiredPacket,
@@ -84,6 +85,8 @@ import { BotsDebugOverlay } from './BotsDebugOverlay';
 import { Portals } from './Portals';
 import { WorldTerrain } from './WorldTerrain';
 import { WorldStaticProps } from './WorldStaticProps';
+import { DestructibleSheets, filterNonSheetStaticProps } from './DestructibleSheets';
+import { SheetFallingDebris } from './SheetFallingDebris';
 import {
   DEFAULT_WORLD_DOCUMENT,
   removeVehicleEntitiesFromWorldDocument,
@@ -1178,6 +1181,10 @@ export function GameWorld({
       expiresAtMs,
     });
   }).current;
+  const [carveEvents, setCarveEvents] = useState<CarveEventPacket[]>([]);
+  const carveEventsRef = useRef<CarveEventPacket[]>([]);
+  carveEventsRef.current = carveEvents;
+  const solidStaticWorld = useMemo(() => filterNonSheetStaticProps(worldDocument), [worldDocument]);
   const { ready, renderBlocks, runtimeRef } = useGameRuntime(
     mode,
     worldJson,
@@ -1188,9 +1195,48 @@ export function GameWorld({
     localRenderSmoothingEnabled,
     (packet) => damageEventHandlerRef.current(packet),
     handleServerShotFired,
+    (packet) => {
+      setCarveEvents((prev) => [...prev, packet]);
+    },
   );
   runtimeRefForShotFired.current = runtimeRef.current;
   const { camera, gl } = useThree();
+
+  // Browser QA hook for Playwright / manual console testing of sheet destruction.
+  useEffect(() => {
+    const qa = {
+      getCarveCount: () => carveEventsRef.current.length,
+      getCarveEvents: () => carveEventsRef.current.slice(),
+      getPosition: () => runtimeRef.current?.getPosition() ?? null,
+      fireAt: (x: number, y: number, z: number) => {
+        const client = runtimeRef.current;
+        if (!client) return { ok: false as const, reason: 'no-runtime' };
+        const pos = client.getPosition();
+        if (!pos) return { ok: false as const, reason: 'no-position' };
+        const origin: [number, number, number] = [pos[0], pos[1] + PLAYER_EYE_HEIGHT, pos[2]];
+        const dx = x - origin[0];
+        const dy = y - origin[1];
+        const dz = z - origin[2];
+        const len = Math.hypot(dx, dy, dz) || 1;
+        const dir: [number, number, number] = [dx / len, dy / len, dz / len];
+        const shotId = (Date.now() & 0xffffffff) >>> 0;
+        client.sendFire({
+          seq: client.peekNextInputSeq(),
+          shotId,
+          weapon: WEAPON_HITSCAN,
+          clientFireTimeUs: client.serverClock.serverNowUs(),
+          clientInterpMs: Math.round(client.interpolationDelayMs),
+          clientDynamicInterpMs: Math.round(client.dynamicBodyInterpolationDelayMs),
+          dir,
+        });
+        return { ok: true as const, origin, dir, shotId };
+      },
+    };
+    (window as Window & { __VIBE_SHEET_QA__?: typeof qa }).__VIBE_SHEET_QA__ = qa;
+    return () => {
+      delete (window as Window & { __VIBE_SHEET_QA__?: typeof qa }).__VIBE_SHEET_QA__;
+    };
+  }, [runtimeRef]);
 
   const inputManagerRef = useRef<GameInputManager | null>(null);
   const yawRef = useRef(0);
@@ -3130,7 +3176,13 @@ export function GameWorld({
       />
       <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
       <WorldTerrain world={worldDocument} />
-      <WorldStaticProps world={worldDocument} />
+      <WorldStaticProps world={solidStaticWorld} />
+      <DestructibleSheets
+        world={worldDocument}
+        carveEvents={carveEvents}
+        spawnVisualDebris={!practiceMode}
+      />
+      {practiceMode && <SheetFallingDebris runtimeRef={runtimeRef} />}
       <Portals runtimeRef={runtimeRef} />
 
       {renderBlocks.map((block) => (

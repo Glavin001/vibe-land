@@ -12,6 +12,7 @@ import {
   netPlayerStateToMeters,
   netVehicleStateToMeters,
   type BlockEditCmd,
+  type CarveEventPacket,
   type DamageEventPacket,
   type DynamicBodyStateMeters,
   type FireCmd,
@@ -40,6 +41,7 @@ export type LocalPracticeClientConfig = {
   onLocalSnapshot?: (ackInputSeq: number, state: NetPlayerState) => void;
   onLocalVehicleSnapshot?: (vehicleState: NetVehicleState, ackInputSeq: number) => void;
   onDamageEvent?: (packet: DamageEventPacket) => void;
+  onCarveEvent?: (packet: CarveEventPacket) => void;
   worldJson?: string;
 };
 
@@ -321,6 +323,12 @@ export class LocalPracticeClient implements PracticeBotHost {
     return s;
   }
 
+  getSheetDebrisStates(): Float32Array | null {
+    const s = this.session?.getSheetDebrisStates?.();
+    if (!s || s.length === 0) return null;
+    return s instanceof Float32Array ? s : new Float32Array(s);
+  }
+
   setRagdollBodyVelocity(
     id: number,
     vx: number, vy: number, vz: number,
@@ -537,6 +545,8 @@ export class LocalPracticeClient implements PracticeBotHost {
       }
       if (decoded.type === 'damageEvent') {
         this.config.onDamageEvent?.(decoded);
+      } else if (decoded.type === 'carveEvent') {
+        this.config.onCarveEvent?.(decoded);
       }
     }
   }

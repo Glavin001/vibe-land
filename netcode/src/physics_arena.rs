@@ -88,6 +88,23 @@ impl DynamicArena {
             .add_static_cuboid_rotated(center, rotation, half_extents, user_data)
     }
 
+    pub fn add_static_cuboid_rotated_with_hooks(
+        &mut self,
+        center: Vec3,
+        rotation: [f32; 4],
+        half_extents: Vec3,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
+        self.sim.add_static_cuboid_rotated_with_hooks(
+            center,
+            rotation,
+            half_extents,
+            user_data,
+            active_hooks,
+        )
+    }
+
     pub fn add_static_heightfield(
         &mut self,
         center: Vec3,
@@ -125,6 +142,28 @@ impl DynamicArena {
         user_data: u128,
     ) -> ColliderHandle {
         self.sim.add_static_trimesh(vertices, indices, user_data)
+    }
+
+    pub fn add_static_trimesh_with_hooks(
+        &mut self,
+        vertices: Vec<Point3<f32>>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
+        self.sim
+            .add_static_trimesh_with_hooks(vertices, indices, user_data, active_hooks)
+    }
+
+    pub fn configure_soft_sheet_collider(
+        &mut self,
+        handle: ColliderHandle,
+        sheet_id: u32,
+        soft_flag: u128,
+        active_hooks: ActiveHooks,
+    ) -> bool {
+        self.sim
+            .configure_soft_sheet_collider(handle, sheet_id, soft_flag, active_hooks)
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {

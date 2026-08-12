@@ -43,6 +43,7 @@ export const PKT_LOCAL_PLAYER_ENERGY = 115;
 export const PKT_BATTERY_SYNC = 116;
 export const PKT_SHOT_FIRED = 117;
 export const PKT_DAMAGE_EVENT = 118;
+export const PKT_CARVE_EVENT = 119;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;

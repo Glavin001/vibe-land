@@ -80,6 +80,7 @@ import {
   resolveSelectedTransformEntity,
   selectionExists,
   updateSelectedTargetHalfExtents,
+  updateSelectedTargetMaterial,
   updateSelectedTargetPosition,
   updateSelectedTargetRadius,
   updateSelectedTargetRotation,
@@ -955,6 +956,13 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
     applyCommittedWorldEdit((current) => updateSelectedTargetVehicleType(current, selected, value));
   }, [applyCommittedWorldEdit, selected]);
 
+  const updateSelectedMaterial = useCallback((value: string) => {
+    if (selected?.kind !== 'static') {
+      return;
+    }
+    applyCommittedWorldEdit((current) => updateSelectedTargetMaterial(current, selected, value));
+  }, [applyCommittedWorldEdit, selected]);
+
   const updateSelectedYaw = useCallback((yawDegrees: number) => {
     const yawRadians = (yawDegrees * Math.PI) / 180;
     const nextRotation = quaternionFromYaw(yawRadians);
@@ -1500,6 +1508,14 @@ export function GodModePage({ publishedId }: GodModePageProps = {}) {
                             onYawChange={updateSelectedYaw}
                             dimensions={selectedStatic.halfExtents}
                             onDimensionsChange={updateSelectedHalfExtent}
+                            material={selectedStatic.material ?? 'editor-static'}
+                            materialOptions={[
+                              { value: 'editor-static', label: 'Solid' },
+                              { value: 'drywall', label: 'Drywall (destructible)' },
+                              { value: 'wood', label: 'Wood (destructible)' },
+                              { value: 'plaster', label: 'Plaster (destructible)' },
+                            ]}
+                            onMaterialChange={updateSelectedMaterial}
                             onDelete={removeSelected}
                           />
                         )}
@@ -2425,7 +2441,21 @@ function GodModeEditorScene({
             }}
           >
             <boxGeometry args={scaleExtents(entity.halfExtents)} />
-            <meshStandardMaterial color={multiSelected.some((t) => t?.kind === 'static' && t?.id === entity.id) ? 0xbce784 : 0x7b6955} roughness={0.86} metalness={0.04} />
+            <meshStandardMaterial
+              color={
+                multiSelected.some((t) => t?.kind === 'static' && t?.id === entity.id)
+                  ? 0xbce784
+                  : entity.material === 'drywall'
+                    ? 0xd8d0c0
+                    : entity.material === 'wood'
+                      ? 0x8b5a2b
+                      : entity.material === 'plaster'
+                        ? 0xcfc6b8
+                        : 0x7b6955
+              }
+              roughness={0.86}
+              metalness={0.04}
+            />
           </mesh>
         ))}
         {world.dynamicEntities.map((entity) => (
@@ -2948,6 +2978,9 @@ function EditorFields({
   vehicleType,
   vehicleTypeOptions,
   onVehicleTypeChange,
+  material,
+  materialOptions,
+  onMaterialChange,
   yawDegrees,
   onYawChange,
   onDelete,
@@ -2962,6 +2995,9 @@ function EditorFields({
   vehicleType?: number;
   vehicleTypeOptions?: Array<{ value: number; label: string }>;
   onVehicleTypeChange?: (value: number) => void;
+  material?: string;
+  materialOptions?: Array<{ value: string; label: string }>;
+  onMaterialChange?: (value: string) => void;
   yawDegrees?: number;
   onYawChange?: (value: number) => void;
   onDelete: () => void;
@@ -2998,6 +3034,16 @@ function EditorFields({
           Vehicle Type
           <select value={vehicleType} onChange={(event) => onVehicleTypeChange(Number(event.target.value))}>
             {vehicleTypeOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      {material != null && materialOptions && onMaterialChange && (
+        <label style={fieldLabelStyle}>
+          Material
+          <select value={material} onChange={(event) => onMaterialChange(event.target.value)}>
+            {materialOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>

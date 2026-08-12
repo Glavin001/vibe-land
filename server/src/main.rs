@@ -679,6 +679,9 @@ struct MatchState {
     id: String,
     arena: PhysicsArena,
     world: VoxelWorld,
+    sheets: vibe_land_shared::sheet_destruction::SheetRegistry,
+    sheet_colliders: HashMap<u32, Vec<rapier3d::prelude::ColliderHandle>>,
+    sheet_momentum_cooldown: vibe_land_shared::sheet_destruction::MomentumCarveCooldown,
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
@@ -1172,7 +1175,18 @@ async fn run_match_loop(
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default());
     let world = VoxelWorld::new();
-    seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
+    let world_doc =
+        seed_world_for_match(&mut arena, &match_id).expect("world document should instantiate");
+    let sheets = vibe_land_shared::sheet_destruction::SheetRegistry::from_static_props(
+        &world_doc.static_props,
+    );
+    let mut sheet_colliders = HashMap::new();
+    for (&sheet_id, _) in sheets.iter() {
+        if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
+            arena.enable_soft_sheet_collider(handle, sheet_id);
+            sheet_colliders.insert(sheet_id, vec![handle]);
+        }
+    }
     let dynamic_body_handles = arena
         .snapshot_dynamic_bodies()
         .into_iter()
@@ -1199,6 +1213,9 @@ async fn run_match_loop(
         id: match_id,
         arena,
         world,
+        sheets,
+        sheet_colliders,
+        sheet_momentum_cooldown: vibe_land_shared::sheet_destruction::MomentumCarveCooldown::default(),
         history: LagCompHistory::new(1000),
         players: HashMap::new(),
         queued_shots: Vec::new(),
@@ -1468,6 +1485,7 @@ impl MatchState {
                 });
                 let _ = try_queue_packet(&conn.tx, encode_server_packet(&welcome), &self.io);
                 self.send_initial_metadata(&conn.tx);
+                self.send_sheet_carve_replay(&conn.tx);
                 self.queue_roster_sync();
 
                 if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
@@ -1852,7 +1870,7 @@ impl MatchState {
             .dead_players_skipped
             .record(dead_players_skipped);
 
-        let (vehicle_ms, dynamics_ms) = self.arena.step_vehicles_and_dynamics(dt);
+        let (vehicle_ms, dynamics_ms) = self.step_vehicles_dynamics_and_soft_sheet_carves(dt);
         for player_id in self.arena.apply_vehicle_player_collisions() {
             self.kill_player_with_cause(player_id, server_time_ms, DeathCause::VehicleCollision);
         }
@@ -2618,12 +2636,13 @@ impl MatchState {
                 continue;
             };
 
-            let world_toi = self.arena.cast_static_world_ray(
+            let world_hit = self.arena.cast_static_world_ray_detailed(
                 origin,
                 queued.cmd.dir,
                 HITSCAN_MAX_DISTANCE_M,
                 Some(queued.player_id),
             );
+            let world_toi = world_hit.map(|h| h.toi);
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 queued.cmd.dir,
@@ -2644,6 +2663,26 @@ impl MatchState {
                 target_time_ms,
                 blocker_toi,
             );
+
+            // Authoritative sheet carve when the static world is the closest hit.
+            if player_hit.is_none() {
+                let world_is_closest = match (world_hit.as_ref(), dynamic_hit.as_ref()) {
+                    (Some(wh), Some((_, d_toi, _))) => wh.toi <= *d_toi,
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+                if world_is_closest {
+                    if let Some(hit) = world_hit {
+                        self.try_carve_sheet_from_hitscan(
+                            queued.player_id,
+                            queued.cmd.shot_id,
+                            origin,
+                            queued.cmd.dir,
+                            hit,
+                        );
+                    }
+                }
+            }
 
             // Pre-compute the authoritative trace endpoint + classification for the
             // shot-fired broadcast. This is used purely for visual trace rendering
@@ -2823,6 +2862,275 @@ impl MatchState {
             for player in self.players.values() {
                 let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
             }
+        }
+    }
+
+    fn try_carve_sheet_from_hitscan(
+        &mut self,
+        shooter_id: u32,
+        shot_id: u32,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        hit: vibe_netcode::sim_world::RayHitDetailed,
+    ) {
+        use vibe_land_shared::sheet_destruction::{
+            carve_event_to_packet, CarveEvent, RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M,
+            RIFLE_BULLET_SPEED_MPS,
+        };
+
+        let sheet_id = hit.user_data as u32;
+        if !self.sheets.contains(sheet_id) {
+            return;
+        }
+        let Some(sheet) = self.sheets.get(sheet_id) else {
+            return;
+        };
+
+        let impact = [
+            origin[0] + dir[0] * hit.toi,
+            origin[1] + dir[1] * hit.toi,
+            origin[2] + dir[2] * hit.toi,
+        ];
+        let uv = sheet.frame.world_to_uv(impact);
+        let au = sheet.frame.axis_u;
+        let av = sheet.frame.axis_v;
+        let dir_uv = [
+            dir[0] * au[0] + dir[1] * au[1] + dir[2] * au[2],
+            dir[0] * av[0] + dir[1] * av[1] + dir[2] * av[2],
+        ];
+        let normal_speed = {
+            let n = hit.normal;
+            let dn = dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2];
+            dn.abs() * RIFLE_BULLET_SPEED_MPS
+        };
+        let seq = sheet.mask.seq.saturating_add(1);
+        let seed = shooter_id
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(shot_id)
+            .wrapping_add(sheet_id);
+        let event = CarveEvent {
+            sheet_id,
+            seq,
+            uv,
+            dir_uv,
+            normal_speed,
+            mass_or_energy: RIFLE_BULLET_MASS_KG,
+            footprint_radius: RIFLE_BULLET_RADIUS_M,
+            seed,
+        };
+        self.apply_and_emit_sheet_carve(event);
+    }
+
+    fn step_vehicles_dynamics_and_soft_sheet_carves(&mut self, dt: f32) -> (f32, f32) {
+        use std::sync::Mutex;
+
+        use rapier3d::prelude::ColliderHandle;
+        use vibe_land_shared::sheet_destruction::{
+            apply_soft_sheet_drag, finalize_soft_sheet_impacts, impact_to_carve_event,
+            sample_tunnel_sheet_impacts, sheet_collider_index, sheet_momentum_carve_enabled,
+            MomentumStrikerKind, SoftSheetStepCollector, StrikerRef, MOMENTUM_CARVE_MAX_PER_TICK,
+        };
+
+        if !sheet_momentum_carve_enabled() || self.sheet_colliders.is_empty() {
+            return self.arena.step_vehicles_and_dynamics(dt);
+        }
+
+        let mut breakers: HashMap<ColliderHandle, StrikerRef> = HashMap::new();
+        let mut strikers: Vec<StrikerRef> = Vec::new();
+        for (&id, v) in &self.arena.vehicles {
+            let s = StrikerRef {
+                kind: MomentumStrikerKind::Vehicle,
+                id,
+                collider: v.chassis_collider,
+                body: v.chassis_body,
+            };
+            breakers.insert(s.collider, s);
+            strikers.push(s);
+        }
+        for (&id, body) in &self.arena.dynamic.dynamic_bodies {
+            let s = StrikerRef {
+                kind: MomentumStrikerKind::Dynamic,
+                id,
+                collider: body.collider_handle,
+                body: body.body_handle,
+            };
+            breakers.insert(s.collider, s);
+            strikers.push(s);
+        }
+
+        let collector = Mutex::new(SoftSheetStepCollector::default());
+        let timings = self
+            .arena
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &collector);
+
+        let SoftSheetStepCollector { impacts: raw, drags } = collector
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply_soft_sheet_drag(&mut self.arena.dynamic.sim, &self.sheets, &drags);
+        let mut impacts = finalize_soft_sheet_impacts(
+            raw,
+            &self.sheets,
+            &mut self.sheet_momentum_cooldown,
+            self.server_tick,
+        );
+
+        let budget = MOMENTUM_CARVE_MAX_PER_TICK.saturating_sub(impacts.len());
+        if budget > 0 && !strikers.is_empty() {
+            let already: HashSet<_> = impacts
+                .iter()
+                .map(|i| (i.striker_kind as u8, i.striker_id, i.sheet_id))
+                .collect();
+            let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
+            let tunnel = sample_tunnel_sheet_impacts(
+                &self.arena.dynamic.sim,
+                &sheet_by_handle,
+                &strikers,
+                &self.sheets,
+                &already,
+                &mut self.sheet_momentum_cooldown,
+                self.server_tick,
+                dt,
+                budget,
+            );
+            impacts.extend(tunnel);
+        }
+
+        for impact in impacts {
+            let Some(sheet) = self.sheets.get(impact.sheet_id) else {
+                continue;
+            };
+            let event = impact_to_carve_event(sheet, &impact);
+            self.apply_and_emit_sheet_carve(event);
+        }
+        timings
+    }
+
+    fn apply_and_emit_sheet_carve(
+        &mut self,
+        event: vibe_land_shared::sheet_destruction::CarveEvent,
+    ) {
+        use vibe_land_shared::sheet_destruction::{
+            carve_event_to_packet, is_debris_worthy, sheet_falling_debris_enabled,
+        };
+        let sheet_id = event.sheet_id;
+        let Some(result) = self.sheets.apply_event(&event) else {
+            return;
+        };
+        if !result.applied {
+            return;
+        }
+        if result.carved_cells == 0 {
+            // Still broadcast damage-only events so clients accumulate dents.
+            if result.damaged_cells > 0 {
+                let pkt = carve_event_to_packet(&event);
+                let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));
+                for player in self.players.values() {
+                    let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
+                }
+            }
+            return;
+        }
+
+        // Force parent hole open when a debris-sized island drops so the cutout
+        // volume is empty (cosmetic debris is client/practice-local only).
+        // Also force on blunt vehicle/crate carves so soft-pass bodies are not
+        // re-wedged by stale solid cuboids after they slow down.
+        let force_hole = sheet_falling_debris_enabled()
+            && result.dropped_islands.iter().any(is_debris_worthy);
+        let force_collision = force_hole || event.footprint_radius >= 0.12;
+        self.sync_sheet_collision(sheet_id, force_collision);
+
+        let pkt = carve_event_to_packet(&event);
+        let encoded = encode_server_packet(&ServerPacket::CarveEvent(pkt));
+        for player in self.players.values() {
+            let _ = try_queue_packet(&player.tx, encoded.clone(), &self.io);
+        }
+    }
+
+    fn sync_sheet_collision(&mut self, sheet_id: u32, force: bool) {
+        use vibe_land_shared::sheet_destruction::sheet_coarse_collision_enabled;
+        let old = self
+            .sheet_colliders
+            .get(&sheet_id)
+            .cloned()
+            .unwrap_or_default();
+        if sheet_coarse_collision_enabled() {
+            let cuboids = {
+                let Some(sheet) = self.sheets.get_mut(sheet_id) else {
+                    return;
+                };
+                if force {
+                    Some(sheet.take_collision_cuboids_forced())
+                } else {
+                    sheet.take_collision_cuboids_if_dirty()
+                }
+            };
+            let Some(cuboids) = cuboids else {
+                return;
+            };
+            if cuboids.is_empty() {
+                for h in &old {
+                    self.arena.remove_collider(*h);
+                }
+                self.sheet_colliders.remove(&sheet_id);
+                self.arena.rebuild_broad_phase();
+            } else {
+                let payload: Vec<_> = cuboids
+                    .iter()
+                    .map(|c| {
+                        (
+                            nalgebra::Vector3::new(c.center[0], c.center[1], c.center[2]),
+                            c.rotation_xyzw,
+                            nalgebra::Vector3::new(
+                                c.half_extents[0],
+                                c.half_extents[1],
+                                c.half_extents[2],
+                            ),
+                        )
+                    })
+                    .collect();
+                let handles =
+                    self.arena
+                        .swap_static_cuboid_set(&old, &payload, sheet_id as u128);
+                self.sheet_colliders.insert(sheet_id, handles);
+            }
+            return;
+        }
+        let (verts, tris) = {
+            let Some(sheet) = self.sheets.get(sheet_id) else {
+                return;
+            };
+            sheet.build_world_trimesh()
+        };
+        if old.is_empty() {
+            return;
+        }
+        if verts.is_empty() {
+            for h in &old {
+                self.arena.remove_collider(*h);
+            }
+            self.sheet_colliders.remove(&sheet_id);
+            self.arena.rebuild_broad_phase();
+        } else {
+            for h in old.iter().skip(1) {
+                self.arena.remove_collider(*h);
+            }
+            let new_handle =
+                self.arena
+                    .swap_static_trimesh(old[0], verts, tris, sheet_id as u128);
+            self.sheet_colliders.insert(sheet_id, vec![new_handle]);
+        }
+    }
+
+    fn send_sheet_carve_replay(&self, tx: &mpsc::Sender<Vec<u8>>) {
+        use vibe_land_shared::sheet_destruction::carve_event_to_packet;
+        for event in self.sheets.dirty_event_log() {
+            let pkt = carve_event_to_packet(&event);
+            let _ = try_queue_packet(
+                tx,
+                encode_server_packet(&ServerPacket::CarveEvent(pkt)),
+                &self.io,
+            );
         }
     }
 

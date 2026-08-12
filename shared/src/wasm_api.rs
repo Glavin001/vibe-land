@@ -1997,6 +1997,12 @@ impl WasmLocalSession {
         self.inner.remove_ragdoll_body(id);
     }
 
+    /// Packed sheet-debris states: `[id,hx,hy,hz,px,py,pz,qx,qy,qz,qw,cr,cg,cb]*N`.
+    #[wasm_bindgen(js_name = getSheetDebrisStates)]
+    pub fn get_sheet_debris_states(&self) -> Box<[f32]> {
+        self.inner.sheet_debris_states().into_boxed_slice()
+    }
+
     #[wasm_bindgen(js_name = getRagdollBodyState)]
     pub fn get_ragdoll_body_state(&self, id: u32) -> Box<[f64]> {
         match self.inner.ragdoll_body_state(id) {
@@ -2264,5 +2270,216 @@ impl WasmClockSync {
     #[wasm_bindgen(js_name = getRttMs)]
     pub fn get_rtt_ms(&self) -> f64 {
         self.estimator.rtt_ms()
+    }
+}
+
+struct WasmSheetFlatMesh {
+    outer_rev: u32,
+    inner_rev: u32,
+    positions: Vec<f32>,
+    colors: Vec<f32>,
+    indices: Vec<u32>,
+}
+
+/// Deterministic sheet-destruction registry for client remesh / practice sync.
+#[wasm_bindgen]
+pub struct WasmSheetRegistry {
+    inner: crate::sheet_destruction::SheetRegistry,
+    flat_cache: std::cell::RefCell<HashMap<u32, WasmSheetFlatMesh>>,
+    /// Packed visual debris from the most recent `applyCarve`.
+    last_debris_spawns: std::cell::RefCell<Vec<f32>>,
+}
+
+impl WasmSheetRegistry {
+    fn ensure_flat_mesh(&self, sheet_id: u32) -> bool {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return false;
+        };
+        let outer_rev = sheet.mask.rev;
+        let inner_rev = sheet.inner_mask.rev;
+        {
+            let cache = self.flat_cache.borrow();
+            if let Some(hit) = cache.get(&sheet_id) {
+                if hit.outer_rev == outer_rev && hit.inner_rev == inner_rev {
+                    return true;
+                }
+            }
+        }
+        let mesh = sheet.build_mesh();
+        let (verts, tris) = crate::sheet_destruction::remesh::transform_mesh_to_world(
+            &mesh,
+            sheet.frame.origin,
+            sheet.frame.axis_u,
+            sheet.frame.axis_thickness,
+            sheet.frame.axis_v,
+        );
+        let positions: Vec<f32> = verts.into_iter().flat_map(|v| [v[0], v[1], v[2]]).collect();
+        let colors: Vec<f32> = mesh.colors.into_iter().flat_map(|c| [c[0], c[1], c[2]]).collect();
+        let indices: Vec<u32> = tris.into_iter().flat_map(|t| [t[0], t[1], t[2]]).collect();
+        self.flat_cache.borrow_mut().insert(
+            sheet_id,
+            WasmSheetFlatMesh {
+                outer_rev,
+                inner_rev,
+                positions,
+                colors,
+                indices,
+            },
+        );
+        true
+    }
+}
+
+#[wasm_bindgen]
+impl WasmSheetRegistry {
+    #[wasm_bindgen(constructor)]
+    pub fn new(world_json: &str) -> Result<WasmSheetRegistry, JsValue> {
+        let world: WorldDocument = serde_json::from_str(world_json)
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        Ok(Self {
+            inner: crate::sheet_destruction::SheetRegistry::from_static_props(&world.static_props),
+            flat_cache: std::cell::RefCell::new(HashMap::new()),
+            last_debris_spawns: std::cell::RefCell::new(Vec::new()),
+        })
+    }
+
+    #[wasm_bindgen(js_name = sheetCount)]
+    pub fn sheet_count(&self) -> u32 {
+        self.inner.len() as u32
+    }
+
+    #[wasm_bindgen(js_name = sheetIds)]
+    pub fn sheet_ids(&self) -> Box<[u32]> {
+        let mut ids: Vec<u32> = self.inner.iter().map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = materialName)]
+    pub fn material_name(&self, sheet_id: u32) -> Option<String> {
+        self.inner
+            .get(sheet_id)
+            .map(|s| s.material_id.as_str().to_string())
+    }
+
+    /// Apply a carve event packet fields. Returns carved cell count (0 if no-op).
+    #[wasm_bindgen(js_name = applyCarve)]
+    pub fn apply_carve(
+        &mut self,
+        sheet_id: u32,
+        seq: u32,
+        uv_u: u16,
+        uv_v: u16,
+        dir_u: i16,
+        dir_v: i16,
+        normal_speed_cms: u16,
+        mass_or_energy_grams: u16,
+        footprint_radius_mm: u16,
+        seed: u32,
+    ) -> u32 {
+        use crate::protocol::CarveEventPacket;
+        use crate::sheet_destruction::carve_event_from_packet;
+        let pkt = CarveEventPacket {
+            sheet_id,
+            seq,
+            uv_u,
+            uv_v,
+            dir_u,
+            dir_v,
+            normal_speed_cms,
+            mass_or_energy_grams,
+            footprint_radius_mm,
+            seed,
+        };
+        use crate::sheet_destruction::{
+            debris_spawns_from_islands, sheet_falling_debris_enabled, SheetMaterialId,
+        };
+        let event = carve_event_from_packet(&pkt);
+        let result = self.inner.apply_event(&event);
+        let carved = result.as_ref().map(|r| r.carved_cells).unwrap_or(0);
+        self.last_debris_spawns.borrow_mut().clear();
+        if let Some(result) = result.as_ref() {
+            if sheet_falling_debris_enabled() {
+                if let Some(sheet) = self.inner.get(sheet_id) {
+                    let cuboids =
+                        debris_spawns_from_islands(&result.dropped_islands, &sheet.frame);
+                    let (cr, cg, cb) = match sheet.material_id {
+                        SheetMaterialId::Drywall => (216.0 / 255.0, 208.0 / 255.0, 192.0 / 255.0),
+                        SheetMaterialId::Wood => (139.0 / 255.0, 90.0 / 255.0, 43.0 / 255.0),
+                        SheetMaterialId::Plaster => (207.0 / 255.0, 198.0 / 255.0, 184.0 / 255.0),
+                    };
+                    let mut packed = Vec::with_capacity(cuboids.len() * 13);
+                    for c in cuboids {
+                        packed.extend_from_slice(&c.half_extents);
+                        packed.extend_from_slice(&c.center);
+                        packed.extend_from_slice(&c.rotation_xyzw);
+                        packed.push(cr);
+                        packed.push(cg);
+                        packed.push(cb);
+                    }
+                    *self.last_debris_spawns.borrow_mut() = packed;
+                }
+            }
+        }
+        if carved > 0 {
+            self.flat_cache.borrow_mut().remove(&sheet_id);
+        }
+        carved
+    }
+
+    /// After the latest `applyCarve`, return packed debris cuboids for visual FX:
+    /// `[hx,hy,hz, px,py,pz, qx,qy,qz,qw, cr,cg,cb] * N` (empty if flag off / freckles).
+    #[wasm_bindgen(js_name = takeLastDebrisSpawns)]
+    pub fn take_last_debris_spawns(&self) -> Box<[f32]> {
+        std::mem::take(&mut *self.last_debris_spawns.borrow_mut()).into_boxed_slice()
+    }
+
+    /// World-space mesh for a sheet: flat [x,y,z,...] positions + [i0,i1,i2,...] indices.
+    #[wasm_bindgen(js_name = meshPositions)]
+    pub fn mesh_positions(&self, sheet_id: u32) -> Box<[f32]> {
+        if !self.ensure_flat_mesh(sheet_id) {
+            return Box::new([]);
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.positions.clone().into_boxed_slice())
+            .unwrap_or_default()
+    }
+
+    #[wasm_bindgen(js_name = meshColors)]
+    pub fn mesh_colors(&self, sheet_id: u32) -> Box<[f32]> {
+        if !self.ensure_flat_mesh(sheet_id) {
+            return Box::new([]);
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.colors.clone().into_boxed_slice())
+            .unwrap_or_default()
+    }
+
+    #[wasm_bindgen(js_name = meshIndices)]
+    pub fn mesh_indices(&self, sheet_id: u32) -> Box<[u32]> {
+        if !self.ensure_flat_mesh(sheet_id) {
+            return Box::new([]);
+        }
+        self.flat_cache
+            .borrow()
+            .get(&sheet_id)
+            .map(|m| m.indices.clone().into_boxed_slice())
+            .unwrap_or_default()
+    }
+
+    #[wasm_bindgen(js_name = carvedCellCount)]
+    pub fn carved_cell_count(&self, sheet_id: u32) -> u32 {
+        let Some(sheet) = self.inner.get(sheet_id) else {
+            return 0;
+        };
+        let outer = sheet.mask.cell_count() as u32
+            - sheet.mask.occupancy_count() as u32;
+        let inner = sheet.inner_mask.cell_count() as u32
+            - sheet.inner_mask.occupancy_count() as u32;
+        outer.saturating_add(inner)
     }
 }

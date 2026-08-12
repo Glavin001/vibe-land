@@ -202,6 +202,21 @@ pub struct DamageEventPacket {
     pub server_time_ms: u32,
 }
 
+/// Authoritative sheet carve event (bullet disc for MVP).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CarveEventPacket {
+    pub sheet_id: u32,
+    pub seq: u32,
+    pub uv_u: u16,
+    pub uv_v: u16,
+    pub dir_u: i16,
+    pub dir_v: i16,
+    pub normal_speed_cms: u16,
+    pub mass_or_energy_grams: u16,
+    pub footprint_radius_mm: u16,
+    pub seed: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetVehicleState {
     pub id: u32,

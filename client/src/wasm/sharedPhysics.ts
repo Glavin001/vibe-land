@@ -160,6 +160,7 @@ type WasmSimWorldCtor = {
 };
 
 type WasmLocalSessionInstance = InstanceType<typeof RawWasmLocalSession> & {
+  getSheetDebrisStates(): Float32Array;
   connectBot(botId: number): boolean;
   disconnectBot(botId: number): boolean;
   handleBotPacket(botId: number, bytes: Uint8Array): void;

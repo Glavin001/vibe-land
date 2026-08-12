@@ -682,6 +682,7 @@ impl WorldDocument {
         let mut world: Self = serde_json::from_str(DEFAULT_WORLD_DOCUMENT_JSON)
             .expect("default world document asset should deserialize");
         world.version = WORLD_DOCUMENT_VERSION;
+        crate::sheet_destruction::append_destructible_demo_huts(&mut world);
         world
     }
 

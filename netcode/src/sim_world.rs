@@ -284,6 +284,23 @@ impl SimWorld {
         half_extents: Vector3<f32>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_cuboid_rotated_with_hooks(
+            center,
+            rotation,
+            half_extents,
+            user_data,
+            ActiveHooks::empty(),
+        )
+    }
+
+    pub fn add_static_cuboid_rotated_with_hooks(
+        &mut self,
+        center: Vector3<f32>,
+        rotation: [f32; 4],
+        half_extents: Vector3<f32>,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
         let orientation = UnitQuaternion::from_quaternion(Quaternion::new(
             rotation[3],
             rotation[0],
@@ -298,6 +315,7 @@ impl SimWorld {
                 ))
                 .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
                 .user_data(user_data)
+                .active_hooks(active_hooks)
                 .build(),
         )
     }
@@ -347,6 +365,16 @@ impl SimWorld {
         indices: Vec<[u32; 3]>,
         user_data: u128,
     ) -> ColliderHandle {
+        self.add_static_trimesh_with_hooks(vertices, indices, user_data, ActiveHooks::empty())
+    }
+
+    pub fn add_static_trimesh_with_hooks(
+        &mut self,
+        vertices: Vec<Point3<f32>>,
+        indices: Vec<[u32; 3]>,
+        user_data: u128,
+        active_hooks: ActiveHooks,
+    ) -> ColliderHandle {
         self.colliders.insert(
             ColliderBuilder::trimesh_with_flags(
                 vertices,
@@ -356,8 +384,25 @@ impl SimWorld {
             .expect("terrain trimesh should be valid")
             .collision_groups(InteractionGroups::new(STATIC_WORLD_GROUP, Group::all()))
             .user_data(user_data)
+            .active_hooks(active_hooks)
             .build(),
         )
+    }
+
+    /// Stamp soft-sheet `user_data` + `MODIFY_SOLVER_CONTACTS` on an existing collider.
+    pub fn configure_soft_sheet_collider(
+        &mut self,
+        handle: ColliderHandle,
+        sheet_id: u32,
+        soft_flag: u128,
+        active_hooks: ActiveHooks,
+    ) -> bool {
+        let Some(collider) = self.colliders.get_mut(handle) else {
+            return false;
+        };
+        collider.user_data = (sheet_id as u128) | soft_flag;
+        collider.set_active_hooks(active_hooks);
+        true
     }
 
     pub fn remove_collider(&mut self, handle: ColliderHandle) {
@@ -371,6 +416,14 @@ impl SimWorld {
 
     pub fn collider_user_data(&self, handle: ColliderHandle) -> Option<u128> {
         self.colliders.get(handle).map(|c| c.user_data)
+    }
+
+    /// Find the first collider whose `user_data` equals `user_data`.
+    pub fn find_collider_by_user_data(&self, user_data: u128) -> Option<ColliderHandle> {
+        self.colliders
+            .iter()
+            .find(|(_, c)| c.user_data == user_data)
+            .map(|(h, _)| h)
     }
 
     /// Flush pending collider changes into the broad-phase BVH.
@@ -816,23 +869,8 @@ impl SimWorld {
         max_toi: f32,
         exclude_collider: Option<ColliderHandle>,
     ) -> Option<f32> {
-        let ray = Ray::new(
-            nalgebra::point![origin[0], origin[1], origin[2]],
-            vector![dir[0], dir[1], dir[2]],
-        );
-        let mut filter = QueryFilter::default();
-        if let Some(handle) = exclude_collider {
-            filter = filter.exclude_collider(handle);
-        }
-        let query_pipeline = self.broad_phase.as_query_pipeline(
-            self.narrow_phase.query_dispatcher(),
-            &self.rigid_bodies,
-            &self.colliders,
-            filter,
-        );
-        query_pipeline
-            .cast_ray(&ray, max_toi, true)
-            .map(|(_handle, toi)| toi)
+        self.cast_ray_detailed(origin, dir, max_toi, exclude_collider)
+            .map(|hit| hit.toi)
     }
 
     /// Cast a ray and return both the time-of-impact and the surface normal.
@@ -843,6 +881,18 @@ impl SimWorld {
         max_toi: f32,
         exclude_collider: Option<ColliderHandle>,
     ) -> Option<(f32, [f32; 3])> {
+        self.cast_ray_detailed(origin, dir, max_toi, exclude_collider)
+            .map(|hit| (hit.toi, hit.normal))
+    }
+
+    /// Cast a ray and return toi, normal, collider user_data, and handle.
+    pub fn cast_ray_detailed(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_toi: f32,
+        exclude_collider: Option<ColliderHandle>,
+    ) -> Option<RayHitDetailed> {
         let ray = Ray::new(
             nalgebra::point![origin[0], origin[1], origin[2]],
             vector![dir[0], dir[1], dir[2]],
@@ -857,13 +907,26 @@ impl SimWorld {
             &self.colliders,
             filter,
         );
-        query_pipeline
-            .cast_ray_and_get_normal(&ray, max_toi, true)
-            .map(|(_handle, intersection)| {
-                let n = intersection.normal;
-                (intersection.time_of_impact, [n.x, n.y, n.z])
-            })
+        let (handle, intersection) =
+            query_pipeline.cast_ray_and_get_normal(&ray, max_toi, true)?;
+        let n = intersection.normal;
+        let user_data = self.colliders.get(handle).map(|c| c.user_data).unwrap_or(0);
+        Some(RayHitDetailed {
+            toi: intersection.time_of_impact,
+            normal: [n.x, n.y, n.z],
+            user_data,
+            handle,
+        })
     }
+}
+
+/// Detailed static-world raycast result.
+#[derive(Clone, Copy, Debug)]
+pub struct RayHitDetailed {
+    pub toi: f32,
+    pub normal: [f32; 3],
+    pub user_data: u128,
+    pub handle: ColliderHandle,
 }
 
 #[cfg(test)]

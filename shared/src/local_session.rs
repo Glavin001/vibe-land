@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     constants::{
@@ -14,6 +14,16 @@ use crate::{
     physics_arena::{MoveConfig, PhysicsArena, PlayerDamageOutcome},
     protocol::*,
     seq::seq_is_newer,
+        sheet_destruction::{
+        apply_soft_sheet_drag, carve_event_to_packet, debris_spawns_from_islands,
+        encode_carve_event_packet, finalize_soft_sheet_impacts, impact_to_carve_event,
+        lookup_sheet_material, sample_tunnel_sheet_impacts, sheet_coarse_collision_enabled,
+        sheet_collider_index, sheet_falling_debris_enabled, sheet_momentum_carve_enabled,
+        CarveEvent, MomentumCarveCooldown, MomentumStrikerKind, OrientedWorldCuboid,
+        SheetMaterialId, SheetRegistry, SoftSheetStepCollector, StrikerRef,
+        DEBRIS_MAX_CONCURRENT, DEBRIS_SPAWN_NUDGE_M, DEBRIS_TTL_SEC, MOMENTUM_CARVE_MAX_PER_TICK,
+        RIFLE_BULLET_MASS_KG, RIFLE_BULLET_RADIUS_M, RIFLE_BULLET_SPEED_MPS,
+    },
     unit_conv::{i16_to_angle, meters_to_mm, snorm16_to_f32},
     vehicle::{read_vehicle_debug_snapshot, VehicleDebugSnapshot},
     world_document::WorldDocument,
@@ -22,14 +32,32 @@ use bytes::{Buf, BufMut, BytesMut};
 use nalgebra::{vector, Isometry3, Point3, Quaternion, Translation3, Unit, UnitQuaternion};
 use rapier3d::pipeline::DebugRenderPipeline;
 use rapier3d::prelude::{
-    ColliderBuilder, Group, ImpulseJointHandle, InteractionGroups, RevoluteJointBuilder,
-    RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
+    ColliderBuilder, ColliderHandle, Group, ImpulseJointHandle, InteractionGroups,
+    RevoluteJointBuilder, RigidBodyBuilder, RigidBodyHandle, SphericalJointBuilder,
 };
 use vibe_netcode::lag_comp::{classify_player_hitscan, HitZone};
+
+fn sheet_material_rgb(id: SheetMaterialId) -> (f32, f32, f32) {
+    match id {
+        SheetMaterialId::Drywall => (0xD8 as f32 / 255.0, 0xD0 as f32 / 255.0, 0xC0 as f32 / 255.0),
+        SheetMaterialId::Wood => (0x8B as f32 / 255.0, 0x5A as f32 / 255.0, 0x2B as f32 / 255.0),
+        SheetMaterialId::Plaster => (0xCF as f32 / 255.0, 0xC6 as f32 / 255.0, 0xB8 as f32 / 255.0),
+    }
+}
 
 pub const LOCAL_PLAYER_ID: u32 = 1;
 const BOT_RESPAWN_TICKS: u32 = 60 * 3;
 const LOCAL_RESPAWN_DELAY_MS: u32 = 3_000;
+/// Local-only sheet debris body ids (not networked / not in dynamic snapshots).
+const SHEET_DEBRIS_ID_BASE: u32 = 900_000;
+const SHEET_DEBRIS_STATE_STRIDE: usize = 14;
+
+struct SheetDebrisMeta {
+    id: u32,
+    half_extents: [f32; 3],
+    material_id: SheetMaterialId,
+    expires_tick: u32,
+}
 
 #[derive(Default)]
 struct PlayerRuntime {
@@ -57,6 +85,8 @@ enum LocalDeathCause {
 
 pub struct LocalSession {
     arena: PhysicsArena,
+    sheets: SheetRegistry,
+    sheet_colliders: HashMap<u32, Vec<ColliderHandle>>,
     connected: bool,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<(u32, FireCmd)>,
@@ -67,6 +97,11 @@ pub struct LocalSession {
     // same physics world as terrain/vehicles so they collide naturally.
     ragdoll_bodies: HashMap<u32, RigidBodyHandle>,
     ragdoll_joint_handles: HashMap<u32, ImpulseJointHandle>,
+    /// Cosmetic falling sheet cutouts (ragdoll-style local bodies + TTL).
+    sheet_debris: HashMap<u32, SheetDebrisMeta>,
+    next_sheet_debris_id: u32,
+    /// Rate-limit vehicle/crate sheet carves.
+    sheet_momentum_cooldown: MomentumCarveCooldown,
 }
 
 impl LocalSession {
@@ -86,9 +121,19 @@ impl LocalSession {
             .instantiate(&mut arena)
             .map_err(|error| error.to_string())?;
         arena.set_spawn_areas(world.spawn_areas.clone());
+        let sheets = SheetRegistry::from_static_props(&world.static_props);
+        let mut sheet_colliders = HashMap::new();
+        for (&sheet_id, _) in sheets.iter() {
+            if let Some(handle) = arena.find_collider_by_user_data(sheet_id as u128) {
+                arena.enable_soft_sheet_collider(handle, sheet_id);
+                sheet_colliders.insert(sheet_id, vec![handle]);
+            }
+        }
 
         Ok(Self {
             arena,
+            sheets,
+            sheet_colliders,
             connected: false,
             players: HashMap::new(),
             queued_shots: Vec::new(),
@@ -97,6 +142,9 @@ impl LocalSession {
             server_tick: 0,
             ragdoll_bodies: HashMap::new(),
             ragdoll_joint_handles: HashMap::new(),
+            sheet_debris: HashMap::new(),
+            next_sheet_debris_id: SHEET_DEBRIS_ID_BASE,
+            sheet_momentum_cooldown: MomentumCarveCooldown::default(),
         })
     }
 
@@ -379,7 +427,7 @@ impl LocalSession {
             }
             self.arena.simulate_player_tick(id, &input, dt);
         }
-        self.arena.step_vehicles_and_dynamics(dt);
+        self.step_vehicles_dynamics_and_soft_sheet_carves(dt);
 
         let vehicle_killed = self.arena.apply_vehicle_player_collisions();
         for killed_id in vehicle_killed {
@@ -423,6 +471,7 @@ impl LocalSession {
 
         self.process_hitscan(server_time_ms);
         self.process_melee(server_time_ms);
+        self.expire_sheet_debris();
 
         if self.server_tick % (SIM_HZ as u32 / SNAPSHOT_HZ_LOCAL as u32) == 0 {
             self.outbound_packets.push(self.build_snapshot_packet());
@@ -580,12 +629,13 @@ impl LocalSession {
             }
 
             let origin = [pos[0], pos[1] + PLAYER_EYE_HEIGHT_M, pos[2]];
-            let world_toi = self.arena.cast_static_world_ray(
+            let world_hit = self.arena.cast_static_world_ray_detailed(
                 origin,
                 shot.dir,
                 HITSCAN_MAX_DISTANCE_M,
                 Some(shooter_id),
             );
+            let world_toi = world_hit.map(|h| h.toi);
             let dynamic_hit = self.arena.cast_dynamic_body_ray(
                 origin,
                 shot.dir,
@@ -675,13 +725,439 @@ impl LocalSession {
                         .clamp(0.0, u16::MAX as f32)
                         as u16;
                 }
-            } else if world_toi.is_some() {
+            } else if let Some(hit) = world_hit {
                 result.server_resolution = SHOT_RESOLUTION_BLOCKED_BY_WORLD;
+                if world_toi
+                    .map(|toi| (toi - nearest_toi).abs() <= 1e-3)
+                    .unwrap_or(false)
+                {
+                    self.try_carve_sheet_from_hitscan(shooter_id, shot.shot_id, origin, shot.dir, hit);
+                }
             }
 
             self.outbound_packets
                 .push(encode_shot_result_packet(&result));
         }
+    }
+
+    fn try_carve_sheet_from_hitscan(
+        &mut self,
+        shooter_id: u32,
+        shot_id: u32,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        hit: vibe_netcode::sim_world::RayHitDetailed,
+    ) {
+        let sheet_id = hit.user_data as u32;
+        if !self.sheets.contains(sheet_id) {
+            return;
+        }
+        let Some(sheet) = self.sheets.get(sheet_id) else {
+            return;
+        };
+        let impact = [
+            origin[0] + dir[0] * hit.toi,
+            origin[1] + dir[1] * hit.toi,
+            origin[2] + dir[2] * hit.toi,
+        ];
+        let uv = sheet.frame.world_to_uv(impact);
+        let au = sheet.frame.axis_u;
+        let av = sheet.frame.axis_v;
+        let dir_uv = [
+            dir[0] * au[0] + dir[1] * au[1] + dir[2] * au[2],
+            dir[0] * av[0] + dir[1] * av[1] + dir[2] * av[2],
+        ];
+        let n = hit.normal;
+        let normal_speed =
+            (dir[0] * n[0] + dir[1] * n[1] + dir[2] * n[2]).abs() * RIFLE_BULLET_SPEED_MPS;
+        let seq = sheet.mask.seq.saturating_add(1);
+        let seed = shooter_id
+            .wrapping_mul(0x9e37_79b9)
+            .wrapping_add(shot_id)
+            .wrapping_add(sheet_id);
+        let event = CarveEvent {
+            sheet_id,
+            seq,
+            uv,
+            dir_uv,
+            normal_speed,
+            mass_or_energy: RIFLE_BULLET_MASS_KG,
+            footprint_radius: RIFLE_BULLET_RADIUS_M,
+            seed,
+        };
+        self.apply_and_emit_sheet_carve(event, dir);
+    }
+
+    fn collect_sheet_strikers(&self) -> (HashMap<ColliderHandle, StrikerRef>, Vec<StrikerRef>) {
+        let mut by_collider = HashMap::new();
+        let mut list = Vec::new();
+        for (&id, v) in &self.arena.vehicles {
+            let s = StrikerRef {
+                kind: MomentumStrikerKind::Vehicle,
+                id,
+                collider: v.chassis_collider,
+                body: v.chassis_body,
+            };
+            by_collider.insert(s.collider, s);
+            list.push(s);
+        }
+        for (&id, body) in &self.arena.dynamic.dynamic_bodies {
+            let s = StrikerRef {
+                kind: MomentumStrikerKind::Dynamic,
+                id,
+                collider: body.collider_handle,
+                body: body.body_handle,
+            };
+            by_collider.insert(s.collider, s);
+            list.push(s);
+        }
+        (by_collider, list)
+    }
+
+    /// Soft breaker↔sheet pass-through during the dynamics solve, then carve.
+    fn step_vehicles_dynamics_and_soft_sheet_carves(&mut self, dt: f32) -> (f32, f32) {
+        if !sheet_momentum_carve_enabled() || self.sheet_colliders.is_empty() {
+            return self.arena.step_vehicles_and_dynamics(dt);
+        }
+
+        let (breakers, strikers) = self.collect_sheet_strikers();
+        let collector = std::sync::Mutex::new(SoftSheetStepCollector::default());
+        let timings = self
+            .arena
+            .step_vehicles_and_dynamics_soft_sheets(dt, &breakers, &collector);
+
+        let SoftSheetStepCollector { impacts: raw, drags } = collector
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        apply_soft_sheet_drag(&mut self.arena.dynamic.sim, &self.sheets, &drags);
+        let mut impacts = finalize_soft_sheet_impacts(
+            raw,
+            &self.sheets,
+            &mut self.sheet_momentum_cooldown,
+            self.server_tick,
+        );
+
+        let budget = MOMENTUM_CARVE_MAX_PER_TICK.saturating_sub(impacts.len());
+        if budget > 0 && !strikers.is_empty() {
+            let already: HashSet<_> = impacts
+                .iter()
+                .map(|i| (i.striker_kind as u8, i.striker_id, i.sheet_id))
+                .collect();
+            let sheet_by_handle = sheet_collider_index(&self.sheet_colliders);
+            let tunnel = sample_tunnel_sheet_impacts(
+                &self.arena.dynamic.sim,
+                &sheet_by_handle,
+                &strikers,
+                &self.sheets,
+                &already,
+                &mut self.sheet_momentum_cooldown,
+                self.server_tick,
+                dt,
+                budget,
+            );
+            impacts.extend(tunnel);
+        }
+
+        for impact in impacts {
+            let Some(sheet) = self.sheets.get(impact.sheet_id) else {
+                continue;
+            };
+            let event = impact_to_carve_event(sheet, &impact);
+            let debris_dir = [
+                -impact.normal_sheet_out[0],
+                -impact.normal_sheet_out[1],
+                -impact.normal_sheet_out[2],
+            ];
+            self.apply_and_emit_sheet_carve(event, debris_dir);
+        }
+        timings
+    }
+
+    fn apply_and_emit_sheet_carve(&mut self, event: CarveEvent, debris_dir: [f32; 3]) {
+        let sheet_id = event.sheet_id;
+        let Some(result) = self.sheets.apply_event(&event) else {
+            return;
+        };
+        if !result.applied {
+            return;
+        }
+        let debris_cuboids = {
+            let sheet = self.sheets.get(sheet_id);
+            sheet
+                .map(|s| debris_spawns_from_islands(&result.dropped_islands, &s.frame))
+                .unwrap_or_default()
+        };
+        let force_hole = sheet_falling_debris_enabled() && !debris_cuboids.is_empty();
+        // Vehicle/crate blunt carves must open collision immediately — the soft
+        // pass already let the body through, and a deferred usefulness rebuild
+        // leaves a solid wall that re-wedges the chassis as it slows.
+        // Any blunt momentum carve (≥ crate footprint); bullets stay on the
+        // usefulness gate.
+        let force_collision = force_hole || event.footprint_radius >= 0.12;
+        if result.carved_cells > 0 {
+            self.sync_sheet_collision(sheet_id, force_collision);
+        }
+        if force_hole {
+            let material_id = self
+                .sheets
+                .get(sheet_id)
+                .map(|s| s.material_id)
+                .unwrap_or(SheetMaterialId::Drywall);
+            let thickness_axis = self
+                .sheets
+                .get(sheet_id)
+                .map(|s| s.frame.axis_thickness)
+                .unwrap_or([0.0, 1.0, 0.0]);
+            self.spawn_sheet_debris_cuboids(
+                &debris_cuboids,
+                material_id,
+                thickness_axis,
+                debris_dir,
+                event.seed,
+            );
+        }
+        if result.carved_cells > 0 || result.damaged_cells > 0 {
+            let pkt = carve_event_to_packet(&event);
+            self.outbound_packets
+                .push(encode_carve_event_packet(&pkt));
+        }
+    }
+
+    fn sync_sheet_collision(&mut self, sheet_id: u32, force: bool) {
+        let old = self
+            .sheet_colliders
+            .get(&sheet_id)
+            .cloned()
+            .unwrap_or_default();
+        if sheet_coarse_collision_enabled() {
+            let cuboids = {
+                let Some(sheet) = self.sheets.get_mut(sheet_id) else {
+                    return;
+                };
+                if force {
+                    Some(sheet.take_collision_cuboids_forced())
+                } else {
+                    sheet.take_collision_cuboids_if_dirty()
+                }
+            };
+            let Some(cuboids) = cuboids else {
+                return;
+            };
+            if cuboids.is_empty() {
+                for h in &old {
+                    self.arena.remove_collider(*h);
+                }
+                self.sheet_colliders.remove(&sheet_id);
+                self.arena.rebuild_broad_phase();
+            } else {
+                let payload: Vec<_> = cuboids
+                    .iter()
+                    .map(|c| {
+                        (
+                            nalgebra::Vector3::new(c.center[0], c.center[1], c.center[2]),
+                            c.rotation_xyzw,
+                            nalgebra::Vector3::new(
+                                c.half_extents[0],
+                                c.half_extents[1],
+                                c.half_extents[2],
+                            ),
+                        )
+                    })
+                    .collect();
+                let handles =
+                    self.arena
+                        .swap_static_cuboid_set(&old, &payload, sheet_id as u128);
+                self.sheet_colliders.insert(sheet_id, handles);
+            }
+            return;
+        }
+        // Legacy path: remesh visual trimesh into Rapier every carve.
+        let (verts, tris) = {
+            let Some(sheet) = self.sheets.get(sheet_id) else {
+                return;
+            };
+            sheet.build_world_trimesh()
+        };
+        if old.is_empty() {
+            return;
+        }
+        if verts.is_empty() {
+            for h in &old {
+                self.arena.remove_collider(*h);
+            }
+            self.sheet_colliders.remove(&sheet_id);
+            self.arena.rebuild_broad_phase();
+        } else {
+            for h in old.iter().skip(1) {
+                self.arena.remove_collider(*h);
+            }
+            let new_handle =
+                self.arena
+                    .swap_static_trimesh(old[0], verts, tris, sheet_id as u128);
+            self.sheet_colliders.insert(sheet_id, vec![new_handle]);
+        }
+    }
+
+    fn spawn_sheet_debris_cuboids(
+        &mut self,
+        cuboids: &[OrientedWorldCuboid],
+        material_id: SheetMaterialId,
+        thickness_axis: [f32; 3],
+        shot_dir: [f32; 3],
+        seed: u32,
+    ) {
+        if cuboids.is_empty() || !sheet_falling_debris_enabled() {
+            return;
+        }
+        let density = lookup_sheet_material(material_id).island_density;
+        let side = {
+            let d = shot_dir[0] * thickness_axis[0]
+                + shot_dir[1] * thickness_axis[1]
+                + shot_dir[2] * thickness_axis[2];
+            if d >= 0.0 {
+                1.0
+            } else {
+                -1.0
+            }
+        };
+        let ttl_ticks = (DEBRIS_TTL_SEC * SIM_HZ as f32).round().max(1.0) as u32;
+        let expires_tick = self.server_tick.saturating_add(ttl_ticks);
+
+        for (i, c) in cuboids.iter().enumerate() {
+            while self.sheet_debris.len() >= DEBRIS_MAX_CONCURRENT {
+                let oldest = self
+                    .sheet_debris
+                    .values()
+                    .min_by_key(|m| m.expires_tick)
+                    .map(|m| m.id);
+                if let Some(id) = oldest {
+                    self.remove_sheet_debris(id);
+                } else {
+                    break;
+                }
+            }
+            let id = self.next_sheet_debris_id;
+            self.next_sheet_debris_id = self.next_sheet_debris_id.wrapping_add(1).max(SHEET_DEBRIS_ID_BASE);
+            let jitter = ((seed.wrapping_add(i as u32 * 97)) & 0xff) as f32 / 255.0 - 0.5;
+            let center = [
+                c.center[0] + thickness_axis[0] * side * DEBRIS_SPAWN_NUDGE_M,
+                c.center[1] + thickness_axis[1] * side * DEBRIS_SPAWN_NUDGE_M,
+                c.center[2] + thickness_axis[2] * side * DEBRIS_SPAWN_NUDGE_M,
+            ];
+            let vx = thickness_axis[0] * side * 1.4 + jitter * 0.3;
+            let vy = thickness_axis[1] * side * 1.4 - 0.35;
+            let vz = thickness_axis[2] * side * 1.4 + jitter * 0.25;
+            let wx = jitter * 2.5;
+            let wy = (0.5 - jitter) * 1.8;
+            let wz = jitter * -2.0;
+            self.spawn_sheet_debris_body(
+                id,
+                c.half_extents,
+                center,
+                c.rotation_xyzw,
+                [vx, vy, vz],
+                [wx, wy, wz],
+                density,
+            );
+            self.sheet_debris.insert(
+                id,
+                SheetDebrisMeta {
+                    id,
+                    half_extents: c.half_extents,
+                    material_id,
+                    expires_tick,
+                },
+            );
+        }
+    }
+
+    fn spawn_sheet_debris_body(
+        &mut self,
+        id: u32,
+        half_extents: [f32; 3],
+        center: [f32; 3],
+        rotation_xyzw: [f32; 4],
+        linvel: [f32; 3],
+        angvel: [f32; 3],
+        density: f32,
+    ) {
+        if self.ragdoll_bodies.contains_key(&id) {
+            return;
+        }
+        let iso = UnitQuaternion::from_quaternion(Quaternion::new(
+            rotation_xyzw[3],
+            rotation_xyzw[0],
+            rotation_xyzw[1],
+            rotation_xyzw[2],
+        ));
+        let body = RigidBodyBuilder::dynamic()
+            .position(Isometry3::from_parts(
+                Translation3::new(center[0], center[1], center[2]),
+                iso,
+            ))
+            .linvel(vector![linvel[0], linvel[1], linvel[2]])
+            .angvel(vector![angvel[0], angvel[1], angvel[2]])
+            .linear_damping(0.04)
+            .angular_damping(0.08)
+            .can_sleep(true)
+            .build();
+        let body_handle = self.arena.dynamic.sim.rigid_bodies.insert(body);
+        // Same groups as ragdolls: collide with static world + other dynamics.
+        let dyn_groups = InteractionGroups::new(Group::GROUP_2, Group::GROUP_1 | Group::GROUP_2);
+        let collider = ColliderBuilder::cuboid(half_extents[0], half_extents[1], half_extents[2])
+            .density(density.max(1.0))
+            .restitution(0.15)
+            .friction(0.7)
+            .collision_groups(dyn_groups)
+            .user_data(id as u128)
+            .build();
+        let _ = self.arena.dynamic.sim.colliders.insert_with_parent(
+            collider,
+            body_handle,
+            &mut self.arena.dynamic.sim.rigid_bodies,
+        );
+        self.ragdoll_bodies.insert(id, body_handle);
+    }
+
+    fn remove_sheet_debris(&mut self, id: u32) {
+        self.sheet_debris.remove(&id);
+        self.remove_ragdoll_body(id);
+    }
+
+    fn expire_sheet_debris(&mut self) {
+        let tick = self.server_tick;
+        let expired: Vec<u32> = self
+            .sheet_debris
+            .values()
+            .filter(|m| m.expires_tick <= tick)
+            .map(|m| m.id)
+            .collect();
+        for id in expired {
+            self.remove_sheet_debris(id);
+        }
+    }
+
+    /// Packed `[id, hx, hy, hz, px, py, pz, qx, qy, qz, qw, cr, cg, cb] * N`.
+    pub fn sheet_debris_states(&self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.sheet_debris.len() * SHEET_DEBRIS_STATE_STRIDE);
+        let mut ids: Vec<u32> = self.sheet_debris.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            let Some(meta) = self.sheet_debris.get(&id) else {
+                continue;
+            };
+            let Some(state) = self.ragdoll_body_state(id) else {
+                continue;
+            };
+            let (cr, cg, cb) = sheet_material_rgb(meta.material_id);
+            out.push(id as f32);
+            out.extend_from_slice(&meta.half_extents);
+            out.extend_from_slice(&state);
+            out.push(cr);
+            out.push(cg);
+            out.push(cb);
+        }
+        out
     }
 
     // TODO: lag-compensate melee
@@ -2478,4 +2954,390 @@ mod tests {
         let victim_hp = session.arena.players.get(&bot_id).expect("bot exists").hp;
         assert_eq!(victim_hp, 100, "victim should be out of melee range");
     }
+
+    #[test]
+    fn demo_local_session_registers_sheet_colliders() {
+        let session = LocalSession::new();
+        assert!(
+            !session.sheets.is_empty(),
+            "demo world should include destructible hut sheets"
+        );
+        assert_eq!(session.sheets.len(), session.sheet_colliders.len());
+    }
+
+    #[test]
+    fn firing_at_demo_hut_wall_emits_carve_event() {
+        use crate::constants::{PKT_CARVE_EVENT, WEAPON_HITSCAN};
+
+        let mut session = LocalSession::new();
+        session.connect();
+
+        // Drywall hut south wall center (see sheet_destruction::demo_huts).
+        let wall = [4.0_f32, 1.4, -13.6];
+        let eye = [4.0_f32, 1.4, -10.0];
+        place_player_at(
+            &mut session,
+            LOCAL_PLAYER_ID,
+            eye[0] as f64,
+            eye[1] as f64 - PLAYER_EYE_HEIGHT_M as f64,
+            eye[2] as f64,
+        );
+        let dir = [
+            wall[0] - eye[0],
+            wall[1] - eye[1],
+            wall[2] - eye[2],
+        ];
+        let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+        let dir = [dir[0] / len, dir[1] / len, dir[2] / len];
+
+        let before_occ: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        session.queue_fire_cmd(FireCmd {
+            seq: 1,
+            shot_id: 42,
+            weapon: WEAPON_HITSCAN,
+            client_fire_time_us: session.server_time_us(),
+            client_interp_ms: 0,
+            client_dynamic_interp_ms: 0,
+            dir,
+        });
+        session.process_hitscan(session.server_time_ms());
+
+        let after_occ: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+        assert!(
+            after_occ < before_occ,
+            "shot at hut wall should carve cells (before={before_occ} after={after_occ})"
+        );
+
+        let packets = session.drain_packets();
+        let carve_count = packets
+            .iter()
+            .filter(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT))
+            .count();
+        assert!(
+            carve_count >= 1,
+            "expected at least one CarveEvent packet, got {}",
+            packets.len()
+        );
+    }
+
+    #[test]
+    fn high_speed_crate_contact_carves_demo_hut() {
+        use crate::constants::PKT_CARVE_EVENT;
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        // Overlap the drywall south wall and drive through it.
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -13.45],
+            vector![0.5, 0.5, 0.5],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, -20.0], true);
+            rb.wake_up(true);
+        }
+
+        let before: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        for _ in 0..30 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+        }
+
+        let after: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+        assert!(
+            after < before,
+            "high-speed crate contact should carve (before={before} after={after})"
+        );
+        assert!(session
+            .drain_packets()
+            .iter()
+            .any(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT)));
+    }
+
+    #[test]
+    fn soft_sheet_drag_slows_breaker_but_still_passes() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.4, 0.4, 0.4],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        let v0 = 16.0;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, v0], true);
+            rb.wake_up(true);
+        }
+
+        let mut min_speed = f32::MAX;
+        let mut saw_drag_window = false;
+        for _ in 0..40 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+            let speed = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.linvel().norm())
+                .unwrap_or(0.0);
+            let z = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.translation().z)
+                .unwrap_or(0.0);
+            // While overlapping the south wall band, soft drag should bite.
+            if (-13.85..-13.35).contains(&z) {
+                saw_drag_window = true;
+                min_speed = min_speed.min(speed);
+            }
+        }
+
+        let z1 = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(-14.2);
+        assert!(saw_drag_window, "breaker should transit the sheet band");
+        assert!(
+            min_speed < v0 * 0.97,
+            "soft drag should remove some through-speed (min={min_speed})"
+        );
+        assert!(
+            min_speed > 6.0,
+            "soft drag must not hard-stop the breaker (min={min_speed})"
+        );
+        assert!(
+            z1 > -13.2,
+            "breaker should finish passing through (z1={z1})"
+        );
+    }
+
+    #[test]
+    fn soft_sheet_hook_preserves_breaker_speed_while_carving() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        // Approach the drywall south face from -Z (outside → through).
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.4, 0.4, 0.4],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 18.0], true);
+            rb.wake_up(true);
+        }
+
+        let before: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        let mut min_speed_after_impact = f32::MAX;
+        let mut saw_carve = false;
+        for _ in 0..45 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+            let speed = session
+                .arena
+                .dynamic
+                .sim
+                .rigid_bodies
+                .get(body_handle)
+                .map(|rb| rb.linvel().norm())
+                .unwrap_or(0.0);
+            let occ: u32 = session
+                .sheets
+                .iter()
+                .map(|(_, s)| s.mask.occupancy_count() as u32)
+                .sum();
+            if occ < before {
+                saw_carve = true;
+                min_speed_after_impact = min_speed_after_impact.min(speed);
+            }
+        }
+
+        assert!(saw_carve, "soft sheet path should carve the demo hut wall");
+        assert!(
+            min_speed_after_impact > 8.0,
+            "breaker should keep most of its speed through soft sheet contacts (min={min_speed_after_impact})"
+        );
+    }
+
+    #[test]
+    fn slowing_breaker_inside_sheet_keeps_soft_and_opens_driveable_hole() {
+        use nalgebra::vector;
+
+        let mut session = LocalSession::new();
+        session.connect();
+        // Smash into the drywall south wall, then scrub speed while still inside
+        // — the failure mode from the drive-through wedge screenshot.
+        let body_id = session.arena.spawn_dynamic_box(
+            vector![4.0, 1.4, -14.2],
+            vector![0.7, 0.35, 1.2],
+        );
+        session.arena.rebuild_broad_phase();
+        let body_handle = session
+            .arena
+            .dynamic
+            .dynamic_bodies
+            .get(&body_id)
+            .unwrap()
+            .body_handle;
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 16.0], true);
+            rb.wake_up(true);
+        }
+
+        let before: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+
+        for _ in 0..8 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+        }
+        // Scrub speed while overlapping / mid-transit through the wall.
+        if let Some(rb) = session.arena.dynamic.sim.rigid_bodies.get_mut(body_handle) {
+            rb.set_linvel(vector![0.0, 0.0, 1.2], true);
+            rb.wake_up(true);
+        }
+        let z_mid = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(0.0);
+
+        for _ in 0..40 {
+            session.step_vehicles_dynamics_and_soft_sheet_carves(1.0 / 60.0);
+            session.server_tick = session.server_tick.saturating_add(1);
+        }
+
+        let after: u32 = session
+            .sheets
+            .iter()
+            .map(|(_, s)| s.mask.occupancy_count() as u32)
+            .sum();
+        let z1 = session
+            .arena
+            .dynamic
+            .sim
+            .rigid_bodies
+            .get(body_handle)
+            .map(|rb| rb.translation().z)
+            .unwrap_or(z_mid);
+
+        assert!(
+            after + 80 < before,
+            "drive-through should open a hole even after slowing (before={before} after={after})"
+        );
+        assert!(
+            z1 > z_mid + 0.1,
+            "breaker should keep advancing after slowdown, not wedge (z_mid={z_mid} z1={z1})"
+        );
+    }
+
+    #[test]
+    fn vehicle_style_carve_on_demo_hut_emits_event() {
+        use crate::constants::PKT_CARVE_EVENT;
+        use crate::sheet_destruction::{
+            VEHICLE_CARVE_EFF_MASS_KG, VEHICLE_CARVE_FOOTPRINT_M,
+        };
+
+        let mut session = LocalSession::new();
+        session.connect();
+
+        // Drywall hut south wall center in world / UV.
+        let (sheet_id, uv) = session
+            .sheets
+            .iter()
+            .find_map(|(&id, s)| {
+                // Prefer the thin Z-facing wall near z=-13.6.
+                let center = s.frame.uv_to_world([s.frame.size_u * 0.5, s.frame.size_v * 0.5]);
+                if (center[0] - 4.0).abs() < 0.6 && (center[2] + 13.6).abs() < 0.3 {
+                    Some((id, [s.frame.size_u * 0.5, s.frame.size_v * 0.5]))
+                } else {
+                    None
+                }
+            })
+            .expect("drywall south wall sheet");
+
+        let before = session.sheets.get(sheet_id).unwrap().mask.occupancy_count();
+        let event = CarveEvent {
+            sheet_id,
+            seq: session.sheets.get(sheet_id).unwrap().mask.seq + 1,
+            uv,
+            dir_uv: [0.0, 0.0],
+            normal_speed: 12.0,
+            mass_or_energy: VEHICLE_CARVE_EFF_MASS_KG,
+            footprint_radius: VEHICLE_CARVE_FOOTPRINT_M,
+            seed: 77,
+        };
+        session.apply_and_emit_sheet_carve(event, [0.0, 0.0, -1.0]);
+        let after = session.sheets.get(sheet_id).unwrap().mask.occupancy_count();
+        assert!(after < before, "vehicle-style carve should remove cells");
+
+        let packets = session.drain_packets();
+        assert!(packets
+            .iter()
+            .any(|pkt| pkt.first() == Some(&PKT_CARVE_EVENT)));
+    }
+
 }

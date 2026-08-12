@@ -138,10 +138,23 @@ impl PhysicsArena {
         max_toi: f32,
         exclude_player: Option<u32>,
     ) -> Option<f32> {
+        self.cast_static_world_ray_detailed(origin, dir, max_toi, exclude_player)
+            .map(|hit| hit.toi)
+    }
+
+    pub fn cast_static_world_ray_detailed(
+        &self,
+        origin: [f32; 3],
+        dir: [f32; 3],
+        max_toi: f32,
+        exclude_player: Option<u32>,
+    ) -> Option<vibe_netcode::sim_world::RayHitDetailed> {
         let exclude = exclude_player
             .and_then(|pid| self.players.get(&pid))
             .map(|p| p.collider);
-        self.dynamic.sim.cast_ray(origin, dir, max_toi, exclude)
+        self.dynamic
+            .sim
+            .cast_ray_detailed(origin, dir, max_toi, exclude)
     }
 
     pub fn cast_dynamic_body_ray(
