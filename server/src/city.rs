@@ -134,12 +134,11 @@ fn build_scene() -> anyhow::Result<CityScene> {
         })
         .count();
     if hull_nodes > 0 {
-        tracing::warn!(
+        tracing::info!(
             scene = %scene_file(),
             hull_nodes,
             total_nodes = pack.node_colliders.len(),
-            "scene pack contains convex-hull chunks; the client renders AABB boxes, \
-             so chunks will look interpenetrating. Prefer an all-cuboid pack."
+            "scene pack contains convex-hull chunks; the client renders them as hulls"
         );
     }
 

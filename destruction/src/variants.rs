@@ -52,7 +52,12 @@ pub fn truncate_to_floors(
     }
     let mut result = ScenePack {
         title: format!("{} {}-floor", source.title, floors),
+        version: source.version,
         stress_limits: source.stress_limits,
+        // Truncation drops nodes, never materials: a shorter variant is the
+        // same building made of the same things, and bond material indices
+        // are copied verbatim so they must keep resolving.
+        materials: source.materials.clone(),
         nodes: Vec::new(),
         bonds: Vec::new(),
         node_sizes: Vec::new(),

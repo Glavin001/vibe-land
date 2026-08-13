@@ -1,4 +1,4 @@
-//! ScenePack v1 parser — the JSON building-asset format produced by the
+//! ScenePack v1/v2 parser — the JSON building-asset format produced by the
 //! blast-stress-solver exporters (fractured-tower.json et al).
 //!
 //! Schema mirrored from
@@ -40,7 +40,12 @@ pub struct SceneBond {
     pub node1: u32,
     pub centroid: Vec3,
     pub normal: Vec3,
+    /// Real contact patch (m^2). Geometry only -- strength is authored through
+    /// `material`, never by scaling area.
     pub area: f32,
+    /// Index into `ScenePack::materials`. v1 packs have a single material, so
+    /// every bond is 0.
+    pub material: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -52,7 +57,14 @@ pub enum SceneCollider {
 #[derive(Clone, Debug)]
 pub struct ScenePack {
     pub title: String,
+    /// Source format version. v2 authors a material table; v1 has one global
+    /// set of limits, which is normalised into a one-entry table below.
+    pub version: u32,
     pub stress_limits: Option<StressLimits>,
+    /// Always non-empty after parsing. A structure mixes strengths -- a facade
+    /// clip is meant to shed long before the frame does -- and that difference
+    /// is authored here rather than by distorting bond areas.
+    pub materials: Vec<StressLimits>,
     pub nodes: Vec<SceneNode>,
     pub bonds: Vec<SceneBond>,
     /// Visual box size per node (full extents), used for rendering.
@@ -110,11 +122,18 @@ struct SceneDefaultsJson {
 struct SolverDefaultsJson {
     #[serde(default)]
     limits: Option<LimitsJson>,
+    #[serde(default)]
+    materials: Option<Vec<LimitsJson>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LimitsJson {
+    /// v2 material tables label their entries. Parsed so an unknown field
+    /// cannot fail the load; vibe-land has no report surface that needs it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    name: Option<String>,
     compression_elastic: f32,
     compression_fatal: f32,
     tension_elastic: f32,
@@ -146,6 +165,9 @@ struct ScenarioBondJson {
     centroid: Vec3Json,
     normal: Vec3Json,
     area: f32,
+    /// Material index. Omitted means 0, which is what every v1 bond uses.
+    #[serde(default, rename = "m")]
+    m: u32,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -173,10 +195,63 @@ enum NodeColliderJson {
     },
 }
 
+/// Limits used when a v1 pack authors none. Matches the server-side fallback.
+const PLACEHOLDER_LIMITS: StressLimits = StressLimits {
+    compression_elastic: 12.0e6,
+    compression_fatal: 30.0e6,
+    tension_elastic: 1.2e6,
+    tension_fatal: 3.0e6,
+    shear_elastic: 1.6e6,
+    shear_fatal: 4.0e6,
+};
+
+fn limits_from(limits: &LimitsJson) -> StressLimits {
+    StressLimits {
+        compression_elastic: limits.compression_elastic,
+        compression_fatal: limits.compression_fatal,
+        tension_elastic: limits.tension_elastic,
+        tension_fatal: limits.tension_fatal,
+        shear_elastic: limits.shear_elastic,
+        shear_fatal: limits.shear_fatal,
+    }
+}
+
+/// A negative tension or shear limit means "same as compression". Resolved
+/// once, here, so every consumer downstream sees real numbers -- a sentinel
+/// that reached a log or an assertion would read as a nonsensical strength.
+fn resolve_inherited(limits: &StressLimits) -> StressLimits {
+    let inherit = |value: f32, fallback: f32| if value < 0.0 { fallback } else { value };
+    StressLimits {
+        compression_elastic: limits.compression_elastic,
+        compression_fatal: limits.compression_fatal,
+        tension_elastic: inherit(limits.tension_elastic, limits.compression_elastic),
+        tension_fatal: inherit(limits.tension_fatal, limits.compression_fatal),
+        shear_elastic: inherit(limits.shear_elastic, limits.compression_elastic),
+        shear_fatal: inherit(limits.shear_fatal, limits.compression_fatal),
+    }
+}
+
+fn validate_material(index: usize, limits: &StressLimits) -> Result<(), ScenePackError> {
+    if limits.compression_elastic < 0.0 {
+        return Err(ScenePackError::Invalid(format!(
+            "material {index} has a negative compression limit; only tension and shear may \
+             inherit from compression"
+        )));
+    }
+    // Fatal below elastic would mean a bond breaks before it yields, which is
+    // not a weaker material -- it is an incoherent one.
+    if limits.compression_fatal < limits.compression_elastic {
+        return Err(ScenePackError::Invalid(format!(
+            "material {index} has compressionFatal below compressionElastic"
+        )));
+    }
+    Ok(())
+}
+
 pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
     let pack: ScenePackJson =
         serde_json::from_str(payload).map_err(|error| ScenePackError::Json(error.to_string()))?;
-    if pack.version != 1 {
+    if pack.version != 1 && pack.version != 2 {
         return Err(ScenePackError::UnsupportedVersion(pack.version));
     }
     let scenario = pack.scenario;
@@ -204,20 +279,73 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
         }
     }
 
+    let solver = pack.defaults.and_then(|defaults| defaults.solver);
+    let authored_limits = solver.as_ref().and_then(|solver| solver.limits.as_ref()).map(limits_from);
+    let materials = match pack.version {
+        2 => {
+            // The table is the whole point of v2: without it a pack that was
+            // authored with a weak facade and a strong frame would silently
+            // load with one uniform strength.
+            let table = solver
+                .as_ref()
+                .and_then(|solver| solver.materials.as_ref())
+                .ok_or_else(|| {
+                    ScenePackError::Invalid(
+                        "scene pack v2 requires defaults.solver.materials".to_string(),
+                    )
+                })?;
+            if table.is_empty() {
+                return Err(ScenePackError::Invalid(
+                    "scene pack v2 requires at least one solver material".to_string(),
+                ));
+            }
+            table.iter().map(limits_from).collect::<Vec<_>>()
+        }
+        // v1 has one global set of limits. Normalising it into a one-entry
+        // table means everything downstream sees a single shape.
+        _ => vec![authored_limits.unwrap_or(PLACEHOLDER_LIMITS)],
+    };
+    for (index, material) in materials.iter().enumerate() {
+        validate_material(index, material)?;
+    }
+    let materials: Vec<StressLimits> = materials.iter().map(resolve_inherited).collect();
+
+    let bonds: Vec<SceneBond> = scenario
+        .bonds
+        .iter()
+        .enumerate()
+        .map(|(index, bond)| {
+            // v1 packs have no material table, so any stray index is not
+            // meaningful; v2 indices must actually exist.
+            let material = if pack.version >= 2 { bond.m } else { 0 };
+            if material as usize >= materials.len() {
+                return Err(ScenePackError::Invalid(format!(
+                    "bond {index} references material {material} but the pack has {} materials",
+                    materials.len()
+                )));
+            }
+            Ok(SceneBond {
+                node0: bond.node0,
+                node1: bond.node1,
+                centroid: bond.centroid.into(),
+                normal: bond.normal.into(),
+                area: bond.area,
+                material,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
     Ok(ScenePack {
         title: pack.title,
-        stress_limits: pack
-            .defaults
-            .and_then(|defaults| defaults.solver)
-            .and_then(|solver| solver.limits)
-            .map(|limits| StressLimits {
-                compression_elastic: limits.compression_elastic,
-                compression_fatal: limits.compression_fatal,
-                tension_elastic: limits.tension_elastic,
-                tension_fatal: limits.tension_fatal,
-                shear_elastic: limits.shear_elastic,
-                shear_fatal: limits.shear_fatal,
-            }),
+        version: pack.version,
+        // v2 authors its limits in the table; keep field one exposed here so
+        // callers that only want "the" limits still get a sensible answer.
+        stress_limits: if pack.version >= 2 {
+            materials.first().copied()
+        } else {
+            authored_limits.map(|limits| resolve_inherited(&limits))
+        },
+        materials,
         nodes: scenario
             .nodes
             .into_iter()
@@ -227,17 +355,7 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
                 volume: node.volume,
             })
             .collect(),
-        bonds: scenario
-            .bonds
-            .into_iter()
-            .map(|bond| SceneBond {
-                node0: bond.node0,
-                node1: bond.node1,
-                centroid: bond.centroid.into(),
-                normal: bond.normal.into(),
-                area: bond.area,
-            })
-            .collect(),
+        bonds,
         node_sizes: scenario.node_sizes.into_iter().map(Into::into).collect(),
         node_colliders: scenario
             .node_colliders
@@ -295,6 +413,147 @@ mod tests {
             ]
         }
     }"#;
+
+    /// v2 of the format: a material table plus per-bond indices into it.
+    const V2: &str = r#"{
+        "version": 2,
+        "title": "v2 test",
+        "defaults": {
+            "solver": {
+                "materials": [
+                    {"name": "frame",
+                     "compressionElastic": 12.0, "compressionFatal": 30.0,
+                     "tensionElastic": 1.2, "tensionFatal": 3.0,
+                     "shearElastic": 1.6, "shearFatal": 4.0},
+                    {"name": "facade",
+                     "compressionElastic": 1.0, "compressionFatal": 2.0,
+                     "tensionElastic": -1.0, "tensionFatal": -1.0,
+                     "shearElastic": -1.0, "shearFatal": -1.0}
+                ]
+            }
+        },
+        "scenario": {
+            "nodes": [
+                {"centroid": {"x": 0, "y": 0, "z": 0}, "mass": 0, "volume": 1},
+                {"centroid": {"x": 0, "y": 1, "z": 0}, "mass": 10, "volume": 1}
+            ],
+            "bonds": [
+                {"node0": 0, "node1": 1,
+                 "centroid": {"x": 0, "y": 0.5, "z": 0},
+                 "normal": {"x": 0, "y": 1, "z": 0}, "area": 1.0, "m": 1},
+                {"node0": 1, "node1": 0,
+                 "centroid": {"x": 0, "y": 0.5, "z": 0},
+                 "normal": {"x": 0, "y": 1, "z": 0}, "area": 2.0}
+            ],
+            "nodeSizes": [
+                {"x": 1, "y": 1, "z": 1},
+                {"x": 1, "y": 1, "z": 1}
+            ],
+            "nodeColliders": [
+                {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}},
+                {"kind": "cuboid", "halfExtents": {"x": 0.5, "y": 0.5, "z": 0.5}}
+            ]
+        }
+    }"#;
+
+    fn v2_with(mutate: impl Fn(&mut serde_json::Value)) -> String {
+        let mut value: serde_json::Value = serde_json::from_str(V2).expect("fixture parses");
+        mutate(&mut value);
+        value.to_string()
+    }
+
+    #[test]
+    fn parses_v2_material_table_and_bond_indices() {
+        let pack = parse_scene_pack(V2).expect("parse");
+        assert_eq!(pack.version, 2);
+        assert_eq!(pack.materials.len(), 2);
+        assert_eq!(pack.bonds[0].material, 1, "explicit m is honoured");
+        assert_eq!(pack.bonds[1].material, 0, "omitted m means the first material");
+    }
+
+    /// The facade material authors -1 for tension and shear, meaning "same as
+    /// compression". Resolving at parse keeps sentinels out of everything
+    /// downstream, where a negative strength would be meaningless.
+    #[test]
+    fn v2_negative_limits_inherit_compression() {
+        let pack = parse_scene_pack(V2).expect("parse");
+        let facade = pack.materials[1];
+        assert_eq!(facade.tension_elastic, facade.compression_elastic);
+        assert_eq!(facade.shear_fatal, facade.compression_fatal);
+    }
+
+    /// v1 has no table. Normalising it to one entry means every consumer sees
+    /// the same shape regardless of which version authored the pack.
+    #[test]
+    fn v1_synthesises_a_single_material() {
+        let pack = parse_scene_pack(MINIMAL).expect("parse");
+        assert_eq!(pack.version, 1);
+        assert_eq!(pack.materials.len(), 1);
+        assert_eq!(pack.materials[0], pack.stress_limits.expect("limits"));
+        assert!(pack.bonds.iter().all(|bond| bond.material == 0));
+    }
+
+    #[test]
+    fn v1_without_limits_falls_back_to_placeholder() {
+        let json = v2_with(|value| {
+            value["version"] = serde_json::json!(1);
+            value["defaults"] = serde_json::json!({});
+        });
+        let pack = parse_scene_pack(&json).expect("parse");
+        assert_eq!(pack.materials, vec![PLACEHOLDER_LIMITS]);
+    }
+
+    /// Without the table a v2 pack would load with one uniform strength,
+    /// silently discarding the weak-facade/strong-frame split it was authored
+    /// around. Better to refuse than to quietly build the wrong building.
+    #[test]
+    fn v2_without_materials_is_rejected() {
+        let json = v2_with(|value| {
+            value["defaults"]["solver"] = serde_json::json!({});
+        });
+        assert!(parse_scene_pack(&json).is_err());
+    }
+
+    #[test]
+    fn v2_with_empty_material_table_is_rejected() {
+        let json = v2_with(|value| {
+            value["defaults"]["solver"]["materials"] = serde_json::json!([]);
+        });
+        assert!(parse_scene_pack(&json).is_err());
+    }
+
+    #[test]
+    fn out_of_range_material_index_names_the_bond() {
+        let json = v2_with(|value| {
+            value["scenario"]["bonds"][1]["m"] = serde_json::json!(7);
+        });
+        let error = parse_scene_pack(&json).expect_err("should reject");
+        let message = error.to_string();
+        assert!(message.contains("bond 1"), "message should name the bond: {message}");
+        assert!(message.contains('7'), "message should name the index: {message}");
+    }
+
+    /// A bond that breaks before it yields is not a weaker material, it is an
+    /// incoherent one.
+    #[test]
+    fn fatal_below_elastic_is_rejected() {
+        let json = v2_with(|value| {
+            value["defaults"]["solver"]["materials"][0]["compressionFatal"] =
+                serde_json::json!(0.5);
+        });
+        assert!(parse_scene_pack(&json).is_err());
+    }
+
+    #[test]
+    fn unsupported_versions_are_still_rejected() {
+        let json = v2_with(|value| {
+            value["version"] = serde_json::json!(9);
+        });
+        assert!(matches!(
+            parse_scene_pack(&json),
+            Err(ScenePackError::UnsupportedVersion(9))
+        ));
+    }
 
     #[test]
     fn parses_minimal_pack() {
