@@ -89,6 +89,10 @@ fn main() {
                 blast.display(),
                 path.display()
             );
+            // Without this, editing a Blast source leaves the previous object
+            // file in place and the next run silently exercises the old code.
+            // That has already produced one confidently-wrong measurement.
+            println!("cargo:rerun-if-changed={}", path.display());
             build.file(path);
         }
         build
