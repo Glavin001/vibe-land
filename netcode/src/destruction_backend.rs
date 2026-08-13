@@ -35,11 +35,15 @@ impl Default for StressMaterial {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+// Not Copy: the material table is a Vec. Settings are built once per match,
+// so the clone cost is irrelevant next to being able to carry a real table.
+#[derive(Clone, Debug, PartialEq)]
 pub struct StressSolverSettings {
     pub max_solver_iterations_per_frame: u32,
     pub graph_reduction_level: u32,
-    pub material: StressMaterial,
+    /// Stress materials, indexed by `ChunkBondDesc::material`. Always at least
+    /// one entry: a structure with no material has no strength to solve for.
+    pub materials: Vec<StressMaterial>,
     /// Per-structure caps mirroring `ExtStressPhysXSettings`.
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
@@ -54,7 +58,7 @@ impl Default for StressSolverSettings {
         Self {
             max_solver_iterations_per_frame: 25,
             graph_reduction_level: 0,
-            material: StressMaterial::default(),
+            materials: vec![StressMaterial::default()],
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,

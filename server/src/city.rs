@@ -184,19 +184,22 @@ pub fn spawn_ring_radius_m() -> f32 {
     })
 }
 
-/// Stress limits declared by the scene pack, if it carries any.
+/// Stress material table declared by the scene pack.
 ///
 /// The pack is calibrated against its own material band (the high-rise pack
 /// reports safety factors of ~2.7 to ~39 under self-weight), so reading them
 /// beats hardcoding a guess in the server.
-fn scene_stress_limits() -> Option<vibe_land_destruction::scene_pack::StressLimits> {
-    static LIMITS: OnceLock<Option<vibe_land_destruction::scene_pack::StressLimits>> =
+fn scene_stress_materials() -> Vec<vibe_land_destruction::scene_pack::StressLimits> {
+    static MATERIALS: OnceLock<Vec<vibe_land_destruction::scene_pack::StressLimits>> =
         OnceLock::new();
-    *LIMITS.get_or_init(|| {
-        load_scene_pack_file(&asset_path())
-            .ok()
-            .and_then(|pack| pack.stress_limits)
-    })
+    MATERIALS
+        .get_or_init(|| {
+            load_scene_pack_file(&asset_path())
+                .ok()
+                .map(|pack| pack.materials)
+                .unwrap_or_default()
+        })
+        .clone()
 }
 
 pub fn manifest_asset() -> Option<&'static (String, Arc<DestructionManifest>, Vec<u8>)> {
@@ -319,35 +322,44 @@ impl CityRuntime {
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| *value > 0.0)
             .unwrap_or(1.0);
-        let limits = scene_stress_limits();
-        let (ce, cf, te, tf, se, sf) = limits
-            .map(|l| {
-                (
-                    l.compression_elastic,
-                    l.compression_fatal,
-                    l.tension_elastic,
-                    l.tension_fatal,
-                    l.shear_elastic,
-                    l.shear_fatal,
-                )
-            })
-            .unwrap_or((12e6, 30e6, 1.2e6, 3e6, 1.6e6, 4e6));
+        let table = scene_stress_materials();
+        let from_pack = !table.is_empty();
+        // The whole table scales together. Scaling only the first entry would
+        // silently change the RATIO between frame, slab and cladding -- the
+        // very thing the pack authors -- so the dial stays a uniform
+        // sensitivity control rather than a shape-changing one.
+        let materials: Vec<vibe_netcode::destruction_backend::StressMaterial> = if from_pack {
+            table
+                .iter()
+                .map(|l| vibe_netcode::destruction_backend::StressMaterial {
+                    compression_elastic_mpa: l.compression_elastic * scale,
+                    compression_fatal_mpa: l.compression_fatal * scale,
+                    tension_elastic_mpa: l.tension_elastic * scale,
+                    tension_fatal_mpa: l.tension_fatal * scale,
+                    shear_elastic_mpa: l.shear_elastic * scale,
+                    shear_fatal_mpa: l.shear_fatal * scale,
+                })
+                .collect()
+        } else {
+            vec![vibe_netcode::destruction_backend::StressMaterial {
+                compression_elastic_mpa: 12e6 * scale,
+                compression_fatal_mpa: 30e6 * scale,
+                tension_elastic_mpa: 1.2e6 * scale,
+                tension_fatal_mpa: 3e6 * scale,
+                shear_elastic_mpa: 1.6e6 * scale,
+                shear_fatal_mpa: 4e6 * scale,
+            }]
+        };
         tracing::info!(
             scene = %scene_file(),
-            from_pack = limits.is_some(),
+            from_pack,
             scale,
-            compression_fatal = cf * scale,
-            "city stress limits"
+            materials = materials.len(),
+            compression_fatal = materials[0].compression_fatal_mpa,
+            "city stress materials"
         );
         let mut settings = StressSolverSettings::default();
-        settings.material = vibe_netcode::destruction_backend::StressMaterial {
-            compression_elastic_mpa: ce * scale,
-            compression_fatal_mpa: cf * scale,
-            tension_elastic_mpa: te * scale,
-            tension_fatal_mpa: tf * scale,
-            shear_elastic_mpa: se * scale,
-            shear_fatal_mpa: sf * scale,
-        };
+        settings.materials = materials;
         // City towers have ~150–200 chunks; the synthetic default of 48
         // truncates island promotions mid-collapse.
         // Stress-solve cost is the dominant term once a city is heavily

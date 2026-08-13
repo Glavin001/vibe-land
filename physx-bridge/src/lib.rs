@@ -294,16 +294,23 @@ pub struct ContactEvent {
     pub point: Vec3,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DestructibleSettings {
-    pub max_solver_iterations_per_frame: u32,
-    pub graph_reduction_level: u32,
+/// One entry of a destructible's stress material table. Strength is authored
+/// here; bond area stays pure geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StressMaterialDesc {
     pub compression_elastic: f32,
     pub compression_fatal: f32,
     pub tension_elastic: f32,
     pub tension_fatal: f32,
     pub shear_elastic: f32,
     pub shear_fatal: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct DestructibleSettings {
+    pub max_solver_iterations_per_frame: u32,
+    pub graph_reduction_level: u32,
+    pub materials: Vec<StressMaterialDesc>,
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
@@ -315,12 +322,14 @@ impl Default for DestructibleSettings {
         Self {
             max_solver_iterations_per_frame: 25,
             graph_reduction_level: 0,
-            compression_elastic: 0.008,
-            compression_fatal: 0.01,
-            tension_elastic: -1.0,
-            tension_fatal: -1.0,
-            shear_elastic: -1.0,
-            shear_fatal: -1.0,
+            materials: vec![StressMaterialDesc {
+                compression_elastic: 0.008,
+                compression_fatal: 0.01,
+                tension_elastic: -1.0,
+                tension_fatal: -1.0,
+                shear_elastic: -1.0,
+                shear_fatal: -1.0,
+            }],
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
@@ -347,7 +356,10 @@ pub struct ChunkBondDesc {
     pub node1: u32,
     pub centroid: Vec3,
     pub normal: Vec3,
+    /// Real contact patch (m^2), geometry only.
     pub area: f32,
+    /// Index into `DestructibleSettings::materials`; strength lives there.
+    pub material: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1169,15 +1181,21 @@ mod ffi {
         point: FfiVec3,
     }
 
-    struct FfiDestructibleSettings {
-        max_solver_iterations_per_frame: u32,
-        graph_reduction_level: u32,
+    /// One entry of a destructible's stress material table.
+    struct FfiStressMaterial {
         compression_elastic: f32,
         compression_fatal: f32,
         tension_elastic: f32,
         tension_fatal: f32,
         shear_elastic: f32,
         shear_fatal: f32,
+    }
+
+    struct FfiDestructibleSettings {
+        max_solver_iterations_per_frame: u32,
+        graph_reduction_level: u32,
+        /// Indexed by `FfiChunkBondDesc::material`; must have >= 1 entry.
+        materials: Vec<FfiStressMaterial>,
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
@@ -1202,6 +1220,8 @@ mod ffi {
         centroid: FfiVec3,
         normal: FfiVec3,
         area: f32,
+        /// Index into `FfiDestructibleSettings::materials`.
+        material: u32,
     }
 
     struct FfiBrokenBondEvent {
@@ -1627,12 +1647,18 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
         Self {
             max_solver_iterations_per_frame: value.max_solver_iterations_per_frame,
             graph_reduction_level: value.graph_reduction_level,
-            compression_elastic: value.compression_elastic,
-            compression_fatal: value.compression_fatal,
-            tension_elastic: value.tension_elastic,
-            tension_fatal: value.tension_fatal,
-            shear_elastic: value.shear_elastic,
-            shear_fatal: value.shear_fatal,
+            materials: value
+                .materials
+                .into_iter()
+                .map(|material| ffi::FfiStressMaterial {
+                    compression_elastic: material.compression_elastic,
+                    compression_fatal: material.compression_fatal,
+                    tension_elastic: material.tension_elastic,
+                    tension_fatal: material.tension_fatal,
+                    shear_elastic: material.shear_elastic,
+                    shear_fatal: material.shear_fatal,
+                })
+                .collect(),
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,
@@ -1670,6 +1696,7 @@ impl From<ChunkBondDesc> for ffi::FfiChunkBondDesc {
             centroid: value.centroid.into(),
             normal: value.normal.into(),
             area: value.area,
+            material: value.material,
         }
     }
 }

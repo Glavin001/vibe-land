@@ -74,17 +74,40 @@ impl CityDestruction {
         let ffi_settings = DestructibleSettings {
             max_solver_iterations_per_frame: settings.max_solver_iterations_per_frame,
             graph_reduction_level: settings.graph_reduction_level,
-            compression_elastic: settings.material.compression_elastic_mpa,
-            compression_fatal: settings.material.compression_fatal_mpa,
-            tension_elastic: settings.material.tension_elastic_mpa,
-            tension_fatal: settings.material.tension_fatal_mpa,
-            shear_elastic: settings.material.shear_elastic_mpa,
-            shear_fatal: settings.material.shear_fatal_mpa,
+            materials: settings
+                .materials
+                .iter()
+                .map(|material| vibe_land_physx_bridge::StressMaterialDesc {
+                    compression_elastic: material.compression_elastic_mpa,
+                    compression_fatal: material.compression_fatal_mpa,
+                    tension_elastic: material.tension_elastic_mpa,
+                    tension_fatal: material.tension_fatal_mpa,
+                    shear_elastic: material.shear_elastic_mpa,
+                    shear_fatal: material.shear_fatal_mpa,
+                })
+                .collect(),
             maximum_bodies: settings.maximum_bodies,
             maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: settings.apply_excess_forces,
             excess_force_scale: settings.excess_force_scale,
         };
+
+        // Bond materials and the material table arrive by different routes --
+        // the table from the scene pack via settings, the indices from the
+        // manifest -- so a mismatch is possible in principle. Catching it here
+        // turns what would be a C++ abort into an ordinary error.
+        let material_count = ffi_settings.materials.len() as u32;
+        if let Some(bad) = manifest
+            .structures
+            .iter()
+            .flat_map(|structure| structure.bonds.iter())
+            .find(|bond| bond.material >= material_count)
+        {
+            return Err(CityDestructionError::Bridge(format!(
+                "bond material {} out of range ({material_count} materials)",
+                bad.material
+            )));
+        }
 
         for structure in &manifest.structures {
             let nodes: Vec<ChunkNodeDesc> = structure
@@ -146,6 +169,7 @@ impl CityDestruction {
                     centroid: Vec3::new(bond.centroid[0], bond.centroid[1], bond.centroid[2]),
                     normal: Vec3::new(bond.normal[0], bond.normal[1], bond.normal[2]),
                     area: bond.area,
+                    material: bond.material,
                 })
                 .collect();
             let pose = Pose {
@@ -167,7 +191,7 @@ impl CityDestruction {
                     pose,
                     &nodes,
                     &bonds,
-                    ffi_settings,
+                    ffi_settings.clone(),
                     GROUP_CHUNK,
                     CHUNK_COLLISION_MASK,
                 )

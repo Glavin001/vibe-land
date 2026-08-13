@@ -383,7 +383,9 @@ void DestructionManager::create_destructible(
     dst.area = src.area > 0.0f ? src.area : 1.0f;
     dst.node0 = src.node0;
     dst.node1 = src.node1;
-    dst.material = 0;
+    dst.material = src.material;
+    require(dst.material < settings.materials.size(),
+            "bond material index out of range");
     require(dst.node0 < nodes.size() && dst.node1 < nodes.size(),
             "bond node index out of range");
   }
@@ -472,18 +474,24 @@ void DestructionManager::create_destructible(
       settings.apply_excess_forces ? 0.35f : 0.0f;
   desc.errorCallback = adapter_error;
 
-  // Stress limits moved from settings onto a per-material table indexed by
-  // each bond (upstream's multi-material work). One entry is enough here: the
-  // city pack authors a single concrete, so index 0 is the structure default
-  // and every bond references it. Per-bond materials can be read from the
-  // ScenePack later without touching this call site.
-  std::vector<ExtStressPhysXMaterial> stress_materials(1);
-  stress_materials[0].compressionElasticLimit = settings.compression_elastic;
-  stress_materials[0].compressionFatalLimit = settings.compression_fatal;
-  stress_materials[0].tensionElasticLimit = settings.tension_elastic;
-  stress_materials[0].tensionFatalLimit = settings.tension_fatal;
-  stress_materials[0].shearElasticLimit = settings.shear_elastic;
-  stress_materials[0].shearFatalLimit = settings.shear_fatal;
+  // A structure is not made of one thing: the frame, its slabs, the facade
+  // panels and the clips holding them on all fail at different loads, and the
+  // pack authors that as a material table with each bond naming its entry.
+  // Collapsing it to a single material makes everything fail at the same
+  // threshold -- the facade stops shedding first, and footings authored two
+  // orders of magnitude stronger than cladding become just as fragile.
+  require(!settings.materials.empty(),
+          "destructible requires at least one stress material");
+  std::vector<ExtStressPhysXMaterial> stress_materials(settings.materials.size());
+  for (std::size_t i = 0; i < settings.materials.size(); ++i) {
+    const FfiStressMaterial &src = settings.materials[i];
+    stress_materials[i].compressionElasticLimit = src.compression_elastic;
+    stress_materials[i].compressionFatalLimit = src.compression_fatal;
+    stress_materials[i].tensionElasticLimit = src.tension_elastic;
+    stress_materials[i].tensionFatalLimit = src.tension_fatal;
+    stress_materials[i].shearElasticLimit = src.shear_elastic;
+    stress_materials[i].shearFatalLimit = src.shear_fatal;
+  }
   desc.stressMaterials = stress_materials.data();
   desc.stressMaterialCount = static_cast<std::uint32_t>(stress_materials.size());
 
