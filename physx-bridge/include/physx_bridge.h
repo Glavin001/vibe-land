@@ -87,7 +87,9 @@ public:
   rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
   rust::Vec<FfiIslandBodyEvent> take_island_events();
-  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const;
+  /// This tick's chunk body snapshots, borrowed from the destruction
+  /// manager's persistent buffer. Valid until the next call.
+  rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
   void sleep_chunk_body(std::uint32_t entity_id);
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;

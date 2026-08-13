@@ -31,6 +31,9 @@ interface CityServerStats {
   solve_ms: number;
   begin_ms: number;
   end_ms: number;
+  readback_ms_host: number;
+  settle_ms: number;
+  ingest_ms: number;
   gpu_stress_structures: number;
   gpu_stress_solve_ms: number;
   settle_deferred_penetrating: number;
@@ -281,6 +284,13 @@ export function CityStatsOverlay({
       />
       <Stat label="blast solve" value={`${(city?.solve_ms ?? 0).toFixed(1)} ms`} />
       <Stat label="blast end" value={`${(city?.end_ms ?? 0).toFixed(1)} ms`} />
+      <Stat label="readback" value={`${(city?.readback_ms_host ?? 0).toFixed(1)} ms`} />
+      <Stat label="settle scan" value={`${(city?.settle_ms ?? 0).toFixed(1)} ms`} />
+      <Stat
+        label="encoder ingest"
+        value={`${(city?.ingest_ms ?? 0).toFixed(1)} ms`}
+        warn={(city?.ingest_ms ?? 0) > 4}
+      />
       <Stat
         label="stress solver"
         value={

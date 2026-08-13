@@ -240,6 +240,12 @@ struct CityStatsSnapshot {
     /// injection walk costs more than the GPU solve.
     begin_ms: f32,
     end_ms: f32,
+    /// Host-side stages. Without these the overlay shows a large "city step"
+    /// with only the Blast phases beneath it, and the majority of the cost is
+    /// invisible: at 10k bodies the Blast phases are 6.4 ms of a 23.5 ms step.
+    readback_ms_host: f32,
+    settle_ms: f32,
+    ingest_ms: f32,
     /// Structures whose stress solve is running on the GPU, so a silent
     /// fallback to the CPU solver is visible rather than merely slower.
     gpu_stress_structures: u32,
@@ -2683,6 +2689,9 @@ impl MatchState {
                     events_ms: stats.events_ms,
                     begin_ms: stats.begin_ms,
                     end_ms: stats.end_ms,
+                    readback_ms_host: stats.readback_ms_host,
+                    settle_ms: stats.settle_ms,
+                    ingest_ms: stats.ingest_ms,
                     gpu_stress_structures: stats.gpu_stress_structures,
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,

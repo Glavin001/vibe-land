@@ -1097,7 +1097,7 @@ public:
 #endif
   }
 
-  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const {
+  rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
     return destruction_->chunk_body_snapshots();
@@ -1476,7 +1476,7 @@ rust::Vec<FfiIslandBodyEvent> World::take_island_events() {
   return impl_->take_island_events();
 }
 
-rust::Vec<FfiChunkBodySnapshot> World::chunk_body_snapshots() const {
+rust::Slice<const FfiChunkBodySnapshot> World::chunk_body_snapshots() const {
   return impl_->chunk_body_snapshots();
 }
 

@@ -1359,12 +1359,12 @@ rust::Vec<FfiIslandBodyEvent> DestructionManager::take_island_events() {
   return out;
 }
 
-rust::Vec<FfiChunkBodySnapshot>
+rust::Slice<const FfiChunkBodySnapshot>
 DestructionManager::chunk_body_snapshots() const {
-  rust::Vec<FfiChunkBodySnapshot> out;
-  // Reserve up front: this pushes one entry per dynamic body (thousands
-  // during a demolition) and rust::Vec grows geometrically, so without this
-  // the tick pays a dozen reallocations and memcpys of the whole array.
+  auto &out = body_snapshot_buffer_;
+  out.clear();
+  // The buffer keeps its capacity between ticks, so after the first few this
+  // reserve is a no-op and the whole function allocates nothing.
   std::size_t reserve_hint = 0;
   for (const auto &slot_ptr : slots_) {
     if (slot_ptr && slot_ptr->dest != nullptr) {
@@ -1433,7 +1433,7 @@ DestructionManager::chunk_body_snapshots() const {
       out.push_back(snap);
     }
   }
-  return out;
+  return rust::Slice<const FfiChunkBodySnapshot>(out.data(), out.size());
 }
 
 void DestructionManager::sleep_chunk_body(std::uint32_t entity_id) {

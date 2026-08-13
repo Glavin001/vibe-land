@@ -935,15 +935,14 @@ impl World {
             .collect())
     }
 
+    /// This tick's chunk body snapshots, borrowed from the bridge.
+    ///
+    /// Borrowed rather than collected: at 10k bodies the previous signature
+    /// copied ~760 KB out of C++ and then again into a Rust Vec, every tick.
+    /// Valid until the next call.
     #[cfg(feature = "destruction")]
-    pub fn chunk_body_snapshots(&self) -> Result<Vec<ChunkBodySnapshot>, BridgeError> {
-        Ok(self
-            .inner
-            .chunk_body_snapshots()
-            .map_err(operation_error)?
-            .into_iter()
-            .map(Into::into)
-            .collect())
+    pub fn chunk_body_snapshots(&self) -> Result<&[ffi::FfiChunkBodySnapshot], BridgeError> {
+        self.inner.chunk_body_snapshots().map_err(operation_error)
     }
 
     #[cfg(feature = "destruction")]
@@ -1348,7 +1347,7 @@ mod ffi {
         fn take_broken_bonds(self: Pin<&mut World>) -> Result<Vec<FfiBrokenBondEvent>>;
         fn take_chunk_migrations(self: Pin<&mut World>) -> Result<Vec<FfiChunkMigrationEvent>>;
         fn take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
-        fn chunk_body_snapshots(self: &World) -> Result<Vec<FfiChunkBodySnapshot>>;
+        fn chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn sleep_chunk_body(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;

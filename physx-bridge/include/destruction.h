@@ -123,7 +123,14 @@ public:
   rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
   rust::Vec<FfiIslandBodyEvent> take_island_events();
-  rust::Vec<FfiChunkBodySnapshot> chunk_body_snapshots() const;
+  /// Per-tick body snapshots as a slice into a persistent buffer.
+  ///
+  /// Returned by reference rather than by value: at 10k bodies the old
+  /// rust::Vec return copied ~760 KB out of C++ and the Rust side copied it
+  /// again into its own Vec, twice per tick, for data that is regenerated
+  /// every tick anyway. The buffer lives here and is refilled in place.
+  /// Valid until the next call.
+  rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
 
   void sleep_chunk_body(std::uint32_t entity_id);
   FfiDestructionStats destruction_stats() const;
@@ -172,6 +179,8 @@ private:
   /// Wake requests exceeding a slot's wake buffer. Non-zero means a contacted
   /// sleeping body was left asleep for a tick.
   std::uint64_t wake_truncations_ = 0;
+  /// Backing store for chunk_body_snapshots(); reused across ticks.
+  mutable std::vector<FfiChunkBodySnapshot> body_snapshot_buffer_;
   /// Bodies with speculative CCD enabled. Applied once per body, outside the
   /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
   std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;
