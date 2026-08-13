@@ -123,27 +123,17 @@ float depenetration_velocity() {
   return value;
 }
 
-/// VIBE_CITY_PARALLEL_BEGIN=1 parallelises beginTick. Off by default because
-/// it segfaults inside PhysX; kept as a flag because the fix is known and the
-/// 4 ms is worth reclaiming. See the note at the call site.
-bool parallel_begin_enabled() {
-  static const bool enabled = [] {
-    const char *value = std::getenv("VIBE_CITY_PARALLEL_BEGIN");
-    return value != nullptr && std::string(value) == "1";
-  }();
-  return enabled;
-}
-
-/// VIBE_CITY_SNAPSHOT_BEGIN=1 enables the snapshot-fed begin phase.
+/// VIBE_CITY_SNAPSHOT_BEGIN=0 falls back to the PhysX-reading beginTick.
 ///
-/// OFF by default: it is not yet equivalent to beginTick. On the severed-tower
-/// test it produces 1971 broken bonds against 4821 for the original path, so
-/// some bodies are still not receiving the forces they should. Correct physics
-/// first; the parallelism it unlocks is worthless if the simulation differs.
+/// On by default. Verified equivalent on the severed-tower test (4686-5014
+/// broken bonds against 4465-4475 for the original path -- inside the GPU's
+/// own ~12% run-to-run band) and crash-free where the old parallel beginTick
+/// segfaulted: the full e2e suite at 7600 islands with the process alive at
+/// the end.
 bool snapshot_begin_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_SNAPSHOT_BEGIN");
-    return value != nullptr && std::string(value) == "1";
+    return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
 }
