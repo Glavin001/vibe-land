@@ -629,10 +629,14 @@ void DestructionManager::register_filters(Slot &slot) {
 void DestructionManager::collect_events(Slot &slot) {
   require(slot.dest != nullptr, "missing destructible");
 
-  // Snapshot membership BEFORE assigning new serials so promotions are visible.
-  const auto previous_body_to_serial = slot.body_to_serial;
-  const auto previous_node_to_body = slot.node_to_body;
-  const auto previous_node_to_serial = slot.node_to_serial;
+  // Diffed in place against the live maps, not against copies of them.
+  //
+  // This used to deep-copy body_to_serial, node_to_body and node_to_serial on
+  // every changed slot -- one allocation per entry, thousands of entries, on
+  // exactly the fracture ticks that already cost the most. The copies existed
+  // to see pre-update state, which is available anyway as long as each entry
+  // is READ before it is WRITTEN. Every loop below visits a given body or node
+  // once, so that ordering holds; the reads are marked where it matters.
 
   // Shared readback from refresh_snapshots(); no second device read.
   const auto &bodies = slot.body_cache;
@@ -653,14 +657,15 @@ void DestructionManager::collect_events(Slot &slot) {
     // has become an independent island since we last looked. Treat it as new:
     // it needs its own serial, and clients need the promotion event, or its
     // chunks stay bound to the support body and move as one piece with it.
-    const auto mapped = previous_body_to_serial.find(bodies[i].bodyId);
-    const bool became_dynamic = mapped != previous_body_to_serial.end()
+    // Read before this iteration's write, so it still sees prior state.
+    const auto mapped = slot.body_to_serial.find(bodies[i].bodyId);
+    const bool became_dynamic = mapped != slot.body_to_serial.end()
                                 && mapped->second == kSupportIslandSerial
                                 && !bodies[i].kinematic;
     if (became_dynamic) {
       ++support_promotions_;
     }
-    if (mapped == previous_body_to_serial.end() || became_dynamic) {
+    if (mapped == slot.body_to_serial.end() || became_dynamic) {
       const std::uint32_t serial =
           bodies[i].kinematic ? 0 : next_serial(slot);
       slot.body_to_serial[bodies[i].bodyId] = serial;
@@ -688,8 +693,10 @@ void DestructionManager::collect_events(Slot &slot) {
   }
 
   // Retire disappeared non-support bodies.
+  // Bodies added by the loop above are live, so iterating the live map here
+  // retires exactly the same set the copy did.
   std::vector<ExtStressPhysXId> retired_ids;
-  for (const auto &entry : previous_body_to_serial) {
+  for (const auto &entry : slot.body_to_serial) {
     if (live_bodies.find(entry.first) == live_bodies.end() &&
         entry.second != 0) {
       FfiIslandBodyEvent event{};
@@ -711,12 +718,13 @@ void DestructionManager::collect_events(Slot &slot) {
     const auto &shape = shapes[i];
     const std::uint32_t node = shape.nodeIndex;
     const ExtStressPhysXId new_body = shape.bodyId;
-    auto old_body_it = previous_node_to_body.find(node);
+    // Both reads precede this iteration's writes to the same node key.
+    auto old_body_it = slot.node_to_body.find(node);
     const ExtStressPhysXId old_body =
-        old_body_it != previous_node_to_body.end() ? old_body_it->second : 0;
-    auto old_serial_it = previous_node_to_serial.find(node);
+        old_body_it != slot.node_to_body.end() ? old_body_it->second : 0;
+    auto old_serial_it = slot.node_to_serial.find(node);
     const std::uint32_t old_serial =
-        old_serial_it != previous_node_to_serial.end() ? old_serial_it->second
+        old_serial_it != slot.node_to_serial.end() ? old_serial_it->second
                                                        : 0;
     auto new_serial_it = slot.body_to_serial.find(new_body);
     const std::uint32_t new_serial =
