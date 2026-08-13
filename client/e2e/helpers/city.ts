@@ -85,8 +85,25 @@ export async function routeWebTransportOverride(page: Page): Promise<void> {
   const override = process.env.E2E_CITY_WT_URL;
   if (!override) return;
   await page.route('**/session-config*', async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
+    // Retry on an empty/!ok body. The dev server proxies this to the game
+    // server, and a request that lands mid-restart comes back empty -- which
+    // threw "Unexpected end of JSON input" out of the route handler, failed
+    // the spec with no bearing on what it was testing, and cost several runs
+    // to recognise as infrastructure rather than a regression.
+    let response = await route.fetch();
+    let raw = await response.text();
+    for (let attempt = 0; attempt < 5 && (!response.ok() || raw.trim() === ''); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      response = await route.fetch();
+      raw = await response.text();
+    }
+    if (raw.trim() === '') {
+      throw new Error(
+        'session-config returned an empty body after 5 attempts: the game '
+          + 'server is not up. Start it before running the city specs.',
+      );
+    }
+    const body = JSON.parse(raw);
     body.url = override;
     await route.fulfill({
       response,

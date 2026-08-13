@@ -923,15 +923,20 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     }
   }
 
-  // Three phases, of which the first two are concurrent.
+  // Three phases, of which only the middle one is concurrent.
   //
-  // beginTick (consumeContacts + addGravity) reads PhysX poses and writes only
-  // the destructible's OWN solver and contact list -- no PxScene mutation, no
-  // manager-level state -- so it parallelises exactly like solveTick. It was
-  // serial here on an incorrect assumption that it touched shared state, and
-  // measured 6.86 ms at 5.5k bodies: three times the CUDA solve, and the
-  // largest single term in the tick. endTick genuinely does mutate the scene
-  // (fracture, actor creation/destruction) and stays serial.
+  // beginTick was parallelised here on the reasoning that consumeContacts and
+  // addGravity write only the destructible's own solver and contact list. That
+  // reasoning was wrong: it crashed the server under heavy destruction (no
+  // panic, no log -- a segfault), reproducibly, while the same run with
+  // VIBE_CITY_STRESS_WORKERS=1 survived. The state it shares is not in the
+  // functions themselves but underneath them -- Blast's global allocator,
+  // which consumeContacts hits and solveTick (working from pre-sized buffers)
+  // does not, which is why solveTick has been safely parallel for days.
+  //
+  // It is worth 2-4 ms and worth revisiting, but only behind an allocator
+  // that is provably thread-safe. endTick mutates the scene (fracture, actor
+  // creation) and is serial for the ordinary reason.
   //
   // Timed separately, because reporting them as one number ("stress solve")
   // hid where the cost actually was: begin and end are SERIAL walks that scale
@@ -939,9 +944,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // the graph. Optimising the wrong one of the three is the failure mode this
   // split exists to prevent.
   auto phase = clock::now();
-  stress_executor_->run(live_slots_.size(), [this, dt, g](std::size_t index) {
-    require(live_slots_[index]->dest->beginTick(dt, g), "beginTick failed");
-  });
+  for (Slot *slot : live_slots_) {
+    require(slot->dest->beginTick(dt, g), "beginTick failed");
+  }
   begin_ms += ms_since(phase);
 
   phase = clock::now();
