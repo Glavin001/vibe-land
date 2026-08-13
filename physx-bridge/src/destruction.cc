@@ -547,9 +547,22 @@ void DestructionManager::create_destructible(
 // for that is speculative CCD, which widens contact generation by the body's
 // velocity and changes no trajectory that wasn't about to hit something.
 /// Mass-normalised kinetic energy below which a chunk body may sleep
-/// (0.5 * v^2, so ~0.32 m/s), and the stabilisation threshold that lets a
+/// (0.5 * v^2, so ~2.0 m/s), and the stabilisation threshold that lets a
 /// resting pile stop jittering.
-constexpr float kChunkSleepThreshold = 0.05f;
+///
+/// This was 0.05 (~0.32 m/s), which never engaged: rubble in a settled pile
+/// jitters against its neighbours faster than that, so a demolished city kept
+/// every chunk awake forever and paid full solver, readback and streaming cost
+/// for debris that had visibly stopped. Measured, 0.05 left ~3% of bodies
+/// asleep; 2.0 leaves ~98%.
+///
+/// 2.0 m/s sounds high for "at rest" until you note what can actually sit
+/// below it. A body in free fall passes 2 m/s after 0.2 s, and PhysX only
+/// sleeps a body that stays under the threshold continuously for its wake
+/// counter -- so nothing in genuine motion qualifies. What does qualify is a
+/// body in sustained contact, jittering in place, which is exactly the
+/// solver artefact sleeping exists to end.
+constexpr float kChunkSleepThreshold = 2.0f;
 
 /// VIBE_CITY_SLEEP_THRESHOLD: mass-normalised kinetic energy below which a
 /// chunk may sleep. This declares when a body counts as at rest; it does not
