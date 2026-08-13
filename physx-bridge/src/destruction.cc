@@ -123,6 +123,17 @@ float depenetration_velocity() {
   return value;
 }
 
+/// VIBE_CITY_PARALLEL_BEGIN=1 parallelises beginTick. Off by default because
+/// it segfaults inside PhysX; kept as a flag because the fix is known and the
+/// 4 ms is worth reclaiming. See the note at the call site.
+bool parallel_begin_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_PARALLEL_BEGIN");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
 bool quiet_skip_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_QUIET_SKIP");
@@ -925,18 +936,26 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
 
   // Three phases, of which only the middle one is concurrent.
   //
-  // beginTick was parallelised here on the reasoning that consumeContacts and
-  // addGravity write only the destructible's own solver and contact list. That
-  // reasoning was wrong: it crashed the server under heavy destruction (no
-  // panic, no log -- a segfault), reproducibly, while the same run with
-  // VIBE_CITY_STRESS_WORKERS=1 survived. The state it shares is not in the
-  // functions themselves but underneath them -- Blast's global allocator,
-  // which consumeContacts hits and solveTick (working from pre-sized buffers)
-  // does not, which is why solveTick has been safely parallel for days.
+  // beginTick is serial because parallelising it segfaults inside PhysX. The
+  // stack, captured under gdb (EXIT_STATUS=139) with VIBE_CITY_PARALLEL_BEGIN=1:
   //
-  // It is worth 2-4 ms and worth revisiting, but only behind an allocator
-  // that is provably thread-safe. endTick mutates the scene (fracture, actor
-  // creation) and is serial for the ordinary reason.
+  //   Sc::SqBoundsManagerEx::removeSyncShape(ShapeSimBase&)
+  //   PxgSimulationControllerCallback::updateScBodyAndShapeSim
+  //   Sc::Scene::afterIntegration
+  //   Ext::CpuWorkerThread::execute
+  //
+  // addGravity calls body->getGlobalPose() on every body. Done from N threads
+  // that is unsynchronised PxScene access, which races PhysX's own deferred
+  // shape/bounds sync running on its worker threads. PhysX requires
+  // PxScene::lockRead()/lockWrite() for multithreaded scene access; we hold
+  // neither. solveTick is safely parallel because it touches only Blast's
+  // solver and never the PhysX scene -- that asymmetry, not anything about
+  // Blast, is why one parallelises and the other does not.
+  //
+  // The fix is a scene read lock around this phase (and eREQUIRE_RW_LOCK on
+  // the scene), which is a core scene-config change and wants its own
+  // validation pass rather than being rushed in behind a perf number. Worth
+  // 4 ms. endTick mutates the scene and is serial for the ordinary reason.
   //
   // Timed separately, because reporting them as one number ("stress solve")
   // hid where the cost actually was: begin and end are SERIAL walks that scale
@@ -944,8 +963,14 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // the graph. Optimising the wrong one of the three is the failure mode this
   // split exists to prevent.
   auto phase = clock::now();
-  for (Slot *slot : live_slots_) {
-    require(slot->dest->beginTick(dt, g), "beginTick failed");
+  if (parallel_begin_enabled()) {
+    stress_executor_->run(live_slots_.size(), [this, dt, g](std::size_t index) {
+      require(live_slots_[index]->dest->beginTick(dt, g), "beginTick failed");
+    });
+  } else {
+    for (Slot *slot : live_slots_) {
+      require(slot->dest->beginTick(dt, g), "beginTick failed");
+    }
   }
   begin_ms += ms_since(phase);
 
