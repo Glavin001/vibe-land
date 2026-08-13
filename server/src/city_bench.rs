@@ -192,6 +192,127 @@ fn demolished_tower_comes_to_rest() {
     );
 }
 
+/// How many players can one match stream to?
+///
+/// Physics is player-independent -- PhysX steps the same scene whether one
+/// client watches or two hundred. The stream is not: client_datagrams
+/// evaluates interest and priority for every awake body FOR EVERY CLIENT, so
+/// its cost is bodies x players, which is the worst scaling law in the system
+/// and the thing that decides the player ceiling.
+///
+/// This drives the encoder directly rather than through browsers, so it can
+/// reach player counts no e2e could, and isolates the streaming cost from
+/// rendering and transport.
+#[test]
+#[ignore = "benchmark: needs a GPU, takes ~2 min"]
+fn player_scaling_of_the_stream() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+
+    // Build a large debris field first.
+    let towers: Vec<(f32, f32)> = [-36.0f32, -12.0, 12.0, 36.0]
+        .iter()
+        .flat_map(|&x| [-36.0f32, -12.0, 12.0, 36.0].iter().map(move |&z| (x, z)))
+        .collect();
+    let mut tick = 0u32;
+    for &(tx, tz) in towers.iter() {
+        let origin = Vec3::new(tx, 1.6, tz - 26.0);
+        for shot in 0..18 {
+            let target = Vec3::new(
+                tx + (-4.0 + (shot % 9) as f32),
+                2.0 + (shot % 12) as f32 * 2.4,
+                tz,
+            );
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+            for _ in 0..6 {
+                world.step().expect("step");
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                tick += 1;
+            }
+        }
+    }
+
+    let stats = city.stats();
+    println!("\n=== stream cost vs player count ===");
+    println!("bodies {}  awake {}", stats.chunk_bodies, stats.awake_chunk_bodies);
+    println!(
+        "\n{:>8}  {:>12}  {:>12}  {:>14}",
+        "players", "shared p50", "pack p50", "pack/client"
+    );
+
+    for &players in &[1usize, 4, 16, 32, 64, 128, 256] {
+        for id in 0..players {
+            city.add_client(id as u64);
+        }
+        // Cameras ringed around the city looking inward, so interest is
+        // realistic rather than every client sharing one view.
+        let cameras: Vec<(u64, vibe_land_destruction::types::Camera)> = (0..players)
+            .map(|id| {
+                let angle = id as f32 / players as f32 * std::f32::consts::TAU;
+                let eye = Vec3::new(angle.cos() * 70.0, 2.0, angle.sin() * 70.0);
+                (
+                    id as u64,
+                    vibe_land_destruction::types::Camera {
+                        eye,
+                        direction: (Vec3::ZERO - eye).normalize(),
+                        fov_degrees: 75.0,
+                    },
+                )
+            })
+            .collect();
+
+        let (mut shared_ms, mut pack_ms) = (vec![], vec![]);
+        for _ in 0..30 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+
+            let started = std::time::Instant::now();
+            let shared = city.encode_shared(tick);
+            shared_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+
+            let started = std::time::Instant::now();
+            for &(id, camera) in &cameras {
+                let _ = city.client_datagrams(id, camera, &shared);
+            }
+            pack_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+        }
+
+        let shared_p50 = pct(&mut shared_ms, 0.5);
+        let pack_p50 = pct(&mut pack_ms, 0.5);
+        println!(
+            "{:>8}  {:>12.2}  {:>12.2}  {:>14.3}",
+            players,
+            shared_p50,
+            pack_p50,
+            pack_p50 / players as f32
+        );
+
+        for id in 0..players {
+            city.remove_client(id as u64);
+        }
+    }
+    println!(
+        "\nBudget note: the whole tick must fit 16.67 ms, and the stream runs at\n\
+         30 Hz (every other tick), so a pack cost of ~10 ms is already half the\n\
+         budget on the ticks it lands.\n"
+    );
+}
+
 /// Reproduce the reported demo: demolish the whole city, ~8k bodies.
 ///
 /// The general bench peaks near 3.8k bodies; the user's session reached 8495
