@@ -169,6 +169,9 @@ private:
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
   std::uint64_t serial_wraps_ = 0;
+  /// Wake requests exceeding a slot's wake buffer. Non-zero means a contacted
+  /// sleeping body was left asleep for a tick.
+  std::uint64_t wake_truncations_ = 0;
   /// Bodies with speculative CCD enabled. Applied once per body, outside the
   /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
   std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;

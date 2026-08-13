@@ -134,6 +134,20 @@ bool parallel_begin_enabled() {
   return enabled;
 }
 
+/// VIBE_CITY_SNAPSHOT_BEGIN=1 enables the snapshot-fed begin phase.
+///
+/// OFF by default: it is not yet equivalent to beginTick. On the severed-tower
+/// test it produces 1971 broken bonds against 4821 for the original path, so
+/// some bodies are still not receiving the forces they should. Correct physics
+/// first; the parallelism it unlocks is worthless if the simulation differs.
+bool snapshot_begin_enabled() {
+  static const bool enabled = [] {
+    const char *value = std::getenv("VIBE_CITY_SNAPSHOT_BEGIN");
+    return value != nullptr && std::string(value) == "1";
+  }();
+  return enabled;
+}
+
 bool quiet_skip_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_CITY_QUIET_SKIP");
@@ -224,6 +238,12 @@ struct DestructionManager::Slot {
   std::unordered_map<std::uint32_t, ExtStressPhysXId> node_to_body; // node -> bodyId
   std::unordered_map<std::uint32_t, std::uint32_t> node_to_serial;
   std::vector<std::uint8_t> bond_alive; // 1 = alive
+
+  /// Bodies the snapshot-fed begin phase wants woken. wakeUp() is a scene
+  /// write, so that phase records ids here and the caller applies them
+  /// serially. Overflow is counted, not silently dropped.
+  std::vector<ExtStressPhysXId> wake_bodies = std::vector<ExtStressPhysXId>(256);
+  std::uint32_t wake_count = 0;
 
   // Topology counters as of the last diff. The adapter only mutates topology
   // inside endTick, and only when bonds were overstressed, so when these are
@@ -936,43 +956,77 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
 
   // Three phases, of which only the middle one is concurrent.
   //
-  // beginTick is serial because parallelising it segfaults inside PhysX. The
-  // stack, captured under gdb (EXIT_STATUS=139) with VIBE_CITY_PARALLEL_BEGIN=1:
+  // Phase order: read body state ONCE, then begin (parallel), solve
+  // (parallel), end (serial).
+  //
+  // beginTick() used to be serial because parallelising it segfaulted inside
+  // PhysX -- captured under gdb (EXIT_STATUS=139):
   //
   //   Sc::SqBoundsManagerEx::removeSyncShape(ShapeSimBase&)
   //   PxgSimulationControllerCallback::updateScBodyAndShapeSim
-  //   Sc::Scene::afterIntegration
-  //   Ext::CpuWorkerThread::execute
+  //   Sc::Scene::afterIntegration        <- PhysX worker thread
   //
-  // addGravity calls body->getGlobalPose() on every body. Done from N threads
-  // that is unsynchronised PxScene access, which races PhysX's own deferred
-  // shape/bounds sync running on its worker threads. PhysX requires
-  // PxScene::lockRead()/lockWrite() for multithreaded scene access; we hold
-  // neither. solveTick is safely parallel because it touches only Blast's
-  // solver and never the PhysX scene -- that asymmetry, not anything about
-  // Blast, is why one parallelises and the other does not.
+  // Its addGravity called isSleeping() + getGlobalPose() on EVERY body, so
+  // running it on N threads was unsynchronised PxScene access racing PhysX's
+  // deferred shape/bounds sync. Read locks do not help: PxScene's RW lock only
+  // engages with PxSceneFlag::eREQUIRE_RW_LOCK, which would oblige every scene
+  // access in the bridge to take matching locks (measured: still SIGSEGV).
   //
-  // The fix is a scene read lock around this phase (and eREQUIRE_RW_LOCK on
-  // the scene), which is a core scene-config change and wants its own
-  // validation pass rather than being rushed in behind a perf number. Worth
-  // 4 ms. endTick mutates the scene and is serial for the ordinary reason.
+  // The fix is to remove the reads rather than guard them. We already read
+  // every body's pose and sleep state once per tick, and the stress phases do
+  // not move bodies -- PhysX did that in world.step(), and splits only create
+  // bodies in endTick. So the snapshot taken here is exactly what addGravity
+  // was re-fetching one virtual call at a time. beginTickFromSnapshot consumes
+  // it and touches PhysX not at all, which makes the phase pure per-structure
+  // math and safe to parallelise by construction.
   //
-  // Timed separately, because reporting them as one number ("stress solve")
-  // hid where the cost actually was: begin and end are SERIAL walks that scale
-  // with total nodes, while solve is the parallel/CUDA part that scales with
-  // the graph. Optimising the wrong one of the three is the failure mode this
-  // split exists to prevent.
+  // Contacts on a sleeping body still need wakeUp(), which is a scene write,
+  // so the adapter returns those ids and we apply them serially below.
   auto phase = clock::now();
-  if (parallel_begin_enabled()) {
-    // NOTE: per-worker scene_.lockRead() was tried here and does NOT fix the
-    // crash -- still SIGSEGV in the same place. PxScene's RW lock only engages
-    // when the scene is created with PxSceneFlag::eREQUIRE_RW_LOCK, and
-    // turning that on obliges EVERY scene access in the bridge (raycasts,
-    // body/player/vehicle snapshots, controller moves) to take the matching
-    // lock. That scene-wide discipline is the real price of this 4 ms.
+  for (Slot *slot : live_slots_) {
+    refresh_snapshots(*slot);
+  }
+  readback_ms += ms_since(phase);
+
+  phase = clock::now();
+  if (snapshot_begin_enabled()) {
     stress_executor_->run(live_slots_.size(), [this, dt, g](std::size_t index) {
-      require(live_slots_[index]->dest->beginTick(dt, g), "beginTick failed");
+      Slot &slot = *live_slots_[index];
+      slot.wake_count = 0;
+      require(
+          slot.dest->beginTickFromSnapshot(
+              dt, g, slot.body_cache.data(), slot.body_cache_count,
+              slot.wake_bodies.data(),
+              static_cast<std::uint32_t>(slot.wake_bodies.size()),
+              &slot.wake_count),
+          "beginTickFromSnapshot failed");
     });
+    // Serial: wakeUp() is a scene write. Only bodies that took a contact while
+    // asleep appear here, so this is a handful even during a collapse.
+    for (Slot *slot : live_slots_) {
+      const std::uint32_t capacity =
+          static_cast<std::uint32_t>(slot->wake_bodies.size());
+      const std::uint32_t applied = std::min(slot->wake_count, capacity);
+      // getBodySnapshots returns bodies sorted by id, so this is a binary
+      // search rather than a scan per wake.
+      const auto begin = slot->body_cache.begin();
+      const auto end = begin + slot->body_cache_count;
+      for (std::uint32_t i = 0; i < applied; ++i) {
+        const ExtStressPhysXId id = slot->wake_bodies[i];
+        const auto found = std::lower_bound(
+            begin, end, id,
+            [](const ExtStressPhysXBodySnapshot &entry, ExtStressPhysXId value) {
+              return entry.bodyId < value;
+            });
+        if (found != end && found->bodyId == id && found->body != nullptr &&
+            !found->kinematic) {
+          found->body->wakeUp();
+        }
+      }
+      if (slot->wake_count > capacity) {
+        wake_truncations_ += slot->wake_count - capacity;
+      }
+    }
   } else {
     for (Slot *slot : live_slots_) {
       require(slot->dest->beginTick(dt, g), "beginTick failed");
@@ -994,11 +1048,6 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
 
   for (Slot *slot_ptr : live_slots_) {
     Slot &slot = *slot_ptr;
-    // One readback, then every consumer works off it. This always runs: poses
-    // change every tick even when topology does not.
-    phase = clock::now();
-    refresh_snapshots(slot);
-    readback_ms += ms_since(phase);
 
     // Speculative CCD, enabled exactly once per dynamic body, independently of
     // the event diff (a body can turn dynamic on a tick with no split, which
@@ -1051,6 +1100,14 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
       ++quiet_slot_ticks_;
       continue;
     }
+
+    // Topology changed, so endTick created/destroyed bodies after the
+    // pre-solve readback. Re-read for the consumers below and for the
+    // encoder. On quiet ticks the pre-solve snapshot is already exact: the
+    // stress phases do not move bodies.
+    phase = clock::now();
+    refresh_snapshots(slot);
+    readback_ms += ms_since(phase);
     // Shapes are only read by the two functions below, so they are fetched
     // here rather than every tick in refresh_snapshots.
     refresh_shape_snapshots(slot);
