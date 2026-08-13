@@ -246,6 +246,10 @@ struct CityStatsSnapshot {
     readback_ms_host: f32,
     settle_ms: f32,
     ingest_ms: f32,
+    /// The 30 Hz stream encode: shared record build, then per-client interest
+    /// and datagram packing.
+    encode_shared_ms: f32,
+    client_datagrams_ms: f32,
     /// Structures whose stress solve is running on the GPU, so a silent
     /// fallback to the CPU solver is visible rather than merely slower.
     gpu_stress_structures: u32,
@@ -2351,7 +2355,16 @@ impl MatchState {
         // Chunk stream cadence: shared encode once, per-client interest +
         // ceiling selection, own datagram sequence space per client.
         if send_due {
+            // Timed because it was the single largest unmeasured cost: at 10k
+            // bodies the tick was 44 ms while the city step and physx step
+            // together accounted for only 26 ms. encode_shared walks every
+            // active body, and client_datagrams walks all of its records again
+            // PER CLIENT doing interest tests -- so this scales with bodies
+            // times players, and nothing reported it.
+            let encode_started = std::time::Instant::now();
             let shared = city.encode_shared(self.server_tick);
+            let shared_ms = encode_started.elapsed().as_secs_f32() * 1000.0;
+            let datagrams_started = std::time::Instant::now();
             if !shared.records.is_empty() {
                 for (player_id, camera) in cameras {
                     let packets = city.client_datagrams(u64::from(player_id), camera, &shared);
@@ -2362,6 +2375,10 @@ impl MatchState {
                     }
                 }
             }
+            city.record_encode_timings(
+                shared_ms,
+                datagrams_started.elapsed().as_secs_f32() * 1000.0,
+            );
         }
         self.city = Some(city);
     }
@@ -2677,6 +2694,7 @@ impl MatchState {
                 let stats = city.stats();
                 let encoder = city.encoder_stats();
                 let (records, bytes, packets) = city.last_stream_counters();
+                let encode_timings = city.last_encode_timings();
                 CityStatsSnapshot {
                     structures: stats.structures,
                     chunk_bodies: stats.chunk_bodies,
@@ -2692,6 +2710,8 @@ impl MatchState {
                     readback_ms_host: stats.readback_ms_host,
                     settle_ms: stats.settle_ms,
                     ingest_ms: stats.ingest_ms,
+                    encode_shared_ms: encode_timings.0,
+                    client_datagrams_ms: encode_timings.1,
                     gpu_stress_structures: stats.gpu_stress_structures,
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,

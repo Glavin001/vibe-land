@@ -224,6 +224,8 @@ pub struct CityRuntime {
     pub manifest: Arc<DestructionManifest>,
     send_interval_ticks: u32,
     pub last_encode_ms: f32,
+    last_encode_shared_ms: f32,
+    last_client_datagrams_ms: f32,
     structure_centers: Vec<(Vec3, f32)>,
     sent_records: u64,
     sent_bytes: u64,
@@ -272,6 +274,8 @@ impl CityRuntime {
             manifest,
             send_interval_ticks: config.send_interval_ticks,
             last_encode_ms: 0.0,
+            last_encode_shared_ms: 0.0,
+            last_client_datagrams_ms: 0.0,
             structure_centers,
             sent_records: 0,
             sent_bytes: 0,
@@ -667,6 +671,17 @@ impl CityRuntime {
         }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
         reliable
+    }
+
+    /// Wall time of the last 30 Hz stream encode, split into the shared record
+    /// build and the per-client interest/packing pass.
+    pub fn record_encode_timings(&mut self, shared_ms: f32, datagrams_ms: f32) {
+        self.last_encode_shared_ms = shared_ms;
+        self.last_client_datagrams_ms = datagrams_ms;
+    }
+
+    pub fn last_encode_timings(&self) -> (f32, f32) {
+        (self.last_encode_shared_ms, self.last_client_datagrams_ms)
     }
 
     pub fn encode_shared(&mut self, sim_tick: u32) -> SharedRecords {

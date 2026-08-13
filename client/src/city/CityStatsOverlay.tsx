@@ -34,6 +34,8 @@ interface CityServerStats {
   readback_ms_host: number;
   settle_ms: number;
   ingest_ms: number;
+  encode_shared_ms: number;
+  client_datagrams_ms: number;
   gpu_stress_structures: number;
   gpu_stress_solve_ms: number;
   settle_deferred_penetrating: number;
@@ -290,6 +292,16 @@ export function CityStatsOverlay({
         label="encoder ingest"
         value={`${(city?.ingest_ms ?? 0).toFixed(1)} ms`}
         warn={(city?.ingest_ms ?? 0) > 4}
+      />
+      <Stat
+        label="stream encode"
+        value={`${(city?.encode_shared_ms ?? 0).toFixed(1)} ms`}
+        warn={(city?.encode_shared_ms ?? 0) > 4}
+      />
+      <Stat
+        label="per-client pack"
+        value={`${(city?.client_datagrams_ms ?? 0).toFixed(1)} ms`}
+        warn={(city?.client_datagrams_ms ?? 0) > 4}
       />
       <Stat
         label="stress solver"
