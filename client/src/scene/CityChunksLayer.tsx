@@ -1,20 +1,23 @@
-// Instanced rendering of the destructible city: one THREE.InstancedMesh of
-// unit boxes, per-instance matrix = chunkWorldPose ∘ scale(chunkSize),
-// composed from the streamed island-body poses + the manifest ledger.
+// Batched rendering of the destructible city: one THREE.BatchedMesh whose
+// per-instance matrix = chunkWorldPose ∘ scale, composed from the streamed
+// island-body poses + the manifest ledger.
 //
-// Follows the BodiesTransportLab instanced path (never GameWorld's per-body
-// Mesh map): intact/settled chunks are written once and frozen; only chunks
-// belonging to live streaming bodies are recomposed each frame.
+// Intact/settled chunks are written once and frozen; only chunks belonging to
+// live streaming bodies are recomposed each frame.
 //
-// Note: chunk.size is the authored AABB, so fractured Voronoi pieces can look
-// overlapping as boxes. Physics still uses convex hulls; a convex render path
-// can replace this once it is cheap enough for ~2k chunks.
+// BatchedMesh rather than InstancedMesh because fractured chunks each have
+// their own convex hull, and an InstancedMesh can only draw one shape. It
+// still costs a single draw call: distinct hulls are uploaded once and reused
+// by every instance that shares them, which matters because the city stamps
+// one building pack sixteen times. Box chunks all share a single unit-cube
+// entry and carry their extents in the instance matrix, exactly as before.
 
 import { useFrame } from '@react-three/fiber';
 import { useRef } from 'react';
 import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
+import { buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import { updateCityE2E } from '../e2eBridge';
 import type { CityE2EStats } from '../e2eBridge';
 
@@ -31,8 +34,15 @@ const TMP_COLOR = new THREE.Color();
 const CHUNK_SUNK_Y_M = -0.25;
 
 type CityMeshState = {
-  mesh: THREE.InstancedMesh;
-  sizes: Float32Array;
+  mesh: THREE.BatchedMesh;
+  /**
+   * BatchedMesh hands out its own instance ids. They happen to be sequential
+   * today, but nothing promises they equal the topology slot, so the mapping
+   * is kept explicitly rather than assumed.
+   */
+  instanceIds: Int32Array;
+  /** Per-slot render scale: box extents, or 1 for hulls (already metric). */
+  scales: Float32Array;
   baseColors: Float32Array;
 };
 
@@ -43,53 +53,103 @@ function structureColor(structureId: number): THREE.Color {
 function buildMesh(client: CityClient): CityMeshState {
   const manifest = client.manifest.manifest;
   const count = client.topology.chunkCount;
-  const geometry = new THREE.BoxGeometry(1, 1, 1);
+
+  // Resolve every chunk's shape first: the BatchedMesh has to be sized with
+  // the total vertex and index budget up front, which is only knowable once
+  // the distinct hulls are known.
+  const scales = new Float32Array(count * 3);
+  const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
+  const hullGeometries = new Map<string, THREE.BufferGeometry>();
+  for (const structure of manifest.structures) {
+    for (const chunk of structure.chunks) {
+      const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
+      const shape = chunkShape(chunk);
+      shapeBySlot[slot] = shape;
+      if (shape.kind === 'hull') {
+        scales[slot * 3] = 1;
+        scales[slot * 3 + 1] = 1;
+        scales[slot * 3 + 2] = 1;
+        if (!hullGeometries.has(shape.key)) {
+          hullGeometries.set(shape.key, buildHullGeometry(shape.points));
+        }
+      } else {
+        scales[slot * 3] = shape.scale[0];
+        scales[slot * 3 + 1] = shape.scale[1];
+        scales[slot * 3 + 2] = shape.scale[2];
+      }
+    }
+  }
+
+  const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+  let vertexBudget = boxGeometry.attributes.position.count;
+  let indexBudget = boxGeometry.index?.count ?? 0;
+  for (const geometry of hullGeometries.values()) {
+    vertexBudget += geometry.attributes.position.count;
+    // ConvexGeometry is non-indexed; BatchedMesh still needs room reserved.
+    indexBudget += geometry.index?.count ?? geometry.attributes.position.count;
+  }
+
   const material = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 });
-  const mesh = new THREE.InstancedMesh(geometry, material, count);
-  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const mesh = new THREE.BatchedMesh(count, vertexBudget, indexBudget, material);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  // The city is always around the player and every instance is written from
+  // authoritative poses, so culling per instance would cost a pass over
+  // thousands of chunks to hide almost nothing.
+  mesh.perObjectFrustumCulled = false;
+  mesh.sortObjects = false;
   mesh.frustumCulled = false;
 
-  const sizes = new Float32Array(count * 3);
+  const boxGeometryId = mesh.addGeometry(boxGeometry);
+  const hullGeometryIds = new Map<string, number>();
+  for (const [key, geometry] of hullGeometries) {
+    hullGeometryIds.set(key, mesh.addGeometry(geometry));
+  }
+
+  const instanceIds = new Int32Array(count).fill(-1);
   const baseColors = new Float32Array(count * 3);
   for (const structure of manifest.structures) {
     const color = structureColor(structure.structureId);
     for (const chunk of structure.chunks) {
       const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
-      sizes[slot * 3] = Math.max(0.05, chunk.size[0]);
-      sizes[slot * 3 + 1] = Math.max(0.05, chunk.size[1]);
-      sizes[slot * 3 + 2] = Math.max(0.05, chunk.size[2]);
+      const shape = shapeBySlot[slot];
+      const geometryId =
+        shape.kind === 'hull' ? (hullGeometryIds.get(shape.key) ?? boxGeometryId) : boxGeometryId;
+      instanceIds[slot] = mesh.addInstance(geometryId);
       baseColors[slot * 3] = color.r;
       baseColors[slot * 3 + 1] = color.g;
       baseColors[slot * 3 + 2] = color.b;
-      writeInstance(mesh, client, slot, sizes);
-      mesh.setColorAt(slot, color);
+      writeInstance(mesh, client, slot, scales, instanceIds);
+      mesh.setColorAt(instanceIds[slot], color);
     }
   }
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) {
-    mesh.instanceColor.needsUpdate = true;
-  }
-  console.info('[city] instanced chunk mesh ready', {
+
+  console.info('[city] batched chunk mesh ready', {
     chunks: count,
     structures: manifest.structures.length,
+    hullGeometries: hullGeometries.size,
+    vertices: vertexBudget,
   });
-  return { mesh, sizes, baseColors };
+  return { mesh, instanceIds, scales, baseColors };
 }
 
 function writeInstance(
-  mesh: THREE.InstancedMesh,
+  mesh: THREE.BatchedMesh,
   client: CityClient,
   slot: number,
-  sizes: Float32Array,
+  scales: Float32Array,
+  instanceIds: Int32Array,
 ): void {
+  const instanceId = instanceIds[slot];
+  if (instanceId < 0) {
+    return;
+  }
   const pose = client.topology.chunkWorldPose(slot);
   TMP_POSITION.set(pose.position[0], pose.position[1], pose.position[2]);
   TMP_QUATERNION.set(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
-  TMP_SCALE.set(sizes[slot * 3], sizes[slot * 3 + 1], sizes[slot * 3 + 2]);
+  TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
   TMP_MATRIX.compose(TMP_POSITION, TMP_QUATERNION, TMP_SCALE);
-  mesh.setMatrixAt(slot, TMP_MATRIX);
+  mesh.setMatrixAt(instanceId, TMP_MATRIX);
 }
 
 export function CityChunksLayer({
@@ -113,6 +173,9 @@ export function CityChunksLayer({
     if (clientRef.current !== client) {
       if (stateRef.current) {
         group.remove(stateRef.current.mesh);
+        // BatchedMesh owns the matrix/colour data textures as well as the
+        // merged geometry; its own dispose is what releases them.
+        stateRef.current.mesh.dispose();
         stateRef.current.mesh.geometry.dispose();
         (stateRef.current.mesh.material as THREE.Material).dispose();
         stateRef.current = null;
@@ -218,7 +281,6 @@ export function CityChunksLayer({
     if (dirty.size === 0) {
       return;
     }
-    let wrote = false;
     for (const key of dirty) {
       const body = client.topology.body(key);
       if (!body) {
@@ -227,25 +289,24 @@ export function CityChunksLayer({
       }
       const settledTint = body.settled ? 0.75 : 1;
       for (const slot of body.chunkSlots) {
-        writeInstance(state.mesh, client, slot, state.sizes);
+        const instanceId = state.instanceIds[slot];
+        if (instanceId < 0) {
+          continue;
+        }
+        writeInstance(state.mesh, client, slot, state.scales, state.instanceIds);
         TMP_COLOR.setRGB(
           state.baseColors[slot * 3] * settledTint,
           state.baseColors[slot * 3 + 1] * settledTint,
           state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
         );
-        state.mesh.setColorAt(slot, TMP_COLOR);
+        state.mesh.setColorAt(instanceId, TMP_COLOR);
       }
       if (!live.has(key)) {
         dirty.delete(key);
       }
-      wrote = true;
     }
-    if (wrote) {
-      state.mesh.instanceMatrix.needsUpdate = true;
-      if (state.mesh.instanceColor) {
-        state.mesh.instanceColor.needsUpdate = true;
-      }
-    }
+    // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
+    // straight into its own data textures and flags them itself.
   });
 
   return <group ref={groupRef} />;
