@@ -91,11 +91,6 @@ impl CityDestruction {
                 .chunks
                 .iter()
                 .map(|chunk| {
-                    // PhysX GPU convex cooking rejects hulls with >64 input
-                    // points (`MAX_GPU_CONVEX_POINTS`). Downsample evenly so we
-                    // keep a convex shape instead of an overlapping AABB that
-                    // fights neighboring chunks after any bond break.
-                    const MAX_GPU_CONVEX_POINTS: usize = 64;
                     let (geom_kind, half_extents, convex_points) = match &chunk.geometry {
                         ChunkGeometry::Cuboid { half_extents } => (
                             0,
@@ -103,20 +98,26 @@ impl CityDestruction {
                             Vec::new(),
                         ),
                         ChunkGeometry::ConvexHull { points } => {
+                            // Duplicate positions only -- authored point
+                            // buffers often repeat corners per face, and the
+                            // repeats are byte-identical. This is lossless;
+                            // the shape is untouched.
+                            //
+                            // NO geometric thinning happens here. An earlier
+                            // version strided every Nth point to fit the GPU's
+                            // 64-vertex hull cap, silently deforming colliders
+                            // away from the rendered geometry. The cap is now
+                            // enforced where it belongs: the PhysX cooker's
+                            // own vertex limit, which computes the optimal
+                            // bounded hull when an asset exceeds it.
+                            let mut seen = std::collections::HashSet::new();
                             let pts: Vec<Vec3> = points
                                 .chunks_exact(3)
+                                .filter(|p| {
+                                    seen.insert([p[0].to_bits(), p[1].to_bits(), p[2].to_bits()])
+                                })
                                 .map(|p| Vec3::new(p[0], p[1], p[2]))
                                 .collect();
-                            let pts = if pts.len() > MAX_GPU_CONVEX_POINTS && pts.len() >= 2 {
-                                (0..MAX_GPU_CONVEX_POINTS)
-                                    .map(|k| {
-                                        let idx = k * (pts.len() - 1) / (MAX_GPU_CONVEX_POINTS - 1);
-                                        pts[idx]
-                                    })
-                                    .collect()
-                            } else {
-                                pts
-                            };
                             (1, Vec3::new(0.5, 0.5, 0.5), pts)
                         }
                     };
