@@ -285,6 +285,16 @@ export class CityTopology {
           promotion.rotation,
         );
       }
+      // After promotions: a chunk can be promoted into a new island and then
+      // migrate in the same batch, and the server orders it that way.
+      for (const migration of batch.migrations ?? []) {
+        this.migrateChunk(
+          batch.structureId,
+          migration.node,
+          migration.fromIslandSerial,
+          migration.toIslandSerial,
+        );
+      }
       for (const retired of batch.retiredIslandIds) {
         this.retire(bodyKey(batch.structureId, retired));
       }
@@ -407,7 +417,82 @@ export class CityTopology {
    * is kinematic), so it keeps the structure-origin pose and plain rest
    * offsets that `reset()` gave it.
    */
-  private reoffsetBody(body: LedgerBody): void {
+  /**
+   * Move one chunk between two islands that both already exist.
+   *
+   * Physics reparents chunks without issuing a promotion -- thousands of times
+   * over a demolition. Both islands' centres of mass move when it happens, so
+   * both have to be re-offset, and the destination's offset for this chunk has
+   * to be stated in the destination's frame rather than carried over from the
+   * source's.
+   */
+  private migrateChunk(
+    structureId: number,
+    node: number,
+    fromIslandSerial: number,
+    toIslandSerial: number,
+  ): void {
+    const slot = this.slotOf(structureId, node);
+    const destination = this.bodies.get(bodyKey(structureId, toIslandSerial));
+    if (!destination) {
+      // The destination should have been promoted already. Without it there is
+      // nowhere correct to put the chunk, and guessing is what produces
+      // chunks composed against the wrong frame.
+      this.needsResync = true;
+      return;
+    }
+    const source = this.bodies.get(bodyKey(structureId, fromIslandSerial));
+    // Both frames have to be read before membership changes: afterwards they
+    // are no longer recoverable from the members' offsets.
+    const sourceOldCom = source ? this.centreOfMass(source) : null;
+    const destinationOldCom = this.centreOfMass(destination);
+    if (source) {
+      const index = source.chunkSlots.indexOf(slot);
+      if (index >= 0) {
+        source.chunkSlots.splice(index, 1);
+      }
+    }
+    if (!destination.chunkSlots.includes(slot)) {
+      destination.chunkSlots.push(slot);
+    }
+    this.chunkBody[slot] = destination.key;
+    this.localRot[slot * 4] = 0;
+    this.localRot[slot * 4 + 1] = 0;
+    this.localRot[slot * 4 + 2] = 0;
+    this.localRot[slot * 4 + 3] = 1;
+    // Membership changed on both sides, so both centres of mass moved.
+    // reoffsetBody restates every member offset and shifts the body pose to
+    // match, which also covers this chunk's new offset.
+    if (source) {
+      this.reoffsetBody(source, sourceOldCom);
+    }
+    this.reoffsetBody(destination, destinationOldCom);
+  }
+
+  /**
+   * Centre of mass of a body's current members, in structure-rest coordinates.
+   */
+  private centreOfMass(body: LedgerBody): Vec3 | null {
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    let totalWeight = 0;
+    for (const slot of body.chunkSlots) {
+      const weight = this.restMass[slot] > 0 ? this.restMass[slot] : 1;
+      x += this.restPos[slot * 3] * weight;
+      y += this.restPos[slot * 3 + 1] * weight;
+      z += this.restPos[slot * 3 + 2] * weight;
+      totalWeight += weight;
+    }
+    return totalWeight > 0 ? [x / totalWeight, y / totalWeight, z / totalWeight] : null;
+  }
+
+  /**
+   * `knownOldCom` is required when the caller has already changed membership,
+   * because the frame is otherwise recovered from a member's current offset --
+   * and a chunk that just arrived from another body carries that body's frame.
+   */
+  private reoffsetBody(body: LedgerBody, knownOldCom?: Vec3 | null): void {
     if (body.islandSerial === SUPPORT_SERIAL || body.chunkSlots.length === 0) {
       return;
     }
@@ -431,11 +516,12 @@ export class CityTopology {
     // Every surviving offset is `rest - oldCom`, so any one of them recovers
     // the frame we are leaving. Read it before the loop below overwrites it.
     const anchor = body.chunkSlots[0];
-    const delta: Vec3 = [
-      comX - (this.restPos[anchor * 3] - this.localPos[anchor * 3]),
-      comY - (this.restPos[anchor * 3 + 1] - this.localPos[anchor * 3 + 1]),
-      comZ - (this.restPos[anchor * 3 + 2] - this.localPos[anchor * 3 + 2]),
+    const oldCom: Vec3 = knownOldCom ?? [
+      this.restPos[anchor * 3] - this.localPos[anchor * 3],
+      this.restPos[anchor * 3 + 1] - this.localPos[anchor * 3 + 1],
+      this.restPos[anchor * 3 + 2] - this.localPos[anchor * 3 + 2],
     ];
+    const delta: Vec3 = [comX - oldCom[0], comY - oldCom[1], comZ - oldCom[2]];
     for (const slot of body.chunkSlots) {
       this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
       this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;

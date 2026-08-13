@@ -26,7 +26,7 @@ use crate::quant::{
 };
 use crate::types::Pose;
 
-pub const CITY_WIRE_VERSION: u8 = 1;
+pub const CITY_WIRE_VERSION: u8 = 2;
 
 pub const PKT_CITY_CHUNKS: u8 = 119;
 pub const PKT_CITY_TOPOLOGY: u8 = 120;
@@ -495,6 +495,16 @@ pub fn encode_topology(message: &TopologyMessage) -> Vec<u8> {
         for retired in &batch.retired_island_ids {
             write_leb128(&mut out, *retired);
         }
+        // Chunks physics reparented between islands that both already exist.
+        // No promotion is issued for these, so without them on the wire the
+        // client keeps the chunk on its old body and both islands carry a
+        // centre of mass computed from the wrong membership.
+        write_leb128(&mut out, batch.migrations.len() as u32);
+        for migration in &batch.migrations {
+            write_leb128(&mut out, ids::chunk_id_parts(migration.chunk_id).1);
+            write_leb128(&mut out, migration.from_island_id);
+            write_leb128(&mut out, migration.to_island_id);
+        }
     }
 
     if !message.settled.is_empty() {
@@ -586,10 +596,22 @@ pub fn decode_topology(data: &[u8]) -> Result<TopologyMessage, WireError> {
                 for _ in 0..retired_count {
                     retired_island_ids.push(reader.leb128()?);
                 }
+                let migration_count = reader.leb128()?;
+                let mut migrations = Vec::with_capacity(migration_count as usize);
+                for _ in 0..migration_count {
+                    let node = reader.leb128()?;
+                    let from_island_id = reader.leb128()?;
+                    let to_island_id = reader.leb128()?;
+                    migrations.push(vibe_netcode::destruction_backend::ShapeMigration {
+                        chunk_id: ids::chunk_id(structure_id, node),
+                        from_island_id,
+                        to_island_id,
+                    });
+                }
                 message.batches.push(FractureBatch {
                     structure_id,
                     broken_bond_ids,
-                    migrations: Vec::new(),
+                    migrations,
                     promoted_islands,
                     retired_island_ids,
                 });
@@ -1069,7 +1091,7 @@ mod tests {
             //             | count=0100 | reserved=0000
             // record: tag=00 | leb128(0x80000001)=8180808008
             //         | region=000000000000 | local cm=6400 c800 2c01 | quat32=03000000
-            "770101000000020003000000010000000081808080080000000000006400c8002c0103000000"
+            "770201000000020003000000010000000081808080080000000000006400c8002c0103000000"
         );
     }
 

@@ -12,7 +12,7 @@ import {
 } from '../net/sharedConstants';
 import type { Quat, Vec3 } from './vec';
 
-export const CITY_WIRE_VERSION = 1;
+export const CITY_WIRE_VERSION = 2;
 
 export const RECORD_FLAG_SETTLED_HINT = 0b0000_1000;
 export const RECORD_FLAG_KINEMATIC_SUPPORT = 0b0001_0000;
@@ -76,6 +76,12 @@ export interface FractureBatchMessage {
   brokenBondIndices: number[];
   promotions: IslandPromotionMessage[];
   retiredIslandIds: number[];
+  /**
+   * Chunks physics moved between islands that both already exist. No promotion
+   * is issued for these, so the client has to be told or it keeps the chunk on
+   * its old body and both islands' centres of mass go wrong.
+   */
+  migrations: Array<{ node: number; fromIslandSerial: number; toIslandSerial: number }>;
 }
 
 export interface SettleMessage {
@@ -354,7 +360,26 @@ export function decodeTopology(bytes: Uint8Array): TopologyMessage {
       for (let i = 0; i < retiredCount; i++) {
         retiredIslandIds.push(reader.leb128());
       }
-      message.batches.push({ structureId, brokenBondIndices, promotions, retiredIslandIds });
+      const migrationCount = reader.leb128();
+      const migrations: Array<{
+        node: number;
+        fromIslandSerial: number;
+        toIslandSerial: number;
+      }> = [];
+      for (let i = 0; i < migrationCount; i++) {
+        migrations.push({
+          node: reader.leb128(),
+          fromIslandSerial: reader.leb128(),
+          toIslandSerial: reader.leb128(),
+        });
+      }
+      message.batches.push({
+        structureId,
+        brokenBondIndices,
+        promotions,
+        retiredIslandIds,
+        migrations,
+      });
     } else if (section === SECTION_SETTLE) {
       const count = reader.leb128();
       for (let i = 0; i < count; i++) {

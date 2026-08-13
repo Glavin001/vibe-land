@@ -22,7 +22,7 @@ const fromHex = (hex: string): Uint8Array => {
 
 // Rust: wire::tests::chunks_datagram_golden_vector
 const GOLDEN_CHUNKS =
-  '770101000000020003000000010000000081808080080000000000006400c8002c0103000000';
+  '770201000000020003000000010000000081808080080000000000006400c8002c0103000000';
 
 describe('city wire decoder', () => {
   it('decodes the pinned chunks golden vector', () => {

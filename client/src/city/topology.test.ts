@@ -54,6 +54,7 @@ const fractureMessage = (topoSeq: number): TopologyMessage => ({
         },
       ],
       retiredIslandIds: [],
+      migrations: [],
     },
   ],
   settled: [],
@@ -133,6 +134,7 @@ describe('CityTopology', () => {
             },
           ],
           retiredIslandIds: [],
+      migrations: [],
         },
       ],
       settled: [],
@@ -174,6 +176,7 @@ describe('CityTopology', () => {
             },
           ],
           retiredIslandIds: [],
+      migrations: [],
         },
       ],
       settled: [],
@@ -205,6 +208,7 @@ describe('CityTopology', () => {
             },
           ],
           retiredIslandIds: [],
+      migrations: [],
         },
       ],
       settled: [],
@@ -331,6 +335,7 @@ describe('CityTopology centre-of-mass re-offset', () => {
           },
         ],
         retiredIslandIds: [],
+      migrations: [],
       },
     ],
     settled: [],
@@ -357,6 +362,7 @@ describe('CityTopology centre-of-mass re-offset', () => {
           },
         ],
         retiredIslandIds: [],
+      migrations: [],
       },
     ],
     settled: [],
@@ -385,5 +391,107 @@ describe('CityTopology centre-of-mass re-offset', () => {
     expect(shed).toBeDefined();
     // COM falls from y=2.0 (nodes 1+2) to y=1.5 (node 1 alone).
     expect(shed!.delta[1]).toBeCloseTo(-0.5, 5);
+  });
+});
+
+// Physics reparents chunks between existing islands thousands of times over a
+// demolition and issues no promotion for it. If the client is not told, the
+// chunk stays on its old body and BOTH islands carry a centre of mass computed
+// from the wrong membership -- which is how a chunk ends up composed against a
+// frame it does not belong to.
+describe('CityTopology chunk migration', () => {
+  const promoteTwo = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 10,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [0, 1],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 1,
+            nodes: [1],
+            position: [10, 1.5, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+          {
+            structureId: 0,
+            islandId: 2,
+            nodes: [2],
+            position: [10, 2.5, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+        migrations: [],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  const migrate = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 20,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [],
+        promotions: [],
+        retiredIslandIds: [],
+        migrations: [{ node: 2, fromIslandSerial: 2, toIslandSerial: 1 }],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  it('rebinds the chunk to its new body', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(promoteTwo(1))).toBe(true);
+    const slot = topology.slotOf(0, 2);
+    expect(topology.bodyKeyOf(slot)).toBe(bodyKey(0, 2));
+    expect(topology.apply(migrate(2))).toBe(true);
+    expect(topology.bodyKeyOf(slot)).toBe(bodyKey(0, 1));
+    expect(topology.body(bodyKey(0, 1))!.chunkSlots).toContain(slot);
+    expect(topology.body(bodyKey(0, 2))!.chunkSlots).not.toContain(slot);
+  });
+
+  // The destination's frame must be read before the arriving chunk joins it:
+  // that chunk still carries the source body's frame, so deriving the old
+  // centre of mass from it would corrupt the very offsets being fixed.
+  it('leaves the destination chunks world-fixed', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(promoteTwo(1))).toBe(true);
+    const survivor = topology.slotOf(0, 1);
+    const before = topology.chunkWorldPose(survivor);
+    expect(topology.apply(migrate(2))).toBe(true);
+    const after = topology.chunkWorldPose(survivor);
+    expect(after.position[0]).toBeCloseTo(before.position[0], 5);
+    expect(after.position[1]).toBeCloseTo(before.position[1], 5);
+    expect(after.position[2]).toBeCloseTo(before.position[2], 5);
+  });
+
+  it('asks for a resync rather than guessing at an unknown destination', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(promoteTwo(1))).toBe(true);
+    topology.apply({
+      ...migrate(2),
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [],
+          promotions: [],
+          retiredIslandIds: [],
+          migrations: [{ node: 2, fromIslandSerial: 2, toIslandSerial: 99 }],
+        },
+      ],
+    });
+    expect(topology.needsResync).toBe(true);
   });
 });
