@@ -231,6 +231,7 @@ fn full_demolition_cost() {
     let (mut post_ms, mut snap_ms, mut ing_ms, mut dyn_ms) =
         (vec![], vec![], vec![], vec![]);
     let (mut rb_ms, mut set_ms, mut sf_ms) = (vec![], vec![], vec![]);
+    let (mut ev_ms, mut fl_ms) = (vec![], vec![]);
     let (mut peak_bodies, mut peak_awake) = (0u32, 0u32);
     let mut tick = 0u32;
 
@@ -263,6 +264,8 @@ fn full_demolition_cost() {
                     rb_ms.push(stats.readback_ms_host);
                     set_ms.push(stats.settle_ms);
                     sf_ms.push(stats.stats_ffi_ms);
+                    ev_ms.push(stats.events_ms);
+                    fl_ms.push(stats.filters_ms);
                 }
                 tick += 1;
             }
@@ -292,6 +295,8 @@ fn full_demolition_cost() {
         ("blast solve", &mut solve_ms),
         ("blast end", &mut end_ms),
         ("post_step", &mut post_ms),
+        ("  events diff", &mut ev_ms),
+        ("  filters", &mut fl_ms),
         ("  readback", &mut rb_ms),
         ("  settle scan", &mut set_ms),
         ("  stats ffi", &mut sf_ms),

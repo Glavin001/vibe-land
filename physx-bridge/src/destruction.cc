@@ -913,10 +913,15 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     }
   }
 
-  // Three phases, because only the middle one is safely concurrent.
-  // beginTick injects contacts and gravity, endTick fractures and edits PhysX
-  // actors -- both touch shared state. solveTick is pure computation over one
-  // structure's own graph, so structures solve independently.
+  // Three phases, of which the first two are concurrent.
+  //
+  // beginTick (consumeContacts + addGravity) reads PhysX poses and writes only
+  // the destructible's OWN solver and contact list -- no PxScene mutation, no
+  // manager-level state -- so it parallelises exactly like solveTick. It was
+  // serial here on an incorrect assumption that it touched shared state, and
+  // measured 6.86 ms at 5.5k bodies: three times the CUDA solve, and the
+  // largest single term in the tick. endTick genuinely does mutate the scene
+  // (fracture, actor creation/destruction) and stays serial.
   //
   // Timed separately, because reporting them as one number ("stress solve")
   // hid where the cost actually was: begin and end are SERIAL walks that scale
@@ -924,9 +929,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // the graph. Optimising the wrong one of the three is the failure mode this
   // split exists to prevent.
   auto phase = clock::now();
-  for (Slot *slot : live_slots_) {
-    require(slot->dest->beginTick(dt, g), "beginTick failed");
-  }
+  stress_executor_->run(live_slots_.size(), [this, dt, g](std::size_t index) {
+    require(live_slots_[index]->dest->beginTick(dt, g), "beginTick failed");
+  });
   begin_ms += ms_since(phase);
 
   phase = clock::now();

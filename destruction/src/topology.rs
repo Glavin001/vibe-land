@@ -149,6 +149,21 @@ impl CityLedger {
 
     /// Refresh a live island's pose from the kinematic stream so bootstraps
     /// hand late joiners current state.
+    /// Motion update for a run of bodies that share a structure.
+    ///
+    /// The per-body entry point does two nested hash lookups (structure, then
+    /// island). Bodies arrive grouped by structure, so the outer one is the
+    /// same answer for long runs; this resolves it once and lets the caller
+    /// update each island directly.
+    pub fn structure_islands_mut(
+        &mut self,
+        structure_id: u32,
+    ) -> Option<&mut HashMap<u32, LedgerIsland>> {
+        self.structures
+            .get_mut(&structure_id)
+            .map(|structure| &mut structure.islands)
+    }
+
     pub fn update_island_motion(
         &mut self,
         body_entity: u32,

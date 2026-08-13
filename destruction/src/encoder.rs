@@ -302,6 +302,8 @@ impl ChunkStreamEncoder {
 
         // Classifier updates from the delta/active-only export.
         self.active_order.clear();
+        let mut cached_structure = u32::MAX;
+        let mut cached_islands = false;
         for snapshot in active {
             let entity = snapshot.body_entity;
             let state = BodyState {
@@ -328,14 +330,31 @@ impl ChunkStreamEncoder {
             track.class = track.classifier.update(state, config);
             track.state = state;
             self.active_order.push(entity);
-            self.ledger.update_island_motion(
-                entity,
-                state.pose,
-                state.linear_velocity,
-                state.angular_velocity,
-            );
+
+            // Bodies arrive grouped by structure, so resolve the structure map
+            // only when it actually changes rather than per body.
+            let (structure_id, serial) = ids::body_entity_parts(entity);
+            if structure_id != cached_structure {
+                cached_structure = structure_id;
+                cached_islands = self.ledger.structure_islands_mut(structure_id).is_some();
+            }
+            if cached_islands {
+                if let Some(islands) = self.ledger.structure_islands_mut(structure_id) {
+                    if let Some(island) = islands.get_mut(&serial) {
+                        island.pose = state.pose;
+                        island.linear_velocity = state.linear_velocity;
+                        island.angular_velocity = state.angular_velocity;
+                    }
+                }
+            }
         }
-        self.active_order.sort_unstable();
+        // Snapshots come back sorted by body id from the bridge, and entity
+        // packing is monotonic within a structure, so the list is already
+        // ordered on the overwhelming majority of ticks. Checking is O(n)
+        // against an O(n log n) sort over several thousand entries.
+        if !self.active_order.is_sorted() {
+            self.active_order.sort_unstable();
+        }
         // `active_order` drives both the awake-body count and the baseline
         // record list, and the baseline wire format needs strictly increasing
         // ids just like the datagram one. One snapshot batch carrying the same
