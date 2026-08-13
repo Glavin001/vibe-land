@@ -90,18 +90,23 @@ pub fn pack_footprint_m(pack: &ScenePack) -> f32 {
     let mut low = Vec3::splat(f32::INFINITY);
     let mut high = Vec3::splat(f32::NEG_INFINITY);
     for (node, collider) in pack.nodes.iter().zip(&pack.node_colliders) {
-        let half = match collider {
-            SceneCollider::Cuboid { half_extents } => *half_extents,
-            SceneCollider::ConvexHull { points } => {
-                let mut extent = Vec3::ZERO;
-                for point in points.chunks_exact(3) {
-                    extent = extent.max(Vec3::new(point[0], point[1], point[2]).abs());
-                }
-                extent
+        match collider {
+            SceneCollider::Cuboid { half_extents } => {
+                low = low.min(node.centroid - *half_extents);
+                high = high.max(node.centroid + *half_extents);
             }
-        };
-        low = low.min(node.centroid - half);
-        high = high.max(node.centroid + half);
+            SceneCollider::ConvexHull { points } => {
+                // The true extent of each vertex. Treating max |p| as a
+                // symmetric half-extent inflated the footprint of any hull
+                // whose vertices are unevenly spread about its centroid,
+                // widening the whole grid pitch for empty air.
+                for point in points.chunks_exact(3) {
+                    let world = node.centroid + Vec3::new(point[0], point[1], point[2]);
+                    low = low.min(world);
+                    high = high.max(world);
+                }
+            }
+        }
     }
     if !low.is_finite() || !high.is_finite() {
         return 0.0;

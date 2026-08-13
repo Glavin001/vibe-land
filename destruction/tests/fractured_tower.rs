@@ -22,7 +22,12 @@ fn variant_counts_match_the_cpp_contract() {
     let variants = make_building_variants(&pack, true).expect("variants");
     assert_eq!(variants.len(), MAXIMUM_FLOORS as usize);
 
-    let expected = [(83, 209), (148, 373), (204, 546)];
+    // Re-pinned 2026-08-13: the asset's centroids were corrected to exact
+    // hull volume centroids (they had been authored ~21 cm off, median), and
+    // floor truncation slices by centroid Y, so a few nodes legitimately
+    // changed floors. The full tower (204/546) is untouched -- only the
+    // cutoff moved relative to the corrected centroids.
+    let expected = [(86, 213), (145, 365), (204, 546)];
     for (variant, (nodes, bonds)) in variants.iter().zip(expected) {
         assert_eq!(
             variant.pack.nodes.len(),
