@@ -57,6 +57,25 @@ type CityMeshState = {
   baseColors: Float32Array;
 };
 
+/**
+ * Keep a bounded window of update costs. Bounded because this runs every frame
+ * forever: an unbounded array would be a leak measured in hours.
+ */
+function recordUpdateMs(samples: number[], value: number): void {
+  samples.push(value);
+  if (samples.length > 240) {
+    samples.shift();
+  }
+}
+
+function percentile(samples: number[], fraction: number): number {
+  if (samples.length === 0) {
+    return 0;
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+}
+
 function structureColor(structureId: number): THREE.Color {
   return TMP_COLOR.setHSL(((structureId * 47) % 360) / 360, 0.35, 0.62);
 }
@@ -197,6 +216,7 @@ export function CityChunksLayer({
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
   const buildFailedForRef = useRef<CityClient | null>(null);
+  const updateSamplesRef = useRef<number[]>([]);
 
   useFrame((frameState) => {
     const client = getCityClient();
@@ -305,6 +325,7 @@ export function CityChunksLayer({
         rendered: stateRef.current != null,
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         chunksBelowGround,
+        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
         deepest,
@@ -337,6 +358,7 @@ export function CityChunksLayer({
     const camera = frameState.camera.position;
     const frame = frameCounterRef.current;
     const touchedMeshes = new Set<number>();
+    const updateStartedAt = performance.now();
     for (const key of dirty) {
       const body = client.topology.body(key);
       if (!body) {
@@ -390,6 +412,7 @@ export function CityChunksLayer({
     for (const index of touchedMeshes) {
       state.meshes[index]?.computeBoundingSphere();
     }
+    recordUpdateMs(updateSamplesRef.current, performance.now() - updateStartedAt);
     // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
     // straight into its own data textures and flags them itself.
   });

@@ -115,6 +115,15 @@ export interface CityE2EStats {
   minChunkY: number;
   /** Chunks whose centroid has sunk below the ground plane. */
   chunksBelowGround: number;
+  /**
+   * Milliseconds this layer spent recomposing chunk transforms, p95.
+   *
+   * Distinct from `frame p95`, which is a requestAnimationFrame delta and so
+   * is quantised by vsync -- a 17 ms frame and a 33 ms frame both report 33 ms
+   * at 30 fps, which makes real improvements invisible. This measures only the
+   * work this layer does, so it can be optimised against.
+   */
+  chunkUpdateP95Ms: number;
   /** Chunks whose owning body vanished from the ledger. Must be 0. */
   orphanedChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */

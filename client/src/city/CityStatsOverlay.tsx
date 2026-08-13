@@ -149,6 +149,7 @@ export function CityStatsOverlay({
     datagramsReceived: number;
     minChunkY: number;
     chunksBelowGround: number;
+    chunkUpdateP95Ms: number;
     orphanedChunks: number;
     rendered: boolean;
   } | null;
@@ -300,6 +301,11 @@ export function CityStatsOverlay({
       <Stat label="fps" value={frame.fps.toFixed(0)} warn={frame.fps < 45} />
       <Stat label="frame p95" value={`${frame.p95.toFixed(1)} ms`} warn={frame.p95 > 25} />
       <Stat label="chunks drawn" value={`${clientStats?.chunksTotal ?? 0}`} />
+      <Stat
+        label="chunk update"
+        value={`${(clientStats?.chunkUpdateP95Ms ?? 0).toFixed(1)} ms`}
+        warn={(clientStats?.chunkUpdateP95Ms ?? 0) > 8}
+      />
       <Stat
         label="rendered"
         value={clientStats?.rendered ? 'yes' : 'NO'}
