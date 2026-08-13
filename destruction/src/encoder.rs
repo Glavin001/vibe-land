@@ -105,6 +105,14 @@ struct ClientState {
     sequence: u32,
 }
 
+/// A body slower than this, that has not moved from where a client last saw
+/// it, has nothing to send that client. Well under the sleep threshold, so a
+/// body creeping toward rest still streams.
+const REST_SPEED_MPS: f32 = 0.05;
+const REST_ANGULAR_RPS: f32 = 0.05;
+/// Pose agreement required alongside those speeds, in metres.
+const REST_POSE_EPSILON_M: f32 = 0.02;
+
 /// One shared (client-independent) candidate produced by `encode_send`.
 #[derive(Clone, Debug)]
 pub struct SharedRecord {
@@ -454,6 +462,27 @@ impl ChunkStreamEncoder {
             let entity = shared_record.record.body_entity;
             // One lookup for interest state and send history together.
             let body_state = state.bodies.entry(entity).or_default();
+
+            // Nothing to tell this client about a body that is at rest where
+            // the client already has it. This is not a staleness tradeoff: the
+            // client's pose is already correct, so interest and priority can
+            // only conclude "no update needed" after doing the full frustum
+            // and error work. Skipping is the same answer for a hash lookup
+            // and two compares.
+            //
+            // With sleep miscalibrated most of a settled rubble field is
+            // "awake" but motionless, so this is the bulk of the stream input:
+            // ~10k bodies evaluated per client per send to ship ~350.
+            if let Some((_, last_pose)) = body_state.last_sent {
+                let at_rest = shared_record.linear_speed <= REST_SPEED_MPS
+                    && shared_record.angular_speed <= REST_ANGULAR_RPS;
+                if at_rest
+                    && shared_record.position.distance_squared(last_pose.position)
+                        <= REST_POSE_EPSILON_M * REST_POSE_EPSILON_M
+                {
+                    continue;
+                }
+            }
             let decision = body_state.track.update_with_frusta(
                 shared.sim_tick,
                 Pose {

@@ -129,17 +129,45 @@ pub fn select_with_ceiling(
     initial_bytes: usize,
 ) -> BudgetSelection {
     let order = &mut *candidates;
-    order.sort_by(|a, b| {
+    let ranking = |a: &BudgetCandidate, b: &BudgetCandidate| {
         b.required
             .cmp(&a.required)
             .then_with(|| b.priority.total_cmp(&a.priority))
             .then_with(|| a.index.cmp(&b.index))
-    });
+    };
+
+    // Partition to the plausible winners, then sort only those.
+    //
+    // The ceiling admits roughly ceiling/min_cost records, so a full O(n log n)
+    // sort of every candidate ranks thousands of bodies that cannot possibly
+    // ship. select_nth_unstable puts the best K in the front partition in
+    // O(n); the sort that decides actual order then runs over K, not n. K is
+    // padded 2x because per-record costs vary, so the K-th best by priority is
+    // not exactly the cutoff by bytes; the greedy fill below remains the
+    // arbiter and required records are counted separately so they can never be
+    // partitioned away.
+    let mut fill_limit = order.len();
+    if let Some(ceiling) = ceiling_bytes {
+        let min_cost = order
+            .iter()
+            .map(|candidate| candidate.cost_bytes.max(1))
+            .min()
+            .unwrap_or(1);
+        let max_records = ceiling.saturating_sub(initial_bytes) / min_cost;
+        let required = order.iter().filter(|candidate| candidate.required).count();
+        let padded = max_records.saturating_mul(2).saturating_add(required);
+        if padded < order.len() {
+            order.select_nth_unstable_by(padded, ranking);
+            fill_limit = padded + 1;
+        }
+    }
+    order[..fill_limit].sort_by(ranking);
+
     let mut selection = BudgetSelection {
-        selected_indices: Vec::with_capacity(order.len()),
+        selected_indices: Vec::with_capacity(fill_limit),
         used_bytes: initial_bytes,
     };
-    for candidate in order.iter() {
+    for candidate in order[..fill_limit].iter() {
         let fits = ceiling_bytes.is_none_or(|ceiling| {
             selection.used_bytes.saturating_add(candidate.cost_bytes) <= ceiling
         });
