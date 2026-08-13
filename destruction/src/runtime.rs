@@ -52,6 +52,8 @@ impl std::fmt::Display for CityDestructionError {
 impl std::error::Error for CityDestructionError {}
 
 pub struct CityDestruction {
+    /// Awake-body encoder input, rebuilt once per tick inside `post_step`.
+    encoder_input: Vec<BodySnapshotInput>,
     manifest: Arc<DestructionManifest>,
     settle: SettleTracker,
     settle_config: SettleConfig,
@@ -172,6 +174,7 @@ impl CityDestruction {
         }
 
         Ok(Self {
+            encoder_input: Vec::new(),
             stats: DestructionStats {
                 structures: manifest.structures.len() as u32,
                 ..DestructionStats::default()
@@ -382,6 +385,10 @@ impl CityDestruction {
         let mut max_speed = 0.0f32;
         let mut max_speed_pos = [0.0f32; 3];
         let mut max_speed_entity = 0u32;
+        // Built here rather than by a second full pass in body_snapshots():
+        // that pass re-crossed the FFI boundary, rebuilt a Vec of every body,
+        // and re-filtered it, all over data this loop already has in hand.
+        let mut encoder_input: Vec<BodySnapshotInput> = Vec::with_capacity(snapshots.len());
         let mut max_angular = 0.0f32;
         for snap in snapshots.iter() {
             if snap.kinematic {
@@ -442,8 +449,35 @@ impl CityDestruction {
                 }
                 self.known_awake.insert(snap.entity_id, true);
             }
+
+            // The encoder only streams awake, non-kinematic bodies.
+            if !snap.kinematic && !snap.sleeping {
+                encoder_input.push(BodySnapshotInput {
+                    body_entity: snap.entity_id,
+                    position: [snap.position.x, snap.position.y, snap.position.z],
+                    rotation: [
+                        snap.rotation.x,
+                        snap.rotation.y,
+                        snap.rotation.z,
+                        snap.rotation.w,
+                    ],
+                    linear_velocity: [
+                        snap.linear_velocity.x,
+                        snap.linear_velocity.y,
+                        snap.linear_velocity.z,
+                    ],
+                    angular_velocity: [
+                        snap.angular_velocity.x,
+                        snap.angular_velocity.y,
+                        snap.angular_velocity.z,
+                    ],
+                    contacts: 0,
+                    flags: 0,
+                });
+            }
         }
 
+        self.encoder_input = encoder_input;
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();
 
@@ -461,8 +495,6 @@ impl CityDestruction {
             self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
-        self.stats.max_body_speed = self.stats.max_body_speed.max(max_speed);
-        self.stats.max_body_angular_speed = self.stats.max_body_angular_speed.max(max_angular);
 
         if let Ok(bridge_stats) = world.destruction_stats() {
             self.stats.chunk_bodies = bridge_stats.chunk_bodies;
@@ -489,48 +521,21 @@ impl CityDestruction {
         })
     }
 
+    /// Awake bodies for the encoder, captured during `post_step`.
+    ///
+    /// This used to make a second `chunk_body_snapshots()` call: another FFI
+    /// crossing, another full Vec of every body, another filter pass, over
+    /// state `post_step` had already walked one line earlier.
     pub fn body_snapshots(
         &self,
-        world: &World,
-    ) -> Result<Vec<BodySnapshotInput>, CityDestructionError> {
+        _world: &World,
+    ) -> Result<&[BodySnapshotInput], CityDestructionError> {
         if self.degraded {
             return Err(CityDestructionError::Degraded);
         }
-        let snapshots = world
-            .chunk_body_snapshots()
-            .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
-        Ok(snapshots
-            .into_iter()
-            .filter(|snap| !snap.kinematic && !snap.sleeping)
-            .map(|snap| BodySnapshotInput {
-                body_entity: snap.entity_id,
-                position: [snap.position.x, snap.position.y, snap.position.z],
-                rotation: [
-                    snap.rotation.x,
-                    snap.rotation.y,
-                    snap.rotation.z,
-                    snap.rotation.w,
-                ],
-                linear_velocity: [
-                    snap.linear_velocity.x,
-                    snap.linear_velocity.y,
-                    snap.linear_velocity.z,
-                ],
-                angular_velocity: [
-                    snap.angular_velocity.x,
-                    snap.angular_velocity.y,
-                    snap.angular_velocity.z,
-                ],
-                contacts: 0,
-                flags: 0,
-            })
-            .collect())
+        Ok(&self.encoder_input)
     }
 
-    /// Record host-side stage timings measured by the caller.
-    ///
-    /// These are Rust-side wall times around the FFI boundary, so they belong
-    /// to whoever calls them, not to the bridge.
     pub fn record_host_timings(&mut self, post_step_ms: f32, snapshot_ms: f32, ingest_ms: f32) {
         self.stats.post_step_ms = post_step_ms;
         self.stats.snapshot_ms = snapshot_ms;
