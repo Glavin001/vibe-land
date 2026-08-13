@@ -44,6 +44,12 @@ export default defineConfig(({ mode }) => {
         '/match-stats': {
           target: `http://${serverHost}:${serverPort}`,
         },
+        // Every server route needs an entry here or the dev server answers it
+        // with the SPA fallback -- a 200 full of HTML, which reads as a
+        // successful request right up until something tries to use the body.
+        '/city-reset': {
+          target: `http://${serverHost}:${serverPort}`,
+        },
       },
     },
     optimizeDeps: {
