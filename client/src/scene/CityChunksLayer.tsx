@@ -18,6 +18,7 @@ import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
+import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
 import { updateCityE2E } from '../e2eBridge';
 import type { CityE2EStats } from '../e2eBridge';
 
@@ -163,7 +164,7 @@ export function CityChunksLayer({
   const frameCounterRef = useRef(0);
   const buildFailedForRef = useRef<CityClient | null>(null);
 
-  useFrame(() => {
+  useFrame((frameState) => {
     const client = getCityClient();
     const group = groupRef.current;
     if (!client || !group) {
@@ -280,11 +281,36 @@ export function CityChunksLayer({
     if (dirty.size === 0) {
       return;
     }
+    // Rewriting every moving chunk every frame is the client's dominant cost
+    // once a demolition is large: tens of thousands of matrix composes, most
+    // of them for rubble far enough away that a frame's motion is a fraction
+    // of a pixel. Distant bodies are updated on a stride instead, staggered by
+    // key so the deferred work spreads across frames rather than spiking on
+    // one.
+    //
+    // This is a render-rate decision only. The authoritative pose is whatever
+    // the ledger holds; deferring a write delays when a distant chunk is
+    // redrawn, it never changes where it is.
+    const camera = frameState.camera.position;
+    const frame = frameCounterRef.current;
     for (const key of dirty) {
       const body = client.topology.body(key);
       if (!body) {
         dirty.delete(key);
         continue;
+      }
+      // A body that stopped moving gets its final write unconditionally.
+      // Deferring that one would strand the chunk at its second-to-last pose
+      // for good, since no further frame will list it as live.
+      const settling = !live.has(key);
+      if (!settling) {
+        const dx = body.position[0] - camera.x;
+        const dy = body.position[1] - camera.y;
+        const dz = body.position[2] - camera.z;
+        const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
+        if (!shouldUpdateThisFrame(frame, key, stride)) {
+          continue;
+        }
       }
       const settledTint = body.settled ? 0.75 : 1;
       for (const slot of body.chunkSlots) {
