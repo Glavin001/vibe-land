@@ -87,6 +87,30 @@ function useFrameTime(): { fps: number; p95: number } {
 }
 
 const row: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 12 };
+/**
+ * Shared style for the show/hide controls.
+ *
+ * `pointerEvents: 'auto'` is the point of it: the panel opts out of pointer
+ * events entirely so it can never swallow a shot, and these controls are the
+ * only things inside it that opt back in. The hit box is sized for a thumb
+ * rather than a cursor, since a touch device has no F9 to fall back on.
+ */
+const toggleButton: React.CSSProperties = {
+  position: 'absolute',
+  zIndex: 41,
+  pointerEvents: 'auto',
+  minWidth: 44,
+  minHeight: 28,
+  padding: '4px 10px',
+  borderRadius: 6,
+  border: '1px solid rgba(214,245,214,0.25)',
+  background: 'rgba(8,12,10,0.82)',
+  color: '#d6f5d6',
+  font: '11px ui-monospace, SFMono-Regular, Menlo, monospace',
+  cursor: 'pointer',
+  // Stops iOS Safari treating a fast tap as a double-tap zoom.
+  touchAction: 'manipulation',
+};
 const heading: React.CSSProperties = {
   opacity: 0.55,
   textTransform: 'uppercase',
@@ -173,7 +197,22 @@ export function CityStatsOverlay({
     };
   }, [matchId, visible]);
 
-  if (!visible) return null;
+  // Touch devices have no F9, so the overlay needs a tap target to come back
+  // from. It doubles as the hidden-state indicator: without it there is no
+  // sign the overlay exists at all.
+  if (!visible) {
+    return (
+      <button
+        type="button"
+        onClick={() => setVisible(true)}
+        style={{ ...toggleButton, top: 56, left: 12 }}
+        data-testid="city-stats-show"
+        aria-label="Show city stats"
+      >
+        STATS
+      </button>
+    );
+  }
 
   // Datagram rate from the monotonic received counter.
   const now = performance.now();
@@ -209,7 +248,18 @@ export function CityStatsOverlay({
     >
       <div style={{ ...row, opacity: 0.9, fontWeight: 700 }}>
         <span>CITY STATS</span>
-        <span style={{ opacity: 0.5 }}>F9</span>
+        {/* The panel itself is pointer-transparent so it never eats a shot;
+            this control opts back in for its own hit box only. */}
+        <button
+          type="button"
+          onClick={() => setVisible(false)}
+          style={{ ...toggleButton, position: 'static', padding: '1px 6px' }}
+          data-testid="city-stats-hide"
+          aria-label="Hide city stats"
+          title="Hide (F9)"
+        >
+          F9 ✕
+        </button>
       </div>
 
       <div style={heading}>browser</div>
