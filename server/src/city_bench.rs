@@ -192,6 +192,91 @@ fn demolished_tower_comes_to_rest() {
     );
 }
 
+/// Would view clustering actually reduce evaluations, and by how much?
+///
+/// The per-client stream cost is O(bodies x players) because every client
+/// ranks bodies for itself. Clustering clients with similar cameras would make
+/// it O(bodies x clusters) -- but only if realistic player distributions
+/// actually cluster. This measures the cluster count directly rather than
+/// assuming it, because a distribution that yields 40 clusters from 64 players
+/// is a 1.6x win and not worth the machinery.
+///
+/// Two players share a cluster when their eyes are close AND they look in
+/// similar directions: both matter, since visibility depends on position and
+/// orientation together.
+#[test]
+fn view_clustering_reduction_on_realistic_layouts() {
+    fn cluster_count(cameras: &[(Vec3, Vec3)], eye_radius_m: f32, cos_tolerance: f32) -> usize {
+        // Greedy: first camera seeds a cluster, later ones join if close to
+        // the seed. Deliberately simple -- it is a lower bound on what a
+        // smarter clustering achieves, so it will not flatter the idea.
+        let mut seeds: Vec<(Vec3, Vec3)> = Vec::new();
+        for &(eye, direction) in cameras {
+            let joined = seeds.iter().any(|&(seed_eye, seed_dir)| {
+                eye.distance(seed_eye) <= eye_radius_m
+                    && direction.dot(seed_dir) >= cos_tolerance
+            });
+            if !joined {
+                seeds.push((eye, direction));
+            }
+        }
+        seeds.len()
+    }
+
+    // 30 degrees of direction tolerance, 25 m of position tolerance: wide
+    // enough to share visibility of a 96 m city at typical viewing range.
+    let cos_tolerance = 30.0f32.to_radians().cos();
+    let eye_radius_m = 25.0;
+
+    println!("\n=== view clustering: clusters per layout ===");
+    println!("{:>8}  {:>10}  {:>10}  {:>10}", "players", "ring", "clumped", "scattered");
+    for &players in &[4usize, 16, 32, 64, 128] {
+        // Ring: everyone around the edge looking inward (the bench layout).
+        let ring: Vec<(Vec3, Vec3)> = (0..players)
+            .map(|i| {
+                let angle = i as f32 / players as f32 * std::f32::consts::TAU;
+                let eye = Vec3::new(angle.cos() * 70.0, 2.0, angle.sin() * 70.0);
+                (eye, (Vec3::ZERO - eye).normalize())
+            })
+            .collect();
+        // Clumped: a firefight -- players bunched in a few spots, similar views.
+        let clumped: Vec<(Vec3, Vec3)> = (0..players)
+            .map(|i| {
+                let group = i % 4;
+                let angle = group as f32 / 4.0 * std::f32::consts::TAU;
+                let jitter = (i / 4) as f32 * 0.7;
+                let eye = Vec3::new(
+                    angle.cos() * 40.0 + jitter,
+                    2.0,
+                    angle.sin() * 40.0 + jitter * 0.5,
+                );
+                (eye, (Vec3::ZERO - eye).normalize())
+            })
+            .collect();
+        // Scattered: worst case -- spread through the city facing anywhere.
+        let scattered: Vec<(Vec3, Vec3)> = (0..players)
+            .map(|i| {
+                let a = i as f32 * 2.399;
+                let b = i as f32 * 1.117;
+                let eye = Vec3::new(a.sin() * 48.0, 2.0, a.cos() * 48.0);
+                (eye, Vec3::new(b.cos(), 0.0, b.sin()).normalize())
+            })
+            .collect();
+
+        println!(
+            "{:>8}  {:>10}  {:>10}  {:>10}",
+            players,
+            cluster_count(&ring, eye_radius_m, cos_tolerance),
+            cluster_count(&clumped, eye_radius_m, cos_tolerance),
+            cluster_count(&scattered, eye_radius_m, cos_tolerance),
+        );
+    }
+    println!(
+        "\nReduction is players/clusters. Clustering is worth building only if\n\
+         that ratio is large on layouts players actually produce.\n"
+    );
+}
+
 /// How many players can one match stream to?
 ///
 /// Physics is player-independent -- PhysX steps the same scene whether one
