@@ -12,6 +12,7 @@ import {
 } from './presentation';
 import { CityTopology, bodyKey } from './topology';
 import type { Quat, Vec3 } from './vec';
+import { qRotate, vAdd } from './vec';
 import {
   BaselineMessage,
   ChunksDatagram,
@@ -66,7 +67,16 @@ export class CityClient {
   readonly topology: CityTopology;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
   private baselineId = 0;
-  private readonly baselinePoses: Map<number, Vec3> = new Map();
+  /**
+   * Baseline poses per generation, newest last.
+   *
+   * A generation is broadcast as several parts, and delta records stamped with
+   * it start arriving before the last part does. Keeping the previous
+   * generation alive means those in-flight deltas still resolve against the
+   * base the server actually used, instead of being dropped for the ~parts
+   * window every time a generation rolls over.
+   */
+  private readonly baselineGenerations: Map<number, Map<number, Vec3>> = new Map();
   /** Records referencing bodies the ledger doesn't know yet (topology in flight). */
   private pendingRecords: ChunksDatagram[] = [];
   private datagramsReceived = 0;
@@ -76,12 +86,31 @@ export class CityClient {
   private bytesWindow: Array<{ at: number; bytes: number }> = [];
   private latestSimTick = 0;
   private latestSimTickAtMs = 0;
+  /**
+   * Tick at which each body was last settled by the reliable channel. Guards
+   * the unreliable stream, which has no ordering relationship to it.
+   */
+  private readonly settledAtTick: Map<number, number> = new Map();
 
   constructor(
     readonly manifest: LoadedCityManifest,
     private readonly sendResync: (bytes: Uint8Array) => void,
   ) {
     this.topology = new CityTopology(manifest.manifest);
+    // A body's frame moves when it sheds members. Carry that move through the
+    // buffered poses so the smoothing delay cannot render new-frame offsets
+    // against poses still stated in the old frame.
+    this.topology.onReoffset = (key, deltaLocal) => {
+      const state = this.bodies.get(key);
+      if (!state) {
+        return;
+      }
+      state.track.rebase(deltaLocal);
+      if (state.lastPresented) {
+        const worldDelta = qRotate(state.lastPresented.rotation, deltaLocal);
+        state.lastPresented.position = vAdd(state.lastPresented.position, worldDelta);
+      }
+    };
   }
 
   /** Route one raw server packet (kind 119-122). */
@@ -109,6 +138,14 @@ export class CityClient {
           for (const settle of message.settled) {
             const key = bodyKey(settle.structureId, settle.islandId);
             this.bodies.delete(key);
+            // Dropping the track also drops its per-body staleness guard, so
+            // without this a pre-settle datagram still in flight would look
+            // new, overwrite the authoritative rest pose, and stick -- the
+            // body is asleep, so no later update ever corrects it.
+            this.settledAtTick.set(key, message.simTick);
+          }
+          for (const wake of message.wakes) {
+            this.settledAtTick.delete(bodyKey(wake.structureId, wake.islandSerial));
           }
           this.drainPending();
         }
@@ -122,6 +159,13 @@ export class CityClient {
         this.topology.applyBootstrap(message);
         this.bodies.clear();
         this.pendingRecords = [];
+        this.settledAtTick.clear();
+        this.baselineGenerations.clear();
+        // Bootstrap names the generation in flight. Recording it (empty) means
+        // the parts that follow accumulate into it rather than being treated
+        // as a rollover that discards what came before.
+        this.baselineId = message.baselineId;
+        this.baselineGenerations.set(message.baselineId, new Map());
         break;
       }
       default:
@@ -130,19 +174,36 @@ export class CityClient {
   }
 
   private handleBaseline(message: BaselineMessage): void {
-    if (message.baselineId !== this.baselineId) {
+    let poses = this.baselineGenerations.get(message.baselineId);
+    if (!poses) {
+      poses = new Map();
+      this.baselineGenerations.set(message.baselineId, poses);
       this.baselineId = message.baselineId;
-      this.baselinePoses.clear();
+      // Retire by age, not on arrival of a newer generation: the one being
+      // replaced still has deltas in flight against it.
+      while (this.baselineGenerations.size > 2) {
+        const oldest = this.baselineGenerations.keys().next();
+        if (oldest.done) {
+          break;
+        }
+        this.baselineGenerations.delete(oldest.value);
+      }
     }
     for (const record of message.records) {
-      this.baselinePoses.set(record.bodyEntity, record.position);
+      poses.set(record.bodyEntity, record.position);
     }
   }
 
   private handleChunks(datagram: ChunksDatagram): void {
     this.datagramsReceived += 1;
-    this.latestSimTick = Math.max(this.latestSimTick, datagram.simTick);
-    this.latestSimTickAtMs = performance.now();
+    // Re-anchoring the clock on a datagram that did not advance the tick --
+    // a reordered packet, or the 2nd..Nth of one tick's MTU-split burst --
+    // walks render time backwards, which `PresentationTrack.sample` is
+    // documented not to accept. Advance the anchor only with the tick.
+    if (datagram.simTick > this.latestSimTick) {
+      this.latestSimTick = datagram.simTick;
+      this.latestSimTickAtMs = performance.now();
+    }
     let deferred = false;
     for (const record of datagram.records) {
       if (!this.applyRecord(datagram, record)) {
@@ -181,12 +242,21 @@ export class CityClient {
       this.recordsBuffered += 1;
       return false;
     }
+    // The settle arrived on the reliable channel carrying the authoritative
+    // rest pose; anything the unreliable stream produced at or before that
+    // tick is older news, whether it arrives late or gets replayed from the
+    // pending buffer.
+    const settledAt = this.settledAtTick.get(record.bodyEntity);
+    if (settledAt !== undefined && datagram.simTick <= settledAt) {
+      return true;
+    }
     let position: Vec3;
     if (record.mode === RecordMode.Delta || record.mode === RecordMode.MotionDelta) {
-      if (datagram.baselineId !== this.baselineId) {
+      const generation = this.baselineGenerations.get(datagram.baselineId);
+      if (!generation) {
         return true; // stale/unknown baseline generation — drop, absolutes recover
       }
-      const baseline = this.baselinePoses.get(record.bodyEntity);
+      const baseline = generation.get(record.bodyEntity);
       if (!baseline) {
         return true;
       }

@@ -117,3 +117,101 @@ describe('PresentationTrack', () => {
     expect(state.position).toEqual([0, 0, 0]);
   });
 });
+
+describe('PresentationTrack.rebase', () => {
+  const at = (
+    tick: number,
+    position: [number, number, number],
+    rotation: [number, number, number, number] = [0, 0, 0, 1],
+    linearVelocity: [number, number, number] = [0, 0, 0],
+    angularVelocity: [number, number, number] = [0, 0, 0],
+  ): MotionSnapshot => ({
+    tick,
+    position,
+    rotation,
+    linearVelocity,
+    angularVelocity,
+    class: PresentationClass.ContactActive,
+  });
+
+  // The whole fracture-jump fix rests on this: a body's pose is stated about
+  // its centre of mass, so when the body sheds members every chunk offset
+  // shifts by -delta. Rebasing the buffered poses by +delta must therefore
+  // leave the composed world position of a chunk exactly where it was.
+  it('leaves composed world placement unchanged', () => {
+    const track = new PresentationTrack(config());
+    track.push(at(0, [1, 2, 3]));
+    track.push(at(1, [1.5, 2, 3]));
+    const chunkOffsetBefore: [number, number, number] = [0.25, -0.5, 0.75];
+    const before = track.sample(1);
+    const worldBefore = [
+      before.position[0] + chunkOffsetBefore[0],
+      before.position[1] + chunkOffsetBefore[1],
+      before.position[2] + chunkOffsetBefore[2],
+    ];
+
+    // COM moves by delta => every offset moves by -delta.
+    const delta: [number, number, number] = [0.1, -0.2, 0.3];
+    track.rebase(delta);
+    const chunkOffsetAfter = chunkOffsetBefore.map((v, i) => v - delta[i]);
+
+    const after = track.sample(1);
+    const worldAfter = [
+      after.position[0] + chunkOffsetAfter[0],
+      after.position[1] + chunkOffsetAfter[1],
+      after.position[2] + chunkOffsetAfter[2],
+    ];
+    expect(worldAfter[0]).toBeCloseTo(worldBefore[0], 9);
+    expect(worldAfter[1]).toBeCloseTo(worldBefore[1], 9);
+    expect(worldAfter[2]).toBeCloseTo(worldBefore[2], 9);
+  });
+
+  it('shifts the sampled pose by exactly the rotated delta', () => {
+    // 90 degrees about +Y: a local +X delta must come out as world -Z.
+    const half = Math.SQRT1_2;
+    const track = new PresentationTrack(config());
+    track.push(at(0, [0, 0, 0], [0, half, 0, half]));
+    // Copy: `sample` hands back the same object it keeps as its on-screen
+    // anchor, and the rebase updates that anchor too.
+    const before = [...track.sample(0).position];
+    track.rebase([1, 0, 0]);
+    const after = track.sample(0).position;
+    expect(after[0] - before[0]).toBeCloseTo(0, 6);
+    expect(after[1] - before[1]).toBeCloseTo(0, 6);
+    expect(after[2] - before[2]).toBeCloseTo(-1, 6);
+  });
+
+  // A rebase is a restatement of the same motion, not new information. If it
+  // registered as a path revision the track would smooth it, reintroducing
+  // exactly the visible drift the rebase exists to remove.
+  it('does not produce a correction', () => {
+    const track = new PresentationTrack(config({ interpolationDelayTicks: 2 }));
+    track.push(at(0, [0, 0, 0]));
+    track.push(at(1, [1, 0, 0]));
+    track.push(at(2, [2, 0, 0]));
+    track.sample(2);
+    track.rebase([0.5, 0, 0]);
+    const after = track.sample(3);
+    expect(after.positionCorrection[0]).toBeCloseTo(0, 9);
+    expect(after.positionCorrection[1]).toBeCloseTo(0, 9);
+    expect(after.positionCorrection[2]).toBeCloseTo(0, 9);
+  });
+
+  it('carries the angular term into linear velocity', () => {
+    const track = new PresentationTrack(config());
+    // Spinning about +Y; a lever arm along +X gains velocity along -Z.
+    track.push(at(0, [0, 0, 0], [0, 0, 0, 1], [0, 0, 0], [0, 2, 0]));
+    track.rebase([1, 0, 0]);
+    const state = track.sample(0);
+    expect(state.linearVelocity[2]).toBeCloseTo(-2, 6);
+  });
+
+  it('ignores degenerate deltas', () => {
+    const track = new PresentationTrack(config());
+    track.push(at(0, [1, 2, 3]));
+    track.rebase([0, 0, 0]);
+    track.rebase([NaN, 0, 0]);
+    const state = track.sample(0);
+    expect(state.position).toEqual([1, 2, 3]);
+  });
+});

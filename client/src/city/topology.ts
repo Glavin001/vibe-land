@@ -11,7 +11,18 @@
 
 import type { CityManifest } from './manifest';
 import type { BootstrapMessage, TopologyMessage } from './wire';
-import { Quat, Vec3, composePose, qIdentity, relativePose, vClone } from './vec';
+import {
+  EPSILON,
+  Quat,
+  Vec3,
+  composePose,
+  qIdentity,
+  qRotate,
+  relativePose,
+  vAdd,
+  vClone,
+  vLength,
+} from './vec';
 
 export const SUPPORT_SERIAL = 0;
 
@@ -84,6 +95,13 @@ export class CityTopology {
   private topoSeqGaps = 0;
   /** Set when a gap was detected; cleared by bootstrap. */
   needsResync = false;
+  /**
+   * Notified when a body's centre-of-mass frame shifts, with the body-local
+   * delta. The pose stream is buffered for smoothing, so whoever holds that
+   * buffer has to carry the same shift or it will compose old-frame poses
+   * with the new-frame offsets written here.
+   */
+  onReoffset: ((bodyKey: number, deltaLocal: Vec3) => void) | null = null;
 
   constructor(private readonly manifest: CityManifest) {
     let total = 0;
@@ -410,11 +428,30 @@ export class CityTopology {
     comX /= totalWeight;
     comY /= totalWeight;
     comZ /= totalWeight;
+    // Every surviving offset is `rest - oldCom`, so any one of them recovers
+    // the frame we are leaving. Read it before the loop below overwrites it.
+    const anchor = body.chunkSlots[0];
+    const delta: Vec3 = [
+      comX - (this.restPos[anchor * 3] - this.localPos[anchor * 3]),
+      comY - (this.restPos[anchor * 3 + 1] - this.localPos[anchor * 3 + 1]),
+      comZ - (this.restPos[anchor * 3 + 2] - this.localPos[anchor * 3 + 2]),
+    ];
     for (const slot of body.chunkSlots) {
       this.localPos[slot * 3] = this.restPos[slot * 3] - comX;
       this.localPos[slot * 3 + 1] = this.restPos[slot * 3 + 1] - comY;
       this.localPos[slot * 3 + 2] = this.restPos[slot * 3 + 2] - comZ;
     }
+    if (!delta.every(Number.isFinite) || vLength(delta) <= EPSILON) {
+      return;
+    }
+    // The offsets now describe a frame the streamed pose has not moved to
+    // yet. Shift the pose to match so the composed world placement is
+    // unchanged by this call, and tell the presentation layer to carry the
+    // same shift through its buffer -- otherwise the next several frames
+    // render new-frame offsets against old-frame poses.
+    const worldDelta = qRotate(body.rotation, delta);
+    body.position = vAdd(body.position, worldDelta);
+    this.onReoffset?.(body.key, delta);
   }
 
   private promote(

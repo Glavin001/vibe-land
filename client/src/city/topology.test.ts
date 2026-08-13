@@ -304,3 +304,86 @@ describe('CityTopology', () => {
     expect(topology.chunkWorldPose(2).position[1]).toBeCloseTo(0.5, 5); // 2.5 - 2 fell
   });
 });
+
+// A body's pose is stated about its centre of mass, so an island that sheds a
+// member changes frame: every surviving offset shifts by -delta. The ledger
+// has to move the pose by +delta in the same breath, or the composed world
+// placement jumps by the centre-of-mass delta -- which is what made buildings
+// visibly hop on every hit.
+describe('CityTopology centre-of-mass re-offset', () => {
+  // Split node 2 away from an island holding nodes 1 and 2, leaving node 1.
+  const secondSplit = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 20,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 2,
+            nodes: [2],
+            position: [10, 2.5, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  const firstSplit = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 10,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [0],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 1,
+            nodes: [1, 2],
+            // COM of nodes 1 and 2 (equal mass): rest y 1.5 and 2.5 -> 2.0.
+            position: [10, 2, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  it('keeps the surviving chunk world-fixed when its island sheds a member', () => {
+    const topology = new CityTopology(manifest());
+    expect(topology.apply(firstSplit(1))).toBe(true);
+    const before = topology.chunkWorldPose(1);
+    expect(topology.apply(secondSplit(2))).toBe(true);
+    const after = topology.chunkWorldPose(1);
+    expect(after.position[0]).toBeCloseTo(before.position[0], 5);
+    expect(after.position[1]).toBeCloseTo(before.position[1], 5);
+    expect(after.position[2]).toBeCloseTo(before.position[2], 5);
+  });
+
+  it('reports the body-local delta so buffered poses can follow', () => {
+    const topology = new CityTopology(manifest());
+    const seen: Array<{ key: number; delta: number[] }> = [];
+    topology.onReoffset = (key, delta) => seen.push({ key, delta: [...delta] });
+    expect(topology.apply(firstSplit(1))).toBe(true);
+    seen.length = 0;
+    expect(topology.apply(secondSplit(2))).toBe(true);
+    const shed = seen.find((entry) => entry.key === bodyKey(0, 1));
+    expect(shed).toBeDefined();
+    // COM falls from y=2.0 (nodes 1+2) to y=1.5 (node 1 alone).
+    expect(shed!.delta[1]).toBeCloseTo(-0.5, 5);
+  });
+});

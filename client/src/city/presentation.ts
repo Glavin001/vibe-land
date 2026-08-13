@@ -15,9 +15,11 @@ import {
   qMul,
   qNormalize,
   qSlerp,
+  qRotate,
   qToRotationVector,
   vAdd,
   vClone,
+  vCross,
   vDistance,
   vLength,
   vLerp,
@@ -154,6 +156,61 @@ export class PresentationTrack {
       this.snapshots.splice(low, 0, entry);
     }
     this.revision = (this.revision + 1) | 0;
+  }
+
+  /**
+   * Re-expresses every buffered pose in a body frame whose origin moved by
+   * `deltaLocal` (body-local metres).
+   *
+   * A body's pose is stated about its centre of mass, so the frame shifts the
+   * instant the body sheds members to a fracture. The topology message that
+   * announces that shift arrives on the reliable channel and is applied at
+   * once, but poses render through `interpolationDelayTicks` of buffering --
+   * so without this the buffer holds old-frame poses that get composed with
+   * new-frame chunk offsets, drawing every surviving chunk displaced by the
+   * centre-of-mass delta until the delay window catches up. That was the
+   * visible "jump out, jump back" on every hit.
+   *
+   * The correction is exact rather than approximate. Chunk rest positions are
+   * fixed, so a centre-of-mass move by `delta` shifts every local offset by
+   * exactly `-delta`, and a pose `p` with rotation `R` describes the identical
+   * world placement in the new frame as `p + R*delta`. Rotation is unchanged
+   * (the frames differ by a translation), and velocity picks up the rigid
+   * term `w x R*delta` so Hermite tangents stay consistent with the shifted
+   * knots.
+   *
+   * Deliberately does NOT bump `revision`: the buffer describes the same
+   * motion through the same world points, so there is nothing for `sample`'s
+   * late-path reconciliation to smooth. Treating it as a revision would
+   * inject a decaying correction and reintroduce the artefact this removes.
+   */
+  rebase(deltaLocal: Vec3): void {
+    if (!deltaLocal.every(Number.isFinite)) {
+      return;
+    }
+    if (vLength(deltaLocal) <= EPSILON) {
+      return;
+    }
+    for (const snapshot of this.snapshots) {
+      const worldDelta = qRotate(snapshot.rotation, deltaLocal);
+      snapshot.position = vAdd(snapshot.position, worldDelta);
+      snapshot.linearVelocity = vAdd(
+        snapshot.linearVelocity,
+        vCross(snapshot.angularVelocity, worldDelta),
+      );
+    }
+    if (this.previous) {
+      // The on-screen pose is the anchor `sample` reconciles against; leaving
+      // it in the old frame would manufacture exactly the discontinuity the
+      // snapshot rebase just removed.
+      const state = this.previous.state;
+      const worldDelta = qRotate(state.rotation, deltaLocal);
+      state.position = vAdd(state.position, worldDelta);
+      state.linearVelocity = vAdd(
+        state.linearVelocity,
+        vCross(state.angularVelocity, worldDelta),
+      );
+    }
   }
 
   /** Samples the track at a fractional render tick. */
