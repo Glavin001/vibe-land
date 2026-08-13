@@ -156,6 +156,7 @@ export function CityStatsOverlay({
   pingMs: number;
 }) {
   const [visible, setVisible] = useState(true);
+  const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [server, setServer] = useState<MatchStats | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const frame = useFrameTime();
@@ -259,6 +260,39 @@ export function CityStatsOverlay({
           title="Hide (F9)"
         >
           F9 ✕
+        </button>
+      </div>
+
+      <div style={{ ...row, marginTop: 4, marginBottom: 2 }}>
+        <button
+          type="button"
+          disabled={resetState === 'sending'}
+          onClick={async () => {
+            setResetState('sending');
+            try {
+              const response = await fetch(
+                `/city-reset/${encodeURIComponent(matchId)}`,
+                { method: 'POST' },
+              );
+              // The server rebuilds on its next tick and re-bootstraps every
+              // client, so a success here means "accepted", not "done".
+              setResetState(response.ok ? 'sent' : 'failed');
+            } catch {
+              setResetState('failed');
+            }
+            window.setTimeout(() => setResetState('idle'), 2000);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-reset"
+          aria-label="Rebuild the city"
+        >
+          {resetState === 'sending'
+            ? 'RESETTING...'
+            : resetState === 'sent'
+              ? 'RESET SENT'
+              : resetState === 'failed'
+                ? 'RESET FAILED'
+                : 'RESET CITY'}
         </button>
       </div>
 

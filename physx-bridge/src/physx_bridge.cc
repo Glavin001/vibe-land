@@ -1007,6 +1007,13 @@ public:
 #endif
   }
 
+  void clear_destructibles() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    destruction_->clear_destructibles();
+#endif
+  }
+
   void destruction_tick(float dt, FfiVec3 gravity) {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1441,6 +1448,8 @@ void World::create_destructible(std::uint32_t structure_id, const FfiPose &pose,
   impl_->create_destructible(structure_id, pose, nodes, bonds, settings,
                              collision_group, collision_mask);
 }
+
+void World::clear_destructibles() { impl_->clear_destructibles(); }
 
 void World::destruction_tick(float dt, FfiVec3 gravity) {
   impl_->destruction_tick(dt, gravity);

@@ -428,6 +428,40 @@ impl CityRuntime {
         Self::synthetic(sim_hz)
     }
 
+    /// Rebuild the city undamaged, preserving the client list.
+    ///
+    /// Every destructible and its PhysX actors are released before the scene is
+    /// rebuilt, so this leaves nothing behind from the previous city. Callers
+    /// must re-send a bootstrap afterwards: the client's ledger still describes
+    /// the demolished city, and nothing in the incremental topology stream can
+    /// express "start over".
+    pub fn reset(
+        &mut self,
+        sim_hz: u32,
+        #[cfg(feature = "destruction")] world: Option<&mut World>,
+        #[cfg(not(feature = "destruction"))] world: Option<()>,
+    ) -> anyhow::Result<()> {
+        let clients = self.encoder.clients();
+        #[cfg(feature = "destruction")]
+        let world = {
+            // The backend refers to structures by id, not by pointer, so
+            // releasing the bridge's destructibles here cannot dangle: the old
+            // backend is dropped below when self is replaced.
+            if let Some(world) = world {
+                world.clear_destructibles()?;
+                Some(world)
+            } else {
+                None
+            }
+        };
+        let mut rebuilt = Self::open(sim_hz, world)?;
+        for client in clients {
+            rebuilt.add_client(client);
+        }
+        *self = rebuilt;
+        Ok(())
+    }
+
     pub fn is_physx(&self) -> bool {
         match &self.backend {
             CityBackend::Synthetic(_) => false,

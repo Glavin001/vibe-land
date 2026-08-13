@@ -240,6 +240,12 @@ impl ChunkStreamEncoder {
         }
     }
 
+    /// Connected client ids. Needed to carry the client set across a city
+    /// rebuild, which otherwise silently drops everyone's stream.
+    pub fn clients(&self) -> Vec<u64> {
+        self.clients.keys().copied().collect()
+    }
+
     pub fn add_client(&mut self, client: u64) {
         self.clients.entry(client).or_default();
     }

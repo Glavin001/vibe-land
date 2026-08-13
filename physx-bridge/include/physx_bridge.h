@@ -76,6 +76,8 @@ public:
                            const FfiDestructibleSettings &settings,
                            std::uint32_t collision_group,
                            std::uint32_t collision_mask);
+  /// Release every destructible and its actors so the city can be rebuilt.
+  void clear_destructibles();
   void destruction_tick(float dt, FfiVec3 gravity);
   void queue_chunk_damage(std::uint32_t structure_id, std::uint32_t chunk_id,
                           FfiVec3 impulse, FfiVec3 point);

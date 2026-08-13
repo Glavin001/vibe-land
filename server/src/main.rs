@@ -30,7 +30,7 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use bytes::BufMut;
@@ -636,6 +636,11 @@ struct AppState {
     physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    /// Match ids awaiting a city reset. The HTTP handler cannot touch the
+    /// simulation directly -- the match loop owns it -- so the request is left
+    /// here and consumed on the next tick, between steps where rebuilding the
+    /// scene is safe.
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
 }
 
 #[derive(Clone)]
@@ -788,6 +793,7 @@ struct MatchState {
     dynamic_body_handles: HashMap<u32, DynamicBodyMetaRuntime>,
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
 }
 
 #[tokio::main]
@@ -890,6 +896,7 @@ async fn main() -> Result<()> {
             physics,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
         }),
     };
 
@@ -940,6 +947,7 @@ async fn main() -> Result<()> {
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
+        .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
         .layer(tower_http::cors::CorsLayer::permissive())
@@ -1026,6 +1034,25 @@ async fn match_stats_handler(
         Some(stats) => (StatusCode::OK, Json(stats)).into_response(),
         None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
     }
+}
+
+/// Request an undamaged city for this match. Applied by the match loop on its
+/// next tick, so this returns "accepted", not "done".
+async fn city_reset_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    if !city::is_city_match(&match_id) {
+        return (StatusCode::BAD_REQUEST, "not a city match").into_response();
+    }
+    state
+        .inner
+        .reset_requests
+        .write()
+        .expect("reset requests poisoned")
+        .insert(match_id.clone());
+    info!(%match_id, "city reset requested");
+    (StatusCode::ACCEPTED, "reset queued").into_response()
 }
 
 async fn city_manifest_handler(
@@ -1365,6 +1392,7 @@ async fn run_match_loop(
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    reset_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
         .expect("selected authoritative physics backend should initialize");
@@ -1447,6 +1475,7 @@ async fn run_match_loop(
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
+        reset_requests,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -1509,6 +1538,7 @@ fn spawn_match_loop(
                     app.stats_tx.clone(),
                     telemetry,
                     app.stats_registry.clone(),
+                    app.reset_requests.clone(),
                 ))
                 .catch_unwind()
                 .await;
@@ -2324,6 +2354,40 @@ impl MatchState {
         };
 
         let mut city = self.city.take().expect("checked above");
+        #[cfg(feature = "destruction")]
+        let world = self.arena.physx_world_mut();
+        #[cfg(not(feature = "destruction"))]
+        let world = None;
+        // Between steps is the only safe point to rebuild: the scene is not
+        // mid-simulate, and the bootstrap we send afterwards describes the
+        // city the very next step will advance.
+        let reset_requested = self
+            .reset_requests
+            .write()
+            .expect("reset requests poisoned")
+            .remove(&self.id);
+        if reset_requested {
+            match city.reset(SIM_HZ as u32, world) {
+                Ok(()) => {
+                    // The client ledger still describes the demolished city and
+                    // no incremental topology event can say "start over", so
+                    // every client needs a fresh bootstrap.
+                    let bootstrap = city.bootstrap(self.server_tick);
+                    for runtime in self.players.values() {
+                        let _ =
+                            try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
+                    }
+                    tracing::info!(
+                        match_id = %self.id,
+                        players = self.players.len(),
+                        "city reset; re-bootstrapped clients"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(match_id = %self.id, %error, "city reset failed");
+                }
+            }
+        }
         #[cfg(feature = "destruction")]
         let world = self.arena.physx_world_mut();
         #[cfg(not(feature = "destruction"))]

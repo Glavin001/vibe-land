@@ -265,7 +265,12 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
   stress_executor_ = std::make_unique<StressExecutor>(workers);
 }
 
-DestructionManager::~DestructionManager() {
+DestructionManager::~DestructionManager() { clear_destructibles(); }
+
+void DestructionManager::clear_destructibles() {
+  // Releasing a destructible releases the PhysX bodies, shapes and convex
+  // meshes it created (under a scene write lock), so this leaves no orphaned
+  // actors behind in the scene.
   for (auto &slot : slots_) {
     if (slot && slot->dest != nullptr) {
       slot->dest->release();
@@ -273,7 +278,29 @@ DestructionManager::~DestructionManager() {
     }
   }
   slots_.clear();
+  live_slots_.clear();
+  // Every one of these keys a released pointer or counts an event about bodies
+  // that no longer exist. Leaving any of it behind would let a recycled
+  // address inherit a dead body's identity, which is the id-aliasing class of
+  // bug this code has been bitten by before.
   shape_owners_.clear();
+  body_entity_stamp_.clear();
+  shape_entity_stamp_.clear();
+  ccd_enabled_.clear();
+  body_snapshot_buffer_.clear();
+  broken_bonds_.clear();
+  migrations_.clear();
+  island_events_.clear();
+  quiet_slot_ticks_ = 0;
+  serial_wraps_ = 0;
+  wake_truncations_ = 0;
+  repeated_body_snapshots_ = 0;
+  aliased_body_entities_ = 0;
+  support_promotions_ = 0;
+  reused_parent_promotions_ = 0;
+  max_island_serial_ = 0;
+  total_broken_bonds_ = 0;
+  last_stress_solve_ms_ = 0.0f;
 }
 
 DestructionManager::Slot *

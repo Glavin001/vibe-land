@@ -843,6 +843,14 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Release every destructible and its PhysX actors. The caller rebuilds by
+    /// re-issuing create_destructible; this is how the city is reset without
+    /// restarting the process.
+    #[cfg(feature = "destruction")]
+    pub fn clear_destructibles(&mut self) -> Result<(), BridgeError> {
+        self.inner.pin_mut().clear_destructibles().map_err(operation_error)
+    }
+
     #[cfg(feature = "destruction")]
     pub fn destruction_tick(&mut self, dt: f32, gravity: Vec3) -> Result<(), BridgeError> {
         self.inner
@@ -1322,6 +1330,7 @@ mod ffi {
             collision_group: u32,
             collision_mask: u32,
         ) -> Result<()>;
+        fn clear_destructibles(self: Pin<&mut World>) -> Result<()>;
         fn destruction_tick(self: Pin<&mut World>, dt: f32, gravity: FfiVec3) -> Result<()>;
         fn queue_chunk_damage(
             self: Pin<&mut World>,

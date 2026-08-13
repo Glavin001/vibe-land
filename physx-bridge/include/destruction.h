@@ -94,6 +94,12 @@ public:
   DestructionManager(const DestructionManager &) = delete;
   DestructionManager &operator=(const DestructionManager &) = delete;
 
+  /// Release every destructible and its PhysX actors, returning the manager to
+  /// its just-constructed state. The city is then rebuilt by re-issuing
+  /// create_destructible, which is the only way to get an undamaged city
+  /// without restarting the process.
+  void clear_destructibles();
+
   void create_destructible(std::uint32_t structure_id, const FfiPose &pose,
                            rust::Slice<const FfiChunkNodeDesc> nodes,
                            rust::Slice<const FfiChunkBondDesc> bonds,
