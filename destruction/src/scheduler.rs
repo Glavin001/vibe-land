@@ -117,12 +117,18 @@ pub struct BudgetSelection {
     pub used_bytes: usize,
 }
 
+/// Greedy fill by priority, in place.
+///
+/// Takes `&mut` so it can sort the caller's buffer directly: it used to
+/// `to_vec()` first, copying every candidate before sorting it, once per
+/// client per send. At several thousand candidates that copy is pure waste --
+/// the caller rebuilds the buffer next send anyway.
 pub fn select_with_ceiling(
-    candidates: &[BudgetCandidate],
+    candidates: &mut [BudgetCandidate],
     ceiling_bytes: Option<usize>,
     initial_bytes: usize,
 ) -> BudgetSelection {
-    let mut order = candidates.to_vec();
+    let order = &mut *candidates;
     order.sort_by(|a, b| {
         b.required
             .cmp(&a.required)
@@ -133,7 +139,7 @@ pub fn select_with_ceiling(
         selected_indices: Vec::with_capacity(order.len()),
         used_bytes: initial_bytes,
     };
-    for candidate in order {
+    for candidate in order.iter() {
         let fits = ceiling_bytes.is_none_or(|ceiling| {
             selection.used_bytes.saturating_add(candidate.cost_bytes) <= ceiling
         });
@@ -226,44 +232,38 @@ mod tests {
 
     #[test]
     fn budget_is_a_ceiling_not_a_fill_target() {
-        let selection = select_with_ceiling(
-            &[BudgetCandidate {
-                index: 0,
-                cost_bytes: 20,
-                priority: 1.0,
-                required: false,
-            }],
-            Some(100),
-            5,
-        );
+        let mut only = [BudgetCandidate {
+            index: 0,
+            cost_bytes: 20,
+            priority: 1.0,
+            required: false,
+        }];
+        let selection = select_with_ceiling(&mut only, Some(100), 5);
         assert_eq!(selection.selected_indices, [0]);
         assert_eq!(selection.used_bytes, 25);
 
-        let idle = select_with_ceiling(&[], Some(100), 0);
+        let idle = select_with_ceiling(&mut [], Some(100), 0);
         assert!(idle.selected_indices.is_empty());
         assert_eq!(idle.used_bytes, 0);
     }
 
     #[test]
     fn highest_priority_candidates_fit_first() {
-        let selection = select_with_ceiling(
-            &[
-                BudgetCandidate {
-                    index: 0,
-                    cost_bytes: 60,
-                    priority: 1.0,
-                    required: false,
-                },
-                BudgetCandidate {
-                    index: 1,
-                    cost_bytes: 60,
-                    priority: 5.0,
-                    required: false,
-                },
-            ],
-            Some(70),
-            0,
-        );
+        let mut pair = [
+            BudgetCandidate {
+                index: 0,
+                cost_bytes: 60,
+                priority: 1.0,
+                required: false,
+            },
+            BudgetCandidate {
+                index: 1,
+                cost_bytes: 60,
+                priority: 5.0,
+                required: false,
+            },
+        ];
+        let selection = select_with_ceiling(&mut pair, Some(70), 0);
         assert_eq!(selection.selected_indices, [1]);
         assert_eq!(selection.used_bytes, 60);
     }

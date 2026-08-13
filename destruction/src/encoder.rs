@@ -447,7 +447,9 @@ impl ChunkStreamEncoder {
         // Camera basis built once, not re-derived inside every visibility test
         // for every body.
         let frusta = crate::interest::ViewFrusta::for_view(view, config.interest);
-        let mut candidates = Vec::new();
+        // Sized for the record count: this used to grow from empty through a
+        // dozen reallocations every send, per client.
+        let mut candidates = Vec::with_capacity(shared.records.len());
         for (index, shared_record) in shared.records.iter().enumerate() {
             let entity = shared_record.record.body_entity;
             // One lookup for interest state and send history together.
@@ -514,7 +516,7 @@ impl ChunkStreamEncoder {
         }
 
         let selection =
-            select_with_ceiling(&candidates, Some(config.client_ceiling_bytes), 0);
+            select_with_ceiling(&mut candidates, Some(config.client_ceiling_bytes), 0);
         let mut selected: Vec<BodyRecord> = selection
             .selected_indices
             .iter()
