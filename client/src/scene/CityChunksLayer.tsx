@@ -126,12 +126,15 @@ function buildMesh(client: CityClient): CityMeshState {
     const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    // Every instance is written from authoritative poses and a building is
-    // either near the player or cheap to skip wholesale, so per-instance
-    // culling would cost a pass over thousands of chunks to hide little.
+    // Per-instance culling walks every chunk to decide each one, which is the
+    // work we are trying to avoid.
     mesh.perObjectFrustumCulled = false;
     mesh.sortObjects = false;
-    mesh.frustumCulled = false;
+    // Whole-batch culling, on the other hand, is one sphere test that can drop
+    // an entire building. This is only worth anything because batches are per
+    // structure: a single city-wide batch always intersects the frustum, which
+    // is why culling used to be turned off here.
+    mesh.frustumCulled = true;
 
     const boxGeometryId = mesh.addGeometry(boxGeometry);
     const hullGeometryIds = new Map<string, number>();
@@ -333,6 +336,7 @@ export function CityChunksLayer({
     // redrawn, it never changes where it is.
     const camera = frameState.camera.position;
     const frame = frameCounterRef.current;
+    const touchedMeshes = new Set<number>();
     for (const key of dirty) {
       const body = client.topology.body(key);
       if (!body) {
@@ -375,9 +379,16 @@ export function CityChunksLayer({
         );
         mesh.setColorAt(instanceId, TMP_COLOR);
       }
+      touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {
         dirty.delete(key);
       }
+    }
+    // A batch is culled against its bounding sphere, and debris falls outside
+    // the footprint the sphere was built from. Recomputing it for batches that
+    // moved keeps a spreading pile from being culled while still on screen.
+    for (const index of touchedMeshes) {
+      state.meshes[index]?.computeBoundingSphere();
     }
     // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
     // straight into its own data textures and flags them itself.
