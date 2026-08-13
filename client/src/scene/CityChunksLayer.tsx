@@ -17,7 +17,7 @@ import { useRef } from 'react';
 import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
-import { buildHullGeometry, chunkShape } from '../city/chunkGeometry';
+import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import { updateCityE2E } from '../e2eBridge';
 import type { CityE2EStats } from '../e2eBridge';
 
@@ -80,13 +80,12 @@ function buildMesh(client: CityClient): CityMeshState {
     }
   }
 
-  const boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+  const boxGeometry = buildBoxGeometry();
   let vertexBudget = boxGeometry.attributes.position.count;
   let indexBudget = boxGeometry.index?.count ?? 0;
   for (const geometry of hullGeometries.values()) {
     vertexBudget += geometry.attributes.position.count;
-    // ConvexGeometry is non-indexed; BatchedMesh still needs room reserved.
-    indexBudget += geometry.index?.count ?? geometry.attributes.position.count;
+    indexBudget += geometry.index?.count ?? 0;
   }
 
   const material = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 });

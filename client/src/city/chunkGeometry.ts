@@ -95,5 +95,41 @@ export function buildHullGeometry(points: Float32Array): THREE.BufferGeometry {
   for (let i = 0; i + 2 < points.length; i += 3) {
     vertices.push(new THREE.Vector3(points[i], points[i + 1], points[i + 2]));
   }
-  return new ConvexGeometry(vertices);
+  return normalizeForBatching(new ConvexGeometry(vertices));
+}
+
+/** Unit cube, in the same layout hulls are normalised to. */
+export function buildBoxGeometry(): THREE.BufferGeometry {
+  return normalizeForBatching(new THREE.BoxGeometry(1, 1, 1));
+}
+
+/**
+ * Give a geometry the exact attribute layout batched rendering requires.
+ *
+ * Geometries drawn from one batch share a single buffer, so they must agree on
+ * whether they are indexed and on which attributes they carry -- a mismatch is
+ * a hard error, not a silent fallback, and takes the whole mesh with it.
+ * `BoxGeometry` arrives indexed and UV-mapped while a computed hull is neither,
+ * so both are normalised to the same shape rather than trusting them to match.
+ *
+ * Anything missing is synthesised: a sequential index for non-indexed
+ * geometry, and zeroed UVs, which are unused by the untextured city material
+ * but must still be present for the layouts to line up.
+ */
+export function normalizeForBatching(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  if (!geometry.getAttribute('normal')) {
+    geometry.computeVertexNormals();
+  }
+  const vertexCount = geometry.getAttribute('position').count;
+  if (!geometry.getAttribute('uv')) {
+    geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(vertexCount * 2), 2));
+  }
+  if (!geometry.getIndex()) {
+    const index = new Uint32Array(vertexCount);
+    for (let i = 0; i < vertexCount; i++) {
+      index[i] = i;
+    }
+    geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  return geometry;
 }

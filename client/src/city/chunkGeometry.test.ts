@@ -2,8 +2,16 @@
 // back to boxes, and when two hulls are the same geometry.
 
 import { describe, expect, it } from 'vitest';
+import * as THREE from 'three';
 
-import { MIN_HULL_POINTS, boxScale, chunkShape, hullKey } from './chunkGeometry';
+import {
+  MIN_HULL_POINTS,
+  boxScale,
+  buildBoxGeometry,
+  buildHullGeometry,
+  chunkShape,
+  hullKey,
+} from './chunkGeometry';
 import type { ManifestChunk } from './manifest';
 
 const chunk = (overrides: Partial<ManifestChunk> = {}): ManifestChunk =>
@@ -91,5 +99,49 @@ describe('hullKey', () => {
     expect(hullKey(Float32Array.from([1, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))).not.toBe(
       hullKey(Float32Array.from([12, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
     );
+  });
+});
+
+// Assembly, not just selection. The first version of this renderer passed
+// every shape-selection test and still drew nothing, because geometries in a
+// batch must agree on indexing and attributes and a computed hull agrees with
+// a box on neither. That is a throw, and a throw here costs the whole city --
+// so the contract is pinned directly.
+describe('batching layout', () => {
+  const TETRA_POINTS = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+
+  it('gives hulls and boxes the same attribute layout', () => {
+    const box = buildBoxGeometry();
+    const hull = buildHullGeometry(TETRA_POINTS);
+    expect(Object.keys(hull.attributes).sort()).toEqual(Object.keys(box.attributes).sort());
+    for (const name of Object.keys(box.attributes)) {
+      expect(hull.getAttribute(name).itemSize).toBe(box.getAttribute(name).itemSize);
+    }
+  });
+
+  it('indexes both, since a batch cannot mix indexed and non-indexed', () => {
+    expect(buildBoxGeometry().getIndex()).not.toBeNull();
+    expect(buildHullGeometry(TETRA_POINTS).getIndex()).not.toBeNull();
+  });
+
+  it('builds a hull that encloses its points', () => {
+    const hull = buildHullGeometry(TETRA_POINTS);
+    expect(hull.getAttribute('position').count).toBeGreaterThanOrEqual(4);
+  });
+
+  // The end-to-end guard: three itself validates the batch, so a real
+  // BatchedMesh accepting both geometries is the actual proof.
+  it('accepts both geometries into one BatchedMesh', () => {
+    const box = buildBoxGeometry();
+    const hull = buildHullGeometry(TETRA_POINTS);
+    const vertices = box.attributes.position.count + hull.attributes.position.count;
+    const indices = (box.getIndex()?.count ?? 0) + (hull.getIndex()?.count ?? 0);
+    const mesh = new THREE.BatchedMesh(4, vertices, indices, new THREE.MeshStandardMaterial());
+    expect(() => {
+      const boxId = mesh.addGeometry(box);
+      const hullId = mesh.addGeometry(hull);
+      mesh.setMatrixAt(mesh.addInstance(boxId), new THREE.Matrix4());
+      mesh.setMatrixAt(mesh.addInstance(hullId), new THREE.Matrix4());
+    }).not.toThrow();
   });
 });
