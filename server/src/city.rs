@@ -153,6 +153,16 @@ fn build_scene() -> anyhow::Result<CityScene> {
     ) {
         desc.varied_heights = false;
     }
+    // Grid edge length in buildings. The pitch is derived from the pack's own
+    // footprint, so widening the grid grows the map without pushing buildings
+    // into each other.
+    if let Some(grid) = std::env::var("VIBE_CITY_GRID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|grid| (1..=16).contains(grid))
+    {
+        desc.grid = grid;
+    }
     build_city_scene(&pack, desc)
         .map_err(|error| anyhow::anyhow!("building city scene: {error}"))
 }

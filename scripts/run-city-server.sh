@@ -96,6 +96,13 @@ export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-high-rise-10f-local.json}"
 # Buildings at authored strength barely fracture under rifle fire, which makes
 # every destruction measurement look better than the real workload.
 export VIBE_CITY_STRESS_LIMIT_SCALE="${VIBE_CITY_STRESS_LIMIT_SCALE:-0.10}"
+# Grid edge in buildings; pitch comes from the pack footprint, so this widens
+# the map without crowding it.
+export VIBE_CITY_GRID="${VIBE_CITY_GRID:-4}"
+# Structural packs author a load path through frame, slabs and facade. Floor
+# truncation slices at a Y cutoff and can leave panels hanging off a removed
+# slab, so varied heights stay off unless asked for.
+export VIBE_CITY_VARIED_HEIGHTS="${VIBE_CITY_VARIED_HEIGHTS:-0}"
 export RUST_LOG="${RUST_LOG:-info}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-full}"
 
