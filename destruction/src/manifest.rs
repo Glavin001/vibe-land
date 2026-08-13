@@ -22,6 +22,28 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub struct DestructionManifest {
     pub version: u32,
     pub structures: Vec<StructureManifest>,
+    /// Stress materials, indexed by `BondDef::material`. All structures come
+    /// from one pack, so the table is shared rather than repeated per
+    /// structure.
+    ///
+    /// Skipped when empty, which is the case for every v1 pack. That is not a
+    /// tidiness choice: manifests are content-addressed, so serialising an
+    /// empty table would change the hash of every existing scene and force a
+    /// re-fetch for no gain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<StressMaterialDef>,
+}
+
+/// One entry of the manifest's stress material table.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StressMaterialDef {
+    pub compression_elastic: f32,
+    pub compression_fatal: f32,
+    pub tension_elastic: f32,
+    pub tension_fatal: f32,
+    pub shear_elastic: f32,
+    pub shear_fatal: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -80,6 +102,14 @@ pub struct BondDef {
     pub centroid: [f32; 3],
     pub normal: [f32; 3],
     pub area: f32,
+    /// Index into `DestructionManifest::materials`. Skipped when 0 so v1
+    /// manifests keep hashing exactly as they did before materials existed.
+    #[serde(default, skip_serializing_if = "is_default_material")]
+    pub material: u32,
+}
+
+fn is_default_material(material: &u32) -> bool {
+    *material == 0
 }
 
 impl DestructionManifest {
@@ -126,14 +156,38 @@ impl DestructionManifest {
                             centroid: bond.centroid.to_array(),
                             normal: bond.normal.to_array(),
                             area: bond.area,
+                            material: bond.material,
                         })
                         .collect(),
                 }
             })
             .collect();
+        // Only v2 packs author a table. Emitting one for v1 would rewrite the
+        // hash of every existing scene without changing what it describes,
+        // since a single implicit material is exactly what v1 already means.
+        let materials = city
+            .instances
+            .first()
+            .map(|instance| &city.variant_for(instance).pack)
+            .filter(|pack| pack.version >= 2)
+            .map(|pack| {
+                pack.materials
+                    .iter()
+                    .map(|limits| StressMaterialDef {
+                        compression_elastic: limits.compression_elastic,
+                        compression_fatal: limits.compression_fatal,
+                        tension_elastic: limits.tension_elastic,
+                        tension_fatal: limits.tension_fatal,
+                        shear_elastic: limits.shear_elastic,
+                        shear_fatal: limits.shear_fatal,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             version: MANIFEST_VERSION,
             structures,
+            materials,
         }
     }
 
@@ -231,6 +285,34 @@ mod tests {
         let b = DestructionManifest::from_city(&build_city_scene(&pack, desc).unwrap());
         assert_eq!(a.hash(), b.hash());
         assert_eq!(a.hash_hex().len(), 64);
+    }
+
+    /// Tripwire for the content-addressing invariant. Manifests are fetched by
+    /// hash and cached immutably, so a v1 manifest must serialise to exactly
+    /// the bytes it did before materials existed -- otherwise every deployed
+    /// scene re-hashes and every client re-downloads a field carrying no
+    /// information. The `skip_serializing_if` attributes on
+    /// `DestructionManifest::materials` and `BondDef::material` are what make
+    /// that true; this is what stops them being "tidied" away.
+    #[test]
+    fn v1_manifests_do_not_serialise_material_fields() {
+        let pack = tiny_pack();
+        let desc = CitySceneDesc {
+            grid: 2,
+            pitch_m: 10.0,
+            varied_heights: true,
+        };
+        let manifest = DestructionManifest::from_city(&build_city_scene(&pack, desc).unwrap());
+        assert!(manifest.materials.is_empty(), "a v1 pack authors no table");
+        let json = String::from_utf8(manifest.to_json_bytes()).expect("utf8");
+        assert!(
+            !json.contains("\"materials\""),
+            "v1 manifest must not emit a materials table"
+        );
+        assert!(
+            !json.contains("\"material\""),
+            "v1 bonds must not emit a material index"
+        );
     }
 
     #[test]
