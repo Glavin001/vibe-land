@@ -1271,6 +1271,16 @@ rust::Vec<FfiIslandBodyEvent> DestructionManager::take_island_events() {
 rust::Vec<FfiChunkBodySnapshot>
 DestructionManager::chunk_body_snapshots() const {
   rust::Vec<FfiChunkBodySnapshot> out;
+  // Reserve up front: this pushes one entry per dynamic body (thousands
+  // during a demolition) and rust::Vec grows geometrically, so without this
+  // the tick pays a dozen reallocations and memcpys of the whole array.
+  std::size_t reserve_hint = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (slot_ptr && slot_ptr->dest != nullptr) {
+      reserve_hint += slot_ptr->body_cache_count;
+    }
+  }
+  out.reserve(reserve_hint);
   // Which body produced each entity this tick. Two bodies landing on one
   // entity is the aliasing bug; recording both sides of the collision names
   // the mechanism (same structure or cross-structure, and which serials).
