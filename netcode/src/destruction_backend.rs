@@ -188,6 +188,11 @@ pub struct DestructionStats {
     pub chunk_bodies: u32,
     pub awake_chunk_bodies: u32,
     pub broken_bonds: u32,
+    /// Chunks physics moved between existing islands without a promotion.
+    /// These are collected but not yet put on the wire, so a non-zero count
+    /// means the client's membership (and therefore every affected island's
+    /// centre of mass) has diverged from the server's.
+    pub chunk_migrations: u64,
     pub stress_solve_ms: f32,
     /// Settles deferred because the body was still sunk in the ground. A
     /// sleeping body gets no depenetration, so freezing one mid-penetration

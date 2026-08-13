@@ -665,6 +665,7 @@ fn severed_upper_half_reconstructs_in_com_frame() {
     println!("broken bonds   {}", stats.broken_bonds);
     println!("chunk bodies   {}", stats.chunk_bodies);
     println!("min body y     {:.2} m", stats.min_body_y);
+    println!("migrations     {}", stats.chunk_migrations);
 
     // Without this the test can pass vacuously: if the cut never severed
     // anything, no body ever holds the reused parent actor and the convention
@@ -763,6 +764,7 @@ fn city_destruction_cost_is_stable() {
     println!("awake  (peak)  {peak_awake}");
     println!("broken bonds   {}", stats.broken_bonds);
     println!("min body y     {:.2} m", stats.min_body_y);
+    println!("migrations     {}", stats.chunk_migrations);
     println!(
         "worst body     pos ({:.0}, {:.0}, {:.0})  vel ({:.0}, {:.0}, {:.0})",
         stats.min_body_pos[0], stats.min_body_pos[1], stats.min_body_pos[2],

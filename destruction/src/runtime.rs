@@ -305,6 +305,7 @@ impl CityDestruction {
                 structure_id: event.structure_id,
                 ..FractureBatch::default()
             });
+            self.stats.chunk_migrations += 1;
             batch.migrations.push(ShapeMigration {
                 chunk_id: event.chunk_id,
                 from_island_id: event.from_island,
