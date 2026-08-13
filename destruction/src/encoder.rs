@@ -101,7 +101,9 @@ struct ClientBodyState {
 #[derive(Default)]
 struct ClientState {
     view: InterestViewTrack,
-    bodies: HashMap<u32, ClientBodyState>,
+    /// Indexed by SharedRecord::slot. An array index instead of a hash probe
+    /// per body per send; grown on demand and reset when a slot is recycled.
+    slots: Vec<ClientBodyState>,
     sequence: u32,
 }
 
@@ -112,10 +114,23 @@ const REST_SPEED_MPS: f32 = 0.05;
 const REST_ANGULAR_RPS: f32 = 0.05;
 /// Pose agreement required alongside those speeds, in metres.
 const REST_POSE_EPSILON_M: f32 = 0.02;
+/// Re-evaluate a resting body on one send in this many, staggered by slot.
+const REST_EVAL_STRIDE: u32 = 8;
+/// Records a single client ranks per send. Well above the ~350 the byte
+/// ceiling admits, so the selection still has room to choose.
+const MAX_EVAL_PER_CLIENT: usize = 1200;
 
 /// One shared (client-independent) candidate produced by `encode_send`.
 #[derive(Clone, Debug)]
 pub struct SharedRecord {
+    /// Dense per-body index, stable across sends and reused after a retire.
+    ///
+    /// Per-client state is indexed by this rather than hashed by entity: the
+    /// packing loop touches every awake body for every client, and at 4735
+    /// bodies that was ~700 ns per body per client -- a hash and a random
+    /// probe into a large map, i.e. a cache miss, dwarfing the frustum test it
+    /// was there to serve.
+    pub slot: u32,
     pub record: BodyRecord,
     pub class: PhysicalClass,
     pub contacts: u16,
@@ -133,6 +148,11 @@ pub struct SharedRecord {
 
 #[derive(Clone, Debug, Default)]
 pub struct SharedRecords {
+    /// Indices into `records`, ordered by client-independent newsworthiness
+    /// (events first, then motion). Clients evaluate a prefix of this rather
+    /// than every record: the byte ceiling ships ~350, so ranking thousands of
+    /// motionless bodies per client is work that cannot change the outcome.
+    pub eval_order: Vec<usize>,
     pub sim_tick: u32,
     pub records: Vec<SharedRecord>,
 }
@@ -155,6 +175,11 @@ pub struct ChunkStreamEncoder {
     structure_chunks: HashMap<u32, Vec<(Vec3, f32)>>,
     ledger: CityLedger,
     bodies: HashMap<u32, BodyTrack>,
+    /// Dense slot per entity, with freed slots reused so the vector tracks
+    /// live bodies rather than growing with cumulative destruction.
+    entity_slots: HashMap<u32, u32>,
+    free_slots: Vec<u32>,
+    next_slot: u32,
     active_order: Vec<u32>,
     baseline_id: u16,
     baseline_poses: HashMap<u32, Pose>,
@@ -194,6 +219,9 @@ impl ChunkStreamEncoder {
             topo_seq: 0,
             staged_topology: Vec::new(),
             clients: HashMap::new(),
+            entity_slots: HashMap::new(),
+            free_slots: Vec::new(),
+            next_slot: 0,
             duplicate_body_records: 0,
         }
     }
@@ -286,8 +314,15 @@ impl ChunkStreamEncoder {
                 for &retired in &batch.retired_island_ids {
                     let entity = ids::body_entity(batch.structure_id, retired);
                     self.bodies.remove(&entity);
+                    if let Some(slot) = self.entity_slots.remove(&entity) {
+                        self.free_slots.push(slot);
+                        for client in self.clients.values_mut() {
+                            if let Some(state) = client.slots.get_mut(slot as usize) {
+                                *state = ClientBodyState::default();
+                            }
+                        }
+                    }
                     for client in self.clients.values_mut() {
-                        client.bodies.remove(&entity);
                     }
                     self.baseline_poses.remove(&entity);
                 }
@@ -333,6 +368,14 @@ impl ChunkStreamEncoder {
                 flags: snapshot.flags,
             };
             let config = self.config.classifier;
+            if !self.entity_slots.contains_key(&entity) {
+                let slot = self.free_slots.pop().unwrap_or_else(|| {
+                    let slot = self.next_slot;
+                    self.next_slot += 1;
+                    slot
+                });
+                self.entity_slots.insert(entity, slot);
+            }
             let track = self.bodies.entry(entity).or_insert_with(|| BodyTrack {
                 classifier: Classifier::default(),
                 class: PhysicalClass::ContactActive,
@@ -412,6 +455,7 @@ impl ChunkStreamEncoder {
                 0
             };
             records.push(SharedRecord {
+                slot: self.entity_slots.get(&entity).copied().unwrap_or(u32::MAX),
                 record: BodyRecord {
                     body_entity: entity,
                     mode,
@@ -435,8 +479,36 @@ impl ChunkStreamEncoder {
                 linear_velocity: state.linear_velocity,
             });
         }
+        // Rank once, client-independently. Events and fast motion first: those
+        // are what any client would prioritise, and the ordering below is the
+        // same for everyone, so it is computed once instead of N times.
+        let mut eval_order: Vec<usize> = (0..records.len()).collect();
+        let ranking = |a: &usize, b: &usize| {
+            let score = |record: &SharedRecord| {
+                let event = record.contact_begin || record.joint_break || record.wake;
+                (
+                    !event,
+                    -(record.linear_speed + record.angular_speed * 0.5),
+                )
+            };
+            let (event_a, motion_a) = score(&records[*a]);
+            let (event_b, motion_b) = score(&records[*b]);
+            event_a
+                .cmp(&event_b)
+                .then_with(|| motion_a.total_cmp(&motion_b))
+        };
+        // Only the prefix clients actually read needs to be in order, so
+        // partition to it in O(n) and sort that -- a full sort of every body
+        // was costing more in the shared phase than the per-client saving.
+        if eval_order.len() > MAX_EVAL_PER_CLIENT {
+            eval_order.select_nth_unstable_by(MAX_EVAL_PER_CLIENT, ranking);
+            eval_order.truncate(MAX_EVAL_PER_CLIENT);
+        }
+        eval_order.sort_unstable_by(ranking);
+
         SharedRecords {
             sim_tick,
+            eval_order,
             records,
         }
     }
@@ -458,10 +530,48 @@ impl ChunkStreamEncoder {
         // Sized for the record count: this used to grow from empty through a
         // dozen reallocations every send, per client.
         let mut candidates = Vec::with_capacity(shared.records.len());
-        for (index, shared_record) in shared.records.iter().enumerate() {
+        // Bounded per-client evaluation. The ceiling ships ~350 records, so
+        // ranking every body for every client is work that cannot change what
+        // is sent -- it only decides the order of things that were never going
+        // to fit. The cap keeps the top candidates by client-independent
+        // newsworthiness and is generous enough that per-client interest still
+        // has real choice among them.
+        let eval_limit = shared.eval_order.len().min(MAX_EVAL_PER_CLIENT);
+        for &index in shared.eval_order.iter().take(eval_limit) {
+            let shared_record = &shared.records[index];
             let entity = shared_record.record.body_entity;
-            // One lookup for interest state and send history together.
-            let body_state = state.bodies.entry(entity).or_default();
+            // Array index, not a hash probe: this line runs once per awake
+            // body per client per send.
+            let slot = shared_record.slot as usize;
+            if slot >= state.slots.len() {
+                state.slots.resize(slot + 1, ClientBodyState::default());
+            }
+            let body_state = &mut state.slots[slot];
+
+            // Resting bodies are re-evaluated at a fraction of the send rate.
+            //
+            // The packing loop is O(bodies x players) because every client
+            // evaluates every awake body. Most of a demolished city is awake
+            // but motionless -- rubble that has come to rest without crossing
+            // the sleep threshold -- and a motionless body's interest and
+            // priority answer barely changes between sends. Staggering by slot
+            // spreads them across sends rather than spiking on one, and moving
+            // bodies are never deferred, so anything a player can actually see
+            // change is evaluated every send.
+            //
+            // The cost is bounded latency on FIRST delivery of a resting body
+            // (up to REST_EVAL_STRIDE sends, ~0.13 s at 30 Hz). It cannot
+            // cause a wrong pose, only a late one, and only for something that
+            // is not moving.
+            let resting = shared_record.linear_speed <= REST_SPEED_MPS
+                && shared_record.angular_speed <= REST_ANGULAR_RPS;
+            if resting
+                && (shared.sim_tick.wrapping_add(shared_record.slot))
+                    % REST_EVAL_STRIDE
+                    != 0
+            {
+                continue;
+            }
 
             // Nothing to tell this client about a body that is at rest where
             // the client already has it. This is not a staleness tradeoff: the
@@ -564,12 +674,14 @@ impl ChunkStreamEncoder {
             self.duplicate_body_records += (before - selected.len()) as u64;
         }
 
-        for record in &selected {
-            state
-                .bodies
-                .entry(record.body_entity)
-                .or_default()
-                .last_sent = Some((shared.sim_tick, record.pose));
+        for index in &selection.selected_indices {
+            let shared_record = &shared.records[*index];
+            let slot = shared_record.slot as usize;
+            if slot >= state.slots.len() {
+                state.slots.resize(slot + 1, ClientBodyState::default());
+            }
+            state.slots[slot].last_sent =
+                Some((shared.sim_tick, shared_record.record.pose));
         }
         encode_chunks_datagrams(
             &selected,
