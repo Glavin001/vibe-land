@@ -964,8 +964,17 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // split exists to prevent.
   auto phase = clock::now();
   if (parallel_begin_enabled()) {
+    // Each worker takes its own PxScene read lock: addGravity reads
+    // getGlobalPose() for every body, and PhysX blocks a reader while its own
+    // deferred shape/bounds sync holds the write lock. Without this the reads
+    // race that sync and crash inside SqBoundsManagerEx::removeSyncShape.
+    // Read locks are shared, so the workers do not serialise against each
+    // other, only against PhysX's writer.
     stress_executor_->run(live_slots_.size(), [this, dt, g](std::size_t index) {
-      require(live_slots_[index]->dest->beginTick(dt, g), "beginTick failed");
+      scene_.lockRead(__FILE__, __LINE__);
+      const bool ok = live_slots_[index]->dest->beginTick(dt, g);
+      scene_.unlockRead();
+      require(ok, "beginTick failed");
     });
   } else {
     for (Slot *slot : live_slots_) {
