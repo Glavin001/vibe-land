@@ -137,6 +137,8 @@ private:
   void register_filters(Slot &slot);
   /// Single GPU->CPU readback of body and shape state for one structure.
   void refresh_snapshots(Slot &slot) const;
+  /// Shape snapshots: only needed on ticks where topology changed.
+  void refresh_shape_snapshots(Slot &slot) const;
   void collect_events(Slot &slot);
   /// Allocates the next island serial for a structure, reporting exhaustion of
   /// the 16-bit space rather than silently aliasing live bodies.

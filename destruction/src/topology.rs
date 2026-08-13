@@ -183,12 +183,20 @@ impl CityLedger {
         }
     }
 
+    /// Full-state resync for a late joiner.
+    ///
+    /// `live_motion` supplies each body's CURRENT pose and velocity. The
+    /// ledger used to carry its own copy, refreshed for every body on every
+    /// tick, and read only here -- a per-tick cost across thousands of bodies
+    /// to serve a message sent when someone joins. The caller already tracks
+    /// this state, so it is passed in instead.
     pub fn bootstrap(
         &self,
         sim_tick: u32,
         manifest_hash: [u8; 32],
         baseline_id: u16,
         topo_seq: u32,
+        live_motion: &dyn Fn(u32, u32) -> Option<(Pose, Vec3, Vec3)>,
     ) -> BootstrapMessage {
         let mut structure_ids: Vec<u32> = self.structures.keys().copied().collect();
         structure_ids.sort_unstable();
@@ -205,13 +213,19 @@ impl CityLedger {
             serials.sort_unstable();
             for serial in serials {
                 let island = &structure.islands[&serial];
+                let (pose, linear_velocity, angular_velocity) =
+                    live_motion(structure_id, serial).unwrap_or((
+                        island.pose,
+                        island.linear_velocity,
+                        island.angular_velocity,
+                    ));
                 islands.push(BootstrapIsland {
                     structure_id,
                     island_id: serial as u32,
                     nodes: island.nodes.clone(),
-                    pose: island.pose,
-                    linear_velocity: island.linear_velocity,
-                    angular_velocity: island.angular_velocity,
+                    pose,
+                    linear_velocity,
+                    angular_velocity,
                     settled: island.settled,
                 });
             }
@@ -352,7 +366,7 @@ mod tests {
         ledger.apply_batch(&batch);
         assert_eq!(ledger.broken_bonds_total(), 1);
 
-        let bootstrap = ledger.bootstrap(10, [1; 32], 0, 5);
+        let bootstrap = ledger.bootstrap(10, [1; 32], 0, 5, &|_, _| None);
         assert_eq!(bootstrap.structures.len(), 1);
         // Bond 0 alive, bond 1 broken -> bitset 0b0000_0001.
         assert_eq!(bootstrap.structures[0].alive_bonds, vec![0b0000_0001]);

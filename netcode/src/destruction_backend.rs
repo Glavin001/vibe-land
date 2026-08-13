@@ -233,6 +233,10 @@ pub struct DestructionStats {
     pub readback_ms_host: f32,
     pub settle_ms: f32,
     pub stats_ffi_ms: f32,
+    /// The three FFI event drains plus batch assembly.
+    pub drain_ms: f32,
+    /// The destruction_tick FFI call itself (all C++ phases inside it).
+    pub tick_ffi_ms: f32,
     pub snapshot_ms: f32,
     pub ingest_ms: f32,
     pub readback_ms: f32,

@@ -302,8 +302,6 @@ impl ChunkStreamEncoder {
 
         // Classifier updates from the delta/active-only export.
         self.active_order.clear();
-        let mut cached_structure = u32::MAX;
-        let mut cached_islands = false;
         for snapshot in active {
             let entity = snapshot.body_entity;
             let state = BodyState {
@@ -331,22 +329,7 @@ impl ChunkStreamEncoder {
             track.state = state;
             self.active_order.push(entity);
 
-            // Bodies arrive grouped by structure, so resolve the structure map
-            // only when it actually changes rather than per body.
-            let (structure_id, serial) = ids::body_entity_parts(entity);
-            if structure_id != cached_structure {
-                cached_structure = structure_id;
-                cached_islands = self.ledger.structure_islands_mut(structure_id).is_some();
-            }
-            if cached_islands {
-                if let Some(islands) = self.ledger.structure_islands_mut(structure_id) {
-                    if let Some(island) = islands.get_mut(&serial) {
-                        island.pose = state.pose;
-                        island.linear_velocity = state.linear_velocity;
-                        island.angular_velocity = state.angular_velocity;
-                    }
-                }
-            }
+
         }
         // Snapshots come back sorted by body id from the bridge, and entity
         // packing is monotonic within a structure, so the list is already
@@ -612,11 +595,24 @@ impl ChunkStreamEncoder {
 
     /// Late-join / resync payload.
     pub fn bootstrap_message(&self, sim_tick: u32) -> Vec<u8> {
+        let bodies = &self.bodies;
+        let live_motion = move |structure_id: u32, serial: u32| {
+            bodies
+                .get(&ids::body_entity(structure_id, serial))
+                .map(|track| {
+                    (
+                        track.state.pose,
+                        track.state.linear_velocity,
+                        track.state.angular_velocity,
+                    )
+                })
+        };
         encode_bootstrap(&self.ledger.bootstrap(
             sim_tick,
             self.manifest_hash,
             self.baseline_id,
             self.topo_seq,
+            &live_motion,
         ))
     }
 }

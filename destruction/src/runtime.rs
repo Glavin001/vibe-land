@@ -280,6 +280,7 @@ impl CityDestruction {
             return Err(CityDestructionError::Bridge(error.to_string()));
         }
 
+        let drain_started = std::time::Instant::now();
         let broken = world
             .take_broken_bonds()
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
@@ -355,6 +356,7 @@ impl CityDestruction {
             }
         }
 
+        let drain_ms = drain_started.elapsed().as_secs_f32() * 1000.0;
         let readback_started = std::time::Instant::now();
         let snapshots = world
             .chunk_body_snapshots()
@@ -426,10 +428,13 @@ impl CityDestruction {
                     snap.linear_velocity.z,
                 ];
             }
-            let previously = self.known_awake.get(&snap.entity_id).copied();
+            // One hash lookup per body, not two: this runs for every body
+            // every tick, and with sleep miscalibrated that is ~6000 bodies.
+            let entry = self.known_awake.entry(snap.entity_id).or_insert(true);
+            let previously = Some(*entry);
             if snap.sleeping {
                 if previously != Some(false) {
-                    self.known_awake.insert(snap.entity_id, false);
+                    *entry = false;
                     let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
                     settled.push(SettleEvent {
                         structure_id,
@@ -447,7 +452,7 @@ impl CityDestruction {
                 if previously == Some(false) {
                     self.stats.resettled_wakes += 1;
                 }
-                self.known_awake.insert(snap.entity_id, true);
+                *entry = true;
             }
 
             // The encoder only streams awake, non-kinematic bodies.
@@ -493,6 +498,7 @@ impl CityDestruction {
         self.stats.peak_body_speed = self.stats.peak_body_speed.max(max_speed);
         self.stats.peak_body_angular_speed =
             self.stats.peak_body_angular_speed.max(max_angular);
+        self.stats.drain_ms = drain_ms;
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
 

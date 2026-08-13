@@ -763,6 +763,16 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
     slot.body_cache_count = slot.dest->getBodySnapshots(
         slot.body_cache.data(), static_cast<std::uint32_t>(slot.body_cache.size()));
   }
+}
+
+/// Shape snapshots, refreshed only when something will read them.
+///
+/// The only consumers are collect_events and register_filters, and both are
+/// skipped on ticks where topology did not change -- which is nearly every
+/// tick. Reading one snapshot per NODE (11k+ citywide, awake or not) and then
+/// discarding it was pure cost: getShapeSnapshots always writes
+/// min(capacity, m_nodes.size()) entries regardless of what is moving.
+void DestructionManager::refresh_shape_snapshots(Slot &slot) const {
   slot.shape_cache.resize(slot.node_descs.size() + 64);
   slot.shape_cache_count = slot.dest->getShapeSnapshots(
       slot.shape_cache.data(), static_cast<std::uint32_t>(slot.shape_cache.size()));
@@ -1005,6 +1015,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
       ++quiet_slot_ticks_;
       continue;
     }
+    // Shapes are only read by the two functions below, so they are fetched
+    // here rather than every tick in refresh_snapshots.
+    refresh_shape_snapshots(slot);
     slot.last_splits = telemetry.splits;
     slot.last_bodies_created = telemetry.bodiesCreated;
     slot.last_shapes_migrated = telemetry.shapesMigrated;
