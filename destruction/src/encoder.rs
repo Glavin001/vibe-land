@@ -85,12 +85,23 @@ struct BodyTrack {
     settled_hint: bool,
 }
 
+/// Everything this client knows about one body.
+///
+/// Merged from three parallel HashMaps (tracks / last_sent_tick /
+/// last_sent_pose). The packing loop visits every shared record for every
+/// client, so three maps meant three hashes of the same key per record per
+/// client -- at ~6800 bodies and 2 clients, ~40k lookups per send.
+#[derive(Clone, Debug, Default)]
+struct ClientBodyState {
+    track: InterestTrack,
+    /// None until this body has actually been sent to this client.
+    last_sent: Option<(u32, Pose)>,
+}
+
 #[derive(Default)]
 struct ClientState {
     view: InterestViewTrack,
-    tracks: HashMap<u32, InterestTrack>,
-    last_sent_tick: HashMap<u32, u32>,
-    last_sent_pose: HashMap<u32, Pose>,
+    bodies: HashMap<u32, ClientBodyState>,
     sequence: u32,
 }
 
@@ -268,9 +279,7 @@ impl ChunkStreamEncoder {
                     let entity = ids::body_entity(batch.structure_id, retired);
                     self.bodies.remove(&entity);
                     for client in self.clients.values_mut() {
-                        client.tracks.remove(&entity);
-                        client.last_sent_tick.remove(&entity);
-                        client.last_sent_pose.remove(&entity);
+                        client.bodies.remove(&entity);
                     }
                     self.baseline_poses.remove(&entity);
                 }
@@ -435,10 +444,15 @@ impl ChunkStreamEncoder {
         let state = self.clients.entry(client).or_default();
         let view: InterestView = state.view.update(camera, config.interest);
 
+        // Camera basis built once, not re-derived inside every visibility test
+        // for every body.
+        let frusta = crate::interest::ViewFrusta::for_view(view, config.interest);
         let mut candidates = Vec::new();
         for (index, shared_record) in shared.records.iter().enumerate() {
             let entity = shared_record.record.body_entity;
-            let decision = state.tracks.entry(entity).or_default().update(
+            // One lookup for interest state and send history together.
+            let body_state = state.bodies.entry(entity).or_default();
+            let decision = body_state.track.update_with_frusta(
                 shared.sim_tick,
                 Pose {
                     position: shared_record.position,
@@ -446,23 +460,22 @@ impl ChunkStreamEncoder {
                 },
                 shared_record.linear_velocity,
                 shared_record.radius,
-                view,
+                frusta,
                 config.interest,
             );
             if !decision.relevant {
                 continue;
             }
-            let age_ticks = state
-                .last_sent_tick
-                .get(&entity)
-                .map_or(u32::MAX / 2, |&last| shared.sim_tick.saturating_sub(last));
-            let error_ratio = state.last_sent_pose.get(&entity).map_or(4.0, |last_pose| {
+            let age_ticks = body_state
+                .last_sent
+                .map_or(u32::MAX / 2, |(last, _)| shared.sim_tick.saturating_sub(last));
+            let error_ratio = body_state.last_sent.map_or(4.0, |(_, last_pose)| {
                 projected_error_pixels(
                     Pose {
                         position: shared_record.position,
                         rotation: shared_record.record.pose.rotation,
                     },
-                    *last_pose,
+                    last_pose,
                     shared_record.radius,
                     view.current,
                     config.interest.pane_width,
@@ -522,11 +535,10 @@ impl ChunkStreamEncoder {
 
         for record in &selected {
             state
-                .last_sent_tick
-                .insert(record.body_entity, shared.sim_tick);
-            state
-                .last_sent_pose
-                .insert(record.body_entity, record.pose);
+                .bodies
+                .entry(record.body_entity)
+                .or_default()
+                .last_sent = Some((shared.sim_tick, record.pose));
         }
         encode_chunks_datagrams(
             &selected,

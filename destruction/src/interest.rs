@@ -98,6 +98,8 @@ impl InterestViewTrack {
 }
 
 impl InterestTrack {
+    /// Prefer `update_with_frusta` in loops: this rebuilds the camera basis on
+    /// every call, which the packing loop does thousands of times per send.
     pub fn update(
         &mut self,
         tick: u32,
@@ -107,33 +109,28 @@ impl InterestTrack {
         view: InterestView,
         config: InterestConfig,
     ) -> InterestDecision {
-        let visible_now = sphere_in_view(
-            pose.position,
-            radius,
-            view.current,
-            config.pane_width,
-            config.pane_height,
-            config.fov_margin_degrees,
-        );
+        let frusta = ViewFrusta::for_view(view, config);
+        self.update_with_frusta(tick, pose, linear_velocity, radius, frusta, config)
+    }
+
+    /// As `update`, with the camera basis supplied by the caller.
+    pub fn update_with_frusta(
+        &mut self,
+        tick: u32,
+        pose: Pose,
+        linear_velocity: Vec3,
+        radius: f32,
+        frusta: ViewFrusta,
+        config: InterestConfig,
+    ) -> InterestDecision {
+        let visible_now = frusta.current.contains_sphere(pose.position, radius);
         let lookahead_seconds = config.lookahead_ticks as f32 * config.dt;
         let predicted_position = pose.position + linear_velocity * lookahead_seconds;
         let prefetched = !visible_now
-            && (sphere_in_view(
-                predicted_position,
-                radius,
-                view.current,
-                config.pane_width,
-                config.pane_height,
-                config.fov_margin_degrees,
-            ) || sphere_in_view(
-                predicted_position,
-                radius,
-                view.predicted,
-                config.pane_width,
-                config.pane_height,
-                config.fov_margin_degrees,
-            ));
-        let nearby = pose.position.distance(view.current.eye) - radius <= config.proximity_meters;
+            && (frusta.current.contains_sphere(predicted_position, radius)
+                || frusta.predicted.contains_sphere(predicted_position, radius));
+        let nearby =
+            pose.position.distance(frusta.current.eye()) - radius <= config.proximity_meters;
         let directly_relevant = visible_now || prefetched || nearby;
         if directly_relevant {
             self.relevant_until_tick = tick.saturating_add(config.grace_ticks);
@@ -151,6 +148,116 @@ impl InterestTrack {
     }
 }
 
+/// Camera basis and frustum constants, computed once per view.
+///
+/// sphere_in_view used to derive all of this per call: two normalize()s, two
+/// cross products, a tan() and a to_radians(). It is called up to three times
+/// per body per client, so at ~6000 bodies and 2 clients that was ~36k
+/// recomputations per send of values that do not change within the loop.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewFrustum {
+    eye: Vec3,
+    direction: Vec3,
+    right: Vec3,
+    up: Vec3,
+    half_vertical: f32,
+    half_horizontal: f32,
+    valid: bool,
+}
+
+impl ViewFrustum {
+    pub fn new(
+        camera: Camera,
+        pane_width: u32,
+        pane_height: u32,
+        fov_margin_degrees: f32,
+    ) -> Self {
+        let direction = camera.direction.normalize_or_zero();
+        if direction == Vec3::ZERO {
+            return Self {
+                eye: camera.eye,
+                direction: Vec3::Z,
+                right: Vec3::X,
+                up: Vec3::Y,
+                half_vertical: 0.0,
+                half_horizontal: 0.0,
+                valid: false,
+            };
+        }
+        let reference_up = if direction.dot(Vec3::Y).abs() > 0.99 {
+            Vec3::X
+        } else {
+            Vec3::Y
+        };
+        let right = direction.cross(reference_up).normalize();
+        let up = right.cross(direction).normalize();
+        let expanded_fov = (camera.fov_degrees + 2.0 * fov_margin_degrees)
+            .clamp(1.0, 179.0)
+            .to_radians();
+        let half_vertical = (expanded_fov * 0.5).tan();
+        let aspect = pane_width as f32 / pane_height.max(1) as f32;
+        Self {
+            eye: camera.eye,
+            direction,
+            right,
+            up,
+            half_vertical,
+            half_horizontal: half_vertical * aspect,
+            valid: true,
+        }
+    }
+
+    /// Camera position this frustum was built from.
+    #[inline]
+    pub fn eye(&self) -> Vec3 {
+        self.eye
+    }
+
+    #[inline]
+    pub fn contains_sphere(&self, position: Vec3, radius: f32) -> bool {
+        if !self.valid {
+            return false;
+        }
+        let relative = position - self.eye;
+        let depth = relative.dot(self.direction);
+        if depth + radius <= 0.1 {
+            return false;
+        }
+        let inv_depth = 1.0 / depth.max(0.1);
+        let angular_radius = radius * inv_depth;
+        let x = relative.dot(self.right) * inv_depth;
+        let y = relative.dot(self.up) * inv_depth;
+        x.abs() <= self.half_horizontal + angular_radius
+            && y.abs() <= self.half_vertical + angular_radius
+    }
+}
+
+/// Both frusta a body is tested against, built once per client per send.
+#[derive(Clone, Copy, Debug)]
+pub struct ViewFrusta {
+    pub current: ViewFrustum,
+    pub predicted: ViewFrustum,
+}
+
+impl ViewFrusta {
+    pub fn for_view(view: InterestView, config: InterestConfig) -> Self {
+        Self {
+            current: ViewFrustum::new(
+                view.current,
+                config.pane_width,
+                config.pane_height,
+                config.fov_margin_degrees,
+            ),
+            predicted: ViewFrustum::new(
+                view.predicted,
+                config.pane_width,
+                config.pane_height,
+                config.fov_margin_degrees,
+            ),
+        }
+    }
+}
+
 pub fn sphere_in_view(
     position: Vec3,
     radius: f32,
@@ -159,31 +266,8 @@ pub fn sphere_in_view(
     pane_height: u32,
     fov_margin_degrees: f32,
 ) -> bool {
-    let direction = camera.direction.normalize_or_zero();
-    if direction == Vec3::ZERO {
-        return false;
-    }
-    let reference_up = if direction.dot(Vec3::Y).abs() > 0.99 {
-        Vec3::X
-    } else {
-        Vec3::Y
-    };
-    let right = direction.cross(reference_up).normalize();
-    let up = right.cross(direction).normalize();
-    let relative = position - camera.eye;
-    let depth = relative.dot(direction);
-    if depth + radius <= 0.1 {
-        return false;
-    }
-    let expanded_fov = (camera.fov_degrees + 2.0 * fov_margin_degrees)
-        .clamp(1.0, 179.0)
-        .to_radians();
-    let half_vertical = (expanded_fov * 0.5).tan();
-    let aspect = pane_width as f32 / pane_height.max(1) as f32;
-    let angular_radius = radius / depth.max(0.1);
-    let x = relative.dot(right) / depth.max(0.1);
-    let y = relative.dot(up) / depth.max(0.1);
-    x.abs() <= half_vertical * aspect + angular_radius && y.abs() <= half_vertical + angular_radius
+    ViewFrustum::new(camera, pane_width, pane_height, fov_margin_degrees)
+        .contains_sphere(position, radius)
 }
 
 #[cfg(test)]
