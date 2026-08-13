@@ -102,6 +102,10 @@ export const SNAPSHOT_HZ_MULTIPLAYER = 30;
 export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
 export const MAX_PENDING_INPUTS = 120;
 export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+/// On-foot backlog depth that triggers a jump to the newest input. Small on
+/// purpose: the point is to track the player's current intent, not to replay
+/// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+export const PLAYER_INPUT_CATCHUP_THRESHOLD = 3;
 export const RIFLE_FIRE_INTERVAL_MS = 100;
 export const RIFLE_BODY_DAMAGE = 14;
 export const RIFLE_HEAD_DAMAGE = 16;
