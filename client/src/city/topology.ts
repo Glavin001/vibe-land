@@ -299,6 +299,7 @@ export class CityTopology {
         this.retire(bodyKey(batch.structureId, retired));
       }
     }
+    this.diagnoseFrames('apply', message.topoSeq);
     for (const settle of message.settled) {
       const body = this.bodies.get(bodyKey(settle.structureId, settle.islandId));
       if (body) {
@@ -438,6 +439,7 @@ export class CityTopology {
       // The destination should have been promoted already. Without it there is
       // nowhere correct to put the chunk, and guessing is what produces
       // chunks composed against the wrong frame.
+      console.error(`[city-diag] migrate missing destination s=${structureId} node=${node} from=${fromIslandSerial} to=${toIslandSerial}`);
       this.needsResync = true;
       return;
     }
@@ -445,6 +447,7 @@ export class CityTopology {
     // Both frames have to be read before membership changes: afterwards they
     // are no longer recoverable from the members' offsets.
     const sourceOldCom = source ? this.centreOfMass(source) : null;
+    const destinationWasEmpty = destination.chunkSlots.length === 0;
     const destinationOldCom = this.centreOfMass(destination);
     if (source) {
       const index = source.chunkSlots.indexOf(slot);
@@ -466,7 +469,22 @@ export class CityTopology {
     if (source) {
       this.reoffsetBody(source, sourceOldCom);
     }
-    this.reoffsetBody(destination, destinationOldCom);
+    if (destinationWasEmpty) {
+      // An empty body has no frame to recover: reoffsetBody's fallback would
+      // read the "old" centre of mass from the chunk that just arrived, which
+      // still carries the SOURCE body's frame -- producing a corrupt offset
+      // tens of metres long and a pose shifted by the same garbage. (Found as
+      // exactly that: a 1-member island rendering 57 m from its body.) With
+      // one member the frame is fully determined: offset zero about its own
+      // centroid, pose whatever the server streams.
+      const slotIndex = destination.chunkSlots[0];
+      const com = this.centreOfMass(destination);
+      this.localPos[slotIndex * 3] = com ? this.restPos[slotIndex * 3] - com[0] : 0;
+      this.localPos[slotIndex * 3 + 1] = com ? this.restPos[slotIndex * 3 + 1] - com[1] : 0;
+      this.localPos[slotIndex * 3 + 2] = com ? this.restPos[slotIndex * 3 + 2] - com[2] : 0;
+    } else {
+      this.reoffsetBody(destination, destinationOldCom);
+    }
   }
 
   /**
@@ -618,6 +636,39 @@ export class CityTopology {
         rotation: [...island.rotation] as Quat,
         settled: island.settled,
       });
+    }
+    this.diagnoseFrames('bootstrap', message.topoSeq);
+  }
+
+  /** TEMP DIAGNOSTIC: find small bodies with impossible offsets. */
+  diagnoseFrames(tag: string, seq: number): void {
+    const globals = globalThis as { __cityDiagCount?: number };
+    if ((globals.__cityDiagCount ?? 0) > 3) return;
+    for (const body of this.bodies.values()) {
+      if (body.islandSerial === SUPPORT_SERIAL || body.chunkSlots.length === 0) continue;
+      if (body.chunkSlots.length > 2) continue;
+      const slot = body.chunkSlots[0];
+      const magnitude = Math.hypot(
+        this.localPos[slot * 3],
+        this.localPos[slot * 3 + 1],
+        this.localPos[slot * 3 + 2],
+      );
+      if (magnitude > 5) {
+        globals.__cityDiagCount = (globals.__cityDiagCount ?? 0) + 1;
+        console.error(`[city-diag] ${tag} seq=${seq} corrupt frame ` + JSON.stringify({
+          serial: body.islandSerial,
+          members: body.chunkSlots.map((memberSlot) => ({
+            node: this.slotNode[memberSlot],
+            rest: [
+              this.restPos[memberSlot * 3],
+              this.restPos[memberSlot * 3 + 1],
+              this.restPos[memberSlot * 3 + 2],
+            ],
+          })),
+          bodyPos: body.position,
+        }));
+        break;
+      }
     }
   }
 

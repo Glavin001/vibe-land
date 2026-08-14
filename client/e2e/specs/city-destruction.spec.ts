@@ -159,6 +159,12 @@ test.describe('destructible city', () => {
    * that reaches that scale the failure can only be found by playing.
    */
   test('heavy destruction keeps every chunk on a live body', async ({ page }) => {
+    // TEMP: surface the topology diagnostic from the browser console.
+    page.on('console', (msg) => {
+      if (msg.text().includes('[city-diag]')) {
+        console.log('DIAG>>', msg.text().slice(0, 2000));
+      }
+    });
     test.setTimeout(600_000);
     await openCity(page);
     await join(page);

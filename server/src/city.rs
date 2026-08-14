@@ -733,6 +733,21 @@ impl CityRuntime {
         }
         if let Some(baselines) = self.encoder.maybe_emit_baseline(sim_tick) {
             reliable.extend(baselines);
+            // TEMP DIAGNOSTIC (1 Hz, rides the baseline cadence): ledger
+            // islands whose physics body no longer exists. The client renders
+            // every ledger island, so a phantom freezes its chunks at the last
+            // streamed pose -- floating shards, below-ground counts, while
+            // server physics is clean.
+            #[cfg(feature = "destruction")]
+            if let CityBackend::Physx(runtime) = &self.backend {
+                let (phantoms, example) = self
+                    .encoder
+                    .ledger()
+                    .phantom_islands(&runtime.live_entities);
+                if phantoms > 0 {
+                    tracing::warn!(phantoms, ?example, "ledger islands with no live body");
+                }
+            }
         }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
         reliable

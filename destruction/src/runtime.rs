@@ -62,6 +62,8 @@ pub struct CityDestruction {
     degraded: bool,
     /// island serials already known so we can detect wakes after settle.
     known_awake: HashMap<u32, bool>,
+    /// TEMP DIAGNOSTIC: every live non-kinematic body entity this tick.
+    pub live_entities: std::collections::HashSet<u32>,
 }
 
 impl CityDestruction {
@@ -212,6 +214,7 @@ impl CityDestruction {
             tick: 0,
             degraded: false,
             known_awake: HashMap::new(),
+            live_entities: std::collections::HashSet::new(),
         })
     }
 
@@ -403,6 +406,7 @@ impl CityDestruction {
         // transition is the network-definitive "at rest now" moment the stream
         // needs.
         let mut settled = Vec::new();
+        self.live_entities.clear();
         // Lowest body this tick, over EVERY dynamic body -- sleeping included.
         // This field existed, was logged, asserted on and shown in the overlay,
         // but was never actually computed: it sat at its Default of 0.0
@@ -483,6 +487,9 @@ impl CityDestruction {
                 *entry = true;
             }
 
+            if !snap.kinematic {
+                self.live_entities.insert(snap.entity_id);
+            }
             // The encoder only streams awake, non-kinematic bodies.
             if !snap.kinematic && !snap.sleeping {
                 encoder_input.push(BodySnapshotInput {

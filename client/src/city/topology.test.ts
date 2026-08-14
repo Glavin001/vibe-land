@@ -495,3 +495,124 @@ describe('CityTopology chunk migration', () => {
     expect(topology.needsResync).toBe(true);
   });
 });
+
+// The bug this pins: a chunk migrating into a body whose members had all
+// previously migrated away rendered 57 metres from its body. An empty body
+// has no frame to recover, and the fallback read the "old" centre of mass
+// from the just-arrived chunk -- which still carried the SOURCE body's frame.
+describe('CityTopology migration into an emptied body', () => {
+  // Four chunks, so the source island can hold TWO members: the migrating
+  // chunk must carry a non-zero source-frame offset or the stale frame the
+  // bug reads happens to coincide with the true one and the test is vacuous.
+  const manifest4 = (): CityManifest => ({
+    version: 1,
+    structures: [
+      {
+        structureId: 0,
+        worldPosition: [10, 0, 0],
+        worldRotation: [0, 0, 0, 1],
+        chunks: [0, 1, 2, 3].map((node) => ({
+          nodeIndex: node,
+          centroid: [0, node + 0.5, 0],
+          mass: node === 0 ? 0 : 10,
+          volume: 1,
+          size: [1, 1, 1],
+          geometry: { kind: 'Cuboid', halfExtents: [0.5, 0.5, 0.5] },
+          radius: 0.87,
+          support: node === 0,
+        })),
+        bonds: [
+          { bondIndex: 0, node0: 0, node1: 1, centroid: [0, 1, 0], normal: [0, 1, 0], area: 1 },
+          { bondIndex: 1, node0: 1, node1: 2, centroid: [0, 2, 0], normal: [0, 1, 0], area: 1 },
+          { bondIndex: 2, node0: 2, node1: 3, centroid: [0, 3, 0], normal: [0, 1, 0], area: 1 },
+        ],
+      },
+    ],
+  });
+
+  const promoteTwo = (topoSeq: number): TopologyMessage => ({
+    topoSeq,
+    simTick: 10,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [0, 1],
+        promotions: [
+          {
+            structureId: 0,
+            islandId: 1,
+            // Two members: com y=2.0, so each carries a +/-0.5 offset.
+            nodes: [1, 2],
+            position: [10, 2.0, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+          {
+            structureId: 0,
+            islandId: 2,
+            nodes: [3],
+            position: [10, 3.5, 0],
+            rotation: [0, 0, 0, 1],
+            linearVelocity: [0, 0, 0],
+            angularVelocity: [0, 0, 0],
+          },
+        ],
+        retiredIslandIds: [],
+        migrations: [],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  const migrateNode = (
+    topoSeq: number,
+    node: number,
+    from: number,
+    to: number,
+  ): TopologyMessage => ({
+    topoSeq,
+    simTick: 10 + topoSeq,
+    batches: [
+      {
+        structureId: 0,
+        brokenBondIndices: [],
+        promotions: [],
+        retiredIslandIds: [],
+        migrations: [{ node, fromIslandSerial: from, toIslandSerial: to }],
+      },
+    ],
+    settled: [],
+    wakes: [],
+  });
+
+  it('gives the chunk a clean frame when its destination had been emptied', () => {
+    const topology = new CityTopology(manifest4());
+    expect(topology.apply(promoteTwo(1))).toBe(true);
+    // Empty island 2 by moving its only member to island 1...
+    expect(topology.apply(migrateNode(2, 3, 2, 1))).toBe(true);
+    expect(topology.body(bodyKey(0, 2))!.chunkSlots).toHaveLength(0);
+    const slot = topology.slotOf(0, 1);
+    // ...then migrate a chunk carrying a non-zero source-frame offset INTO
+    // the now-empty island 2.
+    expect(topology.apply(migrateNode(3, 1, 1, 2))).toBe(true);
+
+    // A 1-member island's offset is zero about its own centroid by
+    // construction; anything large means the frame was recovered from the
+    // arriving chunk's stale source-frame offset -- the 57 m bug.
+    const offset = topology.chunkLocalOffset(slot);
+    expect(Math.hypot(...offset.position)).toBeLessThan(0.01);
+
+    // World-fixedness is not achievable from the migration alone: the
+    // destination's pose is stale until its next datagram (a migrating body
+    // is awake, so that is one send away). What must hold is that the next
+    // pose update lands the chunk EXACTLY where the server has it.
+    topology.updateBodyPose(bodyKey(0, 2), [10, 1.5, 0], [0, 0, 0, 1]);
+    const after = topology.chunkWorldPose(slot);
+    expect(after.position[0]).toBeCloseTo(10, 4);
+    expect(after.position[1]).toBeCloseTo(1.5, 4);
+    expect(after.position[2]).toBeCloseTo(0, 4);
+    void manifest;
+  });
+});
