@@ -44,6 +44,9 @@ pub struct StressSolverSettings {
     /// Stress materials, indexed by `ChunkBondDesc::material`. Always at least
     /// one entry: a structure with no material has no strength to solve for.
     pub materials: Vec<StressMaterial>,
+    /// Damping applied to fracture debris.
+    pub linear_damping: f32,
+    pub angular_damping: f32,
     /// Per-structure caps mirroring `ExtStressPhysXSettings`.
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
@@ -59,6 +62,8 @@ impl Default for StressSolverSettings {
             max_solver_iterations_per_frame: 25,
             graph_reduction_level: 0,
             materials: vec![StressMaterial::default()],
+            linear_damping: 0.25,
+            angular_damping: 0.35,
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,

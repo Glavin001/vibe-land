@@ -90,6 +90,8 @@ impl CityDestruction {
             maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: settings.apply_excess_forces,
             excess_force_scale: settings.excess_force_scale,
+            linear_damping: settings.linear_damping,
+            angular_damping: settings.angular_damping,
         };
 
         // Bond materials and the material table arrive by different routes --

@@ -477,6 +477,8 @@ void DestructionManager::create_destructible(
   desc.settings.idleSkip = true;
   // Keep a tiny peel impulse so new islands don't stick, but not the old 4 m/s
   // "inflate then collapse" puff that made shots look like overlapping chunks.
+  desc.settings.linearDamping = settings.linear_damping;
+  desc.settings.angularDamping = settings.angular_damping;
   desc.settings.minimumSeparationVelocity =
       settings.apply_excess_forces ? 0.35f : 0.0f;
   desc.errorCallback = adapter_error;

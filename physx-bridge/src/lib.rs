@@ -315,6 +315,11 @@ pub struct DestructibleSettings {
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
     pub excess_force_scale: f32,
+    /// Damping on every fracture body. Debris needs more than PhysX's
+    /// gameplay-object defaults or a rubble pile jitters forever and, because
+    /// PhysX sleeps per contact island, holds its whole pile awake with it.
+    pub linear_damping: f32,
+    pub angular_damping: f32,
 }
 
 impl Default for DestructibleSettings {
@@ -334,6 +339,8 @@ impl Default for DestructibleSettings {
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
             excess_force_scale: 0.012,
+            linear_damping: 0.25,
+            angular_damping: 0.35,
         }
     }
 }
@@ -1200,6 +1207,8 @@ mod ffi {
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
         excess_force_scale: f32,
+        linear_damping: f32,
+        angular_damping: f32,
     }
 
     struct FfiChunkNodeDesc {
@@ -1663,6 +1672,8 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,
             excess_force_scale: value.excess_force_scale,
+            linear_damping: value.linear_damping,
+            angular_damping: value.angular_damping,
         }
     }
 }
