@@ -102,6 +102,15 @@ impl CityLedger {
                 .map(|&chunk| ids::chunk_id_parts(chunk).1)
                 .collect();
             nodes.sort_unstable();
+            // A node joining a new island has left its previous one. The
+            // clients drain the losing body when they apply this promotion;
+            // the ledger must do the same or its node lists go stale -- and
+            // the ledger is what bootstraps late joiners and resyncs, so a
+            // stale list here becomes corrupt membership (and a corrupt
+            // centre of mass) on every client that ever resynchronises.
+            for island in structure.islands.values_mut() {
+                island.nodes.retain(|node| !nodes.contains(node));
+            }
             structure.islands.insert(
                 promotion.island_id,
                 LedgerIsland {
@@ -115,6 +124,24 @@ impl CityLedger {
                     settled: false,
                 },
             );
+        }
+        // Chunks physics moved between existing islands, with no promotion.
+        // Same staleness consequence as above if skipped -- which it was: the
+        // wire carried migrations to clients while the ledger ignored them,
+        // so every bootstrap after enough migrations described a city whose
+        // membership no client could reconcile.
+        for migration in &batch.migrations {
+            let node = ids::chunk_id_parts(migration.chunk_id).1;
+            if let Some(source) = structure.islands.get_mut(&migration.from_island_id) {
+                source.nodes.retain(|&existing| existing != node);
+            }
+            if let Some(destination) = structure.islands.get_mut(&migration.to_island_id) {
+                // Keep ascending order: bootstrap gap-encodes node lists, so
+                // an out-of-order insert would corrupt the wire encoding.
+                if let Err(index) = destination.nodes.binary_search(&node) {
+                    destination.nodes.insert(index, node);
+                }
+            }
         }
         for &retired in &batch.retired_island_ids {
             structure.islands.remove(&retired);
@@ -190,6 +217,32 @@ impl CityLedger {
     /// tick, and read only here -- a per-tick cost across thousands of bodies
     /// to serve a message sent when someone joins. The caller already tracks
     /// this state, so it is passed in instead.
+    /// TEMP DIAGNOSTIC: ledger islands with no live physics body.
+    ///
+    /// The client renders every ledger island; an island whose body no longer
+    /// exists is a phantom -- its chunks freeze at the last streamed pose,
+    /// which presents as floating shards and below-ground counts while server
+    /// physics is clean.
+    pub fn phantom_islands(&self, live_entities: &std::collections::HashSet<u32>) -> (usize, Option<(u32, u32)>) {
+        let mut count = 0;
+        let mut example = None;
+        for (&structure_id, structure) in &self.structures {
+            for (&serial, _island) in &structure.islands {
+                if serial == 0 {
+                    continue; // kinematic support is never streamed
+                }
+                let entity = crate::ids::body_entity(structure_id, serial);
+                if !live_entities.contains(&entity) {
+                    count += 1;
+                    if example.is_none() {
+                        example = Some((structure_id, serial));
+                    }
+                }
+            }
+        }
+        (count, example)
+    }
+
     pub fn bootstrap(
         &self,
         sim_tick: u32,
