@@ -518,6 +518,15 @@ impl CityDestruction {
         }
 
         self.encoder_input = encoder_input;
+
+        // TEMP DIAGNOSTIC (1 Hz): the adapter's own mapping validator, now
+        // extended to compare bookkept node ownership against the shapes'
+        // physical attachment. Promotions report the bookkeeping; poses
+        // stream from physics -- if they diverge, clients get impossible
+        // memberships.
+        if tick % 60 == 0 && !world.validate_destruction_mappings().unwrap_or(true) {
+            eprintln!("[city-diag] tick {tick}: destruction mapping validation FAILED");
+        }
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();
 
