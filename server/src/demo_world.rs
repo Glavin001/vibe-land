@@ -68,6 +68,13 @@ fn city_world() -> WorldDocument {
         BENCHMARK_TERRAIN_HALF_EXTENT_M,
         vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
     );
+    // No vehicle. The benchmark template parks one at the origin -- the centre
+    // of the city grid -- and the vehicle sim keeps it permanently awake.
+    // PhysX sleeps bodies per contact island, so one always-awake actor
+    // resting among the rubble held every chunk touching that pile awake
+    // forever: the live server sat at 19k awake indefinitely while the
+    // vehicle-free bench slept the same demolition to zero in 22 seconds.
+    world.dynamic_entities.clear();
     // Solid ground under the flat terrain.
     //
     // A PhysX heightfield is a surface, not a volume: anything that ends up
