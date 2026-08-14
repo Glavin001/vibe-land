@@ -54,7 +54,6 @@ import {
   RIFLE_FIRE_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
   VEHICLE_INTERACT_RADIUS_M,
-  WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
   DamageEventPacket,
@@ -112,6 +111,7 @@ import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets'
 import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
+import { cycleWeaponMode, getWeaponMode } from './weaponMode';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -1345,6 +1345,19 @@ export function GameWorld({
     wheelGroundObjectIds: [0, 0, 0, 0],
   });
 
+  // Weapon toggle. A dedicated key rather than right mouse, which is already
+  // aim-down-sights; and a toggle rather than two fire buttons because the
+  // cannon is a different weapon, not an alternate fire of the ray gun.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.code === 'KeyQ' && !event.repeat) {
+        cycleWeaponMode();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   useEffect(() => {
     const manager = new GameInputManager();
     manager.attach();
@@ -2188,7 +2201,7 @@ export function GameWorld({
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,
-          weapon: WEAPON_HITSCAN,
+          weapon: getWeaponMode(),
           clientFireTimeUs: client.serverClock.serverNowUs(),
           clientInterpMs: Math.round(state.interpolationDelayMs),
           clientDynamicInterpMs: dynamicLagMsForShot,

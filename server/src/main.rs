@@ -761,6 +761,10 @@ enum OutboundDelivery {
     StrictDrop,
 }
 
+/// Entity ids for cannonballs live above anything the world document or the
+/// city allocates, so a ball can never collide with a real entity's id.
+const CANNONBALL_ENTITY_BASE: u32 = 0x7000_0000;
+
 struct QueuedShot {
     player_id: u32,
     cmd: FireCmd,
@@ -778,6 +782,9 @@ struct MatchState {
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
+    /// Live cannonballs and the tick each was fired on, for retirement.
+    live_cannonballs: Vec<(u32, u32)>,
+    next_cannonball_entity: u32,
     queued_melees: Vec<QueuedMelee>,
     server_tick: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
@@ -1502,6 +1509,8 @@ async fn run_match_loop(
         history: LagCompHistory::new(1000),
         players: HashMap::new(),
         queued_shots: Vec::new(),
+        live_cannonballs: Vec::new(),
+        next_cannonball_entity: CANNONBALL_ENTITY_BASE,
         queued_melees: Vec::new(),
         server_tick: 0,
         stats_tx,
@@ -2274,6 +2283,7 @@ impl MatchState {
         }
 
         self.route_city_shots();
+        self.retire_cannonballs();
 
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
@@ -2306,12 +2316,84 @@ impl MatchState {
     }
 
     /// Route queued hitscan shots into city destruction before
+    /// Launch a cannonball: a real rigid body, fired along the aim direction.
+    ///
+    /// It damages by colliding, through exactly the contact path that carries
+    /// a falling slab's impact into the stress solver. There is no bespoke
+    /// damage rule, which is what makes it read as a physical interaction
+    /// rather than a scripted one.
+    #[cfg(feature = "destruction")]
+    fn spawn_cannonball(&mut self, eye: glam::Vec3, direction: glam::Vec3) {
+        use vibe_land_shared::constants as sc;
+        let dir = direction.normalize_or_zero();
+        if dir == glam::Vec3::ZERO {
+            return;
+        }
+        let Some(world) = self.arena.physx_world_mut() else {
+            return;
+        };
+        let entity_id = self.next_cannonball_entity;
+        self.next_cannonball_entity = self.next_cannonball_entity.wrapping_add(1).max(CANNONBALL_ENTITY_BASE);
+        // Spawn clear of the player's own capsule, or the ball resolves its
+        // overlap with the shooter and launches them instead.
+        let spawn = eye + dir * (sc::CANNON_RADIUS_M + 1.2);
+        if world
+            .add_dynamic_sphere(vibe_land_physx_bridge::DynamicSphereDesc {
+                entity_id,
+                user_id: 0,
+                pose: vibe_land_physx_bridge::Pose {
+                    position: vibe_land_physx_bridge::Vec3::new(spawn.x, spawn.y, spawn.z),
+                    rotation: vibe_land_physx_bridge::Quat::IDENTITY,
+                },
+                radius: sc::CANNON_RADIUS_M,
+                mass: sc::CANNON_MASS_KG,
+                collision_group: vibe_land_destruction::runtime::GROUP_DYNAMIC,
+                collision_mask: vibe_land_destruction::runtime::CHUNK_COLLISION_MASK,
+            })
+            .is_err()
+        {
+            return;
+        }
+        // Impulse = mass * velocity: the muzzle speed is a property of the
+        // weapon, and the mass is what turns it into a building-moving blow.
+        let impulse = dir * (sc::CANNON_MUZZLE_SPEED_MPS * sc::CANNON_MASS_KG);
+        let _ = world.apply_impulse(
+            entity_id,
+            vibe_land_physx_bridge::Vec3::new(impulse.x, impulse.y, impulse.z),
+        );
+        self.live_cannonballs.push((entity_id, self.server_tick));
+    }
+
+    #[cfg(not(feature = "destruction"))]
+    fn spawn_cannonball(&mut self, _eye: glam::Vec3, _direction: glam::Vec3) {}
+
+    /// Remove spent ordnance so a long match does not accumulate it.
+    #[cfg(feature = "destruction")]
+    fn retire_cannonballs(&mut self) {
+        use vibe_land_shared::constants as sc;
+        let tick = self.server_tick;
+        let Some(world) = self.arena.physx_world_mut() else {
+            return;
+        };
+        self.live_cannonballs.retain(|(entity_id, fired_tick)| {
+            if tick.saturating_sub(*fired_tick) < sc::CANNON_LIFETIME_TICKS {
+                return true;
+            }
+            let _ = world.remove_actor(*entity_id);
+            false
+        });
+    }
+
+    #[cfg(not(feature = "destruction"))]
+    fn retire_cannonballs(&mut self) {}
+
     /// `process_hitscan` drains them (players/vehicles still take the same
     /// hitscan resolution afterwards).
     fn route_city_shots(&mut self) {
         if self.city.is_none() {
             return;
         }
+        let mut cannon_shots: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
         let shots: Vec<(glam::Vec3, glam::Vec3)> = self
             .queued_shots
             .iter()
@@ -2320,16 +2402,25 @@ impl MatchState {
                 if state.dead {
                     return None;
                 }
-                Some((
-                    glam::Vec3::new(
-                        state.position.x as f32,
-                        state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
-                        state.position.z as f32,
-                    ),
-                    glam::Vec3::from_array(queued.cmd.dir),
-                ))
+                let eye = glam::Vec3::new(
+                    state.position.x as f32,
+                    state.position.y as f32 + PLAYER_EYE_HEIGHT_M,
+                    state.position.z as f32,
+                );
+                let dir = glam::Vec3::from_array(queued.cmd.dir);
+                // The cannon is not a hitscan weapon: it spawns a mass and
+                // lets the simulation decide what happens. It therefore takes
+                // no part in ray resolution.
+                if queued.cmd.weapon == vibe_land_shared::constants::WEAPON_CANNON {
+                    cannon_shots.push((eye, dir));
+                    return None;
+                }
+                Some((eye, dir))
             })
             .collect();
+        for (eye, dir) in cannon_shots {
+            self.spawn_cannonball(eye, dir);
+        }
         let shot_count = shots.len();
         let mut city = self.city.take().expect("checked above");
         let broken_before = city.stats().broken_bonds;

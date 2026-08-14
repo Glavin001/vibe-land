@@ -67,6 +67,19 @@ export const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE = 1 << 1;
 
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
+/// A thrown physical mass rather than a hitscan ray. The projectile is a real
+/// rigid body: it arcs under gravity, and what it destroys it destroys by
+/// colliding, through the same contact path as any falling debris. Nothing
+/// about the damage is special-cased, which is the point of it.
+export const WEAPON_CANNON = 2;
+/// Cannonball ballistics. Heavy and fast enough to carry across the map and
+/// stagger a building; the mass is what makes the impact read as physical.
+export const CANNON_RADIUS_M = 0.55;
+export const CANNON_MASS_KG = 900.0;
+export const CANNON_MUZZLE_SPEED_MPS = 85.0;
+/// Cannonballs are removed after this long so a match does not accumulate
+/// spent ordnance forever.
+export const CANNON_LIFETIME_TICKS = 60 * 20;
 export const WEAPON_ROCKET = 2;
 
 // ── Hit zones ───────────────────────────────────

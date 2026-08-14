@@ -57,6 +57,8 @@ interface MatchStats {
   city?: CityServerStats;
 }
 
+import { WEAPON_LABELS, getWeaponMode, subscribeWeaponMode } from '../scene/weaponMode';
+
 declare const __CLIENT_BUILD__: string;
 const CLIENT_BUILD = typeof __CLIENT_BUILD__ === 'string' ? __CLIENT_BUILD__ : 'dev';
 
@@ -163,6 +165,8 @@ export function CityStatsOverlay({
 }) {
   const [visible, setVisible] = useState(true);
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  const [weapon, setWeapon] = useState(getWeaponMode());
+  useEffect(() => subscribeWeaponMode(setWeapon), []);
   const [server, setServer] = useState<MatchStats | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const frame = useFrameTime();
@@ -317,6 +321,11 @@ export function CityStatsOverlay({
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>
           {server?.server_started ?? '?'}
         </span>
+      </div>
+
+      <div style={{ ...row, opacity: 0.9 }}>
+        <span>weapon (Q)</span>
+        <span style={{ color: '#ffd479' }}>{WEAPON_LABELS[weapon] ?? weapon}</span>
       </div>
 
       <div style={heading}>browser</div>
