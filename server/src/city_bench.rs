@@ -481,6 +481,35 @@ fn full_demolition_cost() {
         }
     }
 
+    // Settle curve: stop shooting and just run. This is the honest test of
+    // sleep at scale -- the single-tower settle test passes at 628 bodies,
+    // while the live city sits ~95% awake at 15-20k, and only a curve can say
+    // whether that is "settling, slowly" or "a wake loop holding the pile
+    // open". Wall-clock sampling of a moving demolition cannot answer it.
+    println!("\n=== settle curve (no further shots) ===");
+    println!("{:>6} {:>8} {:>8} {:>6} {:>10}", "sec", "bodies", "awake", "pct", "maxspeed");
+    for quiet in 0..1800u32 {
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        tick += 1;
+        if quiet % 120 == 0 {
+            let s = city.stats();
+            let pct = if s.chunk_bodies > 0 {
+                100 * s.awake_chunk_bodies / s.chunk_bodies
+            } else {
+                0
+            };
+            println!(
+                "{:>6} {:>8} {:>8} {:>5}% {:>10.2}",
+                quiet / 60,
+                s.chunk_bodies,
+                s.awake_chunk_bodies,
+                pct,
+                s.max_body_speed
+            );
+        }
+    }
+
     let stats = city.stats();
     println!("\n=== full demolition ===");
     println!("bodies (peak)  {peak_bodies}");
