@@ -120,6 +120,23 @@ const REST_EVAL_STRIDE: u32 = 8;
 /// ceiling admits, so the selection still has room to choose.
 const MAX_EVAL_PER_CLIENT: usize = 1200;
 
+/// Candidates each client may evaluate per send.
+///
+/// VIBE_CITY_MAX_EVAL overrides it; 0 means unlimited, which streams every
+/// body that wants syncing and lets the byte ceiling be the only limit. That
+/// is a diagnostic setting: it answers "what does perfect cost" without the
+/// priority function in the way.
+fn max_eval_per_client() -> usize {
+    static VALUE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *VALUE.get_or_init(|| {
+        match std::env::var("VIBE_CITY_MAX_EVAL").ok().and_then(|v| v.parse::<usize>().ok()) {
+            Some(0) => usize::MAX,
+            Some(limit) => limit,
+            None => MAX_EVAL_PER_CLIENT,
+        }
+    })
+}
+
 /// One shared (client-independent) candidate produced by `encode_send`.
 #[derive(Clone, Debug)]
 pub struct SharedRecord {
@@ -506,9 +523,10 @@ impl ChunkStreamEncoder {
         // Only the prefix clients actually read needs to be in order, so
         // partition to it in O(n) and sort that -- a full sort of every body
         // was costing more in the shared phase than the per-client saving.
-        if eval_order.len() > MAX_EVAL_PER_CLIENT {
-            eval_order.select_nth_unstable_by(MAX_EVAL_PER_CLIENT, ranking);
-            eval_order.truncate(MAX_EVAL_PER_CLIENT);
+        let eval_cap = max_eval_per_client();
+        if eval_order.len() > eval_cap {
+            eval_order.select_nth_unstable_by(eval_cap, ranking);
+            eval_order.truncate(eval_cap);
         }
         eval_order.sort_unstable_by(ranking);
 
@@ -542,7 +560,7 @@ impl ChunkStreamEncoder {
         // to fit. The cap keeps the top candidates by client-independent
         // newsworthiness and is generous enough that per-client interest still
         // has real choice among them.
-        let eval_limit = shared.eval_order.len().min(MAX_EVAL_PER_CLIENT);
+        let eval_limit = shared.eval_order.len().min(max_eval_per_client());
         for &index in shared.eval_order.iter().take(eval_limit) {
             let shared_record = &shared.records[index];
             let entity = shared_record.record.body_entity;

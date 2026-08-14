@@ -52,6 +52,14 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+    define: {
+      // Build stamp so a stale page is visible in a screenshot. The client is
+      // hot-reloaded independently of the server, so "which code is running"
+      // has two answers and both need to be on screen.
+      __CLIENT_BUILD__: JSON.stringify(
+        new Date().toISOString().slice(11, 19),
+      ),
+    },
     optimizeDeps: {
       exclude: ['vibe-land-shared'],
     },

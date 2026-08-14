@@ -584,6 +584,12 @@ struct PlayerStatsSnapshot {
 struct MatchStatsSnapshot {
     id: String,
     scenario_tag: String,
+    /// When this binary was built and when this process started, so a
+    /// screenshot can be told apart from a stale one. Reading a metric off a
+    /// server that predates the change being tested has wasted real time in
+    /// this project more than once.
+    server_build: String,
+    server_started: String,
     physics_backend: String,
     physics_gpu_required: bool,
     physics_gpu_active: bool,
@@ -1038,6 +1044,41 @@ async fn match_stats_handler(
 
 /// Request an undamaged city for this match. Applied by the match loop on its
 /// next tick, so this returns "accepted", not "done".
+/// When this binary was built, from its own file mtime -- no build script or
+/// codegen needed, and it cannot drift from the artefact actually running.
+fn server_build_stamp() -> String {
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP
+        .get_or_init(|| {
+            std::env::current_exe()
+                .and_then(|path| std::fs::metadata(path))
+                .and_then(|meta| meta.modified())
+                .map(format_stamp)
+                .unwrap_or_else(|_| "unknown".to_string())
+        })
+        .clone()
+}
+
+/// When this process started. Distinct from the build stamp: a restart on an
+/// unchanged binary resets the world without changing the code.
+fn server_started_stamp() -> String {
+    static STAMP: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    STAMP
+        .get_or_init(|| format_stamp(std::time::SystemTime::now()))
+        .clone()
+}
+
+/// `HH:MM:SS` in UTC. Enough to spot a stale artefact in a screenshot; a full
+/// date would not fit the overlay and is never the question being asked.
+fn format_stamp(time: std::time::SystemTime) -> String {
+    let secs = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let day = secs % 86_400;
+    format!("{:02}:{:02}:{:02}", day / 3600, (day % 3600) / 60, day % 60)
+}
+
 async fn city_reset_handler(
     Path(match_id): Path<String>,
     State(state): State<SharedAppState>,
@@ -2603,6 +2644,8 @@ impl MatchState {
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
+            server_build: server_build_stamp(),
+            server_started: server_started_stamp(),
             physics_backend: self.physics.backend.name().to_string(),
             physics_gpu_required: self.physics.capabilities.gpu_required,
             physics_gpu_active: physics_health.gpu_active,

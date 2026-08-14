@@ -45,6 +45,8 @@ interface CityServerStats {
 }
 
 interface MatchStats {
+  server_build?: string;
+  server_started?: string;
   server_tick: number;
   player_count: number;
   physics_backend: string;
@@ -54,6 +56,9 @@ interface MatchStats {
   timings?: { total_ms?: { avg?: number; p95?: number; max?: number } };
   city?: CityServerStats;
 }
+
+declare const __CLIENT_BUILD__: string;
+const CLIENT_BUILD = typeof __CLIENT_BUILD__ === 'string' ? __CLIENT_BUILD__ : 'dev';
 
 const SIM_HZ = 60;
 const TICK_BUDGET_MS = 1000 / SIM_HZ;
@@ -295,6 +300,23 @@ export function CityStatsOverlay({
                 ? 'RESET FAILED'
                 : 'RESET CITY'}
         </button>
+      </div>
+
+      {/* Which code is actually running. The client hot-reloads and the
+          server restarts independently, so a screenshot without both stamps
+          cannot be dated -- and reading a metric off a stale build has cost
+          this project real time more than once. */}
+      <div style={{ ...row, opacity: 0.75, marginTop: 4 }}>
+        <span>build srv/cli</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {`${server?.server_build ?? '?'} / ${CLIENT_BUILD}`}
+        </span>
+      </div>
+      <div style={{ ...row, opacity: 0.75 }}>
+        <span>srv started</span>
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+          {server?.server_started ?? '?'}
+        </span>
       </div>
 
       <div style={heading}>browser</div>

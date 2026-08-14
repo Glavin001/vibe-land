@@ -258,8 +258,18 @@ impl CityRuntime {
         config.send_interval_ticks = (sim_hz
             / u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ))
         .max(1);
-        config.client_ceiling_bytes =
-            usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND);
+        // VIBE_CITY_CEILING_BYTES overrides the per-client byte ceiling; 0
+        // removes it entirely. Removing it is a diagnostic, not a shipping
+        // setting: the ceiling is what keeps a client's downlink bounded when
+        // the world has more motion than any link can carry.
+        config.client_ceiling_bytes = match std::env::var("VIBE_CITY_CEILING_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            Some(0) => usize::MAX,
+            Some(bytes) => bytes,
+            None => usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND),
+        };
         config.interest.proximity_meters = 120.0;
         let encoder = ChunkStreamEncoder::new(&manifest, config);
         let structure_centers = manifest
