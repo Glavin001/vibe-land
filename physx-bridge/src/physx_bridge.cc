@@ -431,8 +431,23 @@ public:
           const FfiVec3 position = from_px(point.position);
           const FfiVec3 impulse = from_px(point.impulse);
           const FfiVec3 neg{-impulse.x, -impulse.y, -impulse.z};
-          destruction_->route_contact_shape(pair.shapes[0], position, impulse);
-          destruction_->route_contact_shape(pair.shapes[1], position, neg);
+          // Reported contacts feed damage to the stress solver but never wake
+          // sleeping bodies. Measured on a demolished city, every waking
+          // variant -- including waking only on eNOTIFY_THRESHOLD_FORCE_FOUND
+          // -- held 94% of 14k bodies awake indefinitely, because a rubble
+          // pile continuously breaks and reforms contacts, so even "new"
+          // events fire somewhere every tick and each wake re-opens the whole
+          // contact island. With contact wakes off the same pile is 100%
+          // asleep in 8 seconds.
+          //
+          // Nothing is lost by not waking here: PhysX itself wakes a sleeping
+          // body struck by a moving one, deliberate damage goes through
+          // wake_bodies_near, and a fracture wakes the bodies it creates. The
+          // queued load still reaches the solver either way.
+          destruction_->route_contact_shape(pair.shapes[0], position, impulse,
+                                            /*wake=*/false);
+          destruction_->route_contact_shape(pair.shapes[1], position, neg,
+                                            /*wake=*/false);
         }
 #endif
       }

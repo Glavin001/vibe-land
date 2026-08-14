@@ -113,12 +113,19 @@ bool speculative_ccd_enabled() {
 }
 
 /// VIBE_CITY_DEPEN_VELOCITY: max depenetration velocity; 0 = PhysX default.
+///
+/// 1.0 m/s, deliberately below the sleep threshold's ~2 m/s equivalent. A
+/// depenetration correction is the solver fixing overlap that never
+/// physically happened, and at 3.0 it ejected bodies fast enough to reset
+/// sleep progress for their whole contact island -- the settle curve showed a
+/// resting pile spiking to 5 m/s every few seconds and never sleeping.
+/// Below the threshold, a correction can nudge but never counts as motion.
 float depenetration_velocity() {
   static const float value = [] {
     if (const char *raw = std::getenv("VIBE_CITY_DEPEN_VELOCITY")) {
       return static_cast<float>(std::atof(raw));
     }
-    return 3.0f;
+    return 1.0f;
   }();
   return value;
 }
@@ -1182,7 +1189,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
 }
 
 void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
-                                             FfiVec3 impulse) {
+                                             FfiVec3 impulse, bool wake) {
   if (shape == nullptr) {
     return;
   }
@@ -1194,7 +1201,12 @@ void DestructionManager::route_contact_shape(PxShape *shape, FfiVec3 position,
   if (slot == nullptr || slot->dest == nullptr) {
     return;
   }
-  slot->dest->queueContact(*shape, to_px(position), to_px(impulse));
+  ExtStressPhysXContact contact;
+  contact.shape = shape;
+  contact.worldPosition = to_px(position);
+  contact.worldImpulse = to_px(impulse);
+  contact.wake = wake;
+  slot->dest->queueContact(contact);
 }
 
 void DestructionManager::queue_chunk_damage(std::uint32_t structure_id,

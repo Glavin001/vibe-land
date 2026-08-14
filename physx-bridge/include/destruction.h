@@ -124,7 +124,7 @@ public:
 
   /// Route a PhysX contact pair into the owning destructible(s).
   void route_contact_shape(physx::PxShape *shape, FfiVec3 position,
-                           FfiVec3 impulse);
+                           FfiVec3 impulse, bool wake);
 
   rust::Vec<FfiBrokenBondEvent> take_broken_bonds();
   rust::Vec<FfiChunkMigrationEvent> take_chunk_migrations();
