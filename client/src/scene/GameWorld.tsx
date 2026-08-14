@@ -112,6 +112,7 @@ import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
 import { CityChunksLayer } from './CityChunksLayer';
 import { cycleWeaponMode, getWeaponMode } from './weaponMode';
+import { WEAPON_CANNON } from '../net/sharedConstants';
 
 const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
@@ -2186,18 +2187,22 @@ export function GameWorld({
             nearestRenderedBodyRadiusM: nearestRenderedCandidate?.radius ?? null,
           },
         );
-        pushActiveShotTrace(
-          activeShotTracesRef.current,
-          createLocalShotTrace(
-            nextShotTraceIdRef.current++,
-            client.playerId,
-            camera,
-            now,
-            fireDir,
-            remoteHits,
-            sceneHit?.toi ?? null,
-          ),
-        );
+        // The cannon fires a projectile the client can see; a tracer would be
+        // a second, imaginary shot alongside it.
+        if (getWeaponMode() !== WEAPON_CANNON) {
+          pushActiveShotTrace(
+            activeShotTracesRef.current,
+            createLocalShotTrace(
+              nextShotTraceIdRef.current++,
+              client.playerId,
+              camera,
+              now,
+              fireDir,
+              remoteHits,
+              sceneHit?.toi ?? null,
+            ),
+          );
+        }
         client.sendFire({
           seq: prediction.peekNextInputSeq(),
           shotId,

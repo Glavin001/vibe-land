@@ -761,10 +761,6 @@ enum OutboundDelivery {
     StrictDrop,
 }
 
-/// Entity ids for cannonballs live above anything the world document or the
-/// city allocates, so a ball can never collide with a real entity's id.
-const CANNONBALL_ENTITY_BASE: u32 = 0x7000_0000;
-
 struct QueuedShot {
     player_id: u32,
     cmd: FireCmd,
@@ -782,9 +778,14 @@ struct MatchState {
     history: LagCompHistory,
     players: HashMap<u32, PlayerRuntime>,
     queued_shots: Vec<QueuedShot>,
-    /// Live cannonballs and the tick each was fired on, for retirement.
+    /// Live cannonballs and the tick each was fired on.
+    ///
+    /// Not yet retired: the arena exposes no despawn for dynamic bodies, and
+    /// adding one across both physics backends is more surface than this
+    /// feature warrants today. Balls therefore accumulate for the life of a
+    /// match -- one per shot, so a long session leaves a field of them.
     live_cannonballs: Vec<(u32, u32)>,
-    next_cannonball_entity: u32,
+
     queued_melees: Vec<QueuedMelee>,
     server_tick: u32,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
@@ -1510,7 +1511,7 @@ async fn run_match_loop(
         players: HashMap::new(),
         queued_shots: Vec::new(),
         live_cannonballs: Vec::new(),
-        next_cannonball_entity: CANNONBALL_ENTITY_BASE,
+
         queued_melees: Vec::new(),
         server_tick: 0,
         stats_tx,
@@ -2283,7 +2284,6 @@ impl MatchState {
         }
 
         self.route_city_shots();
-        self.retire_cannonballs();
 
         let hitscan_started = Instant::now();
         self.process_hitscan(server_time_ms);
@@ -2322,70 +2322,35 @@ impl MatchState {
     /// a falling slab's impact into the stress solver. There is no bespoke
     /// damage rule, which is what makes it read as a physical interaction
     /// rather than a scripted one.
-    #[cfg(feature = "destruction")]
+    ///
+    /// Spawned through the arena's dynamic-body path rather than straight into
+    /// the PhysX world: that path registers the body for replication, and a
+    /// projectile the client cannot see is not a projectile.
     fn spawn_cannonball(&mut self, eye: glam::Vec3, direction: glam::Vec3) {
         use vibe_land_shared::constants as sc;
         let dir = direction.normalize_or_zero();
         if dir == glam::Vec3::ZERO {
             return;
         }
-        let Some(world) = self.arena.physx_world_mut() else {
-            return;
-        };
-        let entity_id = self.next_cannonball_entity;
-        self.next_cannonball_entity = self.next_cannonball_entity.wrapping_add(1).max(CANNONBALL_ENTITY_BASE);
-        // Spawn clear of the player's own capsule, or the ball resolves its
-        // overlap with the shooter and launches them instead.
-        let spawn = eye + dir * (sc::CANNON_RADIUS_M + 1.2);
-        if world
-            .add_dynamic_sphere(vibe_land_physx_bridge::DynamicSphereDesc {
-                entity_id,
-                user_id: 0,
-                pose: vibe_land_physx_bridge::Pose {
-                    position: vibe_land_physx_bridge::Vec3::new(spawn.x, spawn.y, spawn.z),
-                    rotation: vibe_land_physx_bridge::Quat::IDENTITY,
-                },
-                radius: sc::CANNON_RADIUS_M,
-                mass: sc::CANNON_MASS_KG,
-                collision_group: vibe_land_destruction::runtime::GROUP_DYNAMIC,
-                collision_mask: vibe_land_destruction::runtime::CHUNK_COLLISION_MASK,
-            })
-            .is_err()
-        {
-            return;
-        }
-        // Impulse = mass * velocity: the muzzle speed is a property of the
-        // weapon, and the mass is what turns it into a building-moving blow.
-        let impulse = dir * (sc::CANNON_MUZZLE_SPEED_MPS * sc::CANNON_MASS_KG);
-        let _ = world.apply_impulse(
-            entity_id,
-            vibe_land_physx_bridge::Vec3::new(impulse.x, impulse.y, impulse.z),
+        // Clear of the shooter's own capsule: spawned at the eye, the ball
+        // resolves its overlap with the player and launches them instead.
+        let spawn = eye + dir * (sc::CANNON_RADIUS_M + 1.5);
+        let body_id = self.arena.spawn_dynamic_ball(
+            nalgebra::Vector3::new(spawn.x, spawn.y, spawn.z),
+            sc::CANNON_RADIUS_M,
         );
-        self.live_cannonballs.push((entity_id, self.server_tick));
+        // Impulse = mass x velocity. The arena sizes the ball's mass from its
+        // radius, so the muzzle speed is expressed against that rather than
+        // against the authored mass.
+        let mass = (4.0 / 3.0) * std::f32::consts::PI * sc::CANNON_RADIUS_M.powi(3);
+        let impulse = dir * (sc::CANNON_MUZZLE_SPEED_MPS * mass.max(0.1));
+        self.arena.apply_dynamic_body_impulse(
+            body_id,
+            [impulse.x, impulse.y, impulse.z],
+            [spawn.x, spawn.y, spawn.z],
+        );
+        self.live_cannonballs.push((body_id, self.server_tick));
     }
-
-    #[cfg(not(feature = "destruction"))]
-    fn spawn_cannonball(&mut self, _eye: glam::Vec3, _direction: glam::Vec3) {}
-
-    /// Remove spent ordnance so a long match does not accumulate it.
-    #[cfg(feature = "destruction")]
-    fn retire_cannonballs(&mut self) {
-        use vibe_land_shared::constants as sc;
-        let tick = self.server_tick;
-        let Some(world) = self.arena.physx_world_mut() else {
-            return;
-        };
-        self.live_cannonballs.retain(|(entity_id, fired_tick)| {
-            if tick.saturating_sub(*fired_tick) < sc::CANNON_LIFETIME_TICKS {
-                return true;
-            }
-            let _ = world.remove_actor(*entity_id);
-            false
-        });
-    }
-
-    #[cfg(not(feature = "destruction"))]
-    fn retire_cannonballs(&mut self) {}
 
     /// `process_hitscan` drains them (players/vehicles still take the same
     /// hitscan resolution afterwards).
@@ -3283,6 +3248,11 @@ impl MatchState {
     fn process_hitscan(&mut self, server_time_ms: u32) {
         let shots = std::mem::take(&mut self.queued_shots);
         for queued in shots {
+            // The cannon already spawned a projectile in route_city_shots.
+            // Letting it also resolve a ray would fire both weapons at once.
+            if queued.cmd.weapon == vibe_land_shared::constants::WEAPON_CANNON {
+                continue;
+            }
             let can_process = {
                 let Some(runtime) = self.players.get_mut(&queued.player_id) else {
                     continue;
