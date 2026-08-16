@@ -84,12 +84,23 @@ export function getActiveSession(): ActiveSession | null {
  * lives inside the render canvas, far from the overlay that displays it.
  */
 let matchStats: unknown = null;
+/**
+ * Stats get their own subscribers. They arrive every second during play, and
+ * on the shared list that re-rendered the whole app once a second -- a real
+ * cost on a phone already busy drawing a collapsing city, to update one panel.
+ */
+const statsListeners = new Set<() => void>();
 
 export function setMatchStats(stats: unknown): void {
   matchStats = stats;
-  for (const listener of listeners) listener();
+  for (const listener of statsListeners) listener();
 }
 
 export function getMatchStats(): unknown {
   return matchStats;
+}
+
+export function subscribeMatchStats(listener: () => void): () => void {
+  statsListeners.add(listener);
+  return () => statsListeners.delete(listener);
 }

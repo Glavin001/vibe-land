@@ -136,7 +136,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
   );
 }
 
-import { getMatchStats, subscribeConnectPhase } from '../app/connectPhase';
+import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 
 export function CityStatsOverlay({
   matchId,
@@ -188,7 +188,7 @@ export function CityStatsOverlay({
   // Stats pushed over the session describe the server actually being played
   // on, so they win. Polling remains for older servers that do not send them.
   const pushed = useSyncExternalStore(
-    subscribeConnectPhase,
+    subscribeMatchStats,
     getMatchStats,
     getMatchStats,
   ) as MatchStats | null;
