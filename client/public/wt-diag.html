@@ -67,6 +67,19 @@ const describe = (error) =>
 const results = {};
 
 (async function run() {
+  // If the previous load died mid-connect -- an iOS memory reload takes the
+  // console with it -- the game left a note behind.
+  try {
+    const crumb = localStorage.getItem('vl-connect-breadcrumb');
+    if (crumb) {
+      const parsed = JSON.parse(crumb);
+      row('Previous session ended mid-connect', 'warn',
+        'phase: ' + parsed.phase +
+        (parsed.heapMb != null ? '\nJS heap at the time: ' + parsed.heapMb + ' MB' : '') +
+        '\nat: ' + parsed.at);
+    }
+  } catch (_) { /* nothing recorded */ }
+
   // 1. What the engine offers. On iOS every browser is WebKit, so this answers
   //    "is WebTransport even possible here" independently of our server.
   const hasWT = typeof window.WebTransport !== 'undefined';

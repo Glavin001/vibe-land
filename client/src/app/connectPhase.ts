@@ -23,10 +23,51 @@ export type ConnectPhase =
 let current: ConnectPhase = null;
 const listeners = new Set<() => void>();
 
+const BREADCRUMB_KEY = 'vl-connect-breadcrumb';
+
+/**
+ * A crash on a phone takes the console with it: iOS reloads the tab on memory
+ * pressure and everything logged is gone, which is why an OOM and a hang look
+ * identical from the outside. The current phase is therefore mirrored into
+ * localStorage, so the *next* load can report what the previous one died
+ * doing. Cleared once a session is established.
+ */
+function leaveBreadcrumb(phase: ConnectPhase): void {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    if (phase === null) {
+      storage.removeItem(BREADCRUMB_KEY);
+      return;
+    }
+    const memory = (performance as { memory?: { usedJSHeapSize: number } }).memory;
+    storage.setItem(
+      BREADCRUMB_KEY,
+      JSON.stringify({
+        phase,
+        at: new Date().toISOString(),
+        heapMb: memory ? Math.round(memory.usedJSHeapSize / 1048576) : null,
+      }),
+    );
+  } catch {
+    /* private browsing or a full quota -- diagnostics must never break the game */
+  }
+}
+
 export function setConnectPhase(phase: ConnectPhase): void {
   if (current === phase) return;
   current = phase;
+  leaveBreadcrumb(phase);
   for (const listener of listeners) listener();
+}
+
+/** What the previous page load was doing when it stopped, if it did not finish. */
+export function readConnectBreadcrumb(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(BREADCRUMB_KEY) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function getConnectPhase(): ConnectPhase {
