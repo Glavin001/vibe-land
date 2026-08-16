@@ -47,6 +47,14 @@ pub const PKT_CITY_CHUNKS: u8 = 119;
 pub const PKT_CITY_TOPOLOGY: u8 = 120;
 pub const PKT_CITY_BASELINE: u8 = 121;
 pub const PKT_CITY_BOOTSTRAP: u8 = 122;
+/// The city manifest itself, gzipped, pushed on join.
+///
+/// Clients used to fetch this over HTTP from the game server. That works only
+/// when the page and the server share an origin: a rented GPU box serves plain
+/// HTTP on a random port, which an HTTPS page may not fetch, and its
+/// WebTransport certificate is self-signed so an HTTPS fetch is refused too.
+/// Sending it down the session that is already open sidesteps all of it.
+pub const PKT_CITY_MANIFEST: u8 = 123;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 pub const CITY_CHUNK_STREAM_HZ: u16 = 30;
 pub const CITY_BASELINE_INTERVAL_MS: u16 = 1000;

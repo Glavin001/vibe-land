@@ -3,6 +3,7 @@ mod city;
 #[cfg(all(test, feature = "destruction"))]
 mod city_bench;
 mod demo_world;
+mod heartbeat;
 mod lag_comp;
 mod movement;
 #[cfg(feature = "physx-gpu")]
@@ -36,7 +37,6 @@ use axum::{
 use bytes::BufMut;
 use futures_util::{sink::SinkExt, stream::StreamExt, FutureExt};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, RwLock as AsyncRwLock};
 use tracing::{error, info, warn};
 use vibe_land_shared::constants::{
@@ -80,6 +80,12 @@ const RESPAWN_DELAY_MS: u32 = 3_000;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
 const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 64;
+/// A session that opens a stream and then says nothing holds a task and a QUIC
+/// stream open; drop it rather than letting it accumulate.
+const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CLIENT_HELLO_BYTES: usize = 4096;
+/// Client uplink packets are inputs and commands -- tens of bytes, not frames.
+const MAX_CLIENT_STREAM_PACKET_BYTES: usize = 8192;
 const PLAYER_HANDLE_REUSE_COOLDOWN_TICKS: u32 = SIM_HZ as u32 * 10;
 const PLAYER_ROSTER_SYNC_INTERVAL_TICKS: u32 = SIM_HZ as u32 * 2;
 const COLD_VEHICLE_REFRESH_TICKS: u32 = SIM_HZ as u32 / 2;
@@ -948,6 +954,7 @@ async fn main() -> Result<()> {
         });
     }
 
+    let heartbeat_state = state.inner.clone();
     let app = Router::new()
         .route("/healthz", get(health_handler))
         .route("/session-config", get(session_config_handler))
@@ -964,6 +971,14 @@ async fn main() -> Result<()> {
         .parse()?;
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    // Both listeners are up, so the first beat can truthfully claim the server
+    // is reachable -- that beat is what promotes this box to READY.
+    match heartbeat::HeartbeatConfig::from_env() {
+        Some(config) => heartbeat::spawn(heartbeat_state, config),
+        None => info!("heartbeat disabled: CONTROL_PLANE_URL/SERVER_DO_ID/HEARTBEAT_TOKEN not set"),
+    }
+
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -975,20 +990,33 @@ struct HealthResponse {
     physics_gpu_required: bool,
     sim_hz: u16,
     snapshot_hz: u16,
+    /// Load, so a container smoke test and the Docker HEALTHCHECK can tell
+    /// "listening" apart from "listening and actually running matches".
+    active_matches: u32,
+    players: u32,
 }
 
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
+    let (active_matches, players) = heartbeat::fleet_stats(&state.inner).await;
     Json(HealthResponse {
         status: "ok",
         physics_backend: state.inner.physics.backend.name(),
         physics_gpu_required: state.inner.physics.capabilities.gpu_required,
         sim_hz: state.inner.physics.sim_hz(),
         snapshot_hz: state.inner.physics.snapshot_hz(),
+        active_matches,
+        players,
     })
 }
 
 fn load_repo_env() {
     let repo_env = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.env");
+    // The path is baked in at compile time, so on a deployed box it points at
+    // the *builder's* checkout and will never exist. Returning quietly keeps
+    // container logs free of a warning that looks like a misconfiguration.
+    if !repo_env.exists() {
+        return;
+    }
     match dotenvy::from_path(&repo_env) {
         Ok(()) => info!(path = %repo_env.display(), "loaded repo .env"),
         Err(err) => warn!(path = %repo_env.display(), error = %err, "failed to load repo .env"),
@@ -1147,15 +1175,29 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
     // Accept the client's first bidi stream which carries the framed ClientHello
     let (mut send_stream, mut recv_stream) = connection.accept_bi().await?;
 
-    // Read all bytes from the stream (client closes its write side after sending ClientHello)
-    let mut raw = Vec::new();
-    recv_stream.read_to_end(&mut raw).await?;
-
-    // Strip 4-byte LE length prefix from frameReliablePacket
-    anyhow::ensure!(raw.len() >= 4, "ClientHello too short");
-    let payload_len = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
-    anyhow::ensure!(raw.len() >= 4 + payload_len, "ClientHello truncated");
-    let hello = decode_client_hello(&raw[4..4 + payload_len])?;
+    // Read exactly the framed ClientHello rather than reading to end-of-stream.
+    //
+    // Reading to end waits for the client's FIN, which makes the handshake
+    // depend on every browser's WebTransport implementation delivering that
+    // promptly. When one does not, this blocks forever: no Welcome is sent, no
+    // error is raised, and the player sits on "Connecting..." with nothing in
+    // the log to explain it. The frame is length-prefixed, so the exact size is
+    // known up front and there is no reason to wait for a close.
+    let payload = tokio::time::timeout(CLIENT_HELLO_TIMEOUT, async {
+        let mut length = [0u8; 4];
+        recv_stream.read_exact(&mut length).await?;
+        let payload_len = u32::from_le_bytes(length) as usize;
+        anyhow::ensure!(
+            payload_len > 0 && payload_len <= MAX_CLIENT_HELLO_BYTES,
+            "ClientHello length out of range: {payload_len}"
+        );
+        let mut payload = vec![0u8; payload_len];
+        recv_stream.read_exact(&mut payload).await?;
+        Ok::<_, anyhow::Error>(payload)
+    })
+    .await
+    .context("timed out waiting for ClientHello")??;
+    let hello = decode_client_hello(&payload)?;
     if app.physics.backend == vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu {
         anyhow::ensure!(
             hello.protocol_version >= vibe_land_shared::constants::PROTOCOL_VERSION,
@@ -1295,7 +1337,55 @@ async fn handle_wt_session(app: Arc<AppState>, connection: Connection) -> Result
         info!(player_id, "WT reader task exited");
     });
 
+    // Second inbound path: the same control stream the ClientHello arrived on,
+    // carrying length-prefixed client packets.
+    //
+    // Safari can receive WebTransport datagrams but cannot send them
+    // (`datagrams.writable` is undefined), which used to demote those sessions
+    // all the way to WebSocket -- surrendering UDP in both directions to work
+    // around a limit that only affects the client's tiny uplink. Reading input
+    // here lets the expensive server-to-client stream stay on datagrams.
+    let tx_stream = handle.tx.clone();
+    let stream_telemetry = handle.telemetry.clone();
+    let stream_reader = tokio::spawn(async move {
+        loop {
+            let mut length = [0u8; 4];
+            if recv_stream.read_exact(&mut length).await.is_err() {
+                break; // clean close, or the peer never used this path
+            }
+            let payload_len = u32::from_le_bytes(length) as usize;
+            if payload_len == 0 || payload_len > MAX_CLIENT_STREAM_PACKET_BYTES {
+                warn!(player_id, payload_len, "closing WT uplink: implausible frame length");
+                break;
+            }
+            let mut payload = vec![0u8; payload_len];
+            if recv_stream.read_exact(&mut payload).await.is_err() {
+                break;
+            }
+            stream_telemetry.observe_inbound(payload.len());
+            match decode_client_datagram(&payload) {
+                Ok(dgram) => {
+                    let packet = client_datagram_to_packet(dgram);
+                    if tx_stream
+                        .send(MatchEvent::Packet { player_id, packet })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(err) => {
+                    stream_telemetry.observe_malformed_packet();
+                    warn!(player_id, error = ?err, "dropping malformed WT stream packet");
+                }
+            }
+        }
+        info!(player_id, "WT stream uplink reader exited");
+    });
+
+    // The datagram reader owns disconnect: it is the path every client has, and
+    // the stream reader ending simply means this client never needed it.
     let _ = tokio::join!(writer, reader);
+    stream_reader.abort();
     Ok(())
 }
 
@@ -1796,6 +1886,14 @@ impl MatchState {
 
                 if let Some(city) = self.city.as_mut() {
                     city.add_client(u64::from(conn.player_id));
+                    // Manifest first: it describes the geometry every later city
+                    // packet refers to, so a client cannot use bootstrap without it.
+                    if let Some((_, _, gzipped)) = city::manifest_asset() {
+                        let mut packet = Vec::with_capacity(gzipped.len() + 1);
+                        packet.push(vibe_land_shared::constants::PKT_CITY_MANIFEST);
+                        packet.extend_from_slice(gzipped);
+                        let _ = try_queue_packet(&conn.tx, packet, &self.io);
+                    }
                     let _ = try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
                 }
 
