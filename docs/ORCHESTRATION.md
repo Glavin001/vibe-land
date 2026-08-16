@@ -160,12 +160,34 @@ Worker vars, all in `control-plane/wrangler.jsonc`:
 - **No join tickets yet.** Anyone who can reach a box's UDP port can connect to
   it; `/join` is the only discovery path but it is not a credential. The server
   needs ticket verification before this is public.
-- **City manifests do not load on a rented box.** The manifest is fetched over
-  the server's HTTP port, which the browser cannot reach through a self-signed
-  origin. Local development works via the Vite proxy. The fix is to deliver the
-  manifest over the WebTransport stream.
 - **One box at a time.** A second player arriving during a cold start waits for
   the first player's box rather than triggering a second rental.
 - **`vast.ts` is written against the v0 API from documentation.** The mock
   mirrors it exactly, but the shapes need confirming against the real
   marketplace before the first production deploy.
+- **No image has been built yet.** A Vast instance is itself an unprivileged
+  container, so Docker can start its daemon here but cannot unpack a layer;
+  the first build has to happen in CI or on another host.
+
+## Verified on a phone
+
+The full path -- `/join`, a box rented on demand, a browser connecting straight
+to it over WebTransport, a GPU destruction city streaming -- runs on iOS Safari
+over both WiFi and cellular, with the manifest and per-match stats arriving on
+the session rather than over HTTP.
+
+Getting there turned up three things worth remembering, all documented in
+`NETCODE_NOTES.md`:
+
+- Safari can receive WebTransport datagrams but not send them, which silently
+  demoted every iPhone to WebSocket while looking perfectly healthy.
+- A manifest fetched over HTTP cannot work on a rented box, so a match would
+  connect and simulate while rendering nothing.
+- Endpoint mistakes look like browser crashes. A control plane advertising a
+  loopback address sent the phone to dial itself; the connection failed, the
+  session dropped back to the join screen, and it read as the page reloading.
+
+`client/public/wt-diag.html` probes each capability separately on a device with
+no devtools, and the client records the connect phase it is in -- including a
+localStorage breadcrumb that survives an iOS memory reload. Both exist because
+reasoning about the phone from here was consistently wrong.
