@@ -1,0 +1,12 @@
+# Local development secrets for `wrangler dev`.
+# Copy to `.dev.vars` (gitignored) and edit. These are NOT production values.
+VAST_API_KEY=dev-vast-key
+HEARTBEAT_TOKEN=dev-heartbeat-token
+ADMIN_TOKEN=dev-admin-token
+
+# Point the fleet at the local mock marketplace instead of the real one.
+VAST_API_BASE=http://127.0.0.1:5175
+
+# Where game servers should send their heartbeats. Must be reachable FROM the
+# game server, so it is the public address of `wrangler dev`, not localhost.
+CONTROL_PLANE_URL=http://127.0.0.1:9001

@@ -1,0 +1,65 @@
+# Rebuild the toolchain image (CUDA + PhysX + Blast).
+#
+# Manual on purpose: it takes tens of minutes and only needs to change when the
+# PhysX SDK, the Blast fork, or the Rust toolchain moves. Everyday deploys reuse
+# whatever tag `BUILDER_IMAGE_TAG` points at.
+name: builder-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      physx_ref:
+        description: PhysX git ref to build
+        default: ovphysx-0.5.10
+      blast_ref:
+        description: blast-stress-solver git ref
+        default: main
+      tag:
+        description: Tag for the resulting builder image
+        default: cuda12.8-physx-ovphysx-5.5.1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The CUDA devel base plus a PhysX build needs far more than the ~14 GB a
+      # standard runner has free.
+      - name: Reclaim disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: true
+          docker-images: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.builder
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ inputs.tag }}
+          build-args: |
+            PHYSX_REF=${{ inputs.physx_ref }}
+            BLAST_REF=${{ inputs.blast_ref }}
+          # Blast is a private repo; a BuildKit secret keeps the token out of
+          # the image layers, unlike a build-arg.
+          secrets: |
+            gh_token=${{ secrets.BLAST_REPO_TOKEN }}
+
+      - name: Remind about the deploy pointer
+        run: |
+          echo "Set repository variable BUILDER_IMAGE_TAG=${{ inputs.tag }}"
+          echo "so deploy.yml builds against this image."

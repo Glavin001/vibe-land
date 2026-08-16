@@ -1,0 +1,21 @@
+{
+  "name": "vibe-land-control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "mock-vast": "node mock-vast/server.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@cloudflare/workers-types": "^5.20260815.1",
+    "typescript": "^5.6.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.123.0"
+  }
+}

@@ -9,9 +9,13 @@ inspiration/
 loadtest-results/
 benchmark-results/
 test-results/
+client/netlab/results/
 playwright-report/
 blob-report/
 logs/
 .vercel
 .env*.local
 .certs/
+dist/
+control-plane/.wrangler/
+control-plane/.dev.vars
