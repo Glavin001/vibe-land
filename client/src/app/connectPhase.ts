@@ -76,3 +76,20 @@ export function setActiveSession(session: ActiveSession | null): void {
 export function getActiveSession(): ActiveSession | null {
   return activeSession;
 }
+
+/**
+ * Latest per-match server telemetry, pushed over the session.
+ *
+ * Kept here rather than in React state because the runtime that receives it
+ * lives inside the render canvas, far from the overlay that displays it.
+ */
+let matchStats: unknown = null;
+
+export function setMatchStats(stats: unknown): void {
+  matchStats = stats;
+  for (const listener of listeners) listener();
+}
+
+export function getMatchStats(): unknown {
+  return matchStats;
+}

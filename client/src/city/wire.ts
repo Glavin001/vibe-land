@@ -10,6 +10,7 @@ import {
   PKT_CITY_RESYNC_REQUEST,
   PKT_CITY_MANIFEST,
   PKT_CITY_TOPOLOGY,
+  PKT_MATCH_STATS,
 } from '../net/sharedConstants';
 import type { Quat, Vec3 } from './vec';
 
@@ -486,12 +487,19 @@ export function encodeCityResyncRequest(lastTopoSeq: number): Uint8Array {
   return bytes;
 }
 
+/**
+ * Packets handed through as raw bytes rather than decoded as gameplay packets.
+ * Beyond city geometry this now carries the manifest and per-match telemetry,
+ * both of which travel on the session because a browser cannot fetch them from
+ * a rented box over HTTP.
+ */
 export function isCityPacketKind(kind: number): boolean {
   return (
     kind === PKT_CITY_CHUNKS ||
     kind === PKT_CITY_TOPOLOGY ||
     kind === PKT_CITY_BASELINE ||
     kind === PKT_CITY_BOOTSTRAP ||
-    kind === PKT_CITY_MANIFEST
+    kind === PKT_CITY_MANIFEST ||
+    kind === PKT_MATCH_STATS
   );
 }

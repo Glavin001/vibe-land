@@ -1,5 +1,5 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
-import { setActiveSession, setConnectPhase } from '../app/connectPhase';
+import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
@@ -39,7 +39,7 @@ import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredicto
 import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
 import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
 import { CityClient } from '../city/cityClient';
-import { PKT_CITY_MANIFEST } from '../net/sharedConstants';
+import { PKT_CITY_MANIFEST, PKT_MATCH_STATS } from '../net/sharedConstants';
 import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
 import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
 import {
@@ -1172,6 +1172,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.thinAuthoritative = usesThinAuthoritativeRuntime(sessionConfig);
     // A matchmade session runs on a box this page cannot reach over HTTP, so
     // its per-match stats are simply unavailable here.
+    setMatchStats(null);
     setActiveSession({
       matchId: this.matchId,
       statsBaseUrl: this.options.sessionConfig ? null : '',
@@ -1244,6 +1245,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
           }
         },
         onCityPacket: (bytes) => {
+          if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
+            try {
+              setMatchStats(JSON.parse(new TextDecoder().decode(bytes.subarray(1))));
+            } catch (error) {
+              console.warn('[stats] unreadable match stats packet', error);
+            }
+            return;
+          }
           if (bytes.length > 1 && bytes[0] === PKT_CITY_MANIFEST) {
             // The manifest describes the geometry every other city packet
             // refers to, so it is consumed here rather than buffered.

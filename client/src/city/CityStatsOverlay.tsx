@@ -11,7 +11,7 @@
 // 21-29 ms against a 16.67 ms budget with ~650 chunk bodies that never slept.
 // Without server numbers on screen that reads as "the game is laggy".
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
 interface CityServerStats {
@@ -136,6 +136,8 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
   );
 }
 
+import { getMatchStats, subscribeConnectPhase } from '../app/connectPhase';
+
 export function CityStatsOverlay({
   matchId,
   statsBaseUrl = '',
@@ -183,13 +185,26 @@ export function CityStatsOverlay({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Stats pushed over the session describe the server actually being played
+  // on, so they win. Polling remains for older servers that do not send them.
+  const pushed = useSyncExternalStore(
+    subscribeConnectPhase,
+    getMatchStats,
+    getMatchStats,
+  ) as MatchStats | null;
+
   useEffect(() => {
     if (!visible) return undefined;
+    if (pushed) {
+      setServer(pushed);
+      setServerError(null);
+      return undefined;
+    }
     if (statsBaseUrl === null) {
       // Better to say nothing than to report another server's simulation as
       // though it were this one.
       setServer(null);
-      setServerError('remote server — per-match stats not reachable from this page');
+      setServerError('waiting for stats from the server…');
       return undefined;
     }
     let cancelled = false;
@@ -214,7 +229,7 @@ export function CityStatsOverlay({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [matchId, statsBaseUrl, visible]);
+  }, [matchId, pushed, statsBaseUrl, visible]);
 
   // Touch devices have no F9, so the overlay needs a tap target to come back
   // from. It doubles as the hidden-state indicator: without it there is no

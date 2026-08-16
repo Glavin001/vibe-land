@@ -2936,6 +2936,23 @@ impl MatchState {
             }),
         };
 
+        // Same snapshot the HTTP endpoint serves, pushed to the players it
+        // describes. Reliable rather than datagram: it is ~1 Hz and being
+        // truncated by an MTU would make it unparseable.
+        if !self.players.is_empty() {
+            match serde_json::to_vec(&match_stats) {
+                Ok(json) => {
+                    let mut packet = Vec::with_capacity(json.len() + 1);
+                    packet.push(vibe_land_shared::constants::PKT_MATCH_STATS);
+                    packet.extend_from_slice(&json);
+                    for runtime in self.players.values() {
+                        let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+                    }
+                }
+                Err(err) => warn!(match_id = %self.id, error = ?err, "match stats serialize failed"),
+            }
+        }
+
         let global = {
             let mut registry = self
                 .stats_registry

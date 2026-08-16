@@ -58,6 +58,14 @@ export const PKT_CITY_BOOTSTRAP = 122;
 /// WebTransport certificate is self-signed so an HTTPS fetch is refused too.
 /// Sending it down the session that is already open sidesteps all of it.
 export const PKT_CITY_MANIFEST = 123;
+/// Per-match server telemetry as JSON, pushed roughly once a second.
+///
+/// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
+/// reach on a rented box for the same reason it cannot fetch the manifest.
+/// Sent on the session so the numbers describe the server actually being
+/// played on, rather than whichever one the page happens to share an origin
+/// with.
+export const PKT_MATCH_STATS = 124;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 export const CITY_CHUNK_STREAM_HZ = 30;
 export const CITY_BASELINE_INTERVAL_MS = 1000;
