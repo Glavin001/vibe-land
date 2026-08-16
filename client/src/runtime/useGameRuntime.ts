@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { isPracticeMode, type GameMode } from '../app/gameMode';
 import { defaultMatchIdForPath, resolveRequestedMatchId } from '../app/matchId';
-import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { backendFromOrigin, resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { joinServer, resolveControlPlane, toSessionConfig, type JoinProgress } from '../app/join';
 import type { DamageEventPacket, ShotFiredPacket } from '../net/protocol';
 import type { RenderBlock } from '../world/voxelWorld';
 import {
@@ -32,6 +33,9 @@ export function useGameRuntime(
       ),
     [],
   );
+  // Null unless a control plane is configured, in which case the server to
+  // play on is discovered at connect time instead of being baked into the build.
+  const controlPlane = useMemo(() => resolveControlPlane(window.location.search), []);
   const runtimeRef = useRef<GameRuntimeClient | null>(null);
   const onWelcomeRef = useRef(onWelcome);
   const onDisconnectRef = useRef(onDisconnect);
@@ -40,6 +44,7 @@ export function useGameRuntime(
   const onShotFiredRef = useRef(onShotFired);
   const [ready, setReady] = useState(false);
   const [renderBlocks, setRenderBlocks] = useState<RenderBlock[]>([]);
+  const [joinProgress, setJoinProgress] = useState<JoinProgress | null>(null);
 
   onWelcomeRef.current = onWelcome;
   onDisconnectRef.current = onDisconnect;
@@ -82,35 +87,75 @@ export function useGameRuntime(
       },
     };
 
-    const runtime = practiceMode
-      ? new LocalGameRuntime(callbacks, worldJson)
-      : new MultiplayerGameRuntime(
+    // Renting and booting a GPU box takes minutes, so the abort controller
+    // matters: unmounting mid-wait must stop the polling loop.
+    const joinAbort = new AbortController();
+
+    const buildRuntime = async (): Promise<GameRuntimeClient> => {
+      if (practiceMode) {
+        return new LocalGameRuntime(callbacks, worldJson);
+      }
+      if (!controlPlane) {
+        return new MultiplayerGameRuntime(
           callbacks,
           multiplayerBackend,
           multiplayerMatchId,
           predictionWorldJson,
           localRenderSmoothingEnabled,
         );
-    runtimeRef.current = runtime;
-
-    void runtime.connect().catch((error) => {
-      if (disposed) {
-        runtime.disconnect();
-        return;
       }
-      onDisconnectRef.current(error instanceof Error ? error.message : String(error));
-    });
+
+      setJoinProgress({ phase: 'SEARCHING', etaSeconds: 300, attempt: 0 });
+      const joined = await joinServer(controlPlane, {
+        signal: joinAbort.signal,
+        onProgress: (progress) => {
+          if (!disposed) setJoinProgress(progress);
+        },
+      });
+      if (!disposed) setJoinProgress(null);
+
+      const sessionConfig = toSessionConfig(joined);
+      return new MultiplayerGameRuntime(
+        callbacks,
+        backendFromOrigin(new URL(sessionConfig.url).origin),
+        joined.matchId,
+        predictionWorldJson,
+        localRenderSmoothingEnabled,
+        { sessionConfig },
+      );
+    };
+
+    let runtime: GameRuntimeClient | null = null;
+    void buildRuntime()
+      .then(async (built) => {
+        runtime = built;
+        if (disposed) {
+          built.disconnect();
+          return;
+        }
+        runtimeRef.current = built;
+        await built.connect();
+      })
+      .catch((error) => {
+        if (disposed) {
+          runtime?.disconnect();
+          return;
+        }
+        onDisconnectRef.current(error instanceof Error ? error.message : String(error));
+      });
 
     return () => {
       disposed = true;
-      runtime.disconnect();
-      if (runtimeRef.current === runtime) {
+      joinAbort.abort();
+      runtime?.disconnect();
+      if (runtime && runtimeRef.current === runtime) {
         runtimeRef.current = null;
       }
       setReady(false);
       setRenderBlocks([]);
     };
   }, [
+    controlPlane,
     localRenderSmoothingEnabled,
     mode,
     multiplayerBackend,
@@ -124,5 +169,7 @@ export function useGameRuntime(
     ready,
     renderBlocks,
     runtimeRef,
+    /** Non-null while waiting for the control plane to produce a server. */
+    joinProgress,
   };
 }
