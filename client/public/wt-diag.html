@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>vibe-land transport diagnostics</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 16px;
+    background: #11151c; color: #e6edf3;
+    font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  .sub { color: #8b98a5; font-size: 13px; margin-bottom: 16px; }
+  .row {
+    border: 1px solid #2a3038; border-left-width: 5px; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 10px; background: #171c24;
+  }
+  .row.pass { border-left-color: #3fb950; }
+  .row.fail { border-left-color: #f85149; }
+  .row.warn { border-left-color: #d29922; }
+  .row.pending { border-left-color: #6e7681; }
+  .label { font-weight: 700; }
+  .value { color: #b9c4cf; margin-top: 4px; word-break: break-word; }
+  .verdict {
+    margin-top: 18px; padding: 14px; border-radius: 6px;
+    background: #1c2430; border: 1px solid #30404f; font-size: 15px;
+  }
+  .verdict h2 { font-size: 15px; margin: 0 0 8px; }
+  code { color: #79c0ff; }
+</style>
+</head>
+<body>
+<h1>vibe-land transport diagnostics</h1>
+<div class="sub">Screenshot this whole page and send it back. No devtools needed.</div>
+<div id="out"></div>
+<div class="verdict" id="verdict"><h2>Verdict</h2><div id="verdict-body">running…</div></div>
+
+<script>
+const out = document.getElementById('out');
+const params = new URLSearchParams(location.search);
+const MATCH = params.get('match') || 'city-default';
+const TIMEOUT_MS = 10000;
+
+function row(label, state, value) {
+  const el = document.createElement('div');
+  el.className = 'row ' + state;
+  el.innerHTML = '<div class="label"></div><div class="value"></div>';
+  el.querySelector('.label').textContent = label;
+  el.querySelector('.value').textContent = value;
+  out.appendChild(el);
+  return el;
+}
+function update(el, state, value) {
+  el.className = 'row ' + state;
+  el.querySelector('.value').textContent = value;
+}
+const withTimeout = (promise, ms, what) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(what + ' timed out after ' + ms + 'ms')), ms)),
+  ]);
+const describe = (error) =>
+  (error && (error.name || 'Error')) + ': ' + String((error && error.message) || error).slice(0, 200);
+
+const results = {};
+
+(async function run() {
+  // 1. What the engine offers. On iOS every browser is WebKit, so this answers
+  //    "is WebTransport even possible here" independently of our server.
+  const hasWT = typeof window.WebTransport !== 'undefined';
+  results.hasWT = hasWT;
+  results.secure = window.isSecureContext;
+
+  row('WebTransport API', hasWT ? 'pass' : 'fail',
+      hasWT ? 'present' : 'MISSING — this browser cannot use WebTransport at all');
+  row('Secure context', window.isSecureContext ? 'pass' : 'fail',
+      window.isSecureContext + '   (page: ' + location.protocol + '//' + location.host + ')');
+  row('Browser', 'pending', navigator.userAgent);
+
+  // 2. Plain HTTP to the server, through whatever origin serves this page.
+  //    If this fails, nothing else can work and the cause is not TLS-specific.
+  const httpRow = row('HTTP /session-config', 'pending', 'requesting…');
+  let session = null;
+  try {
+    const response = await withTimeout(
+      fetch('/session-config?match_id=' + encodeURIComponent(MATCH)), TIMEOUT_MS, 'fetch');
+    session = await response.json();
+    results.http = true;
+    // ?wt=<url> aims the WebTransport probes at a specific endpoint instead of
+    // the one the server advertises -- useful when testing a box directly, or
+    // from a host that cannot reach its own public address.
+    const override = params.get('wt');
+    if (override) session.url = override;
+    // ?hash= must accompany ?wt= when aiming at a different server: the hash
+    // below came from whichever server answered the HTTP request, and pinning
+    // fails if it does not belong to the certificate that server presents.
+    const hashOverride = params.get('hash');
+    if (hashOverride) session.server_certificate_hash_hex = hashOverride;
+    update(httpRow, 'pass',
+      'ok — server says url=' + session.url + (override ? '  (overridden by ?wt=)' : '') +
+      '\ncertHash=' + (session.server_certificate_hash_hex || '(none)') +
+      (hashOverride ? '  (overridden by ?hash=)' : ''));
+  } catch (error) {
+    results.http = false;
+    update(httpRow, 'fail', describe(error));
+  }
+
+  // 3. WebTransport with certificate pinning: the path Chrome uses for a
+  //    self-signed server. WebKit has never shipped serverCertificateHashes.
+  if (hasWT && session && session.url) {
+    const hex = session.server_certificate_hash_hex || '';
+    const pinRow = row('WebTransport (pinned cert hash)', 'pending', 'connecting…');
+    try {
+      const bytes = Uint8Array.from((hex.match(/.{1,2}/g) || []).map((b) => parseInt(b, 16)));
+      const options = { requireUnreliable: true };
+      if (bytes.length) options.serverCertificateHashes = [{ algorithm: 'sha-256', value: bytes }];
+      const transport = new WebTransport(session.url, options);
+      await withTimeout(transport.ready, TIMEOUT_MS, 'handshake');
+      results.wtPinned = true;
+      update(pinRow, 'pass', 'connected');
+      try { transport.close(); } catch (_) {}
+    } catch (error) {
+      results.wtPinned = false;
+      update(pinRow, 'fail', describe(error));
+    }
+
+    // 4. Same server, normal certificate validation. Expected to fail while the
+    //    server is self-signed; it is the probe that turns green once a real
+    //    certificate is installed.
+    const caRow = row('WebTransport (normal cert validation)', 'pending', 'connecting…');
+    try {
+      const transport = new WebTransport(session.url, { requireUnreliable: true });
+      await withTimeout(transport.ready, TIMEOUT_MS, 'handshake');
+      results.wtCa = true;
+      update(caRow, 'pass', 'connected — server certificate is publicly trusted');
+      try { transport.close(); } catch (_) {}
+    } catch (error) {
+      results.wtCa = false;
+      update(caRow, 'fail', describe(error));
+    }
+    // 4b. The actual game handshake, which is where "Connecting…" hangs.
+    //
+    // Everything above only proves the tunnel opens. The game then opens a
+    // bidirectional stream, writes a length-prefixed ClientHello, closes its
+    // write half, and waits for a Welcome. A server that reads that stream to
+    // end-of-stream depends on this browser delivering the closure, and if it
+    // does not, both sides wait forever with nothing logged.
+    if (results.wtPinned || results.wtCa) {
+      const hsRow = row('Game handshake (ClientHello → Welcome)', 'pending', 'connecting…');
+      try {
+        const hex = session.server_certificate_hash_hex || '';
+        const bytes = Uint8Array.from((hex.match(/.{1,2}/g) || []).map((b) => parseInt(b, 16)));
+        const options = { requireUnreliable: true };
+        if (bytes.length) options.serverCertificateHashes = [{ algorithm: 'sha-256', value: bytes }];
+        const transport = new WebTransport(session.url, options);
+        await withTimeout(transport.ready, TIMEOUT_MS, 'handshake');
+
+        const matchId = MATCH;
+        const idBytes = new TextEncoder().encode(matchId);
+        const hello = new Uint8Array(1 + 2 + idBytes.length + 2 + 1);
+        const view = new DataView(hello.buffer);
+        view.setUint8(0, 1);                       // PKT_CLIENT_HELLO
+        view.setUint16(1, idBytes.length, true);
+        hello.set(idBytes, 3);
+        view.setUint16(3 + idBytes.length, 3, true);   // PROTOCOL_VERSION
+        view.setUint8(5 + idBytes.length, 0b11);       // full prediction | thin authoritative
+        const framed = new Uint8Array(4 + hello.length);
+        new DataView(framed.buffer).setUint32(0, hello.length, true);
+        framed.set(hello, 4);
+
+        const stream = await transport.createBidirectionalStream();
+        const writer = stream.writable.getWriter();
+        await writer.write(framed);
+        await writer.close();
+
+        const reader = stream.readable.getReader();
+        const first = await withTimeout(reader.read(), TIMEOUT_MS, 'waiting for Welcome');
+        const got = first && first.value ? first.value.length : 0;
+        results.handshake = got > 0;
+        update(hsRow, got > 0 ? 'pass' : 'fail',
+          got > 0 ? 'Welcome received (' + got + ' bytes) — this server accepts the handshake'
+                  : 'stream ended with no reply');
+        try { transport.close(); } catch (_) {}
+      } catch (error) {
+        results.handshake = false;
+        update(hsRow, 'fail',
+          describe(error) + '  — the tunnel opened but the server never replied');
+      }
+    }
+    // 4c. Which constructor option is the game passing that this browser
+    //     rejects? A browser that refuses one of these falls back to
+    //     WebSocket, quietly trading UDP for TCP while everything still
+    //     "works" -- the worst kind of failure, because nothing looks broken.
+    if (results.wtPinned) {
+      const hex = session.server_certificate_hash_hex || '';
+      const pin = () => ({
+        serverCertificateHashes: [{
+          algorithm: 'sha-256',
+          value: Uint8Array.from((hex.match(/.{1,2}/g) || []).map((b) => parseInt(b, 16))),
+        }],
+      });
+      const cases = [
+        ['requireUnreliable only', { requireUnreliable: true }],
+        ['+ allowPooling:false', { requireUnreliable: true, allowPooling: false }],
+        ['+ congestionControl:low-latency',
+          { requireUnreliable: true, congestionControl: 'low-latency' }],
+        ['ALL (what the game sends)',
+          { requireUnreliable: true, allowPooling: false, congestionControl: 'low-latency' }],
+      ];
+      for (const [name, extra] of cases) {
+        const caseRow = row('Option probe: ' + name, 'pending', 'connecting…');
+        try {
+          let transport;
+          try {
+            transport = new WebTransport(session.url, Object.assign({}, extra, pin()));
+          } catch (constructorError) {
+            // A synchronous throw means the browser rejected the options
+            // themselves, before any network activity.
+            update(caseRow, 'fail', 'constructor threw — ' + describe(constructorError));
+            continue;
+          }
+          await withTimeout(transport.ready, 8000, 'handshake');
+          update(caseRow, 'pass', 'connected');
+          try { transport.close(); } catch (_) {}
+        } catch (error) {
+          update(caseRow, 'fail', describe(error));
+        }
+      }
+    }
+    // 4d. Datagrams. Everything above uses streams, but the game sends input
+    //     and receives 60 Hz snapshots as datagrams -- unreliable delivery is
+    //     the entire reason for choosing WebTransport. A browser that opens the
+    //     session but cannot do datagrams throws here, and the client falls
+    //     back to WebSocket while looking perfectly healthy.
+    if (results.wtPinned) {
+      const dgRow = row('Datagrams (how the game actually streams)', 'pending', 'testing…');
+      try {
+        const hex = session.server_certificate_hash_hex || '';
+        const options = { requireUnreliable: true, allowPooling: false,
+                          congestionControl: 'low-latency' };
+        if (hex) {
+          options.serverCertificateHashes = [{
+            algorithm: 'sha-256',
+            value: Uint8Array.from((hex.match(/.{1,2}/g) || []).map((b) => parseInt(b, 16))),
+          }];
+        }
+        const transport = new WebTransport(session.url, options);
+        await withTimeout(transport.ready, 8000, 'handshake');
+
+        // Each capability is checked on its own. Send and receive are separate
+        // features here: a browser that cannot send datagrams may still be able
+        // to receive them, and that difference decides whether the heavy
+        // server-to-client stream can stay on UDP.
+        const notes = [];
+        const step = (label, fn) => {
+          try {
+            const value = fn();
+            notes.push(label + ': ' + (value === undefined ? 'ok' : value));
+            return true;
+          } catch (error) {
+            notes.push(label + ': FAILED (' + describe(error) + ')');
+            return false;
+          }
+        };
+
+        const hasDatagrams = step('datagrams property',
+          () => (transport.datagrams ? 'present' : 'MISSING'));
+        if (hasDatagrams && transport.datagrams) {
+          step('maxDatagramSize', () => String(transport.datagrams.maxDatagramSize ?? 'n/a'));
+          const canRead = step('datagrams.readable',
+            () => (transport.datagrams.readable ? 'present' : 'MISSING'));
+          const canWrite = step('datagrams.writable',
+            () => (transport.datagrams.writable ? 'present' : 'MISSING'));
+
+          if (canRead && transport.datagrams.readable) {
+            step('readable.getReader()', () => {
+              const reader = transport.datagrams.readable.getReader();
+              try { reader.releaseLock(); } catch (_) {}
+            });
+          }
+          if (canWrite && transport.datagrams.writable) {
+            let writer = null;
+            if (step('writable.getWriter()', () => { writer = transport.datagrams.writable.getWriter(); })) {
+              try {
+                await writer.write(new Uint8Array([7, 0, 0, 0]));
+                notes.push('write(): ok');
+              } catch (error) {
+                notes.push('write(): FAILED (' + describe(error) + ')');
+              }
+              try { writer.releaseLock(); } catch (_) {}
+            }
+          }
+          results.datagramsRead = Boolean(transport.datagrams.readable);
+          results.datagramsWrite = Boolean(transport.datagrams.writable);
+        }
+
+        results.datagrams = results.datagramsRead && results.datagramsWrite;
+        update(dgRow, results.datagrams ? 'pass' : 'fail', notes.join('\n'));
+        try { transport.close(); } catch (_) {}
+      } catch (error) {
+        results.datagrams = false;
+        update(dgRow, 'fail',
+          describe(error) + '  — this is why the game drops to WebSocket');
+      }
+    }
+  } else if (!hasWT) {
+    row('WebTransport tests', 'warn', 'skipped — no WebTransport in this browser');
+  }
+
+  // 5. The fallback. If WebTransport is unavailable this is the only way in,
+  //    and it fails against a self-signed origin even after the page loads.
+  const wsRow = row('WebSocket fallback', 'pending', 'connecting…');
+  try {
+    const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = scheme + '//' + location.host + '/ws/' + encodeURIComponent(MATCH) +
+                  '?identity=diag&token=mvp-token';
+    await withTimeout(new Promise((resolve, reject) => {
+      const socket = new WebSocket(wsUrl);
+      socket.onopen = () => { resolve(); try { socket.close(); } catch (_) {} };
+      socket.onerror = () => reject(new Error('connection failed (' + wsUrl + ')'));
+      socket.onclose = (event) =>
+        reject(new Error('closed before open: code ' + event.code + ' ' + (event.reason || '')));
+    }), TIMEOUT_MS, 'websocket');
+    results.ws = true;
+    update(wsRow, 'pass', 'connected');
+  } catch (error) {
+    results.ws = false;
+    update(wsRow, 'fail', describe(error));
+  }
+
+  verdict();
+})();
+
+function verdict() {
+  const lines = [];
+  if (!results.hasWT) {
+    lines.push('This browser has no WebTransport. Playing here requires the WebSocket path.');
+  } else if (results.wtPinned) {
+    lines.push('WebTransport works with a pinned certificate hash — this browser is fine as-is.');
+  } else if (results.wtCa) {
+    lines.push('WebTransport works, but only with a publicly trusted certificate — ' +
+               'pinning is unsupported, so the server needs a real certificate.');
+  } else {
+    lines.push('WebTransport exists but no connection succeeded. Either the certificate is ' +
+               'rejected or UDP is blocked on this network.');
+  }
+  if (results.datagramsRead && !results.datagramsWrite) {
+    lines.push('Datagrams can be received but not sent. The 60 Hz world stream could still ' +
+               'run over UDP, with only player input moved to a reliable stream — much better ' +
+               'than dropping the whole session to TCP.');
+  } else if (results.datagrams === false) {
+    lines.push('Datagrams are unavailable, which is why this device silently ends up on ' +
+               'WebSocket/TCP even though WebTransport itself works.');
+  }
+  if (results.handshake === true) {
+    lines.push('The game handshake completed — this server will let you play.');
+  } else if (results.handshake === false) {
+    lines.push('The tunnel opens but the game handshake never completes. That is the ' +
+               '"Connecting…" hang, and it is a server-side bug, not a browser or network one.');
+  }
+  if (results.ws) {
+    lines.push('WebSocket fallback works, so this device can play over TCP.');
+  } else {
+    lines.push('WebSocket fallback also failed — with a self-signed page certificate that is ' +
+               'expected, and it is why the game sits on "Connecting…".');
+  }
+  if (!results.http) {
+    lines.push('The plain HTTP request failed too, so check that the server is running before ' +
+               'reading anything else here.');
+  }
+  document.getElementById('verdict-body').textContent = lines.join('\n\n');
+}
+</script>
+</body>
+</html>

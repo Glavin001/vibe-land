@@ -138,11 +138,14 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 
 export function CityStatsOverlay({
   matchId,
+  statsBaseUrl = '',
   getCityStats,
   transport,
   pingMs,
 }: {
   matchId: string;
+  /** Origin serving this match's stats; null when unreachable from this page. */
+  statsBaseUrl?: string | null;
   getCityStats: () => {
     chunksTotal: number;
     chunksAwake: number;
@@ -182,10 +185,19 @@ export function CityStatsOverlay({
 
   useEffect(() => {
     if (!visible) return undefined;
+    if (statsBaseUrl === null) {
+      // Better to say nothing than to report another server's simulation as
+      // though it were this one.
+      setServer(null);
+      setServerError('remote server — per-match stats not reachable from this page');
+      return undefined;
+    }
     let cancelled = false;
     const poll = async () => {
       try {
-        const response = await fetch(`/match-stats/${encodeURIComponent(matchId)}`);
+        const response = await fetch(
+          `${statsBaseUrl}/match-stats/${encodeURIComponent(matchId)}`,
+        );
         if (!response.ok) throw new Error(`${response.status}`);
         const json = (await response.json()) as MatchStats;
         if (!cancelled) {
@@ -202,7 +214,7 @@ export function CityStatsOverlay({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [matchId, visible]);
+  }, [matchId, statsBaseUrl, visible]);
 
   // Touch devices have no F9, so the overlay needs a tap target to come back
   // from. It doubles as the hidden-state indicator: without it there is no
@@ -277,7 +289,7 @@ export function CityStatsOverlay({
             setResetState('sending');
             try {
               const response = await fetch(
-                `/city-reset/${encodeURIComponent(matchId)}`,
+                `${statsBaseUrl ?? ''}/city-reset/${encodeURIComponent(matchId)}`,
                 { method: 'POST' },
               );
               // The server rebuilds on its next tick and re-bootstraps every

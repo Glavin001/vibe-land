@@ -1,5 +1,11 @@
-import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef, type CSSProperties, type ReactNode, useSyncExternalStore } from 'react';
 import { gameModeLabel, isPracticeMode, type GameMode } from './app/gameMode';
+import {
+  getActiveSession,
+  getConnectPhase,
+  getTransportNote,
+  subscribeConnectPhase,
+} from './app/connectPhase';
 import { isTouchDevice } from './device';
 import { buildMatchHref, defaultMatchIdForPath, isCityMatchId, resolveRequestedMatchId } from './app/matchId';
 import type { PlayBenchmarkPageState, PlayWorkerResult } from './benchmark/contracts';
@@ -228,6 +234,11 @@ export function App({
   const { displayState: controlHintsState, updateInputFrame, isDesktop } = useControlHints();
   const { controller: damageFeedbackController, renderState: damageOverlayState } = useDamageFeedback();
   const touchMode = isTouchDevice();
+  // Which step of joining we are on, so a stalled connect names the step it
+  // stalled on instead of just saying "Connecting..." forever.
+  const connectPhase = useSyncExternalStore(subscribeConnectPhase, getConnectPhase, getConnectPhase);
+  const transportNote = useSyncExternalStore(subscribeConnectPhase, getTransportNote, getTransportNote);
+  const activeSession = useSyncExternalStore(subscribeConnectPhase, getActiveSession, getActiveSession);
   const renderStatsParentRef = useRef<HTMLDivElement>(null);
 
   const getGameCanvas = useCallback(
@@ -897,6 +908,8 @@ export function App({
           className="pointer-events-none absolute left-2 top-2 z-5 rounded bg-[rgba(0,0,0,0.6)] px-3 py-1 text-sm"
         >
           {status}
+          {connectPhase ? ` — ${connectPhase}` : ''}
+          {transportNote ? <div className="text-amber-300">{transportNote}</div> : null}
         </div>
       )}
       {!hideTopNav && (
@@ -1112,7 +1125,8 @@ export function App({
       <MeleeHUD visible={connected} />
       {cityWorld && connected && (
         <CityStatsOverlay
-          matchId={multiplayerMatchId}
+          matchId={activeSession?.matchId ?? multiplayerMatchId}
+          statsBaseUrl={activeSession ? activeSession.statsBaseUrl : ''}
           getCityStats={() => window.__VIBE_E2E__?.snapshot().city ?? null}
           transport={displayStats.transport}
           pingMs={displayStats.pingMs}
