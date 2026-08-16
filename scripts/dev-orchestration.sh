@@ -178,6 +178,14 @@ EOF
       # runs HTTPS when WebTransport certs are set, and an https page may not
       # fetch an http control plane -- the browser blocks it as mixed content.
       local client_port="${VAST_TCP_PORT_9000:-${CLIENT_PORT:-5555}}"
+      if [[ "$PUBLIC_IP" == 127.* || "$PUBLIC_IP" == localhost ]]; then
+        # Loopback is right for headless checks on this box and useless from any
+        # other device: the address is handed to the browser verbatim, so a phone
+        # would dial itself, fail, and land back on the join screen looking as if
+        # the page had reloaded.
+        echo "[orch] WARNING: advertising $PUBLIC_IP — reachable only from this machine."
+        echo "[orch]          Re-run without PUBLIC_IPADDR set to serve real devices."
+      fi
       echo "[orch] play at: https://$PUBLIC_IP:${client_port}/city?controlPlane=/cp"
       echo "[orch]   (plain-HTTP dev server? use ?controlPlane=http://127.0.0.1:$CONTROL_PLANE_PORT)"
       return 0

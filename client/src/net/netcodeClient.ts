@@ -296,6 +296,13 @@ export class NetcodeClient {
         if (options.allowWsFallback === false) {
           // Rethrow rather than fail twice: the fallback targets the same
           // untrusted-certificate origin and would only mask the real cause.
+          // The note is set first so the player sees the reason instead of
+          // being bounced silently back to the join screen.
+          setTransportNote(
+            'Could not reach the server (' +
+              (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
+              ')',
+          );
           console.error('[netcode] WebTransport failed and WebSocket fallback is unavailable', err);
           throw err;
         }
