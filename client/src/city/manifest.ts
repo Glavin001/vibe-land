@@ -99,7 +99,40 @@ export async function fetchCityManifest(
   if (!response.ok) {
     throw new Error(`city manifest fetch failed: ${response.status}`);
   }
-  const bytes = await response.arrayBuffer();
+  return parseCityManifest(await response.arrayBuffer(), expectedHashHex);
+}
+
+/**
+ * The same manifest, delivered over the game session instead of fetched.
+ *
+ * A rented GPU box cannot serve this over HTTP to an HTTPS page -- plain HTTP
+ * on a random port is mixed content, and its self-signed origin is refused --
+ * so the server pushes it down the connection that is already open. Gzipped on
+ * the wire because the uncompressed JSON runs to megabytes on a large city.
+ */
+export async function decodeCityManifestPayload(
+  gzipped: Uint8Array,
+  expectedHashHex: string,
+): Promise<LoadedCityManifest> {
+  const Decompression = (globalThis as { DecompressionStream?: typeof DecompressionStream })
+    .DecompressionStream;
+  if (!Decompression) {
+    throw new Error('DecompressionStream unavailable; cannot read pushed city manifest');
+  }
+  const stream = new Blob([gzipped as BlobPart]).stream().pipeThrough(new Decompression('gzip'));
+  const bytes = await new Response(stream).arrayBuffer();
+  return parseCityManifest(bytes, expectedHashHex);
+}
+
+/**
+ * Verification is deliberately identical for both paths: the manifest is
+ * content-addressed, so a mismatched hash means the geometry does not match the
+ * simulation and every chunk id that follows would refer to the wrong thing.
+ */
+async function parseCityManifest(
+  bytes: ArrayBuffer,
+  expectedHashHex: string,
+): Promise<LoadedCityManifest> {
   const hashHex = await sha256Hex(bytes);
   if (hashHex !== expectedHashHex) {
     throw new Error(`city manifest hash mismatch: got ${hashHex}, expected ${expectedHashHex}`);
