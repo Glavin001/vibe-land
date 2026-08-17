@@ -18,7 +18,11 @@ import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
-import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
+import {
+  partitionSlotsByCell,
+  shouldUpdateThisFrame,
+  updateStrideForDistanceSq,
+} from '../city/renderScheduling';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
@@ -37,13 +41,21 @@ const CHUNK_SUNK_Y_M = -0.25;
 
 type CityMeshState = {
   /**
-   * One batch per structure, not one for the whole city.
+   * One batch per render cell, not one for the whole city.
    *
    * three uploads a BatchedMesh's entire matrix texture whenever any instance
    * in it moves -- textures have no partial-update path the way buffers do. A
    * single city-wide batch therefore re-uploaded megabytes every frame because
-   * one chunk somewhere was falling. Splitting per structure means a building
-   * nobody has touched costs nothing.
+   * one chunk somewhere was falling. Splitting means a patch of city nobody has
+   * touched costs nothing.
+   *
+   * The split is spatial rather than per structure. Per structure looks
+   * equivalent while every pack is one building stamped across a grid, but a
+   * pack that is itself a laid-out district arrives as a *single* structure,
+   * and the whole city collapses back into one batch: no culling (a 289 m mesh
+   * always intersects the frustum) and no stagger (every body shares one phase,
+   * so the map freezes and jumps in lockstep). Cells hold regardless of how the
+   * pack is authored.
    */
   meshes: THREE.BatchedMesh[];
   /** Slot -> index into `meshes`. */
@@ -91,9 +103,36 @@ function buildMesh(client: CityClient): CityMeshState {
   const scales = new Float32Array(count * 3);
   const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
   const hullGeometries = new Map<string, THREE.BufferGeometry>();
+  // Rest-pose XZ per slot, relative to its own structure's origin, used only to
+  // assign cells.
+  //
+  // Structure-relative rather than world so the cell grid is anchored to each
+  // pack instead of to the world origin. A 12 m building that happened to
+  // straddle a world cell boundary would otherwise shatter into four batches
+  // for no benefit, and which buildings did that would depend on where the grid
+  // dropped them. Anchored per structure, anything smaller than a cell is
+  // always exactly one batch, and only a pack genuinely bigger than a cell --
+  // the district -- splits.
+  //
+  // Chunks move, but cells are fixed at build time: a chunk keeps the batch it
+  // was authored into. Re-celling tumbling debris would mean moving instances
+  // between BatchedMeshes mid-flight, which costs a geometry re-add and defeats
+  // the purpose -- and rubble ends up near where it started anyway.
+  const localXZ = new Float32Array(count * 2);
   for (const structure of manifest.structures) {
+    TMP_QUATERNION.set(
+      structure.worldRotation[0],
+      structure.worldRotation[1],
+      structure.worldRotation[2],
+      structure.worldRotation[3],
+    );
     for (const chunk of structure.chunks) {
       const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
+      TMP_POSITION.set(chunk.centroid[0], chunk.centroid[1], chunk.centroid[2]).applyQuaternion(
+        TMP_QUATERNION,
+      );
+      localXZ[slot * 2] = TMP_POSITION.x;
+      localXZ[slot * 2 + 1] = TMP_POSITION.z;
       const shape = chunkShape(chunk);
       shapeBySlot[slot] = shape;
       if (shape.kind === 'hull') {
@@ -111,9 +150,9 @@ function buildMesh(client: CityClient): CityMeshState {
     }
   }
 
-  // One batch per structure. Geometry is rebuilt per structure rather than
-  // shared, which costs some memory, but a shared city-wide batch made every
-  // frame upload the transforms of every chunk in the city -- see the note on
+  // One batch per render cell. Geometry is rebuilt per cell rather than shared,
+  // which costs some memory, but a shared city-wide batch made every frame
+  // upload the transforms of every chunk in the city -- see the note on
   // CityMeshState.
   const material = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 });
   const meshes: THREE.BatchedMesh[] = [];
@@ -123,64 +162,70 @@ function buildMesh(client: CityClient): CityMeshState {
   let totalVertices = 0;
 
   for (const structure of manifest.structures) {
-    const slots = structure.chunks.map((chunk) =>
+    const structureSlots = structure.chunks.map((chunk) =>
       client.topology.slotOf(structure.structureId, chunk.nodeIndex),
     );
-    // Only the hulls this structure actually uses.
-    const localHulls = new Map<string, THREE.BufferGeometry>();
-    for (const slot of slots) {
-      const shape = shapeBySlot[slot];
-      if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
-        localHulls.set(shape.key, buildHullGeometry(shape.points));
-      }
-    }
-    const boxGeometry = buildBoxGeometry();
-    let vertexBudget = boxGeometry.attributes.position.count;
-    let indexBudget = boxGeometry.index?.count ?? 0;
-    for (const geometry of localHulls.values()) {
-      vertexBudget += geometry.attributes.position.count;
-      indexBudget += geometry.index?.count ?? 0;
-    }
-    totalVertices += vertexBudget;
-
-    const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    // Per-instance culling walks every chunk to decide each one, which is the
-    // work we are trying to avoid.
-    mesh.perObjectFrustumCulled = false;
-    mesh.sortObjects = false;
-    // Whole-batch culling, on the other hand, is one sphere test that can drop
-    // an entire building. This is only worth anything because batches are per
-    // structure: a single city-wide batch always intersects the frustum, which
-    // is why culling used to be turned off here.
-    mesh.frustumCulled = true;
-
-    const boxGeometryId = mesh.addGeometry(boxGeometry);
-    const hullGeometryIds = new Map<string, number>();
-    for (const [key, geometry] of localHulls) {
-      hullGeometryIds.set(key, mesh.addGeometry(geometry));
-    }
-
-    const meshIndex = meshes.length;
+    // Cells are cut inside a structure, so a grid of separate buildings still
+    // gets at least one batch per building (each is far smaller than a cell)
+    // and a district pack gets one per city block.
     const color = structureColor(structure.structureId);
-    for (const slot of slots) {
-      const shape = shapeBySlot[slot];
-      const geometryId =
-        shape.kind === 'hull' ? (hullGeometryIds.get(shape.key) ?? boxGeometryId) : boxGeometryId;
-      meshOfSlot[slot] = meshIndex;
-      instanceIds[slot] = mesh.addInstance(geometryId);
-      baseColors[slot * 3] = color.r;
-      baseColors[slot * 3 + 1] = color.g;
-      baseColors[slot * 3 + 2] = color.b;
-      writeInstance(mesh, client, slot, scales, instanceIds);
-      mesh.setColorAt(instanceIds[slot], color);
+    for (const slots of partitionSlotsByCell(localXZ, structureSlots).values()) {
+      // Only the hulls this cell actually uses.
+      const localHulls = new Map<string, THREE.BufferGeometry>();
+      for (const slot of slots) {
+        const shape = shapeBySlot[slot];
+        if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
+          localHulls.set(shape.key, buildHullGeometry(shape.points));
+        }
+      }
+      const boxGeometry = buildBoxGeometry();
+      let vertexBudget = boxGeometry.attributes.position.count;
+      let indexBudget = boxGeometry.index?.count ?? 0;
+      for (const geometry of localHulls.values()) {
+        vertexBudget += geometry.attributes.position.count;
+        indexBudget += geometry.index?.count ?? 0;
+      }
+      totalVertices += vertexBudget;
+
+      const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      // Per-instance culling walks every chunk to decide each one, which is the
+      // work we are trying to avoid.
+      mesh.perObjectFrustumCulled = false;
+      mesh.sortObjects = false;
+      // Whole-batch culling, on the other hand, is one sphere test that can drop
+      // a whole block. This is only worth anything because batches are cell
+      // sized: a single city-wide batch always intersects the frustum, which is
+      // why culling used to be turned off here.
+      mesh.frustumCulled = true;
+
+      const boxGeometryId = mesh.addGeometry(boxGeometry);
+      const hullGeometryIds = new Map<string, number>();
+      for (const [key, geometry] of localHulls) {
+        hullGeometryIds.set(key, mesh.addGeometry(geometry));
+      }
+
+      const meshIndex = meshes.length;
+      for (const slot of slots) {
+        const shape = shapeBySlot[slot];
+        const geometryId =
+          shape.kind === 'hull' ? (hullGeometryIds.get(shape.key) ?? boxGeometryId) : boxGeometryId;
+        meshOfSlot[slot] = meshIndex;
+        instanceIds[slot] = mesh.addInstance(geometryId);
+        baseColors[slot * 3] = color.r;
+        baseColors[slot * 3 + 1] = color.g;
+        baseColors[slot * 3 + 2] = color.b;
+        writeInstance(mesh, client, slot, scales, instanceIds);
+        mesh.setColorAt(instanceIds[slot], color);
+      }
+      meshes.push(mesh);
     }
-    meshes.push(mesh);
   }
 
   console.info('[city] batched chunk meshes ready', {
     chunks: count,
+    structures: manifest.structures.length,
     batches: meshes.length,
     vertices: totalVertices,
   });
@@ -691,12 +736,19 @@ export function CityChunksLayer({
         const dy = body.position[1] - camera.y;
         const dz = body.position[2] - camera.z;
         const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
-        // Staggered by STRUCTURE, not by body. A batch re-uploads its whole
-        // transform texture if any one instance in it changes, so bodies of
-        // one building must defer together -- staggering them individually
-        // would put at least one write in every building on every frame and
-        // save nothing at all.
-        if (!shouldUpdateThisFrame(frame, body.structureId, stride)) {
+        // Staggered by BATCH, not by body. A batch re-uploads its whole
+        // transform texture if any one instance in it changes, so bodies
+        // sharing a batch must defer together -- staggering them individually
+        // would put at least one write in every batch on every frame and save
+        // nothing at all.
+        //
+        // The key is the batch itself rather than the structure it came from.
+        // Those coincide only while one structure means one building; a pack
+        // authored as a whole district is a single structure, and keying on it
+        // gave every body the same phase, so the entire map deferred and
+        // resumed together instead of spreading across the stride window.
+        const batch = state.meshOfSlot[body.chunkSlots[0]];
+        if (!shouldUpdateThisFrame(frame, batch < 0 ? 0 : batch, stride)) {
           continue;
         }
       }
