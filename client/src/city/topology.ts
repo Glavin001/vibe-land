@@ -11,6 +11,12 @@
 
 import type { CityManifest } from './manifest';
 import type { BootstrapMessage, TopologyMessage } from './wire';
+
+/** Which writer produced a body pose. See `updateBodyPose`. */
+export type BodyPoseSource = 'raw' | 'presented' | 'settle' | 'promote' | 'reoffset' | 'bootstrap';
+
+/** Wire position quantum (1 cm); anything below it is encoding dither. */
+const POSE_QUANTUM_M = 0.01;
 import {
   EPSILON,
   Quat,
@@ -264,6 +270,27 @@ export class CityTopology {
     }
     this.lastTopoSeq = message.topoSeq;
 
+    // A chunk is the same physical object before and after a topology batch
+    // re-parents it, so its world pose should be continuous across the batch.
+    // Displacement here is the fracture discontinuity a player sees as chunks
+    // jumping the instant a building breaks.
+    let poseBefore: Map<number, Vec3> | null = null;
+    if (this.watchPoseSources && this.onAdoptionJump) {
+      poseBefore = new Map();
+      for (const batch of message.batches) {
+        const touched = [
+          ...batch.promotions.flatMap((p) => p.nodes),
+          ...batch.migrations.map((m) => m.node),
+        ];
+        for (const node of touched) {
+          const slot = this.slotOf(batch.structureId, node);
+          if (!poseBefore.has(slot)) {
+            poseBefore.set(slot, this.chunkWorldPose(slot).position);
+          }
+        }
+      }
+    }
+
     for (const batch of message.batches) {
       const bits = this.aliveBonds.get(batch.structureId);
       if (bits) {
@@ -313,17 +340,134 @@ export class CityTopology {
         body.settled = false;
       }
     }
+
+    if (poseBefore) {
+      for (const [slot, before] of poseBefore) {
+        const after = this.chunkWorldPose(slot).position;
+        const step = Math.hypot(
+          after[0] - before[0],
+          after[1] - before[1],
+          after[2] - before[2],
+        );
+        if (step > POSE_QUANTUM_M) this.onAdoptionJump?.(slot, step);
+      }
+    }
     return true;
   }
 
-  /** Updates a live body's authoritative pose from the kinematic stream. */
-  updateBodyPose(key: number, position: Vec3, rotation: Quat): void {
+  /**
+   * Updates a live body's authoritative pose.
+   *
+   * `source` says which writer this is. There are two in normal operation:
+   * `raw` (newest streamed pose, written at packet arrival) and `presented`
+   * (the interpolated pose, one interpolation delay behind). A body whose
+   * writes alternate between them is being drawn at two different times in
+   * consecutive frames, which is visible as a flicker — so while recording,
+   * alternation with real displacement is reported.
+   */
+  updateBodyPose(
+    key: number,
+    position: Vec3,
+    rotation: Quat,
+    source: BodyPoseSource = 'raw',
+  ): void {
     const body = this.bodies.get(key);
-    if (body) {
-      body.position = vClone(position);
-      body.rotation = [...rotation] as Quat;
+    if (!body) return;
+    if (this.watchPoseSources) {
+      this.observePoseWrite(key, body.position, position, source);
     }
+    body.position = vClone(position);
+    body.rotation = [...rotation] as Quat;
   }
+
+  /**
+   * Records which writer last set each body's pose, and how far that write
+   * moved it.
+   *
+   * Note this alone is NOT an artefact: `samplePresentation` writes every live
+   * body once per frame and runs before the renderer reads, so a raw write
+   * that lands between frames is normally overwritten before anyone sees it.
+   * What matters is the source in effect at the moment the renderer composes
+   * the chunk — see `poseSourceOf`, sampled by the render layer.
+   */
+  private observePoseWrite(
+    key: number,
+    previousPosition: Vec3,
+    nextPosition: Vec3,
+    source: BodyPoseSource,
+  ): void {
+    this.lastPoseSource.set(key, source);
+    const dx = nextPosition[0] - previousPosition[0];
+    const dy = nextPosition[1] - previousPosition[1];
+    const dz = nextPosition[2] - previousPosition[2];
+    // The wire quantises position to 1 cm, so anything below that is dither.
+    const delta = Math.hypot(dx, dy, dz);
+    this.lastPoseDelta.set(key, delta < POSE_QUANTUM_M ? 0 : delta);
+  }
+
+  /** Enable pose-source tracking (measurement only; off in normal play). */
+  watchPoseSources = false;
+  private readonly lastPoseSource = new Map<number, BodyPoseSource>();
+  private readonly lastPoseDelta = new Map<number, number>();
+
+  /** Which writer last set this body's pose, and how far that write moved it. */
+  poseSourceOf(key: number): { source: BodyPoseSource | undefined; deltaM: number } {
+    return { source: this.lastPoseSource.get(key), deltaM: this.lastPoseDelta.get(key) ?? 0 };
+  }
+
+  /**
+   * Checks the two membership records agree: `chunkBody[slot]` names the body
+   * whose `chunkSlots` contains `slot`, and vice versa. They are written
+   * independently by promote/migrate/retire, and a divergence leaves "shadow
+   * members" — chunks a body still owns by one record but excludes from its
+   * centre of mass, so their offsets rot in a dead frame while the body keeps
+   * moving. This is the client-side analogue of the server's
+   * `duplicate_body_records` check.
+   */
+  membershipViolations(): number {
+    let violations = 0;
+    for (let slot = 0; slot < this.chunkCount; slot += 1) {
+      const key = this.chunkBody[slot];
+      const body = this.bodies.get(key);
+      if (!body) continue; // orphan; counted separately by stats()
+      if (!body.chunkSlots.includes(slot)) violations += 1;
+    }
+    for (const [key, body] of this.bodies) {
+      for (const slot of body.chunkSlots) {
+        if (this.chunkBody[slot] !== key) violations += 1;
+      }
+    }
+    return violations;
+  }
+
+  /**
+   * Flags islands whose members sit further from each other than the island
+   * could physically span — a small island pairing chunks tens of metres apart
+   * is membership the client cannot have derived correctly. Ported from the
+   * diagnostics that localised the district-scene position corruption.
+   */
+  diagnoseFrames(maxOffsetM = 5, maxMembers = 2): Array<{ key: number; worstOffsetM: number; members: number }> {
+    const suspects: Array<{ key: number; worstOffsetM: number; members: number }> = [];
+    for (const [key, body] of this.bodies) {
+      if (body.chunkSlots.length === 0 || body.chunkSlots.length > maxMembers) continue;
+      let worst = 0;
+      for (const slot of body.chunkSlots) {
+        const offset = Math.hypot(
+          this.localPos[slot * 3],
+          this.localPos[slot * 3 + 1],
+          this.localPos[slot * 3 + 2],
+        );
+        if (offset > worst) worst = offset;
+      }
+      if (worst > maxOffsetM) {
+        suspects.push({ key, worstOffsetM: worst, members: body.chunkSlots.length });
+      }
+    }
+    return suspects;
+  }
+
+  /** Migration events the ledger could not apply correctly. */
+  readonly migrateAnomalies = { missingDestination: 0, emptyDestination: 0 };
 
   /**
    * Re-parent `nodes` onto an island body and set their body-local offsets.
@@ -348,6 +492,23 @@ export class CityTopology {
    * watched the collapse agree chunk for chunk.
    */
   private adoptIslandMembers(
+    structureId: number,
+    key: number,
+    nodes: number[],
+  ): number[] {
+    return this.adoptIslandMembersInner(structureId, key, nodes);
+  }
+
+  /**
+   * Reported when a topology batch moves a chunk's world pose.
+   *
+   * Measured across the whole batch, not inside adoption: `promote` adopts
+   * members before it inserts the body, so mid-adoption the chunk resolves
+   * through the missing-body fallback and any reading there is meaningless.
+   */
+  onAdoptionJump: ((slot: number, stepM: number) => void) | null = null;
+
+  private adoptIslandMembersInner(
     structureId: number,
     key: number,
     nodes: number[],
@@ -438,8 +599,18 @@ export class CityTopology {
       // The destination should have been promoted already. Without it there is
       // nowhere correct to put the chunk, and guessing is what produces
       // chunks composed against the wrong frame.
+      this.migrateAnomalies.missingDestination += 1;
       this.needsResync = true;
       return;
+    }
+    // An empty destination has no frame to leave, so `reoffsetBody` would fall
+    // back to reading the "old" centre of mass off the chunk that just arrived
+    // -- which still carries the SOURCE body's frame. That yields a delta the
+    // size of the gap between the two islands, and shifts the destination's
+    // pose and its whole buffered track by it. Handled separately below.
+    const destinationWasEmpty = destination.chunkSlots.length === 0;
+    if (destinationWasEmpty) {
+      this.migrateAnomalies.emptyDestination += 1;
     }
     const source = this.bodies.get(bodyKey(structureId, fromIslandSerial));
     // Both frames have to be read before membership changes: afterwards they
@@ -466,7 +637,18 @@ export class CityTopology {
     if (source) {
       this.reoffsetBody(source, sourceOldCom);
     }
-    this.reoffsetBody(destination, destinationOldCom);
+    if (destinationWasEmpty) {
+      // With one member the frame is fully determined: the centre of mass is
+      // that chunk's own centroid, so its offset is zero. The body's pose is
+      // left alone -- it heals on the next streamed record rather than being
+      // shifted by a delta recovered from the wrong frame.
+      const com = this.centreOfMass(destination);
+      this.localPos[slot * 3] = com ? this.restPos[slot * 3] - com[0] : 0;
+      this.localPos[slot * 3 + 1] = com ? this.restPos[slot * 3 + 1] - com[1] : 0;
+      this.localPos[slot * 3 + 2] = com ? this.restPos[slot * 3 + 2] - com[2] : 0;
+    } else {
+      this.reoffsetBody(destination, destinationOldCom);
+    }
   }
 
   /**

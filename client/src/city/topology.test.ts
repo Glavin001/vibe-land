@@ -495,3 +495,119 @@ describe('CityTopology chunk migration', () => {
     expect(topology.needsResync).toBe(true);
   });
 });
+
+describe('CityTopology migration into an emptied body', () => {
+  /**
+   * Four chunks so an island can be reduced to zero members and still have a
+   * migrating chunk arrive from a body whose frame is genuinely different.
+   */
+  const manifest4 = (): CityManifest => ({
+    version: 1,
+    structures: [
+      {
+        structureId: 0,
+        worldPosition: [10, 0, 0],
+        worldRotation: [0, 0, 0, 1],
+        chunks: [0, 1, 2, 3].map((node) => ({
+          nodeIndex: node,
+          centroid: [0, node + 0.5, 0],
+          mass: node === 0 ? 0 : 10,
+          volume: 1,
+          size: [1, 1, 1],
+          geometry: { kind: 'Cuboid', halfExtents: [0.5, 0.5, 0.5] },
+          radius: 0.87,
+          support: node === 0,
+        })),
+        bonds: [0, 1, 2].map((i) => ({
+          bondIndex: i,
+          node0: i,
+          node1: i + 1,
+          centroid: [0, i + 1, 0],
+          normal: [0, 1, 0],
+          area: 1,
+        })),
+      },
+    ],
+  });
+
+  const promotion = (
+    islandId: number,
+    nodes: number[],
+    position: [number, number, number],
+  ) => ({
+    structureId: 0,
+    islandId,
+    nodes,
+    position,
+    rotation: [0, 0, 0, 1] as [number, number, number, number],
+    linearVelocity: [0, 0, 0] as [number, number, number],
+    angularVelocity: [0, 0, 0] as [number, number, number],
+  });
+
+  it('does not shift the destination by a delta read from the source frame', () => {
+    const topology = new CityTopology(manifest4());
+    // Island 1 holds two members; island 2 holds one, far away.
+    topology.apply({
+      topoSeq: 1,
+      simTick: 1,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [0, 1, 2],
+          promotions: [promotion(1, [1, 2], [0, 2, 0]), promotion(2, [3], [0, 40, 0])],
+          retiredIslandIds: [],
+          migrations: [],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    } as unknown as TopologyMessage);
+
+    // Empty island 2 by moving its only member to island 1, then move a chunk
+    // back into the now-empty island 2.
+    topology.apply({
+      topoSeq: 2,
+      simTick: 2,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [],
+          promotions: [],
+          retiredIslandIds: [],
+          migrations: [{ node: 3, fromIslandSerial: 2, toIslandSerial: 1 }],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    } as unknown as TopologyMessage);
+
+    const emptied = topology.body(bodyKey(0, 2));
+    expect(emptied?.chunkSlots.length).toBe(0);
+    const poseBefore = [...(emptied?.position ?? [])];
+
+    topology.apply({
+      topoSeq: 3,
+      simTick: 3,
+      batches: [
+        {
+          structureId: 0,
+          brokenBondIndices: [],
+          promotions: [],
+          retiredIslandIds: [],
+          migrations: [{ node: 1, fromIslandSerial: 1, toIslandSerial: 2 }],
+        },
+      ],
+      settled: [],
+      wakes: [],
+    } as unknown as TopologyMessage);
+
+    const destination = topology.body(bodyKey(0, 2));
+    expect(destination?.chunkSlots.length).toBe(1);
+    // Sole member of a body sits at its own centre of mass: offset zero.
+    const slot = topology.slotOf(0, 1);
+    const offset = topology.chunkLocalOffset(slot).position;
+    expect(Math.hypot(offset[0], offset[1], offset[2])).toBeLessThan(1e-6);
+    // And the pose must not have been dragged by a source-frame delta.
+    expect(destination?.position[1]).toBeCloseTo(poseBefore[1] as number, 5);
+  });
+});

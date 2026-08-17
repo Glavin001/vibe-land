@@ -106,6 +106,35 @@ interface PreviousSample {
   revision: number;
 }
 
+/**
+ * Discontinuities this track presented on purpose.
+ *
+ * Each one is a designed escape hatch — an unsmoothed rewind, a correction
+ * abandoned as too large, a knot pair too far apart to interpolate — and each
+ * is visible on screen as a jump. They are reported rather than logged so a
+ * measurement harness can count them without this module depending on it.
+ */
+export type PresentationAnomalyKind =
+  /** Render time moved backwards; the correction is dropped and the pose rewinds. */
+  | 'clock_rollback'
+  /** Correction exceeded snapDistanceMeters and was abandoned — hard snap onto the new path. */
+  | 'correction_snap'
+  /** Two consecutive snapshots too far apart to interpolate; sampled as a step function. */
+  | 'implausible_jump';
+
+export interface PresentationAnomaly {
+  kind: PresentationAnomalyKind;
+  /** Metres for snap/jump; ticks rewound for clock_rollback. */
+  magnitude: number;
+  /**
+   * For clock_rollback: how much correction was still in flight when it was
+   * dropped. Zero means nothing was being smoothed and nothing was lost.
+   */
+  abandonedCorrectionM?: number;
+}
+
+export type PresentationAnomalyListener = (anomaly: PresentationAnomaly) => void;
+
 export class PresentationTrack {
   private readonly config: PresentationConfig;
   private readonly linearDamping: number;
@@ -114,6 +143,12 @@ export class PresentationTrack {
   private correction: Correction = zeroCorrection();
   private previous: PreviousSample | null = null;
   private revision = 0;
+  private onAnomaly: PresentationAnomalyListener | null = null;
+
+  /** Observe presented discontinuities. Pass null to stop. */
+  setAnomalyListener(listener: PresentationAnomalyListener | null): void {
+    this.onAnomaly = listener;
+  }
 
   constructor(config: PresentationConfig, linearDamping = 0, angularDamping = 0) {
     this.config = { ...config };
@@ -135,6 +170,49 @@ export class PresentationTrack {
 
   bufferedSnapshots(): number {
     return this.snapshots.length;
+  }
+
+  /**
+   * Declares where this body is already being drawn, before any snapshot.
+   *
+   * A promoted island starts life with its chunks already on screen as part of
+   * the structure they broke off. Its first streamed pose is the fracture tick
+   * -- ahead of the ~interpolation delay everything around it renders at -- so
+   * adopting it directly teleports every chunk in the island. Seeding the
+   * on-screen pose instead makes the first `sample` take the same late-packet
+   * reconciliation path a revised trajectory takes: the island glides from
+   * where it was drawn onto the authoritative path over `correctionSeconds`.
+   *
+   * Call on a fresh track before the first `push`. `push` bumps the revision,
+   * so leaving the seed at revision 0 is what arms that reconciliation.
+   */
+  seedPresented(
+    state: {
+      position: Vec3;
+      rotation: Quat;
+      linearVelocity: Vec3;
+      angularVelocity: Vec3;
+    },
+    renderTick: number,
+  ): void {
+    if (!Number.isFinite(renderTick)) {
+      return;
+    }
+    if (!state.position.every(Number.isFinite) || !state.rotation.every(Number.isFinite)) {
+      return;
+    }
+    this.previous = {
+      renderTick,
+      state: {
+        position: vClone(state.position),
+        rotation: [...state.rotation] as Quat,
+        linearVelocity: vClone(state.linearVelocity),
+        angularVelocity: vClone(state.angularVelocity),
+        positionCorrection: vZero(),
+        rotationCorrectionDegrees: 0,
+      },
+      revision: this.revision,
+    };
   }
 
   /** Inserts a timestamped snapshot, coalescing snapshots at the same tick. */
@@ -228,6 +306,14 @@ export class PresentationTrack {
 
     if (this.previous) {
       if (renderTick < this.previous.renderTick) {
+        // The rewind itself is usually sub-tick and invisible. What the player
+        // sees is the correction being dropped: a smoothing already in flight
+        // is abandoned mid-glide, so the pose jumps to the raw path.
+        this.onAnomaly?.({
+          kind: 'clock_rollback',
+          magnitude: this.previous.renderTick - renderTick,
+          abandonedCorrectionM: vLength(this.correction.position),
+        });
         this.correction = zeroCorrection();
       } else if (this.previous.revision !== this.revision) {
         // Re-anchor the revised path to the pose already on screen so a late
@@ -246,10 +332,13 @@ export class PresentationTrack {
             revisedPrevious.angularVelocity,
           ),
         };
-        this.correction =
-          vLength(correction.position) > this.config.snapDistanceMeters
-            ? zeroCorrection()
-            : correction;
+        const correctionDistance = vLength(correction.position);
+        if (correctionDistance > this.config.snapDistanceMeters) {
+          this.onAnomaly?.({ kind: 'correction_snap', magnitude: correctionDistance });
+          this.correction = zeroCorrection();
+        } else {
+          this.correction = correction;
+        }
       }
     }
 
@@ -283,6 +372,7 @@ export class PresentationTrack {
           targetTick,
           this.config.dt,
           this.config.snapDistanceMeters,
+          this.onAnomaly,
         );
       }
     }
@@ -372,6 +462,7 @@ function interpolate(
   targetTick: number,
   dt: number,
   snapDistanceMeters: number,
+  onAnomaly?: PresentationAnomalyListener | null,
 ): PresentedState {
   const tickSpan = right.tick - left.tick;
   if (tickSpan <= 0) {
@@ -380,7 +471,9 @@ function interpolate(
   const seconds = tickSpan * dt;
   const plausibleMotion =
     Math.max(vLength(left.linearVelocity), vLength(right.linearVelocity)) * seconds;
-  if (vDistance(left.position, right.position) > plausibleMotion + snapDistanceMeters) {
+  const knotDistance = vDistance(left.position, right.position);
+  if (knotDistance > plausibleMotion + snapDistanceMeters) {
+    onAnomaly?.({ kind: 'implausible_jump', magnitude: knotDistance });
     return targetTick < right.tick ? snapshotState(left) : snapshotState(right);
   }
 

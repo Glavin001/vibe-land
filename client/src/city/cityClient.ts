@@ -16,6 +16,7 @@ import { qRotate, vAdd } from './vec';
 import {
   BaselineMessage,
   ChunksDatagram,
+  TopologyMessage,
   RECORD_FLAG_SETTLED_HINT,
   RecordMode,
   decodeBaseline,
@@ -30,6 +31,7 @@ import {
   PKT_CITY_CHUNKS,
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
+import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
 
 export interface CityClientStats {
   chunksTotal: number;
@@ -91,6 +93,21 @@ export class CityClient {
    * the unreliable stream, which has no ordering relationship to it.
    */
   private readonly settledAtTick: Map<number, number> = new Map();
+  /** One resync request per divergence, cleared when the bootstrap lands. */
+  private resyncRequested = false;
+  /**
+   * Bodies whose ledger pose changed without a streaming update to carry it
+   * to the screen — settles, promotions, migrations, wakes. The render layer
+   * repaints only what streams; while the tab is hidden rAF is paused but the
+   * reliable channel keeps mutating the ledger, and an island that settles in
+   * that window is removed from the streaming set before it is ever sampled
+   * again. Without this queue its chunks keep their pre-hide matrices forever
+   * (measured: 690 stale chunks on refocus, 28 permanent).
+   */
+  private repaintAll = false;
+  private readonly repaintBodies = new Set<number>();
+  /** Whether any bootstrap has established the baseline this session. */
+  private bootstrapped = false;
 
   constructor(
     readonly manifest: LoadedCityManifest,
@@ -113,6 +130,26 @@ export class CityClient {
     };
   }
 
+  /** Bootstraps applied this session; a forced resync bumps it on arrival. */
+  bootstrapCount = 0;
+
+  /** Ask the server for a fresh bootstrap (measurement / recovery). */
+  requestResync(): void {
+    this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+  }
+
+  /**
+   * Bodies needing a one-shot instance rewrite, drained by the render layer
+   * each frame. `all` after a bootstrap/resync (the whole ledger was replaced).
+   */
+  drainRepaint(): { all: boolean; bodies: number[] } {
+    const all = this.repaintAll;
+    const bodies = all ? [] : [...this.repaintBodies];
+    this.repaintAll = false;
+    this.repaintBodies.clear();
+    return { all, bodies };
+  }
+
   /** Route one raw server packet (kind 119-122). */
   handlePacket(bytes: Uint8Array): void {
     if (bytes.length === 0) {
@@ -129,25 +166,71 @@ export class CityClient {
         this.handleChunks(decodeChunksDatagram(bytes));
         break;
       case PKT_CITY_TOPOLOGY: {
+        // The server sends a bootstrap to every joiner before any topology.
+        // If topology arrives first, the bootstrap was dropped or lost — and
+        // accepting the stream anyway would silently run an INTACT ledger:
+        // every pre-join fracture invisible, settled islands never streaming
+        // again to correct it. The first live message is the only evidence,
+        // so it triggers the resync instead of being applied.
+        if (!this.bootstrapped) {
+          if (!this.resyncRequested) {
+            this.resyncRequested = true;
+            this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+          }
+          break;
+        }
         const message = decodeTopology(bytes);
+        // Read where the chunks about to be re-parented are drawn, before the
+        // ledger moves them.
+        this.captureDrawnPoses(message);
         const applied = this.topology.apply(message);
-        if (!applied && this.topology.needsResync) {
-          this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
-        } else {
-          // Settle closes tracks; wakes re-open them.
+        if (applied) {
+          this.seedPromotions(message);
+          for (const batch of message.batches) {
+            for (const promotion of batch.promotions) {
+              this.repaintBodies.add(bodyKey(promotion.structureId, promotion.islandId));
+            }
+            for (const migration of batch.migrations) {
+              this.repaintBodies.add(bodyKey(batch.structureId, migration.fromIslandSerial));
+              this.repaintBodies.add(bodyKey(batch.structureId, migration.toIslandSerial));
+            }
+          }
+          for (const settle of message.settled) {
+            this.repaintBodies.add(bodyKey(settle.structureId, settle.islandId));
+          }
+          for (const wake of message.wakes) {
+            this.repaintBodies.add(bodyKey(wake.structureId, wake.islandSerial));
+          }
+          // Settle closes tracks.
           for (const settle of message.settled) {
             const key = bodyKey(settle.structureId, settle.islandId);
             this.bodies.delete(key);
             // Dropping the track also drops its per-body staleness guard, so
             // without this a pre-settle datagram still in flight would look
             // new, overwrite the authoritative rest pose, and stick -- the
-            // body is asleep, so no later update ever corrects it.
+            // body is asleep, so no later update ever corrects it. The guard
+            // is deliberately NOT cleared on wake: a settle tick only ever
+            // moves forward, so it keeps rejecting genuinely older records
+            // while letting every post-wake record through.
             this.settledAtTick.set(key, message.simTick);
           }
-          for (const wake of message.wakes) {
-            this.settledAtTick.delete(bodyKey(wake.structureId, wake.islandSerial));
+          // A retired island will never stream again; without this its track
+          // is sampled for the rest of the match.
+          for (const batch of message.batches) {
+            for (const islandId of batch.retiredIslandIds) {
+              const key = bodyKey(batch.structureId, islandId);
+              this.bodies.delete(key);
+              this.settledAtTick.delete(key);
+            }
           }
           this.drainPending();
+        }
+        // Checked independently of `applied`: a successful apply still sets
+        // this when a migration names an island the client does not have, and
+        // that chunk stays on the wrong body until a bootstrap replaces it.
+        if (this.topology.needsResync && !this.resyncRequested) {
+          this.resyncRequested = true;
+          this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
         }
         break;
       }
@@ -161,6 +244,11 @@ export class CityClient {
         this.pendingRecords = [];
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
+        this.resyncRequested = false;
+        this.bootstrapped = true;
+        this.bootstrapCount += 1;
+        this.repaintAll = true;
+        this.repaintBodies.clear();
         // Bootstrap names the generation in flight. Recording it (empty) means
         // the parts that follow accumulate into it rather than being treated
         // as a rollover that discards what came before.
@@ -233,6 +321,144 @@ export class CityClient {
     }
   }
 
+  /** Creates and registers a body's presentation track. */
+  private createBodyState(key: number): BodyStreamState {
+    const track = new PresentationTrack(presentationConfig60Hz());
+    if (isRecording()) {
+      track.setAnomalyListener((anomaly) => {
+        recordCityEvent(
+          anomaly.kind === 'clock_rollback'
+            ? 'city_clock_rollback'
+            : anomaly.kind === 'correction_snap'
+              ? 'city_snap'
+              : 'city_implausible_jump',
+          {
+            body: key,
+            magnitude: anomaly.magnitude,
+            ...(anomaly.abandonedCorrectionM !== undefined
+              ? { abandonedCorrectionM: anomaly.abandonedCorrectionM }
+              : {}),
+          },
+        );
+      });
+    }
+    const state: BodyStreamState = { track, lastTick: 0, settledHint: false };
+    this.bodies.set(key, state);
+    return state;
+  }
+
+  /**
+   * Opens a presentation track for every island a fracture just created,
+   * anchored to where its chunks are already on screen.
+   *
+   * Without this a promoted island has no track until its first datagram, so
+   * `samplePresentation` never visits it, the render layer never marks it
+   * dirty, and its chunks keep the pose of the body they broke off until a
+   * record lands -- at which point they jump. Seeding turns that jump into the
+   * same bounded glide a late packet gets.
+   */
+  private seedPromotions(message: TopologyMessage): void {
+    if (this.latestSimTickAtMs === 0) {
+      // Nothing has been drawn yet, so there is no on-screen pose to hold.
+      return;
+    }
+    const renderTick =
+      this.latestSimTick + ((performance.now() - this.latestSimTickAtMs) / 1000) * 60;
+    for (const batch of message.batches) {
+      for (const promotion of batch.promotions) {
+        const key = bodyKey(promotion.structureId, promotion.islandId);
+        if (this.bodies.has(key)) {
+          // Serial reuse: the existing track reconciles this the usual way.
+          continue;
+        }
+        const body = this.topology.body(key);
+        if (!body || body.chunkSlots.length === 0) {
+          continue;
+        }
+        // Solve for the body pose that leaves the anchor chunk exactly where
+        // it is being drawn: worldPose = bodyPos + R * localOffset.
+        const anchor = body.chunkSlots[0];
+        const drawn = this.drawnChunkPose.get(anchor);
+        if (!drawn) {
+          continue;
+        }
+        const local = this.topology.chunkLocalOffset(anchor).position;
+        const seedRotation = drawn.rotation;
+        const worldOffset = qRotate(seedRotation, local);
+        const state = this.createBodyState(key);
+        state.track.seedPresented(
+          {
+            position: [
+              drawn.position[0] - worldOffset[0],
+              drawn.position[1] - worldOffset[1],
+              drawn.position[2] - worldOffset[2],
+            ],
+            rotation: seedRotation,
+            linearVelocity: promotion.linearVelocity,
+            angularVelocity: promotion.angularVelocity,
+          },
+          renderTick,
+        );
+        state.track.push({
+          tick: message.simTick,
+          position: promotion.position,
+          rotation: promotion.rotation,
+          linearVelocity: promotion.linearVelocity,
+          angularVelocity: promotion.angularVelocity,
+          class: PresentationClass.Ballistic,
+        });
+        state.lastTick = message.simTick;
+        if (isRecording()) {
+          const seedDelta = Math.hypot(
+            drawn.position[0] - worldOffset[0] - promotion.position[0],
+            drawn.position[1] - worldOffset[1] - promotion.position[1],
+            drawn.position[2] - worldOffset[2] - promotion.position[2],
+          );
+          recordCityEvent('city_seed', {
+            body: key,
+            simTick: message.simTick,
+            renderTick,
+            seedDeltaM: seedDelta,
+            members: body.chunkSlots.length,
+            speed: Math.hypot(
+              promotion.linearVelocity[0],
+              promotion.linearVelocity[1],
+              promotion.linearVelocity[2],
+            ),
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Where each chunk about to be re-parented is currently drawn, captured
+   * before the ledger changes. Reused across the topology branch only.
+   */
+  private readonly drawnChunkPose = new Map<number, { position: Vec3; rotation: Quat }>();
+
+  private captureDrawnPoses(message: TopologyMessage): void {
+    this.drawnChunkPose.clear();
+    if (this.latestSimTickAtMs === 0) {
+      return;
+    }
+    for (const batch of message.batches) {
+      for (const promotion of batch.promotions) {
+        for (const node of promotion.nodes) {
+          const slot = this.topology.slotOf(promotion.structureId, node);
+          if (this.drawnChunkPose.has(slot)) {
+            continue;
+          }
+          const pose = this.topology.chunkWorldPose(slot);
+          this.drawnChunkPose.set(slot, {
+            position: [pose.position[0], pose.position[1], pose.position[2]],
+            rotation: [...pose.rotation] as Quat,
+          });
+        }
+      }
+    }
+  }
+
   private applyRecord(
     datagram: ChunksDatagram,
     record: ChunksDatagram['records'][number],
@@ -271,12 +497,7 @@ export class CityClient {
 
     let state = this.bodies.get(record.bodyEntity);
     if (!state) {
-      state = {
-        track: new PresentationTrack(presentationConfig60Hz()),
-        lastTick: 0,
-        settledHint: false,
-      };
-      this.bodies.set(record.bodyEntity, state);
+      state = this.createBodyState(record.bodyEntity);
     }
     if (datagram.simTick <= state.lastTick) {
       return true; // stale reordered datagram — latest wins
@@ -295,7 +516,29 @@ export class CityClient {
           : PresentationClass.ContactActive,
     };
     state.track.push(snapshot);
-    this.topology.updateBodyPose(record.bodyEntity, position, record.rotation);
+    if (isCitySuspect(record.bodyEntity)) {
+      recordCityEvent('city_suspect_record', {
+        body: record.bodyEntity,
+        tick: datagram.simTick,
+        mode: record.mode,
+        x: position[0],
+        y: position[1],
+        z: position[2],
+        vx: record.linearVelocity[0],
+        vy: record.linearVelocity[1],
+        vz: record.linearVelocity[2],
+      });
+    }
+    // Placeholder only: a body that has never been sampled needs SOME ledger
+    // pose or its chunks compose against garbage. Once presentation owns the
+    // body, writing the raw pose here puts a value ~one interpolation delay
+    // AHEAD of everything drawn around it into the shared slot, and whenever
+    // that write survives to draw time the chunk visibly leads its island and
+    // snaps back — measured live as ~1.7 m alternation at datagram cadence on
+    // a perfectly smooth wire trajectory.
+    if (!state.lastPresented) {
+      this.topology.updateBodyPose(record.bodyEntity, position, record.rotation, 'raw');
+    }
     this.recordsApplied += 1;
     return true;
   }
@@ -352,7 +595,7 @@ export class CityClient {
           presented.rotation[3],
         ],
       };
-      this.topology.updateBodyPose(key, presented.position, presented.rotation);
+      this.topology.updateBodyPose(key, presented.position, presented.rotation, 'presented');
       live.add(key);
     }
     return live;

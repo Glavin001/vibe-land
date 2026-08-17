@@ -20,6 +20,7 @@ import type { CityClient } from '../city/cityClient';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import { shouldUpdateThisFrame, updateStrideForDistanceSq } from '../city/renderScheduling';
 import { updateCityE2E } from '../e2eBridge';
+import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
 
 const TMP_MATRIX = new THREE.Matrix4();
@@ -192,17 +193,179 @@ function writeInstance(
   slot: number,
   scales: Float32Array,
   instanceIds: Int32Array,
+  probeCtx?: ChunkWriteContext,
 ): void {
   const instanceId = instanceIds[slot];
   if (instanceId < 0) {
     return;
   }
   const pose = client.topology.chunkWorldPose(slot);
+  // Teleport probe: this is the last point every chunk transform passes
+  // through, so a jump seen here is a jump the player saw, whatever produced
+  // it upstream.
+  if (chunkTeleportProbe) chunkTeleportProbe(slot, pose.position, probeCtx);
   TMP_POSITION.set(pose.position[0], pose.position[1], pose.position[2]);
   TMP_QUATERNION.set(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
   TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
   TMP_MATRIX.compose(TMP_POSITION, TMP_QUATERNION, TMP_SCALE);
   mesh.setMatrixAt(instanceId, TMP_MATRIX);
+}
+
+/**
+ * Largest believable single-frame move for a chunk, in metres.
+ *
+ * Debris is speed-clamped server-side at 12 m/s; at 60 fps that is 0.2 m per
+ * frame, and a distance-strided chunk accumulates 8 frames of it. 1.5 m leaves
+ * headroom above that so only genuine discontinuities are reported.
+ */
+const CHUNK_TELEPORT_M = 1.5;
+
+/** Per-write context so a teleport event names its suspect, not just a slot. */
+interface ChunkWriteContext {
+  bodyKey: number;
+  settling: boolean;
+  bodySettled: boolean;
+}
+
+/**
+ * Settled islands hovering in mid-air: lowest chunk well above ground with no
+ * chunk of any island beneath its column. The netcode can only show what the
+ * ledger holds — if the ledger itself (confirmed against server truth by the
+ * resync differential) has floating settled islands, the fault is physics
+ * settling, not synchronisation. Coarse XZ hashing keeps the 2 Hz scan cheap.
+ */
+function countFloatingSettledIslands(client: CityClient): number {
+  const topology = client.topology;
+  const cell = 2.5;
+  const columns = new Map<string, number>();
+  const count = topology.chunkCount;
+  const poses: Array<{ x: number; y: number; z: number }> = new Array(count);
+  for (let slot = 0; slot < count; slot += 1) {
+    const pose = topology.chunkWorldPose(slot);
+    const p = { x: pose.position[0], y: pose.position[1], z: pose.position[2] };
+    poses[slot] = p;
+    const key = `${Math.round(p.x / cell)},${Math.round(p.z / cell)}`;
+    const lowest = columns.get(key);
+    if (lowest === undefined || p.y < lowest) columns.set(key, p.y);
+  }
+  let floating = 0;
+  for (const body of topology.allBodies()) {
+    if (!body.settled || body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
+    let minY = Infinity;
+    let minSlot = -1;
+    for (const slot of body.chunkSlots) {
+      if (poses[slot].y < minY) {
+        minY = poses[slot].y;
+        minSlot = slot;
+      }
+    }
+    if (minY < 1.5) continue; // near ground — supported or close enough
+    const p = poses[minSlot];
+    const key = `${Math.round(p.x / cell)},${Math.round(p.z / cell)}`;
+    const columnFloor = columns.get(key) ?? minY;
+    // Nothing beneath it in its own column within 1.5 m → hovering.
+    if (minY - columnFloor < 0.01 && minY > 1.5) floating += 1;
+  }
+  return floating;
+}
+
+/** Set while recording; see `installChunkTeleportProbe`. */
+let chunkTeleportProbe:
+  | ((slot: number, position: readonly number[], ctx?: ChunkWriteContext) => void)
+  | null = null;
+
+/**
+ * Slots whose last DRAWN position disagrees with the ledger by more than
+ * `toleranceM`.
+ *
+ * The ledger is the authority the renderer is supposed to be showing, so a
+ * standing disagreement means the screen is stale — a body whose pose changed
+ * without anything ever marking its chunks for a rewrite. Nothing else
+ * observes this: every other city metric reads the ledger, which is correct
+ * even when the screen is not.
+ */
+let countStaleDrawnChunks: ((client: CityClient, toleranceM: number) => number) | null = null;
+
+/**
+ * Watch every written chunk transform for single-frame jumps.
+ *
+ * Returns a disposer. Positions are held in a preallocated array so the probe
+ * costs one compare and three stores per chunk write. Each event carries the
+ * causal context of the write — which body, how long since this chunk's last
+ * write, and what kind of write — because a bare step size cannot distinguish
+ * "moved 2 m because it was not drawn for 500 ms" from "jumped 2 m between
+ * consecutive frames", and those have entirely different root causes.
+ */
+function installChunkTeleportProbe(chunkCount: number): () => void {
+  const previous = new Float32Array(chunkCount * 3).fill(Number.NaN);
+  const lastWriteMs = new Float32Array(chunkCount).fill(Number.NaN);
+  /** EMA of each slot's own write-to-write speed, m/s. */
+  const speedEst = new Float32Array(chunkCount);
+  const teleportStrikes = new Map<number, number>();
+  countStaleDrawnChunks = (client, toleranceM) => {
+    let stale = 0;
+    const count = client.topology.chunkCount;
+    for (let slot = 0; slot < count; slot += 1) {
+      const base = slot * 3;
+      if (Number.isNaN(previous[base])) continue;
+      const pose = client.topology.chunkWorldPose(slot);
+      const dx = pose.position[0] - previous[base];
+      const dy = pose.position[1] - previous[base + 1];
+      const dz = pose.position[2] - previous[base + 2];
+      if (Math.hypot(dx, dy, dz) > toleranceM) stale += 1;
+    }
+    return stale;
+  };
+  chunkTeleportProbe = (slot, position, ctx) => {
+    const base = slot * 3;
+    const px = previous[base];
+    const nowMs = performance.now();
+    // Teleport analysis needs the write's context; stale-detection only needs
+    // the position, so buildMesh's context-free initial writes still register.
+    if (!Number.isNaN(px) && ctx) {
+      const dx = position[0] - px;
+      const dy = position[1] - previous[base + 1];
+      const dz = position[2] - previous[base + 2];
+      const step = Math.hypot(dx, dy, dz);
+      const gapSec = Math.max((nowMs - lastWriteMs[slot]) / 1000, 1 / 240);
+      // Judge the step against this chunk's own recent speed, not a flat
+      // bound: debris legitimately flies at 40-70 m/s since the push-speed
+      // redesign removed the velocity clamp, and a distant body on an 8-frame
+      // stride covers multiple metres per write. A fault is a step the
+      // chunk's own trajectory cannot explain.
+      const explained = 3 * speedEst[slot] * gapSec + 0.3;
+      const anomalous = step > CHUNK_TELEPORT_M && step > explained;
+      speedEst[slot] = 0.7 * speedEst[slot] + 0.3 * (step / gapSec);
+      if (anomalous) {
+        recordCityEvent('city_chunk_teleport', {
+          slot,
+          stepM: step,
+          body: ctx.bodyKey,
+          settling: ctx.settling,
+          bodySettled: ctx.bodySettled,
+          sinceLastWriteMs: Number.isNaN(lastWriteMs[slot])
+            ? -1
+            : Math.round(nowMs - lastWriteMs[slot]),
+          x: position[0],
+          y: position[1],
+          z: position[2],
+        });
+        // Repeated teleports on one body: tap its raw record stream so the
+        // wire trajectory itself becomes inspectable.
+        const strikes = (teleportStrikes.get(ctx.bodyKey) ?? 0) + 1;
+        teleportStrikes.set(ctx.bodyKey, strikes);
+        if (strikes === 3) addCitySuspect(ctx.bodyKey);
+      }
+    }
+    previous[base] = position[0];
+    previous[base + 1] = position[1];
+    previous[base + 2] = position[2];
+    lastWriteMs[slot] = nowMs;
+  };
+  return () => {
+    chunkTeleportProbe = null;
+    countStaleDrawnChunks = null;
+  };
 }
 
 export function CityChunksLayer({
@@ -215,6 +378,8 @@ export function CityChunksLayer({
   const clientRef = useRef<CityClient | null>(null);
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
+  const lastMigrateAnomaliesRef = useRef({ missingDestination: 0, emptyDestination: 0 });
+  const teleportProbeRef = useRef<(() => void) | null>(null);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
 
@@ -245,6 +410,67 @@ export function CityChunksLayer({
       buildFailedForRef.current = null;
       dirtyBodiesRef.current.clear();
     }
+
+    // Measurement bridge for the resync differential: snapshot every chunk's
+    // ledger pose, force a fresh bootstrap, snapshot again — any chunk that
+    // moved was desynced, whatever the streaming-path detectors said. Only
+    // installed while recording.
+    if (isRecording() && !(window as any).__VIBE_CITY_DEBUG__) {
+      (window as any).__VIBE_CITY_DEBUG__ = {
+        snapshotLedger: (): number[] => {
+          const out: number[] = [];
+          const count = client.topology.chunkCount;
+          for (let slot = 0; slot < count; slot += 1) {
+            const pose = client.topology.chunkWorldPose(slot);
+            out.push(pose.position[0], pose.position[1], pose.position[2]);
+          }
+          return out;
+        },
+        requestResync: (): void => client.requestResync(),
+        bootstrapCount: (): number => client.bootstrapCount,
+        /**
+         * The biggest live island and where it is right now. A scenario can
+         * keep firing at a monolith as it tips and flies, which is the only
+         * way to test whether sustained fire actually breaks it down.
+         */
+        largestIsland: (): { key: number; chunks: number; center: number[] } | null => {
+          let best: { key: number; chunks: number } | null = null;
+          for (const body of client.topology.allBodies()) {
+            if (body.islandSerial === 0) continue;
+            if (!best || body.chunkSlots.length > best.chunks) {
+              best = { key: body.key, chunks: body.chunkSlots.length };
+            }
+          }
+          if (!best) return null;
+          const body = client.topology.body(best.key);
+          if (!body) return null;
+          let x = 0, y = 0, z = 0;
+          for (const slot of body.chunkSlots) {
+            const p = client.topology.chunkWorldPose(slot).position;
+            x += p[0]; y += p[1]; z += p[2];
+          }
+          const n = Math.max(1, body.chunkSlots.length);
+          return { key: best.key, chunks: best.chunks, center: [x / n, y / n, z / n] };
+        },
+      };
+    }
+
+    // Attach/detach the measurement probes as recording toggles, so a normal
+    // session pays one boolean compare per frame and nothing else.
+    const recording = isRecording();
+    if (recording && !teleportProbeRef.current) {
+      teleportProbeRef.current = installChunkTeleportProbe(client.topology.chunkCount);
+      client.topology.watchPoseSources = true;
+      client.topology.onAdoptionJump = (slot, stepM) => {
+        recordCityEvent('city_adoption_jump', { slot, stepM });
+      };
+    } else if (!recording && teleportProbeRef.current) {
+      teleportProbeRef.current();
+      teleportProbeRef.current = null;
+      client.topology.watchPoseSources = false;
+      client.topology.onAdoptionJump = null;
+    }
+
     if (!stateRef.current && buildFailedForRef.current !== client) {
       // A mesh build failure must not kill the frame loop or hide telemetry:
       // remember the failure, keep publishing stats, and let the session run
@@ -259,6 +485,7 @@ export function CityChunksLayer({
         console.error('[city] chunk mesh build failed; city will not render', error);
       }
     }
+
 
     // Telemetry is published before the mesh gate on purpose. It is the only
     // window E2E/QA has into decode, topology and bandwidth, and it must stay
@@ -312,6 +539,79 @@ export function CityChunksLayer({
           localOffset: [offset[0], offset[1], offset[2]],
         };
       }
+      // Invariant scans. Both walk the ledger, so they ride the existing 2 Hz
+      // telemetry cadence rather than running per frame.
+      if (isRecording()) {
+        const violations = client.topology.membershipViolations();
+        if (violations > 0) {
+          recordCityEvent('city_membership', { violations });
+        }
+        for (const suspect of client.topology.diagnoseFrames()) {
+          recordCityEvent('city_frame_diag', suspect);
+        }
+        const anomalies = client.topology.migrateAnomalies;
+        if (anomalies.missingDestination > lastMigrateAnomaliesRef.current.missingDestination
+          || anomalies.emptyDestination > lastMigrateAnomaliesRef.current.emptyDestination) {
+          recordCityEvent('city_migrate_anomaly', {
+            missingDestination: anomalies.missingDestination,
+            emptyDestination: anomalies.emptyDestination,
+          });
+          lastMigrateAnomaliesRef.current = { ...anomalies };
+        }
+      }
+      recordCityStats({
+        chunksTotal: stats.chunksTotal,
+        chunksAwake: stats.chunksAwake,
+        chunksSettled: stats.chunksSettled,
+        brokenBonds: stats.brokenBonds,
+        liveIslands: stats.liveIslands,
+        topoSeqGaps: stats.topoSeqGaps,
+        bytesPerSecond: stats.bytesPerSecond,
+        datagramsReceived: stats.datagramsReceived,
+        chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
+        orphanedChunks: stats.orphanedChunks,
+        chunksBelowGround,
+        minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
+        // 0.5 m: comfortably above quantisation and strided-motion lag, far
+        // below a chunk left at its intact pose while its island has fallen.
+        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
+        floatingSettledIslands: countFloatingSettledIslands(client),
+        largestIslandSpanM: (() => {
+          // What the player sees is SIZE, not chunk count: a 5-chunk island of
+          // bonded slabs is still a wall-sized panel. Span = longest edge of
+          // the island's world AABB.
+          let span = 0;
+          for (const body of client.topology.allBodies()) {
+            if (body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+            for (const slot of body.chunkSlots) {
+              const p = client.topology.chunkWorldPose(slot).position;
+              if (p[0] < minX) minX = p[0];
+              if (p[1] < minY) minY = p[1];
+              if (p[2] < minZ) minZ = p[2];
+              if (p[0] > maxX) maxX = p[0];
+              if (p[1] > maxY) maxY = p[1];
+              if (p[2] > maxZ) maxZ = p[2];
+            }
+            const s = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
+            if (s > span) span = s;
+          }
+          return span;
+        })(),
+        largestIslandChunks: (() => {
+          // A building half that shots cannot break apart shows up here as a
+          // flat line: the biggest island never shrinks however much fire it
+          // takes. Excludes the intact support body (serial 0), which is the
+          // whole un-fractured structure by definition.
+          let largest = 0;
+          for (const body of client.topology.allBodies()) {
+            if (body.islandSerial === 0) continue;
+            if (body.chunkSlots.length > largest) largest = body.chunkSlots.length;
+          }
+          return largest;
+        })(),
+      });
       updateCityE2E({
         chunksTotal: stats.chunksTotal,
         chunksAwake: stats.chunksAwake,
@@ -341,6 +641,23 @@ export function CityChunksLayer({
     const dirty = dirtyBodiesRef.current;
     for (const key of live) {
       dirty.add(key);
+    }
+
+    // Ledger mutations that never stream (settles, promotions, migrations —
+    // and everything, after a bootstrap) still have to reach the screen. The
+    // dirty set only carries streaming bodies, so these ride a separate
+    // one-shot queue. Adding to `dirty` (not writing directly) reuses the
+    // normal write path; a repainted body that is not live gets the settling
+    // final-write and then costs nothing again.
+    const repaint = client.drainRepaint();
+    if (repaint.all) {
+      for (const body of client.topology.allBodies()) {
+        dirty.add(body.key);
+      }
+    } else {
+      for (const key of repaint.bodies) {
+        if (client.topology.body(key)) dirty.add(key);
+      }
     }
     if (dirty.size === 0) {
       return;
@@ -383,7 +700,21 @@ export function CityChunksLayer({
           continue;
         }
       }
+      // A body drawn while its pose came from the raw writer is being shown at
+      // the newest streamed tick rather than the interpolated one — roughly an
+      // interpolation delay ahead of the frames around it. That is the
+      // two-writer flicker, and this is the only place it can be observed,
+      // because it depends on what the ledger holds at draw time.
+      if (recording) {
+        const { source, deltaM } = client.topology.poseSourceOf(key);
+        if (source === 'raw' && deltaM > 0) {
+          recordCityEvent('city_flicker', { body: key, deltaM, settling });
+        }
+      }
       const settledTint = body.settled ? 0.75 : 1;
+      const probeCtx: ChunkWriteContext | undefined = recording
+        ? { bodyKey: key, settling, bodySettled: body.settled }
+        : undefined;
       for (const slot of body.chunkSlots) {
         const instanceId = state.instanceIds[slot];
         if (instanceId < 0) {
@@ -393,7 +724,7 @@ export function CityChunksLayer({
         if (!mesh) {
           continue;
         }
-        writeInstance(mesh, client, slot, state.scales, state.instanceIds);
+        writeInstance(mesh, client, slot, state.scales, state.instanceIds, probeCtx);
         TMP_COLOR.setRGB(
           state.baseColors[slot * 3] * settledTint,
           state.baseColors[slot * 3 + 1] * settledTint,
