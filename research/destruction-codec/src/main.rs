@@ -113,6 +113,13 @@ struct DebrisTracksArgs {
 
 #[derive(Args)]
 struct DebrisCodecArgs {
+    /// Encode one stream per island instead of per chunk.
+    ///
+    /// Only meaningful on a Blast-model trace: chunks sharing an island are
+    /// rigid with respect to each other, so a member's pose is implied by its
+    /// root's and needs no records of its own. Off by default.
+    #[arg(long, default_value_t = false)]
+    island_stream: bool,
     /// Input TWTRACE1 path.
     #[arg(long)]
     trace: PathBuf,
@@ -591,6 +598,7 @@ fn dispatch() -> Result<()> {
             encode_parallel: args.encode_parallel,
             budget_mbps: args.budget_mbps,
             sync_min_radius_m: args.sync_min_radius_m,
+            island_stream: args.island_stream,
             live_reference_bytes: debris_codec::default_live_reference(),
             archive_reference_bytes: debris_codec::default_archive_reference(),
         }),

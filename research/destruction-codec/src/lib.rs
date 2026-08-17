@@ -17,6 +17,7 @@ pub mod evaluate;
 pub mod exact_island;
 pub mod hierarchy;
 pub mod interest;
+pub mod island;
 pub mod mask;
 pub mod metrics;
 pub mod presentation;

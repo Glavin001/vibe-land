@@ -58,6 +58,7 @@ use crate::mask::{motion_magnitude, MaskConfig};
 use crate::metrics::ContinuityConfig;
 use crate::presentation::{MotionSnapshot, PresentationConfig};
 use crate::replay::ReplayWriter;
+use crate::island::{encode_topology_block, IslandView, TopologyTickDelta};
 use crate::trace::{ActorState, Pose, TraceReader};
 
 /// Millimetre position grid, zigzag-varint coded so the range is unbounded.
@@ -1139,6 +1140,14 @@ impl Encoder {
         }
     }
 
+    /// Restate a body's shell radius.
+    ///
+    /// Island membership changes what a root has to hold: the bound covers the
+    /// whole island's reach, not the root chunk's own size.
+    pub(crate) fn set_radii(&mut self, radii: &[f32]) {
+        self.config.radii.copy_from_slice(radii);
+    }
+
     /// One tick of one body. Emits into the span buffer; the span is finalized
     /// later, once hindsight is available.
     pub(crate) fn push(&mut self, body: usize, tick: u32, state: &ActorState) {
@@ -1977,6 +1986,13 @@ struct DebrisReport {
     uncompressed_bytes: u64,
     compressed_bytes: u64,
     header_bytes: u64,
+    /// Island-stream mode only. Zero elsewhere, so a report from the per-chunk
+    /// path stays comparable field for field.
+    island_stream: bool,
+    islands_peak: u64,
+    topology_bytes: u64,
+    topology_blocks: u64,
+    total_with_topology_bytes: u64,
     average_mbps: f64,
     p50_block_mbps: f64,
     p95_block_mbps: f64,
@@ -2055,6 +2071,12 @@ pub struct DebrisCodecOptions {
     pub correction_ms: u32,
     pub snap_distance_m: f32,
     pub pixel_budget: f32,
+    /// Encode one stream per ISLAND rather than per chunk.
+    ///
+    /// Only meaningful on a Blast-model trace, where chunks sharing an island
+    /// are rigid with respect to each other and the trace's topology names the
+    /// membership. Default off, so every existing measurement is untouched.
+    pub island_stream: bool,
     pub live_reference_bytes: u64,
     pub archive_reference_bytes: u64,
 }
@@ -2119,6 +2141,10 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         options.sync_min_radius_m,
         options.encode_parallel,
     );
+    let mut encode_island = IslandView::new(body_count);
+    let mut encode_derivable = vec![false; body_count];
+    let mut topology_deltas: Vec<TopologyTickDelta> = Vec::new();
+    let mut islands_peak = 0usize;
     let mut blocks: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut pending: Vec<Record> = Vec::new();
     let mut block_first_tick = 0u32;
@@ -2180,7 +2206,29 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         if budget_bytes.is_some() {
             block_states.push(tick.states.clone());
         }
-        encoder.push_tick(tick.index, &tick.states);
+        if options.island_stream {
+            // Membership first: a chunk promoted this tick belongs to its new
+            // island for this tick's pose, not the previous one.
+            encode_island.update(&tick);
+            if let Some(delta) = TopologyTickDelta::from_tick(&tick) {
+                topology_deltas.push(delta);
+                // Membership moved, so the reach of at least one island moved
+                // with it. Restate every root's bound before this tick is fitted,
+                // and re-decide which islands are precise enough to derive.
+                encoder.set_radii(&encode_island.island_radii(&radii));
+                encode_derivable = encode_island.derivable(&radii, options.shell_cm / 100.0);
+            }
+            // Only island roots reach the wire. Every other chunk is rigid
+            // with respect to its root, so its pose is implied.
+            for (body, state) in tick.states.iter().enumerate() {
+                if encode_island.is_root(body) || !encode_derivable[encode_island.root_of(body)] {
+                    encoder.push(body, tick.index, state);
+                }
+            }
+            islands_peak = islands_peak.max(encode_island.island_count());
+        } else {
+            encoder.push_tick(tick.index, &tick.states);
+        }
 
         if (tick.index + 1) % span_ticks == 0 {
             encoder.finalize_span(block_first_tick, &mut pending);
@@ -2222,6 +2270,27 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
             compressed_bytes: framed,
             mbps: (framed as f64 * 8.0) / block_seconds / 1.0e6,
         });
+    }
+
+    // The topology track: which chunk belongs to which island, and which bonds
+    // broke. It is small but it is not free, and it has to be RELIABLE where
+    // the pose stream is loss-tolerant -- so it is counted as its own stream
+    // rather than folded into the pose bitrate.
+    let mut topology_bytes = 0u64;
+    let mut topology_blocks = 0u64;
+    if options.island_stream && !topology_deltas.is_empty() {
+        let mut start = 0usize;
+        while start < topology_deltas.len() {
+            let block_first = topology_deltas[start].tick - (topology_deltas[start].tick % block_ticks);
+            let mut end = start;
+            while end < topology_deltas.len() && topology_deltas[end].tick < block_first + block_ticks {
+                end += 1;
+            }
+            let encoded = encode_topology_block(&topology_deltas[start..end], block_first)?;
+            topology_bytes += (encoded.len() + BLOCK_HEADER_BYTES) as u64;
+            topology_blocks += 1;
+            start = end;
+        }
     }
 
     // ----- verification pass: rebuild every pose from re-parsed bytes -----
@@ -2300,6 +2369,9 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
     }
 
     let mut reader = TraceReader::open(&options.trace)?;
+    let mut verify_island = IslandView::new(body_count);
+    let mut verify_derivable = vec![false; body_count];
+    let mut island_resolved: Vec<Option<Pose>> = vec![None; body_count];
     let mut max_shell = 0.0f32;
     let mut max_rotation = 0.0f32;
     let mut violations = 0u64;
@@ -2313,6 +2385,15 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
             break;
         }
         telemetry.begin_tick(&tick);
+        if options.island_stream {
+            verify_island.update(&tick);
+            if !tick.topology.changed_roots.is_empty() {
+                verify_derivable = verify_island.derivable(&radii, options.shell_cm / 100.0);
+            }
+            // Roots are the lowest index in their island, so a root is always
+            // resolved before the members that read it.
+            island_resolved.iter_mut().for_each(|slot| *slot = None);
+        }
         for (body, state) in tick.states.iter().enumerate() {
             if radii[body] < options.sync_min_radius_m {
                 // Not on the wire: the client renders its own cosmetic piece,
@@ -2329,11 +2410,34 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
                 update_history[body].push_back(tick.index);
                 continue;
             }
-            let playback = &mut playbacks[body];
-            playback.advance_to(tick.index, dt, gravity);
-            let Some(pose) = playback.pose_at(tick.index, dt, gravity) else {
-                continue;
+            // A member chunk carries no records: it is rebuilt from its
+            // island root's decoded pose, which is the whole claim being
+            // measured. If islands were not rigid this is where it would show
+            // up -- as shell-bound violations and failed artifact gates, not as
+            // a quietly larger stream.
+            let composed = if options.island_stream
+                && !verify_island.is_root(body)
+                && verify_derivable[verify_island.root_of(body)]
+            {
+                island_resolved[verify_island.root_of(body)]
+                    .map(|root_pose| verify_island.compose(body, root_pose))
+            } else {
+                None
             };
+            let playback = &mut playbacks[body];
+            let pose = match composed {
+                Some(pose) => pose,
+                None => {
+                    playback.advance_to(tick.index, dt, gravity);
+                    match playback.pose_at(tick.index, dt, gravity) {
+                        Some(pose) => pose,
+                        None => continue,
+                    }
+                }
+            };
+            if options.island_stream {
+                island_resolved[body] = Some(pose);
+            }
             // Feed presentation with the same hold-coalescing the live path
             // uses: a body the wire is deliberately holding still must not be
             // scored as a freeze, and the closing synthetic snapshot keeps
@@ -2487,6 +2591,11 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
 
     let total_records: u64 = (0..5).map(|kind| encoder.kind_count(kind)).sum();
     let report = DebrisReport {
+        island_stream: options.island_stream,
+        islands_peak: islands_peak as u64,
+        topology_bytes,
+        topology_blocks,
+        total_with_topology_bytes: compressed_bytes + topology_bytes,
         trace: options.trace.display().to_string(),
         bodies: body_count,
         ticks: ticks_seen,
@@ -2608,6 +2717,26 @@ fn print_summary(report: &DebrisReport) {
         "  bytes/body/tick: {:.4}   vs live {:.2}x   vs archive {:.2}x",
         report.bytes_per_body_tick, report.ratio_vs_live, report.ratio_vs_archive
     );
+    if report.island_stream {
+        let seconds = report.ticks as f64 / report.physics_hz as f64;
+        println!(
+            "  island stream  : peak {} islands of {} chunks ({:.1}% carry records)",
+            report.islands_peak,
+            report.bodies,
+            100.0 * report.islands_peak as f64 / report.bodies as f64
+        );
+        println!(
+            "  topology track : {} bytes over {} blocks ({:.3} Mbps) -- reliable",
+            report.topology_bytes,
+            report.topology_blocks,
+            (report.topology_bytes as f64 * 8.0) / seconds / 1.0e6
+        );
+        println!(
+            "  TOTAL          : {} bytes ({:.3} Mbps) = poses + topology",
+            report.total_with_topology_bytes,
+            (report.total_with_topology_bytes as f64 * 8.0) / seconds / 1.0e6
+        );
+    }
     println!(
         "  records        : {} seg ({} ballistic / {} supported) / {} imp / {} sample-run ({} frames) / {} rest",
         report.segments,
