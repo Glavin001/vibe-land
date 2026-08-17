@@ -18,6 +18,7 @@
     "test": "vitest run",
     "test:world-docs": "vitest run src/world/worldDocumentPhysics.test.ts",
     "simulate": "node --env-file=../.env --import=tsx/esm simulate.ts",
+    "netlab": "node --env-file=../.env --import=tsx/esm netlab/run.mts",
     "benchmark": "node --env-file=../.env --import=tsx/esm benchmark.ts",
     "benchmark:smoke": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite smoke --environment local",
     "benchmark:default": "node --env-file=../.env --import=tsx/esm benchmark.ts --suite default --environment local",

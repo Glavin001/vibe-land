@@ -10,6 +10,7 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
@@ -2661,7 +2662,7 @@ export function GameWorld({
           )
         : null;
       const authoritativePosition = localAuthoritativeSample?.position ?? pos;
-      updateE2EBridgeFrameState({
+      const frameState: Parameters<typeof updateE2EBridgeFrameState>[0] = {
         cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
         cameraYaw: yawRef.current,
         cameraPitch: pitchRef.current,
@@ -2710,7 +2711,25 @@ export function GameWorld({
           inVehicle: ((client?.localPlayerFlags ?? 0) & 0x2) !== 0,
           dead: ((client?.localPlayerFlags ?? 0) & 0x4) !== 0,
         },
-      });
+      };
+      updateE2EBridgeFrameState(frameState);
+
+      if (isRecording()) {
+        const observed = remoteSummaries[0] ?? null;
+        recordFrame({
+          tMs: now,
+          frameDeltaMs: frameDelta * 1000,
+          renderedPosition: pos,
+          authoritativePosition,
+          authoritativeVelocity: frameState.movementTelemetry.authoritativeVelocity,
+          camYaw: yawRef.current,
+          camPitch: pitchRef.current,
+          stats: frameState.stats,
+          transport: frameState.stats.transport,
+          remote: observed,
+          remoteCount: remoteSummaries.length,
+        });
+      }
     }
 
     // Update remote player meshes

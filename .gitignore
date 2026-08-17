@@ -10,6 +10,7 @@ loadtest-results/
 benchmark-results/
 test-results/
 client/netlab/results/
+target-netlab/
 playwright-report/
 blob-report/
 logs/

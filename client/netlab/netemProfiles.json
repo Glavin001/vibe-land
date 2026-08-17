@@ -1,0 +1,11 @@
+{
+  "comment": "Single source of truth for netlab impairment profiles. delayMs is ONE-WAY per direction: the in-process PacketImpairment applies it to each direction separately, and scripts/netem.sh applies it on lo egress which both directions traverse once. lossPct is per-packet.",
+  "profiles": {
+    "wifi-good": { "delayMs": 25, "jitterMs": 8, "lossPct": 0.5 },
+    "wifi-bad": { "delayMs": 40, "jitterMs": 20, "lossPct": 2, "reorderPct": 1 },
+    "lte": { "delayMs": 90, "jitterMs": 35, "lossPct": 3 },
+    "congested": { "delayMs": 60, "jitterMs": 15, "lossPct": 0, "rateMbit": 5, "limitPkts": 100 },
+    "loss-burst": { "delayMs": 30, "jitterMs": 5, "lossPct": 0, "gemodelPct": { "p": 1, "r": 20 } },
+    "blackhole": { "delayMs": 0, "jitterMs": 0, "lossPct": 100 }
+  }
+}

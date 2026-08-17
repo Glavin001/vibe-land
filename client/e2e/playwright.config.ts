@@ -32,23 +32,9 @@ const BASE_URL = process.env.E2E_BASE_URL
     : `http://127.0.0.1:${CLIENT_PORT}`);
 const CHROMIUM_EXECUTABLE_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
-// Real GPU rendering. Without `--use-angle=vulkan` Chromium silently picks
-// SwiftShader even on a machine with a discrete GPU, and every frame-time
-// number then measures software rasterisation instead of the product: a city
-// collapse read 133 ms/frame under SwiftShader and 16.7 ms on the same box
-// through ANGLE/Vulkan. Hosts without a GPU still fall back automatically.
-const GPU_ARGS = [
-  '--enable-quic',
-  '--no-sandbox',
-  '--disable-gpu-sandbox',
-  '--ignore-certificate-errors',
-  '--allow-insecure-localhost',
-  '--use-gl=angle',
-  '--use-angle=vulkan',
-  '--enable-features=Vulkan',
-  '--ignore-gpu-blocklist',
-  '--enable-gpu-rasterization',
-];
+// GPU flags shared with the netlab runner — see helpers/gpuArgs.ts for why
+// they are load-bearing for every frame-time measurement.
+import { GPU_ARGS } from './helpers/gpuArgs';
 
 // Allow skipping webServer when servers are already running externally
 const SKIP_WEB_SERVER = process.env.E2E_SKIP_WEB_SERVER === '1';

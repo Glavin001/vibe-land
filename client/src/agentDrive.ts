@@ -14,6 +14,7 @@
 import type { ResolvedGameInput } from './input/types';
 import { LOOK_PITCH_MAX, LOOK_PITCH_MIN } from './input/resolver';
 import { BTN_CROUCH, BTN_JUMP, BTN_SPRINT } from './net/sharedConstants';
+import { recordEvent } from './netlab/recorder';
 
 export type AgentDriveMoveCommand = {
   /** +1 forward, -1 back. */
@@ -300,6 +301,22 @@ const bridge: VibeDriveBridge = {
     };
   },
 };
+
+/**
+ * Tee every command into the netlab recorder so input intent is time-aligned
+ * with the telemetry it produced. status() is read-only and stays untapped.
+ */
+const RECORDED_COMMANDS = [
+  'look', 'lookAt', 'faceCity', 'move', 'stop', 'clear', 'setSprint', 'setCrouch', 'jump', 'fire',
+] as const;
+
+for (const name of RECORDED_COMMANDS) {
+  const original = bridge[name] as (...args: unknown[]) => unknown;
+  (bridge as unknown as Record<string, unknown>)[name] = function wrapped(...args: unknown[]): unknown {
+    recordEvent('drive_cmd', { cmd: name, args });
+    return original.apply(bridge, args);
+  };
+}
 
 declare global {
   interface Window {

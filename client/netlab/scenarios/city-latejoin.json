@@ -1,0 +1,121 @@
+{
+  "name": "city-latejoin",
+  "description": "One client demolishes and lets the rubble fully settle (awake -> 0, stream -> 0), then a second joins. Reproduces a late joiner whose only pose source is the bootstrap.",
+  "symptom": [
+    "stale",
+    "teleporting",
+    "desync"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-latejoin-{iter}",
+  "durationMs": 185000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.10"
+  },
+  "clients": [
+    {
+      "role": "demolisher",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 6000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 6200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 17000,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 17200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 28000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            -12
+          ]
+        },
+        {
+          "at": 28200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 39000,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            3,
+            -12
+          ]
+        },
+        {
+          "at": 39200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 50000,
+          "cmd": "mark",
+          "args": "demolition-done-settling"
+        },
+        {
+          "at": 50200,
+          "cmd": "faceCity"
+        }
+      ]
+    },
+    {
+      "role": "latejoiner",
+      "joinDelayMs": 150000,
+      "drive": [
+        {
+          "at": 154000,
+          "cmd": "mark",
+          "args": "latejoiner-observing-fully-settled-city"
+        },
+        {
+          "at": 156000,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

@@ -1,0 +1,33 @@
+{
+  "name": "city-idle",
+  "description": "Untouched city, short hold. Calibrates the resync differential: on a pristine ledger the forced bootstrap must move zero chunks.",
+  "symptom": [
+    "jitter",
+    "freeze",
+    "bandwidth",
+    "teleporting"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-idle-{iter}",
+  "durationMs": 25000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "observer",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

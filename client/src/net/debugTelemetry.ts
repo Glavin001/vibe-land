@@ -1,4 +1,5 @@
 import type { DynamicBodyStateMeters } from './protocol';
+import { recordEvent } from '../netlab/recorder';
 
 const WINDOW_MS = 15000;
 const MAX_EVENTS = 64;
@@ -161,6 +162,7 @@ export class NetDebugTelemetry {
     const nowMs = performance.now();
     if (this.lastSnapshotAtMs > 0) {
       const gapMs = nowMs - this.lastSnapshotAtMs;
+      recordEvent('snapshot_received', { source, serverTick, gapMs, playerCount, dynamicBodyCount });
       this.snapshotGapsMs.push({ atMs: nowMs, value: gapMs });
       trimTimedValues(this.snapshotGapsMs, nowMs);
       if (gapMs >= SNAPSHOT_GAP_EVENT_THRESHOLD_MS && nowMs - this.lastSnapshotGapEventAtMs >= EVENT_COOLDOWN_MS) {
@@ -189,6 +191,7 @@ export class NetDebugTelemetry {
 
   observeDroppedSnapshot(source: string, incomingTick: number, latestTick: number): void {
     this.staleSnapshotsDropped += 1;
+    recordEvent('stale_drop', { source, incomingTick, latestTick });
     this.addEvent(
       performance.now(),
       `dropped stale snapshot tick ${incomingTick} from ${source} (latest ${latestTick})`,

@@ -1,0 +1,47 @@
+{
+  "name": "city-demolition-heavy",
+  "description": "16-building block (16512 chunks) demolished by cutting supports low. Finds the scale ceiling of the city chunk stream.",
+  "symptom": ["jitter", "freeze", "bandwidth", "teleporting"],
+  "path": "/city?portal=true",
+  "matchId": "city-heavy-{iter}",
+  "durationMs": 120000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+    "VIBE_CITY_GRID": "4",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.06"
+  },
+  "clients": [
+    {
+      "role": "mover",
+      "drive": [
+        { "at": 4000, "cmd": "faceCity" },
+        { "at": 6000, "cmd": "mark", "args": "pre-demolition-baseline" },
+        { "at": 14000, "cmd": "mark", "args": "demolition-start" },
+        { "at": 14000, "cmd": "lookAt", "args": [14, 3, 14] },
+        { "at": 14200, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 25500, "cmd": "lookAt", "args": [-14, 3, 14] },
+        { "at": 25700, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 37000, "cmd": "lookAt", "args": [14, 3, -14] },
+        { "at": 37200, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 48500, "cmd": "lookAt", "args": [-14, 3, -14] },
+        { "at": 48700, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 60000, "cmd": "lookAt", "args": [42, 4, 42] },
+        { "at": 60200, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 71500, "cmd": "lookAt", "args": [-42, 4, 42] },
+        { "at": 71700, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 83000, "cmd": "lookAt", "args": [42, 4, -42] },
+        { "at": 83200, "cmd": "fire", "args": { "holdMs": 11000 } },
+        { "at": 94500, "cmd": "mark", "args": "demolition-end-observe-settle" },
+        { "at": 95000, "cmd": "faceCity" },
+        { "at": 100000, "cmd": "move", "args": { "forward": 1, "durationMs": 5000 } },
+        { "at": 107000, "cmd": "move", "args": { "strafe": 1, "durationMs": 5000 } },
+        { "at": 114000, "cmd": "stop" }
+      ]
+    }
+  ],
+  "iterations": 1
+}
