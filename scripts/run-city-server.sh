@@ -92,12 +92,14 @@ export WT_BIND_ADDR="${WT_BIND_ADDR:-0.0.0.0:4434}"
 export WT_PUBLIC_URL="${WT_PUBLIC_URL:-https://209.121.195.117:40651}"
 export WT_CERT_PEM="${WT_CERT_PEM:-$REPO_ROOT/.certs/page-cert.pem}"
 export WT_KEY_PEM="${WT_KEY_PEM:-$REPO_ROOT/.certs/page-key.pem}"
-# The fractured pack, not the box high-rise. It authors five materials with a
-# ductile frame (fatal/elastic = 10) and a deliberately brittle facade (1.2), so
-# a struck panel lets go at the impact site while the frame yields instead of
-# snapping. The box pack is ScenePack v1: one material at band 2.5 everywhere,
-# with the frame no stronger than the cladding.
-export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-highrise-10f.json}"
+# The mixed-archetype district: 15,918 chunks of wall, slab, column and footing
+# across a 289x273 m block, 60 m at the tallest, 19,447 t. Like the single
+# fractured high-rise it authors five materials with a ductile frame
+# (fatal/elastic = 10) and a deliberately brittle facade (1.2), so a struck panel
+# lets go at the impact site while the frame yields instead of snapping.
+# fractured-highrise-10f.json is the same pack format at 1/14 the size and is
+# the faster choice for iterating on stress behaviour.
+export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-district.json}"
 # Full authored strength. The old 0.10 made buildings ~10x weaker than the
 # geometry was drawn for, to compensate for shots that could not fracture
 # anything on their own -- and at that scale the structure cannot even hold
@@ -107,8 +109,10 @@ export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-highrise-10f.json}"
 # per-material band and cannot be reached from here.
 export VIBE_CITY_STRESS_LIMIT_SCALE="${VIBE_CITY_STRESS_LIMIT_SCALE:-1.0}"
 # Grid edge in buildings; pitch comes from the pack footprint, so this widens
-# the map without crowding it.
-export VIBE_CITY_GRID="${VIBE_CITY_GRID:-4}"
+# the map without crowding it. The district pack is already a laid-out block of
+# mixed buildings spanning 289x273 m, so it wants a grid of 1 -- raising this
+# tiles whole districts and multiplies 15,918 chunks by grid^2.
+export VIBE_CITY_GRID="${VIBE_CITY_GRID:-1}"
 # Structural packs author a load path through frame, slabs and facade. Floor
 # truncation slices at a Y cutoff and can leave panels hanging off a removed
 # slab, so varied heights stay off unless asked for.

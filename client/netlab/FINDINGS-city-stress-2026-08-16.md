@@ -437,3 +437,39 @@ constant at 8.90 from frame 30 to frame 2750, and city bandwidth over the same w
 accumulator, so a single join spike pins it for the rest of the run and it cannot recover.
 Left failing rather than retuned -- the bootstrap paint is worth optimising on its own
 merits, and moving the threshold would only hide it.
+
+## Scaling up: the mixed-archetype district
+
+`fractured-district.json` -- "Fractured city district (mixed archetypes, reach-based
+spacing)" -- came from the blast-stress-solver mini-city assets. It is the same ScenePack v2
+container as the high-rise, same five-material table, same ductile-frame/brittle-facade
+bands, so the loader needed no change:
+
+| | fractured-highrise-10f | fractured-district |
+|---|---|---|
+| nodes / bonds | 1,096 / 3,451 | **15,918 / 48,670** |
+| footprint | 12 m | **289 x 273 m, 60 m tall** |
+| mass | -- | 19,447 t |
+| archetypes | one tower | wall 5,440 / slab 5,416 / column 4,636 / footing 426 |
+
+It runs at `VIBE_CITY_GRID=1`: the pack is already a laid-out block, and the grid tiles
+whole districts, so grid^2 multiplies 15,918 chunks. Spawn needs no change either --
+`spawn_ring_radius_m` is `grid_half_extent + footprint/2 + 12`, which at grid 1 is 0 + 144 +
+12 = 156 m, the district edge plus a margin. You spawn at the perimeter and walk in.
+
+**Idle, 60 s:** 0 broken bonds for the entire run, 0 overstressed, 0 awake bodies,
+utilisation 0.9995, 378 bonds above half. The district holds itself up exactly as the single
+tower does.
+
+**Server cost is comfortable:** tick avg 5.5 ms / p95 7.3 ms against a 16.6 ms budget, city
+step 4.6 ms, blast solve 4.1 ms, stress solve median 3.49 ms (max 6.40). Note the overlay
+reports the stress solver running on **CPU** with `gpu_stress_structures 0` -- the GPU solver
+is not engaged for this pack, so that 3.5 ms is CPU work and is the obvious lever if the
+district needs to get bigger still.
+
+**The cost lands on the client renderer,** which is where the layer attribution puts it
+(NETWORK/SERVER/SYNC all OK, RENDER degraded): `cityChunkUpdateP95MaxMs` 8.90 -> **25.50 ms**
+and `frameGapP99Ms` 18.60 -> 29.50 ms, at 65 fps mean. As with the pack switch, the
+chunk-update figure is a non-decaying accumulator pinned by the bootstrap paint of 15,918
+chunks -- constant at 25.50 from the first quarter to the last -- so it measures the join
+spike, not steady-state cost. Steady state is 60 fps with the city stream at 0.00 Mbps.
