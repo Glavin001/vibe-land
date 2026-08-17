@@ -28,6 +28,23 @@ use crate::types::Pose;
 
 pub const CITY_WIRE_VERSION: u8 = 2;
 
+/// Wire v3: same packet kinds, denser encodings on the reliable channel.
+///
+/// v2 spends more on topology, baselines and bootstrap than on the pose stream
+/// they support -- measured at 12.6k islands, ~3.2 Mbps reliable against
+/// 2.47 Mbps of poses, which is what pushes a client past its own burst
+/// ceiling. v3 keeps the packet kinds and the decoded message shapes identical
+/// so only the byte layer changes, and clients negotiate the version in the
+/// session config rather than guessing.
+pub const CITY_WIRE_V3: u8 = 3;
+
+/// Versions this build can encode. Ordered oldest-first.
+pub const SUPPORTED_CITY_WIRE_VERSIONS: [u8; 2] = [CITY_WIRE_VERSION, CITY_WIRE_V3];
+
+pub fn is_supported_city_wire_version(version: u8) -> bool {
+    SUPPORTED_CITY_WIRE_VERSIONS.contains(&version)
+}
+
 pub const PKT_CITY_CHUNKS: u8 = 119;
 pub const PKT_CITY_TOPOLOGY: u8 = 120;
 pub const PKT_CITY_BASELINE: u8 = 121;

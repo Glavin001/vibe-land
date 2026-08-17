@@ -56,6 +56,9 @@ pub struct EncoderConfig {
     pub classifier: ClassifierConfig,
     pub priority: PriorityConfig,
     pub interest: InterestConfig,
+    /// Which byte layout the reliable channel uses. The decoded message shapes
+    /// are identical across versions; only the encoding differs.
+    pub wire_version: u8,
 }
 
 impl EncoderConfig {
@@ -69,6 +72,7 @@ impl EncoderConfig {
             classifier: ClassifierConfig::default(),
             priority: PriorityConfig::from_hz(sim_hz),
             interest: InterestConfig::validated(sim_hz),
+            wire_version: crate::wire::CITY_WIRE_VERSION,
         }
     }
 }
@@ -261,6 +265,15 @@ impl ChunkStreamEncoder {
     /// rebuild, which otherwise silently drops everyone's stream.
     pub fn clients(&self) -> Vec<u64> {
         self.clients.keys().copied().collect()
+    }
+
+    pub fn set_wire_version(&mut self, version: u8) {
+        debug_assert!(crate::wire::is_supported_city_wire_version(version));
+        self.config.wire_version = version;
+    }
+
+    pub fn wire_version(&self) -> u8 {
+        self.config.wire_version
     }
 
     pub fn add_client(&mut self, client: u64) {

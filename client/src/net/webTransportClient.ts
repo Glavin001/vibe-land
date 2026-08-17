@@ -65,6 +65,7 @@ export type SessionConfigResponse = {
   client_movement_mode: number;
   city_world?: boolean;
   city_manifest_hash?: string;
+  city_wire_version?: number;
 };
 
 /** Generous enough for a cold server, short enough that a player is not stranded. */

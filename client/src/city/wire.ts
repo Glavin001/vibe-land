@@ -15,6 +15,9 @@ import {
 import type { Quat, Vec3 } from './vec';
 
 export const CITY_WIRE_VERSION = 2;
+/** Denser reliable-channel layout; identical decoded shapes. */
+export const CITY_WIRE_V3 = 3;
+export const SUPPORTED_CITY_WIRE_VERSIONS: readonly number[] = [CITY_WIRE_VERSION, CITY_WIRE_V3];
 
 export const RECORD_FLAG_SETTLED_HINT = 0b0000_1000;
 export const RECORD_FLAG_KINEMATIC_SUPPORT = 0b0001_0000;
@@ -256,15 +259,23 @@ function readVelocities(reader: Reader): { linear: Vec3; angular: Vec3 } {
   };
 }
 
-function expectHeader(reader: Reader, expectedKind: number): void {
+/**
+ * Reads the two header bytes and returns the wire version.
+ *
+ * Returning the version rather than asserting one lets a single decoder body
+ * branch on layout, which is what keeps v2 and v3 sharing every downstream
+ * interface instead of forking the client.
+ */
+function expectHeader(reader: Reader, expectedKind: number): number {
   const kind = reader.u8();
   if (kind !== expectedKind) {
     throw new Error(`unexpected packet kind ${kind} (wanted ${expectedKind})`);
   }
   const version = reader.u8();
-  if (version !== CITY_WIRE_VERSION) {
+  if (!SUPPORTED_CITY_WIRE_VERSIONS.includes(version)) {
     throw new Error(`unsupported city wire version ${version}`);
   }
+  return version;
 }
 
 export function decodeChunksDatagram(bytes: Uint8Array): ChunksDatagram {

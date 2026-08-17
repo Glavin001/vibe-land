@@ -698,6 +698,10 @@ struct SessionConfig {
     city_world: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     city_manifest_hash: Option<String>,
+    /// Reliable-channel byte layout this match speaks. The client decodes
+    /// against this rather than assuming, so a v2 client and a v3 match fail
+    /// loudly at the handshake instead of throwing mid-stream.
+    city_wire_version: u8,
 }
 
 struct PlayerConnection {
@@ -1034,6 +1038,7 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    let config_match_id = query.match_id.clone();
     let city_world = city::is_city_match(&query.match_id);
     let city_manifest_hash = if city_world {
         city::manifest_asset().map(|(hash, _, _)| hash.clone())
@@ -1052,6 +1057,7 @@ async fn session_config_handler(
         client_movement_mode: state.inner.physics.client_movement_mode(),
         city_world: city_world && city_manifest_hash.is_some(),
         city_manifest_hash,
+        city_wire_version: city::city_wire_version(&config_match_id),
     };
     axum::Json(config)
 }
@@ -1572,13 +1578,18 @@ async fn run_match_loop(
         #[cfg(not(feature = "destruction"))]
         let world = None;
         match city::CityRuntime::open(SIM_HZ as u32, world) {
-            Ok(runtime) => {
+            Ok(mut runtime) => {
+                // Fixed for the life of the match: the version is announced in
+                // the session config, so every client that joins has already
+                // agreed to this layout.
+                runtime.set_wire_version(city::city_wire_version(&match_id));
                 info!(
                     %match_id,
                     structures = runtime.manifest.structures.len(),
                     chunks = runtime.manifest.total_chunks(),
                     bonds = runtime.manifest.total_bonds(),
                     physx = runtime.is_physx(),
+                    city_wire = runtime.wire_version(),
                     "destructible city initialized"
                 );
                 Some(runtime)

@@ -74,6 +74,27 @@ pub fn is_city_match(match_id: &str) -> bool {
     match_id.starts_with(CITY_MATCH_PREFIX)
 }
 
+/// Match ids starting with this opt into the v3 wire regardless of the env
+/// default, so a new codec can be exercised against real clients without
+/// changing what every other match gets.
+const CITY_V3_MATCH_PREFIX: &str = "cityv3";
+
+/// Which city wire a match speaks.
+///
+/// Per match rather than per process: a v3 rollout wants one match on the new
+/// encoding beside the fleet on the old one, and rollback to be a match id
+/// rather than a deploy. `VIBE_CITY_WIRE` moves the default once v3 has soaked.
+pub fn city_wire_version(match_id: &str) -> u8 {
+    if match_id.starts_with(CITY_V3_MATCH_PREFIX) {
+        return vibe_land_destruction::wire::CITY_WIRE_V3;
+    }
+    std::env::var("VIBE_CITY_WIRE")
+        .ok()
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|version| vibe_land_destruction::wire::is_supported_city_wire_version(*version))
+        .unwrap_or(vibe_land_destruction::wire::CITY_WIRE_VERSION)
+}
+
 fn prefer_synthetic() -> bool {
     matches!(
         std::env::var("VIBE_CITY_SYNTHETIC").as_deref(),
@@ -351,6 +372,19 @@ impl CityRuntime {
         }
         let _ = prefer_synthetic();
         Self::synthetic(sim_hz)
+    }
+
+    /// Select the reliable-channel encoding for this match.
+    ///
+    /// Set once at match creation, before any client joins, because the version
+    /// is announced in the session config and a mid-match change would leave
+    /// joined clients decoding a layout they never agreed to.
+    pub fn set_wire_version(&mut self, version: u8) {
+        self.encoder.set_wire_version(version);
+    }
+
+    pub fn wire_version(&self) -> u8 {
+        self.encoder.wire_version()
     }
 
     /// Rebuild the city undamaged, preserving the client list.

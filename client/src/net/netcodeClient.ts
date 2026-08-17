@@ -167,11 +167,19 @@ export class NetcodeClient {
     }
   }
 
-  citySessionConfig(): { cityWorld: boolean; manifestHash?: string; baseUrl: string } {
+  citySessionConfig(): {
+    cityWorld: boolean;
+    manifestHash?: string;
+    baseUrl: string;
+    wireVersion: number;
+  } {
     const config = this.wtClient?.sessionConfig;
     return {
       cityWorld: Boolean(config?.city_world && config?.city_manifest_hash),
       manifestHash: config?.city_manifest_hash,
+      // A server that predates the field speaks v2; that is the only version
+      // it could have meant.
+      wireVersion: config?.city_wire_version ?? CITY_WIRE_VERSION,
       // Page-relative: the manifest is served over the game server's HTTP
       // port, which is not the WebTransport port in `config.url`, so that URL
       // cannot be used to derive it. In dev the Vite proxy resolves this; on a
