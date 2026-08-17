@@ -1,5 +1,35 @@
 # destruction-codec — orientation for a new session
 
+> **Moved 2026-08-17.** This crate now lives inside the vibe-land repo at
+> `research/destruction-codec`, as a workspace member, next to the simulation
+> that produces its traces. `target/` is the workspace target. The reference
+> traces stay outside the repo under `/root/workspace/codec-results/` — do not
+> delete them. Verification is `.claude/skills/codec-verify` at the repo root.
+>
+> **The live line is now the Blast model, not D6.** `record-city-trace`
+> (`server/src/bin/record_city_trace.rs`) records TWTRACE1 from the production
+> PhysX GPU + Blast stress solver, where an intact structure is one kinematic
+> body and fracture migrates shapes onto child bodies. Chunks sharing an island
+> are rigid **by construction** — the property the D6 hierarchy assumed and did
+> not have. `debris-codec --island-stream` (default off) streams one record per
+> island root and derives the members.
+>
+> Current state of that line, measured on the 30 s 10-floor reference:
+> deriving members unguarded is **1.56x fewer bytes** but fails the gates,
+> because the wire's 32-bit quaternion (2.77 mrad) times a member's lever arm is
+> an error floor the fitter cannot cross — 8.6 cm at 31 m. Guarded to
+> precision-safe islands it passes and earns +2.7% at the 0.5 cm bound, and
+> **1.39x at the far tier's 20 cm bound**, which is where the 6.60 Mbps
+> far-field floor lives. Next levers, in order: wire island-stream input into
+> the tracks layer's coarse tier (no wire change, the far-field win is sitting
+> there), then widen the rotation field for roots (~4 more bits per component).
+> Full arithmetic: `docs/destruction-codec-island-stream-2026-08-17.md`.
+>
+> Everything below this box describes the D6-era work. Those numbers are frozen
+> baselines and still gate every change; read them as history plus tripwires,
+> not as the current direction.
+
+
 Streams authoritative rigid-body destruction state (thousands of simultaneously-moving bodies) from
 one simulation to many viewers. Read this before proposing work: **most of this project's value is
 in what has been ruled out**, and several attractive-sounding ideas have already been measured and
