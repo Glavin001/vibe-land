@@ -1,0 +1,67 @@
+{
+  "name": "city-topple",
+  "description": "Sever a tower's supports, then stop shooting and let the half fall and land. Isolates the contact-derived standing load: no weapon energy is involved after the cut.",
+  "symptom": [
+    "monolith",
+    "no-crumple-on-landing"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-topple-{iter}",
+  "durationMs": 95000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+    "VIBE_CITY_GRID": "2",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.10"
+  },
+  "clients": [
+    {
+      "role": "severer",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 6000,
+          "cmd": "mark",
+          "args": "cut-supports"
+        },
+        {
+          "at": 6000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 6200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 14000
+          }
+        },
+        {
+          "at": 21000,
+          "cmd": "mark",
+          "args": "stop-firing-let-it-fall"
+        },
+        {
+          "at": 21500,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 60000,
+          "cmd": "mark",
+          "args": "landed-and-settling"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

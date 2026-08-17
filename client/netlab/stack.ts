@@ -135,6 +135,27 @@ export async function startStack(
   fs.mkdirSync(logDir, { recursive: true });
   const serverPort = new URL(config.serverHttpUrl).port;
   const clientPort = new URL(config.clientUrl).port;
+
+  // Refuse to run against someone else's stack. A spawn whose bind fails dies
+  // quietly, and the readiness probe below then succeeds against whatever was
+  // already listening -- so the run silently measures a stale binary and
+  // reports it as a result. That happened: six hours of server-side numbers
+  // came from a process started before the code under test existed.
+  for (const [label, url] of [
+    ['game server', config.serverHttpUrl],
+    ['vite', config.clientUrl],
+  ] as const) {
+    const reachable = await fetch(url, { signal: AbortSignal.timeout(1500) })
+      .then(() => true)
+      .catch(() => false);
+    if (reachable) {
+      throw new Error(
+        `${label} port already in use (${url}). A previous netlab stack is still running, ` +
+          `and reusing it would measure that build instead of this one. ` +
+          `Stop it first: fuser -k ${new URL(url).port}/tcp`,
+      );
+    }
+  }
   console.log(
     `[netlab] starting isolated stack (server :${serverPort}, wt udp :${config.wtUdpPort}, vite :${clientPort})...`,
   );

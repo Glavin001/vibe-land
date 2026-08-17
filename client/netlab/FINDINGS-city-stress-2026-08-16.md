@@ -298,3 +298,58 @@ works at the bond level.
 
 Gate for the fix: `city-monolith` must drive `cityLargestIslandSpanM` below ~3 m within the
 80 s fire window (today: stalls at 6.6 m).
+
+---
+
+# Load-signal fix (2026-08-17): severed islands carry weight again
+
+A severed island received only uniform gravity, which on an unanchored body is a
+rigid translation — no relative motion across any bond, so stress exactly zero. The ~37%
+of limit the structure's own weight was carrying vanished at severance, nothing cascaded,
+and the half became indestructible. Two signals were missing (both already implemented
+downstream, neither called) plus the observability to tell the difference.
+
+## Changes
+- **Centrifugal**: the adapter now calls `addCentrifugalAcceleration` per spinning body
+  (omega rotated into the body frame like gravity; centre = mass-weighted mean of member
+  node centroids in STRUCTURE space, cached, invalidated on split).
+- **Standing contact load**: `eNOTIFY_THRESHOLD_FORCE_PERSISTS` on by default, so a resting
+  island keeps receiving the ground's reaction instead of reporting one impact and going
+  silent. Paired with a gravity fix — sleeping bodies had contacts consumed but gravity
+  skipped, which with PERSISTS on would push a pile up with no weight down (wrong-signed
+  stress).
+- **Observability**: `overstressed_bonds` (the quantity that gates fracture) and bond
+  utilisation (stress ÷ that bond's own elastic limit) now cross the FFI to the stats.
+
+## A/B, same binary, `city-topple` (sever a tower, stop firing, let it land)
+
+| | signals ON | signals OFF (pre-fix) |
+|---|---|---|
+| peak overstressed bonds | **183** | 53 |
+| peak bond utilisation | **3559** | 67 |
+| total bonds broken | **12,409** | 11,471 |
+| largest island after landing | **16.7 m / 80 chunks** | 20.3 m / 245 chunks |
+
+The severed half now breaks down substantially further on landing: 938 more bonds broken
+(+8%), and the biggest surviving island drops from 245 chunks to 80. Residual utilisation at
+rest reads *lower* with signals on (0.681 vs 0.913) — expected, and not a regression: the ON
+run broke more bonds, which relieved more load, so it settles at lower residual stress.
+
+## Verified at solver level too
+`blast-stress-solver-rs/tests/free_island_load_test.rs` pins all four cases: anchored+gravity
+loads; free+gravity is exactly zero (correct physics, and the whole bug); free+contact
+reaction loads again; free+spin loads. The zero case has a test so nobody "fixes" it later by
+leaking stress into free fall.
+
+## Measurement-integrity bug found while verifying
+Every `--stack dev` run for six hours had been silently reusing a netlab stack left running
+from 00:51: the spawned server failed to bind, died quietly, and the readiness probe then
+succeeded against the *old* process. The first city-topple run reported all-zero signals for
+exactly this reason. `startStack` now refuses to run when the ports are already occupied,
+naming the port and how to free it, rather than measuring a stale build and calling it a
+result.
+
+## Still open (unchanged, deliberate)
+Shots into an unloaded island remain weak — that is the weapon model, not the load path, and
+radial damage is deferred. Peak utilisation of 3559x the elastic limit during impact suggests
+contact impulse magnitudes deserve their own look.
