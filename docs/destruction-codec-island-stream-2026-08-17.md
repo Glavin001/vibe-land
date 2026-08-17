@@ -76,7 +76,7 @@ Equivalently, the largest island whose members can stay inside the bound:
 This is a floor of the representation, not of the encoder. Fitting the root
 harder cannot cross it, and neither can more bytes.
 
-## Result 3: guarded, it passes -- and wins nothing at the near-field bound
+## Result 3 (superseded): guarded on the narrow grid, it wins nothing
 
 `--island-stream` now derives members only where precision allows
 (`IslandView::derivable`), and streams them per-chunk otherwise. Gates pass
@@ -90,7 +90,9 @@ nothing qualifies:
 | island, guarded | 1,235,439 | PASS |
 
 **+2.7% -- a small loss**, being the topology track paid for with almost no
-derivation earned. At this bound the mechanism is inert by its own safety rule.
+derivation earned. At this bound the mechanism was inert by its own safety rule.
+
+**This is what the wide rotation grid fixes (Result 5).**
 
 ## Result 4: the far field is where this pays
 
@@ -113,26 +115,62 @@ cadence and stride". Island streaming is the first mechanism that changes the
 *number of bodies* rather than the cost per body, and it is precision-safe
 exactly where that floor is.
 
+## Result 5: wide rotation for roots turns the loss into a win
+
+Island roots now quantize rotation on a **16-bit-per-component** grid (7 bytes
+absolute against the narrow 4), selected per body: a root earns it only when its
+island's reach exceeds what the narrow grid can hold. Members are never wide --
+their own radius is the only lever arm they have. Mode bytes name the format, so
+wide and narrow bodies share one stream and a body may switch grids mid-run
+without a resync.
+
+Two things had to be right beyond the grid itself:
+
+- **Analytic segments must decode on the grid they were written on.** Reading a
+  wide value's low 32 bits as a narrow quaternion produced a 174 degree, 7.5 m
+  outlier -- garbage orientation multiplied by the lever arm.
+- **A root that others are rebuilt from forgoes masking slack.** Masking widens
+  a body's bound in proportion to its own motion, but a member near the rotation
+  axis moves slowly and is judged against a tighter bound than the root was
+  fitted to. Holding such a root to the base shell (the floor of `shell_for`) is
+  guaranteed inside every member's allowance. That alone took violations from
+  999 to 7.
+
+Same trace, same 0.5 cm masked contract:
+
+| | bytes | gates | err p95 | violations |
+|---|---:|---|---:|---:|
+| per-chunk | 1,203,144 | PASS | 0.589 cm | 0 |
+| island, guarded narrow | 1,235,439 | PASS | -- | 4 |
+| **island + wide** | **985,445** | **PASS** | **0.380 cm** | 7 |
+
+**1.22x fewer bytes at better accuracy.** The accuracy is not a coincidence:
+strict roots are held to the base bound rather than the masked one, so the
+stream is tighter than the per-chunk path it replaces.
+
+Far tier, 20 cm / 2 s flush: **468,414 -> 336,684 B (1.39x)**, p95 5.771 ->
+4.743 cm.
+
 ## What this says to do next
 
-1. **Widen the rotation field for island roots.** To derive a 31 m island at
-   0.5 cm needs a quantum of 1.6e-4 rad, about 4 more bits per component (10 ->
-   14, so 6 bytes rather than 4). Rotation is 28% of payload today, and only
-   roots would pay, so a 1.5x-ish win at near-field fidelity looks reachable --
-   but that is a projection, not a measurement, and the wire change touches
-   every record type and all four rotation modes.
-2. **Take the far-field win now.** It needs no wire change; it needs the tracks
-   layer to feed island-stream input into the coarse tier (Phase 3, not done).
-3. Do not tune the derivable threshold. It is derived from the quantum and the
-   bound; if it looks wrong, the wire is wrong.
+1. **Feed island-stream input into the tracks layer's coarse tier** (Phase 3,
+   not done). The far-field win is measured and needs no further wire work.
+2. Multi-building scenes: everything here is one structure. The model's real
+   claim -- intact buildings cost nothing -- is understated by a reference whose
+   single building is fully demolished.
+3. Do not tune the derivable or wide thresholds. Both are derived from the
+   rotation quantum and the bound; if one looks wrong, the wire is wrong.
 
 ## Verification
 
-Flag off is byte-inert against both incumbent wires:
+Flag off is byte-inert against both incumbent wires, which is what makes the v2
+wire safe to add: v1 absolute rotations still carry no mode byte.
 
-- `cargo test --release` 103 passing (96 + 7 island tests)
+- `cargo test --release` 111 passing (96 + island + wide-rotation tests)
 - archive `hierarchy.compressed_bytes` **36,646,007** (unchanged)
 - `debris-codec` **13,814,930** (unchanged)
+- both regression gates pass; island wire is byte-stable across runs (985,445
+  twice)
 
 Recorder invariants on the reference: broken bonds 2180 = the adapter's own
 count, and the membership ledger matched the adapter's `node_count` on every

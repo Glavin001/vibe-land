@@ -24,9 +24,25 @@ use glam::{Quat, Vec3};
 
 use crate::trace::{Pose, Tick};
 
+/// Smallest-three reconstruction costs a little more than the two component
+/// quanta the grid suggests: the omitted component is recovered through a
+/// square root, which carries its own error. Measured overshoot is ~14% narrow
+/// and ~1% wide (`wide_is_far_more_precise_than_narrow` pins both against these
+/// constants). These gate a FIDELITY decision -- which islands may have their
+/// members derived -- so they must be true upper bounds, not typical values.
+const SMALLEST_THREE_MARGIN: f32 = 1.25;
+
 /// Worst-case angular step of the wire's 32-bit smallest-three quaternion:
-/// two component quanta at scale `511 * sqrt(2)`.
-pub const ROTATION_QUANTUM_RAD: f32 = 2.0 / (511.0 * std::f32::consts::SQRT_2);
+/// two component quanta at scale `511 * sqrt(2)`, plus the margin above.
+pub const ROTATION_QUANTUM_RAD: f32 =
+    SMALLEST_THREE_MARGIN * 2.0 / (511.0 * std::f32::consts::SQRT_2);
+
+/// Same, for the wide 16-bit-per-component rotation. 64x finer, which is what
+/// moves the derivable island size from metres to hundreds of metres: the bits
+/// a root needs grow with the LOG of its radius, while the bodies an island
+/// removes from the stream grow linearly with its chunk count.
+pub const WIDE_ROTATION_QUANTUM_RAD: f32 =
+    SMALLEST_THREE_MARGIN * 2.0 / (32767.0 * std::f32::consts::SQRT_2);
 
 /// Which island each chunk belongs to, and where it sits inside that island.
 ///
@@ -143,26 +159,41 @@ impl IslandView {
 
     /// Largest island radius whose members stay inside `shell_m`.
     ///
-    /// The wire codes rotation as a 32-bit smallest-three quaternion: 10 bits
-    /// per component at scale 511*sqrt(2), so the angular step is about
-    /// 2.8 mrad in the worst case. A member at radius r inherits `r * step` of
-    /// position error from that single quantum no matter how well the root is
-    /// fitted -- it is a floor of the representation, not of the fitter.
-    ///
-    /// At the 0.5 cm bound this reference is measured against, that caps a
-    /// derivable island at ~1.8 m. Bigger islands are still streamed, but their
-    /// members carry their own records rather than being derived, which is why
-    /// island mode never trades fidelity for the byte win.
-    pub fn max_derivable_radius(shell_m: f32) -> f32 {
-        shell_m / ROTATION_QUANTUM_RAD
+    /// A member at radius r inherits `r * quantum` of position error from one
+    /// rotation quantum of its root -- a floor of the representation, which no
+    /// amount of fitting crosses. At the narrow quantum a 0.5 cm bound caps a
+    /// derivable island at 1.8 m; at the wide one it caps it at 116 m.
+    pub fn max_derivable_radius(shell_m: f32, wide: bool) -> f32 {
+        shell_m
+            / if wide {
+                WIDE_ROTATION_QUANTUM_RAD
+            } else {
+                ROTATION_QUANTUM_RAD
+            }
     }
 
-    /// Whether each island may have its members derived from the root.
+    /// Which islands may have their members derived from the root, given that
+    /// roots are free to use the wide grid. Beyond even the wide limit a member
+    /// falls back to carrying its own records.
     pub fn derivable(&self, chunk_radii: &[f32], shell_m: f32) -> Vec<bool> {
-        let limit = Self::max_derivable_radius(shell_m);
+        let limit = Self::max_derivable_radius(shell_m, true);
         self.island_radii(chunk_radii)
             .into_iter()
             .map(|radius| radius <= limit)
+            .collect()
+    }
+
+    /// Which bodies quantize rotation on the wide grid.
+    ///
+    /// Only island ROOTS, and only those whose reach the narrow grid cannot
+    /// hold: a root with one chunk, or a compact island, keeps the cheaper
+    /// 4-byte rotation. Precision is spent exactly where a lever arm exists to
+    /// amplify it.
+    pub fn wide_roots(&self, chunk_radii: &[f32], shell_m: f32) -> Vec<bool> {
+        let narrow_limit = Self::max_derivable_radius(shell_m, false);
+        let radii = self.island_radii(chunk_radii);
+        (0..self.roots.len())
+            .map(|body| self.is_root(body) && radii[body] > narrow_limit)
             .collect()
     }
 
@@ -376,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn a_big_island_is_not_derivable_at_a_tight_bound() {
+    fn a_big_island_needs_the_wide_grid_to_be_derivable() {
         let tick = tick_with(
             vec![
                 state(Vec3::ZERO, Quat::IDENTITY),
@@ -386,10 +417,15 @@ mod tests {
         );
         let mut view = IslandView::new(2);
         view.update(&tick);
-        // A 30 m island cannot hold 5 mm: one rotation quantum is ~8 cm out there.
-        assert!(!view.derivable(&[0.5, 0.5], 0.005)[0]);
-        // Loosen the bound past that lever arm and it becomes derivable.
-        assert!(view.derivable(&[0.5, 0.5], 0.5)[0]);
+        // A 30 m island cannot hold 5 mm on the NARROW grid: one quantum is
+        // ~8 cm out there. The wide grid is what makes it derivable, and that
+        // is the whole point of the wide mode.
+        assert!(view.island_radii(&[0.5, 0.5])[0] > IslandView::max_derivable_radius(0.005, false));
+        assert!(view.derivable(&[0.5, 0.5], 0.005)[0]);
+        // ...and it earns the wide grid precisely because narrow cannot hold it.
+        assert!(view.wide_roots(&[0.5, 0.5], 0.005)[0]);
+        // A member is never wide: its own radius is the only arm it has.
+        assert!(!view.wide_roots(&[0.5, 0.5], 0.005)[1]);
     }
 
     #[test]
@@ -410,5 +446,25 @@ mod tests {
     fn a_quiet_tick_produces_no_topology_record() {
         let quiet = tick_with(vec![state(Vec3::ZERO, Quat::IDENTITY)], Vec::new());
         assert!(TopologyTickDelta::from_tick(&quiet).is_none());
+    }
+}
+
+#[cfg(test)]
+mod wide_limits {
+    use super::*;
+
+    /// A compact island must not pay for precision it has no arm to amplify.
+    #[test]
+    fn a_small_island_stays_narrow() {
+        let view = IslandView::new(1);
+        assert!(!view.wide_roots(&[0.5], 0.005)[0]);
+    }
+
+    /// The reference's worst island (31.2 m) has to clear the wide limit at the
+    /// bound the reference is measured against, or the mechanism is pointless.
+    #[test]
+    fn the_reference_island_fits_the_wide_grid() {
+        assert!(IslandView::max_derivable_radius(0.005, true) > 31.2);
+        assert!(IslandView::max_derivable_radius(0.005, false) < 31.2);
     }
 }

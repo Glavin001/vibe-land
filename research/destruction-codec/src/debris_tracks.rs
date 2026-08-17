@@ -688,7 +688,7 @@ struct TrackStream {
     meta: TrackMeta,
     encoder: Encoder,
     pending: Vec<Record>,
-    tails: Vec<Option<([i32; 3], u32)>>,
+    tails: Vec<Option<([i32; 3], u64)>>,
     /// (first_tick, compressed_len, keyframe, records)
     blocks: Vec<(u32, usize, bool, Vec<Record>)>,
     uncompressed: u64,
@@ -1004,8 +1004,8 @@ pub fn run(options: DebrisTracksOptions) -> Result<()> {
             for (first_tick, compressed, keyframe, records) in &stream.blocks {
                 bytes.insert(*first_tick, (*compressed, *keyframe));
                 let mut sorted = records.clone();
-                let payload = encode_block(&mut sorted, *first_tick, &mut encode_tails);
-                for record in decode_block(&payload, &mut decode_tails)? {
+                let payload = encode_block(&mut sorted, *first_tick, &mut encode_tails, false);
+                for record in decode_block(&payload, &mut decode_tails, false)? {
                     per_body[record.body() as usize].events.push(record);
                 }
             }
@@ -1149,7 +1149,7 @@ fn encode_split(
             let block_first = (tick.index / stream.block_ticks) * stream.block_ticks;
             if block_first != stream.block_first_tick {
                 let payload =
-                    encode_block(&mut stream.pending, stream.block_first_tick, &mut stream.tails);
+                    encode_block(&mut stream.pending, stream.block_first_tick, &mut stream.tails, false);
                 let compressed = zstd::bulk::compress(&payload, 3)?.len() + 12;
                 stream.uncompressed += payload.len() as u64;
                 stream.compressed += compressed as u64;
@@ -1227,7 +1227,7 @@ fn encode_split(
     for stream in streams.iter_mut() {
         let first = stream.block_first_tick;
         stream.encoder.finalize_span(first, &mut stream.pending);
-        let payload = encode_block(&mut stream.pending, first, &mut stream.tails);
+        let payload = encode_block(&mut stream.pending, first, &mut stream.tails, false);
         let compressed = zstd::bulk::compress(&payload, 3)?.len() + 12;
         stream.uncompressed += payload.len() as u64;
         stream.compressed += compressed as u64;

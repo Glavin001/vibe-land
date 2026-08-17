@@ -123,14 +123,108 @@ fn dequantize_scaled(value: [i16; 3], step: f32) -> Vec3 {
     )
 }
 
-fn quantize_pose(pose: Pose) -> ([i32; 3], u32) {
-    (quantize_position(pose.position), encode_quat32(pose.rotation))
+/// Rotation values carry their own format in bit 63.
+///
+/// Clear: the incumbent 32-bit smallest-three quaternion in the low bits.
+/// Set: a 16-bit-per-component ("wide") one. A member chunk of an island is
+/// reconstructed from its ROOT's rotation at a lever arm, so the root's angular
+/// quantum lands on the member scaled by that arm -- 2.77 mrad over 31 m is
+/// 8.6 cm, which no amount of fitting can undo. Wide roots cut the quantum to
+/// 43 microrad, which holds a 0.5 cm bound out past 100 m.
+///
+/// Tagging the value rather than the stream means a decoder never needs side
+/// state to know which grid a rotation is on, so a body may switch formats
+/// mid-run (its island grew) without a resync.
+const ROTATION_WIDE_TAG: u64 = 1 << 63;
+const ROTATION_WIDE_BYTES: usize = 7;
+/// Scale of a wide component, mirroring `encode_quat32`'s `511 * sqrt(2)`.
+const QUAT48_SCALE: f32 = 32767.0 * std::f32::consts::SQRT_2;
+
+/// Decode a rotation on whichever grid it says it is on.
+///
+/// Reading a wide value's low 32 bits as a narrow quaternion yields a garbage
+/// orientation, and on an island root that garbage is multiplied by every
+/// member's lever arm -- it showed up as a 174 degree, 7.5 m outlier.
+pub(crate) fn decode_rotation(rotation: u64) -> Quat {
+    if is_wide_rotation(rotation) {
+        decode_quat48(rotation)
+    } else {
+        decode_quat32(rotation as u32)
+    }
 }
 
-fn dequantize_pose(position: [i32; 3], rotation: u32) -> Pose {
+pub(crate) fn is_wide_rotation(rotation: u64) -> bool {
+    rotation & ROTATION_WIDE_TAG != 0
+}
+
+/// 2-bit largest-component index + three 16-bit signed components.
+pub(crate) fn encode_quat48(input: Quat) -> u64 {
+    let q = input.normalize();
+    let mut values = [q.x, q.y, q.z, q.w];
+    let mut largest = 0;
+    for i in 1..4 {
+        if values[i].abs() > values[largest].abs() {
+            largest = i;
+        }
+    }
+    if values[largest] < 0.0 {
+        for value in &mut values {
+            *value = -*value;
+        }
+    }
+    let mut packed = ROTATION_WIDE_TAG | largest as u64;
+    let mut shift = 2;
+    for (index, value) in values.into_iter().enumerate() {
+        if index == largest {
+            continue;
+        }
+        let quantized = (value * QUAT48_SCALE)
+            .round()
+            .clamp(i16::MIN as f32, i16::MAX as f32) as i64;
+        packed |= ((quantized as u64) & 0xffff) << shift;
+        shift += 16;
+    }
+    packed
+}
+
+pub(crate) fn decode_quat48(packed: u64) -> Quat {
+    let (index, components) = unpack_quat48(packed);
+    let mut values = [0.0f32; 4];
+    let mut slot = 0;
+    let mut sum = 0.0f32;
+    for (position, value) in values.iter_mut().enumerate() {
+        if position == index as usize {
+            continue;
+        }
+        let component = components[slot] as f32 / QUAT48_SCALE;
+        *value = component;
+        sum += component * component;
+        slot += 1;
+    }
+    values[index as usize] = (1.0 - sum).max(0.0).sqrt();
+    Quat::from_xyzw(values[0], values[1], values[2], values[3]).normalize()
+}
+
+fn quantize_pose(pose: Pose) -> ([i32; 3], u64) {
+    (
+        quantize_position(pose.position),
+        encode_quat32(pose.rotation) as u64,
+    )
+}
+
+/// Quantize onto the grid this body is entitled to.
+fn quantize_pose_with(pose: Pose, wide: bool) -> ([i32; 3], u64) {
+    if wide {
+        (quantize_position(pose.position), encode_quat48(pose.rotation))
+    } else {
+        quantize_pose(pose)
+    }
+}
+
+fn dequantize_pose(position: [i32; 3], rotation: u64) -> Pose {
     Pose {
         position: dequantize_position(position),
-        rotation: decode_quat32(rotation),
+        rotation: decode_rotation(rotation),
     }
 }
 
@@ -153,7 +247,7 @@ pub(crate) enum Record {
         tick: u32,
         gravity: bool,
         position: [i32; 3],
-        rotation: u32,
+        rotation: u64,
         velocity: [i16; 3],
         angular: [i16; 3],
     },
@@ -194,14 +288,14 @@ pub(crate) enum Record {
         /// resolve. The frames stored here are the reconstructed chain, so the
         /// grid is already folded in and playback needs no knowledge of it.
         step_exp: u8,
-        frames: Vec<([i32; 3], u32)>,
+        frames: Vec<([i32; 3], u64)>,
     },
     /// Terminal: the solver slept this body. Free from here on.
     Rest {
         body: u32,
         tick: u32,
         position: [i32; 3],
-        rotation: u32,
+        rotation: u64,
     },
 }
 
@@ -236,9 +330,14 @@ impl Record {
 
     /// Encoded size in the block payload, computed by encoding rather than by
     /// a parallel formula that could drift from the writer.
-    fn encoded_len(&self, block_first_tick: u32, tails: &[Option<([i32; 3], u32)>]) -> usize {
+    fn encoded_len(
+        &self,
+        block_first_tick: u32,
+        tails: &[Option<([i32; 3], u64)>],
+        wire_v2: bool,
+    ) -> usize {
         let mut scratch = Vec::with_capacity(64);
-        write_record(&mut scratch, self, block_first_tick, tails);
+        write_record(&mut scratch, self, block_first_tick, tails, wire_v2);
         scratch.len()
     }
 }
@@ -330,7 +429,8 @@ fn write_record(
     out: &mut Vec<u8>,
     record: &Record,
     block_first_tick: u32,
-    tails: &[Option<([i32; 3], u32)>],
+    tails: &[Option<([i32; 3], u64)>],
+    wire_v2: bool,
 ) {
     match record {
         Record::Segment {
@@ -345,7 +445,7 @@ fn write_record(
             write_varint(out, *body as u64);
             write_varint(out, (tick - block_first_tick) as u64);
             write_position(out, *position);
-            write_u32le(out, *rotation);
+            write_absolute_rotation(out, *rotation, wire_v2);
             write_s16x3(out, *velocity);
             write_s16x3(out, *angular);
         }
@@ -383,7 +483,7 @@ fn write_record(
             // Lossless: the reconstructed values are exactly the absolute ones.
             // A continuity run opens against the tail the receiver already
             // holds, so its first frame codes like any interior one.
-            let mut previous: Option<([i32; 3], u32)> = if *continuity {
+            let mut previous: Option<([i32; 3], u64)> = if *continuity {
                 tails.get(*body as usize).copied().flatten()
             } else {
                 None
@@ -393,7 +493,7 @@ fn write_record(
                 match previous {
                     None => {
                         write_position(out, *position);
-                        write_u32le(out, *rotation);
+                        write_absolute_rotation(out, *rotation, wire_v2);
                     }
                     Some((last_position, last_rotation)) => {
                         let mode = rotation_mode(Some(last_rotation), *rotation);
@@ -425,7 +525,7 @@ fn write_record(
             write_varint(out, *body as u64);
             write_varint(out, (tick - block_first_tick) as u64);
             write_position(out, *position);
-            write_u32le(out, *rotation);
+            write_absolute_rotation(out, *rotation, wire_v2);
         }
     }
 }
@@ -435,7 +535,8 @@ fn read_record(
     cursor: &mut usize,
     kind: usize,
     block_first_tick: u32,
-    tails: &[Option<([i32; 3], u32)>],
+    tails: &[Option<([i32; 3], u64)>],
+    wire_v2: bool,
 ) -> Result<Record> {
     let body = read_varint(input, cursor)? as u32;
     let tick = block_first_tick + read_varint(input, cursor)? as u32;
@@ -445,7 +546,7 @@ fn read_record(
             tick,
             gravity: kind == 0,
             position: read_position(input, cursor)?,
-            rotation: read_u32le(input, cursor)?,
+            rotation: read_absolute_rotation(input, cursor, wire_v2)?,
             velocity: read_s16x3(input, cursor)?,
             angular: read_s16x3(input, cursor)?,
         },
@@ -465,7 +566,7 @@ fn read_record(
             let second_order = packed & 0x80 != 0;
             *cursor += 3;
             let count = read_varint(input, cursor)? as usize;
-            let mut frames: Vec<([i32; 3], u32)> = Vec::with_capacity(count);
+            let mut frames: Vec<([i32; 3], u64)> = Vec::with_capacity(count);
             let mut previous_delta = [0_i64; 3];
             let seed = if continuity {
                 tails.get(body as usize).copied().flatten()
@@ -475,7 +576,7 @@ fn read_record(
             for index in 0..count {
                 if index == 0 && seed.is_none() {
                     let position = read_position(input, cursor)?;
-                    let rotation = read_u32le(input, cursor)?;
+                    let rotation = read_absolute_rotation(input, cursor, wire_v2)?;
                     frames.push((position, rotation));
                     continue;
                 }
@@ -516,7 +617,7 @@ fn read_record(
             body,
             tick,
             position: read_position(input, cursor)?,
-            rotation: read_u32le(input, cursor)?,
+            rotation: read_absolute_rotation(input, cursor, wire_v2)?,
         },
     })
 }
@@ -541,6 +642,11 @@ const ROT_HELD: u8 = 0;
 const ROT_DELTA4: u8 = 1;
 const ROT_DELTA8: u8 = 2;
 const ROT_FULL: u8 = 3;
+/// Wide modes. A mode byte names its own format, so narrow and wide bodies
+/// share one stream and a body may change format between records.
+const ROT_WFULL: u8 = 4;
+const ROT_WDELTA8: u8 = 5;
+const ROT_WDELTA16: u8 = 6;
 
 fn unpack_quat32(packed: u32) -> (u8, [i32; 3]) {
     let index = (packed & 3) as u8;
@@ -552,6 +658,24 @@ fn unpack_quat32(packed: u32) -> (u8, [i32; 3]) {
     (index, components)
 }
 
+fn unpack_quat48(packed: u64) -> (u8, [i32; 3]) {
+    let index = (packed & 3) as u8;
+    let mut components = [0_i32; 3];
+    for (slot, component) in components.iter_mut().enumerate() {
+        let raw = ((packed >> (2 + 16 * slot)) & 0xffff) as i32;
+        *component = if raw & 0x8000 != 0 { raw - 0x10000 } else { raw };
+    }
+    (index, components)
+}
+
+fn pack_quat48(index: u8, components: [i32; 3]) -> u64 {
+    let mut packed = ROTATION_WIDE_TAG | index as u64;
+    for (slot, component) in components.into_iter().enumerate() {
+        packed |= ((component as u64) & 0xffff) << (2 + 16 * slot);
+    }
+    packed
+}
+
 fn pack_quat32(index: u8, components: [i32; 3]) -> u32 {
     let mut packed = index as u32;
     for (slot, component) in components.into_iter().enumerate() {
@@ -561,24 +685,47 @@ fn pack_quat32(index: u8, components: [i32; 3]) -> u32 {
 }
 
 /// Cheapest mode that reproduces `rotation` exactly given `previous`.
-fn rotation_mode(previous: Option<u32>, rotation: u32) -> u8 {
+fn rotation_mode(previous: Option<u64>, rotation: u64) -> u8 {
+    let wide = is_wide_rotation(rotation);
+    let full = if wide { ROT_WFULL } else { ROT_FULL };
     let Some(previous) = previous else {
-        return ROT_FULL;
+        return full;
     };
     if previous == rotation {
         return ROT_HELD;
     }
-    let (last_index, last) = unpack_quat32(previous);
-    let (index, current) = unpack_quat32(rotation);
+    // A format change is a different parameterisation, so it restarts the
+    // delta chain rather than coding against a grid the predecessor is not on.
+    if is_wide_rotation(previous) != wide {
+        return full;
+    }
+    let (last_index, last) = if wide {
+        unpack_quat48(previous)
+    } else {
+        unpack_quat32(previous as u32)
+    };
+    let (index, current) = if wide {
+        unpack_quat48(rotation)
+    } else {
+        unpack_quat32(rotation as u32)
+    };
     if index != last_index {
-        return ROT_FULL;
+        return full;
     }
     let deltas = [
         current[0] - last[0],
         current[1] - last[1],
         current[2] - last[2],
     ];
-    if deltas.iter().all(|delta| (-7..=7).contains(delta)) {
+    if wide {
+        if deltas.iter().all(|delta| (-127..=127).contains(delta)) {
+            ROT_WDELTA8
+        } else if deltas.iter().all(|delta| (-32767..=32767).contains(delta)) {
+            ROT_WDELTA16
+        } else {
+            ROT_WFULL
+        }
+    } else if deltas.iter().all(|delta| (-7..=7).contains(delta)) {
         ROT_DELTA4
     } else if deltas.iter().all(|delta| (-127..=127).contains(delta)) {
         ROT_DELTA8
@@ -587,12 +734,12 @@ fn rotation_mode(previous: Option<u32>, rotation: u32) -> u8 {
     }
 }
 
-fn write_rotation(out: &mut Vec<u8>, mode: u8, previous: Option<u32>, rotation: u32) {
+fn write_rotation(out: &mut Vec<u8>, mode: u8, previous: Option<u64>, rotation: u64) {
     match mode {
         ROT_HELD => {}
         ROT_DELTA4 => {
-            let (_, last) = unpack_quat32(previous.expect("delta needs a predecessor"));
-            let (_, current) = unpack_quat32(rotation);
+            let (_, last) = unpack_quat32(previous.expect("delta needs a predecessor") as u32);
+            let (_, current) = unpack_quat32(rotation as u32);
             // Three 4-bit signed deltas in 12 bits.
             let mut bits = 0_u16;
             for slot in 0..3 {
@@ -602,48 +749,140 @@ fn write_rotation(out: &mut Vec<u8>, mode: u8, previous: Option<u32>, rotation: 
             out.extend_from_slice(&bits.to_le_bytes());
         }
         ROT_DELTA8 => {
-            let (_, last) = unpack_quat32(previous.expect("delta needs a predecessor"));
-            let (_, current) = unpack_quat32(rotation);
+            let (_, last) = unpack_quat32(previous.expect("delta needs a predecessor") as u32);
+            let (_, current) = unpack_quat32(rotation as u32);
             for slot in 0..3 {
                 out.push((current[slot] - last[slot]) as i8 as u8);
             }
         }
-        _ => write_u32le(out, rotation),
+        ROT_WDELTA8 => {
+            let (_, last) = unpack_quat48(previous.expect("delta needs a predecessor"));
+            let (_, current) = unpack_quat48(rotation);
+            for slot in 0..3 {
+                out.push((current[slot] - last[slot]) as i8 as u8);
+            }
+        }
+        ROT_WDELTA16 => {
+            let (_, last) = unpack_quat48(previous.expect("delta needs a predecessor"));
+            let (_, current) = unpack_quat48(rotation);
+            for slot in 0..3 {
+                out.extend_from_slice(&((current[slot] - last[slot]) as i16).to_le_bytes());
+            }
+        }
+        ROT_WFULL => write_wide_rotation(out, rotation),
+        _ => write_u32le(out, rotation as u32),
     }
+}
+
+/// Wide absolute: index byte then three 16-bit components. Seven bytes against
+/// the narrow four, paid only by roots whose island is big enough to need it.
+/// Absolute rotation at a record's opening pose.
+///
+/// v1 wrote a bare 32-bit value with no mode byte, so it could only ever carry
+/// one format. v2 prefixes the mode, which is what lets a wide root and a
+/// narrow chunk share a stream.
+fn write_absolute_rotation(out: &mut Vec<u8>, rotation: u64, wire_v2: bool) {
+    if wire_v2 {
+        let mode = if is_wide_rotation(rotation) {
+            ROT_WFULL
+        } else {
+            ROT_FULL
+        };
+        out.push(mode);
+        write_rotation(out, mode, None, rotation);
+    } else {
+        write_u32le(out, rotation as u32);
+    }
+}
+
+fn read_absolute_rotation(input: &[u8], cursor: &mut usize, wire_v2: bool) -> Result<u64> {
+    if !wire_v2 {
+        return Ok(read_u32le(input, cursor)? as u64);
+    }
+    anyhow::ensure!(*cursor < input.len(), "absolute rotation truncated");
+    let mode = input[*cursor];
+    *cursor += 1;
+    read_rotation(input, cursor, mode, None)
+}
+
+fn write_wide_rotation(out: &mut Vec<u8>, rotation: u64) {
+    let (index, components) = unpack_quat48(rotation);
+    out.push(index);
+    for component in components {
+        out.extend_from_slice(&(component as i16).to_le_bytes());
+    }
+}
+
+fn read_wide_rotation(input: &[u8], cursor: &mut usize) -> Result<u64> {
+    anyhow::ensure!(*cursor + ROTATION_WIDE_BYTES <= input.len(), "wide rotation truncated");
+    let index = input[*cursor];
+    anyhow::ensure!(index < 4, "wide rotation index out of range");
+    *cursor += 1;
+    let mut components = [0_i32; 3];
+    for component in components.iter_mut() {
+        let raw = i16::from_le_bytes([input[*cursor], input[*cursor + 1]]);
+        *cursor += 2;
+        *component = raw as i32;
+    }
+    Ok(pack_quat48(index, components))
 }
 
 fn read_rotation(
     input: &[u8],
     cursor: &mut usize,
     mode: u8,
-    previous: Option<u32>,
-) -> Result<u32> {
+    previous: Option<u64>,
+) -> Result<u64> {
     Ok(match mode {
         ROT_HELD => previous.ok_or_else(|| anyhow::anyhow!("held rotation without a predecessor"))?,
         ROT_DELTA4 => {
             anyhow::ensure!(*cursor + 2 <= input.len(), "rotation delta truncated");
             let bits = u16::from_le_bytes([input[*cursor], input[*cursor + 1]]);
             *cursor += 2;
-            let (index, last) = unpack_quat32(previous.expect("delta needs a predecessor"));
+            let (index, last) =
+                unpack_quat32(previous.expect("delta needs a predecessor") as u32);
             let mut components = [0_i32; 3];
             for slot in 0..3 {
                 let nibble = ((bits >> (4 * slot)) & 0xf) as i32;
                 let delta = if nibble & 0x8 != 0 { nibble - 16 } else { nibble };
                 components[slot] = last[slot] + delta;
             }
-            pack_quat32(index, components)
+            pack_quat32(index, components) as u64
         }
         ROT_DELTA8 => {
             anyhow::ensure!(*cursor + 3 <= input.len(), "rotation delta truncated");
-            let (index, last) = unpack_quat32(previous.expect("delta needs a predecessor"));
+            let (index, last) =
+                unpack_quat32(previous.expect("delta needs a predecessor") as u32);
             let mut components = [0_i32; 3];
             for (slot, component) in components.iter_mut().enumerate() {
                 *component = last[slot] + input[*cursor + slot] as i8 as i32;
             }
             *cursor += 3;
-            pack_quat32(index, components)
+            pack_quat32(index, components) as u64
         }
-        _ => read_u32le(input, cursor)?,
+        ROT_WDELTA8 => {
+            anyhow::ensure!(*cursor + 3 <= input.len(), "wide rotation delta truncated");
+            let (index, last) = unpack_quat48(previous.expect("delta needs a predecessor"));
+            let mut components = [0_i32; 3];
+            for (slot, component) in components.iter_mut().enumerate() {
+                *component = last[slot] + input[*cursor + slot] as i8 as i32;
+            }
+            *cursor += 3;
+            pack_quat48(index, components)
+        }
+        ROT_WDELTA16 => {
+            anyhow::ensure!(*cursor + 6 <= input.len(), "wide rotation delta truncated");
+            let (index, last) = unpack_quat48(previous.expect("delta needs a predecessor"));
+            let mut components = [0_i32; 3];
+            for (slot, component) in components.iter_mut().enumerate() {
+                let raw = i16::from_le_bytes([input[*cursor], input[*cursor + 1]]);
+                *cursor += 2;
+                *component = last[slot] + raw as i32;
+            }
+            pack_quat48(index, components)
+        }
+        ROT_WFULL => read_wide_rotation(input, cursor)?,
+        _ => read_u32le(input, cursor)? as u64,
     })
 }
 
@@ -657,7 +896,7 @@ fn rotation_census(record: &Record) -> (u64, u64, u64) {
     let mut resends = 0;
     let mut held = 0;
     let mut bytes = 0;
-    let mut previous: Option<u32> = None;
+    let mut previous: Option<u64> = None;
     for (index, (_, rotation)) in frames.iter().enumerate() {
         if index == 0 && !*continuity {
             // The opening absolute pose always carries an orientation.
@@ -684,7 +923,7 @@ fn rotation_census(record: &Record) -> (u64, u64, u64) {
     (resends, held, bytes)
 }
 
-fn update_tail(tails: &mut [Option<([i32; 3], u32)>], record: &Record) {
+fn update_tail(tails: &mut [Option<([i32; 3], u64)>], record: &Record) {
     if let Record::SampleRun { body, frames, .. } = record {
         if let (Some(slot), Some(last)) = (tails.get_mut(*body as usize), frames.last()) {
             *slot = Some(*last);
@@ -695,7 +934,8 @@ fn update_tail(tails: &mut [Option<([i32; 3], u32)>], record: &Record) {
 pub(crate) fn encode_block(
     records: &mut [Record],
     first_tick: u32,
-    tails: &mut [Option<([i32; 3], u32)>],
+    tails: &mut [Option<([i32; 3], u64)>],
+    wire_v2: bool,
 ) -> Vec<u8> {
     // Deterministic order, grouped by type so the tag byte is implicit and
     // like fields sit next to like fields for the entropy stage.
@@ -709,7 +949,7 @@ pub(crate) fn encode_block(
             .collect();
         write_varint(&mut payload, group.len() as u64);
         for record in group {
-            write_record(&mut payload, record, first_tick, tails);
+            write_record(&mut payload, record, first_tick, tails, wire_v2);
             update_tail(tails, record);
         }
     }
@@ -717,14 +957,18 @@ pub(crate) fn encode_block(
 }
 
 /// Mirrors `encode_block`'s tail bookkeeping on the receiving side.
-pub(crate) fn decode_block(payload: &[u8], tails: &mut [Option<([i32; 3], u32)>]) -> Result<Vec<Record>> {
+pub(crate) fn decode_block(
+    payload: &[u8],
+    tails: &mut [Option<([i32; 3], u64)>],
+    wire_v2: bool,
+) -> Result<Vec<Record>> {
     let mut cursor = 0;
     let first_tick = read_u32le(payload, &mut cursor)?;
     let mut records = Vec::new();
     for kind in 0..5 {
         let count = read_varint(payload, &mut cursor)? as usize;
         for _ in 0..count {
-            let record = read_record(payload, &mut cursor, kind, first_tick, tails)?;
+            let record = read_record(payload, &mut cursor, kind, first_tick, tails, wire_v2)?;
             update_tail(tails, &record);
             records.push(record);
         }
@@ -808,7 +1052,7 @@ struct BodyFitter {
     /// Last sampled chain frame emitted for this body, or None when a segment,
     /// impulse or rest has since reset the receiver's basis. Lives on the
     /// fitter so the rate controller's rewind restores it with everything else.
-    chain_tail: Option<([i32; 3], u32)>,
+    chain_tail: Option<([i32; 3], u64)>,
     /// Pose the client is holding while this body is parked. Waking is decided
     /// by how far truth has drifted from it, never by speed: a body creeping
     /// under the wake threshold would otherwise slide metres while the client
@@ -850,6 +1094,22 @@ impl Tolerances {
     /// Per-body shell bound for this tick. With masking off this is the flat
     /// bound; with it on, a fast body is allowed the same slack the incumbent
     /// grants it.
+    /// Bound for a body that other bodies are reconstructed from.
+    ///
+    /// Masking hands a body slack in proportion to ITS motion, but an island
+    /// root's error lands on every member, and a member near the rotation axis
+    /// moves slowly -- so it is held to a tighter bound than the root was
+    /// fitted to, and the difference shows up as violations on the member. The
+    /// base shell is the floor of `shell_for`, so holding a root to it is
+    /// guaranteed to be inside every member's allowance. Derived, not tuned.
+    fn shell_for_source(&self, state: &ActorState, radius: f32, strict: bool) -> f32 {
+        if strict {
+            self.shell_m * self.rate_scale
+        } else {
+            self.shell_for(state, radius)
+        }
+    }
+
     fn shell_for(&self, state: &ActorState, radius: f32) -> f32 {
         let masked = if self.mask.enabled {
             let motion = motion_magnitude(state.linear_velocity, state.angular_velocity, radius);
@@ -911,6 +1171,19 @@ pub(crate) struct EncoderConfig {
     /// Motion above which a sampled chain must actually move; see the coarse
     /// grid's continuity guard.
     continuity_epsilon_m: f32,
+    /// v2 prefixes every absolute rotation with its mode byte, which is what
+    /// allows wide and narrow rotations in one stream. Set only by the island
+    /// path, so the incumbent per-chunk wire stays byte-identical.
+    wire_v2: bool,
+    /// Bodies whose rotation is quantized on the wide grid. An island root
+    /// earns this by its REACH: its members are rebuilt at a lever arm, so the
+    /// root's angular quantum is multiplied by that arm before it lands on a
+    /// member. Members themselves are never wide -- their own radius is the
+    /// only arm they have.
+    wide: Vec<bool>,
+    /// Bodies other bodies are reconstructed from: island roots with derived
+    /// members. They forgo masking slack; see `shell_for_source`.
+    strict: Vec<bool>,
 }
 
 /// One body's private encoder state. Bodies are independent by construction --
@@ -940,7 +1213,7 @@ struct SpanOutcome {
     spans_active: u64,
     spans_fallback: u64,
     reopen: bool,
-    chain_tail: Option<([i32; 3], u32)>,
+    chain_tail: Option<([i32; 3], u64)>,
     rotation_resends: u64,
     rotation_held: u64,
     rotation_bytes: u64,
@@ -954,7 +1227,7 @@ pub(crate) struct Encoder {
     config: EncoderConfig,
     lanes: Vec<BodyLane>,
     /// Mirror of the receiver's tail state, used for exact cost accounting.
-    encode_tails: Vec<Option<([i32; 3], u32)>>,
+    encode_tails: Vec<Option<([i32; 3], u64)>>,
     parallel: bool,
     impulse_candidates: u64,
     impulse_taken: u64,
@@ -987,6 +1260,9 @@ impl Encoder {
                 second_order,
                 sync_min_radius_m,
                 continuity_epsilon_m: tolerances.shell_m,
+                wire_v2: false,
+                wide: vec![false; body_count],
+                strict: vec![false; body_count],
             },
             lanes: (0..body_count).map(|_| BodyLane::default()).collect(),
             encode_tails: vec![None; body_count],
@@ -1031,7 +1307,7 @@ impl Encoder {
         // alongside the fitters or the re-encode would code against state the
         // receiver never reaches.
         let tails_at_block_start = self.encode_tails.clone();
-        let mut payload = encode_block(pending, block_first_tick, &mut self.encode_tails);
+        let mut payload = encode_block(pending, block_first_tick, &mut self.encode_tails, self.config.wire_v2);
         let Some(budget) = budget_bytes else {
             return Ok((payload, 1.0));
         };
@@ -1056,7 +1332,7 @@ impl Encoder {
                 }
             }
             self.finalize_span(block_first_tick, pending);
-            payload = encode_block(pending, block_first_tick, &mut self.encode_tails);
+            payload = encode_block(pending, block_first_tick, &mut self.encode_tails, self.config.wire_v2);
             applied = scale;
         }
         self.config.tolerances.rate_scale = 1.0;
@@ -1090,7 +1366,7 @@ impl Encoder {
             let parked_pose = self.lanes[body].fitter.parked_pose;
             self.force_restart(body);
             if let Some(pose) = parked_pose {
-                let (position, rotation) = quantize_pose(pose);
+                let (position, rotation) = quantize_pose_with(pose, self.config.wide[body]);
                 // Restated as a rest record, and the lane goes back to parked so
                 // the body stays free until it actually moves again.
                 out.push(Record::Rest {
@@ -1140,6 +1416,22 @@ impl Encoder {
         }
     }
 
+    /// Turn on the v2 wire. Absolute rotations gain a mode byte, so this is a
+    /// format change and only the island path takes it.
+    pub(crate) fn enable_wire_v2(&mut self) {
+        self.config.wire_v2 = true;
+    }
+
+    /// Restate which bodies quantize rotation on the wide grid.
+    pub(crate) fn set_wide(&mut self, wide: &[bool]) {
+        self.config.wide.copy_from_slice(wide);
+    }
+
+    /// Restate which bodies are reconstruction sources for others.
+    pub(crate) fn set_strict(&mut self, strict: &[bool]) {
+        self.config.strict.copy_from_slice(strict);
+    }
+
     /// Restate a body's shell radius.
     ///
     /// Island membership changes what a root has to hold: the bound covers the
@@ -1165,7 +1457,7 @@ impl Encoder {
         // the not-yet-broken structure; they cost a single record each.
         if state.sleeping() || state.kinematic() {
             if !self.lanes[body].fitter.parked {
-                let (position, rotation) = quantize_pose(pose);
+                let (position, rotation) = quantize_pose_with(pose, self.config.wide[body]);
                 self.emit(
                     body,
                     Record::Rest {
@@ -1195,7 +1487,11 @@ impl Encoder {
                 // Stay parked only while the held pose still represents truth.
                 let drifted = self.lanes[body].fitter.parked_pose.is_none_or(|held| {
                     rigid_shell_error_meters(pose, held, radius)
-                        > self.config.tolerances.shell_for(state, radius)
+                        > self.config.tolerances.shell_for_source(
+                            state,
+                            radius,
+                            self.config.strict[body],
+                        )
                 });
                 if !drifted {
                     return;
@@ -1203,7 +1499,7 @@ impl Encoder {
                 self.lanes[body].fitter.quiet_ticks = 0;
                 self.lanes[body].fitter.parked_pose = None;
             } else if self.lanes[body].fitter.quiet_ticks >= self.config.sleep.ticks {
-                let (position, rotation) = quantize_pose(pose);
+                let (position, rotation) = quantize_pose_with(pose, self.config.wide[body]);
                 self.emit(
                     body,
                     Record::Rest {
@@ -1244,7 +1540,7 @@ impl Encoder {
         // such a body to a tolerance the wire cannot represent makes the fitter
         // reopen a segment every tick and never improve. The achievable floor is
         // the error of re-encoding truth itself.
-        let (floor_position, floor_rotation) = quantize_pose(pose);
+        let (floor_position, floor_rotation) = quantize_pose_with(pose, self.config.wide[body]);
         let floor = rigid_shell_error_meters(
             pose,
             dequantize_pose(floor_position, floor_rotation),
@@ -1253,7 +1549,7 @@ impl Encoder {
         let shell_tolerance = self
             .config
             .tolerances
-            .shell_for(state, radius)
+            .shell_for_source(state, radius, self.config.strict[body])
             .max(floor * 1.05);
         let predicted_velocity = analytic.velocity_at(tick, self.config.dt, self.config.gravity);
         let delta_velocity = state.linear_velocity - predicted_velocity;
@@ -1323,7 +1619,7 @@ impl Encoder {
             state.contacts == 0
         };
 
-        let (position, rotation) = quantize_pose(state.pose);
+        let (position, rotation) = quantize_pose_with(state.pose, self.config.wide[body]);
         let velocity = quantize_scaled(state.linear_velocity, VELOCITY_STEP_MPS);
         let angular = quantize_scaled(state.angular_velocity, ANGULAR_STEP_RPS);
         // Quantization feedback: the fitter now tracks exactly what the client
@@ -1332,7 +1628,7 @@ impl Encoder {
             tick,
             position: dequantize_position(position),
             velocity: dequantize_scaled(velocity, VELOCITY_STEP_MPS),
-            rotation: decode_quat32(rotation),
+            rotation: decode_rotation(rotation),
             angular: dequantize_scaled(angular, ANGULAR_STEP_RPS),
             gravity: use_gravity,
         });
@@ -1369,7 +1665,7 @@ impl Encoder {
                         frames: &mut Vec<Frame>,
                         records: &mut Vec<Record>,
                         had_rest: bool,
-                        tail: Option<([i32; 3], u32)>|
+                        tail: Option<([i32; 3], u64)>|
          -> SpanOutcome {
             let frames = std::mem::take(frames);
             let mut records = std::mem::take(records);
@@ -1386,7 +1682,7 @@ impl Encoder {
 
             let codec_bytes: usize = records
                 .iter()
-                .map(|record| record.encoded_len(block_first_tick, tails))
+                .map(|record| record.encoded_len(block_first_tick, tails, self.config.wire_v2))
                 .sum();
 
             // A span holding a single analytic record is a model that is
@@ -1402,7 +1698,7 @@ impl Encoder {
             // REST is terminal and already minimal; never trade it for samples.
             if !had_rest && model_is_struggling && frames.len() > 1 {
                 if let Some(sample) = config.best_sample_run(body, &frames, tail, tails) {
-                    let sample_bytes = sample.encoded_len(block_first_tick, tails);
+                    let sample_bytes = sample.encoded_len(block_first_tick, tails, self.config.wire_v2);
                     if sample_bytes < codec_bytes {
                         // The sampled span supersedes the analytic one, so the
                         // body must reopen with a fresh segment next span.
@@ -1418,7 +1714,7 @@ impl Encoder {
                 outcome.rotation_resends += resends;
                 outcome.rotation_held += held;
                 outcome.rotation_bytes += rotation_bytes;
-                let bytes = record.encoded_len(block_first_tick, tails) as u64;
+                let bytes = record.encoded_len(block_first_tick, tails, self.config.wire_v2) as u64;
                 outcome.kind_bytes[record.kind_index()] += bytes;
                 outcome.kind_counts[record.kind_index()] += 1;
                 outcome.records_total += 1;
@@ -1441,7 +1737,7 @@ impl Encoder {
             Vec<Frame>,
             Vec<Record>,
             bool,
-            Option<([i32; 3], u32)>,
+            Option<([i32; 3], u64)>,
         )> = Vec::new();
         for (body, lane) in self.lanes.iter_mut().enumerate() {
             if lane.frames.is_empty() && lane.records.is_empty() {
@@ -1551,8 +1847,8 @@ impl EncoderConfig {
         &self,
         body: usize,
         frames: &[Frame],
-        tail: Option<([i32; 3], u32)>,
-        tails: &[Option<([i32; 3], u32)>],
+        tail: Option<([i32; 3], u64)>,
+        tails: &[Option<([i32; 3], u64)>],
     ) -> Option<Record> {
         // Frame index must equal tick offset, or the receiver cannot map a tick
         // back to an interval. A body that slept mid-span leaves a gap.
@@ -1576,7 +1872,7 @@ impl EncoderConfig {
         // A continuity run is nearly always cheaper, but it can fail the
         // validator when the carried chain has drifted, so both are offered
         // and the measured cost decides.
-        let seeds: Vec<Option<([i32; 3], u32)>> = match tail {
+        let seeds: Vec<Option<([i32; 3], u64)>> = match tail {
             Some(tail) => vec![Some(tail), None],
             None => vec![None],
         };
@@ -1613,7 +1909,7 @@ impl EncoderConfig {
                     if let Record::SampleRun { second_order: flag, .. } = &mut candidate {
                         *flag = second_order;
                     }
-                    let cost = candidate.encoded_len(frames[0].tick, tails);
+                    let cost = candidate.encoded_len(frames[0].tick, tails, self.wire_v2);
                     if cheapest.as_ref().is_none_or(|(best, _)| cost < *best) {
                         cheapest = Some((cost, candidate));
                     }
@@ -1647,7 +1943,7 @@ impl EncoderConfig {
         frames: &[Frame],
         stride: u8,
         step_exp: u8,
-        tail: Option<([i32; 3], u32)>,
+        tail: Option<([i32; 3], u64)>,
     ) -> Option<(Record, Vec<usize>)> {
         let stride_usize = stride as usize;
         let mut indices: Vec<usize> = (0..frames.len()).step_by(stride_usize).collect();
@@ -1663,9 +1959,9 @@ impl EncoderConfig {
         // previous one plus a delta rounded onto the coarse grid. Validating
         // anything other than this chain would measure a stream we do not send.
         let step = 1_i64 << step_exp;
-        let mut chain: Vec<([i32; 3], u32)> = Vec::with_capacity(indices.len());
+        let mut chain: Vec<([i32; 3], u64)> = Vec::with_capacity(indices.len());
         for (slot, &index) in indices.iter().enumerate() {
-            let (target, rotation) = quantize_pose(frames[index].pose);
+            let (target, rotation) = quantize_pose_with(frames[index].pose, self.wide[body]);
             if slot == 0 && tail.is_none() {
                 chain.push((target, rotation));
                 continue;
@@ -1751,7 +2047,7 @@ impl EncoderConfig {
                 };
                 let sampled = interpolate_samples(reconstructed[slot], reconstructed[slot + 1], t);
                 let truth = frames[index].pose;
-                let (floor_position, floor_rotation) = quantize_pose(truth);
+                let (floor_position, floor_rotation) = quantize_pose_with(truth, self.wide[body]);
                 let floor = rigid_shell_error_meters(
                     truth,
                     dequantize_pose(floor_position, floor_rotation),
@@ -1768,7 +2064,7 @@ impl EncoderConfig {
                 if rigid_shell_error_meters(truth, sampled, radius)
                     > self
                         .tolerances
-                        .shell_for(&frame_state, radius)
+                        .shell_for_source(&frame_state, radius, self.strict[body])
                         .max(floor * 1.05)
                     || angular_error_degrees(truth.rotation, sampled.rotation)
                         > self.tolerances.rotation_deg
@@ -1853,7 +2149,7 @@ impl Playback {
                         tick,
                         position: dequantize_position(position),
                         velocity: dequantize_scaled(velocity, VELOCITY_STEP_MPS),
-                        rotation: decode_quat32(rotation),
+                        rotation: decode_rotation(rotation),
                         angular: dequantize_scaled(angular, ANGULAR_STEP_RPS),
                         gravity: uses_gravity,
                     });
@@ -2141,8 +2437,12 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         options.sync_min_radius_m,
         options.encode_parallel,
     );
+    if options.island_stream {
+        encoder.enable_wire_v2();
+    }
     let mut encode_island = IslandView::new(body_count);
     let mut encode_derivable = vec![false; body_count];
+    let mut wide_peak = 0usize;
     let mut topology_deltas: Vec<TopologyTickDelta> = Vec::new();
     let mut islands_peak = 0usize;
     let mut blocks: Vec<(u32, Vec<u8>)> = Vec::new();
@@ -2217,6 +2517,22 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
                 // and re-decide which islands are precise enough to derive.
                 encoder.set_radii(&encode_island.island_radii(&radii));
                 encode_derivable = encode_island.derivable(&radii, options.shell_cm / 100.0);
+                // Spend precision only where a lever arm exists to amplify it:
+                // roots whose island the narrow grid cannot hold.
+                let wide = encode_island.wide_roots(&radii, options.shell_cm / 100.0);
+                wide_peak = wide_peak.max(wide.iter().filter(|w| **w).count());
+                encoder.set_wide(&wide);
+                // A root only forgoes masking slack if something is actually
+                // reconstructed from it; a one-chunk island keeps the slack,
+                // because it is its own only member.
+                let mut strict = vec![false; body_count];
+                for body in 0..body_count {
+                    let root = encode_island.root_of(body);
+                    if root != body && encode_derivable[root] {
+                        strict[root] = true;
+                    }
+                }
+                encoder.set_strict(&strict);
             }
             // Only island roots reach the wire. Every other chunk is rigid
             // with respect to its root, so its pose is implied.
@@ -2295,9 +2611,9 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
 
     // ----- verification pass: rebuild every pose from re-parsed bytes -----
     let mut playbacks: Vec<Playback> = (0..body_count).map(|_| Playback::default()).collect();
-    let mut decode_tails: Vec<Option<([i32; 3], u32)>> = vec![None; body_count];
+    let mut decode_tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
     for (_, payload) in &blocks {
-        for record in decode_block(payload, &mut decode_tails)? {
+        for record in decode_block(payload, &mut decode_tails, options.island_stream)? {
             playbacks[record.body() as usize].events.push(record);
         }
     }
@@ -2573,10 +2889,10 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         }
         sorted[((sorted.len() as f64 * q) as usize).min(sorted.len() - 1)]
     };
-    let mut frame_tails: Vec<Option<([i32; 3], u32)>> = vec![None; body_count];
+    let mut frame_tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
     let sampled_frames: u64 = blocks
         .iter()
-        .map(|(_, payload)| decode_block(payload, &mut frame_tails).map(|records| {
+        .map(|(_, payload)| decode_block(payload, &mut frame_tails, options.island_stream).map(|records| {
             records
                 .iter()
                 .map(|record| match record {
@@ -2818,6 +3134,18 @@ pub fn default_archive_reference() -> u64 {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(dead_code)]
+fn pack_quat32_u64(index: u8, components: [i32; 3]) -> u64 {
+    pack_quat32(index, components) as u64
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+fn narrow(rotation: Quat) -> u64 {
+    encode_quat32(rotation) as u64
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2879,7 +3207,7 @@ mod tests {
                 tick: 130,
                 gravity: true,
                 position: [1000, -2000, 3000],
-                rotation: encode_quat32(Quat::from_rotation_x(0.4)),
+                rotation: narrow(Quat::from_rotation_x(0.4)),
                 velocity: [10, -20, 30],
                 angular: [1, 2, 3],
             },
@@ -2898,15 +3226,15 @@ mod tests {
                 second_order: false,
                 step_exp: 0,
                 frames: vec![
-                    ([1, 2, 3], encode_quat32(Quat::IDENTITY)),
-                    ([4, 5, 6], encode_quat32(Quat::from_rotation_y(0.2))),
+                    ([1, 2, 3], narrow(Quat::IDENTITY)),
+                    ([4, 5, 6], narrow(Quat::from_rotation_y(0.2))),
                 ],
             },
             Record::Rest {
                 body: 13,
                 tick: 133,
                 position: [7, 8, 9],
-                rotation: encode_quat32(Quat::IDENTITY),
+                rotation: narrow(Quat::IDENTITY),
             },
         ];
         let expected = {
@@ -2915,9 +3243,9 @@ mod tests {
             sorted
         };
         let mut tails = vec![None; 32];
-        let payload = encode_block(&mut records, 128, &mut tails);
+        let payload = encode_block(&mut records, 128, &mut tails, false);
         let mut decode_tails = vec![None; 32];
-        assert_eq!(decode_block(&payload, &mut decode_tails).unwrap(), expected);
+        assert_eq!(decode_block(&payload, &mut decode_tails, false).unwrap(), expected);
     }
 
     #[test]
@@ -3022,11 +3350,11 @@ mod tests {
         // encoder chose must come back bit-identical through the wire.
         for step_exp in 0..5u8 {
             let step = 1_i32 << step_exp;
-            let frames: Vec<([i32; 3], u32)> = (0..5)
+            let frames: Vec<([i32; 3], u64)> = (0..5)
                 .map(|i| {
                     (
                         [1000 + i * step * 3, -2000 - i * step, 7 * step * i],
-                        encode_quat32(Quat::from_rotation_y(0.05 * i as f32)),
+                        narrow(Quat::from_rotation_y(0.05 * i as f32)),
                     )
                 })
                 .collect();
@@ -3041,9 +3369,9 @@ mod tests {
                 frames: frames.clone(),
             }];
             let mut tails = vec![None; 8];
-            let payload = encode_block(&mut records, 40, &mut tails);
+            let payload = encode_block(&mut records, 40, &mut tails, false);
             let mut decode_tails = vec![None; 8];
-            let decoded = decode_block(&payload, &mut decode_tails).unwrap();
+            let decoded = decode_block(&payload, &mut decode_tails, false).unwrap();
             match &decoded[0] {
                 Record::SampleRun {
                     frames: out,
@@ -3063,13 +3391,13 @@ mod tests {
         // Every mode codes the packed smallest-three word itself, so decode
         // must return the identical bits -- that is what keeps rotation delta
         // coding free of drift.
-        let base = encode_quat32(Quat::from_rotation_y(0.3));
-        let (index, components) = unpack_quat32(base);
+        let base = narrow(Quat::from_rotation_y(0.3));
+        let (index, components) = unpack_quat32(base as u32);
         let cases = [
             (base, ROT_HELD),
-            (pack_quat32(index, [components[0] + 3, components[1] - 2, components[2] + 1]), ROT_DELTA4),
-            (pack_quat32(index, [components[0] + 40, components[1] - 90, components[2] + 12]), ROT_DELTA8),
-            (encode_quat32(Quat::from_rotation_x(1.4)), ROT_FULL),
+            (pack_quat32_u64(index, [components[0] + 3, components[1] - 2, components[2] + 1]), ROT_DELTA4),
+            (pack_quat32_u64(index, [components[0] + 40, components[1] - 90, components[2] + 12]), ROT_DELTA8),
+            (narrow(Quat::from_rotation_x(1.4)), ROT_FULL),
         ];
         for (target, expected_mode) in cases {
             let mode = rotation_mode(Some(base), target);
@@ -3096,8 +3424,8 @@ mod tests {
             second_order: false,
             step_exp: 0,
             frames: vec![
-                ([5000, 100, -300], encode_quat32(Quat::IDENTITY)),
-                ([5040, 90, -280], encode_quat32(Quat::IDENTITY)),
+                ([5000, 100, -300], narrow(Quat::IDENTITY)),
+                ([5040, 90, -280], narrow(Quat::IDENTITY)),
             ],
         };
         let second = Record::SampleRun {
@@ -3109,20 +3437,20 @@ mod tests {
             second_order: false,
             step_exp: 0,
             frames: vec![
-                ([5080, 80, -260], encode_quat32(Quat::IDENTITY)),
-                ([5120, 70, -240], encode_quat32(Quat::IDENTITY)),
+                ([5080, 80, -260], narrow(Quat::IDENTITY)),
+                ([5120, 70, -240], narrow(Quat::IDENTITY)),
             ],
         };
         let mut tails = vec![None; 8];
         let mut block_a = vec![first.clone()];
-        let payload_a = encode_block(&mut block_a, 0, &mut tails);
+        let payload_a = encode_block(&mut block_a, 0, &mut tails, false);
         let mut block_b = vec![second.clone()];
-        let payload_b = encode_block(&mut block_b, 2, &mut tails);
+        let payload_b = encode_block(&mut block_b, 2, &mut tails, false);
 
         let mut decode_tails = vec![None; 8];
-        assert_eq!(decode_block(&payload_a, &mut decode_tails).unwrap(), vec![first]);
+        assert_eq!(decode_block(&payload_a, &mut decode_tails, false).unwrap(), vec![first]);
         assert_eq!(
-            decode_block(&payload_b, &mut decode_tails).unwrap(),
+            decode_block(&payload_b, &mut decode_tails, false).unwrap(),
             vec![second],
             "continuity run must rebuild from the carried tail alone"
         );
@@ -3141,7 +3469,7 @@ mod tests {
                 tick: 0,
                 gravity: true,
                 position: quantize_position(Vec3::new(0.0, 10.0, 0.0)),
-                rotation: encode_quat32(Quat::IDENTITY),
+                rotation: narrow(Quat::IDENTITY),
                 velocity: quantize_scaled(Vec3::new(2.0, 0.0, 0.0), VELOCITY_STEP_MPS),
                 angular: quantize_scaled(Vec3::ZERO, ANGULAR_STEP_RPS),
             },
@@ -3162,5 +3490,153 @@ mod tests {
         assert!((after.position.x - 1.0).abs() < 0.05);
         let later = playback.pose_at(90, dt, gravity).unwrap();
         assert!(later.position.y > after.position.y - 0.5);
+    }
+}
+
+#[cfg(test)]
+mod wide_rotation {
+    use super::*;
+
+    /// Angular error in degrees, computed in f64.
+    ///
+    /// The production `angular_error_degrees` uses `acos(dot)` in f32, whose
+    /// conditioning near identity puts a ~0.04 deg floor under any measurement
+    /// -- coarser than the wide grid itself, so it would report the metric's
+    /// noise as the codec's error. `theta = 4*asin(|a-b|/2)` stays conditioned
+    /// exactly where this test looks.
+    fn precise_angle_deg(a: Quat, b: Quat) -> f64 {
+        let (a, b) = (a.normalize(), b.normalize());
+        let diff = |s: f32| -> f64 {
+            let d = [
+                (a.x - s * b.x) as f64,
+                (a.y - s * b.y) as f64,
+                (a.z - s * b.z) as f64,
+                (a.w - s * b.w) as f64,
+            ];
+            d.iter().map(|v| v * v).sum::<f64>().sqrt()
+        };
+        let chord = diff(1.0).min(diff(-1.0));
+        (4.0 * (chord / 2.0).clamp(-1.0, 1.0).asin()).to_degrees()
+    }
+
+    fn spread() -> Vec<Quat> {
+        let mut out = Vec::new();
+        for i in 0..24 {
+            let a = i as f32 * 0.37;
+            out.push(
+                (Quat::from_rotation_x(a) * Quat::from_rotation_y(a * 1.7)
+                    * Quat::from_rotation_z(a * 0.3))
+                .normalize(),
+            );
+        }
+        out
+    }
+
+    /// The whole justification for the wide grid: it has to actually be ~64x
+    /// finer, and comfortably inside the quantum the island limits assume.
+    #[test]
+    fn wide_is_far_more_precise_than_narrow() {
+        let mut worst_wide = 0.0f64;
+        let mut worst_narrow = 0.0f64;
+        for q in spread() {
+            worst_wide = worst_wide.max(precise_angle_deg(q, decode_quat48(encode_quat48(q))));
+            worst_narrow = worst_narrow.max(precise_angle_deg(q, decode_quat32(encode_quat32(q))));
+        }
+        // The island limits are derived from this quantum, so if the grid is
+        // coarser than advertised every derivable-radius decision is wrong.
+        let limit_deg = crate::island::WIDE_ROTATION_QUANTUM_RAD.to_degrees() as f64;
+        assert!(worst_wide < limit_deg, "wide error {worst_wide} deg >= limit {limit_deg}");
+        assert!(
+            worst_narrow / worst_wide > 32.0,
+            "expected ~64x finer, got {:.1}x (narrow {worst_narrow}, wide {worst_wide})",
+            worst_narrow / worst_wide
+        );
+    }
+
+    #[test]
+    fn wide_values_are_self_describing() {
+        for q in spread() {
+            assert!(is_wide_rotation(encode_quat48(q)));
+            assert!(!is_wide_rotation(encode_quat32(q) as u64));
+        }
+    }
+
+    /// Mode selection has to pick the cheapest coding that reproduces the exact
+    /// bits, and never mix grids across a delta.
+    #[test]
+    fn mode_ladder_covers_both_grids_and_round_trips() {
+        let base = encode_quat48(Quat::from_rotation_x(0.4));
+        let (index, components) = unpack_quat48(base);
+        let cases = [
+            (base, ROT_HELD),
+            (pack_quat48(index, [components[0] + 5, components[1] - 3, components[2] + 1]), ROT_WDELTA8),
+            (pack_quat48(index, [components[0] + 900, components[1] - 400, components[2] + 12]), ROT_WDELTA16),
+            // A different largest component is a different parameterisation,
+            // so it cannot be coded as a delta.
+            (pack_quat48((index + 1) % 4, components), ROT_WFULL),
+            // Crossing grids restarts the chain with an absolute of the new format.
+            (narrow(Quat::from_rotation_x(0.4)), ROT_FULL),
+        ];
+        for (target, want) in cases {
+            let mode = rotation_mode(Some(base), target);
+            assert_eq!(mode, want, "mode for {target:#x}");
+            let mut buffer = Vec::new();
+            write_rotation(&mut buffer, mode, Some(base), target);
+            let mut cursor = 0;
+            let decoded = read_rotation(&buffer, &mut cursor, mode, Some(base)).unwrap();
+            assert_eq!(decoded, target, "round trip for mode {mode}");
+            assert_eq!(cursor, buffer.len(), "mode {mode} left bytes unread");
+        }
+    }
+
+    /// A wide absolute costs 7 bytes against the narrow 4. That is the entire
+    /// price of the mechanism, so pin it.
+    #[test]
+    fn wide_absolute_costs_seven_bytes() {
+        let mut buffer = Vec::new();
+        write_rotation(&mut buffer, ROT_WFULL, None, encode_quat48(Quat::from_rotation_z(0.9)));
+        assert_eq!(buffer.len(), ROTATION_WIDE_BYTES);
+    }
+
+    /// Wide rotations must survive the block boundary through the carried tail,
+    /// byte-exactly, or a body that spans blocks decodes onto the wrong grid.
+    #[test]
+    fn wide_rotations_survive_a_block_boundary() {
+        let wide = encode_quat48(Quat::from_rotation_y(0.31));
+        let mut records = vec![Record::SampleRun {
+            body: 2,
+            tick: 8,
+            stride: 1,
+            last_offset: 1,
+            continuity: false,
+            second_order: false,
+            step_exp: 0,
+            frames: vec![([10, 20, 30], wide), ([11, 20, 30], wide)],
+        }];
+        let mut tails = vec![None; 4];
+        let payload = encode_block(&mut records, 8, &mut tails, true);
+        let mut decode_tails = vec![None; 4];
+        let decoded = decode_block(&payload, &mut decode_tails, true).unwrap();
+        assert_eq!(decoded, records);
+        assert_eq!(tails[2], Some(([11, 20, 30], wide)));
+        assert_eq!(decode_tails[2], tails[2]);
+    }
+
+    /// The v1 wire must not move a byte: it is guarded by two tripwires and a
+    /// regression suite, and a silent change there invalidates every number.
+    #[test]
+    fn v1_wire_never_carries_a_mode_byte_on_absolutes() {
+        let rotation = narrow(Quat::from_rotation_x(0.2));
+        let mut v1 = Vec::new();
+        write_absolute_rotation(&mut v1, rotation, false);
+        assert_eq!(v1.len(), ROTATION_BYTES, "v1 absolute must stay 4 raw bytes");
+        let mut v2 = Vec::new();
+        write_absolute_rotation(&mut v2, rotation, true);
+        assert_eq!(v2.len(), ROTATION_BYTES + 1, "v2 absolute prefixes a mode");
+        assert_eq!(v2[0], ROT_FULL);
+        let mut cursor = 0;
+        assert_eq!(read_absolute_rotation(&v1, &mut cursor, false).unwrap(), rotation);
+        cursor = 0;
+        assert_eq!(read_absolute_rotation(&v2, &mut cursor, true).unwrap(), rotation);
     }
 }
