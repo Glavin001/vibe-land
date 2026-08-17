@@ -63,6 +63,11 @@ struct Args {
     settle_ticks: u32,
     shot_interval_ticks: u32,
     shots: u32,
+    /// How many structures to attack (0 = all). The rest stand untouched,
+    /// which is the case the island model is built for: an intact structure is
+    /// one kinematic body and costs nothing per tick no matter how many chunks
+    /// it was authored from.
+    targets: u32,
     output: PathBuf,
 }
 
@@ -75,6 +80,7 @@ impl Args {
         let mut settle_ticks = 60u32;
         let mut shot_interval_ticks = 14u32;
         let mut shots = 48u32;
+        let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
 
         let mut args = std::env::args().skip(1);
@@ -91,12 +97,13 @@ impl Args {
                 "--settle-ticks" => settle_ticks = value()?.parse()?,
                 "--shot-interval-ticks" => shot_interval_ticks = value()?.parse()?,
                 "--shots" => shots = value()?.parse()?,
+                "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
                          [--grid N] [--hz 60] [--seconds 30] [--settle-ticks 60] \
-                         [--shots N] [--shot-interval-ticks N]"
+                         [--shots N] [--targets N] [--shot-interval-ticks N]"
                     );
                     std::process::exit(0);
                 }
@@ -115,6 +122,7 @@ impl Args {
             settle_ticks,
             shot_interval_ticks,
             shots,
+            targets,
             output,
         })
     }
@@ -418,7 +426,7 @@ fn main() -> Result<()> {
         .context("open trace for writing")?;
 
     let mut membership = Membership::new(&table);
-    let shot_plan = build_shot_plan(&manifest, args.shots);
+    let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
     // Sentinel, so every actor counts as changed on tick 0: the format
     // requires the first tick to carry a complete island map rather than a
@@ -738,15 +746,27 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
 /// Shots that rake each building around a height band, cycling structures so a
 /// multi-building scene collapses broadly instead of felling one tower while
 /// the rest stand untouched.
-fn build_shot_plan(manifest: &DestructionManifest, shots: u32) -> Vec<(Vec3, Vec3)> {
+fn build_shot_plan(
+    manifest: &DestructionManifest,
+    shots: u32,
+    targets: u32,
+) -> Vec<(Vec3, Vec3)> {
     let mut plan = Vec::with_capacity(shots as usize);
     if manifest.structures.is_empty() {
         return plan;
     }
+    // Concentrating fire on a subset leaves the rest intact, which is the
+    // asymmetry worth measuring: untouched structures are one kinematic body
+    // each and never reach the wire.
+    let pool = if targets == 0 {
+        manifest.structures.len()
+    } else {
+        (targets as usize).min(manifest.structures.len())
+    };
     for shot in 0..shots {
-        let structure = &manifest.structures[shot as usize % manifest.structures.len()];
+        let structure = &manifest.structures[shot as usize % pool];
         let centre = Vec3::from_array(structure.world_position);
-        let round = shot / manifest.structures.len().max(1) as u32;
+        let round = shot / pool.max(1) as u32;
         let sweep = -3.0 + (round % 13) as f32 * 0.5;
         let aim_y = 3.0 + (round % 5) as f32 * 2.5;
         let origin = centre + Vec3::new(0.0, 1.6, -26.0);
