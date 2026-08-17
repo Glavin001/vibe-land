@@ -1,6 +1,6 @@
 {
-  "name": "city-idle",
-  "description": "Untouched city, short hold. Calibrates the resync differential: on a pristine ledger the forced bootstrap must move zero chunks.",
+  "name": "city-idle-fractured",
+  "description": "city-idle on the authored fractured pack: 5 materials, ductile frame (band 10), brittle facade (band 1.2), 4x stronger frame, at full authored strength.",
   "symptom": [
     "jitter",
     "freeze",
@@ -8,7 +8,7 @@
     "teleporting"
   ],
   "path": "/city?portal=true",
-  "matchId": "city-idle-{iter}",
+  "matchId": "city-idle-fractured-{iter}",
   "durationMs": 45000,
   "join": "auto",
   "serverEnv": {

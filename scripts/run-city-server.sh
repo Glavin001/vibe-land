@@ -92,10 +92,20 @@ export WT_BIND_ADDR="${WT_BIND_ADDR:-0.0.0.0:4434}"
 export WT_PUBLIC_URL="${WT_PUBLIC_URL:-https://209.121.195.117:40651}"
 export WT_CERT_PEM="${WT_CERT_PEM:-$REPO_ROOT/.certs/page-cert.pem}"
 export WT_KEY_PEM="${WT_KEY_PEM:-$REPO_ROOT/.certs/page-key.pem}"
-export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-high-rise-10f-local.json}"
-# Buildings at authored strength barely fracture under rifle fire, which makes
-# every destruction measurement look better than the real workload.
-export VIBE_CITY_STRESS_LIMIT_SCALE="${VIBE_CITY_STRESS_LIMIT_SCALE:-0.10}"
+# The fractured pack, not the box high-rise. It authors five materials with a
+# ductile frame (fatal/elastic = 10) and a deliberately brittle facade (1.2), so
+# a struck panel lets go at the impact site while the frame yields instead of
+# snapping. The box pack is ScenePack v1: one material at band 2.5 everywhere,
+# with the frame no stronger than the cladding.
+export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-highrise-10f.json}"
+# Full authored strength. The old 0.10 made buildings ~10x weaker than the
+# geometry was drawn for, to compensate for shots that could not fracture
+# anything on their own -- and at that scale the structure cannot even hold
+# itself up: measured 7,052 bonds broken with zero shots fired, self-weight two
+# orders of magnitude past the elastic limit. Note this dial multiplies elastic
+# AND fatal together, so it moves strength only; ductility lives in the pack's
+# per-material band and cannot be reached from here.
+export VIBE_CITY_STRESS_LIMIT_SCALE="${VIBE_CITY_STRESS_LIMIT_SCALE:-1.0}"
 # Grid edge in buildings; pitch comes from the pack footprint, so this widens
 # the map without crowding it.
 export VIBE_CITY_GRID="${VIBE_CITY_GRID:-4}"

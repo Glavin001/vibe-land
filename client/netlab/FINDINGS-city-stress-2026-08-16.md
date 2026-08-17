@@ -353,3 +353,70 @@ result.
 Shots into an unloaded island remain weak — that is the weapon model, not the load path, and
 radial damage is deferred. Peak utilisation of 3559x the elastic limit during impact suggests
 contact impulse magnitudes deserve their own look.
+
+---
+
+# The buildings cannot hold themselves up (2026-08-17)
+
+User reported buildings collapsing under their own weight and cascading. Measured with an
+idle city, no shots fired, `city-idle` at two material strengths:
+
+| stress limit scale | broken bonds (idle, no shots) | peak bond utilisation |
+|---|---|---|
+| **0.10 (shipped)** | **6 -> 7,052** | **489x the elastic limit** |
+| 1.0 (authored concrete) | 0 -> 0 | 0.40 |
+
+At the shipped scale the structure is roughly 10x weaker than the geometry was authored for,
+and self-weight alone is two orders of magnitude past the elastic limit. The building is
+tissue paper: it demolishes itself on spawn, the debris lands, and the impact load cascades
+upward — exactly the described failure.
+
+**This is not caused by the load-signal fix.** The same idle scenario with the new signals
+disabled produces identical numbers (0 broken, 0.40 utilisation at scale 1.0), so contact
+load and centrifugal are not over-driving anything. What the fix did was make the
+consequence visible: before it, a severed island carried no load, so the cascade stalled
+instead of propagating.
+
+Why 0.10 was chosen: `run-city-server.sh` records that buildings at authored strength
+"barely fracture under rifle fire". That is the same root problem as the invulnerable
+monolith — shots must fund the entire fracture themselves — and 0.10 was compensating for a
+weak weapon by making the structure unable to stand. With the load path restored, cutting
+supports now brings a building down through gravity, so the compensation is no longer needed
+and is actively harmful.
+
+**Correction to an earlier entry:** the note that this scene "self-shatters on spawn (7,501
+broken bonds with zero shots, identical at 0.10 and 1.0)" was wrong on the second half. That
+measurement was taken through the stale-stack bug and at the weak scale. Clean measurement:
+self-shatters at 0.10, completely stable at 1.0.
+
+## Fix: the authored pack was already in the repo
+
+`high-rise-10f-local.json` is ScenePack **v1** — one material, band 2.5 everywhere, frame no
+stronger than cladding. The standing-fraction research puts band 2.5 in the row that leaves
+0.06 standing at every impact energy above 1500 kg.
+
+`fractured-highrise-10f.json` was sitting beside it, unused: ScenePack v2, five materials,
+**ductile frame (band 10)** and **deliberately brittle facade (band 1.2)**, with a 4x
+stronger frame (48 MPa vs 12 MPa compression, 6 MPa vs 1.2 MPa tension). vibe-land's
+per-bond material pipeline is complete end to end — the only reason one global material was
+in use is that the live asset authors no `m` index.
+
+Switched the launcher and every city scenario to it, at full authored strength. Measured:
+
+| | idle, no shots | sever a tower and let it fall |
+|---|---|---|
+| box pack @ 0.10 (was shipping) | 7,052 bonds broken, util 489x | 12,409 broken, 20 m island |
+| **fractured pack @ 1.0** | **0 broken, util 1.00** | **615 broken, 4.1 m largest fragment** |
+
+The building now stands under its own weight and a hit does local damage instead of
+detonating the structure. Note the idle utilisation of 1.00 is right at the elastic limit —
+stable, but with no margin, matching the exporter's own note about facade seams sitting near
+safety factor 1. If more headroom is wanted, `VIBE_CITY_STRESS_LIMIT_SCALE` above 1.0 scales
+the whole table uniformly and so preserves the authored frame/facade ratios and bands.
+
+Ductility cannot come from that dial: it multiplies elastic and fatal together, so it moves
+*whether* a joint fails and never *how*. Band lives in the pack, per material.
+
+Gap worth closing: vibe-land has no gravity-only standing gate. The blast repo has one
+(`destruction_quality_test.cpp`: splits == 0, standing fraction > 0.99, one body). The
+`city-idle` scenario now serves that role from the netlab side.

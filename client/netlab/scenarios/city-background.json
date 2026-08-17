@@ -1,7 +1,11 @@
 {
   "name": "city-background",
   "description": "A second client's tab goes to the background (rAF paused, network flowing) while the demolition happens, then refocuses after everything settles. Reproduces the chat-in-another-tab play pattern.",
-  "symptom": ["stale", "flicker-on-return", "desync"],
+  "symptom": [
+    "stale",
+    "flicker-on-return",
+    "desync"
+  ],
   "path": "/city?portal=true",
   "matchId": "city-background-{iter}",
   "durationMs": 120000,
@@ -9,36 +13,119 @@
   "serverEnv": {
     "VIBE_PHYSICS_BACKEND": "physx_gpu",
     "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
-    "VIBE_CITY_SCENE": "high-rise-10f-local.json",
+    "VIBE_CITY_SCENE": "fractured-highrise-10f.json",
     "VIBE_CITY_GRID": "2",
     "VIBE_CITY_VARIED_HEIGHTS": "0",
-    "VIBE_CITY_STRESS_LIMIT_SCALE": "0.10"
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
   },
   "clients": [
     {
       "role": "demolisher",
       "drive": [
-        { "at": 3000, "cmd": "faceCity" },
-        { "at": 10000, "cmd": "lookAt", "args": [12, 3, 12] },
-        { "at": 10200, "cmd": "fire", "args": { "holdMs": 10000 } },
-        { "at": 21000, "cmd": "lookAt", "args": [-12, 3, 12] },
-        { "at": 21200, "cmd": "fire", "args": { "holdMs": 10000 } },
-        { "at": 32000, "cmd": "lookAt", "args": [12, 3, -12] },
-        { "at": 32200, "cmd": "fire", "args": { "holdMs": 10000 } },
-        { "at": 43000, "cmd": "lookAt", "args": [-12, 3, -12] },
-        { "at": 43200, "cmd": "fire", "args": { "holdMs": 10000 } },
-        { "at": 54000, "cmd": "mark", "args": "demolition-done" }
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 10000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 10200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 21000,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            3,
+            12
+          ]
+        },
+        {
+          "at": 21200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 32000,
+          "cmd": "lookAt",
+          "args": [
+            12,
+            3,
+            -12
+          ]
+        },
+        {
+          "at": 32200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 43000,
+          "cmd": "lookAt",
+          "args": [
+            -12,
+            3,
+            -12
+          ]
+        },
+        {
+          "at": 43200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 10000
+          }
+        },
+        {
+          "at": 54000,
+          "cmd": "mark",
+          "args": "demolition-done"
+        }
       ]
     },
     {
       "role": "victim",
       "drive": [
-        { "at": 4000, "cmd": "faceCity" },
-        { "at": 8000, "cmd": "mark", "args": "tab-hidden" },
-        { "at": 8100, "cmd": "hideTab" },
-        { "at": 100000, "cmd": "showTab" },
-        { "at": 100200, "cmd": "mark", "args": "tab-refocused-after-settle" },
-        { "at": 102000, "cmd": "faceCity" }
+        {
+          "at": 4000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 8000,
+          "cmd": "mark",
+          "args": "tab-hidden"
+        },
+        {
+          "at": 8100,
+          "cmd": "hideTab"
+        },
+        {
+          "at": 100000,
+          "cmd": "showTab"
+        },
+        {
+          "at": 100200,
+          "cmd": "mark",
+          "args": "tab-refocused-after-settle"
+        },
+        {
+          "at": 102000,
+          "cmd": "faceCity"
+        }
       ]
     }
   ],
