@@ -16,6 +16,7 @@ cuda-stress = ["destruction", "vibe-land-physx-bridge/cuda-stress"]
 vibe-netcode = { path = "../netcode", features = ["simd-stable"] }
 vibe-land-shared = { path = "../shared", features = ["simd-stable"] }
 vibe-land-destruction = { path = "../destruction" }
+destruction-codec = { path = "../research/destruction-codec" }
 flate2 = "1"
 glam = "0.27"
 vibe-land-physx-bridge = { path = "../physx-bridge", optional = true }
@@ -37,3 +38,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["json"] }
 wtransport = { version = "0.7", features = ["self-signed"] }
+
+# Offline trace recorder for the destruction codec. Needs the real GPU sim, so
+# it only builds with the destruction feature rather than breaking a CI build
+# that has no PhysX.
+[[bin]]
+name = "record-city-trace"
+path = "src/bin/record_city_trace.rs"
+required-features = ["destruction"]

@@ -3100,6 +3100,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bytes",
+ "destruction-codec",
  "dotenvy",
  "flate2",
  "futures-util",

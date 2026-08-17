@@ -17,6 +17,7 @@
 //! native runtime that drives `ExtStressPhysXDestructible` via physx-bridge.
 
 pub mod city;
+pub mod city_config;
 pub mod classify;
 pub mod encoder;
 pub mod ids;
