@@ -1073,3 +1073,195 @@ fn reliable_channel_cost() {
 
     assert!(peak_bodies > 100, "scene never fractured ({peak_bodies} bodies)");
 }
+
+/// Does the v2 pose stream starve at scale, and by how much?
+///
+/// The case for replacing the pose wire does not rest on bytes -- it rests on
+/// the per-client ceiling being a *cap*, so past the point where it binds the
+/// stream stops growing and starts going stale instead. The netlab reported a
+/// ~75 second average per-body refresh at 11.8k awake bodies; that number is the
+/// whole justification for the rewrite and had never been reproduced here.
+///
+/// Measures what a single client actually receives: which bodies appear in its
+/// datagrams, how long each awake body waits between updates, and how often the
+/// send is pinned at the ceiling.
+///
+/// Run:
+///   VIBE_CITY_SCENE=high-rise-10f-local.json VIBE_CITY_GRID=4 \
+///   VIBE_BENCH_SHOTS_PER_STRUCTURE=40 \
+///   cargo test -p web-fps-server --features destruction pose_stream_starvation \
+///     -- --nocapture --ignored
+#[test]
+#[ignore = "benchmark: needs a GPU, takes ~90s"]
+fn pose_stream_starvation() {
+    use std::collections::HashMap;
+
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    assert!(city.is_physx(), "bench requires the PhysX backend");
+    city.add_client(1);
+
+    let camera = vibe_land_destruction::types::Camera {
+        eye: Vec3::new(0.0, 30.0, 90.0),
+        direction: Vec3::new(0.0, -0.25, -1.0).normalize(),
+        fov_degrees: 80.0,
+    };
+    // 0 means "no ceiling" to the runtime, so it must not be read as a
+    // zero-byte budget here -- that reports every send as pinned.
+    let ceiling = match std::env::var("VIBE_CITY_CEILING_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(0) => usize::MAX,
+        Some(bytes) => bytes,
+        None => usize::from(vibe_land_shared::constants::CITY_CLIENT_CEILING_BYTES_PER_SEND),
+    };
+
+    let shots = match std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+    {
+        Some(per_structure) => demolition_plan(&city, per_structure),
+        None => shot_plan(),
+    };
+    let shot_interval = if std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE").is_ok() {
+        4
+    } else {
+        SHOT_INTERVAL_TICKS
+    };
+    let total_ticks = shots.len() as u32 * shot_interval + SETTLE_TICKS;
+    let send_interval = city.send_interval_ticks();
+
+    // Tick a body was last present in this client's datagrams.
+    let mut last_sent: HashMap<u32, u32> = HashMap::new();
+    let mut sends = 0u64;
+    let mut sends_at_ceiling = 0u64;
+    let mut awake_total = 0u64;
+    let mut sent_total = 0u64;
+    let mut peak_awake = 0usize;
+    // Sampled once the scene is genuinely large, so the settling tail does not
+    // flatter the distribution.
+    let mut staleness_samples: Vec<f64> = Vec::new();
+    let mut resting_samples = 0u64;
+
+    for tick in 0..total_ticks {
+        if tick % shot_interval == 0 {
+            if let Some(&(origin, direction)) = shots.get((tick / shot_interval) as usize) {
+                city.apply_shot_ray(origin, direction, Some(&mut world));
+            }
+        }
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+
+        if tick % send_interval != 0 {
+            continue;
+        }
+        let shared = city.encode_shared(tick);
+        let awake = shared.records.len();
+        if awake == 0 {
+            continue;
+        }
+        peak_awake = peak_awake.max(awake);
+        awake_total += awake as u64;
+        sends += 1;
+
+        let packets = city.client_datagrams(1, camera, &shared);
+        let bytes: usize = packets.iter().map(|p| p.len()).sum();
+        if bytes + 64 >= ceiling {
+            sends_at_ceiling += 1;
+        }
+        for packet in &packets {
+            let decoded = vibe_land_destruction::wire::decode_chunks_datagram(packet)
+                .expect("client datagram decodes");
+            sent_total += decoded.records.len() as u64;
+            for record in &decoded.records {
+                last_sent.insert(record.body_entity, tick);
+            }
+        }
+
+        // Staleness, but only for bodies that are actually MOVING.
+        //
+        // The encoder deliberately skips bodies at rest (rest stride, rest pose
+        // epsilon), and a resting body going un-updated is correct behaviour,
+        // not starvation -- charging it would report the optimisation as a
+        // defect. What matters is a body that is moving on the server while the
+        // client has not heard about it.
+        if awake > 500 {
+            for record in &shared.records {
+                if record.linear_speed <= 0.05 && record.angular_speed <= 0.05 {
+                    resting_samples += 1;
+                    continue;
+                }
+                let entity = record.record.body_entity;
+                let age_ticks = match last_sent.get(&entity) {
+                    Some(&sent_tick) => tick.saturating_sub(sent_tick),
+                    // Never sent at all: charge the age of the measurement.
+                    None => tick,
+                };
+                staleness_samples.push(f64::from(age_ticks) * f64::from(DT));
+            }
+        }
+    }
+
+    staleness_samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pct = |q: f64| -> f64 {
+        if staleness_samples.is_empty() {
+            return 0.0;
+        }
+        let index = ((staleness_samples.len() as f64 * q) as usize)
+            .min(staleness_samples.len() - 1);
+        staleness_samples[index]
+    };
+    let mean_awake = awake_total as f64 / sends.max(1) as f64;
+    let mean_sent = sent_total as f64 / sends.max(1) as f64;
+
+    println!("\n=== v2 pose stream at scale ===");
+    println!("peak awake bodies        {peak_awake}");
+    println!("mean awake per send      {mean_awake:.0}");
+    println!("mean bodies sent         {mean_sent:.0}");
+    println!(
+        "coverage per send        {:.1}%  ({:.0} sends to touch every body)",
+        100.0 * mean_sent / mean_awake.max(1.0),
+        mean_awake / mean_sent.max(1.0)
+    );
+    println!(
+        "implied refresh interval {:.1} s",
+        (mean_awake / mean_sent.max(1.0)) * f64::from(send_interval) * f64::from(DT)
+    );
+    println!(
+        "sends pinned at ceiling  {}/{} ({:.1}%)",
+        sends_at_ceiling,
+        sends,
+        100.0 * sends_at_ceiling as f64 / sends.max(1) as f64
+    );
+    println!(
+        "MOVING body staleness   p50 {:.2} s | p95 {:.2} s | p99 {:.2} s | max {:.2} s",
+        pct(0.5),
+        pct(0.95),
+        pct(0.99),
+        pct(1.0)
+    );
+    println!(
+        "  samples: {} moving, {} resting (resting skips are correct, not starvation)",
+        staleness_samples.len(),
+        resting_samples
+    );
+
+    assert!(peak_awake > 100, "scene never fractured");
+}
