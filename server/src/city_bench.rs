@@ -910,3 +910,166 @@ fn city_destruction_cost_is_stable() {
         ),
     }
 }
+
+/// Shots derived from the manifest: rake every structure from the camera side.
+///
+/// Unlike `shot_plan`, this follows the scene instead of pinning it, so grid
+/// size actually changes how much gets destroyed.
+fn demolition_plan(city: &crate::city::CityRuntime, per_structure: u32) -> Vec<(Vec3, Vec3)> {
+    let mut plan = Vec::new();
+    for structure in &city.manifest.structures {
+        let centre = Vec3::from_array(structure.world_position);
+        for shot in 0..per_structure {
+            let sweep = -4.0 + (shot % 17) as f32 * 0.5;
+            let aim_y = 2.0 + (shot % 11) as f32 * 2.0;
+            let origin = centre + Vec3::new(sweep * 0.4, 1.8, 30.0);
+            let target = centre + Vec3::new(sweep, aim_y, 0.0);
+            plan.push((origin, (target - origin).normalize()));
+        }
+    }
+    plan
+}
+
+/// Where the reliable channel's bytes actually go.
+///
+/// The netlab findings measured the total -- ~3.2 Mbps of ungoverned reliable
+/// traffic against 2.47 Mbps of governed poses, which is what pushes a client
+/// past its own 4.0 Mbps burst ceiling -- but not the split between topology,
+/// baselines and bootstrap. Optimising the wrong one of those three would be
+/// wasted work, so this measures each separately on the real encoder before
+/// any format changes.
+///
+/// Run:
+///   VIBE_CITY_SCENE=high-rise-10f-local.json VIBE_CITY_GRID=4 \
+///   cargo test -p web-fps-server --features destruction reliable_channel_cost \
+///     -- --nocapture --ignored
+#[test]
+#[ignore = "benchmark: needs a GPU, takes ~60s"]
+fn reliable_channel_cost() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    assert!(
+        city.is_physx(),
+        "bench requires the PhysX backend (unset VIBE_CITY_SYNTHETIC)"
+    );
+    city.add_client(1);
+
+    // One client's worth of pose traffic, so the datagram column is comparable
+    // with the per-client ceiling rather than a fleet total.
+    let camera = vibe_land_destruction::types::Camera {
+        eye: Vec3::new(0.0, 30.0, 90.0),
+        direction: Vec3::new(0.0, -0.25, -1.0).normalize(),
+        fov_degrees: 80.0,
+    };
+
+    // The fixed shot plan is hardcoded to one layout on purpose (comparability),
+    // which means a wider grid just makes it miss. Reaching the heavy regime the
+    // netlab measured -- where baselines scale with awake bodies while the pose
+    // stream is pinned at its ceiling -- needs shots derived from the manifest.
+    let shots = match std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| *value > 0)
+    {
+        Some(per_structure) => demolition_plan(&city, per_structure),
+        None => shot_plan(),
+    };
+    let shot_interval = if std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE").is_ok() {
+        4
+    } else {
+        SHOT_INTERVAL_TICKS
+    };
+    let total_ticks = shots.len() as u32 * shot_interval + SETTLE_TICKS;
+    let send_interval = city.send_interval_ticks();
+
+    let (mut topology_bytes, mut baseline_bytes, mut bootstrap_bytes, mut pose_bytes) =
+        (0u64, 0u64, 0u64, 0u64);
+    let (mut topology_packets, mut baseline_packets, mut pose_packets) = (0u64, 0u64, 0u64);
+    let mut peak_bodies = 0u32;
+
+    // Join cost is paid once per client, so it is reported separately rather
+    // than folded into a steady-state rate.
+    bootstrap_bytes += city.bootstrap(0).len() as u64;
+
+    for tick in 0..total_ticks {
+        if tick % shot_interval == 0 {
+            if let Some(&(origin, direction)) = shots.get((tick / shot_interval) as usize) {
+                city.apply_shot_ray(origin, direction, Some(&mut world));
+            }
+        }
+        world.step().expect("step");
+        for packet in city.step(tick, DT, GRAVITY, Some(&mut world)) {
+            match packet.first().copied() {
+                Some(vibe_land_destruction::wire::PKT_CITY_TOPOLOGY) => {
+                    topology_bytes += packet.len() as u64;
+                    topology_packets += 1;
+                }
+                Some(vibe_land_destruction::wire::PKT_CITY_BASELINE) => {
+                    baseline_bytes += packet.len() as u64;
+                    baseline_packets += 1;
+                }
+                Some(kind) => panic!("unexpected reliable packet kind {kind}"),
+                None => panic!("empty reliable packet"),
+            }
+        }
+        if tick % send_interval == 0 {
+            let shared = city.encode_shared(tick);
+            if !shared.records.is_empty() {
+                for packet in city.client_datagrams(1, camera, &shared) {
+                    pose_bytes += packet.len() as u64;
+                    pose_packets += 1;
+                }
+            }
+        }
+        peak_bodies = peak_bodies.max(city.stats().chunk_bodies);
+    }
+
+    let seconds = f64::from(total_ticks) * f64::from(DT);
+    let mbps = |bytes: u64| (bytes as f64) * 8.0 / seconds / 1.0e6;
+    let reliable = topology_bytes + baseline_bytes;
+
+    println!("\n=== reliable channel cost ({total_ticks} ticks, {seconds:.1} s) ===");
+    println!("peak bodies        {peak_bodies}");
+    println!(
+        "topology           {:>10} B  {:>6.3} Mbps  ({topology_packets} packets)",
+        topology_bytes,
+        mbps(topology_bytes)
+    );
+    println!(
+        "baseline           {:>10} B  {:>6.3} Mbps  ({baseline_packets} packets)",
+        baseline_bytes,
+        mbps(baseline_bytes)
+    );
+    println!(
+        "RELIABLE TOTAL     {:>10} B  {:>6.3} Mbps",
+        reliable,
+        mbps(reliable)
+    );
+    println!(
+        "poses (1 client)   {:>10} B  {:>6.3} Mbps  ({pose_packets} datagrams)",
+        pose_bytes,
+        mbps(pose_bytes)
+    );
+    println!("bootstrap (once)   {:>10} B", bootstrap_bytes);
+    println!(
+        "reliable share     {:>9.1}% of a client's city traffic",
+        100.0 * reliable as f64 / (reliable + pose_bytes).max(1) as f64
+    );
+
+    assert!(peak_bodies > 100, "scene never fractured ({peak_bodies} bodies)");
+}
