@@ -1,4 +1,4 @@
-# Where the city's bytes actually go: the reliable channel is 15%, not 57%
+# Where the city's bytes actually go, and why the pose stream starves
 
 2026-08-17. Measured with `reliable_channel_cost` in `server/src/city_bench.rs`
 against the real `ChunkStreamEncoder` on the PhysX + Blast city.
@@ -82,3 +82,67 @@ by making topology delivery survive queue pressure — not by shrinking the byte
    most likely behind Finding 3.
 3. Re-run this bench at 12k+ bodies once a scene that reaches it is scripted, to
    confirm the flat 15% holds where the ceiling binds.
+
+
+---
+
+# Part 2: the pose stream starves, and the byte ceiling is not why
+
+Measured with `pose_stream_starvation` in the same bench file, by decoding the
+datagrams one client actually receives.
+
+Staleness is charged **only to bodies that are moving** (linear or angular speed
+above the encoder's own rest thresholds). The encoder deliberately skips bodies
+at rest, and counting those would report a correct optimisation as a defect.
+
+| mean awake | sent per send | coverage | moving staleness p95 | p99 | max | sends pinned at ceiling |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1,648 | 236 | 14.3% | 4.7 s | 10.0 s | 47.6 s | **0%** |
+| 3,283 | 198 | 6.0% | **37.5 s** | **71.6 s** | 164.9 s | **0%** |
+
+The netlab's ~75 s refresh figure reproduces (p99 71.6 s at 3.3k awake), so the
+symptom is real and gets worse than advertised. But the diagnosis was wrong:
+
+- **The byte ceiling never binds.** Zero sends hit it at either scale. Re-running
+  the 1.6k case with the ceiling removed entirely sends **235** bodies per send
+  against **236** with it.
+- **Bodies sent per send goes DOWN as the world gets busier** — 236 at 1,648
+  awake, 198 at 3,283. More motion produces *less* coverage.
+
+Both facts point at one line: `MAX_EVAL_PER_CLIENT = 1200` in
+`destruction/src/encoder.rs`. Each client may only *consider* 1,200 candidates
+per send, ranked by the shared eval order. Past ~1,200 awake bodies the stream
+cannot cover the world at any bandwidth, and the same 1,200 slots spread over
+more claimants as the scene grows.
+
+## What this changes about the rewrite
+
+The argument for the debris codec is not "fewer bytes". It is a different cost
+model:
+
+| | wire v2 | debris codec |
+|---|---|---|
+| work per send | rank + select per client, O(bodies × clients) | encode once per span, O(bodies) |
+| coverage | capped at 1,200 evaluations per client | every awake body, every span |
+| what grows with scale | staleness | bytes |
+
+v2 responds to a busier world by going stale; the debris codec responds by
+costing more bytes — and the measured byte cost of the whole world is 1.1–1.4
+Mbps, inside the per-client budget. Trading staleness for bytes we can afford is
+the entire point.
+
+It also explains the O(bodies × clients) scaling note already recorded in
+`city_bench.rs::player_scaling_of_the_stream`: the per-client packing loop is the
+system's worst scaling term, and broadcasting one shared encode removes it.
+
+## Honest limits of this measurement
+
+- One client. Per-client work is what v2 scales badly in; a fleet makes v2 worse,
+  not better, so this understates the gap.
+- A fixed camera. Interest culling legitimately skips out-of-view bodies, and
+  those are counted in the staleness distribution, so the absolute p95 is
+  pessimistic. The *comparisons* above hold regardless — every row shares the
+  camera.
+- Peak awake reached 7,239 here against the netlab's 16,150; our stress-solver
+  content sleeps bodies aggressively, which is a good thing and makes the
+  starvation regime harder to reach than it was on joint content.
