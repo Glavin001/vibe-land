@@ -1,4 +1,8 @@
-# Island streaming on Blast traces: the win is real, and it is blocked by rotation precision
+# Island streaming on Blast traces: 1.22x fewer bytes at better accuracy
+
+*Read Results 1-4 as the investigation and Result 5 as where it landed: the
+mechanism was blocked by the wire's rotation precision, not by the encoder, and
+widening the grid for island roots turned a 2.7% loss into an 18% win.*
 
 2026-08-17. Reference: `codec-results/blast-one-building-60hz-30s/collapse.towertrace`
 (10-floor high-rise, 1032 chunks, 3624 bonds, 30 s at 60 Hz, 2180 broken bonds,

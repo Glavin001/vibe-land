@@ -34,7 +34,7 @@ gate: it is how we know a new mechanism is inert when its flag is off.
 cargo test --release -p destruction-codec
 ```
 
-Expect **103 passing** (96 before the island line added 7). A new mechanism
+Expect **111 passing** (96 before the island and wide-rotation lines). A new mechanism
 should add its own tests.
 
 ### 2. Regression gates
@@ -100,18 +100,27 @@ Re-run step 3 into a different `--out-dir`; `compressed_bytes` must be identical
 `gates` must read **PASS**. Island streaming derives a member chunk from its
 island root, and a root's rotation quantum is amplified by the member's lever
 arm — so a regression here shows up as shell violations on *members*, not on
-roots. If violations appear, check `IslandView::derivable` before suspecting the
-fitter: at a 0.5 cm bound the largest derivable island is 1.81 m, and that
-threshold is derived from the wire's 2.77 mrad quaternion step, not tuned.
+roots. Suspect these before the fitter:
 
-Reference (2026-08-17): 1,235,439 B total, gates PASS, max error 2.30 cm,
-4 residual violations, peak 519 islands of 1032 chunks.
+- a decode path reading a wide rotation on the narrow grid (look for a huge
+  rotation error, ~174 deg, with a metres-scale position error);
+- a root that should be `strict` keeping its masking slack (violations in the
+  hundreds, all marginal, at exactly the mask cap).
+
+Both thresholds (`IslandView::derivable`, `wide_roots`) are derived from the
+rotation quantum and the bound. If one looks wrong, the wire is wrong — do not
+tune them.
+
+Reference (2026-08-17): **985,445 B** total, gates PASS, err p95 0.380 cm,
+max 2.000 cm, 7 residual violations, peak 519 islands of 1032 chunks.
+Byte-stable across runs.
 
 ### 7. Per-chunk comparison on the same trace
 
-Same command without `--island-stream`: **1,203,144 B**, gates PASS. Island mode
-being slightly *larger* at this bound is the expected, documented result — see
-`docs/destruction-codec-island-stream-2026-08-17.md`.
+Same command without `--island-stream`: **1,203,144 B**, gates PASS, err p95
+0.589 cm. Island mode must be both **smaller and tighter** — 1.22x fewer bytes
+at better accuracy. If it is larger, derivation is not happening; check that
+roots are actually being marked wide.
 
 ### 8. Recorder invariants (only when the recorder changed)
 

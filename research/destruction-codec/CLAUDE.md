@@ -14,15 +14,21 @@
 > not have. `debris-codec --island-stream` (default off) streams one record per
 > island root and derives the members.
 >
-> Current state of that line, measured on the 30 s 10-floor reference:
-> deriving members unguarded is **1.56x fewer bytes** but fails the gates,
-> because the wire's 32-bit quaternion (2.77 mrad) times a member's lever arm is
-> an error floor the fitter cannot cross — 8.6 cm at 31 m. Guarded to
-> precision-safe islands it passes and earns +2.7% at the 0.5 cm bound, and
-> **1.39x at the far tier's 20 cm bound**, which is where the 6.60 Mbps
-> far-field floor lives. Next levers, in order: wire island-stream input into
-> the tracks layer's coarse tier (no wire change, the far-field win is sitting
-> there), then widen the rotation field for roots (~4 more bits per component).
+> Current state of that line, measured on the 30 s 10-floor reference at the
+> 0.5 cm masked contract: **985,445 B against the per-chunk path's 1,203,144
+> (1.22x), gates PASS, and err p95 0.380 vs 0.589 cm** — fewer bytes AND tighter
+> error. Far tier (20 cm, 2 s) 468,414 -> 336,684 B, 1.39x.
+>
+> Getting there needed a wire change, because the 32-bit quaternion's 2.77 mrad
+> step times a member's lever arm is a floor the fitter cannot cross (8.6 cm at
+> 31 m). Island ROOTS now quantize on a 16-bit-per-component grid, selected per
+> body from island reach; members never do. Two subtleties are load-bearing and
+> documented in the results doc: analytic segments must decode on the grid they
+> were written on, and a root others are rebuilt from forgoes masking slack.
+>
+> Next lever: feed island-stream input into the tracks layer's coarse tier — the
+> far-field win is measured and needs no further wire work. Then multi-building
+> scenes, where "intact buildings cost nothing" actually shows up.
 > Full arithmetic: `docs/destruction-codec-island-stream-2026-08-17.md`.
 >
 > Everything below this box describes the D6-era work. Those numbers are frozen
