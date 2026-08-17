@@ -92,14 +92,16 @@ export WT_BIND_ADDR="${WT_BIND_ADDR:-0.0.0.0:4434}"
 export WT_PUBLIC_URL="${WT_PUBLIC_URL:-https://209.121.195.117:40651}"
 export WT_CERT_PEM="${WT_CERT_PEM:-$REPO_ROOT/.certs/page-cert.pem}"
 export WT_KEY_PEM="${WT_KEY_PEM:-$REPO_ROOT/.certs/page-key.pem}"
-# The mixed-archetype district: 15,918 chunks of wall, slab, column and footing
-# across a 289x273 m block, 60 m at the tallest, 19,447 t. Like the single
-# fractured high-rise it authors five materials with a ductile frame
-# (fatal/elastic = 10) and a deliberately brittle facade (1.2), so a struck panel
-# lets go at the impact site while the frame yields instead of snapping.
-# fractured-highrise-10f.json is the same pack format at 1/14 the size and is
-# the faster choice for iterating on stress behaviour.
-export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-district.json}"
+# The dense downtown: 27 buildings, 24,105 chunks, 131x153 m, 84 m at the
+# tallest, 31,714 t. Streets are ~12 m, so a toppling tower reaches its
+# neighbours -- unlike fractured-district.json, which spaces buildings by what
+# they can reach when they fall and therefore cannot be knocked over into
+# itself. That spacing exists for a reason (PhysX sleeps per contact island, and
+# merged rubble fields settle as one), so the district remains the safer pack;
+# this one trades that for a city you can actually collapse onto itself.
+# fractured-highrise-10f.json is the same format at 1/22 the size and is the
+# fast choice for iterating on stress behaviour.
+export VIBE_CITY_SCENE="${VIBE_CITY_SCENE:-fractured-downtown.json}"
 # Full authored strength. The old 0.10 made buildings ~10x weaker than the
 # geometry was drawn for, to compensate for shots that could not fracture
 # anything on their own -- and at that scale the structure cannot even hold
