@@ -736,7 +736,8 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
         fov_degrees: fov,
     };
     [
-        make(Vec3::new(0.0, 0.35 * d, d), 60.0),
+        // Hero pane: low and close, on the side the shots come from.
+        make(Vec3::new(0.0, 0.22 * d, 0.72 * d), 60.0),
         make(Vec3::new(d, 0.5 * d, 0.0), 60.0),
         make(Vec3::new(-0.7 * d, 0.25 * d, -0.7 * d), 60.0),
         make(Vec3::new(0.0, 1.4 * d, 0.01), 60.0),
@@ -755,21 +756,38 @@ fn build_shot_plan(
     if manifest.structures.is_empty() {
         return plan;
     }
-    // Concentrating fire on a subset leaves the rest intact, which is the
-    // asymmetry worth measuring: untouched structures are one kinematic body
-    // each and never reach the wire.
+    // Order by distance from the camera, which sits on +Z looking back at the
+    // origin. Shooting the nearest row means the damage is the thing on screen
+    // rather than something hidden behind an intact facade -- an earlier plan
+    // fired from -Z and every recording showed the undamaged back of the city.
+    let mut order: Vec<&_> = manifest.structures.iter().collect();
+    order.sort_by(|a, b| {
+        b.world_position[2]
+            .partial_cmp(&a.world_position[2])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.world_position[0]
+                    .abs()
+                    .partial_cmp(&b.world_position[0].abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
     let pool = if targets == 0 {
-        manifest.structures.len()
+        order.len()
     } else {
-        (targets as usize).min(manifest.structures.len())
+        (targets as usize).min(order.len())
     };
+
     for shot in 0..shots {
-        let structure = &manifest.structures[shot as usize % pool];
+        let structure = order[shot as usize % pool];
         let centre = Vec3::from_array(structure.world_position);
         let round = shot / pool.max(1) as u32;
-        let sweep = -3.0 + (round % 13) as f32 * 0.5;
-        let aim_y = 3.0 + (round % 5) as f32 * 2.5;
-        let origin = centre + Vec3::new(0.0, 1.6, -26.0);
+        // Rake across the facade and climb, so a sustained barrage cuts a band
+        // rather than drilling one hole.
+        let sweep = -4.0 + (round % 17) as f32 * 0.5;
+        let aim_y = 2.0 + (round % 11) as f32 * 2.0;
+        // Same side as the camera.
+        let origin = centre + Vec3::new(sweep * 0.4, 1.8, 30.0);
         let target = centre + Vec3::new(sweep, aim_y, 0.0);
         plan.push((origin, (target - origin).normalize()));
     }

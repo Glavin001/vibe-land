@@ -15,6 +15,7 @@ precision, cadence and stride. This re-runs that question on the model we ship.
 | `city9-light` | 9 | 6,138 | 21,135 | 626 | 132 | 2 attacked, 8 shots |
 | `city9-localized` | 9 | 6,138 | 21,135 | 4,016 | 897 | 3 attacked, 60 shots |
 | `city25-wide` | 25 | 17,400 | 59,984 | 15,189 | 3,228 | all attacked, 150 shots |
+| `c9-barrage` | 9 | 6,138 | 21,135 | 14,793 | 3,586 | 3 attacked, 600 shots over 60 s |
 
 Recorder invariants held on all three: broken bonds equal the adapter's own
 count, and the membership ledger matched `node_count` on every tick (0
@@ -28,6 +29,11 @@ mismatches) across 168 / 1,746 / 5,258 chunk migrations.
 | 9 bldg, localized | 0.435 Mbps | **0.362 Mbps** | 1.19x | PASS |
 | 25 bldg, all attacked | 1.347 Mbps | **1.128 Mbps** | 1.19x | PASS |
 | 1 bldg, fully demolished | 0.321 Mbps | **0.263 Mbps** | 1.22x | PASS |
+| 9 bldg, 60 s barrage (70% of bonds broken) | 1.454 Mbps | **1.411 Mbps** | 1.03x | PASS |
+
+The barrage row is the ratio's floor and shows the mechanism clearly: with 70%
+of every bond broken, essentially nothing is left in a multi-chunk island, so
+there is nothing to derive and island mode converges on the per-chunk path.
 
 Island streaming also lands **tighter** every time (err p95 0.220 vs 0.323 cm on
 the 25-building scene), because a root others are rebuilt from forgoes masking
@@ -92,6 +98,19 @@ city fits at 1.13 Mbps, inside that ceiling with room for the rest of the game.
   whole claim rendered rather than asserted.
 - `compare-25buildings.mp4` -- truth vs island stream, 17,400 chunks at
   1.13 Mbps. Indistinguishable.
+
+`viewer-videos/blast-barrage-2026-08-17/` -- 60 s sustained barrage, the clearest
+look at the model working:
+
+- `compare-barrage-wide.mp4` -- three towers reduced to a rubble field, truth
+  against island stream.
+- `compare-barrage-topdown.mp4` -- overhead, where the three attacked structures
+  and the six untouched ones are visible at once.
+
+Two framing lessons, both fixed in the recorder: shots used to be fired from the
+side OPPOSITE the camera, so every recording showed the intact back of the city;
+and the default camera framed a 9-building grid so wide the destruction was a
+few pixels. Shots now come from the camera's side and target the nearest row.
 
 ## What this says to do next
 
