@@ -53,6 +53,10 @@ pub struct StressSolverSettings {
     /// Drop fracture commands touching support nodes unless the partner is a
     /// light peelable chunk (facades peel, structure stays locked).
     pub apply_excess_forces: bool,
+    /// Feed each spinning body's omega-squared-r load to the stress solver.
+    /// A free island gets no bond stress from gravity (uniform acceleration is
+    /// a rigid translation), so spin is its only self-generated load.
+    pub apply_centrifugal: bool,
     pub excess_force_scale: f32,
 }
 
@@ -67,6 +71,7 @@ impl Default for StressSolverSettings {
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
+            apply_centrifugal: true,
             excess_force_scale: 0.012,
         }
     }
@@ -193,6 +198,14 @@ pub struct DestructionTickOutput {
 /// consumers at all and were removed. A stat that cannot be produced is worse
 /// than no stat: it is a confident wrong answer.
 pub struct DestructionStats {
+    /// Bonds over their own elastic limit in the last solve. This is what
+    /// gates fracture: zero means nothing was even close to breaking.
+    pub overstressed_bonds: u32,
+    pub contacts_processed: u32,
+    pub contacts_dropped: u32,
+    /// Worst stress / elastic-limit ratio across bonds; 1.0 = at the limit.
+    pub bond_utilisation_max: f32,
+    pub bonds_above_half_utilisation: u32,
     pub structures: u32,
     pub chunk_bodies: u32,
     pub awake_chunk_bodies: u32,

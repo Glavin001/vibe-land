@@ -218,6 +218,9 @@ struct DestructionManager::Slot {
   std::vector<std::vector<PxVec3>> convex_storage;
   std::vector<ExtStressPhysXNodeDesc> node_descs;
   std::vector<ExtStressPhysXBondDesc> bond_descs;
+  /// Reused per-tick scratch for the bond-utilisation sample; sized once so
+  /// the sampling pass allocates nothing.
+  std::vector<float> bond_utilisation;
 
   // One GPU->CPU readback per tick, shared by every consumer.
   //
@@ -457,6 +460,7 @@ void DestructionManager::create_destructible(
 #endif
   desc.settings.recordSplitContinuity = true;
   desc.settings.applyExcessForces = settings.apply_excess_forces;
+  desc.settings.applyCentrifugal = settings.apply_centrifugal;
   desc.settings.excessForceScale = settings.excess_force_scale;
   desc.settings.maximumBodies = settings.maximum_bodies;
   desc.settings.maximumFracturesPerActorPerTick =
@@ -1093,6 +1097,43 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   });
   solve_ms += ms_since(phase);
 
+  // Sample how close bonds are to failing, between solve and fracture. This
+  // is the only signal that distinguishes "the load path is intact and nothing
+  // is near its limit" from "no load is reaching the bonds at all" -- the
+  // broken-bond count cannot, because it is inferred from chunks landing on
+  // different bodies and so stays zero until something actually separates.
+  {
+    float utilisation_max = 0.0f;
+    std::uint32_t above_half = 0;
+    for (Slot *slot_ptr : live_slots_) {
+      Slot &slot = *slot_ptr;
+      const std::uint32_t bond_count =
+          static_cast<std::uint32_t>(slot.bond_descs.size());
+      if (bond_count == 0) {
+        continue;
+      }
+      if (slot.bond_utilisation.size() < bond_count) {
+        slot.bond_utilisation.resize(bond_count);
+      }
+      const std::uint32_t written = slot.dest->getBondUtilisations(
+          slot.bond_utilisation.data(), bond_count);
+      for (std::uint32_t i = 0; i < written; ++i) {
+        const float utilisation = slot.bond_utilisation[i];
+        if (!std::isfinite(utilisation)) {
+          continue;
+        }
+        if (utilisation > utilisation_max) {
+          utilisation_max = utilisation;
+        }
+        if (utilisation >= 0.5f) {
+          ++above_half;
+        }
+      }
+    }
+    last_bond_utilisation_max_ = utilisation_max;
+    last_bonds_above_half_utilisation_ = above_half;
+  }
+
   phase = clock::now();
   for (Slot *slot : live_slots_) {
     require(slot->dest->endTick(), "endTick failed");
@@ -1558,7 +1599,16 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.repeated_body_snapshots = repeated_body_snapshots_;
   stats.gpu_stress_solve_ms +=
         static_cast<float>(telemetry.gpuStressSolveMilliseconds);
+    // The quantity that actually decides whether anything fractures this tick:
+    // endTick() only runs fracture when it is non-zero. Without it in the
+    // stats, "the island never breaks" and "nothing was even close to its
+    // limit" are indistinguishable from outside.
+    stats.overstressed_bonds += telemetry.overstressedBondCount;
+    stats.contacts_processed += telemetry.contactsProcessed;
+    stats.contacts_dropped += telemetry.contactsDropped;
   }
+  stats.bond_utilisation_max = last_bond_utilisation_max_;
+  stats.bonds_above_half_utilisation = last_bonds_above_half_utilisation_;
   return stats;
 }
 

@@ -314,6 +314,7 @@ pub struct DestructibleSettings {
     pub maximum_bodies: u32,
     pub maximum_fractures_per_actor_per_tick: u32,
     pub apply_excess_forces: bool,
+    pub apply_centrifugal: bool,
     pub excess_force_scale: f32,
     /// Damping on every fracture body. Debris needs more than PhysX's
     /// gameplay-object defaults or a rubble pile jitters forever and, because
@@ -338,6 +339,7 @@ impl Default for DestructibleSettings {
             maximum_bodies: 48,
             maximum_fractures_per_actor_per_tick: 8,
             apply_excess_forces: true,
+            apply_centrifugal: true,
             excess_force_scale: 0.012,
             linear_damping: 0.25,
             angular_damping: 0.35,
@@ -413,6 +415,11 @@ pub struct ChunkBodySnapshot {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DestructionStats {
+    pub overstressed_bonds: u32,
+    pub contacts_processed: u32,
+    pub contacts_dropped: u32,
+    pub bond_utilisation_max: f32,
+    pub bonds_above_half_utilisation: u32,
     pub structures: u32,
     pub chunk_bodies: u32,
     pub awake_chunk_bodies: u32,
@@ -1206,6 +1213,7 @@ mod ffi {
         maximum_bodies: u32,
         maximum_fractures_per_actor_per_tick: u32,
         apply_excess_forces: bool,
+        apply_centrifugal: bool,
         excess_force_scale: f32,
         linear_damping: f32,
         angular_damping: f32,
@@ -1273,6 +1281,11 @@ mod ffi {
     }
 
     struct FfiDestructionStats {
+        overstressed_bonds: u32,
+        contacts_processed: u32,
+        contacts_dropped: u32,
+        bond_utilisation_max: f32,
+        bonds_above_half_utilisation: u32,
         structures: u32,
         chunk_bodies: u32,
         awake_chunk_bodies: u32,
@@ -1671,6 +1684,7 @@ impl From<DestructibleSettings> for ffi::FfiDestructibleSettings {
             maximum_bodies: value.maximum_bodies,
             maximum_fractures_per_actor_per_tick: value.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: value.apply_excess_forces,
+            apply_centrifugal: value.apply_centrifugal,
             excess_force_scale: value.excess_force_scale,
             linear_damping: value.linear_damping,
             angular_damping: value.angular_damping,
@@ -1774,6 +1788,11 @@ impl From<ffi::FfiChunkBodySnapshot> for ChunkBodySnapshot {
 impl From<ffi::FfiDestructionStats> for DestructionStats {
     fn from(value: ffi::FfiDestructionStats) -> Self {
         Self {
+            overstressed_bonds: value.overstressed_bonds,
+            contacts_processed: value.contacts_processed,
+            contacts_dropped: value.contacts_dropped,
+            bond_utilisation_max: value.bond_utilisation_max,
+            bonds_above_half_utilisation: value.bonds_above_half_utilisation,
             structures: value.structures,
             chunk_bodies: value.chunk_bodies,
             awake_chunk_bodies: value.awake_chunk_bodies,

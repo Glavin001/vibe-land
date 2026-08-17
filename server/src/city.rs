@@ -435,6 +435,13 @@ impl CityRuntime {
         settings.apply_excess_forces = std::env::var("VIBE_CITY_EXCESS_FORCES")
             .map(|value| value == "1")
             .unwrap_or(false);
+        // Spin is the only load a free island generates for itself: gravity
+        // reaches it as a uniform per-node acceleration, which is a rigid
+        // translation and so leaves every bond unstressed. On by default;
+        // VIBE_CITY_CENTRIFUGAL=0 disables for comparison.
+        settings.apply_centrifugal = std::env::var("VIBE_CITY_CENTRIFUGAL")
+            .map(|value| value != "0")
+            .unwrap_or(true);
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         Ok(Self::from_parts(CityBackend::Physx(backend), manifest, sim_hz))

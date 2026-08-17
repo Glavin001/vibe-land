@@ -123,7 +123,7 @@ void tag_actor(PxActor &actor, std::uint32_t entity_id) {
 bool contact_persists_enabled() {
   static const bool enabled = [] {
     const char *value = std::getenv("VIBE_PHYSX_CONTACT_PERSISTS");
-    return value != nullptr && std::string(value) == "1";
+    return value == nullptr || std::string(value) != "0";
   }();
   return enabled;
 }
@@ -143,10 +143,20 @@ PxFilterFlags simulation_filter(PxFilterObjectAttributes attributes0,
     return PxFilterFlag::eSUPPRESS;
   }
   // FOUND fires when a contact first exceeds the threshold; PERSISTS re-fires
-  // every tick for as long as it stays there. Impact damage only needs the
-  // former — the latter means a settled rubble pile extracts and copies full
-  // contact data for every resting pair, every tick, and keeps those bodies
-  // awake. VIBE_PHYSX_CONTACT_PERSISTS=1 restores it for comparison.
+  // every tick for as long as it stays there.
+  //
+  // PERSISTS is the standing-load channel and is required for correctness, not
+  // a diagnostic. A severed island gets no bond stress from gravity — uniform
+  // per-node acceleration on an unanchored body is a rigid translation — so
+  // the ground's continuous reaction force is the ONLY thing that reproduces
+  // the load path its foundation used to provide. With FOUND alone a landed
+  // slab reports one impact and then rests stress-free forever, which is what
+  // made severed halves indestructible.
+  //
+  // The historical objection was cost and bodies never sleeping. Contacts now
+  // route with wake=false, and a sleeping pair generates no narrowphase at
+  // all, so a settled pile costs nothing. VIBE_PHYSX_CONTACT_PERSISTS=0 is the
+  // kill switch if a pathological scene turns up.
   pair_flags = PxPairFlag::eCONTACT_DEFAULT |
                PxPairFlag::eNOTIFY_THRESHOLD_FORCE_FOUND |
                PxPairFlag::eNOTIFY_CONTACT_POINTS;

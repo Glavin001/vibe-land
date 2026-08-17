@@ -262,6 +262,13 @@ struct CityStatsSnapshot {
     gpu_stress_solve_ms: f32,
     filters_ms: f32,
     sleeping_bodies: u32,
+    /// Bonds over their own elastic limit in the last solve. Fracture only
+    /// runs when this is non-zero, so a persistent 0 while shooting means the
+    /// load never reached the bonds -- not that the material held.
+    overstressed_bonds: u32,
+    /// Worst stress / elastic-limit ratio across bonds (1.0 = at the limit).
+    bond_utilisation_max: f32,
+    bonds_above_half_utilisation: u32,
     packets_per_sec: u64,
     records_per_sec: u64,
     bytes_per_sec: u64,
@@ -2625,6 +2632,8 @@ impl MatchState {
             events_ms = stats.events_ms,
             filters_ms = stats.filters_ms,
             sleeping_bodies = stats.sleeping_chunk_bodies,
+            overstressed_bonds = stats.overstressed_bonds,
+            bond_utilisation_max = stats.bond_utilisation_max,
             "city stream"
         );
     }
@@ -2921,6 +2930,9 @@ impl MatchState {
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
+                    overstressed_bonds: stats.overstressed_bonds,
+                    bond_utilisation_max: stats.bond_utilisation_max,
+                    bonds_above_half_utilisation: stats.bonds_above_half_utilisation,
                     packets_per_sec: packets,
                     records_per_sec: records,
                     bytes_per_sec: bytes,

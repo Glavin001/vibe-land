@@ -89,6 +89,7 @@ impl CityDestruction {
             maximum_bodies: settings.maximum_bodies,
             maximum_fractures_per_actor_per_tick: settings.maximum_fractures_per_actor_per_tick,
             apply_excess_forces: settings.apply_excess_forces,
+            apply_centrifugal: settings.apply_centrifugal,
             excess_force_scale: settings.excess_force_scale,
             linear_damping: settings.linear_damping,
             angular_damping: settings.angular_damping,
@@ -547,6 +548,11 @@ impl CityDestruction {
             self.stats.gpu_stress_solve_ms = bridge_stats.gpu_stress_solve_ms;
             self.stats.filters_ms = bridge_stats.filters_ms;
             self.stats.sleeping_chunk_bodies = bridge_stats.sleeping_chunk_bodies;
+            self.stats.overstressed_bonds = bridge_stats.overstressed_bonds;
+            self.stats.contacts_processed = bridge_stats.contacts_processed;
+            self.stats.contacts_dropped = bridge_stats.contacts_dropped;
+            self.stats.bond_utilisation_max = bridge_stats.bond_utilisation_max;
+            self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
         }
 
         Ok(DestructionTickOutput {
