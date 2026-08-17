@@ -3,7 +3,7 @@
 //! Namespacing follows server/src/physx_runtime.rs: the top nibble selects an
 //! entity namespace; 0x8 is free and becomes NS_CHUNK. Within destruction:
 //!
-//! - chunk id     = (structure_id << 12) | node_index      (≤ 4096 nodes/structure)
+//! - chunk id     = (structure_id << 16) | node_index      (≤ 65536 nodes/structure)
 //! - bond id      = (structure_id << 16) | bond_index      (≤ 65536 bonds/structure)
 //! - body entity  = NS_CHUNK | (structure_id << 22) | island_serial
 //!
@@ -21,7 +21,17 @@
 pub const NS_CHUNK: u32 = 0x8000_0000;
 pub const ID_MASK: u32 = 0x0fff_ffff;
 
-pub const MAX_NODES_PER_STRUCTURE: u32 = 1 << 12;
+/// Nodes per structure.
+///
+/// 16 bits, not 12. A structure is one *scene pack instance*, and a pack that
+/// is an authored city district rather than a single building carries far more
+/// than 4096 nodes -- fractured-district.json has 15,918. Past the old limit
+/// the node index overflowed its field, bled into the structure id, and came
+/// back out of `chunk_id_parts` masked down to `node_index % 4096`: a promoted
+/// island's membership pointed at unrelated chunks hundreds of metres away, so
+/// they rendered scattered around the building they were supposed to be part
+/// of. 74% of that pack's chunks were affected.
+pub const MAX_NODES_PER_STRUCTURE: u32 = 1 << 16;
 pub const MAX_BONDS_PER_STRUCTURE: u32 = 1 << 16;
 pub const MAX_ISLAND_SERIALS: u32 = 1 << 22;
 /// Body entities pack the structure into 28 - 22 = 6 bits.
@@ -31,14 +41,22 @@ pub const SUPPORT_ISLAND_SERIAL: u32 = 0;
 
 #[inline]
 pub fn chunk_id(structure_id: u32, node_index: u32) -> u32 {
-    debug_assert!(structure_id < MAX_STRUCTURES);
-    debug_assert!(node_index < MAX_NODES_PER_STRUCTURE);
-    (structure_id << 12) | node_index
+    // Hard asserts, not debug_asserts. These bounds are fixed the moment a
+    // scene pack is loaded, so a violation is a startup-time authoring error
+    // that fails fast and loudly. As debug_asserts they vanished from the
+    // release build and the overflow instead corrupted island membership
+    // silently for an entire match -- far worse than a crash on load.
+    assert!(structure_id < MAX_STRUCTURES, "structure {structure_id} exceeds id space");
+    assert!(
+        node_index < MAX_NODES_PER_STRUCTURE,
+        "node {node_index} exceeds {MAX_NODES_PER_STRUCTURE} nodes/structure",
+    );
+    (structure_id << 16) | node_index
 }
 
 #[inline]
 pub fn chunk_id_parts(chunk_id: u32) -> (u32, u32) {
-    (chunk_id >> 12, chunk_id & (MAX_NODES_PER_STRUCTURE - 1))
+    (chunk_id >> 16, chunk_id & (MAX_NODES_PER_STRUCTURE - 1))
 }
 
 #[inline]
@@ -101,11 +119,38 @@ mod tests {
     #[test]
     fn intra_structure_ids_are_dense_for_leb128_gaps() {
         // Consecutive chunk ids within one structure differ by 1, so packet
-        // LEB128 gap coding stays 1 byte; crossing structures costs ≤ 2 bytes.
+        // LEB128 gap coding stays 1 byte. Crossing structures now costs ≤ 3
+        // bytes rather than 2, the price of the wider node field -- and only
+        // for a list that mixes structures, which island membership never does.
         let a = chunk_id(3, 100);
         let b = chunk_id(3, 101);
         let c = chunk_id(4, 0);
         assert_eq!(b - a, 1);
-        assert!(c - b < 1 << 14);
+        assert!(c - b < 1 << 21);
+    }
+
+    /// A district pack is a single structure with far more than 4096 nodes.
+    ///
+    /// At the old 12-bit field, node 15_917 packed into the structure field and
+    /// `chunk_id_parts` handed back `15_917 % 4096 = 3_629` under structure 3 --
+    /// so an island claimed a chunk from the other side of the map and drew it
+    /// there. Silent in release, because the guard was a debug_assert.
+    #[test]
+    fn district_sized_structures_round_trip() {
+        for node in [0, 1, 4_095, 4_096, 9_594, 15_917, MAX_NODES_PER_STRUCTURE - 1] {
+            let id = chunk_id(0, node);
+            assert_eq!(chunk_id_parts(id), (0, node), "node {node} did not round-trip");
+        }
+        // And the node index must never leak into the structure field.
+        for structure in [0, 1, 5, MAX_STRUCTURES - 1] {
+            let id = chunk_id(structure, 15_917);
+            assert_eq!(chunk_id_parts(id), (structure, 15_917));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds")]
+    fn node_index_past_the_field_is_loud() {
+        chunk_id(0, MAX_NODES_PER_STRUCTURE);
     }
 }
