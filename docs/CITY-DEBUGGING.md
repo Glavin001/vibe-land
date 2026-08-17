@@ -106,3 +106,37 @@ command — a launch can die before exec and leave the previous process serving:
 ```bash
 tr '\0' '\n' < /proc/<pid>/environ | grep VIBE_CITY
 ```
+
+## The stress solver runs on the CPU unless you ask for CUDA
+
+`--features destruction` builds a server whose Blast stress solver is **CPU-only**.
+`NVBLAST_ENABLE_CUDA_STRESS` is defined only under the `cuda-stress` feature
+(`physx-bridge/build.rs:120`), and without it `destruction.cc` sets
+`gpuStressSolver = false` and the GPU path is compiled out. Nothing warns at runtime.
+
+Build with **`--features cuda-stress`**. Confirm it took by checking
+`gpu_stress_structures` in the city stats -- it counts structures where the CUDA solver is
+*actually* running, not merely requested, because the adapter falls back to CPU silently on
+CUDA init failure. `0` means CPU. The city overlay prints `stress solver: CPU` in red for the
+same reason.
+
+This is not a micro-optimisation, it changes the physics. The CPU solver cannot afford to
+converge, and unconverged residual reads as extra breakage. Measured on `city-downtown-demo`,
+same scenario and settings:
+
+| | CPU stress | CUDA stress |
+|---|---|---|
+| `gpu_stress_structures` | 0 | 1 |
+| bonds broken | 7,024 | **3,283** |
+| server attribution | DEGRADED (4) | DEGRADED (2) |
+| tick p95 peak | 31.3 ms | 27.6 ms |
+
+Roughly half the CPU run's breakage was solver residual rather than the structure actually
+failing -- matching the convergence sweep recorded in `destruction.cc:gpu_stress_min_bonds()`.
+Content tuned against a CPU build will therefore be tuned against the wrong physics: it will
+feel far more fragile than the same materials on a CUDA build. Tune destruction scale with
+`VIBE_CITY_STRESS_LIMIT_SCALE` on a `cuda-stress` server.
+
+`VIBE_CITY_GPU_STRESS=0` disables it at runtime; `VIBE_CITY_GPU_STRESS_MIN_BONDS` sets the
+crossover and defaults to 0 (every structure on the GPU) deliberately -- a non-zero crossover
+splits one scene across two solvers that disagree at a shared iteration budget.

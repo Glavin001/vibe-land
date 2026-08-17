@@ -78,7 +78,12 @@ esac
 BIN="$REPO_ROOT/target/$PROFILE/web-fps-server"
 if [[ ! -x "$BIN" ]]; then
   echo "missing $PROFILE binary: $BIN" >&2
-  echo "build it with: cargo build${PROFILE:+ --$PROFILE} -p web-fps-server --features destruction" >&2
+  # cuda-stress, not just destruction. Without it NVBLAST_ENABLE_CUDA_STRESS is
+  # undefined, the CUDA stress path is compiled out, and the solver silently
+  # runs on the CPU -- which cannot afford to converge. Measured on the dense
+  # downtown: CPU broke 7,024 bonds where the GPU broke 3,283 on the same
+  # scenario. The extra breakage is solver residual, not physics.
+  echo "build it with: cargo build${PROFILE:+ --$PROFILE} -p web-fps-server --features cuda-stress" >&2
   exit 1
 fi
 
