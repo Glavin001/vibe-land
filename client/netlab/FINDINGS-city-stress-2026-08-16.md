@@ -420,3 +420,20 @@ Ductility cannot come from that dial: it multiplies elastic and fatal together, 
 Gap worth closing: vibe-land has no gravity-only standing gate. The blast repo has one
 (`destruction_quality_test.cpp`: splits == 0, standing fraction > 0.99, one body). The
 `city-idle` scenario now serves that role from the netlab side.
+
+## Verified on the shipped config (city-idle, isolated stack, 45 s)
+
+`broken_bonds 0`, `overstressed_bonds 0`, `awake_bodies 0`, `bond_utilisation_max 0.99`,
+`bonds_above_half_utilisation 77`. The city stands for the whole run with nothing awake.
+Utilisation 0.99 means the frame is loaded right up to its elastic limit and no further —
+stable, but with no margin. `VIBE_CITY_STRESS_LIMIT_SCALE` above 1.0 buys margin without
+disturbing the authored frame/facade ratios or the bands.
+
+One gate regressed and it is a real cost, not noise: `cityChunkUpdateP95MaxMs` went
+6.70 ms (box pack, already warning) -> 8.90 ms (fractured pack), crossing the 8.0 fail line.
+It is a one-time bootstrap paint of a pack with more chunks and five materials: the value is
+constant at 8.90 from frame 30 to frame 2750, and city bandwidth over the same window is
+0.01 Mbps, so there is no per-frame work to sustain it. The metric is a non-decaying
+accumulator, so a single join spike pins it for the rest of the run and it cannot recover.
+Left failing rather than retuned -- the bootstrap paint is worth optimising on its own
+merits, and moving the threshold would only hide it.
