@@ -1159,6 +1159,9 @@ fn pose_stream_starvation() {
     // flatter the distribution.
     let mut staleness_samples: Vec<f64> = Vec::new();
     let mut resting_samples = 0u64;
+    let mut culled_samples = 0u64;
+    let interest =
+        vibe_land_destruction::interest::InterestConfig::validated(60);
 
     for tick in 0..total_ticks {
         if tick % shot_interval == 0 {
@@ -1206,6 +1209,21 @@ fn pose_stream_starvation() {
             for record in &shared.records {
                 if record.linear_speed <= 0.05 && record.angular_speed <= 0.05 {
                     resting_samples += 1;
+                    continue;
+                }
+                // Out-of-view bodies are culled on purpose. Charging them would
+                // report interest management as starvation -- and with a fixed
+                // camera on a wide city, they dominate.
+                let visible = vibe_land_destruction::interest::sphere_in_view(
+                    record.position,
+                    record.radius,
+                    camera,
+                    interest.pane_width,
+                    interest.pane_height,
+                    interest.fov_margin_degrees,
+                ) || record.position.distance(camera.eye) <= interest.proximity_meters;
+                if !visible {
+                    culled_samples += 1;
                     continue;
                 }
                 let entity = record.record.body_entity;
@@ -1258,9 +1276,10 @@ fn pose_stream_starvation() {
         pct(1.0)
     );
     println!(
-        "  samples: {} moving, {} resting (resting skips are correct, not starvation)",
+        "  samples: {} relevant-moving, {} resting, {} out-of-view\n  (resting and culled skips are correct behaviour, not starvation)",
         staleness_samples.len(),
-        resting_samples
+        resting_samples,
+        culled_samples
     );
 
     assert!(peak_awake > 100, "scene never fractured");

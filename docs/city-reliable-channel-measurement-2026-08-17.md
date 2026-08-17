@@ -99,21 +99,44 @@ at rest, and counting those would report a correct optimisation as a defect.
 |---:|---:|---:|---:|---:|---:|---:|
 | 1,648 | 236 | 14.3% | 4.7 s | 10.0 s | 47.6 s | **0%** |
 | 3,283 | 198 | 6.0% | **37.5 s** | **71.6 s** | 164.9 s | **0%** |
+| 3,278 (relevant only) | 197 | 6.0% | **40.0 s** | **64.5 s** | 160.1 s | **0%** |
 
-The netlab's ~75 s refresh figure reproduces (p99 71.6 s at 3.3k awake), so the
-symptom is real and gets worse than advertised. But the diagnosis was wrong:
+The netlab's ~75 s refresh figure reproduces (p99 64-72 s at ~3.3k awake), and
+the staleness survives every attempt to explain it away:
 
-- **The byte ceiling never binds.** Zero sends hit it at either scale. Re-running
-  the 1.6k case with the ceiling removed entirely sends **235** bodies per send
-  against **236** with it.
-- **Bodies sent per send goes DOWN as the world gets busier** — 236 at 1,648
-  awake, 198 at 3,283. More motion produces *less* coverage.
+| control | mean awake | sent per send | moving staleness p95 |
+|---|---:|---:|---:|
+| default | 3,283 | 198 | 37.5 s |
+| byte ceiling removed (`VIBE_CITY_CEILING_BYTES=0`) | 2,938→ | 235 @1.6k / — | — |
+| eval cap removed (`VIBE_CITY_MAX_EVAL=0`) | 2,938 | **196** | 22.0 s |
+| out-of-view bodies excluded from the sample | 3,278 | 197 | **40.0 s** |
 
-Both facts point at one line: `MAX_EVAL_PER_CLIENT = 1200` in
-`destruction/src/encoder.rs`. Each client may only *consider* 1,200 candidates
-per send, ranked by the shared eval order. Past ~1,200 awake bodies the stream
-cannot cover the world at any bandwidth, and the same 1,200 slots spread over
-more claimants as the scene grows.
+- **The byte ceiling never binds.** Zero sends hit it. At 1.6k awake, removing it
+  sends 235 bodies/send against 236 with it.
+- **The evaluation cap is not the limiter either.** `MAX_EVAL_PER_CLIENT = 1200`
+  looked like the obvious culprit -- bodies sent per send *falls* as the world
+  gets busier (236 → 198) -- but lifting it entirely changes nothing: 196
+  bodies/send. That hypothesis is disproved.
+- **Interest culling is not hiding the answer.** Filtering the sample to bodies
+  inside the frustum or within the 120 m proximity radius removes **zero**
+  samples: this city is ~72 m across, so every awake body is relevant to this
+  camera. The staleness is on bodies the client genuinely should be tracking.
+
+What is left is the **priority function itself**. v2 sends a body when its
+*projected pixel error* exceeds `error_budget_px = 2.0`, and it is choosing ~197
+bodies per send out of 3,278 relevant moving ones because, by its own model, the
+rest are still within two pixels of where the client already thinks they are.
+
+That is not a bug -- it is the design. Which means **server-side metrics cannot
+settle whether v2 is starving.** A body creeping at 0.06 m/s in a settling rubble
+pile can go 40 s without an update and still be pixel-correct; a body tumbling
+through the air cannot. The 0.05 m/s threshold used here separates "moving" from
+"resting", not "visibly wrong" from "fine".
+
+The honest next step is the project's own standing rule for perceptual
+questions: render what a v2 client actually sees beside ground truth, and look.
+The `viewer-video` pipeline already does this, and the same island-stream
+reconstruction can be rendered from the same trace for a direct A/B.
 
 ## What this changes about the rewrite
 
@@ -139,10 +162,12 @@ system's worst scaling term, and broadcasting one shared encode removes it.
 
 - One client. Per-client work is what v2 scales badly in; a fleet makes v2 worse,
   not better, so this understates the gap.
-- A fixed camera. Interest culling legitimately skips out-of-view bodies, and
-  those are counted in the staleness distribution, so the absolute p95 is
-  pessimistic. The *comparisons* above hold regardless — every row shares the
-  camera.
+- A fixed camera — but this turned out not to matter: the city is smaller than
+  the proximity radius, so nothing is culled and every sample is a body the
+  client should be tracking.
+- **"Moving" is defined as >0.05 m/s, which is not the same as "visibly wrong".**
+  This is the measurement's real limit and the reason it cannot, by itself,
+  condemn v2.
 - Peak awake reached 7,239 here against the netlab's 16,150; our stress-solver
   content sleeps bodies aggressively, which is a good thing and makes the
   starvation regime harder to reach than it was on joint content.
