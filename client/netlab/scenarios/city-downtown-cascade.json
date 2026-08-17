@@ -1,0 +1,292 @@
+{
+  "name": "city-downtown-cascade",
+  "description": "Drive the whole downtown to collapse: cut supports at the base of every block in turn, then watch it settle. This is the scale ceiling test -- a full-city cascade reaches ~26,000 broken bonds and ~7,000 simultaneous bodies, which is where the server falls off 60 Hz. Gates are deliberately not tuned for this scenario; it exists to measure the ceiling and to prove the city still settles and stays uncorrupted at that scale.",
+  "symptom": [
+    "scale",
+    "cascade",
+    "overload"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-downtown-cascade-{iter}",
+  "durationMs": 179000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "1",
+    "VIBE_CITY_VARIED_HEIGHTS": "0",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "demolisher",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 5000,
+          "cmd": "mark",
+          "args": "cascade-start"
+        },
+        {
+          "at": 6000,
+          "cmd": "lookAt",
+          "args": [
+            0,
+            3,
+            -76
+          ]
+        },
+        {
+          "at": 6200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 15200,
+          "cmd": "lookAt",
+          "args": [
+            -30,
+            3,
+            -50
+          ]
+        },
+        {
+          "at": 15400,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 24400,
+          "cmd": "lookAt",
+          "args": [
+            30,
+            3,
+            -50
+          ]
+        },
+        {
+          "at": 24600,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 33600,
+          "cmd": "lookAt",
+          "args": [
+            0,
+            3,
+            -20
+          ]
+        },
+        {
+          "at": 33800,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 42800,
+          "cmd": "lookAt",
+          "args": [
+            -40,
+            3,
+            -20
+          ]
+        },
+        {
+          "at": 43000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 52000,
+          "cmd": "lookAt",
+          "args": [
+            40,
+            3,
+            -20
+          ]
+        },
+        {
+          "at": 52200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 61200,
+          "cmd": "lookAt",
+          "args": [
+            0,
+            3,
+            10
+          ]
+        },
+        {
+          "at": 61400,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 70400,
+          "cmd": "lookAt",
+          "args": [
+            -45,
+            3,
+            10
+          ]
+        },
+        {
+          "at": 70600,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 79600,
+          "cmd": "lookAt",
+          "args": [
+            45,
+            3,
+            10
+          ]
+        },
+        {
+          "at": 79800,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 88800,
+          "cmd": "lookAt",
+          "args": [
+            0,
+            3,
+            40
+          ]
+        },
+        {
+          "at": 89000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 98000,
+          "cmd": "lookAt",
+          "args": [
+            -40,
+            3,
+            40
+          ]
+        },
+        {
+          "at": 98200,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 107200,
+          "cmd": "lookAt",
+          "args": [
+            40,
+            3,
+            40
+          ]
+        },
+        {
+          "at": 107400,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 116400,
+          "cmd": "lookAt",
+          "args": [
+            0,
+            3,
+            70
+          ]
+        },
+        {
+          "at": 116600,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 125600,
+          "cmd": "lookAt",
+          "args": [
+            -30,
+            3,
+            70
+          ]
+        },
+        {
+          "at": 125800,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 134800,
+          "cmd": "lookAt",
+          "args": [
+            30,
+            3,
+            70
+          ]
+        },
+        {
+          "at": 135000,
+          "cmd": "fire",
+          "args": {
+            "holdMs": 8000
+          }
+        },
+        {
+          "at": 144000,
+          "cmd": "mark",
+          "args": "fire-complete-observe-cascade"
+        },
+        {
+          "at": 144500,
+          "cmd": "faceCity"
+        },
+        {
+          "at": 174000,
+          "cmd": "mark",
+          "args": "settle-window-end"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}
