@@ -118,6 +118,22 @@ export function renderReport(v: IterationVerdict): string {
     lines.push(
       `drops: strict ${s.strictSnapshotDrops}, outbound snapshots ${s.droppedOutboundSnapshots}, malformed ${s.malformedPackets}`,
     );
+    if (s.city) {
+      const c = s.city;
+      lines.push(
+        `city: peak ${c.peakBodies} bodies (${c.peakAwake} awake) · ${c.brokenBonds} bonds broken · stress solve max ${fmt(c.stressSolveMaxMs, 2)}ms on ${c.gpuStressStructures > 0 ? 'GPU' : 'CPU'}`,
+      );
+      // finalAwake and the settle-window churn rate are the pair that says
+      // whether the city stopped. A settled city ends at 0 awake with ~0
+      // re-wakes per minute; rubble that keeps waking itself shows a high rate
+      // long after the last shot, and that is what holds the tick over budget.
+      // The verdict keys on finalAwake, not on the churn rate. Debris landing
+      // late in the window legitimately re-wakes what it lands on, so a high
+      // rate alone is not a fault; a city that never reaches 0 awake is.
+      lines.push(
+        `city settling: ${c.finalAwake} awake at end · ${c.resettledWakes} re-wakes total · ${fmt(c.settlingChurnPerMin, 0)}/min during the settle window${c.finalAwake === 0 ? ' — settled' : ' — NEVER SETTLED'}`,
+      );
+    }
   } else {
     lines.push('no server stats captured');
   }

@@ -97,6 +97,22 @@ interface ServerStatsSample {
         input_jitter_ms: number;
         correction_m: number;
       }>;
+      city?: {
+        chunk_bodies: number;
+        awake_bodies: number;
+        broken_bonds: number;
+        /**
+         * Bodies that had settled and were woken again, cumulative.
+         *
+         * The number that distinguishes "a big collapse is still in progress"
+         * from "the rubble is re-waking itself forever": the first stops when
+         * the debris lands, the second climbs with nobody in the game.
+         */
+        resettled_wakes: number;
+        /** Structures actually solving on the CUDA path. 0 means CPU. */
+        gpu_stress_structures: number;
+        stress_solve_ms: number;
+      };
     }>;
   };
 }
@@ -721,6 +737,54 @@ export interface ServerMetrics {
   measuredTickHz: number;
   tickDeficitPct: number;
   statsGapMaxMs: number;
+  /** Null when the match has no city (the plain arena scenarios). */
+  city: CityServerMetrics | null;
+}
+
+export interface CityServerMetrics {
+  peakBodies: number;
+  peakAwake: number;
+  /** Awake bodies in the final sample: 0 means the city actually settled. */
+  finalAwake: number;
+  brokenBonds: number;
+  /**
+   * Re-wakes over the run. Read together with `settlingChurnPerMin`: a large
+   * total accumulated during the collapse is expected, a large *rate* after the
+   * fire stops is rubble re-waking itself.
+   */
+  resettledWakes: number;
+  /** Re-wakes per minute over the last third of the run, i.e. the settle window. */
+  settlingChurnPerMin: number;
+  /** 0 means the stress solver ran on the CPU -- see docs/CITY-DEBUGGING.md. */
+  gpuStressStructures: number;
+  stressSolveMaxMs: number;
+}
+
+function computeCityMetrics(withMatch: ServerStatsSample[]): CityServerMetrics | null {
+  const cities = withMatch
+    .map((s) => ({ at: s.receivedAtMs, city: s.stats.matches[0].city }))
+    .filter((e): e is { at: number; city: NonNullable<typeof e.city> } => e.city != null);
+  if (cities.length === 0) return null;
+
+  const last = cities[cities.length - 1];
+  // The settle window is the tail of the run: by then the scripted fire has
+  // stopped, so anything still waking is the city doing it to itself.
+  const tailStart = cities[0].at + (last.at - cities[0].at) * (2 / 3);
+  const tail = cities.filter((e) => e.at >= tailStart);
+  const tailSpanMs = tail.length > 1 ? tail[tail.length - 1].at - tail[0].at : 0;
+  const tailWakes =
+    tail.length > 1 ? tail[tail.length - 1].city.resettled_wakes - tail[0].city.resettled_wakes : 0;
+
+  return {
+    peakBodies: Math.max(...cities.map((e) => e.city.chunk_bodies)),
+    peakAwake: Math.max(...cities.map((e) => e.city.awake_bodies)),
+    finalAwake: last.city.awake_bodies,
+    brokenBonds: last.city.broken_bonds,
+    resettledWakes: last.city.resettled_wakes,
+    settlingChurnPerMin: tailSpanMs > 0 ? (tailWakes / tailSpanMs) * 60_000 : 0,
+    gpuStressStructures: Math.max(...cities.map((e) => e.city.gpu_stress_structures ?? 0)),
+    stressSolveMaxMs: Math.max(...cities.map((e) => e.city.stress_solve_ms ?? 0)),
+  };
 }
 
 export function computeServerMetrics(samples: ServerStatsSample[]): ServerMetrics | null {
@@ -779,6 +843,7 @@ export function computeServerMetrics(samples: ServerStatsSample[]): ServerMetric
     inputJitterMaxMs: inputJitterMax,
     serverPendingInputsMax: pendingMax,
     tickSpikeAtMs,
+    city: computeCityMetrics(withMatch),
   };
 }
 
