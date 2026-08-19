@@ -252,6 +252,12 @@ struct DestructionManager::Slot {
   std::uint64_t last_bodies_created = 0;
   std::uint64_t last_shapes_migrated = 0;
   bool topology_primed = false;
+  // The adapter's gpuStressSolveMilliseconds is cumulative since the
+  // destructible was created -- it is only ever `+=`d and never reset. Every
+  // other timing in DestructionStats is the cost of one tick, so the raw value
+  // reported alongside them read as a single 3,207 ms solve. Keep the previous
+  // total here and report the delta.
+  double last_gpu_stress_solve_ms = 0.0;
 };
 
 DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
@@ -1597,8 +1603,13 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
       stats.gpu_stress_structures += 1;
     }
     stats.repeated_body_snapshots = repeated_body_snapshots_;
-  stats.gpu_stress_solve_ms +=
-        static_cast<float>(telemetry.gpuStressSolveMilliseconds);
+    // Delta, not the running total -- see last_gpu_stress_solve_ms. Guarded
+    // because the counter resets to 0 if a destructible is recreated, and a
+    // negative "solve time" is worse than a zero.
+    const double gpu_total = telemetry.gpuStressSolveMilliseconds;
+    const double gpu_delta = gpu_total - slot_ptr->last_gpu_stress_solve_ms;
+    slot_ptr->last_gpu_stress_solve_ms = gpu_total;
+    stats.gpu_stress_solve_ms += static_cast<float>(gpu_delta > 0.0 ? gpu_delta : 0.0);
     // The quantity that actually decides whether anything fractures this tick:
     // endTick() only runs fracture when it is non-zero. Without it in the
     // stats, "the island never breaks" and "nothing was even close to its

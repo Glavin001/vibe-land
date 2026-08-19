@@ -262,6 +262,21 @@ export function CityStatsOverlay({
   const effectiveHz = tickAvg > 0 ? Math.min(SIM_HZ, 1000 / tickAvg) : 0;
   const city = server?.city;
 
+  // The children the server times inside its 60 Hz city step. The stream-encode
+  // pair is excluded on purpose: that is a separate 30 Hz pass.
+  const cityStepChildrenMs = city
+    ? city.begin_ms
+      + city.solve_ms
+      + city.end_ms
+      + city.readback_ms_host
+      + city.settle_ms
+      + city.ingest_ms
+    : 0;
+  // Clamped at 0: the children are sampled from the last native tick while
+  // step_ms is host wall time for the same step, so a slow host tick can
+  // briefly report children summing just past it.
+  const cityStepUnattributedMs = Math.max(0, (city?.step_ms ?? 0) - cityStepChildrenMs);
+
   return (
     <div
       style={{
@@ -432,6 +447,20 @@ export function CityStatsOverlay({
         value={`${(city?.ingest_ms ?? 0).toFixed(1)} ms`}
         warn={(city?.ingest_ms ?? 0) > 4}
       />
+      {/*
+        Everything above is inside the 60 Hz city step, so it sums to it. What
+        it does not sum to is the untimed remainder -- the post-fracture push
+        re-apply, topology drain and baseline emit. Showing that gap explicitly
+        keeps a missing measurement visible instead of silently absorbed into
+        "city step is big"; it has run to a quarter of the step under load.
+      */}
+      <Stat label="↳ unattributed" value={`${cityStepUnattributedMs.toFixed(1)} ms`} warn={cityStepUnattributedMs > 4} />
+      {/*
+        Below here is the SEPARATE 30 Hz stream pass, not part of city step.
+        Listed flush with the step's children it invited adding the whole
+        column, which double-counts across two tick rates.
+      */}
+      <Stat label="— stream (30 Hz) —" value="" />
       <Stat
         label="stream encode"
         value={`${(city?.encode_shared_ms ?? 0).toFixed(1)} ms`}
