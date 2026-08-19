@@ -13,7 +13,7 @@
 // entry and carry their extents in the instance matrix, exactly as before.
 
 import { useFrame } from '@react-three/fiber';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
@@ -23,6 +23,7 @@ import {
   shouldUpdateThisFrame,
   updateStrideForDistanceSq,
 } from '../city/renderScheduling';
+import { onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
@@ -188,8 +189,11 @@ function buildMesh(client: CityClient): CityMeshState {
       totalVertices += vertexBudget;
 
       const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+      // Toggleable at runtime: the city is the bulk of the shadow map, and on a
+      // phone that second pass over 24k chunks is a candidate for the whole
+      // frame budget. See app/renderQuality.
+      mesh.castShadow = shadowsEnabled();
+      mesh.receiveShadow = shadowsEnabled();
       // Per-instance culling walks every chunk to decide each one, which is the
       // work we are trying to avoid.
       mesh.perObjectFrustumCulled = false;
@@ -427,6 +431,21 @@ export function CityChunksLayer({
   const teleportProbeRef = useRef<(() => void) | null>(null);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
+
+  // Applied to the live meshes rather than forcing a rebuild: castShadow is a
+  // plain flag on the batch, so the next frame simply stops submitting the city
+  // to the shadow pass. Rebuilding 24k instances to change a boolean would make
+  // the toggle feel like a level reload, which defeats using it to A/B fps.
+  useEffect(
+    () =>
+      onRenderQualityChange(({ shadows }) => {
+        for (const mesh of stateRef.current?.meshes ?? []) {
+          mesh.castShadow = shadows;
+          mesh.receiveShadow = shadows;
+        }
+      }),
+    [],
+  );
 
   useFrame((frameState) => {
     const client = getCityClient();

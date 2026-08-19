@@ -137,6 +137,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 }
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
+import { setShadowsEnabled, shadowsEnabled } from '../app/renderQuality';
 
 export function CityStatsOverlay({
   matchId,
@@ -168,6 +169,7 @@ export function CityStatsOverlay({
 }) {
   const [visible, setVisible] = useState(true);
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
+  const [shadows, setShadows] = useState(shadowsEnabled);
   const [server, setServer] = useState<MatchStats | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const frame = useFrameTime();
@@ -341,6 +343,23 @@ export function CityStatsOverlay({
               : resetState === 'failed'
                 ? 'RESET FAILED'
                 : 'RESET CITY'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !shadows;
+            setShadowsEnabled(next);
+            setShadows(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-shadows-toggle"
+          aria-label="Toggle shadows"
+          title="The city is the bulk of the shadow map; off skips that pass entirely"
+        >
+          {shadows ? 'SHADOWS: ON' : 'SHADOWS: OFF'}
         </button>
       </div>
 
