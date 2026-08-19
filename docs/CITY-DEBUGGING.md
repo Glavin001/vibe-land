@@ -140,3 +140,37 @@ feel far more fragile than the same materials on a CUDA build. Tune destruction 
 `VIBE_CITY_GPU_STRESS=0` disables it at runtime; `VIBE_CITY_GPU_STRESS_MIN_BONDS` sets the
 crossover and defaults to 0 (every structure on the GPU) deliberately -- a non-zero crossover
 splits one scene across two solvers that disagree at a shared iteration budget.
+
+## Reading the city timing breakdown
+
+The overlay's DESTRUCTION column is not one flat list. It contains two passes at two rates
+plus a parent/child hierarchy, and three of those relationships were wrong or unlabelled
+until 2026-08-19 (`ca09adb`).
+
+**Two passes, two rates.** `city step` and its children run at 60 Hz. `stream encode` and
+`per-client pack` are a **separate 30 Hz pass** (`server/src/city.rs:750`
+`record_encode_timings`) and are NOT inside `city step`. Adding the whole column
+double-counts across tick rates. The overlay now separates them with a `— stream (30 Hz) —`
+divider.
+
+**Parent, not sibling.** `stress_solve_ms` brackets `beginTick` through `endTick`
+(`destruction.cc:1003-1235`), so it is a parent of `begin_ms`, `solve_ms`, `end_ms`,
+`readback_ms`, `events_ms` and `filters_ms`. Never add it to them. It is also wall clock
+rather than a sum, and measures ~20% above the sum of its children.
+
+**The gap is real.** `city step` minus its timed children is genuine unattributed cost — the
+post-fracture push re-apply, topology drain and baseline emit are not instrumented. It runs
+12% of the step at moderate load and has reached ~25% under a heavy cascade. The overlay
+shows it as `↳ unattributed` so a missing measurement stays visible instead of reading as
+"city step is just big".
+
+**Cumulative vs per-tick.** Blast's `ExtStressPhysXTelemetry` counters are cumulative since
+the destructible was created — they are only ever `+=`d, with no per-tick reset. `stress_solve_ms`
+is safe (it is host wall clock, `destruction.cc:1229`), but anything sourced straight from
+that telemetry is a running total. `gpu_stress_solve_ms` was exactly that bug. Before adding
+a new field from the adapter's telemetry, check whether it needs a delta.
+
+Sanity checks worth running on any timing claim:
+- Does the child set sum to at most the parent? If it exceeds, the scopes overlap.
+- Is the value monotonic across samples? Then it is cumulative, not per-tick.
+- Do the phases belong to the same tick rate?
