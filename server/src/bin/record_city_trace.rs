@@ -29,9 +29,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use destruction_codec::codec::PhysicalClass;
+use destruction_codec::presentation::{MotionSnapshot, PresentationConfig, PresentationTrack};
+use destruction_codec::replay::ReplayWriter;
 use destruction_codec::trace::{
     ActorDef, ActorState, Camera, Header, Pose as TracePose, Shape, Tick, TopologyEdge,
     TopologyTick, TraceTopology, TraceWriter,
+};
+use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
+use vibe_land_destruction::wire::{
+    decode_baseline, decode_chunks_datagram, decode_topology, RecordMode, PKT_CITY_BASELINE,
+    PKT_CITY_TOPOLOGY, RECORD_FLAG_SETTLED_HINT,
 };
 use glam::{Quat, Vec3};
 use vibe_land_destruction::city::{build_city_scene, CitySceneDesc};
@@ -69,6 +77,10 @@ struct Args {
     /// it was authored from.
     targets: u32,
     output: PathBuf,
+    /// Also record what a wire-v2 client would DISPLAY, as a renderable
+    /// towerstate, by running the real ChunkStreamEncoder and modelling the
+    /// client from its decoded bytes.
+    v2_view: Option<PathBuf>,
 }
 
 impl Args {
@@ -82,6 +94,7 @@ impl Args {
         let mut shots = 48u32;
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
+        let mut v2_view = None;
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -99,6 +112,7 @@ impl Args {
                 "--shots" => shots = value()?.parse()?,
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
+                "--v2-view" => v2_view = Some(PathBuf::from(value()?)),
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
@@ -124,6 +138,7 @@ impl Args {
             shots,
             targets,
             output,
+            v2_view,
         })
     }
 }
@@ -363,6 +378,326 @@ impl Membership {
     }
 }
 
+
+/// What a wire-v2 client would display, reconstructed from bytes alone.
+///
+/// The starvation measurements ended at a question server-side metrics cannot
+/// answer: v2 leaves slow-moving bodies 40+ seconds stale *on purpose*, judging
+/// them inside its two-pixel error budget -- and whether that is fine or awful
+/// is a property of the picture, not of a percentile. So this models the client
+/// and renders the picture.
+///
+/// Honesty rule: the model consumes only the byte packets the real encoder
+/// emits, through the same `wire::decode_*` the browser mirrors. It never reads
+/// encoder internals. A body the client was never told about is simply never
+/// drawn differently from bootstrap state, exactly like the real ledger.
+struct V2ClientModel {
+    encoder: ChunkStreamEncoder,
+    camera: vibe_land_destruction::types::Camera,
+    writer: ReplayWriter,
+    /// Client-side membership ledger, driven by DECODED topology.
+    membership: Membership,
+    /// Delta reference poses per baseline generation (keep 2, like the client).
+    baselines: std::collections::HashMap<u16, HashMap<u32, Vec3>>,
+    tracks: HashMap<u32, PresentationTrack>,
+    /// Bodies parked by a settle record; pose is authoritative until records
+    /// resume for the body.
+    settled: HashMap<u32, TracePose>,
+    presentation: PresentationConfig,
+    actor_template: ActorDef,
+    pose_bytes: u64,
+    topology_bytes: u64,
+    baseline_bytes: u64,
+}
+
+impl V2ClientModel {
+    fn new(
+        manifest: &vibe_land_destruction::manifest::DestructionManifest,
+        table: &ChunkTable,
+        header: &Header,
+        actors: &[ActorDef],
+        path: &std::path::Path,
+        hz: u32,
+    ) -> Result<Self> {
+        let mut config = EncoderConfig::validated(hz);
+        // Mirror CityRuntime::from_parts: 30 Hz sends, wide proximity.
+        config.send_interval_ticks = (hz / 30).max(1);
+        config.interest.proximity_meters = 120.0;
+        let mut encoder = ChunkStreamEncoder::new(manifest, config);
+        encoder.add_client(1);
+        // Interest is evaluated from the pane-0 camera, so the pane the video
+        // shows is the view the encoder was actually serving.
+        let hero = header.cameras[0];
+        let camera = vibe_land_destruction::types::Camera {
+            eye: glam::Vec3::new(hero.eye.x, hero.eye.y, hero.eye.z),
+            direction: glam::Vec3::new(hero.direction.x, hero.direction.y, hero.direction.z),
+            fov_degrees: 80.0,
+        };
+        let mut writer = ReplayWriter::create(path, header, actors, 30)?;
+        // Frame 0 = bootstrap state: every chunk at its structure rest pose.
+        let mut initial = Vec::with_capacity(actors.len());
+        for index in 0..actors.len() as u32 {
+            let (origin, rotation) = table.structure_pose[index as usize];
+            initial.push((
+                index,
+                TracePose {
+                    position: origin + rotation * table.rest[index as usize],
+                    rotation,
+                },
+                true,
+            ));
+        }
+        writer.write_frame_subset(&initial)?;
+        Ok(Self {
+            encoder,
+            camera,
+            writer,
+            membership: Membership::new(table),
+            baselines: std::collections::HashMap::new(),
+            tracks: HashMap::new(),
+            settled: HashMap::new(),
+            presentation: PresentationConfig {
+                // The browser client's presentationConfig60Hz.
+                interpolation_delay_ticks: 6,
+                max_extrapolation_ticks: 8,
+                correction_seconds: 0.1,
+                dt: 1.0 / hz as f32,
+                gravity: Vec3::from_array(GRAVITY),
+                snap_distance_meters: 5.0,
+            },
+            actor_template: ActorDef {
+                id: 0,
+                part: 0,
+                linear_damping: 0.05,
+                angular_damping: 0.05,
+                shapes: Vec::new(),
+                bounding_radius: 1.0,
+            },
+            pose_bytes: 0,
+            topology_bytes: 0,
+            baseline_bytes: 0,
+        })
+    }
+
+    /// Server side of the tick: feed the real encoder, then hand every emitted
+    /// packet straight back to the client half as bytes.
+    fn server_tick(
+        &mut self,
+        tick: u32,
+        snapshots: &[BodySnapshotInput],
+        output: &vibe_netcode::destruction_backend::DestructionTickOutput,
+        table: &ChunkTable,
+    ) -> Result<()> {
+        self.encoder.ingest_tick(tick, snapshots, output, &[]);
+        let mut reliable = self.encoder.take_topology_messages();
+        if let Some(baselines) = self.encoder.maybe_emit_baseline(tick) {
+            reliable.extend(baselines);
+        }
+        for packet in reliable {
+            self.apply_reliable(&packet, table)?;
+        }
+        if tick % self.encoder_send_interval() == 0 {
+            let shared = self.encoder.encode_send(tick);
+            if !shared.records.is_empty() {
+                for packet in self.encoder.client_datagrams(1, self.camera, &shared) {
+                    self.apply_datagram(&packet)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn encoder_send_interval(&self) -> u32 {
+        2
+    }
+
+    fn apply_reliable(&mut self, packet: &[u8], table: &ChunkTable) -> Result<()> {
+        match packet.first().copied() {
+            Some(PKT_CITY_TOPOLOGY) => {
+                self.topology_bytes += packet.len() as u64;
+                let message =
+                    decode_topology(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                for batch in &message.batches {
+                    for promotion in &batch.promoted_islands {
+                        let body = ids::body_entity(promotion.structure_id, promotion.island_id);
+                        for &chunk in &promotion.chunks {
+                            if let Some(&index) = table.by_global.get(&chunk) {
+                                self.membership.move_chunk(index, body);
+                            }
+                        }
+                        self.membership.recompute_com(body, table);
+                        // Promotions carry pose + velocity on the reliable
+                        // channel, so a fresh island is visible immediately --
+                        // this is the promotion-glide seed.
+                        let snapshot = MotionSnapshot {
+                            tick: message.sim_tick,
+                            pose: TracePose {
+                                position: Vec3::from_array(promotion.position),
+                                rotation: glam::Quat::from_array(promotion.rotation).normalize(),
+                            },
+                            linear_velocity: Vec3::from_array(promotion.linear_velocity),
+                            angular_velocity: Vec3::from_array(promotion.angular_velocity),
+                            class: PhysicalClass::ContactActive,
+                        };
+                        self.settled.remove(&body);
+                        self.track_for(body).push(snapshot);
+                    }
+                    for migration in &batch.migrations {
+                        if let Some(&index) = table.by_global.get(&migration.chunk_id) {
+                            let to = ids::body_entity(batch.structure_id, migration.to_island_id);
+                            if let Some(from) = self.membership.move_chunk(index, to) {
+                                self.membership.recompute_com(from, table);
+                            }
+                            self.membership.recompute_com(to, table);
+                        }
+                    }
+                    for &retired in &batch.retired_island_ids {
+                        let body = ids::body_entity(batch.structure_id, retired);
+                        self.tracks.remove(&body);
+                        self.settled.remove(&body);
+                        // Chunks still mapped to the body keep their last drawn
+                        // pose -- the real ledger's stale-orphan behaviour.
+                    }
+                }
+                for settle in &message.settled {
+                    let body = ids::body_entity(settle.structure_id, settle.island_id);
+                    self.tracks.remove(&body);
+                    self.settled.insert(
+                        body,
+                        TracePose {
+                            position: Vec3::from_array(settle.position),
+                            rotation: glam::Quat::from_array(settle.rotation).normalize(),
+                        },
+                    );
+                }
+            }
+            Some(PKT_CITY_BASELINE) => {
+                self.baseline_bytes += packet.len() as u64;
+                let message =
+                    decode_baseline(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                let poses = self.baselines.entry(message.baseline_id).or_default();
+                for record in &message.records {
+                    poses.insert(record.body_entity, record.pose.position);
+                }
+                // Keep two generations, like the browser ledger: the one being
+                // replaced still has deltas in flight against it.
+                if self.baselines.len() > 2 {
+                    let newest = message.baseline_id;
+                    self.baselines
+                        .retain(|&id, _| id == newest || id.wrapping_add(1) == newest);
+                }
+            }
+            other => anyhow::bail!("unexpected reliable packet kind {other:?}"),
+        }
+        Ok(())
+    }
+
+    fn apply_datagram(&mut self, packet: &[u8]) -> Result<()> {
+        self.pose_bytes += packet.len() as u64;
+        let datagram =
+            decode_chunks_datagram(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        for record in &datagram.records {
+            let position = match record.mode {
+                RecordMode::Delta | RecordMode::MotionDelta => {
+                    // Delta against a baseline generation the client may not
+                    // have yet; the real ledger defers such records, and the
+                    // honest equivalent here is to drop them.
+                    match self
+                        .baselines
+                        .get(&datagram.baseline_id)
+                        .and_then(|poses| poses.get(&record.body_entity))
+                    {
+                        Some(base) => *base + record.position,
+                        None => continue,
+                    }
+                }
+                _ => record.position,
+            };
+            let class = match record.mode {
+                RecordMode::Ballistic => PhysicalClass::Ballistic,
+                _ if record.flags & RECORD_FLAG_SETTLED_HINT != 0 => PhysicalClass::Quiescent,
+                _ => PhysicalClass::ContactActive,
+            };
+            let snapshot = MotionSnapshot {
+                tick: datagram.sim_tick,
+                pose: TracePose {
+                    position,
+                    rotation: record.rotation.normalize(),
+                },
+                linear_velocity: record.linear_velocity,
+                angular_velocity: record.angular_velocity,
+                class,
+            };
+            self.settled.remove(&record.body_entity);
+            self.track_for(record.body_entity).push(snapshot);
+        }
+        Ok(())
+    }
+
+    fn track_for(&mut self, body: u32) -> &mut PresentationTrack {
+        let (template, config) = (&self.actor_template, self.presentation);
+        self.tracks
+            .entry(body)
+            .or_insert_with(|| PresentationTrack::new(template, config))
+    }
+
+    /// One displayed frame: sample every live track, compose member chunks.
+    fn write_frame(&mut self, tick: u32, table: &ChunkTable) -> Result<()> {
+        let mut updates: Vec<(u32, TracePose, bool)> = Vec::new();
+        let sampled: Vec<(u32, TracePose)> = self
+            .tracks
+            .iter_mut()
+            .map(|(&body, track)| {
+                let state = track.sample(tick as f32);
+                (body, state.pose)
+            })
+            .collect();
+        for (body, pose) in sampled {
+            self.compose_members(body, pose, false, table, &mut updates);
+        }
+        let parked: Vec<(u32, TracePose)> =
+            self.settled.iter().map(|(&body, &pose)| (body, pose)).collect();
+        for (body, pose) in parked {
+            self.compose_members(body, pose, true, table, &mut updates);
+        }
+        updates.sort_by_key(|(index, _, _)| *index);
+        updates.dedup_by_key(|(index, _, _)| *index);
+        self.writer.write_frame_subset(&updates)?;
+        Ok(())
+    }
+
+    fn compose_members(
+        &self,
+        body: u32,
+        body_pose: TracePose,
+        sleeping: bool,
+        table: &ChunkTable,
+        updates: &mut Vec<(u32, TracePose, bool)>,
+    ) {
+        let Some(members) = self.membership.members.get(&body) else {
+            return;
+        };
+        for &index in members {
+            let local = self.membership.local_offset(index, table);
+            updates.push((
+                index,
+                TracePose {
+                    position: body_pose.position + body_pose.rotation * local,
+                    rotation: body_pose.rotation,
+                },
+                // The renderer darkens sleeping bodies; matching truth's
+                // semantics is what makes the panes comparable.
+                sleeping,
+            ));
+        }
+    }
+
+    fn finish(mut self) -> Result<(u64, u64, u64)> {
+        self.writer.finish()?;
+        Ok((self.pose_bytes, self.topology_bytes, self.baseline_bytes))
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse()?;
 
@@ -426,6 +761,18 @@ fn main() -> Result<()> {
         .context("open trace for writing")?;
 
     let mut membership = Membership::new(&table);
+    let mut v2 = match &args.v2_view {
+        Some(path) => Some(V2ClientModel::new(
+            &manifest,
+            &table,
+            &header,
+            &table.actors,
+            path,
+            args.hz,
+        )?),
+        None => None,
+    };
+    let view_step = (args.hz / 30).max(1);
     let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
     // Sentinel, so every actor counts as changed on tick 0: the format
@@ -452,6 +799,16 @@ fn main() -> Result<()> {
         let output = destruction
             .post_step(&mut world, dt, GRAVITY)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+
+        if let Some(v2) = v2.as_mut() {
+            let snapshots = destruction
+                .body_snapshots(&world)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            v2.server_tick(tick_index, snapshots, &output, &table)?;
+            if tick_index % view_step == 0 && tick_index > 0 {
+                v2.write_frame(tick_index, &table)?;
+            }
+        }
 
         // Apply topology deltas before reading poses: a chunk promoted this
         // tick must be composed against its NEW body's frame, or it draws one
@@ -634,6 +991,22 @@ fn main() -> Result<()> {
     }
 
     writer.finish().context("finalise trace")?;
+    if let Some(v2) = v2.take() {
+        let (pose_bytes, topology_bytes, baseline_bytes) = v2.finish()?;
+        let seconds = f64::from(total_ticks) / f64::from(args.hz);
+        let mbps = |bytes: u64| bytes as f64 * 8.0 / seconds / 1.0e6;
+        let reliable = topology_bytes + baseline_bytes;
+        println!(
+            "v2 view: poses {} B ({:.3} Mbps) | topology {} B ({:.3}) | baseline {} B ({:.3}) | reliable share {:.1}%",
+            pose_bytes,
+            mbps(pose_bytes),
+            topology_bytes,
+            mbps(topology_bytes),
+            baseline_bytes,
+            mbps(baseline_bytes),
+            100.0 * reliable as f64 / (reliable + pose_bytes).max(1) as f64
+        );
+    }
 
     let stats = destruction.stats();
     if mismatch_ticks > 0 {
