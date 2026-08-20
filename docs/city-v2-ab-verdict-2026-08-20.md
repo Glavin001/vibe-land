@@ -58,3 +58,29 @@ Phase C (the live debris codec) proceeds as an upgrade with a *visible-quality*
 justification, not only a scaling one. The v2 A/B harness stays: it is the
 acceptance instrument for C4 (render the v3 client the same way, beside the
 same truth).
+
+
+---
+
+# C0: the flush-latency operating point
+
+Same island-stream codec, 0.5 cm masked contract, both reference traces, all
+gates PASS at every setting and error p95 flat (the bound holds regardless;
+flush buys *bytes*, not accuracy):
+
+| trace | 50 ms flush | 100 ms | 250 ms |
+|---|---:|---:|---:|
+| c9-barrage (70% of bonds broken) | 2.635 Mbps (+86%) | **1.786 (+26%)** | 1.415 |
+| city25-wide | 1.904 (+67%) | **1.291 (+13%)** | 1.138 |
+
+**Operating point: flush = 100 ms.** The 50 ms point pays 67–86% more bytes for
+50 ms less refinement latency; the 250 ms point saves 13–26% but pushes
+end-to-end refinement to ~350 ms. At 100 ms flush + the client's 100 ms
+interpolation, refinement latency is ~200 ms against today's ~135 ms — and
+fracture *events* stay at today's latency via reliable promotions + glide.
+Worst measured case at the operating point is 1.79 Mbps, inside the 2.5 Mbps
+per-client ceiling.
+
+Still owed by C0 (needs C1 code to measure honestly): the self-contained-packet
+compression penalty and the smeared-restatement (K) overhead. Both land with the
+LiveEncoder and gate C1.
