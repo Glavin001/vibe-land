@@ -1086,6 +1086,11 @@ struct BodyFitter {
     /// under the wake threshold would otherwise slide metres while the client
     /// shows it motionless.
     parked_pose: Option<Pose>,
+    /// Anchor for pose-based quiet detection: quiet ticks accumulate while the
+    /// body stays inside the rest shell of this pose, so contact jitter in a
+    /// pile that PhysX never sleeps still earns a park. Reset whenever the
+    /// body escapes the shell.
+    quiet_anchor: Option<Pose>,
 }
 
 #[derive(Clone, Copy)]
@@ -1382,6 +1387,7 @@ impl Encoder {
             lane.fitter.chain_tail = None;
             lane.fitter.parked = false;
             lane.fitter.parked_pose = None;
+            lane.fitter.quiet_anchor = None;
         }
         if let Some(tail) = self.encode_tails.get_mut(body) {
             *tail = None;
@@ -1590,7 +1596,30 @@ impl Encoder {
         if self.config.sleep.enabled() {
             let speed = state.linear_velocity.length();
             let spin = state.angular_velocity.length();
-            if speed <= self.config.sleep.linear_mps && spin <= self.config.sleep.angular_rps {
+            let velocity_quiet =
+                speed <= self.config.sleep.linear_mps && spin <= self.config.sleep.angular_rps;
+            // PhysX never sleeps a large contact pile: bodies carry contact-impulse
+            // velocities above any usable threshold while their poses go nowhere.
+            // Quiet is therefore also earned by pose -- staying inside the rest
+            // shell of an anchor pose for the whole window -- whatever the
+            // velocities claim.
+            let pose_quiet = {
+                let bound = self.config.tolerances.shell_for_source(
+                    state,
+                    radius,
+                    self.config.strict[body],
+                );
+                match self.lanes[body].fitter.quiet_anchor {
+                    Some(anchor) if rigid_shell_error_meters(pose, anchor, radius) <= bound => {
+                        true
+                    }
+                    _ => {
+                        self.lanes[body].fitter.quiet_anchor = Some(pose);
+                        false
+                    }
+                }
+            };
+            if velocity_quiet || pose_quiet {
                 self.lanes[body].fitter.quiet_ticks += 1;
             } else {
                 self.lanes[body].fitter.quiet_ticks = 0;
@@ -1610,6 +1639,7 @@ impl Encoder {
                 }
                 self.lanes[body].fitter.quiet_ticks = 0;
                 self.lanes[body].fitter.parked_pose = None;
+                self.lanes[body].fitter.quiet_anchor = None;
             } else if self.lanes[body].fitter.quiet_ticks >= self.config.sleep.ticks {
                 let (position, rotation) = quantize_pose_with(pose, self.config.wide[body]);
                 self.emit(
@@ -3490,6 +3520,61 @@ mod tests {
         encoder.finalize_span(0, &mut records);
         assert_eq!(records.len(), 1);
         assert!(matches!(records[0], Record::Rest { .. }));
+    }
+
+    #[test]
+    fn a_jittering_body_with_a_static_pose_still_parks() {
+        // PhysX never sleeps a large contact pile: bodies carry contact-impulse
+        // velocities above any velocity threshold while their poses go nowhere.
+        // The pose-anchored quiet path must park them anyway.
+        let dt = 1.0 / 60.0;
+        let sleep = SleepPolicy {
+            linear_mps: 0.15,
+            angular_rps: 0.15,
+            ticks: 30,
+        };
+        let mut encoder = Encoder::new(
+            1,
+            dt,
+            Vec3::new(0.0, -9.81, 0.0),
+            vec![0.3],
+            test_tolerances(),
+            sleep,
+            2,
+            DEFAULT_STRIDE_LADDER.to_vec(),
+            true,
+            0.0,
+            false,
+        );
+        let mut records = Vec::new();
+        for tick in 0..240u32 {
+            // Velocity flutter well above the quiet thresholds, alternating
+            // direction so it never integrates anywhere; pose fixed.
+            let sign = if tick % 2 == 0 { 1.0 } else { -1.0 };
+            let actor = state(
+                Pose {
+                    position: Vec3::new(1.0, 0.5, 2.0),
+                    rotation: Quat::IDENTITY,
+                },
+                Vec3::new(0.4 * sign, 0.3, 0.2 * sign),
+                Vec3::new(0.5 * sign, 0.4, 0.0),
+            );
+            encoder.push(0, tick, &actor);
+            if (tick + 1) % 6 == 0 {
+                encoder.finalize_span(0, &mut records);
+            }
+        }
+        encoder.finalize_span(0, &mut records);
+        let rests = records
+            .iter()
+            .filter(|r| matches!(r, Record::Rest { .. }))
+            .count();
+        assert_eq!(rests, 1, "expected exactly one Rest, got {records:?}");
+        // Once parked, nothing else may be emitted for the remaining ticks.
+        assert!(
+            matches!(records.last(), Some(Record::Rest { .. })),
+            "park must be terminal while the pose holds: {records:?}"
+        );
     }
 
     #[test]
