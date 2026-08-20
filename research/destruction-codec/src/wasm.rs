@@ -18,12 +18,13 @@ use wasm_bindgen::prelude::*;
 
 use crate::debris_codec::Playback;
 use crate::live::LiveDecoder;
+use zstd::dict::DecoderDictionary;
 
 #[wasm_bindgen]
 pub struct DebrisDecoder {
     decoder: LiveDecoder,
     playbacks: HashMap<u32, Playback>,
-    dictionary: Vec<u8>,
+    dictionary: DecoderDictionary<'static>,
     dt: f32,
     gravity: Vec3,
 }
@@ -36,7 +37,9 @@ impl DebrisDecoder {
         DebrisDecoder {
             decoder: LiveDecoder::new(max_lanes as usize),
             playbacks: HashMap::new(),
-            dictionary: dictionary.to_vec(),
+            // Digested once; per-packet dictionary creation measured 76 ms
+            // per span server-side, and the browser pays the same digest.
+            dictionary: DecoderDictionary::copy(dictionary),
             dt: 1.0 / sim_hz.max(1) as f32,
             gravity: Vec3::new(0.0, -9.81, 0.0),
         }
@@ -48,7 +51,7 @@ impl DebrisDecoder {
     pub fn push_payload(&mut self, compression: u8, body: &[u8]) -> Result<u32, JsError> {
         let payload: Vec<u8> = match compression {
             0 => body.to_vec(),
-            1 => zstd::bulk::Decompressor::with_dictionary(&self.dictionary)
+            1 => zstd::bulk::Decompressor::with_prepared_dictionary(&self.dictionary)
                 .and_then(|mut decompressor| decompressor.decompress(body, 64 * 1024))
                 .map_err(|error| JsError::new(&format!("decompress: {error}")))?,
             other => return Err(JsError::new(&format!("unknown compression tag {other}"))),

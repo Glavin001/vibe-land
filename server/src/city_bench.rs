@@ -1284,3 +1284,113 @@ fn pose_stream_starvation() {
 
     assert!(peak_awake > 100, "scene never fractured");
 }
+
+/// Wire-v3 encode cost at demolition scale: the C2 gate.
+///
+/// The loopback recorder measured a 9.4 ms MAX in-process beside the GPU sim,
+/// which could be first-span init, contention, or a real cost -- a max is not
+/// a budget. This pins the p50/p95/max of the per-span LiveEncoder cost on the
+/// real runtime at the heavy scene.
+///
+/// Run:
+///   VIBE_CITY_SCENE=high-rise-10f-local.json VIBE_CITY_GRID=4 \
+///   VIBE_BENCH_SHOTS_PER_STRUCTURE=40 VIBE_CITY_WIRE=3 \
+///   cargo test -p web-fps-server --features destruction v3_span_encode_cost \
+///     -- --nocapture --ignored
+#[test]
+#[ignore = "benchmark: needs a GPU, takes ~60s"]
+fn v3_span_encode_cost() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    assert!(city.is_physx(), "bench requires the PhysX backend");
+    city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_V3);
+    city.add_client(1);
+
+    let shots = match std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|v| *v > 0)
+    {
+        Some(per_structure) => demolition_plan(&city, per_structure),
+        None => shot_plan(),
+    };
+    let shot_interval = if std::env::var("VIBE_BENCH_SHOTS_PER_STRUCTURE").is_ok() {
+        4
+    } else {
+        SHOT_INTERVAL_TICKS
+    };
+    let total_ticks = shots.len() as u32 * shot_interval + SETTLE_TICKS;
+
+    let mut span_ms: Vec<f32> = Vec::new();
+    let (mut datagram_bytes, mut datagrams) = (0u64, 0u64);
+    let mut peak_awake = 0u32;
+    for tick in 0..total_ticks {
+        if tick % shot_interval == 0 {
+            if let Some(&(origin, direction)) = shots.get((tick / shot_interval) as usize) {
+                city.apply_shot_ray(origin, direction, Some(&mut world));
+            }
+        }
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        for packet in city.take_v3_datagrams() {
+            datagram_bytes += packet.len() as u64;
+            datagrams += 1;
+        }
+        // Span cost is recorded when a span closes (every 6 ticks).
+        if (tick + 1) % 6 == 0 {
+            span_ms.push(city.last_v3_span_encode_ms());
+        }
+        peak_awake = peak_awake.max(city.stats().awake_chunk_bodies);
+    }
+
+    span_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pick = |q: f64| span_ms[((span_ms.len() as f64 * q) as usize).min(span_ms.len() - 1)];
+    let seconds = f64::from(total_ticks) * f64::from(DT);
+    println!("\n=== v3 span encode cost ===");
+    println!("peak awake bodies   {peak_awake}");
+    println!(
+        "span encode ms      p50 {:.2} | p95 {:.2} | max {:.2}  ({} spans)",
+        pick(0.5),
+        pick(0.95),
+        pick(1.0),
+        span_ms.len()
+    );
+    println!(
+        "datagrams           {} ({:.3} Mbps broadcast per client)",
+        datagrams,
+        datagram_bytes as f64 * 8.0 / seconds / 1.0e6
+    );
+    assert!(peak_awake > 500, "scene never got heavy");
+    // Gate: the span-close burst must fit a 60 Hz tick beside the sim work.
+    // Measured at 3.2-3.8k awake bodies: fitting 2.75 ms avg (already
+    // parallel), packetize 0.4, compress 0.5, pushes 0.8 -- p95 ~7.4 ms, which
+    // beside ~7 ms of sim lands at ~15 of 16.7 ms. The original 3 ms figure
+    // came from the offline 250 ms-block encoder, an apples-to-oranges
+    // number. If scenes outgrow this, two reductions are known and unbuilt:
+    // a persistent worker pool (thread spawn per span is ~1-1.5 ms of the
+    // fitting time) and splitting fit/packetize across two ticks.
+    let p95 = pick(0.95);
+    assert!(
+        p95 <= 8.0,
+        "v3 span encode p95 {p95:.2} ms exceeds the 8 ms tick-budget gate"
+    );
+    assert!(
+        pick(0.5) <= 5.0,
+        "v3 span encode p50 {:.2} ms exceeds 5 ms",
+        pick(0.5)
+    );
+}

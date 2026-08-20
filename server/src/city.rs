@@ -18,7 +18,7 @@ use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
-use vibe_land_destruction::wire::{compress_debris_payload, encode_debris_datagram};
+use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use vibe_land_destruction::ids as city_ids;
 use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
 use destruction_codec::live::{LiveEncoder, LiveEncoderConfig};
@@ -278,12 +278,13 @@ struct V3Live {
     radii: HashMap<u64, f32>,
     staged: Vec<Vec<u8>>,
     staged_reliable: Vec<Vec<u8>>,
+    compressor: DebrisCompressor,
     /// Encode cost of the last closed span, for the perf gate.
     last_span_encode_ms: f32,
 }
 
 impl V3Live {
-    fn new(sim_hz: u32) -> Self {
+    fn new(sim_hz: u32, chunk_capacity: usize) -> Self {
         let span_ticks = (sim_hz / 10).max(1); // 100 ms: the measured knee
         let encoder = LiveEncoder::new(LiveEncoderConfig {
             dt: 1.0 / sim_hz as f32,
@@ -308,7 +309,9 @@ impl V3Live {
                 ticks: 0,
             },
             restate_period: 16,
-            initial_capacity: 512,
+            // Full capacity up front: islands never exceed chunks, and a
+            // mid-collapse growth rebuilds the encoder (a visible spike).
+            initial_capacity: chunk_capacity.clamp(64, 65_536),
         });
         Self {
             encoder,
@@ -317,6 +320,7 @@ impl V3Live {
             radii: HashMap::new(),
             staged: Vec::new(),
             staged_reliable: Vec::new(),
+            compressor: DebrisCompressor::new(),
             last_span_encode_ms: 0.0,
         }
     }
@@ -416,11 +420,22 @@ impl V3Live {
                 .push(vibe_land_destruction::wire::encode_city_lanes(&assignments));
         }
         if (sim_tick + 1) % self.span_ticks == 0 {
+            let push_ms = started.elapsed().as_secs_f32() * 1000.0;
             let span_first = self.span_first;
-            for packet in self.encoder.finalize_span(span_first) {
-                let (compression, body) = compress_debris_payload(&packet.payload);
+            let finalize_started = std::time::Instant::now();
+            let packets = self.encoder.finalize_span(span_first);
+            let finalize_ms = finalize_started.elapsed().as_secs_f32() * 1000.0;
+            let compress_started = std::time::Instant::now();
+            for packet in packets {
+                let (compression, body) = self.compressor.compress(&packet.payload);
                 self.staged
                     .push(encode_debris_datagram(packet.span_tick, compression, &body));
+            }
+            let compress_ms = compress_started.elapsed().as_secs_f32() * 1000.0;
+            if std::env::var("V3_PROFILE").is_ok() {
+                eprintln!(
+                    "V3SPAN push {push_ms:.2} finalize {finalize_ms:.2} compress {compress_ms:.2}"
+                );
             }
             self.span_first = sim_tick + 1;
             self.last_span_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
@@ -564,7 +579,7 @@ impl CityRuntime {
     pub fn set_wire_version(&mut self, version: u8) {
         self.encoder.set_wire_version(version);
         self.live = if version == vibe_land_destruction::wire::CITY_WIRE_V3 {
-            Some(V3Live::new(self.sim_hz))
+            Some(V3Live::new(self.sim_hz, self.manifest.total_chunks()))
         } else {
             None
         };

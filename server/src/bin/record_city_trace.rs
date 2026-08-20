@@ -43,7 +43,7 @@ use destruction_codec::live::{LiveDecoder, LiveEncoder, LiveEncoderConfig};
 use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
 use vibe_land_destruction::wire::{
-    compress_debris_payload, decode_debris_datagram, encode_debris_datagram, CITY_PACKET_DICT_V3,
+    encode_debris_datagram, DebrisCompressor, DebrisDecompressor,
 };
 use vibe_land_destruction::wire::{
     decode_baseline, decode_chunks_datagram, decode_topology, RecordMode, PKT_CITY_BASELINE,
@@ -745,6 +745,8 @@ struct V3ClientModel {
     pose_bytes: u64,
     topology_bytes: u64,
     span_encode_ms_max: f32,
+    compressor: DebrisCompressor,
+    decompressor: DebrisDecompressor,
 }
 
 impl V3ClientModel {
@@ -813,6 +815,8 @@ impl V3ClientModel {
             pose_bytes: 0,
             topology_bytes: 0,
             span_encode_ms_max: 0.0,
+            compressor: DebrisCompressor::new(),
+            decompressor: DebrisDecompressor::new(),
         })
     }
 
@@ -927,11 +931,13 @@ impl V3ClientModel {
                 .span_encode_ms_max
                 .max(started.elapsed().as_secs_f32() * 1000.0);
             for packet in packets {
-                let (compression, body) = compress_debris_payload(&packet.payload);
+                let (compression, body) = self.compressor.compress(&packet.payload);
                 let datagram = encode_debris_datagram(packet.span_tick, compression, &body);
                 self.pose_bytes += datagram.len() as u64;
                 // --- client half: decode the framed bytes ---
-                let decoded = decode_debris_datagram(&datagram, CITY_PACKET_DICT_V3)
+                let decoded = self
+                    .decompressor
+                    .decode(&datagram)
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 for record in self
                     .decoder

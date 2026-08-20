@@ -87,6 +87,61 @@ pub struct DebrisDatagram {
     pub payload: Vec<u8>,
 }
 
+/// Reusable decompressor; same digest-once rationale as `DebrisCompressor`.
+pub struct DebrisDecompressor {
+    dictionary: zstd::dict::DecoderDictionary<'static>,
+}
+
+impl Default for DebrisDecompressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DebrisDecompressor {
+    pub fn new() -> Self {
+        Self {
+            dictionary: zstd::dict::DecoderDictionary::copy(CITY_PACKET_DICT_V3),
+        }
+    }
+
+    pub fn decode(&self, data: &[u8]) -> Result<DebrisDatagram, WireError> {
+        decode_debris_datagram_prepared(data, &self.dictionary)
+    }
+}
+
+pub fn decode_debris_datagram_prepared(
+    data: &[u8],
+    dictionary: &zstd::dict::DecoderDictionary<'_>,
+) -> Result<DebrisDatagram, WireError> {
+    if data.len() < DEBRIS_HEADER_BYTES {
+        return Err(WireError::Truncated);
+    }
+    if data[0] != PKT_CITY_DEBRIS {
+        return Err(WireError::BadKind(data[0]));
+    }
+    if data[1] != CITY_WIRE_V3 {
+        return Err(WireError::BadVersion(data[1]));
+    }
+    let span_tick = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+    let compression = data[6];
+    let body = &data[DEBRIS_HEADER_BYTES..];
+    let payload = match compression {
+        DEBRIS_COMPRESSION_RAW => body.to_vec(),
+        DEBRIS_COMPRESSION_ZSTD_DICT_V3 => {
+            zstd::bulk::Decompressor::with_prepared_dictionary(dictionary)
+                .and_then(|mut decompressor| decompressor.decompress(body, 64 * 1024))
+                .map_err(|_| WireError::Malformed)?
+        }
+        _ => return Err(WireError::Malformed),
+    };
+    Ok(DebrisDatagram {
+        span_tick,
+        compression,
+        payload,
+    })
+}
+
 pub fn decode_debris_datagram(
     data: &[u8],
     dictionary: &[u8],
@@ -123,15 +178,38 @@ pub fn decode_debris_datagram(
     })
 }
 
-/// Compress one debris payload for the wire, falling back to raw whenever
-/// compression does not pay -- tiny payloads often do not, and the tag byte
-/// makes either choice decodable.
-pub fn compress_debris_payload(payload: &[u8]) -> (u8, Vec<u8>) {
-    let compressed = zstd::bulk::Compressor::with_dictionary(3, CITY_PACKET_DICT_V3)
-        .and_then(|mut compressor| compressor.compress(payload));
-    match compressed {
-        Ok(bytes) if bytes.len() < payload.len() => (DEBRIS_COMPRESSION_ZSTD_DICT_V3, bytes),
-        _ => (DEBRIS_COMPRESSION_RAW, payload.to_vec()),
+/// Reusable compressor for debris payloads.
+///
+/// The dictionary must be DIGESTED once and reused: creating the compression
+/// dictionary per packet measured 76 ms p50 per span on the live bench --
+/// ~34 packets each paying the 64 KB digest -- against a 3 ms gate. Prepared
+/// once, the per-packet cost is the compression itself.
+pub struct DebrisCompressor {
+    dictionary: zstd::dict::EncoderDictionary<'static>,
+}
+
+impl Default for DebrisCompressor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DebrisCompressor {
+    pub fn new() -> Self {
+        Self {
+            dictionary: zstd::dict::EncoderDictionary::copy(CITY_PACKET_DICT_V3, 3),
+        }
+    }
+
+    /// Falls back to raw whenever compression does not pay -- tiny payloads
+    /// often do not, and the tag byte makes either choice decodable.
+    pub fn compress(&self, payload: &[u8]) -> (u8, Vec<u8>) {
+        let compressed = zstd::bulk::Compressor::with_prepared_dictionary(&self.dictionary)
+            .and_then(|mut compressor| compressor.compress(payload));
+        match compressed {
+            Ok(bytes) if bytes.len() < payload.len() => (DEBRIS_COMPRESSION_ZSTD_DICT_V3, bytes),
+            _ => (DEBRIS_COMPRESSION_RAW, payload.to_vec()),
+        }
     }
 }
 

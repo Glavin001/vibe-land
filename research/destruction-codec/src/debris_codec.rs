@@ -328,6 +328,22 @@ impl Record {
         }
     }
 
+    /// Cheap UPPER BOUND on encoded size, for packet packing only.
+    ///
+    /// Fidelity decisions must use `encoded_len` (real bytes, project rule);
+    /// packing is not a fidelity decision, and pricing ~8k records per span by
+    /// full scratch-encoding them twice measured 22 ms p50 against a 3 ms
+    /// budget. The bound over-estimates delta-coded frames, which only makes
+    /// packets smaller than the MTU -- never larger.
+    pub fn size_upper_bound(&self) -> usize {
+        match self {
+            Record::Segment { .. } => 48,
+            Record::Impulse { .. } => 24,
+            Record::Rest { .. } => 34,
+            Record::SampleRun { frames, .. } => 22 + frames.len() * 23,
+        }
+    }
+
     /// Encoded size in the block payload, computed by encoding rather than by
     /// a parallel formula that could drift from the writer.
     pub fn encoded_len(

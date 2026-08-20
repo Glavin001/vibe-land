@@ -269,6 +269,19 @@ impl LiveEncoder {
     /// stamped with it so the client can drop stale packets per body without
     /// any sequence state.
     pub fn finalize_span(&mut self, span_first_tick: u32) -> Vec<LivePacket> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var("V3_PROFILE").is_ok() {
+            let fit_started = std::time::Instant::now();
+            let records = self.close_span(span_first_tick);
+            let fit_ms = fit_started.elapsed().as_secs_f32() * 1000.0;
+            let pack_started = std::time::Instant::now();
+            let packets = self.packetize(span_first_tick, records);
+            eprintln!(
+                "V3FIN fit {fit_ms:.2} pack {:.2}",
+                pack_started.elapsed().as_secs_f32() * 1000.0
+            );
+            return packets;
+        }
         let records = self.close_span(span_first_tick);
         self.packetize(span_first_tick, records)
     }
@@ -365,6 +378,9 @@ impl LiveEncoder {
                 end += 1;
             }
             let body_records = &records[index..end];
+            // Exact sizes: the upper-bound experiment tripled the packet count
+            // (packets a third full) and cost compression ratio; in release
+            // builds the real measurement is cheap.
             let cost: usize = body_records
                 .iter()
                 .map(|record| record.encoded_len(span_tick, &self.wire_tails, true))
