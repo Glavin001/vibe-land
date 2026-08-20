@@ -2214,7 +2214,7 @@ impl SampleWindow {
 
 #[derive(Default)]
 pub struct Playback {
-    pub(crate) events: Vec<Record>,
+    pub events: Vec<Record>,
     cursor: usize,
     analytic: Option<Analytic>,
     samples: Option<SampleWindow>,

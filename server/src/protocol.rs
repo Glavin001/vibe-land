@@ -28,6 +28,8 @@ pub enum ClientPacket {
     /// City topology stream gap detected client-side; server replies with a
     /// fresh PKT_CITY_BOOTSTRAP.
     CityResyncRequest { last_topo_seq: u32 },
+    /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
+    CityNack { bodies: Vec<u32> },
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +61,8 @@ pub enum ClientDatagram {
     Ping(u32),
     DebugStats { correction_m: f32, physics_ms: f32 },
     CityResyncRequest { last_topo_seq: u32 },
+    /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
+    CityNack { bodies: Vec<u32> },
 }
 
 #[derive(Clone, Debug)]
@@ -340,6 +344,14 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 last_topo_seq: buf.get_u32_le(),
             }
         }
+        PKT_CITY_NACK => {
+            ensure!(buf.remaining() >= 2, "short city nack datagram");
+            let count = usize::from(buf.get_u16_le());
+            ensure!(count <= 4096, "oversized city nack");
+            ensure!(buf.remaining() >= count * 4, "short city nack body list");
+            let bodies = (0..count).map(|_| buf.get_u32_le()).collect();
+            ClientDatagram::CityNack { bodies }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
 }
@@ -361,6 +373,7 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             correction_m,
             physics_ms,
         },
+        ClientDatagram::CityNack { bodies } => ClientPacket::CityNack { bodies },
         ClientDatagram::CityResyncRequest { last_topo_seq } => {
             ClientPacket::CityResyncRequest { last_topo_seq }
         }
@@ -748,6 +761,14 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
             ClientPacket::CityResyncRequest {
                 last_topo_seq: buf.get_u32_le(),
             }
+        }
+        PKT_CITY_NACK => {
+            ensure!(buf.remaining() >= 2, "short city nack packet");
+            let count = usize::from(buf.get_u16_le());
+            ensure!(count <= 4096, "oversized city nack");
+            ensure!(buf.remaining() >= count * 4, "short city nack body list");
+            let bodies = (0..count).map(|_| buf.get_u32_le()).collect();
+            ClientPacket::CityNack { bodies }
         }
         other => bail!("unknown client packet kind {other}"),
     })

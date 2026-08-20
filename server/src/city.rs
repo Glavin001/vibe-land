@@ -5,6 +5,7 @@
 //! `--features destruction` and a PhysX GPU arena, `CityDestruction` drives
 //! real Blast/PhysX stress fracture unless `VIBE_CITY_SYNTHETIC=1`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -17,6 +18,14 @@ use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
+use vibe_land_destruction::wire::{compress_debris_payload, encode_debris_datagram};
+use vibe_land_destruction::ids as city_ids;
+use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
+use destruction_codec::live::{LiveEncoder, LiveEncoderConfig};
+use destruction_codec::mask::MaskConfig as LiveMaskConfig;
+use destruction_codec::trace::{ActorState as LiveActorState, Pose as LivePose};
+use vibe_land_destruction::encoder::BodySnapshotInput;
+use vibe_netcode::destruction_backend::DestructionTickOutput;
 use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats, StressSolverSettings};
 
 #[cfg(feature = "destruction")]
@@ -251,7 +260,178 @@ enum CityBackend {
     Physx(CityDestruction),
 }
 
+/// The wire-v3 pose stream: the live debris codec fed beside the v2 encoder.
+///
+/// Topology, bootstrap and settles keep flowing through `ChunkStreamEncoder`
+/// unchanged -- fracture events must stay instant and reliable. What v3
+/// replaces is the per-client ranked datagram stream, whose evaluation model
+/// was measured leaving moving bodies 40+ seconds stale and shown on video
+/// displaying a different scene than the simulation. Here every awake island
+/// is encoded once per span and the same bytes go to every client.
+struct V3Live {
+    encoder: LiveEncoder,
+    span_ticks: u32,
+    span_first: u32,
+    /// Island reach per body key, kept so a body that settles (removed -- the
+    /// reliable settle record owns its pose from then on) and later wakes is
+    /// re-registered with the radius its members demand rather than a guess.
+    radii: HashMap<u64, f32>,
+    staged: Vec<Vec<u8>>,
+    staged_reliable: Vec<Vec<u8>>,
+    /// Encode cost of the last closed span, for the perf gate.
+    last_span_encode_ms: f32,
+}
+
+impl V3Live {
+    fn new(sim_hz: u32) -> Self {
+        let span_ticks = (sim_hz / 10).max(1); // 100 ms: the measured knee
+        let encoder = LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / sim_hz as f32,
+            gravity: glam::Vec3::new(0.0, -9.81, 0.0),
+            // The same fidelity contract every offline number was measured
+            // against: 0.5 cm shell, masked to 20 mm for fast movers.
+            tolerances: LiveTolerances::new(
+                0.005,
+                3.0,
+                0.15,
+                0.5,
+                LiveMaskConfig {
+                    enabled: true,
+                    base_m: 0.005,
+                    cap_m: 0.020,
+                    ..LiveMaskConfig::default()
+                },
+            ),
+            sleep: LiveSleepPolicy {
+                linear_mps: 0.0,
+                angular_rps: 0.0,
+                ticks: 0,
+            },
+            restate_period: 16,
+            initial_capacity: 512,
+        });
+        Self {
+            encoder,
+            span_ticks,
+            span_first: 0,
+            radii: HashMap::new(),
+            staged: Vec::new(),
+            staged_reliable: Vec::new(),
+            last_span_encode_ms: 0.0,
+        }
+    }
+
+    /// Reach of an island: how far any member chunk sits from the island's
+    /// centre of mass, plus that chunk's own radius. This is the shell radius
+    /// the codec must hold -- the root chunk's own size under-constrains the
+    /// island (the wide-rotation lesson, measured as 249k shell violations).
+    fn island_reach(manifest: &DestructionManifest, structure_id: u32, chunks: &[u32]) -> f32 {
+        let Some(structure) = manifest
+            .structures
+            .iter()
+            .find(|structure| structure.structure_id == structure_id)
+        else {
+            return 1.5;
+        };
+        let mut com = glam::Vec3::ZERO;
+        let mut weight_total = 0.0f32;
+        let mut members = Vec::with_capacity(chunks.len());
+        for &chunk in chunks {
+            let node = city_ids::chunk_id_parts(chunk).1 as usize;
+            let Some(def) = structure.chunks.get(node) else {
+                continue;
+            };
+            let centroid = glam::Vec3::from_array(def.centroid);
+            let weight = if def.mass > 0.0 { def.mass } else { 1.0 };
+            com += centroid * weight;
+            weight_total += weight;
+            members.push((centroid, def.radius));
+        }
+        if weight_total <= 0.0 {
+            return 1.5;
+        }
+        com /= weight_total;
+        members
+            .iter()
+            .map(|(centroid, radius)| centroid.distance(com) + radius)
+            .fold(0.5f32, f32::max)
+    }
+
+    fn ingest(
+        &mut self,
+        manifest: &DestructionManifest,
+        sim_tick: u32,
+        snapshots: &[BodySnapshotInput],
+        output: &DestructionTickOutput,
+    ) {
+        let started = std::time::Instant::now();
+        for batch in &output.batches {
+            for promotion in &batch.promoted_islands {
+                let key =
+                    u64::from(city_ids::body_entity(promotion.structure_id, promotion.island_id));
+                let reach =
+                    Self::island_reach(manifest, promotion.structure_id, &promotion.chunks);
+                self.radii.insert(key, reach);
+                self.encoder.add_body(key, reach);
+            }
+            for &retired in &batch.retired_island_ids {
+                let key = u64::from(city_ids::body_entity(batch.structure_id, retired));
+                self.radii.remove(&key);
+                self.encoder.remove_body(key);
+            }
+        }
+        // A settled body's pose is owned by the reliable settle record from
+        // here on; streaming it further would only re-state what the client
+        // already holds. Waking is detected below by reappearance.
+        for settle in &output.settled {
+            let key = u64::from(city_ids::body_entity(settle.structure_id, settle.island_id));
+            self.encoder.remove_body(key);
+        }
+        for snapshot in snapshots {
+            let key = u64::from(snapshot.body_entity);
+            if !self.encoder.contains(key) {
+                let reach = self.radii.get(&key).copied().unwrap_or(1.5);
+                self.encoder.add_body(key, reach);
+            }
+            let rotation = glam::Quat::from_array(snapshot.rotation).normalize();
+            self.encoder.push(
+                key,
+                sim_tick,
+                &LiveActorState {
+                    pose: LivePose {
+                        position: glam::Vec3::from_array(snapshot.position),
+                        rotation,
+                    },
+                    linear_velocity: glam::Vec3::from_array(snapshot.linear_velocity),
+                    angular_velocity: glam::Vec3::from_array(snapshot.angular_velocity),
+                    contacts: snapshot.contacts,
+                    intact_joints: 0,
+                    flags: 0,
+                },
+            );
+        }
+        let assignments = self.encoder.take_lane_assignments();
+        if !assignments.is_empty() {
+            self.staged_reliable
+                .push(vibe_land_destruction::wire::encode_city_lanes(&assignments));
+        }
+        if (sim_tick + 1) % self.span_ticks == 0 {
+            let span_first = self.span_first;
+            for packet in self.encoder.finalize_span(span_first) {
+                let (compression, body) = compress_debris_payload(&packet.payload);
+                self.staged
+                    .push(encode_debris_datagram(packet.span_tick, compression, &body));
+            }
+            self.span_first = sim_tick + 1;
+            self.last_span_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
+        }
+    }
+}
+
 pub struct CityRuntime {
+    /// Present when this match speaks wire v3; owns the live pose stream.
+    live: Option<V3Live>,
+    sim_hz: u32,
     backend: CityBackend,
     encoder: ChunkStreamEncoder,
     pub manifest: Arc<DestructionManifest>,
@@ -312,6 +492,8 @@ impl CityRuntime {
             })
             .collect();
         Self {
+            live: None,
+            sim_hz,
             backend,
             encoder,
             manifest,
@@ -381,6 +563,11 @@ impl CityRuntime {
     /// joined clients decoding a layout they never agreed to.
     pub fn set_wire_version(&mut self, version: u8) {
         self.encoder.set_wire_version(version);
+        self.live = if version == vibe_land_destruction::wire::CITY_WIRE_V3 {
+            Some(V3Live::new(self.sim_hz))
+        } else {
+            None
+        };
     }
 
     pub fn wire_version(&self) -> u8 {
@@ -602,6 +789,9 @@ impl CityRuntime {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
                     self.encoder.ingest_tick(sim_tick, &snapshots, &output, &[]);
+                    if let Some(live) = self.live.as_mut() {
+                        live.ingest(&self.manifest, sim_tick, &snapshots, &output);
+                    }
                     reliable.extend(self.encoder.take_topology_messages());
                 }
                 Err(error) => {
@@ -641,6 +831,9 @@ impl CityRuntime {
                             Ok(snapshots) => {
                                 let ingest_started = std::time::Instant::now();
                                 self.encoder.ingest_tick(sim_tick, &snapshots, &output, &[]);
+                                if let Some(live) = self.live.as_mut() {
+                                    live.ingest(&self.manifest, sim_tick, snapshots, &output);
+                                }
                                 reliable.extend(self.encoder.take_topology_messages());
                                 backend.record_host_timings(
                                     post_step_ms,
@@ -659,8 +852,15 @@ impl CityRuntime {
                 }
             }
         }
-        if let Some(baselines) = self.encoder.maybe_emit_baseline(sim_tick) {
-            reliable.extend(baselines);
+        if let Some(live) = self.live.as_mut() {
+            reliable.append(&mut live.staged_reliable);
+        }
+        // Baselines exist only as the delta reference for the v2 record modes;
+        // v3 records are self-contained or chain-tailed and never look one up.
+        if self.live.is_none() {
+            if let Some(baselines) = self.encoder.maybe_emit_baseline(sim_tick) {
+                reliable.extend(baselines);
+            }
         }
         self.last_encode_ms = started.elapsed().as_secs_f32() * 1000.0;
         reliable
@@ -694,6 +894,31 @@ impl CityRuntime {
         }
         self.sent_records += packets.len() as u64;
         packets
+    }
+
+    /// Drain the v3 pose datagrams staged since the last call. Encode-once:
+    /// the caller broadcasts these same bytes to every client.
+    pub fn take_v3_datagrams(&mut self) -> Vec<Vec<u8>> {
+        self.live
+            .as_mut()
+            .map(|live| std::mem::take(&mut live.staged))
+            .unwrap_or_default()
+    }
+
+    /// A client reported these bodies' chains poisoned by packet loss; restate
+    /// them absolutely on the next span.
+    pub fn restate_bodies(&mut self, bodies: &[u32]) {
+        if let Some(live) = self.live.as_mut() {
+            let keys: Vec<u64> = bodies.iter().map(|&body| u64::from(body)).collect();
+            live.encoder.restate_keys(&keys);
+        }
+    }
+
+    pub fn last_v3_span_encode_ms(&self) -> f32 {
+        self.live
+            .as_ref()
+            .map(|live| live.last_span_encode_ms)
+            .unwrap_or(0.0)
     }
 
     pub fn bootstrap(&self, sim_tick: u32) -> Vec<u8> {

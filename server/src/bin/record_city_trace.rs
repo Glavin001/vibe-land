@@ -36,7 +36,15 @@ use destruction_codec::trace::{
     ActorDef, ActorState, Camera, Header, Pose as TracePose, Shape, Tick, TopologyEdge,
     TopologyTick, TraceTopology, TraceWriter,
 };
+use destruction_codec::debris_codec::{
+    Playback, SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances,
+};
+use destruction_codec::live::{LiveDecoder, LiveEncoder, LiveEncoderConfig};
+use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
+use vibe_land_destruction::wire::{
+    compress_debris_payload, decode_debris_datagram, encode_debris_datagram, CITY_PACKET_DICT_V3,
+};
 use vibe_land_destruction::wire::{
     decode_baseline, decode_chunks_datagram, decode_topology, RecordMode, PKT_CITY_BASELINE,
     PKT_CITY_TOPOLOGY, RECORD_FLAG_SETTLED_HINT,
@@ -81,6 +89,10 @@ struct Args {
     /// towerstate, by running the real ChunkStreamEncoder and modelling the
     /// client from its decoded bytes.
     v2_view: Option<PathBuf>,
+    /// Same, for the wire-v3 debris stream: LiveEncoder packets framed and
+    /// dictionary-compressed exactly as the server sends them, decoded through
+    /// LiveDecoder + Playback exactly as the client will.
+    v3_view: Option<PathBuf>,
 }
 
 impl Args {
@@ -95,6 +107,7 @@ impl Args {
         let mut targets = 0u32;
         let mut output = PathBuf::from("city.towertrace");
         let mut v2_view = None;
+        let mut v3_view = None;
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -113,6 +126,7 @@ impl Args {
                 "--targets" => targets = value()?.parse()?,
                 "--output" => output = PathBuf::from(value()?),
                 "--v2-view" => v2_view = Some(PathBuf::from(value()?)),
+                "--v3-view" => v3_view = Some(PathBuf::from(value()?)),
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
@@ -139,6 +153,7 @@ impl Args {
             targets,
             output,
             v2_view,
+            v3_view,
         })
     }
 }
@@ -698,6 +713,351 @@ impl V2ClientModel {
     }
 }
 
+
+/// What a wire-v3 client would display, from server-framed bytes alone.
+///
+/// The pose path is the live debris codec end to end: LiveEncoder spans,
+/// datagram framing with dictionary compression, LiveDecoder with the chain
+/// gap rule, per-body Playback evaluation at the client's interpolation
+/// delay. Topology and settles flow through the same reliable path the v2
+/// model uses, because production keeps them there -- fracture events must be
+/// instant whatever the pose wire is.
+///
+/// The nack loop is closed in-process (decoder poisons -> encoder restates),
+/// which models a zero-RTT uplink; the netlab impairment scenarios measure the
+/// real round trip later.
+struct V3ClientModel {
+    topology_encoder: ChunkStreamEncoder,
+    live: LiveEncoder,
+    /// Island reach per body key, for wake re-registration.
+    radii: HashMap<u64, f32>,
+    decoder: LiveDecoder,
+    /// lane -> body entity, from the reliable assignment stream.
+    lane_map: HashMap<u32, u32>,
+    playbacks: HashMap<u32, Playback>,
+    membership: Membership,
+    settled: HashMap<u32, TracePose>,
+    writer: ReplayWriter,
+    span_ticks: u32,
+    span_first: u32,
+    dt: f32,
+    gravity: Vec3,
+    pose_bytes: u64,
+    topology_bytes: u64,
+    span_encode_ms_max: f32,
+}
+
+impl V3ClientModel {
+    fn new(
+        manifest: &vibe_land_destruction::manifest::DestructionManifest,
+        table: &ChunkTable,
+        header: &Header,
+        actors: &[ActorDef],
+        path: &std::path::Path,
+        hz: u32,
+    ) -> Result<Self> {
+        let mut topology_encoder =
+            ChunkStreamEncoder::new(manifest, EncoderConfig::validated(hz));
+        topology_encoder.add_client(1);
+        let live = LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / hz as f32,
+            gravity: Vec3::from_array(GRAVITY),
+            tolerances: LiveTolerances::new(
+                0.005,
+                3.0,
+                0.15,
+                0.5,
+                LiveMaskConfig {
+                    enabled: true,
+                    base_m: 0.005,
+                    cap_m: 0.020,
+                    ..LiveMaskConfig::default()
+                },
+            ),
+            sleep: LiveSleepPolicy {
+                linear_mps: 0.0,
+                angular_rps: 0.0,
+                ticks: 0,
+            },
+            restate_period: 16,
+            initial_capacity: 512,
+        });
+        let mut writer = ReplayWriter::create(path, header, actors, 30)?;
+        let mut initial = Vec::with_capacity(actors.len());
+        for index in 0..actors.len() as u32 {
+            let (origin, rotation) = table.structure_pose[index as usize];
+            initial.push((
+                index,
+                TracePose {
+                    position: origin + rotation * table.rest[index as usize],
+                    rotation,
+                },
+                true,
+            ));
+        }
+        writer.write_frame_subset(&initial)?;
+        Ok(Self {
+            topology_encoder,
+            live,
+            radii: HashMap::new(),
+            decoder: LiveDecoder::new(1 << 16),
+            lane_map: HashMap::new(),
+            playbacks: HashMap::new(),
+            membership: Membership::new(table),
+            settled: HashMap::new(),
+            writer,
+            span_ticks: (hz / 10).max(1),
+            span_first: 0,
+            dt: 1.0 / hz as f32,
+            gravity: Vec3::from_array(GRAVITY),
+            pose_bytes: 0,
+            topology_bytes: 0,
+            span_encode_ms_max: 0.0,
+        })
+    }
+
+    fn island_reach(
+        manifest: &vibe_land_destruction::manifest::DestructionManifest,
+        structure_id: u32,
+        chunks: &[u32],
+    ) -> f32 {
+        let Some(structure) = manifest
+            .structures
+            .iter()
+            .find(|structure| structure.structure_id == structure_id)
+        else {
+            return 1.5;
+        };
+        let mut com = Vec3::ZERO;
+        let mut weight_total = 0.0f32;
+        let mut members = Vec::with_capacity(chunks.len());
+        for &chunk in chunks {
+            let node = ids::chunk_id_parts(chunk).1 as usize;
+            let Some(def) = structure.chunks.get(node) else {
+                continue;
+            };
+            let centroid = Vec3::from_array(def.centroid);
+            let weight = if def.mass > 0.0 { def.mass } else { 1.0 };
+            com += centroid * weight;
+            weight_total += weight;
+            members.push((centroid, def.radius));
+        }
+        if weight_total <= 0.0 {
+            return 1.5;
+        }
+        com /= weight_total;
+        members
+            .iter()
+            .map(|(centroid, radius)| centroid.distance(com) + radius)
+            .fold(0.5f32, f32::max)
+    }
+
+    fn server_tick(
+        &mut self,
+        manifest: &vibe_land_destruction::manifest::DestructionManifest,
+        tick: u32,
+        snapshots: &[BodySnapshotInput],
+        output: &vibe_netcode::destruction_backend::DestructionTickOutput,
+        table: &ChunkTable,
+    ) -> Result<()> {
+        // --- server half: mirrors V3Live::ingest exactly ---
+        let started = std::time::Instant::now();
+        self.topology_encoder.ingest_tick(tick, snapshots, output, &[]);
+        for batch in &output.batches {
+            for promotion in &batch.promoted_islands {
+                let key = u64::from(ids::body_entity(promotion.structure_id, promotion.island_id));
+                let reach = Self::island_reach(manifest, promotion.structure_id, &promotion.chunks);
+                self.radii.insert(key, reach);
+                self.live.add_body(key, reach);
+            }
+            for &retired in &batch.retired_island_ids {
+                let key = u64::from(ids::body_entity(batch.structure_id, retired));
+                self.radii.remove(&key);
+                self.live.remove_body(key);
+            }
+        }
+        for settle in &output.settled {
+            let key = u64::from(ids::body_entity(settle.structure_id, settle.island_id));
+            self.live.remove_body(key);
+        }
+        for snapshot in snapshots {
+            let key = u64::from(snapshot.body_entity);
+            if !self.live.contains(key) {
+                let reach = self.radii.get(&key).copied().unwrap_or(1.5);
+                self.live.add_body(key, reach);
+            }
+            self.live.push(
+                key,
+                tick,
+                &ActorState {
+                    pose: TracePose {
+                        position: Vec3::from_array(snapshot.position),
+                        rotation: Quat::from_array(snapshot.rotation).normalize(),
+                    },
+                    linear_velocity: Vec3::from_array(snapshot.linear_velocity),
+                    angular_velocity: Vec3::from_array(snapshot.angular_velocity),
+                    contacts: snapshot.contacts,
+                    intact_joints: 0,
+                    flags: 0,
+                },
+            );
+        }
+
+        // Reliable lane assignments to the client half (decoded bytes only).
+        let assignments = self.live.take_lane_assignments();
+        if !assignments.is_empty() {
+            let packet = vibe_land_destruction::wire::encode_city_lanes(&assignments);
+            self.topology_bytes += packet.len() as u64;
+            for (lane, entity) in vibe_land_destruction::wire::decode_city_lanes(&packet)
+                .map_err(|error| anyhow::anyhow!("{error}"))?
+            {
+                self.lane_map.insert(lane, entity);
+            }
+        }
+        // Reliable topology to the client half (decoded bytes only).
+        for packet in self.topology_encoder.take_topology_messages() {
+            self.topology_bytes += packet.len() as u64;
+            self.apply_topology(&packet, table)?;
+        }
+
+        if (tick + 1) % self.span_ticks == 0 {
+            let span_first = self.span_first;
+            let packets = self.live.finalize_span(span_first);
+            self.span_encode_ms_max = self
+                .span_encode_ms_max
+                .max(started.elapsed().as_secs_f32() * 1000.0);
+            for packet in packets {
+                let (compression, body) = compress_debris_payload(&packet.payload);
+                let datagram = encode_debris_datagram(packet.span_tick, compression, &body);
+                self.pose_bytes += datagram.len() as u64;
+                // --- client half: decode the framed bytes ---
+                let decoded = decode_debris_datagram(&datagram, CITY_PACKET_DICT_V3)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                for record in self
+                    .decoder
+                    .push_packet(&decoded.payload)
+                    .map_err(|error| anyhow::anyhow!("{error}"))?
+                {
+                    // Records carry LANE indices; the client renders entities.
+                    let Some(&entity) = self.lane_map.get(&record.body()) else {
+                        continue;
+                    };
+                    self.settled.remove(&entity);
+                    self.playbacks.entry(entity).or_default().events.push(record);
+                }
+            }
+            // The nack loop, closed in-process.
+            let poisoned = self.decoder.drain_poisoned();
+            if !poisoned.is_empty() {
+                let keys: Vec<u64> = poisoned.iter().map(|&body| u64::from(body)).collect();
+                self.live.restate_keys(&keys);
+            }
+            self.span_first = tick + 1;
+        }
+        Ok(())
+    }
+
+    fn apply_topology(&mut self, packet: &[u8], table: &ChunkTable) -> Result<()> {
+        let message = vibe_land_destruction::wire::decode_topology(packet)
+            .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+        for batch in &message.batches {
+            for promotion in &batch.promoted_islands {
+                let body = ids::body_entity(promotion.structure_id, promotion.island_id);
+                for &chunk in &promotion.chunks {
+                    if let Some(&index) = table.by_global.get(&chunk) {
+                        self.membership.move_chunk(index, body);
+                    }
+                }
+                self.membership.recompute_com(body, table);
+            }
+            for migration in &batch.migrations {
+                if let Some(&index) = table.by_global.get(&migration.chunk_id) {
+                    let to = ids::body_entity(batch.structure_id, migration.to_island_id);
+                    if let Some(from) = self.membership.move_chunk(index, to) {
+                        self.membership.recompute_com(from, table);
+                    }
+                    self.membership.recompute_com(to, table);
+                }
+            }
+            for &retired in &batch.retired_island_ids {
+                let body = ids::body_entity(batch.structure_id, retired);
+                self.playbacks.remove(&body);
+                self.settled.remove(&body);
+            }
+        }
+        for settle in &message.settled {
+            let body = ids::body_entity(settle.structure_id, settle.island_id);
+            self.playbacks.remove(&body);
+            self.settled.insert(
+                body,
+                TracePose {
+                    position: Vec3::from_array(settle.position),
+                    rotation: Quat::from_array(settle.rotation).normalize(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn write_frame(&mut self, tick: u32, table: &ChunkTable) -> Result<()> {
+        // The client's 6-tick interpolation delay, mirrored.
+        let render_tick = tick.saturating_sub(6);
+        let mut updates: Vec<(u32, TracePose, bool)> = Vec::new();
+        let sampled: Vec<(u32, TracePose)> = self
+            .playbacks
+            .iter_mut()
+            .filter_map(|(&body, playback)| {
+                playback.advance_to(render_tick, self.dt, self.gravity);
+                playback
+                    .pose_at(render_tick, self.dt, self.gravity)
+                    .map(|pose| (body, pose))
+            })
+            .collect();
+        for (body, pose) in sampled {
+            compose_membership(&self.membership, body, pose, false, table, &mut updates);
+        }
+        let parked: Vec<(u32, TracePose)> =
+            self.settled.iter().map(|(&body, &pose)| (body, pose)).collect();
+        for (body, pose) in parked {
+            compose_membership(&self.membership, body, pose, true, table, &mut updates);
+        }
+        updates.sort_by_key(|(index, _, _)| *index);
+        updates.dedup_by_key(|(index, _, _)| *index);
+        self.writer.write_frame_subset(&updates)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(u64, u64, f32)> {
+        self.writer.finish()?;
+        Ok((self.pose_bytes, self.topology_bytes, self.span_encode_ms_max))
+    }
+}
+
+/// Compose one body's member chunks -- shared by the v2 and v3 client models.
+fn compose_membership(
+    membership: &Membership,
+    body: u32,
+    body_pose: TracePose,
+    sleeping: bool,
+    table: &ChunkTable,
+    updates: &mut Vec<(u32, TracePose, bool)>,
+) {
+    let Some(members) = membership.members.get(&body) else {
+        return;
+    };
+    for &index in members {
+        let local = membership.local_offset(index, table);
+        updates.push((
+            index,
+            TracePose {
+                position: body_pose.position + body_pose.rotation * local,
+                rotation: body_pose.rotation,
+            },
+            sleeping,
+        ));
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse()?;
 
@@ -772,6 +1132,17 @@ fn main() -> Result<()> {
         )?),
         None => None,
     };
+    let mut v3 = match &args.v3_view {
+        Some(path) => Some(V3ClientModel::new(
+            &manifest,
+            &table,
+            &header,
+            &table.actors,
+            path,
+            args.hz,
+        )?),
+        None => None,
+    };
     let view_step = (args.hz / 30).max(1);
     let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
@@ -807,6 +1178,15 @@ fn main() -> Result<()> {
             v2.server_tick(tick_index, snapshots, &output, &table)?;
             if tick_index % view_step == 0 && tick_index > 0 {
                 v2.write_frame(tick_index, &table)?;
+            }
+        }
+        if let Some(v3) = v3.as_mut() {
+            let snapshots = destruction
+                .body_snapshots(&world)
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            v3.server_tick(&manifest, tick_index, snapshots, &output, &table)?;
+            if tick_index % view_step == 0 && tick_index > 0 {
+                v3.write_frame(tick_index, &table)?;
             }
         }
 
@@ -991,6 +1371,18 @@ fn main() -> Result<()> {
     }
 
     writer.finish().context("finalise trace")?;
+    if let Some(v3) = v3.take() {
+        let (pose_bytes, topology_bytes, span_ms) = v3.finish()?;
+        let seconds = f64::from(total_ticks) / f64::from(args.hz);
+        println!(
+            "v3 view: poses {} B ({:.3} Mbps) | topology {} B ({:.3} Mbps) | span encode max {:.2} ms",
+            pose_bytes,
+            pose_bytes as f64 * 8.0 / seconds / 1.0e6,
+            topology_bytes,
+            topology_bytes as f64 * 8.0 / seconds / 1.0e6,
+            span_ms
+        );
+    }
     if let Some(v2) = v2.take() {
         let (pose_bytes, topology_bytes, baseline_bytes) = v2.finish()?;
         let seconds = f64::from(total_ticks) / f64::from(args.hz);

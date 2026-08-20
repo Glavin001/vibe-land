@@ -53,6 +53,153 @@ pub const PKT_CITY_RESYNC_REQUEST: u8 = 9;
 
 pub const CHUNKS_HEADER_BYTES: usize = 16;
 
+pub const PKT_CITY_DEBRIS: u8 = 125;
+pub const PKT_CITY_NACK: u8 = 126;
+
+/// Static zstd dictionary for v3 debris packets, trained cross-trace on live
+/// packet corpora (see research/destruction-codec live_packet_overhead with
+/// LIVE_DICT_TRACE/LIVE_DICT_OUT). Static + per-packet, so packet loss cannot
+/// poison compression state. Versioned by the wire version: retraining it for
+/// v3 is a wire change and must ship as one.
+pub const CITY_PACKET_DICT_V3: &[u8] = include_bytes!("../assets/city-packet-v3.dict");
+
+/// v3 debris datagram framing. Payload compression is named in-band so a
+/// dictionary-less client (or an emergency raw fallback) always decodes.
+pub const DEBRIS_HEADER_BYTES: usize = 8;
+pub const DEBRIS_COMPRESSION_RAW: u8 = 0;
+pub const DEBRIS_COMPRESSION_ZSTD_DICT_V3: u8 = 1;
+
+pub fn encode_debris_datagram(span_tick: u32, compression: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(DEBRIS_HEADER_BYTES + payload.len());
+    out.push(PKT_CITY_DEBRIS);
+    out.push(CITY_WIRE_V3);
+    out.extend_from_slice(&span_tick.to_le_bytes());
+    out.push(compression);
+    out.push(0); // reserved
+    out.extend_from_slice(payload);
+    out
+}
+
+pub struct DebrisDatagram {
+    pub span_tick: u32,
+    pub compression: u8,
+    /// Decompressed codec payload, ready for the live decoder.
+    pub payload: Vec<u8>,
+}
+
+pub fn decode_debris_datagram(
+    data: &[u8],
+    dictionary: &[u8],
+) -> Result<DebrisDatagram, WireError> {
+    if data.len() < DEBRIS_HEADER_BYTES {
+        return Err(WireError::Truncated);
+    }
+    if data[0] != PKT_CITY_DEBRIS {
+        return Err(WireError::BadKind(data[0]));
+    }
+    if data[1] != CITY_WIRE_V3 {
+        return Err(WireError::BadVersion(data[1]));
+    }
+    let span_tick = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
+    let compression = data[6];
+    let body = &data[DEBRIS_HEADER_BYTES..];
+    let payload = match compression {
+        DEBRIS_COMPRESSION_RAW => body.to_vec(),
+        DEBRIS_COMPRESSION_ZSTD_DICT_V3 => {
+            let mut decompressor = zstd::bulk::Decompressor::with_dictionary(dictionary)
+                .map_err(|_| WireError::Malformed)?;
+            // Codec payloads are datagram-sized pre-compression; 64 KiB is a
+            // generous ceiling that still bounds a hostile packet.
+            decompressor
+                .decompress(body, 64 * 1024)
+                .map_err(|_| WireError::Malformed)?
+        }
+        _ => return Err(WireError::Malformed),
+    };
+    Ok(DebrisDatagram {
+        span_tick,
+        compression,
+        payload,
+    })
+}
+
+/// Compress one debris payload for the wire, falling back to raw whenever
+/// compression does not pay -- tiny payloads often do not, and the tag byte
+/// makes either choice decodable.
+pub fn compress_debris_payload(payload: &[u8]) -> (u8, Vec<u8>) {
+    let compressed = zstd::bulk::Compressor::with_dictionary(3, CITY_PACKET_DICT_V3)
+        .and_then(|mut compressor| compressor.compress(payload));
+    match compressed {
+        Ok(bytes) if bytes.len() < payload.len() => (DEBRIS_COMPRESSION_ZSTD_DICT_V3, bytes),
+        _ => (DEBRIS_COMPRESSION_RAW, payload.to_vec()),
+    }
+}
+
+/// Reliable lane->entity assignment stream for the v3 debris wire.
+pub const PKT_CITY_LANES: u8 = 127;
+
+pub fn encode_city_lanes(assignments: &[(u32, u64)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + assignments.len() * 8);
+    out.push(PKT_CITY_LANES);
+    out.push(CITY_WIRE_V3);
+    let count = assignments.len().min(u16::MAX as usize) as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    for (lane, key) in assignments.iter().take(count as usize) {
+        out.extend_from_slice(&lane.to_le_bytes());
+        out.extend_from_slice(&(*key as u32).to_le_bytes());
+    }
+    out
+}
+
+pub fn decode_city_lanes(data: &[u8]) -> Result<Vec<(u32, u32)>, WireError> {
+    if data.len() < 4 || data[0] != PKT_CITY_LANES {
+        return Err(WireError::Truncated);
+    }
+    if data[1] != CITY_WIRE_V3 {
+        return Err(WireError::BadVersion(data[1]));
+    }
+    let count = u16::from_le_bytes([data[2], data[3]]) as usize;
+    if data.len() < 4 + count * 8 {
+        return Err(WireError::Truncated);
+    }
+    Ok((0..count)
+        .map(|index| {
+            let at = 4 + index * 8;
+            (
+                u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]),
+                u32::from_le_bytes([data[at + 4], data[at + 5], data[at + 6], data[at + 7]]),
+            )
+        })
+        .collect())
+}
+
+pub fn encode_city_nack(bodies: &[u32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(3 + bodies.len() * 4);
+    out.push(PKT_CITY_NACK);
+    let count = bodies.len().min(u16::MAX as usize) as u16;
+    out.extend_from_slice(&count.to_le_bytes());
+    for body in bodies.iter().take(count as usize) {
+        out.extend_from_slice(&body.to_le_bytes());
+    }
+    out
+}
+
+pub fn decode_city_nack(data: &[u8]) -> Result<Vec<u32>, WireError> {
+    if data.len() < 3 || data[0] != PKT_CITY_NACK {
+        return Err(WireError::Truncated);
+    }
+    let count = u16::from_le_bytes([data[1], data[2]]) as usize;
+    if data.len() < 3 + count * 4 {
+        return Err(WireError::Truncated);
+    }
+    Ok((0..count)
+        .map(|index| {
+            let at = 3 + index * 4;
+            u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]])
+        })
+        .collect())
+}
+
 const RECORD_MODE_MASK: u8 = 0b0000_0111;
 pub const RECORD_FLAG_SETTLED_HINT: u8 = 0b0000_1000;
 pub const RECORD_FLAG_KINEMATIC_SUPPORT: u8 = 0b0001_0000;
@@ -148,6 +295,7 @@ pub enum WireError {
     BadMode(u8),
     BadSection(u8),
     Overflow,
+    Malformed,
 }
 
 impl std::fmt::Display for WireError {
@@ -159,6 +307,7 @@ impl std::fmt::Display for WireError {
             Self::BadMode(mode) => write!(f, "invalid record mode {mode}"),
             Self::BadSection(section) => write!(f, "invalid topology section {section}"),
             Self::Overflow => write!(f, "varint overflow"),
+            Self::Malformed => write!(f, "malformed payload"),
         }
     }
 }

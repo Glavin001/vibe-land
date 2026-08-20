@@ -2123,6 +2123,11 @@ impl MatchState {
                         runtime.client_physics_ms = physics_ms;
                         runtime.client_debug_seen = true;
                     }
+                    ClientPacket::CityNack { bodies } => {
+                        if let Some(city) = self.city.as_mut() {
+                            city.restate_bodies(&bodies);
+                        }
+                    }
                     ClientPacket::CityResyncRequest { last_topo_seq } => {
                         if let Some(city) = self.city.as_mut() {
                             info!(
@@ -2554,6 +2559,7 @@ impl MatchState {
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
         let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0], world);
+        let v3_datagrams = city.take_v3_datagrams();
         let broken_after = city.stats().broken_bonds;
         let awake_after = city.stats().awake_chunk_bodies;
         if broken_after > broken_before || awake_after > awake_before {
@@ -2573,9 +2579,20 @@ impl MatchState {
                 let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
             }
         }
-        // Chunk stream cadence: shared encode once, per-client interest +
-        // ceiling selection, own datagram sequence space per client.
-        if send_due {
+        // Wire v3: span-based, encode-once pose datagrams -- the same bytes go
+        // to every client, so nobody can be starved by a per-client ranking
+        // (measured leaving moving bodies 40+ s stale on v2, and shown on
+        // video displaying a different scene than the simulation).
+        for packet in &v3_datagrams {
+            for runtime in self.players.values() {
+                let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+            }
+        }
+        // Chunk stream cadence (wire v2 only): shared encode once, per-client
+        // interest + ceiling selection, own datagram sequence space per client.
+        let v2_pose_stream = v3_datagrams.is_empty()
+            && city.wire_version() != vibe_land_destruction::wire::CITY_WIRE_V3;
+        if send_due && v2_pose_stream {
             // Timed because it was the single largest unmeasured cost: at 10k
             // bodies the tick was 44 ms while the city step and physx step
             // together accounted for only 26 ms. encode_shared walks every
@@ -4534,7 +4551,10 @@ fn is_snapshot_packet_kind(kind: u8) -> bool {
 }
 
 fn wants_unreliable_delivery(kind: u8) -> bool {
-    is_snapshot_packet_kind(kind) || kind == PKT_PING || kind == PKT_CITY_CHUNKS
+    is_snapshot_packet_kind(kind)
+        || kind == PKT_PING
+        || kind == PKT_CITY_CHUNKS
+        || kind == vibe_land_shared::constants::PKT_CITY_DEBRIS
 }
 
 fn strict_snapshot_drop_cause_from_send_error(err: &SendDatagramError) -> StrictSnapshotDropCause {

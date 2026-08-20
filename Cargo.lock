@@ -2937,6 +2937,7 @@ dependencies = [
  "sha2",
  "vibe-land-physx-bridge",
  "vibe-netcode",
+ "zstd",
 ]
 
 [[package]]

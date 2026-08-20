@@ -86,6 +86,13 @@ pub struct LiveEncoder {
     span_index: u32,
     pending: Vec<Record>,
     nack_restates: Vec<usize>,
+    /// (lane, key) assignments since the last drain. The wire's record ids are
+    /// LANE indices -- dense, cheap varints -- so the receiver needs this map,
+    /// and it must arrive reliably: a lost mapping strands every record the
+    /// lane ever carries. Found by rendering: the first v3 video showed intact
+    /// buildings standing in a rubble field, because every sampled body's
+    /// records were keyed by a number the client had no way to interpret.
+    assignments: Vec<(u32, u64)>,
     /// Chain tails as the wire has evolved them. Chains are BOUNDED: the
     /// restatement rotation force-restarts every body once per
     /// `restate_period` spans, so a chain never lives longer than the heal
@@ -114,6 +121,7 @@ impl LiveEncoder {
             span_index: 0,
             pending: Vec::new(),
             nack_restates: Vec::new(),
+            assignments: Vec::new(),
             wire_tails: vec![None; capacity],
         }
     }
@@ -158,6 +166,7 @@ impl LiveEncoder {
             was_parked: false,
         });
         self.by_key.insert(key, lane);
+        self.assignments.push((lane as u32, key));
         self.refresh_radii();
     }
 
@@ -216,6 +225,13 @@ impl LiveEncoder {
         if let Some(&lane) = self.by_key.get(&key) {
             self.encoder.push(lane, tick, state);
         }
+    }
+
+    /// Lane->key assignments made since the last drain. Must be delivered
+    /// reliably and in order, ahead of use; a datagram referencing a lane the
+    /// receiver has no mapping for yet is dropped and healed by restatement.
+    pub fn take_lane_assignments(&mut self) -> Vec<(u32, u64)> {
+        std::mem::take(&mut self.assignments)
     }
 
     /// Restate specific bodies absolutely on the next span.
