@@ -39,8 +39,8 @@ test.describe('city destruction over wire v3', () => {
     expect(before.topoSeqGaps).toBe(0);
 
     const target = await tallestStructureTarget(page);
-    await fireAt(page, target, 9_000);
-    await waitUntilStill(page, 30_000);
+    await fireAt(page, target, 24);
+    await waitUntilStill(page, { timeout: 30_000 });
 
     const samples = await sampleCity(page, 3);
     const after = samples[samples.length - 1];

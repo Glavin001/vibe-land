@@ -116,8 +116,17 @@ export async function routeWebTransportOverride(page: Page): Promise<void> {
 /** Open the `/city` route and wait for the E2E bridge to install. */
 export async function openCity(page: Page): Promise<void> {
   await routeWebTransportOverride(page);
-  await page.goto('/city', { waitUntil: 'domcontentloaded' });
+  // E2E_CITY_URL_PARAMS lets a locally-started stack join the way netlab
+  // does (`portal=true&match=...`); plain /city needs the matchmaking flow.
+  const params = process.env.E2E_CITY_URL_PARAMS;
+  await page.goto(params ? `/city?${params}` : '/city', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window as any).__VIBE_E2E__, { timeout: 30_000 });
+  // Press the join overlay (netlab does the same): joining and gameplay input
+  // both hang off this gesture, and the drive bridge's fire path needs it.
+  const viewport = page.viewportSize();
+  if (viewport) {
+    await page.mouse.click(viewport.width / 2, viewport.height / 2);
+  }
 }
 
 /** Read city stats, throwing a useful error when the match is not a city match. */
