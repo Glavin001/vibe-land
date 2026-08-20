@@ -418,6 +418,11 @@ struct V2ClientModel {
     /// Bodies parked by a settle record; pose is authoritative until records
     /// resume for the body.
     settled: HashMap<u32, TracePose>,
+    /// Topology packets held until the presented clock reaches their tick.
+    /// The browser applies topology time-aligned with the sampled pose stream
+    /// (renderTick-6); applying on arrival composed 100 ms of old-basis poses
+    /// against the new basis and rendered as chunk teleports and dropouts.
+    pending_topology: std::collections::VecDeque<Vec<u8>>,
     presentation: PresentationConfig,
     actor_template: ActorDef,
     pose_bytes: u64,
@@ -471,6 +476,7 @@ impl V2ClientModel {
             baselines: std::collections::HashMap::new(),
             tracks: HashMap::new(),
             settled: HashMap::new(),
+            pending_topology: std::collections::VecDeque::new(),
             presentation: PresentationConfig {
                 // The browser client's presentationConfig60Hz.
                 interpolation_delay_ticks: 6,
@@ -530,6 +536,32 @@ impl V2ClientModel {
         match packet.first().copied() {
             Some(PKT_CITY_TOPOLOGY) => {
                 self.topology_bytes += packet.len() as u64;
+                self.pending_topology.push_back(packet.to_vec());
+            }
+            Some(PKT_CITY_BASELINE) => {
+                self.baseline_bytes += packet.len() as u64;
+                let message =
+                    decode_baseline(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+                let poses = self.baselines.entry(message.baseline_id).or_default();
+                for record in &message.records {
+                    poses.insert(record.body_entity, record.pose.position);
+                }
+                // Keep two generations, like the browser ledger: the one being
+                // replaced still has deltas in flight against it.
+                if self.baselines.len() > 2 {
+                    let newest = message.baseline_id;
+                    self.baselines
+                        .retain(|&id, _| id == newest || id.wrapping_add(1) == newest);
+                }
+            }
+            other => anyhow::bail!("unexpected reliable packet kind {other:?}"),
+        }
+        Ok(())
+    }
+
+    fn apply_topology_packet(&mut self, packet: &[u8], table: &ChunkTable) -> Result<()> {
+        {
+            {
                 let message =
                     decode_topology(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
                 for batch in &message.batches {
@@ -586,23 +618,6 @@ impl V2ClientModel {
                     );
                 }
             }
-            Some(PKT_CITY_BASELINE) => {
-                self.baseline_bytes += packet.len() as u64;
-                let message =
-                    decode_baseline(packet).map_err(|error| anyhow::anyhow!("{error:?}"))?;
-                let poses = self.baselines.entry(message.baseline_id).or_default();
-                for record in &message.records {
-                    poses.insert(record.body_entity, record.pose.position);
-                }
-                // Keep two generations, like the browser ledger: the one being
-                // replaced still has deltas in flight against it.
-                if self.baselines.len() > 2 {
-                    let newest = message.baseline_id;
-                    self.baselines
-                        .retain(|&id, _| id == newest || id.wrapping_add(1) == newest);
-                }
-            }
-            other => anyhow::bail!("unexpected reliable packet kind {other:?}"),
         }
         Ok(())
     }
@@ -658,6 +673,21 @@ impl V2ClientModel {
 
     /// One displayed frame: sample every live track, compose member chunks.
     fn write_frame(&mut self, tick: u32, table: &ChunkTable) -> Result<()> {
+        // Apply topology whose tick the presented clock (tick - interpolation
+        // delay) has reached, so membership/COM and sampled poses describe the
+        // same instant -- mirroring the fixed browser client.
+        let presented = tick.saturating_sub(6);
+        loop {
+            let Some(front) = self.pending_topology.front() else { break };
+            let sim_tick = decode_topology(front)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?
+                .sim_tick;
+            if sim_tick > presented {
+                break;
+            }
+            let packet = self.pending_topology.pop_front().expect("front checked");
+            self.apply_topology_packet(&packet, table)?;
+        }
         let mut updates: Vec<(u32, TracePose, bool)> = Vec::new();
         let sampled: Vec<(u32, TracePose)> = self
             .tracks
@@ -736,6 +766,9 @@ struct V3ClientModel {
     lane_map: HashMap<u32, u32>,
     playbacks: HashMap<u32, Playback>,
     membership: Membership,
+    /// Topology held until the sampled clock reaches its tick (see the v2
+    /// model's field of the same name; same defect, same fix).
+    pending_topology: std::collections::VecDeque<Vec<u8>>,
     settled: HashMap<u32, TracePose>,
     writer: ReplayWriter,
     span_ticks: u32,
@@ -804,6 +837,7 @@ impl V3ClientModel {
             radii: HashMap::new(),
             decoder: LiveDecoder::new(1 << 16),
             lane_map: HashMap::new(),
+            pending_topology: std::collections::VecDeque::new(),
             playbacks: HashMap::new(),
             membership: Membership::new(table),
             settled: HashMap::new(),
@@ -918,10 +952,11 @@ impl V3ClientModel {
                 self.lane_map.insert(lane, entity);
             }
         }
-        // Reliable topology to the client half (decoded bytes only).
+        // Reliable topology to the client half (decoded bytes only), held
+        // until write_frame's sample clock reaches each message's tick.
         for packet in self.topology_encoder.take_topology_messages() {
             self.topology_bytes += packet.len() as u64;
-            self.apply_topology(&packet, table)?;
+            self.pending_topology.push_back(packet);
         }
 
         if (tick + 1) % self.span_ticks == 0 {
@@ -1008,6 +1043,17 @@ impl V3ClientModel {
     fn write_frame(&mut self, tick: u32, table: &ChunkTable) -> Result<()> {
         // The client's 6-tick interpolation delay, mirrored.
         let render_tick = tick.saturating_sub(6);
+        loop {
+            let Some(front) = self.pending_topology.front() else { break };
+            let sim_tick = vibe_land_destruction::wire::decode_topology(front)
+                .map_err(|error| anyhow::anyhow!("{error:?}"))?
+                .sim_tick;
+            if sim_tick > render_tick {
+                break;
+            }
+            let packet = self.pending_topology.pop_front().expect("front checked");
+            self.apply_topology(&packet, table)?;
+        }
         let mut updates: Vec<(u32, TracePose, bool)> = Vec::new();
         let sampled: Vec<(u32, TracePose)> = self
             .playbacks
