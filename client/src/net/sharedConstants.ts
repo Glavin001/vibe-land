@@ -66,6 +66,13 @@ export const PKT_CITY_MANIFEST = 123;
 /// played on, rather than whichever one the page happens to share an origin
 /// with.
 export const PKT_MATCH_STATS = 124;
+
+/// Wire-v3 debris pose packet: self-healing datagram stream from the live
+/// debris codec. Broadcast, loss-tolerant, dictionary-compressed.
+export const PKT_CITY_DEBRIS = 125;
+/// Client -> server: bodies whose chains a lost packet poisoned; the server
+/// restates exactly these. The loss-heal cost scales with actual loss.
+export const PKT_CITY_NACK = 126;
 // Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
 export const CITY_CHUNK_STREAM_HZ = 30;
 export const CITY_BASELINE_INTERVAL_MS = 1000;

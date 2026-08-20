@@ -957,6 +957,18 @@ pub fn encode_block(
 }
 
 /// Mirrors `encode_block`'s tail bookkeeping on the receiving side.
+/// A parse-safe placeholder tail.
+///
+/// Continuity records are DELTA-coded against the receiver's tail, but their
+/// byte LENGTHS never depend on the tail's values -- varints of deltas and
+/// mode-tagged rotations parse identically against any seed. So a decoder that
+/// lost a lane's history can still parse the packet against this placeholder
+/// and let its gap rule discard the garbage records, instead of aborting the
+/// whole packet and losing every innocent lane in it.
+pub fn placeholder_tail() -> ([i32; 3], u64) {
+    ([0, 0, 0], encode_quat32(Quat::IDENTITY) as u64)
+}
+
 pub fn decode_block(
     payload: &[u8],
     tails: &mut [Option<([i32; 3], u64)>],

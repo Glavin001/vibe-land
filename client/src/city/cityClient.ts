@@ -24,11 +24,17 @@ import {
   decodeChunksDatagram,
   decodeTopology,
   encodeCityResyncRequest,
+  decodeCityLanes,
+  decodeDebrisHeader,
+  encodeCityNack,
+  PKT_CITY_LANES,
 } from './wire';
+import type { DebrisDecoder } from './debrisWasm';
 import {
   PKT_CITY_BASELINE,
   PKT_CITY_BOOTSTRAP,
   PKT_CITY_CHUNKS,
+  PKT_CITY_DEBRIS,
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
@@ -88,6 +94,16 @@ export class CityClient {
   private bytesWindow: Array<{ at: number; bytes: number }> = [];
   private latestSimTick = 0;
   private latestSimTickAtMs = 0;
+  /** Wire v3: the wasm debris decoder; null means this match speaks v2. */
+  private readonly debris: DebrisDecoder | null;
+  private readonly simHz: number;
+  /** Wire v3: lane -> body entity, from the reliable PKT_CITY_LANES stream. */
+  private readonly laneToEntity: Map<number, number> = new Map();
+  private readonly entityToLane: Map<number, number> = new Map();
+  /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
+  private sampleLanes = new Uint32Array(4096);
+  private samplePoses = new Float32Array(4096 * 7);
+  private decodeMsWindow: number[] = [];
   /**
    * Tick at which each body was last settled by the reliable channel. Guards
    * the unreliable stream, which has no ordering relationship to it.
@@ -112,7 +128,10 @@ export class CityClient {
   constructor(
     readonly manifest: LoadedCityManifest,
     private readonly sendResync: (bytes: Uint8Array) => void,
+    v3?: { decoder: DebrisDecoder; simHz?: number },
   ) {
+    this.debris = v3?.decoder ?? null;
+    this.simHz = v3?.simHz ?? 60;
     this.topology = new CityTopology(manifest.manifest);
     // A body's frame moves when it sheds members. Carry that move through the
     // buffered poses so the smoothing delay cannot render new-frame offsets
@@ -142,6 +161,59 @@ export class CityClient {
    * Bodies needing a one-shot instance rewrite, drained by the render layer
    * each frame. `all` after a bootstrap/resync (the whole ledger was replaced).
    */
+  /**
+   * Wire v3: one wasm call fills the pose buffers for every live lane; lanes
+   * map to entities through the reliable assignment stream, and poses land in
+   * the same ledger slot the v2 path writes. Chains a lost packet poisoned are
+   * drained here and nacked upstream, so the heal cost tracks actual loss.
+   */
+  private sampleDebris(renderTick: number, live: Set<number>): Set<number> {
+    const debris = this.debris;
+    if (debris === null) {
+      return live;
+    }
+    // The client's interpolation delay, applied exactly as the harness did.
+    const sampleTick = Math.max(0, Math.floor(renderTick) - 6);
+    if (debris.lane_count() > this.sampleLanes.length) {
+      this.sampleLanes = new Uint32Array(this.sampleLanes.length * 2);
+      this.samplePoses = new Float32Array(this.sampleLanes.length * 7);
+    }
+    const filled = debris.sample_into(sampleTick, this.sampleLanes, this.samplePoses);
+    for (let index = 0; index < filled; index += 1) {
+      const entity = this.laneToEntity.get(this.sampleLanes[index]);
+      if (entity === undefined) {
+        continue;
+      }
+      const at = index * 7;
+      this.topology.updateBodyPose(
+        entity,
+        [this.samplePoses[at], this.samplePoses[at + 1], this.samplePoses[at + 2]],
+        [
+          this.samplePoses[at + 3],
+          this.samplePoses[at + 4],
+          this.samplePoses[at + 5],
+          this.samplePoses[at + 6],
+        ],
+        'presented',
+      );
+      live.add(entity);
+    }
+    const poisoned = debris.drain_poisoned();
+    if (poisoned.length > 0) {
+      const entities: number[] = [];
+      for (const lane of poisoned) {
+        const entity = this.laneToEntity.get(lane);
+        if (entity !== undefined) {
+          entities.push(entity);
+        }
+      }
+      if (entities.length > 0) {
+        this.sendResync(encodeCityNack(entities));
+      }
+    }
+    return live;
+  }
+
   drainRepaint(): { all: boolean; bodies: number[] } {
     const all = this.repaintAll;
     const bodies = all ? [] : [...this.repaintBodies];
@@ -163,8 +235,50 @@ export class CityClient {
     }
     switch (bytes[0]) {
       case PKT_CITY_CHUNKS:
-        this.handleChunks(decodeChunksDatagram(bytes));
+        // A v3 match never ranks poses per client; any stray v2 datagram
+        // (e.g. from a mid-deploy server) is ignored rather than mixed in.
+        if (this.debris === null) {
+          this.handleChunks(decodeChunksDatagram(bytes));
+        }
         break;
+      case PKT_CITY_DEBRIS: {
+        if (this.debris === null) {
+          break;
+        }
+        const started = performance.now();
+        const header = decodeDebrisHeader(bytes);
+        if (header.spanTick > this.latestSimTick) {
+          this.latestSimTick = header.spanTick;
+          this.latestSimTickAtMs = performance.now();
+        }
+        try {
+          this.recordsApplied += this.debris.push_payload(
+            header.compression,
+            bytes.subarray(header.bodyOffset),
+          );
+        } catch (error) {
+          // A malformed datagram is dropped like a lost one; the nack loop
+          // and restatement heal whatever it carried.
+          recordCityEvent('city_suspect_record', { error: String(error) });
+        }
+        this.datagramsReceived += 1;
+        this.decodeMsWindow.push(performance.now() - started);
+        if (this.decodeMsWindow.length > 240) {
+          this.decodeMsWindow.shift();
+        }
+        break;
+      }
+      case PKT_CITY_LANES: {
+        for (const [lane, entity] of decodeCityLanes(bytes)) {
+          const previous = this.laneToEntity.get(lane);
+          if (previous !== undefined) {
+            this.entityToLane.delete(previous);
+          }
+          this.laneToEntity.set(lane, entity);
+          this.entityToLane.set(entity, lane);
+        }
+        break;
+      }
       case PKT_CITY_TOPOLOGY: {
         // The server sends a bootstrap to every joiner before any topology.
         // If topology arrives first, the bootstrap was dropped or lost — and
@@ -571,6 +685,9 @@ export class CityClient {
     }
     // Render tick estimate: latest known sim tick + elapsed since it arrived.
     const renderTick = this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * 60;
+    if (this.debris !== null) {
+      return this.sampleDebris(renderTick, live);
+    }
     for (const [key, state] of this.bodies) {
       const presented = state.track.sample(renderTick);
       const previous = state.lastPresented;

@@ -7,6 +7,8 @@ import {
   PKT_CITY_BASELINE,
   PKT_CITY_BOOTSTRAP,
   PKT_CITY_CHUNKS,
+  PKT_CITY_DEBRIS,
+  PKT_CITY_NACK,
   PKT_CITY_RESYNC_REQUEST,
   PKT_CITY_MANIFEST,
   PKT_CITY_TOPOLOGY,
@@ -511,6 +513,60 @@ export function isCityPacketKind(kind: number): boolean {
     kind === PKT_CITY_BASELINE ||
     kind === PKT_CITY_BOOTSTRAP ||
     kind === PKT_CITY_MANIFEST ||
-    kind === PKT_MATCH_STATS
+    kind === PKT_MATCH_STATS ||
+    kind === PKT_CITY_DEBRIS ||
+    kind === PKT_CITY_LANES
   );
+}
+
+/** Reliable lane -> body-entity assignments for the v3 debris stream. */
+export const PKT_CITY_LANES = 127;
+
+export type DebrisHeader = {
+  spanTick: number;
+  /** 0 = raw, 1 = zstd with the shipped v3 dictionary. */
+  compression: number;
+  /** Offset where the codec payload starts. */
+  bodyOffset: number;
+};
+
+export function decodeDebrisHeader(bytes: Uint8Array): DebrisHeader {
+  if (bytes.length < 8 || bytes[0] !== PKT_CITY_DEBRIS) {
+    throw new Error('bad debris datagram');
+  }
+  if (bytes[1] !== CITY_WIRE_V3) {
+    throw new Error(`unsupported debris wire version ${bytes[1]}`);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { spanTick: view.getUint32(2, true), compression: bytes[6], bodyOffset: 8 };
+}
+
+export function decodeCityLanes(bytes: Uint8Array): Array<[number, number]> {
+  if (bytes.length < 4 || bytes[0] !== PKT_CITY_LANES) {
+    throw new Error('bad city lanes packet');
+  }
+  if (bytes[1] !== CITY_WIRE_V3) {
+    throw new Error(`unsupported lanes wire version ${bytes[1]}`);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = view.getUint16(2, true);
+  const out: Array<[number, number]> = [];
+  for (let index = 0; index < count; index += 1) {
+    const at = 4 + index * 8;
+    out.push([view.getUint32(at, true), view.getUint32(at + 4, true)]);
+  }
+  return out;
+}
+
+/** Bodies whose chains a lost packet poisoned; the server restates them. */
+export function encodeCityNack(bodies: number[]): Uint8Array {
+  const count = Math.min(bodies.length, 0xffff);
+  const out = new Uint8Array(3 + count * 4);
+  out[0] = PKT_CITY_NACK;
+  const view = new DataView(out.buffer);
+  view.setUint16(1, count, true);
+  for (let index = 0; index < count; index += 1) {
+    view.setUint32(3 + index * 4, bodies[index] >>> 0, true);
+  }
+  return out;
 }

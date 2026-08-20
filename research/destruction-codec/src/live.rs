@@ -26,7 +26,8 @@ use std::collections::HashMap;
 use glam::Vec3;
 
 use crate::debris_codec::{
-    decode_block, encode_block, Encoder, Record, SleepPolicy, Tolerances, DEFAULT_STRIDE_LADDER,
+    decode_block, encode_block, placeholder_tail, Encoder, Record, SleepPolicy, Tolerances,
+    DEFAULT_STRIDE_LADDER,
 };
 use crate::trace::ActorState;
 
@@ -416,7 +417,11 @@ pub struct LiveDecoder {
 impl LiveDecoder {
     pub fn new(max_lanes: usize) -> Self {
         Self {
-            tails: vec![None; max_lanes],
+            // Placeholder tails, not None: a packet must PARSE even when this
+            // decoder never saw the lane's history (it was in a lost packet).
+            // Record lengths are seed-independent, so parsing against the
+            // placeholder is safe, and the gap rule discards the results.
+            tails: vec![Some(placeholder_tail()); max_lanes],
             expected: vec![None; max_lanes],
             poisoned: Vec::new(),
         }
@@ -454,7 +459,7 @@ impl LiveDecoder {
                             // chain until an absolute arrives, and report the
                             // body so the caller can nack it upstream.
                             self.expected[body] = None;
-                            self.tails[body] = None;
+                            self.tails[body] = Some(placeholder_tail());
                             if !self.poisoned.contains(&(body as u32)) {
                                 self.poisoned.push(body as u32);
                             }
@@ -648,6 +653,92 @@ mod tests {
         for key in 10..30u64 {
             assert!(live.contains(key));
         }
+    }
+}
+
+#[cfg(test)]
+mod fixture {
+    use super::*;
+    use crate::mask::MaskConfig;
+
+    /// Write a golden datagram-payload fixture for the wasm decoder's vitest.
+    ///
+    /// Run when the wire changes:
+    ///   cargo test --release -p destruction-codec write_debris_fixture -- --ignored
+    /// then re-run the client tests; they assert against these exact bytes.
+    #[test]
+    #[ignore = "writes client/src/city/__fixtures__/debris-v3-packets.json"]
+    fn write_debris_fixture() {
+        let mut live = LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / 60.0,
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            tolerances: Tolerances::new(0.005, 3.0, 0.15, 0.5, MaskConfig::default()),
+            sleep: SleepPolicy {
+                linear_mps: 0.0,
+                angular_rps: 0.0,
+                ticks: 0,
+            },
+            restate_period: 16,
+            initial_capacity: 8,
+        });
+        for body in 0..4u64 {
+            live.add_body(body, 1.0);
+        }
+        let mut spans: Vec<serde_json::Value> = Vec::new();
+        for span_start in (0..30u32).step_by(6) {
+            for tick in span_start..span_start + 6 {
+                for body in 0..4u64 {
+                    // Deterministic tumbling motion (no clock, no rng).
+                    let t = tick as f32 / 60.0;
+                    let n = ((tick * 2654435761u32.wrapping_add(body as u32 * 97)) >> 16) as f32
+                        / 65536.0
+                        - 0.5;
+                    live.push(
+                        body,
+                        tick,
+                        &crate::trace::ActorState {
+                            pose: crate::trace::Pose {
+                                position: Vec3::new(body as f32 * 3.0 + n * 0.4, 20.0 - 5.0 * t, n),
+                                rotation: glam::Quat::from_rotation_z(n).normalize(),
+                            },
+                            linear_velocity: Vec3::new(n * 2.0, -5.0, 0.0),
+                            angular_velocity: Vec3::new(0.0, n, 0.2),
+                            contacts: 1,
+                            intact_joints: 0,
+                            flags: 0,
+                        },
+                    );
+                }
+            }
+            let packets: Vec<serde_json::Value> = live
+                .finalize_span(span_start)
+                .into_iter()
+                .map(|packet| {
+                    serde_json::json!({
+                        "spanTick": packet.span_tick,
+                        "payloadHex": packet
+                            .payload
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>(),
+                    })
+                })
+                .collect();
+            spans.push(serde_json::json!({ "spanStart": span_start, "packets": packets }));
+        }
+        let assignments: Vec<serde_json::Value> = (0..4u32)
+            .map(|lane| serde_json::json!({ "lane": lane, "key": lane }))
+            .collect();
+        let out = serde_json::json!({
+            "simHz": 60,
+            "assignments": assignments,
+            "spans": spans,
+        });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../client/src/city/__fixtures__/debris-v3-packets.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+        println!("fixture written to {}", path.display());
     }
 }
 

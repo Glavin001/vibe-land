@@ -30,3 +30,5 @@ pub mod scheduler;
 pub mod symbol_audit;
 pub mod synthetic;
 pub mod trace;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;

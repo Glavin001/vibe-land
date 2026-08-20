@@ -1051,13 +1051,14 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
 
   private async initCityClient(client: NetcodeClient): Promise<void> {
     try {
-      let { cityWorld, manifestHash } = client.citySessionConfig();
+      let { cityWorld, manifestHash, wireVersion } = client.citySessionConfig();
       if (!cityWorld) {
         // WebSocket fallback has no cached WT session config — ask directly.
         try {
           const config = await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint);
           cityWorld = Boolean(config.city_world && config.city_manifest_hash);
           manifestHash = config.city_manifest_hash;
+          wireVersion = config.city_wire_version ?? wireVersion;
         } catch {
           /* not a city match or config unavailable */
         }
@@ -1074,7 +1075,19 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
         chunks: manifest.totalChunks,
         bonds: manifest.totalBonds,
       });
-      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes));
+      let v3: { decoder: import('../city/debrisWasm').DebrisDecoder } | undefined;
+      if (wireVersion === 3) {
+        // The wasm decoder must be live before the first debris datagram is
+        // dispatched; pendingCityPackets buffers everything while we await.
+        const { initDebrisWasm, fetchDebrisDictionary, createDebrisDecoder } = await import(
+          '../city/debrisWasm'
+        );
+        await initDebrisWasm();
+        const dictionary = await fetchDebrisDictionary();
+        v3 = { decoder: createDebrisDecoder(dictionary, 1 << 16, 60) };
+        console.info('[city] wire v3: debris wasm decoder ready');
+      }
+      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes), v3);
       this.cityClient = cityClient;
       const pending = this.pendingCityPackets.splice(0);
       for (const bytes of pending) {
