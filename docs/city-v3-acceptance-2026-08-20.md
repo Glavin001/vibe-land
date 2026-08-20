@@ -124,11 +124,22 @@ retransmits. The netem mode is the fair loss test; it needs root.
 
 ## Perceptual sign-off
 
-Videos at `viewer-videos/v3-live-2026-08-20/` (loopback truth / v2 / v3
-three-way from C2). The netlab campaign changed client-visible behavior since
-those renders (teleport fixes, topology alignment), so a fresh three-way from
-the same recorder is the last item before flipping any default — the
-instrument exists (`record_city_trace --v2-view --v3-view`).
+Fresh three-way rendered AFTER all campaign fixes, from one GPU run
+(grid 2, stress scale 0.10, 45 s, 40 shots × 3 targets: 10,002 broken bonds,
+2,536 peak bodies, membership mismatches 0):
+`viewer-videos/v3-final-2026-08-20/{truth,v2,v3,compare-3way}.mp4`, public at
+`http://209.121.195.117:40616/viewer-videos/v3-final-2026-08-20/` (user
+`viewer`, password in `recordings-server/password.txt`). Earlier C2 renders
+remain at `viewer-videos/v3-live-2026-08-20/`. Regenerate:
+
+```
+VIBE_CITY_STRESS_LIMIT_SCALE=0.10 LD_LIBRARY_PATH=$PHYSX_LIBS \
+  ./target/release/record-city-trace --grid 2 --hz 60 --seconds 45 \
+  --settle-ticks 60 --shots 40 --targets 3 \
+  --output truth.towertrace --v2-view v2.towerstate --v3-view v3.towerstate
+./target/release/destruction-codec replay --trace truth.towertrace --output truth.towerstate
+tower-demo render --state <each>.towerstate --output <each>.mp4   # + ffmpeg hstack
+```
 
 ## State of the branch
 
