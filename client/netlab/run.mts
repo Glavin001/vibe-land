@@ -313,6 +313,14 @@ async function runIteration(
       const context = await browser.newContext({
         viewport: { width: 1280, height: 720 },
         ignoreHTTPSErrors: true,
+        // NETLAB_RECORD_VIDEO=1: capture the client's actual pixels. This is
+        // the honest perceptual instrument -- the Rust view models in
+        // record-city-trace diverged from the shipping client three separate
+        // ways (topology timing, lane healing, support-COM convention), and
+        // every one of them read as a codec defect on video when it wasn't.
+        ...(process.env.NETLAB_RECORD_VIDEO === '1'
+          ? { recordVideo: { dir: iterDir, size: { width: 1280, height: 720 } } }
+          : {}),
       });
       contexts.push(context);
       const page = await context.newPage();
