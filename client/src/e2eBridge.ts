@@ -100,6 +100,7 @@ export interface GameE2ESnapshot {
 }
 
 export interface CityE2EStats {
+  wireVersion: number;
   chunksTotal: number;
   chunksAwake: number;
   chunksSettled: number;

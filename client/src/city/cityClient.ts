@@ -50,6 +50,8 @@ export interface CityClientStats {
   topoSeqGaps: number;
   datagramsReceived: number;
   recordsApplied: number;
+  /** 2 = ranked per-client records; 3 = LiveEncoder debris spans via wasm. */
+  wireVersion: number;
   recordsBuffered: number;
   bytesReceived: number;
   bytesPerSecond: number;
@@ -751,6 +753,7 @@ export class CityClient {
       orphanedByRetire: topologyStats.orphanedByRetire,
       datagramsReceived: this.datagramsReceived,
       recordsApplied: this.recordsApplied,
+      wireVersion: this.debris === null ? 2 : 3,
       recordsBuffered: this.recordsBuffered,
       bytesReceived: this.bytesReceived,
       bytesPerSecond: windowSeconds > 0.25 ? windowBytes / windowSeconds : 0,

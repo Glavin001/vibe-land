@@ -230,6 +230,7 @@ let lastTransport: string | null = null;
 
 /** Latest city stats, pushed by CityChunksLayer at its own cadence. */
 export interface RecorderCityStats {
+  wireVersion: number;
   chunksTotal: number;
   chunksAwake: number;
   chunksSettled: number;

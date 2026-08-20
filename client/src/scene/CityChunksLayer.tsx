@@ -560,6 +560,7 @@ export function CityChunksLayer({
         }
       }
       recordCityStats({
+        wireVersion: stats.wireVersion,
         chunksTotal: stats.chunksTotal,
         chunksAwake: stats.chunksAwake,
         chunksSettled: stats.chunksSettled,
@@ -613,6 +614,7 @@ export function CityChunksLayer({
         })(),
       });
       updateCityE2E({
+        wireVersion: stats.wireVersion,
         chunksTotal: stats.chunksTotal,
         chunksAwake: stats.chunksAwake,
         chunksSettled: stats.chunksSettled,
