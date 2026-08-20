@@ -1913,6 +1913,9 @@ impl MatchState {
                         let _ = try_queue_packet(&conn.tx, packet, &self.io);
                     }
                     let _ = try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                    if let Some(lanes) = city.full_lane_map() {
+                        let _ = try_queue_packet(&conn.tx, lanes, &self.io);
+                    }
                 }
 
                 if let Some((pos, _, _, _, _, _)) = self.arena.snapshot_player(conn.player_id) {
@@ -2138,6 +2141,9 @@ impl MatchState {
                             );
                             let bootstrap = city.bootstrap(self.server_tick);
                             let _ = try_queue_packet(&runtime.tx, bootstrap, &self.io);
+                            if let Some(lanes) = city.full_lane_map() {
+                                let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                            }
                         }
                     }
                 }

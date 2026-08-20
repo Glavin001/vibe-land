@@ -946,6 +946,18 @@ impl CityRuntime {
         self.encoder.bootstrap_message(sim_tick)
     }
 
+    /// Wire v3: the full lane->entity map, sent beside every bootstrap. An
+    /// incremental assignment a client lost is never resent, and without the
+    /// mapping every record the lane carries is uninterpretable.
+    pub fn full_lane_map(&self) -> Option<Vec<u8>> {
+        let live = self.live.as_ref()?;
+        let assignments = live.encoder.all_assignments();
+        if assignments.is_empty() {
+            return None;
+        }
+        Some(vibe_land_destruction::wire::encode_city_lanes(&assignments))
+    }
+
     pub fn stats(&self) -> DestructionStats {
         match &self.backend {
             CityBackend::Synthetic(backend) => backend.stats(),

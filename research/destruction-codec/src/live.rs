@@ -242,6 +242,16 @@ impl LiveEncoder {
     /// Lane->key assignments made since the last drain. Must be delivered
     /// reliably and in order, ahead of use; a datagram referencing a lane the
     /// receiver has no mapping for yet is dropped and healed by restatement.
+    /// Every current (lane, key) mapping -- the full map a resyncing client
+    /// needs, since an incremental assignment it lost is never resent.
+    pub fn all_assignments(&self) -> Vec<(u32, u64)> {
+        self.lanes
+            .iter()
+            .enumerate()
+            .filter_map(|(lane, slot)| slot.as_ref().map(|s| (lane as u32, s.key)))
+            .collect()
+    }
+
     pub fn take_lane_assignments(&mut self) -> Vec<(u32, u64)> {
         std::mem::take(&mut self.assignments)
     }

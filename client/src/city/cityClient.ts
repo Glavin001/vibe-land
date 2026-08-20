@@ -413,7 +413,13 @@ export class CityClient {
         this.topology.applyBootstrap(message);
         this.bodies.clear();
         this.pendingRecords = [];
+        // Keep held topology NEWER than the bootstrap: it arrived reliably and
+        // will never be resent, so dropping it here manufactured a permanent
+        // seq gap and a resync loop (netlab wifi-bad: 100 gaps).
+        const bootstrapSeq = this.topology.lastSeq();
+        const kept = this.pendingTopology.filter((p) => p.message.topoSeq > bootstrapSeq);
         this.pendingTopology.length = 0;
+        this.pendingTopology.push(...kept);
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
         this.resyncRequested = false;
@@ -476,8 +482,11 @@ export class CityClient {
             this.settledAtTick.set(key, message.simTick);
             // Wire v3: the reliable settle owns the pose from here; an
             // in-flight span must not resurrect the body with stale physics.
+            // Both map directions must still agree: this apply runs delayed,
+            // and the lane may have been reassigned in the meantime -- a
+            // stale clear would gut the NEW tenant's stream.
             const lane = this.entityToLane.get(key);
-            if (lane !== undefined) {
+            if (lane !== undefined && this.laneToEntity.get(lane) === key) {
               this.debris?.clear_lane_until(lane, message.simTick);
             }
           }
@@ -489,10 +498,13 @@ export class CityClient {
               this.bodies.delete(key);
               this.settledAtTick.delete(key);
               const lane = this.entityToLane.get(key);
-              if (lane !== undefined) {
+              if (lane !== undefined && this.laneToEntity.get(lane) === key) {
                 this.debris?.clear_lane_until(lane, message.simTick);
                 this.entityToLane.delete(key);
                 this.laneToEntity.delete(lane);
+              } else if (lane !== undefined) {
+                // Lane already reassigned; just drop the retired entity's map.
+                this.entityToLane.delete(key);
               }
             }
           }
