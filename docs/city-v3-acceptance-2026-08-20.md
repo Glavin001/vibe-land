@@ -124,6 +124,21 @@ retransmits. The netem mode is the fair loss test; it needs root.
 
 ## Perceptual sign-off
 
+**User verdict on the first render: both wire legs looked bad** (vanishing
+chunks, teleporting) while the browser measured clean — both true. The
+video's v2/v3 panes are Rust client models in `record_city_trace`, and they
+still had the pre-fix behavior: topology applied on arrival against poses
+sampled 6 ticks back (the compose-basis skew), and membership pointing at
+bodies whose streams start a span later (rendered as missing chunks). The
+models now hold topology until the presented clock reaches it (r2 render:
+`viewer-videos/v3-final-r2-2026-08-20/`). Remaining instrument gap: the
+models lack the client's lane-hold/nack machinery, so occasional islands
+still freeze mid-air after migrations — the video overstates staleness
+relative to the shipping client. The next instrument is the real thing:
+record the browser (Playwright video capture) during a netlab run, beside a
+truth render from the same match.
+
+
 Fresh three-way rendered AFTER all campaign fixes, from one GPU run
 (grid 2, stress scale 0.10, 45 s, 40 shots × 3 targets: 10,002 broken bonds,
 2,536 peak bodies, membership mismatches 0):
