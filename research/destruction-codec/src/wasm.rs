@@ -27,6 +27,12 @@ pub struct DebrisDecoder {
     dictionary: DecoderDictionary<'static>,
     dt: f32,
     gravity: Vec3,
+    /// Per-lane floor tick: records at or below it are dropped. Set on settle,
+    /// retire and lane reassignment -- a recycled lane must not inherit its
+    /// previous tenant's trajectory, and a body the reliable channel parked
+    /// must not be resurrected by an in-flight span (netlab measured 402
+    /// chunk teleports a minute from exactly these, worst 66.8 m).
+    accept_after: HashMap<u32, u32>,
 }
 
 #[wasm_bindgen]
@@ -42,6 +48,7 @@ impl DebrisDecoder {
             dictionary: DecoderDictionary::copy(dictionary),
             dt: 1.0 / sim_hz.max(1) as f32,
             gravity: Vec3::new(0.0, -9.81, 0.0),
+            accept_after: HashMap::new(),
         }
     }
 
@@ -60,8 +67,14 @@ impl DebrisDecoder {
             .decoder
             .push_packet(&payload)
             .map_err(|error| JsError::new(&format!("decode: {error}")))?;
-        let applied = records.len() as u32;
+        let mut applied = 0u32;
         for record in records {
+            if let Some(&floor) = self.accept_after.get(&record.body()) {
+                if record.tick() <= floor {
+                    continue;
+                }
+            }
+            applied += 1;
             self.playbacks
                 .entry(record.body())
                 .or_default()
@@ -114,6 +127,13 @@ impl DebrisDecoder {
     /// its pose from here). Also bounds memory: consumed events are dropped.
     pub fn clear_lane(&mut self, lane: u32) {
         self.playbacks.remove(&lane);
+    }
+
+    /// Forget a lane AND refuse records at or before `tick` -- the settle /
+    /// retire / reassignment guard.
+    pub fn clear_lane_until(&mut self, lane: u32, tick: u32) {
+        self.playbacks.remove(&lane);
+        self.accept_after.insert(lane, tick);
     }
 
     pub fn lane_count(&self) -> u32 {

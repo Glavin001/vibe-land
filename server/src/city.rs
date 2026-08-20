@@ -303,10 +303,16 @@ impl V3Live {
                     ..LiveMaskConfig::default()
                 },
             ),
+            // Modelled sleep: the offline harness read the trace's sleeping
+            // flags; the live feed has none (only awake bodies are pushed), so
+            // without this a near-still body streams sampled runs forever --
+            // netlab measured 1.88 Mbps of "settled" traffic against a 0.5
+            // gate. A body quiet for half a second emits one Rest and goes
+            // silent; pose drift past the shell bound wakes it.
             sleep: LiveSleepPolicy {
-                linear_mps: 0.0,
-                angular_rps: 0.0,
-                ticks: 0,
+                linear_mps: 0.15,
+                angular_rps: 0.15,
+                ticks: sim_hz / 2,
             },
             restate_period: 16,
             // Full capacity up front: islands never exceed chunks, and a

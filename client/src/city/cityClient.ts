@@ -273,8 +273,11 @@ export class CityClient {
       case PKT_CITY_LANES: {
         for (const [lane, entity] of decodeCityLanes(bytes)) {
           const previous = this.laneToEntity.get(lane);
-          if (previous !== undefined) {
+          if (previous !== undefined && previous !== entity) {
             this.entityToLane.delete(previous);
+            // A recycled lane must not inherit its previous tenant's
+            // trajectory (66.8 m single-frame teleports in netlab).
+            this.debris?.clear_lane_until(lane, this.latestSimTick);
           }
           this.laneToEntity.set(lane, entity);
           this.entityToLane.set(entity, lane);
@@ -329,6 +332,12 @@ export class CityClient {
             // moves forward, so it keeps rejecting genuinely older records
             // while letting every post-wake record through.
             this.settledAtTick.set(key, message.simTick);
+            // Wire v3: the reliable settle owns the pose from here; an
+            // in-flight span must not resurrect the body with stale physics.
+            const lane = this.entityToLane.get(key);
+            if (lane !== undefined) {
+              this.debris?.clear_lane_until(lane, message.simTick);
+            }
           }
           // A retired island will never stream again; without this its track
           // is sampled for the rest of the match.
@@ -337,6 +346,12 @@ export class CityClient {
               const key = bodyKey(batch.structureId, islandId);
               this.bodies.delete(key);
               this.settledAtTick.delete(key);
+              const lane = this.entityToLane.get(key);
+              if (lane !== undefined) {
+                this.debris?.clear_lane_until(lane, message.simTick);
+                this.entityToLane.delete(key);
+                this.laneToEntity.delete(lane);
+              }
             }
           }
           this.drainPending();
