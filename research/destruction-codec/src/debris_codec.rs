@@ -1370,6 +1370,51 @@ impl Encoder {
     /// opens absolute, and re-emit the Rest of a parked body (which would
     /// otherwise never speak again). The single-body form of `begin_keyframe`,
     /// for smearing restatement across spans instead of bursting it.
+    /// Mirror externally-managed wire tails into the pricing state.
+    ///
+    /// `finalize_span` prices continuity candidates against
+    /// `self.encode_tails`, which this encoder's own block path maintains. A
+    /// caller that encodes through the free `encode_block` (the live wire)
+    /// must hand its tails back, or every continuity candidate is priced with
+    /// an absolute opening frame and loses the cost comparison it should win.
+    /// Found as a 5.6 MB / trace regression: chains broke on cost, not
+    /// mechanics, and only a record-level diff between drivers exposed it.
+    pub fn sync_encode_tails(&mut self, tails: &[Option<([i32; 3], u64)>]) {
+        self.encode_tails.clone_from_slice(tails);
+    }
+
+    /// Periodic absolute restatement for a live lossy wire, costing as little
+    /// as each body's state allows.
+    ///
+    /// `force_restart` was measured to be the wrong tool for this: nuking the
+    /// whole fitter breaks a healthy sampled chain AND its analytic, and the
+    /// knock-on re-fitting halved the continuity share (86% -> 52%). What loss
+    /// recovery actually requires is one ABSOLUTE record per body per period:
+    ///
+    ///   * sampled-chain rider  -> clear only the chain seed; the next run
+    ///     opens absolute, the fitter state is untouched;
+    ///   * analytic rider       -> full restart; re-opening a segment is one
+    ///     ~30 B record and there is no chain to damage;
+    ///   * parked               -> re-emit the Rest (caller budgets repeats).
+    pub fn restate_body_live(&mut self, body: usize, tick: u32, out: &mut Vec<Record>) {
+        if self.lanes[body].fitter.parked {
+            self.restate_body(body, tick, out);
+            return;
+        }
+        if self.lanes[body].fitter.chain_tail.is_some() {
+            // Riding a sampled chain (the analytic is merely its shadow
+            // predictor): clear only the seed so the next run opens absolute.
+            self.lanes[body].fitter.chain_tail = None;
+            if let Some(slot) = self.encode_tails.get_mut(body) {
+                *slot = None;
+            }
+            return;
+        }
+        // Analytic rider: re-opening a segment is one ~30 B record and there
+        // is no chain to damage.
+        self.force_restart(body);
+    }
+
     /// Whether a body is parked (at rest, represented by a terminal Rest).
     pub fn is_parked(&self, body: usize) -> bool {
         self.lanes[body].fitter.parked
@@ -1440,6 +1485,10 @@ impl Encoder {
     }
 
     /// One tick of every body.
+    pub fn push_tick_public(&mut self, tick: u32, states: &[ActorState]) {
+        self.push_tick(tick, states);
+    }
+
     fn push_tick(&mut self, tick: u32, states: &[ActorState]) {
         for (body, state) in states.iter().enumerate() {
             self.push(body, tick, state);
@@ -2591,7 +2640,34 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         }
 
         if (tick.index + 1) % span_ticks == 0 {
+            let before = pending.len();
             encoder.finalize_span(block_first_tick, &mut pending);
+            // Diagnostic census, env-gated, output-only: the live driver and
+            // this one disagreed by 5.6 MB with nominally identical inputs,
+            // and reading the code failed to find why three times.
+            if let Ok(dump) = std::env::var("DEBRIS_DUMP_RECORDS") {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dump)
+                    .expect("dump file");
+                for record in &pending[before..] {
+                    let (kind, extra) = match record {
+                        Record::Segment { gravity, .. } => ("seg", i64::from(*gravity)),
+                        Record::Impulse { .. } => ("imp", 0),
+                        Record::SampleRun {
+                            continuity,
+                            stride,
+                            frames,
+                            ..
+                        } => ("run", i64::from(*continuity) * 1000 + i64::from(*stride) * 100 + frames.len() as i64),
+                        Record::Rest { .. } => ("rest", 0),
+                    };
+                    writeln!(file, "{},{},{},{}", record.tick(), record.body(), kind, extra)
+                        .expect("dump write");
+                }
+            }
         }
         encode_seconds += encode_started.elapsed().as_secs_f64();
     }

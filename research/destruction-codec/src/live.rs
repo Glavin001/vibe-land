@@ -85,6 +85,7 @@ pub struct LiveEncoder {
     by_key: HashMap<u64, usize>,
     span_index: u32,
     pending: Vec<Record>,
+    nack_restates: Vec<usize>,
     /// Chain tails as the wire has evolved them. Chains are BOUNDED: the
     /// restatement rotation force-restarts every body once per
     /// `restate_period` spans, so a chain never lives longer than the heal
@@ -112,6 +113,7 @@ impl LiveEncoder {
             by_key: HashMap::new(),
             span_index: 0,
             pending: Vec::new(),
+            nack_restates: Vec::new(),
             wire_tails: vec![None; capacity],
         }
     }
@@ -216,18 +218,62 @@ impl LiveEncoder {
         }
     }
 
+    /// Restate specific bodies absolutely on the next span.
+    ///
+    /// This is the loss-heal path. Periodic restatement of every moving body
+    /// was measured at +5.4 MB per minute-long barrage (each restate cascades
+    /// 2-3 broken spans of chain re-establishment), against a no-restatement
+    /// wire of 2.53 Mbps -- paying for losses that mostly never happened. The
+    /// decoder already KNOWS which chains a lost packet poisoned (its gap
+    /// rule), so it reports exactly those bodies on the existing uplink and
+    /// the cost scales with actual loss. Parked bodies keep their budgeted
+    /// Rest rotation: a lost Rest leaves no chain gap to detect.
+    pub fn restate_keys(&mut self, keys: &[u64]) {
+        for &key in keys {
+            if let Some(&lane) = self.by_key.get(&key) {
+                self.nack_restates.push(lane);
+            }
+        }
+    }
+
+    /// `finalize_span`, also returning the records for measurement harnesses.
+    pub fn finalize_span_tapped(
+        &mut self,
+        span_first_tick: u32,
+    ) -> (Vec<LivePacket>, Vec<Record>) {
+        let records = self.close_span(span_first_tick);
+        let packets = self.packetize(span_first_tick, records.clone());
+        (packets, records)
+    }
+
     /// Close the span and return self-contained datagram payloads.
     ///
     /// `span_first_tick` is the tick the span opened at; every packet is
     /// stamped with it so the client can drop stale packets per body without
     /// any sequence state.
     pub fn finalize_span(&mut self, span_first_tick: u32) -> Vec<LivePacket> {
+        let records = self.close_span(span_first_tick);
+        self.packetize(span_first_tick, records)
+    }
+
+    fn close_span(&mut self, span_first_tick: u32) -> Vec<Record> {
         // Restatement cohort for this span: every body whose lane index lands
         // on the rotation gets a forced absolute restart, so any packet loss
         // affecting it heals within `restate_period` spans. Parked bodies get
         // their Rest re-emitted by the same mechanism.
-        let cohort = self.span_index % self.restate_period;
         let mut restated = Vec::new();
+        // Nack-driven restatement: exactly the bodies whose chains a lost
+        // packet poisoned, reported by the decoder.
+        let nacked = std::mem::take(&mut self.nack_restates);
+        for lane in nacked {
+            if self.lanes[lane].is_some() {
+                self.wire_tails[lane] = None;
+                self.restate_lane(lane, span_first_tick, &mut restated);
+            }
+        }
+        // Parked-Rest insurance rotation: a lost Rest leaves no chain gap for
+        // the decoder to detect, so it is repeated a budgeted number of times.
+        let cohort = self.span_index % self.restate_period;
         for lane in 0..self.lanes.len() {
             let Some(slot) = self.lanes[lane].as_ref() else {
                 continue;
@@ -238,7 +284,6 @@ impl LiveEncoder {
             let parked = self.encoder.is_parked(lane);
             let (was_parked, budget) = (slot.was_parked, slot.rest_restates_left);
             if parked && !was_parked {
-                // Fresh parked episode: reset the repeat budget.
                 if let Some(slot) = self.lanes[lane].as_mut() {
                     slot.rest_restates_left = REST_RESTATES;
                     slot.was_parked = true;
@@ -247,15 +292,15 @@ impl LiveEncoder {
                 if let Some(slot) = self.lanes[lane].as_mut() {
                     slot.was_parked = false;
                 }
+                continue;
             }
-            if parked && was_parked && budget == 0 {
-                // Rest already repeated enough; silence is cheaper than
-                // certainty we already have.
+            if was_parked && budget == 0 {
                 continue;
             }
             let before = restated.len();
+            self.wire_tails[lane] = None;
             self.restate_lane(lane, span_first_tick, &mut restated);
-            if restated.len() > before && parked {
+            if restated.len() > before {
                 if let Some(slot) = self.lanes[lane].as_mut() {
                     slot.rest_restates_left = slot.rest_restates_left.saturating_sub(1);
                 }
@@ -265,16 +310,12 @@ impl LiveEncoder {
         self.span_index = self.span_index.wrapping_add(1);
 
         self.encoder.finalize_span(span_first_tick, &mut self.pending);
-        let records = std::mem::take(&mut self.pending);
-        self.packetize(span_first_tick, records)
+        std::mem::take(&mut self.pending)
     }
 
     fn restate_lane(&mut self, lane: usize, tick: u32, out: &mut Vec<Record>) {
-        // force_restart clears the fitter so the next emission opens absolute;
-        // for a parked body nothing would ever be emitted again, so its Rest is
-        // restated here explicitly via begin_keyframe's single-body logic.
         let mut all = Vec::new();
-        self.encoder.restate_body(lane, tick, &mut all);
+        self.encoder.restate_body_live(lane, tick, &mut all);
         out.extend(all);
     }
 
@@ -335,6 +376,9 @@ impl LiveEncoder {
                 bodies: group_bodies,
             });
         }
+        // Hand the evolved tails back so the NEXT span's continuity candidates
+        // are priced correctly (see Encoder::sync_encode_tails).
+        self.encoder.sync_encode_tails(&self.wire_tails);
         packets
     }
 }
@@ -350,6 +394,7 @@ pub struct LiveDecoder {
     tails: Vec<Option<([i32; 3], u64)>>,
     /// Tick each body's chain is expected to resume at; None = no live chain.
     expected: Vec<Option<u32>>,
+    poisoned: Vec<u32>,
 }
 
 impl LiveDecoder {
@@ -357,7 +402,14 @@ impl LiveDecoder {
         Self {
             tails: vec![None; max_lanes],
             expected: vec![None; max_lanes],
+            poisoned: Vec::new(),
         }
+    }
+
+    /// Bodies whose chains a lost packet poisoned since the last drain. The
+    /// caller sends these upstream as a restate request.
+    pub fn drain_poisoned(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.poisoned)
     }
 
     /// Decode one packet, returning only records that are safe to apply.
@@ -383,22 +435,24 @@ impl LiveDecoder {
                         // the previous run ended.
                         if self.expected[body] != Some(*tick) {
                             // Lost link. The tail is now poisoned; drop the
-                            // chain until an absolute arrives.
+                            // chain until an absolute arrives, and report the
+                            // body so the caller can nack it upstream.
                             self.expected[body] = None;
                             self.tails[body] = None;
+                            if !self.poisoned.contains(&(body as u32)) {
+                                self.poisoned.push(body as u32);
+                            }
                             continue;
                         }
                     }
-                    // The run's frames sit on a stride grid with an
-                    // irregular final hop; the chain resumes one tick after
-                    // its last frame.
-                    let last_frame_tick = if frames.len() >= 2 {
-                        tick + (frames.len() as u32 - 2) * u32::from(*stride)
-                            + u32::from(*last_offset)
-                    } else {
-                        *tick
-                    };
-                    self.expected[body] = Some(last_frame_tick + 1);
+                    // `last_offset` is the TOTAL tick span of the run
+                    // (frames[last].tick - frames[0].tick), not a final hop --
+                    // computing it from the stride double-counted and made the
+                    // decoder poison healthy chains, which then cleared parse
+                    // tails mid-stream and corrupted every later packet.
+                    let _ = stride;
+                    let _ = frames;
+                    self.expected[body] = Some(tick + u32::from(*last_offset) + 1);
                     applied.push(record);
                 }
                 _ => {
@@ -434,18 +488,53 @@ mod tests {
         }
     }
 
+    /// Tumbling contact-like motion: no analytic fits it, so every span emits
+    /// a sampled run and chains actually form -- the state the loss machinery
+    /// exists for. A clean ballistic body would open one Segment and go silent,
+    /// which tests nothing.
     fn falling(tick: u32, key_offset: f32) -> ActorState {
         let t = tick as f32 / 60.0;
+        // Deterministic jitter with per-tick sign churn.
+        let n1 = ((tick * 2654435761) >> 16) as f32 / 65536.0 - 0.5;
+        let n2 = ((tick.wrapping_mul(97) * 2246822519) >> 16) as f32 / 65536.0 - 0.5;
         ActorState {
             pose: Pose {
-                position: Vec3::new(key_offset, 50.0 - 4.905 * t * t, 0.0),
-                rotation: Quat::IDENTITY,
+                position: Vec3::new(
+                    key_offset + n1 * 0.4,
+                    (50.0 - 6.0 * t + n2 * 0.3).max(0.5),
+                    n1 * n2,
+                ),
+                rotation: (Quat::from_rotation_z(n1 * 0.8) * Quat::from_rotation_x(t))
+                    .normalize(),
             },
-            linear_velocity: Vec3::new(0.0, -9.81 * t, 0.0),
-            angular_velocity: Vec3::ZERO,
-            contacts: 0,
+            linear_velocity: Vec3::new(n1 * 3.0, -6.0 + n2 * 4.0, n2 * 3.0),
+            angular_velocity: Vec3::new(n2, n1, 0.3),
+            contacts: 1,
             intact_joints: 0,
             flags: 0,
+        }
+    }
+
+    /// Bisect helper: same records, mono-block, no packetize.
+    #[test]
+    fn jitter_stream_mono_roundtrip() {
+        let mut live = LiveEncoder::new(config());
+        for body in 0..16u64 {
+            live.add_body(body, 1.0);
+        }
+        let mut enc_tails = vec![None; 64];
+        let mut dec_tails = vec![None; 64];
+        let span = 6u32;
+        for span_start in (0..60).step_by(span as usize) {
+            for tick in span_start..span_start + span {
+                for body in 0..16u64 {
+                    live.push(body, tick, &falling(tick, body as f32 * 3.0));
+                }
+            }
+            let (_, mut records) = live.finalize_span_tapped(span_start);
+            let payload = encode_block(&mut records, span_start, &mut enc_tails, true);
+            let decoded = decode_block(&payload, &mut dec_tails, true).expect("mono decode");
+            assert_eq!(decoded.len(), records.len());
         }
     }
 
@@ -483,24 +572,25 @@ mod tests {
     /// period -- the decoder's gap rule plus the encoder's smeared restarts.
     #[test]
     fn loss_heals_within_the_restatement_period() {
+        let span = 6u32;
+        // The nack loop: encoder and decoder run against each other, spans
+        // encoded one step ahead of decode so a nack lands before the next
+        // span closes -- the shape of the real server round trip.
         let mut live = LiveEncoder::new(config());
         live.add_body(7, 1.0);
-        let span = 6u32;
-        let mut spans: Vec<Vec<LivePacket>> = Vec::new();
-        for span_start in (0..(span * 12)).step_by(span as usize) {
-            for tick in span_start..span_start + span {
-                live.push(7, tick, &falling(tick, 0.0));
-            }
-            spans.push(live.finalize_span(span_start));
-        }
         let mut decoder = LiveDecoder::new(16);
         let dropped_end = span * 3;
         let mut first_heal: Option<u32> = None;
-        for (index, packets) in spans.iter().enumerate() {
-            if index == 2 {
-                continue; // the loss
+        for span_index in 0..12u32 {
+            let span_start = span_index * span;
+            for tick in span_start..span_start + span {
+                live.push(7, tick, &falling(tick, 0.0));
             }
-            for packet in packets {
+            let packets = live.finalize_span(span_start);
+            if span_index == 2 {
+                continue; // the loss -- decoder never sees this span
+            }
+            for packet in &packets {
                 for record in decoder.push_packet(&packet.payload).expect("decode") {
                     if record.tick() >= dropped_end {
                         first_heal =
@@ -508,12 +598,18 @@ mod tests {
                     }
                 }
             }
+            // Poisoned chains go back upstream, exactly like the client nack.
+            let poisoned = decoder.drain_poisoned();
+            let keys: Vec<u64> = poisoned.iter().map(|_| 7u64).collect();
+            live.restate_keys(&keys);
         }
         let heal_tick = first_heal.expect("no record ever applied after the loss");
-        let bound = dropped_end + 4 * span; // restate_period spans
+        // Heal bound: the nack lands after the first post-loss span, and the
+        // restated absolute arrives in the span after that.
+        let bound = dropped_end + 3 * span;
         assert!(
             heal_tick <= bound,
-            "healed at tick {heal_tick}, restatement bound is {bound}"
+            "healed at tick {heal_tick}, nack bound is {bound}"
         );
     }
 
@@ -568,7 +664,99 @@ mod overhead {
             .map(|actor| actor.bounding_radius.max(0.01))
             .collect();
 
-        for restate_period in [8u32, 16, 32] {
+        // Offline-mimic arm: raw Encoder, no restatement, exactly run()'s
+        // mechanics, to isolate LiveEncoder's own contributions.
+        {
+            let mut reader = TraceReader::open(std::path::Path::new(&path)).expect("trace opens");
+            let mask = MaskConfig {
+                enabled: true,
+                base_m: 0.005,
+                cap_m: 0.020,
+                ..MaskConfig::default()
+            };
+            let mut encoder = Encoder::new(
+                body_count,
+                1.0 / hz as f32,
+                reader.header.gravity,
+                radii.clone(),
+                Tolerances::new(0.005, 3.0, 0.15, 0.5, mask),
+                SleepPolicy {
+                    linear_mps: 0.0,
+                    angular_rps: 0.0,
+                    ticks: 0,
+                },
+                2,
+                DEFAULT_STRIDE_LADDER.to_vec(),
+                false,
+                0.0,
+                true,
+            );
+            let mut tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
+            let mut pending: Vec<Record> = Vec::new();
+            let (mut bytes, mut runs, mut chained, mut ticks) = (0u64, 0u64, 0u64, 0u32);
+            let mut block_start = 0u32;
+            let mut span_count = 0u32;
+            while let Some(tick) = reader.next_tick().expect("tick") {
+                encoder.push_tick_public(tick.index, &tick.states);
+                ticks = tick.index + 1;
+                if (tick.index + 1) % span == 0 {
+                    let before = pending.len();
+                    encoder.finalize_span(block_start, &mut pending);
+                    if let Ok(dump) = std::env::var("MIMIC_DUMP_RECORDS") {
+                        use std::io::Write;
+                        let mut file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(dump)
+                            .expect("dump file");
+                        for record in &pending[before..] {
+                            let (kind, extra) = match record {
+                                Record::Segment { gravity, .. } => ("seg", i64::from(*gravity)),
+                                Record::Impulse { .. } => ("imp", 0),
+                                Record::SampleRun {
+                                    continuity,
+                                    stride,
+                                    frames,
+                                    ..
+                                } => ("run", i64::from(*continuity) * 1000 + i64::from(*stride) * 100 + frames.len() as i64),
+                                Record::Rest { .. } => ("rest", 0),
+                            };
+                            writeln!(file, "{},{},{},{}", record.tick(), record.body(), kind, extra)
+                                .expect("dump write");
+                        }
+                    }
+                    span_count += 1;
+                    // run() keeps block_ms at 250 over 100 ms spans: two spans
+                    // share one encoded block. Mirror that exactly.
+                    if span_count % 2 == 0 {
+                        for record in &pending {
+                            if let Record::SampleRun { continuity, .. } = record {
+                                runs += 1;
+                                if *continuity {
+                                    chained += 1;
+                                }
+                            }
+                        }
+                        let mut block = std::mem::take(&mut pending);
+                        bytes +=
+                            encode_block(&mut block, block_start, &mut tails, false).len() as u64;
+                        encoder.sync_encode_tails(&tails);
+                        block_start = tick.index + 1;
+                    }
+                }
+            }
+            let seconds = f64::from(ticks) / f64::from(hz);
+            println!(
+                "offline-mimic       mono {:>9} B ({:.3} Mbps)  continuity {}/{} ({:.1}%)",
+                bytes,
+                bytes as f64 * 8.0 / seconds / 1.0e6,
+                chained,
+                runs,
+                100.0 * chained as f64 / runs.max(1) as f64
+            );
+        }
+
+        for restate_period in [16u32, 32] {
             let mut reader = TraceReader::open(std::path::Path::new(&path)).expect("trace opens");
             // The same fidelity contract every offline comparison uses:
             // 0.5 cm masked, cap 20 mm.
@@ -595,13 +783,55 @@ mod overhead {
             }
             let (mut raw, mut zstd_bytes, mut packets, mut ticks) = (0u64, 0u64, 0u64, 0u32);
             let mut span_start = 0u32;
+            // Per-kind census: counts + encoded bytes, to diff against the
+            // block wire's debris_report on the identical trace/config.
+            let mut kind_counts = [0u64; 5]; // seg-g, imp, run, rest, seg-nog
+            let mut kind_bytes = [0u64; 5];
+            let mut frames_total = 0u64;
+            let mut chained_runs = 0u64;
+            let empty_tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
+            // Decomposition: the same records encoded as one v1 block per span
+            // (the offline wire), one v2 block per span (wire version cost),
+            // and the real packetized form (framing + grouping cost).
+            let mut mono_v1 = 0u64;
+            let mut mono_v2 = 0u64;
+            let mut mono_v1_tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
+            let mut mono_v2_tails: Vec<Option<([i32; 3], u64)>> = vec![None; body_count];
             while let Some(tick) = reader.next_tick().expect("tick") {
                 for (body, state) in tick.states.iter().enumerate() {
                     live.push(body as u64, tick.index, state);
                 }
                 ticks = tick.index + 1;
                 if (tick.index + 1) % span == 0 {
-                    for packet in live.finalize_span(span_start) {
+                    let (packets_out, span_records) =
+                        live.finalize_span_tapped(span_start);
+                    for record in &span_records {
+                        let slot = match record {
+                            Record::Segment { gravity: true, .. } => 0,
+                            Record::Impulse { .. } => 1,
+                            Record::SampleRun {
+                                frames, continuity, ..
+                            } => {
+                                frames_total += frames.len() as u64;
+                                if *continuity {
+                                    chained_runs += 1;
+                                }
+                                2
+                            }
+                            Record::Rest { .. } => 3,
+                            Record::Segment { gravity: false, .. } => 4,
+                        };
+                        kind_counts[slot] += 1;
+                        kind_bytes[slot] +=
+                            record.encoded_len(span_start, &empty_tails, true) as u64;
+                    }
+                    let mut clone_v1 = span_records.clone();
+                    mono_v1 += encode_block(&mut clone_v1, span_start, &mut mono_v1_tails, false)
+                        .len() as u64;
+                    let mut clone_v2 = span_records.clone();
+                    mono_v2 += encode_block(&mut clone_v2, span_start, &mut mono_v2_tails, true)
+                        .len() as u64;
+                    for packet in packets_out {
                         raw += packet.payload.len() as u64 + 8; // live header
                         zstd_bytes += zstd::bulk::compress(&packet.payload, 3)
                             .expect("zstd")
@@ -619,6 +849,26 @@ mod overhead {
                 raw as f64 * 8.0 / seconds / 1.0e6,
                 zstd_bytes,
                 zstd_bytes as f64 * 8.0 / seconds / 1.0e6
+            );
+            println!(
+                "  mono-block v1 {:>9} B ({:.3} Mbps) | mono v2 {:>9} B | packetized raw {:>9} B",
+                mono_v1,
+                mono_v1 as f64 * 8.0 / seconds / 1.0e6,
+                mono_v2,
+                raw
+            );
+            println!(
+                "  continuity runs {chained_runs} of {} ({:.1}%)",
+                kind_counts[2],
+                100.0 * chained_runs as f64 / kind_counts[2].max(1) as f64
+            );
+            println!(
+                "  segments {} ({} B) | impulses {} ({} B) | sample-runs {} ({} frames, {} B) | rests {} ({} B) | seg-nog {} ({} B)",
+                kind_counts[0], kind_bytes[0],
+                kind_counts[1], kind_bytes[1],
+                kind_counts[2], frames_total, kind_bytes[2],
+                kind_counts[3], kind_bytes[3],
+                kind_counts[4], kind_bytes[4]
             );
         }
     }
