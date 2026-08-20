@@ -93,6 +93,10 @@ struct Args {
     /// dictionary-compressed exactly as the server sends them, decoded through
     /// LiveDecoder + Playback exactly as the client will.
     v3_view: Option<PathBuf>,
+    /// Directory to dump the exact client-bound bytes (manifest.json,
+    /// packets.jsonl) so the REAL TS client can be replayed over them
+    /// offline -- the single-source-of-truth view path.
+    packets_out: Option<PathBuf>,
 }
 
 impl Args {
@@ -108,6 +112,7 @@ impl Args {
         let mut output = PathBuf::from("city.towertrace");
         let mut v2_view = None;
         let mut v3_view = None;
+        let mut packets_out = None;
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -127,6 +132,7 @@ impl Args {
                 "--output" => output = PathBuf::from(value()?),
                 "--v2-view" => v2_view = Some(PathBuf::from(value()?)),
                 "--v3-view" => v3_view = Some(PathBuf::from(value()?)),
+                "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
@@ -154,6 +160,7 @@ impl Args {
             output,
             v2_view,
             v3_view,
+            packets_out,
         })
     }
 }
@@ -780,6 +787,10 @@ struct V3ClientModel {
     span_encode_ms_max: f32,
     compressor: DebrisCompressor,
     decompressor: DebrisDecompressor,
+    /// When set, every client-bound packet is appended as JSONL
+    /// {tick, chan: "r"|"d", b64} -- the byte stream the offline replay of
+    /// the real TS client consumes.
+    packet_log: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 impl V3ClientModel {
@@ -851,7 +862,43 @@ impl V3ClientModel {
             span_encode_ms_max: 0.0,
             compressor: DebrisCompressor::new(),
             decompressor: DebrisDecompressor::new(),
+            packet_log: None,
         })
+    }
+
+    fn enable_packet_log(&mut self, dir: &std::path::Path) -> Result<()> {
+        std::fs::create_dir_all(dir)?;
+        let file = std::fs::File::create(dir.join("packets.jsonl"))?;
+        let mut log = std::io::BufWriter::new(file);
+        // The TS client refuses topology before a bootstrap, exactly like the
+        // browser on join.
+        let bootstrap = self.topology_encoder.bootstrap_message(0);
+        Self::log_packet_to(&mut log, 0, 'r', &bootstrap)?;
+        self.packet_log = Some(log);
+        Ok(())
+    }
+
+    fn log_packet_to(
+        log: &mut std::io::BufWriter<std::fs::File>,
+        tick: u32,
+        chan: char,
+        bytes: &[u8],
+    ) -> Result<()> {
+        use std::io::Write as _;
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            use std::fmt::Write as _;
+            write!(hex, "{byte:02x}").expect("hex write");
+        }
+        writeln!(log, "{{\"tick\":{tick},\"chan\":\"{chan}\",\"hex\":\"{hex}\"}}")?;
+        Ok(())
+    }
+
+    fn log_packet(&mut self, tick: u32, chan: char, bytes: &[u8]) -> Result<()> {
+        if let Some(log) = self.packet_log.as_mut() {
+            Self::log_packet_to(log, tick, chan, bytes)?;
+        }
+        Ok(())
     }
 
     fn island_reach(
@@ -946,6 +993,7 @@ impl V3ClientModel {
         if !assignments.is_empty() {
             let packet = vibe_land_destruction::wire::encode_city_lanes(&assignments);
             self.topology_bytes += packet.len() as u64;
+            self.log_packet(tick, 'r', &packet)?;
             for (lane, entity) in vibe_land_destruction::wire::decode_city_lanes(&packet)
                 .map_err(|error| anyhow::anyhow!("{error}"))?
             {
@@ -956,6 +1004,7 @@ impl V3ClientModel {
         // until write_frame's sample clock reaches each message's tick.
         for packet in self.topology_encoder.take_topology_messages() {
             self.topology_bytes += packet.len() as u64;
+            self.log_packet(tick, 'r', &packet)?;
             self.pending_topology.push_back(packet);
         }
 
@@ -969,6 +1018,7 @@ impl V3ClientModel {
                 let (compression, body) = self.compressor.compress(&packet.payload);
                 let datagram = encode_debris_datagram(packet.span_tick, compression, &body);
                 self.pose_bytes += datagram.len() as u64;
+                self.log_packet(tick, 'd', &datagram)?;
                 // --- client half: decode the framed bytes ---
                 let decoded = self
                     .decompressor
@@ -1195,6 +1245,28 @@ fn main() -> Result<()> {
         )?),
         None => None,
     };
+    if let Some(dir) = &args.packets_out {
+        let v3 = v3
+            .as_mut()
+            .context("--packets-out requires --v3-view (it taps that model's server half)")?;
+        v3.enable_packet_log(dir)?;
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_vec(&*manifest).context("manifest to JSON")?,
+        )?;
+        std::fs::write(
+            dir.join("meta.json"),
+            format!(
+                "{{\"hz\":{},\"ticks\":{},\"wire\":3}}",
+                args.hz, total_ticks
+            ),
+        )?;
+        // TWSTATE1 header (cameras + actor shapes) with the correct frame
+        // count; the TS replayer appends frame records and the terminator.
+        let header_only =
+            ReplayWriter::create(&dir.join("state-header.bin"), &header, &table.actors, 30)?;
+        drop(header_only);
+    }
     let view_step = (args.hz / 30).max(1);
     let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
