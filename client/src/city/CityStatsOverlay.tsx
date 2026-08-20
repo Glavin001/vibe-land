@@ -137,7 +137,12 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 }
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
-import { setShadowsEnabled, shadowsEnabled } from '../app/renderQuality';
+import {
+  setQualityTier,
+  setShadowsEnabled,
+  shadowsEnabled,
+  useQualityTier,
+} from '../app/renderQuality';
 
 export function CityStatsOverlay({
   matchId,
@@ -170,6 +175,10 @@ export function CityStatsOverlay({
   const [visible, setVisible] = useState(true);
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [shadows, setShadows] = useState(shadowsEnabled);
+  const tier = useQualityTier();
+  // The tier the canvas was created with: antialias and tonemapping only apply
+  // at context creation, so a mismatch means "reload to finish applying".
+  const [mountTier] = useState(tier);
   const [server, setServer] = useState<MatchStats | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const frame = useFrameTime();
@@ -343,6 +352,20 @@ export function CityStatsOverlay({
               : resetState === 'failed'
                 ? 'RESET FAILED'
                 : 'RESET CITY'}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => setQualityTier(tier === 'fast' ? 'pretty' : 'fast')}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-quality-toggle"
+          aria-label="Toggle render quality"
+          title="FAST drops resolution, sky, weather, PBR and a light. Antialias and tonemapping apply after a reload."
+        >
+          {tier === 'fast' ? 'QUALITY: FAST' : 'QUALITY: PRETTY'}
+          {tier !== mountTier ? ' (reload for AA)' : ''}
         </button>
       </div>
 

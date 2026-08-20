@@ -23,7 +23,7 @@ import {
   shouldUpdateThisFrame,
   updateStrideForDistanceSq,
 } from '../city/renderScheduling';
-import { onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
+import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
@@ -69,6 +69,8 @@ type CityMeshState = {
   /** Per-slot render scale: box extents, or 1 for hulls (already metric). */
   scales: Float32Array;
   baseColors: Float32Array;
+  /** 1 = hidden via setVisibleAt (sunk below CHUNK_HIDE_Y_M). */
+  hiddenBySlot: Uint8Array;
 };
 
 /**
@@ -88,6 +90,20 @@ function percentile(samples: number[], fraction: number): number {
   }
   const sorted = [...samples].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * fraction))];
+}
+
+/**
+ * City chunks shade as PBR only on the PRETTY tier.
+ *
+ * The city is most of the screen's pixels, and MeshStandardMaterial evaluates
+ * full PBR per pixel per light. Lambert is per-light diffuse only, and on flat
+ * matte rubble (roughness 0.85, metalness 0.05) the difference is barely a
+ * look at all -- but on a fill-bound phone it is a large share of the frame.
+ */
+function buildCityMaterial(): THREE.Material {
+  return cityPbrLighting()
+    ? new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 })
+    : new THREE.MeshLambertMaterial();
 }
 
 function structureColor(structureId: number): THREE.Color {
@@ -155,11 +171,12 @@ function buildMesh(client: CityClient): CityMeshState {
   // which costs some memory, but a shared city-wide batch made every frame
   // upload the transforms of every chunk in the city -- see the note on
   // CityMeshState.
-  const material = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0.05 });
+  const material = buildCityMaterial();
   const meshes: THREE.BatchedMesh[] = [];
   const meshOfSlot = new Int32Array(count).fill(-1);
   const instanceIds = new Int32Array(count).fill(-1);
   const baseColors = new Float32Array(count * 3);
+  const hiddenBySlot = new Uint8Array(count);
   let totalVertices = 0;
 
   for (const structure of manifest.structures) {
@@ -220,7 +237,7 @@ function buildMesh(client: CityClient): CityMeshState {
         baseColors[slot * 3] = color.r;
         baseColors[slot * 3 + 1] = color.g;
         baseColors[slot * 3 + 2] = color.b;
-        writeInstance(mesh, client, slot, scales, instanceIds);
+        writeInstance(mesh, client, slot, scales, instanceIds, hiddenBySlot);
         mesh.setColorAt(instanceIds[slot], color);
       }
       meshes.push(mesh);
@@ -233,8 +250,21 @@ function buildMesh(client: CityClient): CityMeshState {
     batches: meshes.length,
     vertices: totalVertices,
   });
-  return { meshes, meshOfSlot, instanceIds, scales, baseColors };
+  return { meshes, meshOfSlot, instanceIds, scales, baseColors, hiddenBySlot };
 }
+
+/**
+ * Depth below which a chunk cannot be poking through the flat y=0 ground no
+ * matter its size or orientation, so drawing it is pure waste.
+ *
+ * Deliberately far below CHUNK_SUNK_Y_M (-0.25): that constant flags a chunk
+ * as *suspicious* for the below-ground diagnostic, where a large slab's
+ * centroid can legitimately sit slightly negative while its top face shows.
+ * Hiding must be conservative the other way -- the largest authored chunks are
+ * a few metres across, so at -4 m the whole body is underground. Tunnelled
+ * chunks have been observed at -74 m, each still costing a draw.
+ */
+const CHUNK_HIDE_Y_M = -4;
 
 function writeInstance(
   mesh: THREE.BatchedMesh,
@@ -242,6 +272,7 @@ function writeInstance(
   slot: number,
   scales: Float32Array,
   instanceIds: Int32Array,
+  hiddenBySlot?: Uint8Array,
   probeCtx?: ChunkWriteContext,
 ): void {
   const instanceId = instanceIds[slot];
@@ -253,6 +284,18 @@ function writeInstance(
   // through, so a jump seen here is a jump the player saw, whatever produced
   // it upstream.
   if (chunkTeleportProbe) chunkTeleportProbe(slot, pose.position, probeCtx);
+  if (hiddenBySlot) {
+    const hide = pose.position[1] < CHUNK_HIDE_Y_M;
+    if (hide !== (hiddenBySlot[slot] === 1)) {
+      mesh.setVisibleAt(instanceId, !hide);
+      hiddenBySlot[slot] = hide ? 1 : 0;
+    }
+    if (hide) {
+      // No point composing a matrix nothing will draw; the write path will run
+      // again the moment the pose moves, and un-hide then.
+      return;
+    }
+  }
   TMP_POSITION.set(pose.position[0], pose.position[1], pose.position[2]);
   TMP_QUATERNION.set(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
   TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
@@ -433,16 +476,23 @@ export function CityChunksLayer({
   const updateSamplesRef = useRef<number[]>([]);
 
   // Applied to the live meshes rather than forcing a rebuild: castShadow is a
-  // plain flag on the batch, so the next frame simply stops submitting the city
-  // to the shadow pass. Rebuilding 24k instances to change a boolean would make
-  // the toggle feel like a level reload, which defeats using it to A/B fps.
+  // plain flag on the batch, and the shared material is one object swapped in
+  // place. Rebuilding 24k instances to change a boolean would make the toggle
+  // feel like a level reload, which defeats using it to A/B fps.
   useEffect(
     () =>
       onRenderQualityChange(({ shadows }) => {
-        for (const mesh of stateRef.current?.meshes ?? []) {
+        const meshes = stateRef.current?.meshes ?? [];
+        const current = meshes[0]?.material as THREE.Material | undefined;
+        const wantPbr = cityPbrLighting();
+        const havePbr = current instanceof THREE.MeshStandardMaterial;
+        const replacement = current && wantPbr !== havePbr ? buildCityMaterial() : null;
+        for (const mesh of meshes) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
+          if (replacement) mesh.material = replacement;
         }
+        if (replacement) current?.dispose();
       }),
     [],
   );
@@ -795,7 +845,7 @@ export function CityChunksLayer({
         if (!mesh) {
           continue;
         }
-        writeInstance(mesh, client, slot, state.scales, state.instanceIds, probeCtx);
+        writeInstance(mesh, client, slot, state.scales, state.instanceIds, state.hiddenBySlot, probeCtx);
         TMP_COLOR.setRGB(
           state.baseColors[slot * 3] * settledTint,
           state.baseColors[slot * 3 + 1] * settledTint,

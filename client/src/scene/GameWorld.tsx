@@ -1,5 +1,7 @@
 import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
+
+import { useQualityTier } from '../app/renderQuality';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
@@ -1134,6 +1136,8 @@ export function GameWorld({
 }: GameWorldProps) {
   const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
   const effectiveFogDensity = fogDensity * intensity;
+  const qualityIsPretty = useQualityTier() === 'pretty';
+  const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -3141,7 +3145,15 @@ export function GameWorld({
     <>
       <color attach="background" args={[resolvedFogColor]} />
       {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, effectiveFogDensity]} />}
-      {fogEnabled && (
+      {/*
+        FAST-tier cuts, all fill/shader costs on a phone: weather particles are
+        transparent overdraw, the drei Sky runs an atmospheric shader over every
+        sky pixel (the plain background colour + fog above still give a
+        horizon), and the second directional light makes every Standard-material
+        pixel in the scene more expensive. The shadow light stays -- shadows
+        have their own toggle.
+      */}
+      {fogEnabled && weatherOn && (
         <WeatherParticles
           weather={weather}
           windStrengthMps={windStrengthMps}
@@ -3151,14 +3163,16 @@ export function GameWorld({
           intensity={intensity}
         />
       )}
-      <Sky
-        distance={450000}
-        sunPosition={[120, 28, 40]}
-        turbidity={7}
-        rayleigh={2.2}
-        mieCoefficient={0.008}
-        mieDirectionalG={0.86}
-      />
+      {qualityIsPretty && (
+        <Sky
+          distance={450000}
+          sunPosition={[120, 28, 40]}
+          turbidity={7}
+          rayleigh={2.2}
+          mieCoefficient={0.008}
+          mieDirectionalG={0.86}
+        />
+      )}
       <ambientLight intensity={0.18} color={0xfdf6eb} />
       <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
       <directionalLight
@@ -3177,7 +3191,9 @@ export function GameWorld({
         shadow-bias={-0.00015}
         shadow-normalBias={0.03}
       />
-      <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
+      {qualityIsPretty && (
+        <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
+      )}
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />

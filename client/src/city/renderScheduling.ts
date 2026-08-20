@@ -52,15 +52,19 @@ export function shouldUpdateThisFrame(frame: number, key: number, stride: number
 /**
  * Edge of a render cell, in metres.
  *
- * A cell is the unit the renderer batches and staggers by. Sized at or above
- * the 40 m stride-1 band so a single cell rarely straddles two stride bands:
- * if it did, the near half would pull the whole cell to stride 1 and the
- * deferral would buy nothing.
+ * A cell is the unit the renderer batches, frustum-culls and staggers by.
  *
- * Smaller cells stagger more finely but multiply draw calls; larger cells
- * approach the city-wide batch this exists to avoid.
+ * 32, down from the original 48, and the trade moved with the evidence: 48 was
+ * chosen to sit above the 40 m stride-1 band so a cell rarely spans two stride
+ * bands, but on a fill-bound phone the frustum-culling granularity turned out
+ * to matter more than stride purity -- standing in a street of the 131x153 m
+ * downtown, 48 m cells meant nearly every batch's sphere clipped the frustum
+ * and the whole city was submitted every frame. At 32 m the downtown cuts into
+ * ~25 batches and the blocks behind the camera actually cull. Draw-call count
+ * stays trivial either way; a cell now sometimes straddles the stride-1
+ * boundary, which costs a few distant bodies updating a frame early.
  */
-export const RENDER_CELL_SIZE_M = 48;
+export const RENDER_CELL_SIZE_M = 32;
 
 /**
  * Grid-hashes a world XZ position to a cell id.
