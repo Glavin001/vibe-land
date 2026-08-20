@@ -72,7 +72,7 @@ const POSITION_STEP_M: f32 = 0.001;
 const ROTATION_BYTES: usize = 4;
 /// Body varint + tick varint + stride + last offset + packed step + count.
 /// The historical ladder: 20 Hz down to every tick at 120 Hz physics.
-pub(crate) const DEFAULT_STRIDE_LADDER: [u8; 5] = [6, 4, 3, 2, 1];
+pub const DEFAULT_STRIDE_LADDER: [u8; 5] = [6, 4, 3, 2, 1];
 const SAMPLE_RUN_HEADER_BYTES: usize = 7;
 /// A frame after the first cannot cost less than its mode byte plus one byte
 /// per position axis.
@@ -233,7 +233,7 @@ fn dequantize_pose(position: [i32; 3], rotation: u64) -> Pose {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Record {
+pub enum Record {
     /// Opens an analytic arc from a fully specified quantized state.
     ///
     /// `gravity` distinguishes free flight from *supported* motion. A brick
@@ -300,7 +300,7 @@ pub(crate) enum Record {
 }
 
 impl Record {
-    pub(crate) fn body(&self) -> u32 {
+    pub fn body(&self) -> u32 {
         match self {
             Record::Segment { body, .. }
             | Record::Impulse { body, .. }
@@ -309,7 +309,7 @@ impl Record {
         }
     }
 
-    pub(crate) fn tick(&self) -> u32 {
+    pub fn tick(&self) -> u32 {
         match self {
             Record::Segment { tick, .. }
             | Record::Impulse { tick, .. }
@@ -330,7 +330,7 @@ impl Record {
 
     /// Encoded size in the block payload, computed by encoding rather than by
     /// a parallel formula that could drift from the writer.
-    fn encoded_len(
+    pub fn encoded_len(
         &self,
         block_first_tick: u32,
         tails: &[Option<([i32; 3], u64)>],
@@ -931,7 +931,7 @@ fn update_tail(tails: &mut [Option<([i32; 3], u64)>], record: &Record) {
     }
 }
 
-pub(crate) fn encode_block(
+pub fn encode_block(
     records: &mut [Record],
     first_tick: u32,
     tails: &mut [Option<([i32; 3], u64)>],
@@ -957,7 +957,7 @@ pub(crate) fn encode_block(
 }
 
 /// Mirrors `encode_block`'s tail bookkeeping on the receiving side.
-pub(crate) fn decode_block(
+pub fn decode_block(
     payload: &[u8],
     tails: &mut [Option<([i32; 3], u64)>],
     wire_v2: bool,
@@ -1061,7 +1061,7 @@ struct BodyFitter {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct Tolerances {
+pub struct Tolerances {
     shell_m: f32,
     rotation_deg: f32,
     velocity_mps: f32,
@@ -1074,7 +1074,7 @@ pub(crate) struct Tolerances {
 }
 
 impl Tolerances {
-    pub(crate) fn new(
+    pub fn new(
         shell_m: f32,
         rotation_deg: f32,
         velocity_mps: f32,
@@ -1130,10 +1130,10 @@ impl Tolerances {
 /// `ticks` consecutive frames is declared at rest and costs nothing until it
 /// moves again. Fidelity cost is real and shows up in the error statistics.
 #[derive(Clone, Copy)]
-pub(crate) struct SleepPolicy {
-    linear_mps: f32,
-    angular_rps: f32,
-    ticks: u32,
+pub struct SleepPolicy {
+    pub linear_mps: f32,
+    pub angular_rps: f32,
+    pub ticks: u32,
 }
 
 impl SleepPolicy {
@@ -1171,6 +1171,10 @@ pub(crate) struct EncoderConfig {
     /// Motion above which a sampled chain must actually move; see the coarse
     /// grid's continuity guard.
     continuity_epsilon_m: f32,
+    /// Live wire: never emit continuity runs, so every record decodes with no
+    /// carried tail state. This is what makes a datagram packet droppable --
+    /// the measured cost of giving up cross-block continuation is 0.31% (R6).
+    self_contained: bool,
     /// v2 prefixes every absolute rotation with its mode byte, which is what
     /// allows wide and narrow rotations in one stream. Set only by the island
     /// path, so the incumbent per-chunk wire stays byte-identical.
@@ -1223,7 +1227,7 @@ struct SpanOutcome {
     bytes_total: u64,
 }
 
-pub(crate) struct Encoder {
+pub struct Encoder {
     config: EncoderConfig,
     lanes: Vec<BodyLane>,
     /// Mirror of the receiver's tail state, used for exact cost accounting.
@@ -1235,7 +1239,7 @@ pub(crate) struct Encoder {
 }
 
 impl Encoder {
-    pub(crate) fn new(
+    pub fn new(
         body_count: usize,
         dt: f32,
         gravity: Vec3,
@@ -1263,6 +1267,7 @@ impl Encoder {
                 wire_v2: false,
                 wide: vec![false; body_count],
                 strict: vec![false; body_count],
+                self_contained: false,
             },
             lanes: (0..body_count).map(|_| BodyLane::default()).collect(),
             encode_tails: vec![None; body_count],
@@ -1343,7 +1348,7 @@ impl Encoder {
     /// running segment. Used when a body moves between tracks, since a track
     /// that references state published on a *different* track is not
     /// independently decodable, which is the whole point of splitting.
-    pub(crate) fn force_restart(&mut self, body: usize) {
+    pub fn force_restart(&mut self, body: usize) {
         if let Some(lane) = self.lanes.get_mut(body) {
             lane.fitter.analytic = None;
             lane.fitter.chain_tail = None;
@@ -1361,7 +1366,32 @@ impl Encoder {
     ///
     /// This is what makes a track joinable mid-stream. Without it a subscriber
     /// inherits nothing and cannot place bodies that settled before it arrived.
-    pub(crate) fn begin_keyframe(&mut self, tick: u32, out: &mut Vec<Record>) {
+    /// Restate one body absolutely: restart its fitter so the next emission
+    /// opens absolute, and re-emit the Rest of a parked body (which would
+    /// otherwise never speak again). The single-body form of `begin_keyframe`,
+    /// for smearing restatement across spans instead of bursting it.
+    /// Whether a body is parked (at rest, represented by a terminal Rest).
+    pub fn is_parked(&self, body: usize) -> bool {
+        self.lanes[body].fitter.parked
+    }
+
+    pub fn restate_body(&mut self, body: usize, tick: u32, out: &mut Vec<Record>) {
+        let parked_pose = self.lanes[body].fitter.parked_pose;
+        self.force_restart(body);
+        if let Some(pose) = parked_pose {
+            let (position, rotation) = quantize_pose_with(pose, self.config.wide[body]);
+            out.push(Record::Rest {
+                body: body as u32,
+                tick,
+                position,
+                rotation,
+            });
+            self.lanes[body].fitter.parked = true;
+            self.lanes[body].fitter.parked_pose = Some(pose);
+        }
+    }
+
+    pub fn begin_keyframe(&mut self, tick: u32, out: &mut Vec<Record>) {
         for body in 0..self.lanes.len() {
             let parked_pose = self.lanes[body].fitter.parked_pose;
             self.force_restart(body);
@@ -1418,17 +1448,22 @@ impl Encoder {
 
     /// Turn on the v2 wire. Absolute rotations gain a mode byte, so this is a
     /// format change and only the island path takes it.
-    pub(crate) fn enable_wire_v2(&mut self) {
+    /// Live wire mode: self-contained records only (no continuity tails).
+    pub fn set_self_contained(&mut self, enabled: bool) {
+        self.config.self_contained = enabled;
+    }
+
+    pub fn enable_wire_v2(&mut self) {
         self.config.wire_v2 = true;
     }
 
     /// Restate which bodies quantize rotation on the wide grid.
-    pub(crate) fn set_wide(&mut self, wide: &[bool]) {
+    pub fn set_wide(&mut self, wide: &[bool]) {
         self.config.wide.copy_from_slice(wide);
     }
 
     /// Restate which bodies are reconstruction sources for others.
-    pub(crate) fn set_strict(&mut self, strict: &[bool]) {
+    pub fn set_strict(&mut self, strict: &[bool]) {
         self.config.strict.copy_from_slice(strict);
     }
 
@@ -1436,13 +1471,13 @@ impl Encoder {
     ///
     /// Island membership changes what a root has to hold: the bound covers the
     /// whole island's reach, not the root chunk's own size.
-    pub(crate) fn set_radii(&mut self, radii: &[f32]) {
+    pub fn set_radii(&mut self, radii: &[f32]) {
         self.config.radii.copy_from_slice(radii);
     }
 
     /// One tick of one body. Emits into the span buffer; the span is finalized
     /// later, once hindsight is available.
-    pub(crate) fn push(&mut self, body: usize, tick: u32, state: &ActorState) {
+    pub fn push(&mut self, body: usize, tick: u32, state: &ActorState) {
         let pose = state.pose;
         let radius = self.config.radii[body];
         // Class C: below the sync threshold a body is never replicated at all.
@@ -1658,7 +1693,7 @@ impl Encoder {
     /// Bodies are finalized independently, so this is the fan-out point. The
     /// output is appended in body order regardless of completion order, which
     /// is what keeps the parallel path byte-identical to the serial one.
-    pub(crate) fn finalize_span(&mut self, block_first_tick: u32, out: &mut Vec<Record>) {
+    pub fn finalize_span(&mut self, block_first_tick: u32, out: &mut Vec<Record>) {
         let config = &self.config;
         let tails = &self.encode_tails;
         let finalize = |body: usize,
@@ -1748,7 +1783,12 @@ impl Encoder {
                 std::mem::take(&mut lane.frames),
                 std::mem::take(&mut lane.records),
                 std::mem::replace(&mut lane.has_rest, false),
-                lane.fitter.chain_tail,
+                if self.config.self_contained {
+                    // No chain seed: every sampled run opens absolute.
+                    None
+                } else {
+                    lane.fitter.chain_tail
+                },
             ));
         }
 
@@ -1821,7 +1861,11 @@ impl Encoder {
             if outcome.reopen {
                 lane.fitter.analytic = None;
             }
-            lane.fitter.chain_tail = outcome.chain_tail;
+            lane.fitter.chain_tail = if self.config.self_contained {
+                None
+            } else {
+                outcome.chain_tail
+            };
             for kind in 0..5 {
                 lane.kind_counts[kind] += outcome.kind_counts[kind];
                 lane.kind_bytes[kind] += outcome.kind_bytes[kind];
@@ -2120,7 +2164,7 @@ impl SampleWindow {
 }
 
 #[derive(Default)]
-pub(crate) struct Playback {
+pub struct Playback {
     pub(crate) events: Vec<Record>,
     cursor: usize,
     analytic: Option<Analytic>,
@@ -2129,7 +2173,7 @@ pub(crate) struct Playback {
 }
 
 impl Playback {
-    pub(crate) fn advance_to(&mut self, tick: u32, dt: f32, gravity: Vec3) {
+    pub fn advance_to(&mut self, tick: u32, dt: f32, gravity: Vec3) {
         while self.cursor < self.events.len() && self.events[self.cursor].tick() <= tick {
             let event = self.events[self.cursor].clone();
             self.cursor += 1;
@@ -2206,7 +2250,7 @@ impl Playback {
         }
     }
 
-    pub(crate) fn pose_at(&self, tick: u32, dt: f32, gravity: Vec3) -> Option<Pose> {
+    pub fn pose_at(&self, tick: u32, dt: f32, gravity: Vec3) -> Option<Pose> {
         if let Some(window) = &self.samples {
             if let Some(pose) = window.pose_at(tick) {
                 return Some(pose);
@@ -2222,7 +2266,7 @@ impl Playback {
     /// freeze detector can tell intended stillness from a stalled stream.
     /// Rewinds to before the first record so the same decoded stream can be
     /// replayed for another viewer without decoding it again.
-    pub(crate) fn rewind(&mut self) {
+    pub fn rewind(&mut self) {
         self.cursor = 0;
         self.analytic = None;
         self.samples = None;
@@ -2232,20 +2276,20 @@ impl Playback {
     /// Tick of the most recent record applied, or None if nothing has been
     /// applied yet. A subscriber uses this to pick between two tracks that both
     /// carry a body: the freshest one is the one that currently owns it.
-    pub(crate) fn last_event_tick(&self) -> Option<u32> {
+    pub fn last_event_tick(&self) -> Option<u32> {
         self.cursor
             .checked_sub(1)
             .and_then(|index| self.events.get(index))
             .map(|record| record.tick())
     }
 
-    pub(crate) fn is_parked(&self) -> bool {
+    pub fn is_parked(&self) -> bool {
         self.samples.is_none() && self.analytic.is_none() && self.parked.is_some()
     }
 
     /// Velocity the wire states directly. `None` for sampled runs, which carry
     /// poses only and must be finite-differenced like any sampled stream.
-    pub(crate) fn velocity_at(&self, tick: u32, dt: f32, gravity: Vec3) -> Option<(Vec3, Vec3)> {
+    pub fn velocity_at(&self, tick: u32, dt: f32, gravity: Vec3) -> Option<(Vec3, Vec3)> {
         if self.samples.is_some() {
             return None;
         }
