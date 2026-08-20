@@ -756,6 +756,67 @@ mod overhead {
             );
         }
 
+        // Cross-trace dictionary: train on LIVE_DICT_TRACE's packets, apply
+        // to this trace's. Training and evaluating on the same content would
+        // flatter the dictionary; production ships one dict for all matches.
+        let dictionary: Option<Vec<u8>> = std::env::var("LIVE_DICT_TRACE").ok().map(|train| {
+            let mut reader =
+                TraceReader::open(std::path::Path::new(&train)).expect("dict trace opens");
+            let hz = reader.header.physics_hz;
+            let span = (hz / 10).max(1);
+            let count = reader.actors.len();
+            let radii: Vec<f32> = reader
+                .actors
+                .iter()
+                .map(|actor| actor.bounding_radius.max(0.01))
+                .collect();
+            let mask = MaskConfig {
+                enabled: true,
+                base_m: 0.005,
+                cap_m: 0.020,
+                ..MaskConfig::default()
+            };
+            let mut live = LiveEncoder::new(LiveEncoderConfig {
+                dt: 1.0 / hz as f32,
+                gravity: reader.header.gravity,
+                tolerances: Tolerances::new(0.005, 3.0, 0.15, 0.5, mask),
+                sleep: SleepPolicy {
+                    linear_mps: 0.0,
+                    angular_rps: 0.0,
+                    ticks: 0,
+                },
+                restate_period: 16,
+                initial_capacity: count,
+            });
+            for body in 0..count as u64 {
+                live.add_body(body, radii[body as usize]);
+            }
+            let mut samples: Vec<Vec<u8>> = Vec::new();
+            let mut span_start = 0u32;
+            while let Some(tick) = reader.next_tick().expect("tick") {
+                for (body, state) in tick.states.iter().enumerate() {
+                    live.push(body as u64, tick.index, state);
+                }
+                if (tick.index + 1) % span == 0 {
+                    for packet in live.finalize_span(span_start) {
+                        samples.push(packet.payload);
+                    }
+                    span_start = tick.index + 1;
+                }
+            }
+            let dict = zstd::dict::from_samples(&samples, 64 * 1024).expect("dict trains");
+            println!(
+                "dictionary: trained on {} packets from {train}, {} B",
+                samples.len(),
+                dict.len()
+            );
+            if let Ok(out) = std::env::var("LIVE_DICT_OUT") {
+                std::fs::write(&out, &dict).expect("write dict");
+                println!("dictionary written to {out}");
+            }
+            dict
+        });
+
         for restate_period in [16u32, 32] {
             let mut reader = TraceReader::open(std::path::Path::new(&path)).expect("trace opens");
             // The same fidelity contract every offline comparison uses:
@@ -782,6 +843,7 @@ mod overhead {
                 live.add_body(body, radii[body as usize]);
             }
             let (mut raw, mut zstd_bytes, mut packets, mut ticks) = (0u64, 0u64, 0u64, 0u32);
+            let mut dict_bytes = 0u64;
             let mut span_start = 0u32;
             // Per-kind census: counts + encoded bytes, to diff against the
             // block wire's debris_report on the identical trace/config.
@@ -837,6 +899,14 @@ mod overhead {
                             .expect("zstd")
                             .len() as u64
                             + 8;
+                        if let Some(dict) = &dictionary {
+                            dict_bytes += zstd::bulk::Compressor::with_dictionary(3, dict)
+                                .expect("dict compressor")
+                                .compress(&packet.payload)
+                                .expect("dict compress")
+                                .len() as u64
+                                + 8;
+                        }
                         packets += 1;
                     }
                     span_start = tick.index + 1;
@@ -850,6 +920,13 @@ mod overhead {
                 zstd_bytes,
                 zstd_bytes as f64 * 8.0 / seconds / 1.0e6
             );
+            if dictionary.is_some() {
+                println!(
+                    "  with dictionary {:>9} B ({:.3} Mbps)",
+                    dict_bytes,
+                    dict_bytes as f64 * 8.0 / seconds / 1.0e6
+                );
+            }
             println!(
                 "  mono-block v1 {:>9} B ({:.3} Mbps) | mono v2 {:>9} B | packetized raw {:>9} B",
                 mono_v1,
