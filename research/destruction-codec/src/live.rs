@@ -83,6 +83,13 @@ pub struct LiveEncoder {
     restate_period: u32,
     lanes: Vec<Option<Lane>>,
     free: Vec<usize>,
+    /// Lanes freed since the last span close. A lane must not be reassigned
+    /// inside the span that freed it: the encoder lane still holds the old
+    /// tenant's frames for this span, so intra-span reuse emits BOTH tenants'
+    /// records under one lane id -- rendered client-side as ~20-50 m
+    /// out-and-back teleports (netlab, wake-churn piles). finalize_span
+    /// drains the frames, after which reuse is clean.
+    quarantine: Vec<usize>,
     by_key: HashMap<u64, usize>,
     span_index: u32,
     pending: Vec<Record>,
@@ -124,6 +131,7 @@ impl LiveEncoder {
             nack_restates: Vec::new(),
             assignments: Vec::new(),
             wire_tails: vec![None; capacity],
+            quarantine: Vec::new(),
         }
     }
 
@@ -175,7 +183,10 @@ impl LiveEncoder {
         if let Some(lane) = self.by_key.remove(&key) {
             self.encoder.force_restart(lane);
             self.lanes[lane] = None;
-            self.free.push(lane);
+            // Not straight to the free list: the encoder lane still holds this
+            // span's frames for the departing tenant, and reusing the id
+            // before the span closes would interleave two bodies' records.
+            self.quarantine.push(lane);
         }
     }
 
@@ -275,6 +286,7 @@ impl LiveEncoder {
             let records = self.close_span(span_first_tick);
             let fit_ms = fit_started.elapsed().as_secs_f32() * 1000.0;
             let pack_started = std::time::Instant::now();
+            self.free.append(&mut self.quarantine);
             let packets = self.packetize(span_first_tick, records);
             eprintln!(
                 "V3FIN fit {fit_ms:.2} pack {:.2}",
@@ -283,6 +295,7 @@ impl LiveEncoder {
             return packets;
         }
         let records = self.close_span(span_first_tick);
+        self.free.append(&mut self.quarantine);
         self.packetize(span_first_tick, records)
     }
 

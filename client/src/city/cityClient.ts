@@ -102,8 +102,10 @@ export class CityClient {
   /** Wire v3: lane -> body entity, from the reliable PKT_CITY_LANES stream. */
   private readonly laneToEntity: Map<number, number> = new Map();
   private readonly entityToLane: Map<number, number> = new Map();
-  /** Diagnostic only: previous sampled position per entity (netlab recording). */
+  /** Previous sampled position per entity, for the lane-reassignment guard. */
   private readonly lastSamplePos: Map<number, [number, number, number]> = new Map();
+  /** Lanes held from sampling until this tick (reassignment-race guard). */
+  private readonly laneHold: Map<number, number> = new Map();
   /**
    * Wire v3: topology messages held until the debris sample clock reaches
    * their tick, so ledger basis (membership, island COM) and sampled poses
@@ -215,29 +217,49 @@ export class CityClient {
         continue;
       }
       const at = index * 7;
-      if (isRecording()) {
-        const prev = this.lastSamplePos.get(entity);
-        if (prev) {
-          const jump = Math.hypot(
-            this.samplePoses[at] - prev[0],
-            this.samplePoses[at + 1] - prev[1],
-            this.samplePoses[at + 2] - prev[2],
-          );
-          if (jump > 1.0) {
-            recordCityEvent('city_sample_jump', {
-              body: entity,
-              lane,
-              stepM: jump,
-              sampleTick,
-            });
-          }
+      const hold = this.laneHold.get(lane);
+      if (hold !== undefined) {
+        if (sampleTick < hold) {
+          continue;
         }
-        this.lastSamplePos.set(entity, [
-          this.samplePoses[at],
-          this.samplePoses[at + 1],
-          this.samplePoses[at + 2],
-        ]);
+        this.laneHold.delete(lane);
+        this.lastSamplePos.delete(entity);
       }
+      const prev = this.lastSamplePos.get(entity);
+      let jump = 0;
+      if (prev) {
+        jump = Math.hypot(
+          this.samplePoses[at] - prev[0],
+          this.samplePoses[at + 1] - prev[1],
+          this.samplePoses[at + 2] - prev[2],
+        );
+      }
+      if (isRecording() && jump > 1.0) {
+        recordCityEvent('city_sample_jump', {
+          body: entity,
+          lane,
+          stepM: jump,
+          sampleTick,
+          prev,
+          next: [this.samplePoses[at], this.samplePoses[at + 1], this.samplePoses[at + 2]],
+          history: Array.from(debris.lane_history(lane)),
+        });
+      }
+      // No chunk moves >5 m between spans; a discontinuity that large in one
+      // lane means the lane was reassigned and its new tenant's records beat
+      // the reliable lane map. Hold the lane briefly -- either the map update
+      // lands (and the entity guard above retargets the writes) or, if this
+      // somehow was real motion, we snap after 12 ticks instead of showing
+      // another body's trajectory meanwhile.
+      if (jump > 5.0) {
+        this.laneHold.set(lane, sampleTick + 12);
+        continue;
+      }
+      this.lastSamplePos.set(entity, [
+        this.samplePoses[at],
+        this.samplePoses[at + 1],
+        this.samplePoses[at + 2],
+      ]);
       this.topology.updateBodyPose(
         entity,
         [this.samplePoses[at], this.samplePoses[at + 1], this.samplePoses[at + 2]],
@@ -334,6 +356,10 @@ export class CityClient {
             // records (datagrams race the reliable assignment), so ask the
             // server to restate it absolutely; the heal lands next span.
             restate.push(entity);
+            // The map has caught up; release the reassignment-race hold.
+            this.laneHold.delete(lane);
+            this.lastSamplePos.delete(previous);
+            this.lastSamplePos.delete(entity);
           }
           // The entity's old lane must stop writing it too: a parked Rest
           // holds a samplable pose indefinitely, so a stale lane->entity

@@ -33,6 +33,16 @@ pub struct DebrisDecoder {
     /// must not be resurrected by an in-flight span (netlab measured 402
     /// chunk teleports a minute from exactly these, worst 66.8 m).
     accept_after: HashMap<u32, u32>,
+    /// Newest record tick applied per lane -- the latest-wins rule datagram
+    /// transport demands. A reordered packet delivering an older span would
+    /// otherwise yank every body it carries back in time for a frame, then
+    /// snap forward when the next fresh span lands (measured as paired
+    /// equal-magnitude teleports and one-frame multi-body bursts in netlab).
+    newest: HashMap<u32, u32>,
+    /// Diagnostic ring: last 8 applied records per lane as
+    /// (tick, kind, x, y, z); read back by `lane_history` when the client's
+    /// jump detector fires. Cheap enough to keep on always.
+    history: HashMap<u32, std::collections::VecDeque<(u32, u8, [f32; 3])>>,
 }
 
 #[wasm_bindgen]
@@ -49,6 +59,8 @@ impl DebrisDecoder {
             dt: 1.0 / sim_hz.max(1) as f32,
             gravity: Vec3::new(0.0, -9.81, 0.0),
             accept_after: HashMap::new(),
+            newest: HashMap::new(),
+            history: HashMap::new(),
         }
     }
 
@@ -68,18 +80,45 @@ impl DebrisDecoder {
             .push_packet(&payload)
             .map_err(|error| JsError::new(&format!("decode: {error}")))?;
         let mut applied = 0u32;
+        let mut payload_newest: HashMap<u32, u32> = HashMap::new();
         for record in records {
             if let Some(&floor) = self.accept_after.get(&record.body()) {
                 if record.tick() <= floor {
                     continue;
                 }
             }
+            // Latest wins per lane. Spans arrive body-atomic (one packet per
+            // body per span), so a record at or before a PREVIOUS payload's
+            // newest tick for its lane is a reordered or duplicated datagram
+            // -- applying it would yank the body back in time for a frame.
+            // Records within this payload may legitimately share ticks, so
+            // the high-water mark commits only after the loop.
+            if let Some(&newest) = self.newest.get(&record.body()) {
+                if record.tick() <= newest {
+                    continue;
+                }
+            }
+            let mark = payload_newest.entry(record.body()).or_insert(0);
+            *mark = (*mark).max(record.tick());
+            let ring = self.history.entry(record.body()).or_default();
+            if ring.len() >= 8 {
+                ring.pop_front();
+            }
+            ring.push_back((
+                record.tick(),
+                record.debug_kind(),
+                record.debug_position().unwrap_or([f32::NAN; 3]),
+            ));
             applied += 1;
             self.playbacks
                 .entry(record.body())
                 .or_default()
                 .events
                 .push(record);
+        }
+        for (lane, tick) in payload_newest {
+            let entry = self.newest.entry(lane).or_insert(0);
+            *entry = (*entry).max(tick);
         }
         Ok(applied)
     }
@@ -134,6 +173,21 @@ impl DebrisDecoder {
     pub fn clear_lane_until(&mut self, lane: u32, tick: u32) {
         self.playbacks.remove(&lane);
         self.accept_after.insert(lane, tick);
+    }
+
+    /// Diagnostic: last applied records for a lane, flattened as
+    /// [tick, kind, x, y, z] per record. kind: 0 segment, 1 impulse,
+    /// 2 sample run, 3 continuity rider, 4 rest.
+    pub fn lane_history(&self, lane: u32) -> Vec<f32> {
+        let mut out = Vec::new();
+        if let Some(ring) = self.history.get(&lane) {
+            for &(tick, kind, pos) in ring {
+                out.push(tick as f32);
+                out.push(kind as f32);
+                out.extend_from_slice(&pos);
+            }
+        }
+        out
     }
 
     pub fn lane_count(&self) -> u32 {

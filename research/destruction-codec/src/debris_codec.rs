@@ -318,6 +318,39 @@ impl Record {
         }
     }
 
+    /// Diagnostic: the first absolute position this record carries, if any
+    /// (world meters). Impulses carry none.
+    pub fn debug_position(&self) -> Option<[f32; 3]> {
+        match self {
+            Record::Segment { position, .. } | Record::Rest { position, .. } => {
+                let p = dequantize_position(*position);
+                Some([p.x, p.y, p.z])
+            }
+            Record::SampleRun { frames, .. } => frames.first().map(|(p, _)| {
+                let p = dequantize_position(*p);
+                [p.x, p.y, p.z]
+            }),
+            Record::Impulse { .. } => None,
+        }
+    }
+
+    /// Diagnostic: 0 = segment, 1 = impulse, 2 = sample run (3 = continuity
+    /// rider), 4 = rest.
+    pub fn debug_kind(&self) -> u8 {
+        match self {
+            Record::Segment { .. } => 0,
+            Record::Impulse { .. } => 1,
+            Record::SampleRun { continuity, .. } => {
+                if *continuity {
+                    3
+                } else {
+                    2
+                }
+            }
+            Record::Rest { .. } => 4,
+        }
+    }
+
     fn kind_index(&self) -> usize {
         match self {
             Record::Segment { gravity: true, .. } => 0,
