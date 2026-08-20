@@ -102,6 +102,14 @@ export class CityClient {
   /** Wire v3: lane -> body entity, from the reliable PKT_CITY_LANES stream. */
   private readonly laneToEntity: Map<number, number> = new Map();
   private readonly entityToLane: Map<number, number> = new Map();
+  /** Diagnostic only: previous sampled position per entity (netlab recording). */
+  private readonly lastSamplePos: Map<number, [number, number, number]> = new Map();
+  /**
+   * Wire v3: topology messages held until the debris sample clock reaches
+   * their tick, so ledger basis (membership, island COM) and sampled poses
+   * describe the same instant. Drained by `sampleDebris`.
+   */
+  private readonly pendingTopology: { message: TopologyMessage; receivedAtMs: number }[] = [];
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -176,17 +184,60 @@ export class CityClient {
     }
     // The client's interpolation delay, applied exactly as the harness did.
     const sampleTick = Math.max(0, Math.floor(renderTick) - 6);
+    // Apply held topology whose tick the sample clock has reached, so a
+    // migration's basis change lands in the same frame as the poses that
+    // were simulated under it. The wall-clock valve keeps a stalled sample
+    // clock (everything parked, no datagrams) from delaying fracture forever.
+    const nowMs = performance.now();
+    while (this.pendingTopology.length > 0) {
+      const head = this.pendingTopology[0];
+      if (head.message.simTick > sampleTick && nowMs - head.receivedAtMs < 1000) {
+        break;
+      }
+      this.pendingTopology.shift();
+      this.applyTopologyMessage(head.message);
+    }
     if (debris.lane_count() > this.sampleLanes.length) {
       this.sampleLanes = new Uint32Array(this.sampleLanes.length * 2);
       this.samplePoses = new Float32Array(this.sampleLanes.length * 7);
     }
     const filled = debris.sample_into(sampleTick, this.sampleLanes, this.samplePoses);
     for (let index = 0; index < filled; index += 1) {
-      const entity = this.laneToEntity.get(this.sampleLanes[index]);
+      const lane = this.sampleLanes[index];
+      const entity = this.laneToEntity.get(lane);
       if (entity === undefined) {
         continue;
       }
+      // Only the entity's current lane may write it. A lane whose records
+      // raced ahead of its reliable reassignment, or a stale mapping left by
+      // a lane move, would otherwise apply another body's trajectory here.
+      if (this.entityToLane.get(entity) !== lane) {
+        continue;
+      }
       const at = index * 7;
+      if (isRecording()) {
+        const prev = this.lastSamplePos.get(entity);
+        if (prev) {
+          const jump = Math.hypot(
+            this.samplePoses[at] - prev[0],
+            this.samplePoses[at + 1] - prev[1],
+            this.samplePoses[at + 2] - prev[2],
+          );
+          if (jump > 1.0) {
+            recordCityEvent('city_sample_jump', {
+              body: entity,
+              lane,
+              stepM: jump,
+              sampleTick,
+            });
+          }
+        }
+        this.lastSamplePos.set(entity, [
+          this.samplePoses[at],
+          this.samplePoses[at + 1],
+          this.samplePoses[at + 2],
+        ]);
+      }
       this.topology.updateBodyPose(
         entity,
         [this.samplePoses[at], this.samplePoses[at + 1], this.samplePoses[at + 2]],
@@ -271,6 +322,7 @@ export class CityClient {
         break;
       }
       case PKT_CITY_LANES: {
+        const restate: number[] = [];
         for (const [lane, entity] of decodeCityLanes(bytes)) {
           const previous = this.laneToEntity.get(lane);
           if (previous !== undefined && previous !== entity) {
@@ -278,9 +330,24 @@ export class CityClient {
             // A recycled lane must not inherit its previous tenant's
             // trajectory (66.8 m single-frame teleports in netlab).
             this.debris?.clear_lane_until(lane, this.latestSimTick);
+            // The clear may also have swallowed the NEW tenant's first
+            // records (datagrams race the reliable assignment), so ask the
+            // server to restate it absolutely; the heal lands next span.
+            restate.push(entity);
+          }
+          // The entity's old lane must stop writing it too: a parked Rest
+          // holds a samplable pose indefinitely, so a stale lane->entity
+          // entry keeps fighting the new lane every frame.
+          const previousLane = this.entityToLane.get(entity);
+          if (previousLane !== undefined && previousLane !== lane) {
+            this.laneToEntity.delete(previousLane);
+            this.debris?.clear_lane_until(previousLane, this.latestSimTick);
           }
           this.laneToEntity.set(lane, entity);
           this.entityToLane.set(entity, lane);
+        }
+        if (restate.length > 0) {
+          this.sendResync(encodeCityNack(restate));
         }
         break;
       }
@@ -299,10 +366,59 @@ export class CityClient {
           break;
         }
         const message = decodeTopology(bytes);
-        // Read where the chunks about to be re-parented are drawn, before the
-        // ledger moves them.
-        this.captureDrawnPoses(message);
-        const applied = this.topology.apply(message);
+        // Wire v3: the ledger must not run ahead of the pose stream. Sampled
+        // poses are read at renderTick-6, so applying a migration's new
+        // membership/COM immediately would compose 100 ms of old-basis poses
+        // against the new basis -- measured as meter-scale per-frame chunk
+        // teleports. Queue the message and apply it when the sample clock
+        // reaches its tick (sampleDebris drains this every frame).
+        if (this.debris !== null) {
+          this.pendingTopology.push({ message, receivedAtMs: performance.now() });
+          break;
+        }
+        this.applyTopologyMessage(message);
+        break;
+      }
+      case PKT_CITY_BASELINE:
+        this.handleBaseline(decodeBaseline(bytes));
+        break;
+      case PKT_CITY_BOOTSTRAP: {
+        const message = decodeBootstrap(bytes);
+        this.topology.applyBootstrap(message);
+        this.bodies.clear();
+        this.pendingRecords = [];
+        this.pendingTopology.length = 0;
+        this.settledAtTick.clear();
+        this.baselineGenerations.clear();
+        this.resyncRequested = false;
+        this.bootstrapped = true;
+        this.bootstrapCount += 1;
+        this.repaintAll = true;
+        this.repaintBodies.clear();
+        // Bootstrap names the generation in flight. Recording it (empty) means
+        // the parts that follow accumulate into it rather than being treated
+        // as a rollover that discards what came before.
+        this.baselineId = message.baselineId;
+        this.baselineGenerations.set(message.baselineId, new Map());
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Apply one reliable topology message to the ledger, with every side effect
+   * (promotion seeding, repaints, settle/retire lane clearing, resync check).
+   * Wire v2 calls this on packet arrival; wire v3 defers through
+   * `pendingTopology` so the ledger basis never runs ahead of the sampled
+   * pose stream.
+   */
+  private applyTopologyMessage(message: TopologyMessage): void {
+    // Read where the chunks about to be re-parented are drawn, before the
+    // ledger moves them.
+    this.captureDrawnPoses(message);
+    const applied = this.topology.apply(message);
         if (applied) {
           this.seedPromotions(message);
           for (const batch of message.batches) {
@@ -363,33 +479,6 @@ export class CityClient {
           this.resyncRequested = true;
           this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
         }
-        break;
-      }
-      case PKT_CITY_BASELINE:
-        this.handleBaseline(decodeBaseline(bytes));
-        break;
-      case PKT_CITY_BOOTSTRAP: {
-        const message = decodeBootstrap(bytes);
-        this.topology.applyBootstrap(message);
-        this.bodies.clear();
-        this.pendingRecords = [];
-        this.settledAtTick.clear();
-        this.baselineGenerations.clear();
-        this.resyncRequested = false;
-        this.bootstrapped = true;
-        this.bootstrapCount += 1;
-        this.repaintAll = true;
-        this.repaintBodies.clear();
-        // Bootstrap names the generation in flight. Recording it (empty) means
-        // the parts that follow accumulate into it rather than being treated
-        // as a rollover that discards what came before.
-        this.baselineId = message.baselineId;
-        this.baselineGenerations.set(message.baselineId, new Map());
-        break;
-      }
-      default:
-        break;
-    }
   }
 
   private handleBaseline(message: BaselineMessage): void {

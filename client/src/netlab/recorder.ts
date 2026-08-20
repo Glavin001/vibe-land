@@ -115,7 +115,8 @@ export type RecorderEventType =
   | 'city_frame_diag'
   | 'city_adoption_jump'
   | 'city_seed'
-  | 'city_suspect_record';
+  | 'city_suspect_record'
+  | 'city_sample_jump';
 
 export interface RecorderEvent {
   /** performance.now() at emit. */

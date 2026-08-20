@@ -225,6 +225,8 @@ interface ChunkWriteContext {
   bodyKey: number;
   settling: boolean;
   bodySettled: boolean;
+  /** Ledger pose source at write time — splits decoder jumps from compose jumps. */
+  source?: string;
 }
 
 /**
@@ -343,6 +345,7 @@ function installChunkTeleportProbe(chunkCount: number): () => void {
           body: ctx.bodyKey,
           settling: ctx.settling,
           bodySettled: ctx.bodySettled,
+          source: ctx.source ?? 'unknown',
           sinceLastWriteMs: Number.isNaN(lastWriteMs[slot])
             ? -1
             : Math.round(nowMs - lastWriteMs[slot]),
@@ -707,15 +710,17 @@ export function CityChunksLayer({
       // interpolation delay ahead of the frames around it. That is the
       // two-writer flicker, and this is the only place it can be observed,
       // because it depends on what the ledger holds at draw time.
+      let writeSource: string | undefined;
       if (recording) {
         const { source, deltaM } = client.topology.poseSourceOf(key);
+        writeSource = source;
         if (source === 'raw' && deltaM > 0) {
           recordCityEvent('city_flicker', { body: key, deltaM, settling });
         }
       }
       const settledTint = body.settled ? 0.75 : 1;
       const probeCtx: ChunkWriteContext | undefined = recording
-        ? { bodyKey: key, settling, bodySettled: body.settled }
+        ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
         : undefined;
       for (const slot of body.chunkSlots) {
         const instanceId = state.instanceIds[slot];
