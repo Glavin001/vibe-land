@@ -2166,6 +2166,9 @@ impl MatchState {
                             if let Some(lanes) = city.full_lane_map() {
                                 let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
                             }
+                            // The datagram-side half of a resync: every lane
+                            // restates absolutely over the coming spans.
+                            city.begin_join_restate();
                         }
                     }
                 }

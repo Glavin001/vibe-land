@@ -680,6 +680,14 @@ impl CityRuntime {
     }
 
     pub fn add_client(&mut self, client: u64) {
+        // Wire v3: a joiner has the bootstrap and lane map but no poses for
+        // long-parked lanes (their Rest budgets are exhausted by design).
+        // Smear one absolute statement of every occupied lane over the next
+        // spans; worst-case coverage is lanes/64 spans (~4 s at 4k lanes,
+        // 100 ms flush), documented as the join convergence bound.
+        if let Some(live) = self.live.as_mut() {
+            live.encoder.begin_join_restate();
+        }
         self.encoder.add_client(client);
     }
 
@@ -966,6 +974,14 @@ impl CityRuntime {
 
     /// A client reported these bodies' chains poisoned by packet loss; restate
     /// them absolutely on the next span.
+    /// Wire v3: smear an absolute restate of every occupied lane (join /
+    /// resync). No-op on v2 matches.
+    pub fn begin_join_restate(&mut self) {
+        if let Some(live) = self.live.as_mut() {
+            live.encoder.begin_join_restate();
+        }
+    }
+
     pub fn restate_bodies(&mut self, bodies: &[u32]) {
         if let Some(live) = self.live.as_mut() {
             let keys: Vec<u64> = bodies.iter().map(|&body| u64::from(body)).collect();

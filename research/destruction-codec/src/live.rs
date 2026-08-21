@@ -207,6 +207,14 @@ pub struct LiveEncoder {
     span_index: u32,
     pending: Vec<Record>,
     nack_restates: Vec<usize>,
+    /// Lanes still owed a restate for a joiner, drained a bounded number per
+    /// span. A mid-stream joiner has the reliable bootstrap and lane map but
+    /// no poses for lanes whose Rest budget was exhausted long ago -- without
+    /// this, those bodies are invisible to the joiner until they next move.
+    join_restates: std::collections::VecDeque<usize>,
+    /// How many join restates to emit per span (smear bound, keeps the join
+    /// burst inside the byte budget the governor is holding).
+    join_restates_per_span: usize,
     /// (lane, key) assignments since the last drain. The wire's record ids are
     /// LANE indices -- dense, cheap varints -- so the receiver needs this map,
     /// and it must arrive reliably: a lost mapping strands every record the
@@ -243,6 +251,8 @@ impl LiveEncoder {
             span_index: 0,
             pending: Vec::new(),
             nack_restates: Vec::new(),
+            join_restates: std::collections::VecDeque::new(),
+            join_restates_per_span: 64,
             assignments: Vec::new(),
             wire_tails: vec![None; capacity],
             quarantine: Vec::new(),
@@ -404,6 +414,26 @@ impl LiveEncoder {
         self.encoder.set_small_rubble(reach_m, scale);
     }
 
+    /// A client joined (or resynced): every occupied lane owes it one
+    /// absolute statement, smeared over the coming spans so the burst stays
+    /// inside the governed byte budget. Parked lanes get their Rest budget
+    /// re-armed -- a body parked longer than its budget is otherwise
+    /// invisible to a joiner forever. Worst-case coverage latency is
+    /// occupied_lanes / per_span spans; the caller documents that bound.
+    pub fn begin_join_restate(&mut self) {
+        self.join_restates.clear();
+        for (lane, slot) in self.lanes.iter().enumerate() {
+            if slot.is_some() {
+                self.join_restates.push_back(lane);
+            }
+        }
+    }
+
+    /// Lanes still owed to the most recent joiner (telemetry / test hook).
+    pub fn join_restates_pending(&self) -> usize {
+        self.join_restates.len()
+    }
+
     /// Restate specific bodies absolutely on the next span.
     ///
     /// This is the loss-heal path. Periodic restatement of every moving body
@@ -471,6 +501,22 @@ impl LiveEncoder {
                 self.wire_tails[lane] = None;
                 self.restate_lane(lane, span_first_tick, &mut restated);
             }
+        }
+        // Joiner smear: a bounded number of owed lanes per span, parked ones
+        // with their Rest budget re-armed so the Rest actually re-emits.
+        for _ in 0..self.join_restates_per_span {
+            let Some(lane) = self.join_restates.pop_front() else {
+                break;
+            };
+            if self.lanes[lane].is_none() {
+                continue;
+            }
+            if let Some(slot) = self.lanes[lane].as_mut() {
+                slot.rest_restates_left = REST_RESTATES;
+                slot.was_parked = false;
+            }
+            self.wire_tails[lane] = None;
+            self.restate_lane(lane, span_first_tick, &mut restated);
         }
         // Parked-Rest insurance rotation: a lost Rest leaves no chain gap for
         // the decoder to detect, so it is repeated a budgeted number of times.
@@ -723,6 +769,56 @@ mod tests {
             assert_eq!(decision.span_ticks, 6);
             assert_eq!(decision.rate_scale, 1.0);
         }
+    }
+
+    #[test]
+    fn join_restate_covers_every_lane_including_exhausted_parked_ones() {
+        let mut encoder = LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / 60.0,
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            tolerances: Tolerances::new(0.02, 3.0, 0.15, 0.5, crate::mask::MaskConfig::default()),
+            sleep: SleepPolicy { linear_mps: 0.0, angular_rps: 0.0, ticks: 0 },
+            restate_period: 4,
+            initial_capacity: 16,
+        });
+        // Three sleeping bodies -> parked Rests; run enough spans to exhaust
+        // every parked Rest budget so a joiner would never hear about them.
+        for key in 0..3u64 {
+            encoder.add_body(key, 1.0);
+        }
+        let mut tick = 0u32;
+        for _ in 0..40 {
+            for key in 0..3u64 {
+                let mut state = ActorState {
+                    pose: crate::trace::Pose {
+                        position: Vec3::new(key as f32, 2.0, 0.0),
+                        rotation: glam::Quat::IDENTITY,
+                    },
+                    linear_velocity: Vec3::ZERO,
+                    angular_velocity: Vec3::ZERO,
+                    contacts: 0,
+                    intact_joints: 0,
+                    flags: 1, // sleeping -> parked Rest
+                };
+                state.flags = 1;
+                encoder.push(key, tick, &state);
+            }
+            let packets = encoder.finalize_span(tick);
+            let _ = packets;
+            tick += 6;
+        }
+        // Budget exhausted: further spans emit nothing for these lanes.
+        let quiet: usize = encoder.finalize_span(tick).len();
+        assert_eq!(quiet, 0, "parked budget should be exhausted");
+        tick += 6;
+        encoder.begin_join_restate();
+        assert_eq!(encoder.join_restates_pending(), 3);
+        let packets = encoder.finalize_span(tick);
+        assert!(
+            !packets.is_empty(),
+            "join restate must re-emit parked Rests for the joiner"
+        );
+        assert_eq!(encoder.join_restates_pending(), 0);
     }
 
     #[test]
