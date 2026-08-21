@@ -83,6 +83,11 @@ struct Args {
     packets_out: Option<PathBuf>,
     /// Which wire the dump speaks: 2 (ChunkStreamEncoder) or 3 (debris spans).
     packets_wire: u32,
+    /// When set, shot intervals shrink linearly from --shot-interval-ticks
+    /// down to this, so the run RAMPS: opening sniper shots, closing barrage.
+    /// The escalation is the test -- a fixed cadence lets both wires settle
+    /// into a steady state that flatters them.
+    shot_ramp_min_ticks: u32,
     /// Wire-3 span flush in milliseconds (production: 100). The
     /// latency/bytes knob: 50 ms roughly matches wire 2's total delay at
     /// roughly wire 2's byte cost.
@@ -103,6 +108,7 @@ impl Args {
         let mut packets_out = None;
         let mut packets_wire = 3u32;
         let mut packets_span_ms = 100u32;
+        let mut shot_ramp_min_ticks = 0u32;
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -123,6 +129,7 @@ impl Args {
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
+                "--shot-ramp-min-ticks" => shot_ramp_min_ticks = value()?.parse()?,
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
@@ -152,6 +159,7 @@ impl Args {
             packets_out,
             packets_wire,
             packets_span_ms,
+            shot_ramp_min_ticks,
         })
     }
 }
@@ -767,6 +775,7 @@ fn main() -> Result<()> {
     // them into what the shipping client displays.
     let mut v2_tap = None;
     let mut v3_tap = None;
+    let mut timings_log: Option<std::io::BufWriter<std::fs::File>> = None;
     if let Some(dir) = &args.packets_out {
         std::fs::create_dir_all(dir)?;
         match args.packets_wire {
@@ -801,6 +810,9 @@ fn main() -> Result<()> {
             &table.actors,
             30,
         )?);
+        timings_log = Some(std::io::BufWriter::new(std::fs::File::create(
+            dir.join("timings.jsonl"),
+        )?));
     }
     let shot_plan = build_shot_plan(&manifest, args.shots, args.targets);
     let mut epoch = 0u32;
@@ -820,22 +832,35 @@ fn main() -> Result<()> {
     let mut mismatch_ticks = 0u64;
     let mut peak_bodies = 0usize;
     let mut next_shot = 0usize;
+    let mut next_fire_tick = args.settle_ticks;
 
     for tick_index in 0..total_ticks {
-        if tick_index >= args.settle_ticks
-            && next_shot < shot_plan.len()
-            && (tick_index - args.settle_ticks) % args.shot_interval_ticks == 0
-        {
+        if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
             let (origin, direction) = shot_plan[next_shot];
             fire(&mut destruction, &mut world, origin, direction);
             next_shot += 1;
+            // Ramp: interval shrinks linearly across the plan, floor at the
+            // ramp minimum. With the ramp off this is the old fixed cadence.
+            let start = args.shot_interval_ticks.max(1);
+            let floor = if args.shot_ramp_min_ticks == 0 {
+                start
+            } else {
+                args.shot_ramp_min_ticks.min(start)
+            };
+            let span = start.saturating_sub(floor);
+            let interval =
+                start - (span * next_shot as u32) / shot_plan.len().max(1) as u32;
+            next_fire_tick = tick_index + interval.max(floor);
         }
 
+        let sim_started = std::time::Instant::now();
         world.step().map_err(|error| anyhow::anyhow!("{error}"))?;
         let output = destruction
             .post_step(&mut world, dt, GRAVITY)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let sim_ms = sim_started.elapsed().as_secs_f32() * 1000.0;
 
+        let enc_started = std::time::Instant::now();
         if v2_tap.is_some() || v3_tap.is_some() {
             let snapshots = destruction
                 .body_snapshots(&world)
@@ -845,6 +870,14 @@ fn main() -> Result<()> {
             } else if let Some(tap) = v3_tap.as_mut() {
                 tap.server_tick(&manifest, tick_index, snapshots, &output)?;
             }
+        }
+        if let Some(log) = timings_log.as_mut() {
+            use std::io::Write as _;
+            writeln!(
+                log,
+                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3}}}",
+                enc_started.elapsed().as_secs_f32() * 1000.0
+            )?;
         }
 
         // Apply topology deltas before reading poses: a chunk promoted this
@@ -1043,6 +1076,10 @@ fn main() -> Result<()> {
             "  note: {dropped_world_bonds} broken bonds were world anchors (not chunk-chunk edges); \
              the trace omits them by design"
         );
+    }
+    if let Some(mut log) = timings_log.take() {
+        use std::io::Write as _;
+        log.flush()?;
     }
     writer.finish().context("finalise trace")?;
     if let Some(tap) = v3_tap.take() {

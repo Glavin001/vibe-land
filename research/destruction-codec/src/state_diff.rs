@@ -179,6 +179,18 @@ pub struct StructureReport {
 }
 
 #[derive(Serialize)]
+pub struct SecondStat {
+    pub second: u32,
+    /// Chunks whose TRUTH moved this second -- the denominator that matters.
+    pub moving: usize,
+    /// p95 position error over moving chunks only, this second.
+    pub err_p95_moving_m: f32,
+    pub freezes: usize,
+    pub excess_steps: usize,
+    pub reversals: usize,
+}
+
+#[derive(Serialize)]
 pub struct DiffReport {
     pub frames: usize,
     pub chunks: usize,
@@ -192,11 +204,17 @@ pub struct DiffReport {
     /// Error with no lag correction -- the difference between these two is
     /// what the interpolation delay costs, as opposed to what the wire costs.
     pub err_p95_unaligned_m: f32,
+    /// Percentiles over chunks whose truth was moving at the sampled frame.
+    /// At district scale 96% of chunks never move, so the all-chunk
+    /// percentiles read 0.0 regardless of quality; these are the honest rows.
+    pub err_p50_moving_m: f32,
+    pub err_p95_moving_m: f32,
     pub freezes: usize,
     pub excess_steps: usize,
     pub reversals: usize,
     pub structures: Vec<StructureReport>,
     pub worst: Vec<ArtifactEvent>,
+    pub timeline: Vec<SecondStat>,
 }
 
 fn percentile(sorted: &[f32], q: f32) -> f32 {
@@ -312,6 +330,11 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
     let mut freeze_run = vec![0usize; chunks];
     let mut freeze_distance = vec![0.0f32; chunks];
     let last = common - best_lag;
+    let mut errors_moving: Vec<f32> = Vec::new();
+    let fps = truth.fps as usize;
+    let seconds_total = last / fps + 1;
+    let mut second_errors: Vec<Vec<f32>> = vec![Vec::new(); seconds_total];
+    let mut second_counts: Vec<[usize; 3]> = vec![[0; 3]; seconds_total];
 
     for frame in 1..last {
         for slot in 0..chunks {
@@ -337,6 +360,10 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
             let client_step = client_now - client_prev;
             let truth_len = truth_step.length();
             let client_len = client_step.length();
+            if truth_len > MOVING_M {
+                errors_moving.push(error);
+                second_errors[frame / fps].push(error);
+            }
 
             // Freeze: the client holds still while truth is moving. Reported
             // once per run of frames, carrying how far truth travelled during
@@ -357,6 +384,7 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
                         error_m: error,
                     });
                     entry.1 += 1;
+                    second_counts[frame / fps][0] += 1;
                 }
                 freeze_run[slot] = 0;
                 freeze_distance[slot] = 0.0;
@@ -375,6 +403,7 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
                     error_m: error,
                 });
                 entry.2 += 1;
+                second_counts[frame / fps][1] += 1;
             } else if truth_len > REVERSAL_M
                 && client_len > REVERSAL_M
                 && client_step.dot(truth_step) < 0.0
@@ -389,6 +418,7 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
                     error_m: error,
                 });
                 entry.3 += 1;
+                second_counts[frame / fps][2] += 1;
             }
         }
     }
@@ -420,6 +450,23 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
     });
     worst.truncate(options.worst);
 
+    errors_moving.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    let timeline: Vec<SecondStat> = second_errors
+        .iter_mut()
+        .zip(&second_counts)
+        .enumerate()
+        .map(|(second, (errs, counts))| {
+            errs.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+            SecondStat {
+                second: second as u32,
+                moving: errs.len() / fps.max(1),
+                err_p95_moving_m: percentile(errs, 0.95),
+                freezes: counts[0],
+                excess_steps: counts[1],
+                reversals: counts[2],
+            }
+        })
+        .collect();
     let report = DiffReport {
         frames: last,
         chunks,
@@ -430,11 +477,14 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
         err_p95_m: percentile(&errors, 0.95),
         err_max_m: errors.last().copied().unwrap_or(0.0),
         err_p95_unaligned_m: percentile(&errors_unaligned, 0.95),
+        err_p50_moving_m: percentile(&errors_moving, 0.50),
+        err_p95_moving_m: percentile(&errors_moving, 0.95),
         freezes: events.iter().filter(|e| e.kind == "freeze").count(),
         excess_steps: events.iter().filter(|e| e.kind == "excess-step").count(),
         reversals: events.iter().filter(|e| e.kind == "reversal").count(),
         structures,
         worst,
+        timeline,
     };
 
     println!(
@@ -447,6 +497,11 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
         report.err_p95_m * 100.0,
         report.err_max_m,
         report.err_p95_unaligned_m * 100.0
+    );
+    println!(
+        "moving chunks only: p50 {:.1} cm | p95 {:.1} cm",
+        report.err_p50_moving_m * 100.0,
+        report.err_p95_moving_m * 100.0
     );
     println!(
         "artifacts: {} freezes | {} excess steps | {} reversals",

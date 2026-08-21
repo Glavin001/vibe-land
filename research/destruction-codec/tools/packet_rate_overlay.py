@@ -8,7 +8,11 @@ current rate plus running average and peak. Burn it with:
 
     ffmpeg -i leg.mp4 -vf "ass=leg.ass" ...
 
-Usage: packet_rate_overlay.py <packets-dir> <out.ass> <label> [--hz 60]
+With --diff <state-diff.json>, each second also shows the accuracy row from
+the truth-aligned diff: moving-chunk count, p95 error over moving chunks, and
+cumulative artifact counts -- so quality and cost share one meter.
+
+Usage: packet_rate_overlay.py <packets-dir> <out.ass> <label> [--hz 60] [--diff report.json]
 Prints the summary (avg / peak-second / total) to stdout as JSON.
 """
 import json
@@ -21,6 +25,33 @@ def main() -> None:
     hz = 60
     if "--hz" in sys.argv:
         hz = int(sys.argv[sys.argv.index("--hz") + 1])
+    timeline = None
+    if "--diff" in sys.argv:
+        report = json.load(open(sys.argv[sys.argv.index("--diff") + 1]))
+        timeline = {entry["second"]: entry for entry in report.get("timeline", [])}
+    # Server per-tick timings (timings.jsonl in the dump) -> per-second means.
+    sim_ms = {}
+    enc_ms = {}
+    timings_path = os.path.join(packets_dir, "timings.jsonl")
+    if os.path.exists(timings_path):
+        sums = {}
+        for line in open(timings_path):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            bucket = sums.setdefault(entry["t"] // hz, [0.0, 0.0, 0])
+            bucket[0] += entry["sim"]
+            bucket[1] += entry["enc"]
+            bucket[2] += 1
+        for second, (sim, enc, count) in sums.items():
+            sim_ms[second] = sim / count
+            enc_ms[second] = enc / count
+    client_ms = {}
+    if "--client-timings" in sys.argv:
+        data = json.load(open(sys.argv[sys.argv.index("--client-timings") + 1]))
+        for second, value in enumerate(data.get("clientMsPerSecond", [])):
+            # Total ms of client work in that second; show as-is (budget: 1000).
+            client_ms[second] = value
 
     meta = json.load(open(os.path.join(packets_dir, "meta.json")))
     seconds_total = meta["ticks"] // hz
@@ -64,6 +95,28 @@ def main() -> None:
             f"avg {running_avg:5.2f}  peak {running_peak:5.2f}\\N"
             f"total {running_total / 1e6:6.2f} MB"
         )
+        if timeline is not None:
+            entry = timeline.get(second)
+            if entry:
+                art_run = sum(
+                    timeline[s]["freezes"] + timeline[s]["excess_steps"] + timeline[s]["reversals"]
+                    for s in timeline
+                    if s <= second
+                )
+                text += (
+                    f"\\Nmoving {entry['moving']:5d}  "
+                    f"err p95 {entry['err_p95_moving_m'] * 100:5.1f} cm\\N"
+                    f"artifacts {art_run}"
+                )
+        cost_bits = []
+        if second in sim_ms:
+            cost_bits.append(f"sim {sim_ms[second]:5.1f}ms/tick")
+        if second in enc_ms:
+            cost_bits.append(f"enc {enc_ms[second]:4.1f}ms/tick")
+        if second in client_ms:
+            cost_bits.append(f"client {client_ms[second]:5.1f}ms/s")
+        if cost_bits:
+            text += "\\N" + "  ".join(cost_bits)
         lines.append(f"Dialogue: 0,{start},{end},rate,{{\\an7}}{text}\n")
     with open(out_path, "w") as handle:
         handle.writelines(lines)

@@ -87,6 +87,15 @@ if (meta.wire === 3) {
   };
 }
 
+// Real wall-clock for measuring the client's own work; the faked
+// performance.now above is SIM time and must not leak into cost numbers.
+const realNowMs = () => Number(process.hrtime.bigint()) / 1e6;
+const clientMsPerSecond: number[] = [];
+function chargeClientMs(second: number, ms: number): void {
+  while (clientMsPerSecond.length <= second) clientMsPerSecond.push(0);
+  clientMsPerSecond[second] += ms;
+}
+
 let nacks = 0;
 const client = new CityClient(
   { manifest: manifestJson, hashHex: 'offline', totalChunks, totalBonds },
@@ -147,11 +156,16 @@ writeFrame();
 
 for (let tick = 0; tick < meta.ticks; tick += 1) {
   fakeNowMs = tick * msPerTick;
+  const second = Math.floor(tick / meta.hz);
   for (const bytes of byTick.get(tick) ?? []) {
+    const started = realNowMs();
     client.handlePacket(bytes);
+    chargeClientMs(second, realNowMs() - started);
   }
   if (tick % viewStep === 0 && tick > 0) {
+    const started = realNowMs();
     client.samplePresentation(fakeNowMs);
+    chargeClientMs(second, realNowMs() - started);
     writeFrame();
   }
 }
@@ -161,6 +175,13 @@ await new Promise((resolve, reject) => {
   out.end(() => resolve(undefined));
   out.on('error', reject);
 });
+
+const { writeFileSync } = await import('node:fs');
+writeFileSync(
+  `${outPath}.timings.json`,
+  JSON.stringify({ hz: meta.hz, clientMsPerSecond: clientMsPerSecond.map((v) => +v.toFixed(3)) }),
+);
+const totalClientMs = clientMsPerSecond.reduce((a, b) => a + b, 0);
 
 const stats = client.stats();
 console.log(
@@ -172,6 +193,7 @@ console.log(
     topoSeqGaps: stats.topoSeqGaps,
     orphanedChunks: stats.orphanedChunks,
     brokenBonds: stats.brokenBonds,
+    clientMsAvgPerSecond: +(totalClientMs / Math.max(1, clientMsPerSecond.length)).toFixed(2),
   }),
 );
 if (framesWritten !== expectedFrames) {

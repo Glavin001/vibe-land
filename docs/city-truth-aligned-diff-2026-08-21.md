@@ -152,3 +152,53 @@ Instrument limitation recorded: err p50/p95 read 0.0 cm on this scene because
 percentiles are taken over ALL chunks and 96% never move. `state-diff` needs
 a moving-only percentile before its error rows mean anything at district
 scale (the artifact counters and max are unaffected).
+
+---
+
+# The ramped downtown run: receipts for cost, quality, and compute (2026-08-21)
+
+`viewer-videos/downtown-ramp-2026-08-21/compare-downtown-ramp.mp4`. Same
+24,105-chunk downtown, stress scale 0.30, and a RAMPED shot plan
+(`--shot-ramp-min-ticks`): 100 shots whose interval shrinks from 1.2 s to
+83 ms, so the run escalates from sniper pot-shots to a closing barrage —
+~24k bonds broken, ~6,800 peak bodies, ~29k migrations. Each wire pane's
+burned-in meter now carries three rows of receipts per second: bytes
+(now/avg/peak/total), accuracy (moving chunks, moving-only err p95,
+cumulative artifacts), and compute (server sim ms/tick, encode ms/tick,
+client ms/s of real decode+sample work measured in the replayer).
+
+| | wire v2 | wire v3 @ 50 ms |
+|---|---:|---:|
+| avg / peak-second | 2.10 / 3.32 Mbps | **4.02 / 9.00 Mbps** |
+| total (60 s) | 15.7 MB (3.27 reliable) | 30.1 MB (0.57 reliable) |
+| all-chunk err p95 | 13.9 cm | **1.9 cm** |
+| moving-only err p50 / p95 | 1.5 / 5.7 cm | 1.2 / 6.1 cm |
+| freezes / excess / reversals | **4,139** / 1,221 / 520 | 2,063 / 2,146 / 589 |
+| nacks | 0 | 627 |
+| worst event | 2.6 m freeze | **78 m lane-race excursion** |
+| sim ms/tick p50 / p95 / max | 18.4 / 33.0 / 283 | 18.3 / 34.4 / 287 |
+| encode ms/tick p50 / p95 | 0.53 / 1.90 (per client) | 2.10 / 9.02 (all clients) |
+| client work ms per second | 246 | 208 |
+
+What the hard content changes:
+
+- **The flush knob is content-scaled.** 50 ms flush was 1.09 Mbps on the
+  grid-2 city and is 4.02 avg / 9.0 peak here — over the 2.5 Mbps budget.
+  At barrage scale the operating point must be 100 ms (≈ half the bytes) or
+  rate-adaptive flush (shorten when quiet, lengthen under load) — the knob
+  exists, per-match, and this run prices it.
+- **v2 pays where it always pays**: 13.9 cm all-chunk p95 (stale scenery),
+  double the freezes, and 3.27 MB of reliable-channel baseline traffic (21%
+  of its total). But its moving-chunk p95 (5.7 cm) holds up, and its peak
+  bandwidth is governed by its ceiling — the starved bodies just don't get
+  drawn correctly, which bytes metrics cannot see and the freeze counter can.
+- **v3's artifact storm at this churn is the lane race compounding**: 627
+  nacks and 2,146 excess steps at 29k migrations (worst: one chunk 78 m off
+  for ~100 ms). Every escalation of content escalates this class. The 1-byte
+  lane generation tag is no longer an optimization; it is the gate for
+  district-scale destruction.
+- **The simulation itself breaks 60 Hz during the barrage** (sim p95 33-34
+  ms, max ~287 ms against a 16.7 ms budget) — on this box, with this pack,
+  the physics is the binding constraint at peak, not the wire. Encode: v3
+  9 ms p95 within its 50 ms span budget, and once for all clients; v2's
+  1.9 ms is per client.
