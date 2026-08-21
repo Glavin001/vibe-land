@@ -329,7 +329,7 @@ async function runIteration(
       const logStream = fs.createWriteStream(path.join(iterDir, `console.client${k}.log`));
       consoleLogs.push(logStream);
       page.on('console', (msg) => logStream.write(`[${msg.type()}] ${msg.text()}\n`));
-      page.on('pageerror', (err) => logStream.write(`[pageerror] ${err.message}\n`));
+      page.on('pageerror', (err) => logStream.write(`[pageerror] ${err.stack ?? err.message}\n`));
 
       const url = new URL(scenario.path.replace('{iter}', String(iteration)), clientUrl);
       url.searchParams.set('match', matchId);
