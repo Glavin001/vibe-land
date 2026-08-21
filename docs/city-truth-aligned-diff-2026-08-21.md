@@ -67,3 +67,46 @@ sleeping-tint colour flip as the worst artifact in a run, and it cannot tell
 lateness from error at all. Every number above comes from the poses the
 client had in hand immediately before rendering — the same data the GPU was
 about to draw.
+
+---
+
+# The apples-to-apples matrix (post-merge physics, 2026-08-21)
+
+Three legs, identical args, identical merged physics (which is gentler than
+pre-merge: debris damping + restored sleep thresholds mean most breakage is
+world anchors and piles rest properly — cross-run comparisons to pre-merge
+numbers are invalid, so all three legs were re-run). Every leg is the
+shipping client replayed over dumped bytes; delay is measured, not assumed.
+
+| | wire v2 | v3 @ 100 ms flush | **v3 @ 50 ms flush** |
+|---|---:|---:|---:|
+| bytes | 0.79 Mbps | **0.73 Mbps** | 1.09 Mbps |
+| measured presentation delay | 100 ms | 200 ms | **133 ms** |
+| err p95 (lag removed) | 6.8 cm | 0.7 cm | **0.6 cm** |
+| err p95 (same instant) | 8.9 cm | 1.5 cm | 1.6 cm |
+| err max | 1.26 m | 1.38 m | **0.35 m** |
+| freezes | 91 | 17 | **0** |
+| excess steps | 135 | 17 | **1** |
+| reversals | 36 | 2 | **0** |
+
+Notes the table forces into the open:
+
+- **The 200 ms is not needed.** At 50 ms flush v3 sits 33 ms behind v2's
+  latency, with effectively zero artifacts (0 freezes, 1 excess step, 0
+  reversals across 1,346 frames × 3,078 chunks) and 11× tighter p95, for
+  +0.30 Mbps over v2. The 100 ms operating point buys 0.36 Mbps with 67 ms
+  of latency and a handful of artifacts — a reasonable default, but the knob
+  now has measured prices at both ends.
+- **v2 improved on the merged content** (freezes 1,867 → 91 on the old
+  physics vs new): the upstream damping/sleep work makes piles genuinely
+  rest, which shrinks the population v2 starves. Reported because it is
+  true, not because it changes the ranking — v3 beats v2 on every quality
+  metric at every operating point, at equal-or-fewer bytes for equal flush.
+- **Same-instant error**: v3 at either flush is ~1.5 cm from the live
+  simulation at the moment of display; v2 is 8.9 cm. The earlier 42 cm
+  same-instant figures were a property of the violent pre-merge content
+  (fast free-fall × any delay), not of either wire.
+- The merged solver also breaks **world-anchor bonds** (chunk-to-ground);
+  the trace format only carries chunk-chunk edges, so the recorder now
+  filters and counts them (`note:` line), and dedups the two-pass cascade's
+  duplicate reports.

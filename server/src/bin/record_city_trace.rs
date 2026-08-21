@@ -83,6 +83,10 @@ struct Args {
     packets_out: Option<PathBuf>,
     /// Which wire the dump speaks: 2 (ChunkStreamEncoder) or 3 (debris spans).
     packets_wire: u32,
+    /// Wire-3 span flush in milliseconds (production: 100). The
+    /// latency/bytes knob: 50 ms roughly matches wire 2's total delay at
+    /// roughly wire 2's byte cost.
+    packets_span_ms: u32,
 }
 
 impl Args {
@@ -98,6 +102,7 @@ impl Args {
         let mut output = PathBuf::from("city.towertrace");
         let mut packets_out = None;
         let mut packets_wire = 3u32;
+        let mut packets_span_ms = 100u32;
 
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
@@ -117,6 +122,7 @@ impl Args {
                 "--output" => output = PathBuf::from(value()?),
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--packets-wire" => packets_wire = value()?.parse()?,
+                "--packets-span-ms" => packets_span_ms = value()?.parse()?,
                 "--help" | "-h" => {
                     println!(
                         "record-city-trace --output <path> [--scene <pack.json>] \
@@ -145,6 +151,7 @@ impl Args {
             output,
             packets_out,
             packets_wire,
+            packets_span_ms,
         })
     }
 }
@@ -532,6 +539,7 @@ impl V3ServerTap {
         chunk_capacity: usize,
         dir: &std::path::Path,
         hz: u32,
+        span_ms: u32,
     ) -> Result<Self> {
         let mut topology_encoder = ChunkStreamEncoder::new(manifest, EncoderConfig::validated(hz));
         topology_encoder.add_client(1);
@@ -568,7 +576,7 @@ impl V3ServerTap {
             live,
             radii: HashMap::new(),
             compressor: DebrisCompressor::new(),
-            span_ticks: (hz / 10).max(1),
+            span_ticks: (hz * span_ms / 1000).max(1),
             span_first: 0,
             log,
             span_encode_ms_max: 0.0,
@@ -764,7 +772,13 @@ fn main() -> Result<()> {
         match args.packets_wire {
             2 => v2_tap = Some(V2ServerTap::new(&manifest, &header, dir, args.hz)?),
             3 => {
-                v3_tap = Some(V3ServerTap::new(&manifest, table.actors.len(), dir, args.hz)?)
+                v3_tap = Some(V3ServerTap::new(
+                    &manifest,
+                    table.actors.len(),
+                    dir,
+                    args.hz,
+                    args.packets_span_ms,
+                )?)
             }
             other => bail!("--packets-wire must be 2 or 3 (got {other})"),
         }
@@ -794,6 +808,13 @@ fn main() -> Result<()> {
     // requires the first tick to carry a complete island map rather than a
     // delta against an implied state.
     let mut roots = vec![u32::MAX; table.actors.len()];
+    // Bonds the trace topology can express: a manifest bond can anchor a chunk
+    // to the world (both endpoints resolve to one dense index or none), and
+    // the merged resting-load solver breaks those too. The trace only carries
+    // chunk-chunk edges; support changes reach clients via promotions.
+    let trace_edge_ids: std::collections::HashSet<u64> =
+        topology.edges.iter().map(|edge| edge.global_id).collect();
+    let mut dropped_world_bonds = 0u64;
     let mut broken_total = 0u64;
     let mut migrations_total = 0u64;
     let mut mismatch_ticks = 0u64;
@@ -859,8 +880,19 @@ fn main() -> Result<()> {
                 migrations_total += 1;
             }
         }
-        broken_total += broken_edges.len() as u64;
+        broken_edges.retain(|edge| {
+            let known = trace_edge_ids.contains(edge);
+            if !known {
+                dropped_world_bonds += 1;
+            }
+            known
+        });
         broken_edges.sort_unstable();
+        // The merged two-pass stress cascade can report one bond broken twice
+        // in a tick (once per pass); the trace format requires strictly
+        // ascending edges, and breaking a bond is idempotent anyway.
+        broken_edges.dedup();
+        broken_total += broken_edges.len() as u64;
         for body in &touched {
             membership.recompute_com(*body, &table);
         }
@@ -1006,6 +1038,12 @@ fn main() -> Result<()> {
         }
     }
 
+    if dropped_world_bonds > 0 {
+        println!(
+            "  note: {dropped_world_bonds} broken bonds were world anchors (not chunk-chunk edges); \
+             the trace omits them by design"
+        );
+    }
     writer.finish().context("finalise trace")?;
     if let Some(tap) = v3_tap.take() {
         let (pose_bytes, reliable_bytes, total_bytes, span_ms) = tap.finish()?;
