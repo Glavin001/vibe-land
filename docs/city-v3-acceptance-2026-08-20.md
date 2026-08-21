@@ -179,3 +179,44 @@ All work is on `feat/blast-destruction-codec` in vibe-land-2. Upstream
 chunk-id-overflow fix, a two-poses-at-once render fix on the v2 path, and the
 dense-downtown content + scenarios — merge next, then re-run this scenario
 plus the district scenario at that scale.
+
+---
+
+# The A/B, finally on one implementation (2026-08-21)
+
+Both wire legs now come from the SHIPPING client. `record-city-trace` holds no
+client code at all: `--packets-out <dir> --packets-wire 2|3` dumps the exact
+client-bound bytes, and `client/tools/replay-city-client.mts` renders them
+through `cityClient.ts` + the wasm decoder (wire 2 = no decoder passed, the
+browser's own v2 path). Videos:
+`viewer-videos/ab-real-client-2026-08-21/compare-3way-real.mp4`.
+
+One GPU run per wire, grid 2, 45 s, 40 shots x 3 targets, ~10.1k broken bonds,
+2.5-2.6k peak bodies. Replayer output for both: 1350/1350 frames, 0 topo seq
+gaps, 0 orphaned chunks.
+
+| | wire v2 | wire v3 |
+|---|---:|---:|
+| packets | 5,291 | 6,401 |
+| bytes on the wire | ~6.46 MB | **~4.11 MB** |
+| average | 1.15 Mbps | **0.73 Mbps** |
+| broken bonds seen by client | 9,813 | 10,113 |
+| frame-to-frame motion (mean YAVG) | 0.390 | **1.348** |
+| ... p95 | 1.320 | **9.645** |
+
+Truth's own motion profile is mean 1.740 / p95 9.645. **v3's p95 matches truth
+exactly and its mean is within 23%; v2 shows a quarter of truth's motion.**
+That is the starvation, measured on pixels for the first time from a real
+client: v2 isn't jittery, it is *too still* -- bodies hold stale poses while
+the server's have moved on, so the displayed scene changes far less than the
+simulation does. The earlier server-side measurement (40-70 s staleness on
+moving bodies) and this pixel measurement now agree, and they agree through
+the same client code the player runs.
+
+v3 carries 36% fewer bytes AND tracks truth's motion. The remaining v3 delta
+against truth is the designed 100 ms interpolation delay plus 60 nack events
+over 45 s (visible as brief holds, not as wrong-body trajectories).
+
+Caveat kept honest: the towerstate writer does not yet carry the renderer's
+sleeping tint, so the client legs render light where truth renders dark. That
+is a colour difference in the instrument, not a pose difference.
