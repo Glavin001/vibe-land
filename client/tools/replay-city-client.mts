@@ -48,6 +48,14 @@ function hexToBytes(hex: string): Uint8Array {
 
 const packetsDir = arg('--packets');
 const outPath = arg('--out');
+// Optional link impairment, applied the way WebTransport actually behaves:
+// datagrams ('d') suffer loss, delay, jitter and reordering; the reliable
+// channel ('r') is delayed but never lost and never reordered (QUIC
+// retransmits under the hood -- modelled as latency, not loss). Profiles
+// come from the same table netlab uses, seeded for reproducibility.
+const impairName = process.argv.includes('--impair')
+  ? process.argv[process.argv.indexOf('--impair') + 1]
+  : null;
 
 const meta = JSON.parse(readFileSync(join(packetsDir, 'meta.json'), 'utf8')) as {
   hz: number;
@@ -62,17 +70,66 @@ for (const structure of manifestJson.structures) {
   totalBonds += structure.bonds.length;
 }
 
-// Packets grouped by tick, preserving file (= send) order within a tick.
-const byTick = new Map<number, Uint8Array[]>();
-for (const line of readFileSync(join(packetsDir, 'packets.jsonl'), 'utf8').split('\n')) {
-  if (!line.trim()) continue;
-  const entry = JSON.parse(line) as { tick: number; chan: string; hex: string };
-  let list = byTick.get(entry.tick);
-  if (!list) {
-    list = [];
-    byTick.set(entry.tick, list);
+// Packets grouped by DELIVERY tick. Without impairment that is the send
+// tick in send order; with it, datagrams are dropped/delayed/reordered and
+// reliable packets are delayed in order.
+const byTick = new Map<number, Array<{ seq: number; bytes: Uint8Array }>>();
+{
+  let profile: { delayMs: number; jitterMs: number; lossPct: number; reorderPct?: number } | null =
+    null;
+  if (impairName) {
+    const profiles = JSON.parse(
+      readFileSync(join(here, '../netlab/netemProfiles.json'), 'utf8'),
+    ).profiles;
+    profile = profiles[impairName];
+    if (!profile) throw new Error(`unknown impair profile ${impairName}`);
   }
-  list.push(hexToBytes(entry.hex));
+  // mulberry32: tiny seeded RNG so an impaired replay is reproducible.
+  let rngState = 0x9e3779b9;
+  const rng = (): number => {
+    rngState |= 0;
+    rngState = (rngState + 0x6d2b79f5) | 0;
+    let t = Math.imul(rngState ^ (rngState >>> 15), 1 | rngState);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const msToTicks = (ms: number): number => Math.round((ms / 1000) * meta.hz);
+  let reliableFront = 0; // enforces in-order reliable delivery
+  let seq = 0;
+  for (const line of readFileSync(join(packetsDir, 'packets.jsonl'), 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    const entry = JSON.parse(line) as { tick: number; chan: string; hex: string };
+    let deliverAt = entry.tick;
+    if (profile) {
+      const jitter = (rng() * 2 - 1) * profile.jitterMs;
+      if (entry.chan === 'd') {
+        if (rng() * 100 < profile.lossPct) {
+          seq += 1;
+          continue; // lost datagram: nobody retransmits it
+        }
+        let delay = profile.delayMs + jitter;
+        if (profile.reorderPct && rng() * 100 < profile.reorderPct) {
+          delay += profile.jitterMs * 3; // a straggler, delivered out of order
+        }
+        deliverAt = entry.tick + Math.max(0, msToTicks(delay));
+      } else {
+        deliverAt = entry.tick + Math.max(0, msToTicks(profile.delayMs + jitter));
+        // Ordered stream: never before anything already queued on it.
+        deliverAt = Math.max(deliverAt, reliableFront);
+        reliableFront = deliverAt;
+      }
+    }
+    let list = byTick.get(deliverAt);
+    if (!list) {
+      list = [];
+      byTick.set(deliverAt, list);
+    }
+    list.push({ seq, bytes: hexToBytes(entry.hex) });
+    seq += 1;
+  }
+  // Within a tick keep send order for determinism (reordering is expressed
+  // through delivery-tick differences, as on a real link).
+  for (const list of byTick.values()) list.sort((a, b) => a.seq - b.seq);
 }
 
 // Wire 3 needs the wasm debris decoder; wire 2 uses the client's ranked-record
@@ -157,7 +214,7 @@ writeFrame();
 for (let tick = 0; tick < meta.ticks; tick += 1) {
   fakeNowMs = tick * msPerTick;
   const second = Math.floor(tick / meta.hz);
-  for (const bytes of byTick.get(tick) ?? []) {
+  for (const { bytes } of byTick.get(tick) ?? []) {
     const started = realNowMs();
     client.handlePacket(bytes);
     chargeClientMs(second, realNowMs() - started);
