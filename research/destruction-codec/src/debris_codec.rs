@@ -1157,6 +1157,11 @@ impl Tolerances {
         }
     }
 
+    /// Governor knob: multiplies the masked bound for future fitting.
+    pub fn set_rate_scale(&mut self, scale: f32) {
+        self.rate_scale = scale.max(1.0);
+    }
+
     /// Per-body shell bound for this tick. With masking off this is the flat
     /// bound; with it on, a fast body is allowed the same slack the incumbent
     /// grants it.
@@ -1414,6 +1419,13 @@ impl Encoder {
     /// running segment. Used when a body moves between tracks, since a track
     /// that references state published on a *different* track is not
     /// independently decodable, which is the whole point of splitting.
+    /// Governor knob: scales the masked precision bound for spans fitted
+    /// AFTER this call. Feed-forward only -- already-emitted records keep the
+    /// contract they were fitted under.
+    pub fn set_rate_scale(&mut self, scale: f32) {
+        self.config.tolerances.set_rate_scale(scale);
+    }
+
     pub fn force_restart(&mut self, body: usize) {
         if let Some(lane) = self.lanes.get_mut(body) {
             lane.fitter.analytic = None;

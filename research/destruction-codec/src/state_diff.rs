@@ -40,7 +40,10 @@ const EXCESS_FLOOR_M: f32 = 0.25;
 /// Both steps must exceed this before their directions are worth comparing.
 const REVERSAL_M: f32 = 0.05;
 /// Frames of lag searched when estimating the client's presentation delay.
-const MAX_LAG_FRAMES: usize = 12;
+/// Must exceed the client's worst legitimate delay: the adaptive-flush
+/// governor stretches to 250 ms (15 frames at 30 fps output... 8 frames) plus
+/// interpolation margin; 24 covers 800 ms of 30 fps frames with headroom.
+const MAX_LAG_FRAMES: usize = 24;
 
 #[derive(Clone, Copy)]
 struct Pose {
@@ -322,6 +325,62 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
         }
     }
 
+    // --- per-second lag: variable-latency streams (the adaptive-flush
+    // governor) make a single global offset wrong by up to the full
+    // flush delta, which reads as meters of phantom error at debris
+    // velocities. Estimate lag per second on moving chunks, smoothed by
+    // reusing the previous second's lag when it is within noise. --------
+    let per_second_lag: Vec<usize> = {
+        let fps = truth.fps as usize;
+        let seconds_total = (common - MAX_LAG_FRAMES) / fps;
+        let mut lags = Vec::with_capacity(seconds_total);
+        let mut previous = best_lag;
+        for second in 0..seconds_total {
+            let first = (second * fps).max(1);
+            let last_frame = ((second + 1) * fps).min(common - MAX_LAG_FRAMES);
+            let mut best = previous;
+            let mut best_err = f64::INFINITY;
+            for lag in 0..=MAX_LAG_FRAMES {
+                let mut total = 0.0f64;
+                let mut samples = 0usize;
+                for frame in (first..last_frame).step_by(3) {
+                    for &slot in &sample_slots {
+                        let truth_now = truth.frames[frame][slot].position;
+                        // Only moving chunks inform lag; static ones agree at
+                        // every offset.
+                        if truth_now.distance(truth.frames[frame - 1][slot].position) < MOVING_M {
+                            continue;
+                        }
+                        total += f64::from(
+                            truth_now.distance(client.frames[frame + lag][slot].position),
+                        );
+                        samples += 1;
+                    }
+                }
+                if samples > 0 {
+                    let mean = total / samples as f64;
+                    // Prefer the incumbent unless a lag is clearly better:
+                    // hysteresis keeps noise from flapping the alignment.
+                    let margin = if lag == previous { 1.0 } else { 0.97 };
+                    if mean * margin < best_err {
+                        best_err = mean;
+                        best = lag;
+                    }
+                }
+            }
+            lags.push(best);
+            previous = best;
+        }
+        lags
+    };
+    let lag_for = |frame: usize| -> usize {
+        let fps = truth.fps as usize;
+        per_second_lag
+            .get(frame / fps)
+            .copied()
+            .unwrap_or(best_lag)
+    };
+
     // --- per-chunk sweep ---------------------------------------------------
     let mut errors: Vec<f32> = Vec::with_capacity(chunks * 64);
     let mut errors_unaligned: Vec<f32> = Vec::with_capacity(chunks * 64);
@@ -337,11 +396,17 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
     let mut second_counts: Vec<[usize; 3]> = vec![[0; 3]; seconds_total];
 
     for frame in 1..last {
+        let lag = lag_for(frame);
+        if lag_for(frame - 1) != lag {
+            // Alignment shifted between these frames; step comparisons across
+            // the boundary would manufacture phantom jumps.
+            continue;
+        }
         for slot in 0..chunks {
             let truth_now = truth.frames[frame][slot].position;
             let truth_prev = truth.frames[frame - 1][slot].position;
-            let client_now = client.frames[frame + best_lag][slot].position;
-            let client_prev = client.frames[frame + best_lag - 1][slot].position;
+            let client_now = client.frames[frame + lag][slot].position;
+            let client_prev = client.frames[frame + lag - 1][slot].position;
             let error = truth_now.distance(client_now);
             let structure = structure_of.as_ref().map(|map| map[slot]);
             let entry = per_structure
@@ -487,9 +552,11 @@ pub fn run(options: StateDiffOptions) -> Result<()> {
         timeline,
     };
 
+    let lag_min = per_second_lag.iter().copied().min().unwrap_or(best_lag);
+    let lag_max = per_second_lag.iter().copied().max().unwrap_or(best_lag);
     println!(
-        "frames {} | chunks {} | presentation delay {} frames ({:.0} ms, measured)",
-        report.frames, report.chunks, report.lag_frames, report.lag_ms
+        "frames {} | chunks {} | presentation delay {} frames ({:.0} ms global; per-second {}..{} frames)",
+        report.frames, report.chunks, report.lag_frames, report.lag_ms, lag_min, lag_max
     );
     println!(
         "position error vs truth: p50 {:.1} cm | p95 {:.1} cm | max {:.2} m   (p95 without lag correction {:.1} cm)",

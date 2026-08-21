@@ -21,7 +21,7 @@ use vibe_land_destruction::types::Camera;
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use vibe_land_destruction::ids as city_ids;
 use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
-use destruction_codec::live::{LiveEncoder, LiveEncoderConfig};
+use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
 use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use destruction_codec::trace::{ActorState as LiveActorState, Pose as LivePose};
 use vibe_land_destruction::encoder::BodySnapshotInput;
@@ -272,6 +272,11 @@ struct V3Live {
     encoder: LiveEncoder,
     span_ticks: u32,
     span_first: u32,
+    /// Holds the world-feed byte budget by stretching flush (100->250 ms)
+    /// first and widening the masked bound second -- latency before
+    /// precision, correctness never (the inverse of v2's failure mode).
+    governor: RateGovernor,
+    sim_hz: u32,
     /// Island reach per body key, kept so a body that settles (removed -- the
     /// reliable settle record owns its pose from then on) and later wakes is
     /// re-registered with the radius its members demand rather than a guess.
@@ -285,7 +290,18 @@ struct V3Live {
 
 impl V3Live {
     fn new(sim_hz: u32, chunk_capacity: usize) -> Self {
-        let span_ticks = (sim_hz / 10).max(1); // 100 ms: the measured knee
+        let span_ticks = (sim_hz / 10).max(1); // 100 ms floor: the measured knee
+        // World-feed budget. 0 disables the governor (fixed 100 ms flush).
+        let budget_mbps = std::env::var("VIBE_CITY_WORLD_BUDGET_MBPS")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(5.0);
+        let governor = RateGovernor::new(
+            budget_mbps,
+            span_ticks,
+            (sim_hz * 250 / 1000).max(span_ticks), // 250 ms ceiling
+            sim_hz,
+        );
         let encoder = LiveEncoder::new(LiveEncoderConfig {
             dt: 1.0 / sim_hz as f32,
             gravity: glam::Vec3::new(0.0, -9.81, 0.0),
@@ -323,6 +339,8 @@ impl V3Live {
             encoder,
             span_ticks,
             span_first: 0,
+            governor,
+            sim_hz,
             radii: HashMap::new(),
             staged: Vec::new(),
             staged_reliable: Vec::new(),
@@ -428,23 +446,39 @@ impl V3Live {
                     self.encoder.epoch(),
                 ));
         }
-        if (sim_tick + 1) % self.span_ticks == 0 {
+        // Span close by elapsed ticks since the span opened, not a modulo on
+        // absolute tick -- the governor varies span length run-time, and a
+        // phase-locked trigger would emit one mis-sized span per change.
+        if sim_tick + 1 >= self.span_first + self.span_ticks {
             let push_ms = started.elapsed().as_secs_f32() * 1000.0;
             let span_first = self.span_first;
+            let span_len = sim_tick + 1 - self.span_first;
             let finalize_started = std::time::Instant::now();
             let epoch = self.encoder.epoch();
             let packets = self.encoder.finalize_span(span_first);
             let finalize_ms = finalize_started.elapsed().as_secs_f32() * 1000.0;
             let compress_started = std::time::Instant::now();
+            let mut wire_bytes = 0usize;
             for packet in packets {
                 let (compression, body) = self.compressor.compress(&packet.payload);
-                self.staged
-                    .push(encode_debris_datagram(packet.span_tick, compression, epoch, &body));
+                let datagram = encode_debris_datagram(packet.span_tick, compression, epoch, &body);
+                wire_bytes += datagram.len();
+                self.staged.push(datagram);
             }
             let compress_ms = compress_started.elapsed().as_secs_f32() * 1000.0;
+            let decision = self.governor.after_span(span_len, wire_bytes);
+            self.span_ticks = decision.span_ticks;
+            self.encoder.set_rate_scale(decision.rate_scale);
+            // Keep the loss-heal window ~1.6 s of wall clock as flush moves.
+            let heal_spans = (self.sim_hz * 1600 / 1000 / self.span_ticks.max(1)).max(4);
+            self.encoder.set_restate_period(heal_spans);
             if std::env::var("V3_PROFILE").is_ok() {
                 eprintln!(
-                    "V3SPAN push {push_ms:.2} finalize {finalize_ms:.2} compress {compress_ms:.2}"
+                    "V3SPAN push {push_ms:.2} finalize {finalize_ms:.2} compress {compress_ms:.2} \
+                     span {span_len}t next {}t scale {:.2} ema {:.2} Mbps",
+                    decision.span_ticks,
+                    decision.rate_scale,
+                    self.governor.ema_mbps()
                 );
             }
             self.span_first = sim_tick + 1;

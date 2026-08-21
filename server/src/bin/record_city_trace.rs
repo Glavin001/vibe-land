@@ -35,7 +35,7 @@ use destruction_codec::trace::{
     TopologyTick, TraceTopology, TraceWriter,
 };
 use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
-use destruction_codec::live::{LiveEncoder, LiveEncoderConfig};
+use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
 use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
@@ -88,10 +88,13 @@ struct Args {
     /// The escalation is the test -- a fixed cadence lets both wires settle
     /// into a steady state that flatters them.
     shot_ramp_min_ticks: u32,
-    /// Wire-3 span flush in milliseconds (production: 100). The
-    /// latency/bytes knob: 50 ms roughly matches wire 2's total delay at
-    /// roughly wire 2's byte cost.
+    /// Wire-3 minimum span flush in milliseconds (production floor: 100).
     packets_span_ms: u32,
+    /// Governor budget in Mbps (0 = fixed flush at --packets-span-ms). When
+    /// set, flush stretches toward --packets-span-max-ms first, then the
+    /// masked bound widens toward its 4x cap -- the production world-feed law.
+    packets_budget_mbps: f32,
+    packets_span_max_ms: u32,
 }
 
 impl Args {
@@ -108,6 +111,8 @@ impl Args {
         let mut packets_out = None;
         let mut packets_wire = 3u32;
         let mut packets_span_ms = 100u32;
+        let mut packets_budget_mbps = 0.0f32;
+        let mut packets_span_max_ms = 250u32;
         let mut shot_ramp_min_ticks = 0u32;
 
         let mut args = std::env::args().skip(1);
@@ -129,6 +134,8 @@ impl Args {
                 "--packets-out" => packets_out = Some(PathBuf::from(value()?)),
                 "--packets-wire" => packets_wire = value()?.parse()?,
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
+                "--packets-budget-mbps" => packets_budget_mbps = value()?.parse()?,
+                "--packets-span-max-ms" => packets_span_max_ms = value()?.parse()?,
                 "--shot-ramp-min-ticks" => shot_ramp_min_ticks = value()?.parse()?,
                 "--help" | "-h" => {
                     println!(
@@ -159,6 +166,8 @@ impl Args {
             packets_out,
             packets_wire,
             packets_span_ms,
+            packets_budget_mbps,
+            packets_span_max_ms,
             shot_ramp_min_ticks,
         })
     }
@@ -532,6 +541,8 @@ impl V2ServerTap {
 struct V3ServerTap {
     topology_encoder: ChunkStreamEncoder,
     live: LiveEncoder,
+    governor: RateGovernor,
+    hz: u32,
     radii: HashMap<u64, f32>,
     compressor: DebrisCompressor,
     span_ticks: u32,
@@ -539,6 +550,8 @@ struct V3ServerTap {
     log: PacketLog,
     span_encode_ms_max: f32,
     pose_bytes: u64,
+    /// Wire bytes of the span being accumulated, for the governor.
+    pose_bytes_span: usize,
 }
 
 impl V3ServerTap {
@@ -548,6 +561,8 @@ impl V3ServerTap {
         dir: &std::path::Path,
         hz: u32,
         span_ms: u32,
+        budget_mbps: f32,
+        span_max_ms: u32,
     ) -> Result<Self> {
         let mut topology_encoder = ChunkStreamEncoder::new(manifest, EncoderConfig::validated(hz));
         topology_encoder.add_client(1);
@@ -579,9 +594,15 @@ impl V3ServerTap {
         });
         let mut log = PacketLog::create(dir)?;
         log.push(0, 'r', &topology_encoder.bootstrap_message(0))?;
+        let min_ticks = (hz * span_ms / 1000).max(1);
+        let governor =
+            RateGovernor::new(budget_mbps, min_ticks, (hz * span_max_ms / 1000).max(min_ticks), hz);
         Ok(Self {
             topology_encoder,
             live,
+            governor,
+            hz,
+            pose_bytes_span: 0,
             radii: HashMap::new(),
             compressor: DebrisCompressor::new(),
             span_ticks: (hz * span_ms / 1000).max(1),
@@ -649,8 +670,9 @@ impl V3ServerTap {
         for packet in self.topology_encoder.take_topology_messages() {
             self.log.push(tick, 'r', &packet)?;
         }
-        if (tick + 1) % self.span_ticks == 0 {
+        if tick + 1 >= self.span_first + self.span_ticks {
             let span_first = self.span_first;
+            let span_len = tick + 1 - self.span_first;
             let epoch = self.live.epoch();
             let packets = self.live.finalize_span(span_first);
             self.span_encode_ms_max = self
@@ -660,8 +682,15 @@ impl V3ServerTap {
                 let (compression, body) = self.compressor.compress(&packet.payload);
                 let datagram = encode_debris_datagram(packet.span_tick, compression, epoch, &body);
                 self.pose_bytes += datagram.len() as u64;
+                self.pose_bytes_span += datagram.len();
                 self.log.push(tick, 'd', &datagram)?;
             }
+            let decision = self.governor.after_span(span_len, self.pose_bytes_span);
+            self.span_ticks = decision.span_ticks;
+            self.live.set_rate_scale(decision.rate_scale);
+            let heal_spans = (self.hz * 1600 / 1000 / self.span_ticks.max(1)).max(4);
+            self.live.set_restate_period(heal_spans);
+            self.pose_bytes_span = 0;
             self.span_first = tick + 1;
         }
         Ok(())
@@ -789,6 +818,8 @@ fn main() -> Result<()> {
                     dir,
                     args.hz,
                     args.packets_span_ms,
+                    args.packets_budget_mbps,
+                    args.packets_span_max_ms,
                 )?)
             }
             other => bail!("--packets-wire must be 2 or 3 (got {other})"),

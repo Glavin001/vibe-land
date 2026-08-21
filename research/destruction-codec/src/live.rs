@@ -40,6 +40,108 @@ pub const PACKET_PAYLOAD_BUDGET: usize = 1120;
 /// sendings leave a 1e-4 chance the body freezes mid-air until it next moves.
 const REST_RESTATES: u8 = 4;
 
+
+/// Feed-forward byte governor for a live feed: holds a bitrate budget by
+/// spending LATENCY first (longer flush spans fit trajectories better --
+/// measured ~-40% bytes per doubling, error flat) and PRECISION second
+/// (the masked-bound rate_scale, bounded by the calibrated 4x cap), and
+/// never correctness -- continuity and the artifact gates are untouched by
+/// either knob. Both release in reverse order when load falls.
+///
+/// Feed-forward because a live wire cannot re-encode the past: the offline
+/// budget loop (encode_block_within_budget) retries a block until it fits;
+/// here the previous spans' actual bytes steer the NEXT span's parameters.
+pub struct RateGovernor {
+    /// Target for the whole feed, in megabits per second. 0 disables.
+    pub budget_mbps: f32,
+    pub min_span_ticks: u32,
+    pub max_span_ticks: u32,
+    hz: f32,
+    ema_mbps: f32,
+    span_ticks: u32,
+    rate_scale: f32,
+}
+
+/// What the encoder should use for the NEXT span.
+pub struct GovernorDecision {
+    pub span_ticks: u32,
+    pub rate_scale: f32,
+}
+
+impl RateGovernor {
+    pub fn new(budget_mbps: f32, min_span_ticks: u32, max_span_ticks: u32, hz: u32) -> Self {
+        let min_span_ticks = min_span_ticks.max(1);
+        // SampleRun.last_offset is a u8: a span over 256 ticks silently loses
+        // the sampled fallback, so the format itself caps the stretch.
+        let max_span_ticks = max_span_ticks.clamp(min_span_ticks, 255);
+        Self {
+            budget_mbps,
+            min_span_ticks,
+            max_span_ticks,
+            hz: hz.max(1) as f32,
+            ema_mbps: 0.0,
+            span_ticks: min_span_ticks,
+            rate_scale: 1.0,
+        }
+    }
+
+    pub fn span_ticks(&self) -> u32 {
+        self.span_ticks
+    }
+
+    pub fn rate_scale(&self) -> f32 {
+        self.rate_scale
+    }
+
+    pub fn ema_mbps(&self) -> f32 {
+        self.ema_mbps
+    }
+
+    /// Observe a finished span's wire bytes and decide the next span.
+    ///
+    /// Engagement order is fixed: stretch flush toward max first, then widen
+    /// the masked bound; release the bound first, then shrink flush. The
+    /// asymmetric steps (fast attack, slow decay) keep a barrage from
+    /// overshooting the budget for more than a few spans without the
+    /// parameters flapping on the way down.
+    pub fn after_span(&mut self, span_ticks_used: u32, wire_bytes: usize) -> GovernorDecision {
+        if self.budget_mbps <= 0.0 {
+            return GovernorDecision {
+                span_ticks: self.span_ticks,
+                rate_scale: self.rate_scale,
+            };
+        }
+        let seconds = span_ticks_used.max(1) as f32 / self.hz;
+        let span_mbps = wire_bytes as f32 * 8.0 / seconds / 1.0e6;
+        self.ema_mbps = if self.ema_mbps == 0.0 {
+            span_mbps
+        } else {
+            0.7 * self.ema_mbps + 0.3 * span_mbps
+        };
+        if self.ema_mbps > self.budget_mbps {
+            if self.span_ticks < self.max_span_ticks {
+                self.span_ticks =
+                    ((self.span_ticks as f32 * 1.25).ceil() as u32).min(self.max_span_ticks);
+            } else {
+                // Calibrated masking cap: beyond 4x the mask stops being
+                // perceptually free (the P2 research bound).
+                self.rate_scale = (self.rate_scale * 1.25).min(4.0);
+            }
+        } else if self.ema_mbps < self.budget_mbps * 0.6 {
+            if self.rate_scale > 1.0 {
+                self.rate_scale = (self.rate_scale / 1.1).max(1.0);
+            } else if self.span_ticks > self.min_span_ticks {
+                self.span_ticks =
+                    ((self.span_ticks as f32 * 0.9).floor() as u32).max(self.min_span_ticks);
+            }
+        }
+        GovernorDecision {
+            span_ticks: self.span_ticks,
+            rate_scale: self.rate_scale,
+        }
+    }
+}
+
 pub struct LiveEncoderConfig {
     pub dt: f32,
     pub gravity: Vec3,
@@ -278,6 +380,21 @@ impl LiveEncoder {
     /// The current lane-map revision; stamp outgoing datagrams with this.
     pub fn epoch(&self) -> u8 {
         self.epoch
+    }
+
+    /// Apply the governor's masked-bound multiplier to future fitting. Only
+    /// the masked precision slack moves; continuity and artifact behaviour
+    /// are untouched (standing rule: masking may never break continuity).
+    pub fn set_rate_scale(&mut self, scale: f32) {
+        self.tolerances.set_rate_scale(scale);
+        self.encoder.set_rate_scale(scale);
+    }
+
+    /// Keep the loss-heal window ~constant in WALL CLOCK as flush stretches:
+    /// restate_period counts SPANS, so a longer span with an unchanged period
+    /// would silently lengthen the heal window.
+    pub fn set_restate_period(&mut self, period: u32) {
+        self.restate_period = period.max(1);
     }
 
     /// Restate specific bodies absolutely on the next span.
@@ -552,6 +669,55 @@ impl LiveDecoder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn governor_spends_latency_first_precision_second_and_releases_in_reverse() {
+        // 60 Hz, 100 ms floor, 250 ms ceiling, 5 Mbps budget.
+        let mut governor = RateGovernor::new(5.0, 6, 15, 60);
+        // Sustained overload: 9 Mbps at the floor span (6 ticks = 0.1 s).
+        let overload = |ticks: u32| (9.0e6 / 8.0 * (ticks as f32 / 60.0)) as usize;
+        let mut ticks = 6;
+        for _ in 0..8 {
+            ticks = governor.after_span(ticks, overload(ticks)).span_ticks;
+        }
+        assert_eq!(ticks, 15, "flush must reach the ceiling under overload");
+        assert!(
+            governor.rate_scale() > 1.0,
+            "precision engages only after flush is maxed (got {})",
+            governor.rate_scale()
+        );
+        assert!(governor.rate_scale() <= 4.0, "masking cap is a hard bound");
+        // Quiet again: precision releases before flush shrinks.
+        let quiet = |ticks: u32| (0.5e6 / 8.0 * (ticks as f32 / 60.0)) as usize;
+        let mut saw_scale_release_first = false;
+        for _ in 0..64 {
+            let before_scale = governor.rate_scale();
+            let decision = governor.after_span(ticks, quiet(ticks));
+            if before_scale > 1.0 {
+                assert_eq!(
+                    decision.span_ticks, 15,
+                    "flush must hold while precision is still recovering"
+                );
+                if decision.rate_scale < before_scale {
+                    saw_scale_release_first = true;
+                }
+            }
+            ticks = decision.span_ticks;
+        }
+        assert!(saw_scale_release_first);
+        assert_eq!(governor.rate_scale(), 1.0);
+        assert_eq!(ticks, 6, "flush returns to the floor when quiet");
+    }
+
+    #[test]
+    fn governor_disabled_is_inert() {
+        let mut governor = RateGovernor::new(0.0, 6, 15, 60);
+        for _ in 0..10 {
+            let decision = governor.after_span(6, 10_000_000);
+            assert_eq!(decision.span_ticks, 6);
+            assert_eq!(decision.rate_scale, 1.0);
+        }
+    }
+
     #[test]
     fn epoch_advances_only_when_assignments_drain() {
         let mut encoder = LiveEncoder::new(LiveEncoderConfig {

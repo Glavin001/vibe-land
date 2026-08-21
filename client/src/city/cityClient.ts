@@ -110,6 +110,25 @@ export class CityClient {
    * describe the same instant. Drained by `sampleDebris`.
    */
   private readonly pendingTopology: { message: TopologyMessage; receivedAtMs: number }[] = [];
+  /**
+   * Observed span cadence in ticks (EMA of consecutive datagram spanTick
+   * deltas). The sampling delay must cover one full flush window plus
+   * interpolation margin: the governor stretches flush toward 250 ms under
+   * load, and a client still sampling at a fixed 100 ms delay would run
+   * ahead of the data and stutter -- the latency the governor spends has to
+   * be spent HERE, visibly and smoothly.
+   */
+  private spanTicksEma = 6;
+  private lastSpanTick = -1;
+  /**
+   * The delay actually applied, slewed toward the target at a bounded rate.
+   * Stepping it integerly made the sample clock jump N ticks in one frame --
+   * every moving body teleported by delay-delta x velocity simultaneously
+   * (measured: 1.4-2.3 m excess steps at each governor transition). Slewing
+   * at 0.05 ticks/frame spreads a 100 ms change over ~2 s of imperceptible
+   * clock drift.
+   */
+  private sampleDelaySmooth = 6;
   /** Preallocated sampling buffers -- one FFI call per frame, no garbage. */
   private sampleLanes = new Uint32Array(4096);
   private samplePoses = new Float32Array(4096 * 7);
@@ -182,8 +201,18 @@ export class CityClient {
     if (debris === null) {
       return live;
     }
-    // The client's interpolation delay, applied exactly as the harness did.
-    const sampleTick = Math.max(0, Math.floor(renderTick) - 6);
+    // Sampling delay = one observed flush window + interpolation margin, so
+    // the sample clock never outruns the span the encoder is still filling.
+    // Floor of 6 ticks preserves the fixed-flush behaviour exactly; the
+    // applied delay slews toward the target so the clock never jumps.
+    const targetDelay = Math.max(6, Math.ceil(this.spanTicksEma) + 3);
+    const step = 0.05;
+    if (this.sampleDelaySmooth < targetDelay) {
+      this.sampleDelaySmooth = Math.min(targetDelay, this.sampleDelaySmooth + step);
+    } else if (this.sampleDelaySmooth > targetDelay) {
+      this.sampleDelaySmooth = Math.max(targetDelay, this.sampleDelaySmooth - step);
+    }
+    const sampleTick = Math.max(0, Math.floor(renderTick - this.sampleDelaySmooth));
     // Apply held topology whose tick the sample clock has reached, so a
     // migration's basis change lands in the same frame as the poses that
     // were simulated under it. The wall-clock valve keeps a stalled sample
@@ -312,6 +341,15 @@ export class CityClient {
           this.latestSimTickAtMs = performance.now();
         }
         try {
+          if (this.lastSpanTick >= 0 && header.spanTick > this.lastSpanTick) {
+            const delta = header.spanTick - this.lastSpanTick;
+            if (delta <= 32) {
+              this.spanTicksEma = 0.9 * this.spanTicksEma + 0.1 * delta;
+            }
+          }
+          if (header.spanTick > this.lastSpanTick) {
+            this.lastSpanTick = header.spanTick;
+          }
           this.recordsApplied += this.debris.push_payload(
             header.compression,
             header.epoch,
