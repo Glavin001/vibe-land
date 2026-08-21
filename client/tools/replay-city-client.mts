@@ -75,9 +75,17 @@ for (const line of readFileSync(join(packetsDir, 'packets.jsonl'), 'utf8').split
   list.push(hexToBytes(entry.hex));
 }
 
-await initDebris(readFileSync(join(here, '../src/wasm/debris-pkg/destruction_codec_bg.wasm')));
-const dictionary = readFileSync(join(here, '../src/city/city-packet-v3.dict'));
-const decoder = new DebrisDecoder(new Uint8Array(dictionary), 1 << 16, meta.hz);
+// Wire 3 needs the wasm debris decoder; wire 2 uses the client's ranked-record
+// path, and passing no decoder is exactly how the browser runs a v2 match.
+let v3: { decoder: InstanceType<typeof DebrisDecoder>; simHz: number } | undefined;
+if (meta.wire === 3) {
+  await initDebris(readFileSync(join(here, '../src/wasm/debris-pkg/destruction_codec_bg.wasm')));
+  const dictionary = readFileSync(join(here, '../src/city/city-packet-v3.dict'));
+  v3 = {
+    decoder: new DebrisDecoder(new Uint8Array(dictionary), 1 << 16, meta.hz),
+    simHz: meta.hz,
+  };
+}
 
 let nacks = 0;
 const client = new CityClient(
@@ -87,7 +95,7 @@ const client = new CityClient(
     // not healed -- there is no server to heal from.
     nacks += 1;
   },
-  { decoder, simHz: meta.hz },
+  v3,
 );
 
 // --- TWSTATE1 output: recorded header + frame records + terminator --------
