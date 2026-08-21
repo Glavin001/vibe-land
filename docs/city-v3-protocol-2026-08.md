@@ -141,3 +141,19 @@ bounded and measured.
   restate; the periodic form is a flag away).
 - Lane epoch at u16 in the lanes message if churn ever makes the 64-batch
   window tight.
+
+## The matrix, executed (2026-08-21, governed at 5 Mbps, all through the shipping client)
+
+| leg | scene / stress | avg / worst-s Mbps | moving err p50/p95 | freezes | excess | reversals | >10 m excursions |
+|---|---|---:|---:|---:|---:|---:|---:|
+| city-barrage | grid-2 city, 0.10 | 0.83 / 2.67 | 0.4 / 13.2 cm | **0** | 11 | **0** | **0** |
+| downtown-ramp | 24k-chunk district, 0.30, escalating | 2.53 / 5.24 | 1.5 / 17.6 cm | 30 | 1,553 | 7,455 | **0** |
+| projectile-storm | district, full strength, 120 shots | 0.78 / 1.46 | 0.3 / 7.3 cm | 3 | 7 | 2 | **0** |
+| settle-rewake | grid-2, demolish-rest-demolish | 0.65 / 2.54 | 0.6 / 4.7 cm | **0** | 4 | **0** | **0** |
+
+Readings: the budget holds on the only leg that presses it (ramp worst
+second 5.24 vs 9.0 ungoverned); the reassignment race is dead in every
+churn pattern including settle-rewake — the exact scenario whose lane-reuse
+teleports started this campaign — and the ramp's artifact mass remains
+concentrated in its barrage-peak scaled-precision episode, the documented
+trade. Reliable share 2.6–6 % across legs.
