@@ -298,3 +298,178 @@ works at the bond level.
 
 Gate for the fix: `city-monolith` must drive `cityLargestIslandSpanM` below ~3 m within the
 80 s fire window (today: stalls at 6.6 m).
+
+---
+
+# Load-signal fix (2026-08-17): severed islands carry weight again
+
+A severed island received only uniform gravity, which on an unanchored body is a
+rigid translation — no relative motion across any bond, so stress exactly zero. The ~37%
+of limit the structure's own weight was carrying vanished at severance, nothing cascaded,
+and the half became indestructible. Two signals were missing (both already implemented
+downstream, neither called) plus the observability to tell the difference.
+
+## Changes
+- **Centrifugal**: the adapter now calls `addCentrifugalAcceleration` per spinning body
+  (omega rotated into the body frame like gravity; centre = mass-weighted mean of member
+  node centroids in STRUCTURE space, cached, invalidated on split).
+- **Standing contact load**: `eNOTIFY_THRESHOLD_FORCE_PERSISTS` on by default, so a resting
+  island keeps receiving the ground's reaction instead of reporting one impact and going
+  silent. Paired with a gravity fix — sleeping bodies had contacts consumed but gravity
+  skipped, which with PERSISTS on would push a pile up with no weight down (wrong-signed
+  stress).
+- **Observability**: `overstressed_bonds` (the quantity that gates fracture) and bond
+  utilisation (stress ÷ that bond's own elastic limit) now cross the FFI to the stats.
+
+## A/B, same binary, `city-topple` (sever a tower, stop firing, let it land)
+
+| | signals ON | signals OFF (pre-fix) |
+|---|---|---|
+| peak overstressed bonds | **183** | 53 |
+| peak bond utilisation | **3559** | 67 |
+| total bonds broken | **12,409** | 11,471 |
+| largest island after landing | **16.7 m / 80 chunks** | 20.3 m / 245 chunks |
+
+The severed half now breaks down substantially further on landing: 938 more bonds broken
+(+8%), and the biggest surviving island drops from 245 chunks to 80. Residual utilisation at
+rest reads *lower* with signals on (0.681 vs 0.913) — expected, and not a regression: the ON
+run broke more bonds, which relieved more load, so it settles at lower residual stress.
+
+## Verified at solver level too
+`blast-stress-solver-rs/tests/free_island_load_test.rs` pins all four cases: anchored+gravity
+loads; free+gravity is exactly zero (correct physics, and the whole bug); free+contact
+reaction loads again; free+spin loads. The zero case has a test so nobody "fixes" it later by
+leaking stress into free fall.
+
+## Measurement-integrity bug found while verifying
+Every `--stack dev` run for six hours had been silently reusing a netlab stack left running
+from 00:51: the spawned server failed to bind, died quietly, and the readiness probe then
+succeeded against the *old* process. The first city-topple run reported all-zero signals for
+exactly this reason. `startStack` now refuses to run when the ports are already occupied,
+naming the port and how to free it, rather than measuring a stale build and calling it a
+result.
+
+## Still open (unchanged, deliberate)
+Shots into an unloaded island remain weak — that is the weapon model, not the load path, and
+radial damage is deferred. Peak utilisation of 3559x the elastic limit during impact suggests
+contact impulse magnitudes deserve their own look.
+
+---
+
+# The buildings cannot hold themselves up (2026-08-17)
+
+User reported buildings collapsing under their own weight and cascading. Measured with an
+idle city, no shots fired, `city-idle` at two material strengths:
+
+| stress limit scale | broken bonds (idle, no shots) | peak bond utilisation |
+|---|---|---|
+| **0.10 (shipped)** | **6 -> 7,052** | **489x the elastic limit** |
+| 1.0 (authored concrete) | 0 -> 0 | 0.40 |
+
+At the shipped scale the structure is roughly 10x weaker than the geometry was authored for,
+and self-weight alone is two orders of magnitude past the elastic limit. The building is
+tissue paper: it demolishes itself on spawn, the debris lands, and the impact load cascades
+upward — exactly the described failure.
+
+**This is not caused by the load-signal fix.** The same idle scenario with the new signals
+disabled produces identical numbers (0 broken, 0.40 utilisation at scale 1.0), so contact
+load and centrifugal are not over-driving anything. What the fix did was make the
+consequence visible: before it, a severed island carried no load, so the cascade stalled
+instead of propagating.
+
+Why 0.10 was chosen: `run-city-server.sh` records that buildings at authored strength
+"barely fracture under rifle fire". That is the same root problem as the invulnerable
+monolith — shots must fund the entire fracture themselves — and 0.10 was compensating for a
+weak weapon by making the structure unable to stand. With the load path restored, cutting
+supports now brings a building down through gravity, so the compensation is no longer needed
+and is actively harmful.
+
+**Correction to an earlier entry:** the note that this scene "self-shatters on spawn (7,501
+broken bonds with zero shots, identical at 0.10 and 1.0)" was wrong on the second half. That
+measurement was taken through the stale-stack bug and at the weak scale. Clean measurement:
+self-shatters at 0.10, completely stable at 1.0.
+
+## Fix: the authored pack was already in the repo
+
+`high-rise-10f-local.json` is ScenePack **v1** — one material, band 2.5 everywhere, frame no
+stronger than cladding. The standing-fraction research puts band 2.5 in the row that leaves
+0.06 standing at every impact energy above 1500 kg.
+
+`fractured-highrise-10f.json` was sitting beside it, unused: ScenePack v2, five materials,
+**ductile frame (band 10)** and **deliberately brittle facade (band 1.2)**, with a 4x
+stronger frame (48 MPa vs 12 MPa compression, 6 MPa vs 1.2 MPa tension). vibe-land's
+per-bond material pipeline is complete end to end — the only reason one global material was
+in use is that the live asset authors no `m` index.
+
+Switched the launcher and every city scenario to it, at full authored strength. Measured:
+
+| | idle, no shots | sever a tower and let it fall |
+|---|---|---|
+| box pack @ 0.10 (was shipping) | 7,052 bonds broken, util 489x | 12,409 broken, 20 m island |
+| **fractured pack @ 1.0** | **0 broken, util 1.00** | **615 broken, 4.1 m largest fragment** |
+
+The building now stands under its own weight and a hit does local damage instead of
+detonating the structure. Note the idle utilisation of 1.00 is right at the elastic limit —
+stable, but with no margin, matching the exporter's own note about facade seams sitting near
+safety factor 1. If more headroom is wanted, `VIBE_CITY_STRESS_LIMIT_SCALE` above 1.0 scales
+the whole table uniformly and so preserves the authored frame/facade ratios and bands.
+
+Ductility cannot come from that dial: it multiplies elastic and fatal together, so it moves
+*whether* a joint fails and never *how*. Band lives in the pack, per material.
+
+Gap worth closing: vibe-land has no gravity-only standing gate. The blast repo has one
+(`destruction_quality_test.cpp`: splits == 0, standing fraction > 0.99, one body). The
+`city-idle` scenario now serves that role from the netlab side.
+
+## Verified on the shipped config (city-idle, isolated stack, 45 s)
+
+`broken_bonds 0`, `overstressed_bonds 0`, `awake_bodies 0`, `bond_utilisation_max 0.99`,
+`bonds_above_half_utilisation 77`. The city stands for the whole run with nothing awake.
+Utilisation 0.99 means the frame is loaded right up to its elastic limit and no further —
+stable, but with no margin. `VIBE_CITY_STRESS_LIMIT_SCALE` above 1.0 buys margin without
+disturbing the authored frame/facade ratios or the bands.
+
+One gate regressed and it is a real cost, not noise: `cityChunkUpdateP95MaxMs` went
+6.70 ms (box pack, already warning) -> 8.90 ms (fractured pack), crossing the 8.0 fail line.
+It is a one-time bootstrap paint of a pack with more chunks and five materials: the value is
+constant at 8.90 from frame 30 to frame 2750, and city bandwidth over the same window is
+0.01 Mbps, so there is no per-frame work to sustain it. The metric is a non-decaying
+accumulator, so a single join spike pins it for the rest of the run and it cannot recover.
+Left failing rather than retuned -- the bootstrap paint is worth optimising on its own
+merits, and moving the threshold would only hide it.
+
+## Scaling up: the mixed-archetype district
+
+`fractured-district.json` -- "Fractured city district (mixed archetypes, reach-based
+spacing)" -- came from the blast-stress-solver mini-city assets. It is the same ScenePack v2
+container as the high-rise, same five-material table, same ductile-frame/brittle-facade
+bands, so the loader needed no change:
+
+| | fractured-highrise-10f | fractured-district |
+|---|---|---|
+| nodes / bonds | 1,096 / 3,451 | **15,918 / 48,670** |
+| footprint | 12 m | **289 x 273 m, 60 m tall** |
+| mass | -- | 19,447 t |
+| archetypes | one tower | wall 5,440 / slab 5,416 / column 4,636 / footing 426 |
+
+It runs at `VIBE_CITY_GRID=1`: the pack is already a laid-out block, and the grid tiles
+whole districts, so grid^2 multiplies 15,918 chunks. Spawn needs no change either --
+`spawn_ring_radius_m` is `grid_half_extent + footprint/2 + 12`, which at grid 1 is 0 + 144 +
+12 = 156 m, the district edge plus a margin. You spawn at the perimeter and walk in.
+
+**Idle, 60 s:** 0 broken bonds for the entire run, 0 overstressed, 0 awake bodies,
+utilisation 0.9995, 378 bonds above half. The district holds itself up exactly as the single
+tower does.
+
+**Server cost is comfortable:** tick avg 5.5 ms / p95 7.3 ms against a 16.6 ms budget, city
+step 4.6 ms, blast solve 4.1 ms, stress solve median 3.49 ms (max 6.40). Note the overlay
+reports the stress solver running on **CPU** with `gpu_stress_structures 0` -- the GPU solver
+is not engaged for this pack, so that 3.5 ms is CPU work and is the obvious lever if the
+district needs to get bigger still.
+
+**The cost lands on the client renderer,** which is where the layer attribution puts it
+(NETWORK/SERVER/SYNC all OK, RENDER degraded): `cityChunkUpdateP95MaxMs` 8.90 -> **25.50 ms**
+and `frameGapP99Ms` 18.60 -> 29.50 ms, at 65 fps mean. As with the pack switch, the
+chunk-update figure is a non-decaying accumulator pinned by the bootstrap paint of 15,918
+chunks -- constant at 25.50 from the first quarter to the last -- so it measures the join
+spike, not steady-state cost. Steady state is 60 fps with the city stream at 0.00 Mbps.

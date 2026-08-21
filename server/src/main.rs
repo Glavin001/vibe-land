@@ -231,14 +231,29 @@ struct CityStatsSnapshot {
     chunk_bodies: u32,
     awake_bodies: u32,
     broken_bonds: u32,
-    /// Whole city step (physics tick + encode) in ms, not codec time alone.
+    /// Whole 60 Hz city step in ms, not codec time alone.
+    ///
+    /// The parent of `begin_ms`, `solve_ms`, `end_ms`, `readback_ms_host`,
+    /// `settle_ms` and `ingest_ms`. Those do not account for all of it: the
+    /// post-fracture push re-apply, topology drain and baseline emit are
+    /// untimed, and show up as the difference. Treat `step_ms` minus the
+    /// children as real unattributed cost, not as rounding.
     step_ms: f32,
+    /// Host wall time of the whole native destruction tick.
+    ///
+    /// A PARENT of `begin_ms`, `solve_ms`, `end_ms`, `readback_ms`, `events_ms`
+    /// and `filters_ms` -- it brackets beginTick through endTick, so it must
+    /// never be added to them. It is also a wall-clock span rather than a sum
+    /// of those parts, and measures ~20% above them: per-slot dispatch and the
+    /// topology-diff decision live in the gap.
     stress_solve_ms: f32,
-    /// Sub-phases of the native tick: solve, GPU readback, event diffing,
-    /// filter stamping. `stress_solve_ms` is their sum. `solve_ms` is now the
-    /// CUDA/parallel solveTick ALONE -- `begin_ms` and `end_ms` carry the
-    /// serial injection and fracture walks that used to be folded into it.
+    /// Sub-phases of the native tick, all children of `stress_solve_ms`.
+    /// `solve_ms` is the CUDA/parallel solveTick ALONE -- `begin_ms` and
+    /// `end_ms` carry the serial injection and fracture walks that used to be
+    /// folded into it.
     solve_ms: f32,
+    /// Native-side GPU readback. Distinct from `readback_ms_host`, which is the
+    /// host stage outside the native tick; they are not the same measurement.
     readback_ms: f32,
     events_ms: f32,
     /// Serial beginTick / parallel-CUDA solveTick / serial endTick, split
@@ -254,11 +269,18 @@ struct CityStatsSnapshot {
     ingest_ms: f32,
     /// The 30 Hz stream encode: shared record build, then per-client interest
     /// and datagram packing.
+    ///
+    /// NOT part of `step_ms`. This is a separate pass at half the rate, so
+    /// these two must never be added to the `step_ms` sub-phases -- doing so
+    /// double-counts across two different tick rates.
     encode_shared_ms: f32,
     client_datagrams_ms: f32,
     /// Structures whose stress solve is running on the GPU, so a silent
     /// fallback to the CPU solver is visible rather than merely slower.
     gpu_stress_structures: u32,
+    /// Per-tick GPU solve time. The adapter's own counter is cumulative since
+    /// the destructible was created; the bridge reports the delta, so this
+    /// belongs on the same scale as every other ms field here.
     gpu_stress_solve_ms: f32,
     filters_ms: f32,
     sleeping_bodies: u32,

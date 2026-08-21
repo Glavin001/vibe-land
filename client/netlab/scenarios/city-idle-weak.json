@@ -1,6 +1,6 @@
 {
-  "name": "city-idle",
-  "description": "Untouched city, short hold. Calibrates the resync differential: on a pristine ledger the forced bootstrap must move zero chunks.",
+  "name": "city-idle-weak",
+  "description": "Idle city at the shipped 0.10 stress scale: does it stand up under its own weight?",
   "symptom": [
     "jitter",
     "freeze",
@@ -8,7 +8,7 @@
     "teleporting"
   ],
   "path": "/city?portal=true",
-  "matchId": "city-idle-{iter}",
+  "matchId": "city-idle-weak-{iter}",
   "durationMs": 45000,
   "join": "auto",
   "serverEnv": {

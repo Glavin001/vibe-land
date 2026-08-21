@@ -1,14 +1,13 @@
 {
-  "name": "city-monolith-hi",
-  "description": "Same monolith test with 10x shot stress impulse: does the island fracture when the shot supplies more energy?",
+  "name": "city-topple-nosignal",
+  "description": "city-topple with the new load signals disabled: the pre-fix behaviour, same binary.",
   "symptom": [
-    "invulnerable",
     "monolith",
-    "flies-away"
+    "no-crumple-on-landing"
   ],
   "path": "/city?portal=true",
-  "matchId": "city-monolith-hi-{iter}",
-  "durationMs": 120000,
+  "matchId": "city-topple-nosignal-{iter}",
+  "durationMs": 95000,
   "join": "auto",
   "serverEnv": {
     "VIBE_PHYSICS_BACKEND": "physx_gpu",
@@ -17,11 +16,12 @@
     "VIBE_CITY_GRID": "2",
     "VIBE_CITY_VARIED_HEIGHTS": "0",
     "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0",
-    "VIBE_CITY_SHOT_STRESS_IMPULSE": "1.2e8"
+    "VIBE_PHYSX_CONTACT_PERSISTS": "0",
+    "VIBE_CITY_CENTRIFUGAL": "0"
   },
   "clients": [
     {
-      "role": "shooter",
+      "role": "severer",
       "drive": [
         {
           "at": 3000,
@@ -45,29 +45,22 @@
           "at": 6200,
           "cmd": "fire",
           "args": {
-            "holdMs": 12000
+            "holdMs": 14000
           }
         },
         {
-          "at": 20000,
+          "at": 21000,
           "cmd": "mark",
-          "args": "sustained-fire-at-largest-island"
+          "args": "stop-firing-let-it-fall"
         },
         {
-          "at": 20500,
-          "cmd": "huntLargestIsland",
-          "args": {
-            "durationMs": 80000
-          }
-        },
-        {
-          "at": 105000,
-          "cmd": "mark",
-          "args": "observe-final-state"
-        },
-        {
-          "at": 105500,
+          "at": 21500,
           "cmd": "faceCity"
+        },
+        {
+          "at": 60000,
+          "cmd": "mark",
+          "args": "landed-and-settling"
         }
       ]
     }
