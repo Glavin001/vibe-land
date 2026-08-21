@@ -642,7 +642,8 @@ impl V3ServerTap {
         }
         let assignments = self.live.take_lane_assignments();
         if !assignments.is_empty() {
-            let packet = vibe_land_destruction::wire::encode_city_lanes(&assignments);
+            let packet =
+                vibe_land_destruction::wire::encode_city_lanes(&assignments, self.live.epoch());
             self.log.push(tick, 'r', &packet)?;
         }
         for packet in self.topology_encoder.take_topology_messages() {
@@ -650,13 +651,14 @@ impl V3ServerTap {
         }
         if (tick + 1) % self.span_ticks == 0 {
             let span_first = self.span_first;
+            let epoch = self.live.epoch();
             let packets = self.live.finalize_span(span_first);
             self.span_encode_ms_max = self
                 .span_encode_ms_max
                 .max(started.elapsed().as_secs_f32() * 1000.0);
             for packet in packets {
                 let (compression, body) = self.compressor.compress(&packet.payload);
-                let datagram = encode_debris_datagram(packet.span_tick, compression, &body);
+                let datagram = encode_debris_datagram(packet.span_tick, compression, epoch, &body);
                 self.pose_bytes += datagram.len() as u64;
                 self.log.push(tick, 'd', &datagram)?;
             }

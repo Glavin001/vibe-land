@@ -69,13 +69,23 @@ pub const DEBRIS_HEADER_BYTES: usize = 8;
 pub const DEBRIS_COMPRESSION_RAW: u8 = 0;
 pub const DEBRIS_COMPRESSION_ZSTD_DICT_V3: u8 = 1;
 
-pub fn encode_debris_datagram(span_tick: u32, compression: u8, payload: &[u8]) -> Vec<u8> {
+pub fn encode_debris_datagram(
+    span_tick: u32,
+    compression: u8,
+    epoch: u8,
+    payload: &[u8],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(DEBRIS_HEADER_BYTES + payload.len());
     out.push(PKT_CITY_DEBRIS);
     out.push(CITY_WIRE_V3);
     out.extend_from_slice(&span_tick.to_le_bytes());
     out.push(compression);
-    out.push(0); // reserved
+    // Lane-map epoch at encode time (was the reserved byte). Lets the
+    // receiver order this packet against any lane reassignment: records for
+    // a lane assigned at a later epoch than this packet are the OLD tenant's
+    // and must be dropped, which closes the reassignment race that
+    // quarantining alone cannot (packets race the reliable map in flight).
+    out.push(epoch);
     out.extend_from_slice(payload);
     out
 }
@@ -83,6 +93,8 @@ pub fn encode_debris_datagram(span_tick: u32, compression: u8, payload: &[u8]) -
 pub struct DebrisDatagram {
     pub span_tick: u32,
     pub compression: u8,
+    /// Lane-map epoch stamped at encode time (u8 serial arithmetic).
+    pub epoch: u8,
     /// Decompressed codec payload, ready for the live decoder.
     pub payload: Vec<u8>,
 }
@@ -125,6 +137,7 @@ pub fn decode_debris_datagram_prepared(
     }
     let span_tick = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
     let compression = data[6];
+    let epoch = data[7];
     let body = &data[DEBRIS_HEADER_BYTES..];
     let payload = match compression {
         DEBRIS_COMPRESSION_RAW => body.to_vec(),
@@ -138,6 +151,7 @@ pub fn decode_debris_datagram_prepared(
     Ok(DebrisDatagram {
         span_tick,
         compression,
+        epoch,
         payload,
     })
 }
@@ -157,6 +171,7 @@ pub fn decode_debris_datagram(
     }
     let span_tick = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
     let compression = data[6];
+    let epoch = data[7];
     let body = &data[DEBRIS_HEADER_BYTES..];
     let payload = match compression {
         DEBRIS_COMPRESSION_RAW => body.to_vec(),
@@ -174,6 +189,7 @@ pub fn decode_debris_datagram(
     Ok(DebrisDatagram {
         span_tick,
         compression,
+        epoch,
         payload,
     })
 }
@@ -216,10 +232,14 @@ impl DebrisCompressor {
 /// Reliable lane->entity assignment stream for the v3 debris wire.
 pub const PKT_CITY_LANES: u8 = 127;
 
-pub fn encode_city_lanes(assignments: &[(u32, u64)]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + assignments.len() * 8);
+pub fn encode_city_lanes(assignments: &[(u32, u64)], epoch: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(5 + assignments.len() * 8);
     out.push(PKT_CITY_LANES);
     out.push(CITY_WIRE_V3);
+    // The lane-map revision these assignments advance the receiver to. Each
+    // changed lane's assigned_epoch becomes this value; unchanged lanes keep
+    // theirs (the receiver applies it per changed entry, not wholesale).
+    out.push(epoch);
     let count = assignments.len().min(u16::MAX as usize) as u16;
     out.extend_from_slice(&count.to_le_bytes());
     for (lane, key) in assignments.iter().take(count as usize) {
@@ -229,26 +249,28 @@ pub fn encode_city_lanes(assignments: &[(u32, u64)]) -> Vec<u8> {
     out
 }
 
-pub fn decode_city_lanes(data: &[u8]) -> Result<Vec<(u32, u32)>, WireError> {
-    if data.len() < 4 || data[0] != PKT_CITY_LANES {
+pub fn decode_city_lanes(data: &[u8]) -> Result<(u8, Vec<(u32, u32)>), WireError> {
+    if data.len() < 5 || data[0] != PKT_CITY_LANES {
         return Err(WireError::Truncated);
     }
     if data[1] != CITY_WIRE_V3 {
         return Err(WireError::BadVersion(data[1]));
     }
-    let count = u16::from_le_bytes([data[2], data[3]]) as usize;
-    if data.len() < 4 + count * 8 {
+    let epoch = data[2];
+    let count = u16::from_le_bytes([data[3], data[4]]) as usize;
+    if data.len() < 5 + count * 8 {
         return Err(WireError::Truncated);
     }
-    Ok((0..count)
+    let entries = (0..count)
         .map(|index| {
-            let at = 4 + index * 8;
+            let at = 5 + index * 8;
             (
                 u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]),
                 u32::from_le_bytes([data[at + 4], data[at + 5], data[at + 6], data[at + 7]]),
             )
         })
-        .collect())
+        .collect();
+    Ok((epoch, entries))
 }
 
 pub fn encode_city_nack(bodies: &[u32]) -> Vec<u8> {
@@ -1108,6 +1130,25 @@ pub fn decode_bootstrap(data: &[u8]) -> Result<BootstrapMessage, WireError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn debris_datagram_epoch_round_trips() {
+        let payload = vec![7u8; 40];
+        let datagram = super::encode_debris_datagram(1234, super::DEBRIS_COMPRESSION_RAW, 200, &payload);
+        let decoded = super::DebrisDecompressor::new().decode(&datagram).expect("decode");
+        assert_eq!(decoded.span_tick, 1234);
+        assert_eq!(decoded.epoch, 200);
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn city_lanes_epoch_round_trips() {
+        let assignments = vec![(3u32, 900u64), (7u32, 901u64)];
+        let packet = super::encode_city_lanes(&assignments, 42);
+        let (epoch, entries) = super::decode_city_lanes(&packet).expect("decode");
+        assert_eq!(epoch, 42);
+        assert_eq!(entries, vec![(3, 900), (7, 901)]);
+    }
+
     use super::*;
     use glam::Quat;
     use vibe_netcode::destruction_backend::IslandPromotion;

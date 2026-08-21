@@ -32,7 +32,7 @@ describe('debris wasm decoder', () => {
     let applied = 0;
     for (const span of fixture.spans) {
       for (const packet of span.packets) {
-        applied += decoder.push_payload(0, hexToBytes(packet.payloadHex));
+        applied += decoder.push_payload(0, 0, hexToBytes(packet.payloadHex));
       }
     }
     expect(applied).toBeGreaterThan(0);
@@ -60,7 +60,7 @@ describe('debris wasm decoder', () => {
         continue; // the loss
       }
       for (const packet of span.packets) {
-        decoder.push_payload(0, hexToBytes(packet.payloadHex));
+        decoder.push_payload(0, 0, hexToBytes(packet.payloadHex));
       }
     }
     // Whether chains formed across the drop depends on the fixture's motion;
@@ -74,8 +74,8 @@ describe('debris wasm decoder', () => {
 
   it('rejects malformed payloads without corrupting state', () => {
     const decoder = new DebrisDecoder(new Uint8Array(0), 64, fixture.simHz);
-    expect(() => decoder.push_payload(0, new Uint8Array([1, 2, 3]))).toThrow();
+    expect(() => decoder.push_payload(0, 0, new Uint8Array([1, 2, 3]))).toThrow();
     const first = fixture.spans[0].packets[0];
-    expect(decoder.push_payload(0, hexToBytes(first.payloadHex))).toBeGreaterThan(0);
+    expect(decoder.push_payload(0, 0, hexToBytes(first.payloadHex))).toBeGreaterThan(0);
   });
 });

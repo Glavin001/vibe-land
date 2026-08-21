@@ -423,19 +423,23 @@ impl V3Live {
         let assignments = self.encoder.take_lane_assignments();
         if !assignments.is_empty() {
             self.staged_reliable
-                .push(vibe_land_destruction::wire::encode_city_lanes(&assignments));
+                .push(vibe_land_destruction::wire::encode_city_lanes(
+                    &assignments,
+                    self.encoder.epoch(),
+                ));
         }
         if (sim_tick + 1) % self.span_ticks == 0 {
             let push_ms = started.elapsed().as_secs_f32() * 1000.0;
             let span_first = self.span_first;
             let finalize_started = std::time::Instant::now();
+            let epoch = self.encoder.epoch();
             let packets = self.encoder.finalize_span(span_first);
             let finalize_ms = finalize_started.elapsed().as_secs_f32() * 1000.0;
             let compress_started = std::time::Instant::now();
             for packet in packets {
                 let (compression, body) = self.compressor.compress(&packet.payload);
                 self.staged
-                    .push(encode_debris_datagram(packet.span_tick, compression, &body));
+                    .push(encode_debris_datagram(packet.span_tick, compression, epoch, &body));
             }
             let compress_ms = compress_started.elapsed().as_secs_f32() * 1000.0;
             if std::env::var("V3_PROFILE").is_ok() {
@@ -955,7 +959,10 @@ impl CityRuntime {
         if assignments.is_empty() {
             return None;
         }
-        Some(vibe_land_destruction::wire::encode_city_lanes(&assignments))
+        Some(vibe_land_destruction::wire::encode_city_lanes(
+            &assignments,
+            live.encoder.epoch(),
+        ))
     }
 
     pub fn stats(&self) -> DestructionStats {

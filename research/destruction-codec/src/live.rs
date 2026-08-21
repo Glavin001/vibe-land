@@ -91,6 +91,17 @@ pub struct LiveEncoder {
     /// drains the frames, after which reuse is clean.
     quarantine: Vec<usize>,
     by_key: HashMap<u64, usize>,
+    /// Lane-map revision. Bumped once per drained assignment batch and
+    /// stamped into every datagram, so a receiver can order any packet
+    /// against any lane assignment with u8 serial arithmetic: a record for
+    /// lane L applies only when serial(assigned_epoch[L]) <= serial(packet
+    /// epoch). This is what makes lane reuse SOUND rather than merely
+    /// quarantined -- the 78 m cross-tenant excursions at 29k migrations
+    /// were packets racing the reliable map. Wrapping u8 gives a 128-batch
+    /// comparison window (~2 s under maximum churn), far beyond any
+    /// datagram's useful lifetime; older packets already fall to the
+    /// latest-wins tick rule.
+    epoch: u8,
     span_index: u32,
     pending: Vec<Record>,
     nack_restates: Vec<usize>,
@@ -126,6 +137,7 @@ impl LiveEncoder {
             lanes: (0..capacity).map(|_| None).collect(),
             free: (0..capacity).rev().collect(),
             by_key: HashMap::new(),
+            epoch: 0,
             span_index: 0,
             pending: Vec::new(),
             nack_restates: Vec::new(),
@@ -252,8 +264,20 @@ impl LiveEncoder {
             .collect()
     }
 
+    /// Drains staged assignments and, when there are any, advances the
+    /// lane-map epoch they (and every later datagram) are stamped with.
+    /// Returns the batch together with the epoch that now describes the map.
     pub fn take_lane_assignments(&mut self) -> Vec<(u32, u64)> {
-        std::mem::take(&mut self.assignments)
+        let batch = std::mem::take(&mut self.assignments);
+        if !batch.is_empty() {
+            self.epoch = self.epoch.wrapping_add(1);
+        }
+        batch
+    }
+
+    /// The current lane-map revision; stamp outgoing datagrams with this.
+    pub fn epoch(&self) -> u8 {
+        self.epoch
     }
 
     /// Restate specific bodies absolutely on the next span.
@@ -528,6 +552,32 @@ impl LiveDecoder {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn epoch_advances_only_when_assignments_drain() {
+        let mut encoder = LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / 60.0,
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            tolerances: Tolerances::new(0.02, 3.0, 0.15, 0.5, crate::mask::MaskConfig::default()),
+            sleep: SleepPolicy { linear_mps: 0.0, angular_rps: 0.0, ticks: 0 },
+            restate_period: 4,
+            initial_capacity: 8,
+        });
+        assert_eq!(encoder.epoch(), 0);
+        assert!(encoder.take_lane_assignments().is_empty());
+        assert_eq!(encoder.epoch(), 0, "empty drain must not bump the epoch");
+        encoder.add_body(11, 1.0);
+        let batch = encoder.take_lane_assignments();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(encoder.epoch(), 1);
+        // Serial-arithmetic acceptance: a packet stamped at or after the
+        // assignment epoch is the new tenant's; before it, the old one's.
+        let assigned = encoder.epoch();
+        for (packet_epoch, accept) in [(assigned, true), (assigned.wrapping_add(3), true), (assigned.wrapping_sub(1), false)] {
+            let fresh = (packet_epoch.wrapping_sub(assigned) as i8) >= 0;
+            assert_eq!(fresh, accept, "epoch {packet_epoch} vs assigned {assigned}");
+        }
+    }
+
     use super::*;
     use crate::mask::MaskConfig;
     use crate::trace::Pose;

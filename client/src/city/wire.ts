@@ -526,6 +526,8 @@ export type DebrisHeader = {
   spanTick: number;
   /** 0 = raw, 1 = zstd with the shipped v3 dictionary. */
   compression: number;
+  /** Lane-map revision at encode time (u8 serial arithmetic). */
+  epoch: number;
   /** Offset where the codec payload starts. */
   bodyOffset: number;
 };
@@ -538,24 +540,28 @@ export function decodeDebrisHeader(bytes: Uint8Array): DebrisHeader {
     throw new Error(`unsupported debris wire version ${bytes[1]}`);
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return { spanTick: view.getUint32(2, true), compression: bytes[6], bodyOffset: 8 };
+  return { spanTick: view.getUint32(2, true), compression: bytes[6], epoch: bytes[7], bodyOffset: 8 };
 }
 
-export function decodeCityLanes(bytes: Uint8Array): Array<[number, number]> {
-  if (bytes.length < 4 || bytes[0] !== PKT_CITY_LANES) {
+export function decodeCityLanes(bytes: Uint8Array): { epoch: number; entries: Array<[number, number]> } {
+  if (bytes.length < 5 || bytes[0] !== PKT_CITY_LANES) {
     throw new Error('bad city lanes packet');
   }
   if (bytes[1] !== CITY_WIRE_V3) {
     throw new Error(`unsupported lanes wire version ${bytes[1]}`);
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const count = view.getUint16(2, true);
-  const out: Array<[number, number]> = [];
+  // The lane-map revision these assignments advance the receiver to; each
+  // CHANGED lane's assigned epoch becomes this value (unchanged lanes keep
+  // theirs, so in-flight packets for them are not spuriously refused).
+  const epoch = bytes[2];
+  const count = view.getUint16(3, true);
+  const entries: Array<[number, number]> = [];
   for (let index = 0; index < count; index += 1) {
-    const at = 4 + index * 8;
-    out.push([view.getUint32(at, true), view.getUint32(at + 4, true)]);
+    const at = 5 + index * 8;
+    entries.push([view.getUint32(at, true), view.getUint32(at + 4, true)]);
   }
-  return out;
+  return { epoch, entries };
 }
 
 /** Bodies whose chains a lost packet poisoned; the server restates them. */

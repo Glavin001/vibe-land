@@ -39,6 +39,21 @@ pub struct DebrisDecoder {
     /// snap forward when the next fresh span lands (measured as paired
     /// equal-magnitude teleports and one-frame multi-body bursts in netlab).
     newest: HashMap<u32, u32>,
+    /// Lane-map epoch at which each lane's current tenant was assigned
+    /// (u8 serial arithmetic). A record from a packet whose stamped epoch is
+    /// OLDER than the lane's assignment belongs to the previous tenant --
+    /// the packet was in flight when the lane changed hands -- and applying
+    /// it would draw one body with another's trajectory (the 78 m
+    /// cross-tenant excursions measured at 29k migrations/min).
+    assigned_epoch: HashMap<u32, u8>,
+    /// Newest epoch seen on any datagram -- the receiver's notion of "now"
+    /// on the epoch counter. Needed because assignments are fixed points on
+    /// a wrapping counter: without an age bound, a lane assigned 128+ bumps
+    /// ago wraps into the "future" and its records are refused forever
+    /// (measured: 541k excess steps -- the whole stream starved). The drop
+    /// rule therefore only applies while the assignment is RECENT; races
+    /// resolve within a second, ancient assignments accept everything.
+    latest_epoch: u8,
     /// Diagnostic ring: last 8 applied records per lane as
     /// (tick, kind, x, y, z); read back by `lane_history` when the client's
     /// jump detector fires. Cheap enough to keep on always.
@@ -60,14 +75,17 @@ impl DebrisDecoder {
             gravity: Vec3::new(0.0, -9.81, 0.0),
             accept_after: HashMap::new(),
             newest: HashMap::new(),
+            assigned_epoch: HashMap::new(),
+            latest_epoch: 0,
             history: HashMap::new(),
         }
     }
 
     /// Apply one debris payload (framing already stripped by the caller).
     /// `compression`: 0 = raw, 1 = zstd with the shipped dictionary.
+    /// `epoch`: the lane-map revision stamped in the datagram header.
     /// Returns how many records were applied.
-    pub fn push_payload(&mut self, compression: u8, body: &[u8]) -> Result<u32, JsError> {
+    pub fn push_payload(&mut self, compression: u8, epoch: u8, body: &[u8]) -> Result<u32, JsError> {
         let payload: Vec<u8> = match compression {
             0 => body.to_vec(),
             1 => zstd::bulk::Decompressor::with_prepared_dictionary(&self.dictionary)
@@ -75,6 +93,9 @@ impl DebrisDecoder {
                 .map_err(|error| JsError::new(&format!("decompress: {error}")))?,
             other => return Err(JsError::new(&format!("unknown compression tag {other}"))),
         };
+        if (epoch.wrapping_sub(self.latest_epoch) as i8) > 0 {
+            self.latest_epoch = epoch;
+        }
         let records = self
             .decoder
             .push_packet(&payload)
@@ -84,6 +105,18 @@ impl DebrisDecoder {
         for record in records {
             if let Some(&floor) = self.accept_after.get(&record.body()) {
                 if record.tick() <= floor {
+                    continue;
+                }
+            }
+            // Epoch ordering: drop records encoded before this lane's current
+            // assignment. Serial compare on a wrapping u8, valid only while
+            // the assignment is recent (age < 64 bumps relative to the newest
+            // epoch seen); older assignments have no live race to lose and
+            // accept everything -- the age bound is what keeps a fixed
+            // assignment from wrapping into the "future".
+            if let Some(&assigned) = self.assigned_epoch.get(&record.body()) {
+                let age = self.latest_epoch.wrapping_sub(assigned);
+                if age < 64 && (epoch.wrapping_sub(assigned) as i8) < 0 {
                     continue;
                 }
             }
@@ -173,6 +206,16 @@ impl DebrisDecoder {
     pub fn clear_lane_until(&mut self, lane: u32, tick: u32) {
         self.playbacks.remove(&lane);
         self.accept_after.insert(lane, tick);
+    }
+
+    /// Record that `lane` was (re)assigned at lane-map revision `epoch` and
+    /// forget the previous tenant's trajectory. Records from packets stamped
+    /// with an older epoch will be refused; records at or after it belong to
+    /// the new tenant, including any that raced ahead of the reliable map.
+    pub fn assign_lane(&mut self, lane: u32, epoch: u8) {
+        self.playbacks.remove(&lane);
+        self.newest.remove(&lane);
+        self.assigned_epoch.insert(lane, epoch);
     }
 
     /// Diagnostic: last applied records for a lane, flattened as
