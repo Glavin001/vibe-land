@@ -24,6 +24,7 @@ pub mod metrics;
 pub mod presentation;
 pub mod rans;
 pub mod replay;
+pub mod state_diff;
 pub mod residual_coder;
 pub mod root_coder;
 pub mod scheduler;

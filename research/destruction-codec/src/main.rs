@@ -25,6 +25,13 @@ struct Cli {
 enum Command {
     /// Analyze a TWTRACE1 file and emit JSON, CSV, and reconstructed replay.
     Analyze(AnalyzeArgs),
+    /// Diff what a client displayed against server truth, per chunk.
+    ///
+    /// Both inputs are TWSTATE1 over the same actor table -- truth from the
+    /// authoritative trace, client from the real-client replayer. Reports the
+    /// measured presentation delay, position error, and the freeze /
+    /// excess-step / reversal artifacts with the frames they happen at.
+    StateDiff(StateDiffArgs),
     /// Convert authoritative TWTRACE1 poses to a renderable TWSTATE1 replay.
     Replay(ReplayArgs),
     /// Write a deterministic TWTRACE1 fixture with all classifier regimes.
@@ -528,6 +535,25 @@ struct ArchiveArgs {
     mask_motion_high: f32,
 }
 
+#[derive(Parser, Debug)]
+struct StateDiffArgs {
+    /// TWSTATE1 rendered from the authoritative trace.
+    #[arg(long)]
+    truth: std::path::PathBuf,
+    /// TWSTATE1 written by client/tools/replay-city-client.mts.
+    #[arg(long)]
+    client: std::path::PathBuf,
+    /// City manifest JSON, to group chunks by structure.
+    #[arg(long)]
+    manifest: Option<std::path::PathBuf>,
+    /// Write the full report as JSON.
+    #[arg(long)]
+    out: Option<std::path::PathBuf>,
+    /// How many worst events to keep in the report.
+    #[arg(long, default_value_t = 40)]
+    worst: usize,
+}
+
 fn main() -> Result<()> {
     let result = dispatch();
     // P1 census prints only when CODEC_CENSUS is set; inert otherwise.
@@ -544,6 +570,15 @@ fn dispatch() -> Result<()> {
         Command::Synthetic(args) => synthetic(args),
         Command::Archive(args) => archive(args),
         Command::AckBaseline(args) => ack_baseline_cmd(args),
+        Command::StateDiff(args) => destruction_codec::state_diff::run(
+            destruction_codec::state_diff::StateDiffOptions {
+                truth: args.truth,
+                client: args.client,
+                manifest: args.manifest,
+                out: args.out,
+                worst: args.worst,
+            },
+        ),
         Command::ExactIslandProxy(args) => exact_island_proxy_cmd(args),
         Command::RootCoderBench(args) => root_coder_bench(args),
         Command::DebrisTracks(args) => debris_tracks::run(debris_tracks::DebrisTracksOptions {
