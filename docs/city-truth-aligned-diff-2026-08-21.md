@@ -110,3 +110,45 @@ Notes the table forces into the open:
   the trace format only carries chunk-chunk edges, so the recorder now
   filters and counts them (`note:` line), and dedups the two-pass cascade's
   duplicate reports.
+
+---
+
+# Downtown at scale: 24,105 chunks, receipts burned into the video (2026-08-21)
+
+`viewer-videos/downtown-ab-2026-08-21/compare-downtown.mp4` — TRUTH | WIRE V2
+| WIRE V3@50ms, 60 s, the merged fractured-downtown pack at full bond strength
+(1 structure, 24,105 chunks, 74,543 bonds; ~3.7k chunk-chunk breaks, ~19.3k
+migrations, ~950 peak bodies). Each wire pane carries a live byte meter
+(current / running avg / running peak / total) generated from the packet dump
+by `research/destruction-codec/tools/packet_rate_overlay.py`.
+
+| | wire v2 | wire v3 @ 50 ms |
+|---|---:|---:|
+| avg | 0.569 Mbps | **0.554 Mbps** |
+| peak second | 1.38 Mbps | **1.27 Mbps** |
+| total (60 s) | 4.27 MB | **4.16 MB** |
+| ... of which reliable | 0.539 MB | 0.255 MB |
+| measured delay | 100 ms | 133 ms |
+| freezes / reversals | 7 / 0 | 4 / 1 |
+| excess steps | 0 | **189 (~20 excursions)** |
+| err max | 0.28 m | **173 m** |
+
+Two honest findings, one per wire:
+
+- **This content is easy for v2.** Only ~950 of 24k chunks ever move at once,
+  the merged physics rests piles quickly, and v2's ranked selection handles a
+  small moving set fine. The starvation regime needs thousands of
+  simultaneously-moving bodies (the violent grid-2 runs, or multi-building
+  barrages), not one localized cascade. Quiet content narrows the gap; v3
+  still wins every byte metric at 33 ms more delay.
+- **v3's lane-reassignment race scales with migration churn.** ~20 excursions
+  in 60 s where one chunk shows another lane's pose for ~100 ms and snaps
+  back (worst 173 m — palpably a different building). 19.3k migrations is 4×
+  the previous content; the client-side hold guard misses the fresh-lane
+  first-sample case. This is THE argument for the 1-byte lane generation
+  tag: the race is content-scaled, and downtown-scale churn is the roadmap.
+
+Instrument limitation recorded: err p50/p95 read 0.0 cm on this scene because
+percentiles are taken over ALL chunks and 96% never move. `state-diff` needs
+a moving-only percentile before its error rows mean anything at district
+scale (the artifact counters and max are unaffected).
