@@ -1135,6 +1135,10 @@ pub struct Tolerances {
     /// Motion-masked precision, mirroring the live path so the byte comparison
     /// is against the same fidelity contract rather than a flat bound.
     mask: MaskConfig,
+    /// Small-rubble tier: islands with reach under this get `small_scale`x
+    /// the masked bound. 0 disables (the default; flag-gated lever).
+    small_reach_m: f32,
+    small_scale: f32,
     /// Multiplier applied by the block rate controller; 1.0 when under budget.
     rate_scale: f32,
 }
@@ -1153,6 +1157,8 @@ impl Tolerances {
             velocity_mps,
             angular_rps,
             mask,
+            small_reach_m: 0.0,
+            small_scale: 1.0,
             rate_scale: 1.0,
         }
     }
@@ -1160,6 +1166,17 @@ impl Tolerances {
     /// Governor knob: multiplies the masked bound for future fitting.
     pub fn set_rate_scale(&mut self, scale: f32) {
         self.rate_scale = scale.max(1.0);
+    }
+
+    /// Small-rubble contract: islands whose reach is under `reach_m` get
+    /// `scale`x the masked bound. Small debris is the population whose
+    /// precision is least visible (fragments, tiles) and it dominates body
+    /// count in a pile; the reach radius is already per-lane state, so the
+    /// tier costs no wire and no plumbing. Perceptual lever: ships behind a
+    /// flag until the video A/B says the trade is invisible.
+    pub fn set_small_rubble(&mut self, reach_m: f32, scale: f32) {
+        self.small_reach_m = reach_m;
+        self.small_scale = scale.max(1.0);
     }
 
     /// Per-body shell bound for this tick. With masking off this is the flat
@@ -1188,10 +1205,17 @@ impl Tolerances {
         } else {
             self.shell_m
         };
+        // Small-rubble tier stacks with masking the same way rate control
+        // does: strictly widening, never touching continuity.
+        let tiered = if self.small_reach_m > 0.0 && radius < self.small_reach_m {
+            masked * self.small_scale
+        } else {
+            masked
+        };
         // Rate control multiplies the *masked* bound, so an over-budget block
         // degrades precision on top of whatever masking already allowed rather
         // than fighting it. Scale is 1.0 unless a block busted its budget.
-        masked * self.rate_scale
+        tiered * self.rate_scale
     }
 }
 
@@ -1424,6 +1448,11 @@ impl Encoder {
     /// contract they were fitted under.
     pub fn set_rate_scale(&mut self, scale: f32) {
         self.config.tolerances.set_rate_scale(scale);
+    }
+
+    /// See `Tolerances::set_small_rubble`.
+    pub fn set_small_rubble(&mut self, reach_m: f32, scale: f32) {
+        self.config.tolerances.set_small_rubble(reach_m, scale);
     }
 
     pub fn force_restart(&mut self, body: usize) {
@@ -2606,7 +2635,9 @@ pub fn run(options: DebrisCodecOptions) -> Result<()> {
         rotation_deg: options.rotation_deg,
         velocity_mps: options.velocity_mps,
         angular_rps: options.angular_rps,
-        rate_scale: 1.0,
+        small_reach_m: 0.0,
+            small_scale: 1.0,
+            rate_scale: 1.0,
         mask: MaskConfig {
             enabled: options.mask_precision,
             base_m: options.shell_cm / 100.0,
@@ -3379,6 +3410,8 @@ mod tests {
             velocity_mps: 0.15,
             angular_rps: 0.5,
             mask: MaskConfig::default(),
+            small_reach_m: 0.0,
+            small_scale: 1.0,
             rate_scale: 1.0,
         }
     }

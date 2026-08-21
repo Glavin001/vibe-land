@@ -95,6 +95,8 @@ struct Args {
     /// masked bound widens toward its 4x cap -- the production world-feed law.
     packets_budget_mbps: f32,
     packets_span_max_ms: u32,
+    /// Small-rubble tier: "reach_m:scale" (e.g. "0.5:3"). Empty = off.
+    packets_small_rubble: String,
 }
 
 impl Args {
@@ -113,6 +115,7 @@ impl Args {
         let mut packets_span_ms = 100u32;
         let mut packets_budget_mbps = 0.0f32;
         let mut packets_span_max_ms = 250u32;
+        let mut packets_small_rubble = String::new();
         let mut shot_ramp_min_ticks = 0u32;
 
         let mut args = std::env::args().skip(1);
@@ -136,6 +139,7 @@ impl Args {
                 "--packets-span-ms" => packets_span_ms = value()?.parse()?,
                 "--packets-budget-mbps" => packets_budget_mbps = value()?.parse()?,
                 "--packets-span-max-ms" => packets_span_max_ms = value()?.parse()?,
+                "--packets-small-rubble" => packets_small_rubble = value()?,
                 "--shot-ramp-min-ticks" => shot_ramp_min_ticks = value()?.parse()?,
                 "--help" | "-h" => {
                     println!(
@@ -168,6 +172,7 @@ impl Args {
             packets_span_ms,
             packets_budget_mbps,
             packets_span_max_ms,
+            packets_small_rubble,
             shot_ramp_min_ticks,
         })
     }
@@ -820,7 +825,16 @@ fn main() -> Result<()> {
                     args.packets_span_ms,
                     args.packets_budget_mbps,
                     args.packets_span_max_ms,
-                )?)
+                )?);
+                if let Some((reach, scale)) = args.packets_small_rubble.split_once(':') {
+                    let reach: f32 = reach.parse().context("small-rubble reach")?;
+                    let scale: f32 = scale.parse().context("small-rubble scale")?;
+                    v3_tap
+                        .as_mut()
+                        .expect("just constructed")
+                        .live
+                        .set_small_rubble(reach, scale);
+                }
             }
             other => bail!("--packets-wire must be 2 or 3 (got {other})"),
         }

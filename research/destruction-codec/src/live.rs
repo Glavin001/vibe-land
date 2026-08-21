@@ -397,6 +397,13 @@ impl LiveEncoder {
         self.restate_period = period.max(1);
     }
 
+    /// Enable the small-rubble precision tier (see Tolerances). Flag-gated
+    /// perceptual lever; call before any spans are fitted.
+    pub fn set_small_rubble(&mut self, reach_m: f32, scale: f32) {
+        self.tolerances.set_small_rubble(reach_m, scale);
+        self.encoder.set_small_rubble(reach_m, scale);
+    }
+
     /// Restate specific bodies absolutely on the next span.
     ///
     /// This is the loss-heal path. Periodic restatement of every moving body
