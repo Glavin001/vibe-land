@@ -318,6 +318,20 @@ pub struct FreezeTracker {
     /// interval sweep, which remains only as a backstop for anything the
     /// targeted checks miss.
     pending_support_checks: Vec<([f32; 3], f32)>,
+    /// Multiset of frozen anchor heights, keyed by sortable float bits.
+    ///
+    /// Exists so `min_frozen_y` is O(log n) instead of a walk of the whole
+    /// frozen set: the walk was honest (a cached running minimum can only
+    /// fall, and would keep reporting a body that thawed) but it ran every
+    /// tick in the stats path, which at 11k frozen bodies -- i.e. exactly
+    /// when freezing is working -- measured as milliseconds of settle-scan
+    /// time. A multiset gets the same honesty incrementally: entries leave
+    /// when their body does. Anchor poses are immutable while frozen, so the
+    /// key recorded at freeze time is the key to remove at thaw time.
+    frozen_y: std::collections::BTreeMap<u32, u32>,
+    /// Rotating start position for the interval backstop, so each pass scans
+    /// a bounded slice of the frozen set instead of all of it.
+    sweep_cursor: usize,
 }
 
 impl FreezeTracker {
@@ -329,6 +343,8 @@ impl FreezeTracker {
             frozen: HashSet::new(),
             census: FreezeCensus::default(),
             pending_support_checks: Vec::new(),
+            frozen_y: std::collections::BTreeMap::new(),
+            sweep_cursor: 0,
         }
     }
 
@@ -390,6 +406,7 @@ impl FreezeTracker {
             if let Some(body) = self.bodies.get(&entity) {
                 // A frozen support vanished; check what sat on it.
                 self.pending_support_checks.push((body.anchor_pos, body.reach));
+                Self::remove_frozen_y(&mut self.frozen_y, body.anchor_pos[1]);
             }
         }
         self.bodies.remove(&entity);
@@ -400,6 +417,8 @@ impl FreezeTracker {
         self.cells.clear();
         self.frozen.clear();
         self.census = FreezeCensus::default();
+        self.pending_support_checks.clear();
+        self.frozen_y.clear();
     }
 
     /// Observe one body from this tick's snapshot, returning what changed.
@@ -533,6 +552,7 @@ impl FreezeTracker {
                 // The adapter took this frozen body back (it split): whatever
                 // was resting on it needs a support check, same as any thaw.
                 self.pending_support_checks.push(support);
+                Self::remove_frozen_y(&mut self.frozen_y, support.0[1]);
             }
         }
         observation
@@ -559,6 +579,7 @@ impl FreezeTracker {
             body.quiet_ticks = 0;
             if self.frozen.insert(candidate.entity) {
                 self.cells.entry(cell).or_default().push(candidate.entity);
+                *self.frozen_y.entry(y_key(candidate.position[1])).or_insert(0) += 1;
             }
         }
         self.census.frozen = self.frozen.len() as u32;
@@ -648,6 +669,7 @@ impl FreezeTracker {
             if let Some(body) = self.bodies.get(&entity) {
                 // Whatever was resting on this body just lost its support.
                 self.pending_support_checks.push((body.anchor_pos, body.reach));
+                Self::remove_frozen_y(&mut self.frozen_y, body.anchor_pos[1]);
             }
             if let Some(body) = self.bodies.get_mut(&entity) {
                 body.phase = Phase::Awake;
@@ -803,12 +825,21 @@ impl FreezeTracker {
             }
         }
 
-        // Interval backstop: the full scan, for anything the targeted checks
-        // cannot see (a freeze that was unsupported from the start).
+        // Interval backstop, for anything the targeted checks cannot see (a
+        // freeze that was unsupported from the start). A rotating slice, not
+        // the whole set: at 11k frozen bodies a full scan with a neighbour
+        // query per body measured as periodic multi-ms spikes in the settle
+        // scan (the tick p95 riding well above the average). Each pass covers
+        // a bounded window and the cursor wraps, so full coverage arrives
+        // over ~a minute at city scale -- which is the right trade for a
+        // backstop whose real work the event-driven checks already do.
         if tick % u64::from(self.config.unsupported_sweep_ticks) == 0
             && !self.frozen.is_empty()
         {
-            for &entity in &self.frozen {
+            let scan = self.config.unsupported_sweep_batch.max(64) * 2;
+            let count = self.frozen.len();
+            let start = self.sweep_cursor % count;
+            for &entity in self.frozen.iter().cycle().skip(start).take(scan.min(count)) {
                 if stranded.len() >= batch {
                     break;
                 }
@@ -822,6 +853,7 @@ impl FreezeTracker {
                     stranded.push(entity);
                 }
             }
+            self.sweep_cursor = (start + scan) % count.max(1);
         }
         stranded.truncate(batch);
         stranded
@@ -951,16 +983,25 @@ impl FreezeTracker {
 
     /// Lowest frozen body origin, or +inf when nothing is frozen.
     ///
-    /// Walks the frozen set rather than caching a running minimum: a cached
-    /// one can only ever go down, so a body that thawed would keep depressing
-    /// it forever and the below-ground check would report a body that is no
-    /// longer frozen -- or no longer exists.
+    /// A height multiset, not a cached running minimum (which could only ever
+    /// fall, so a thawed body would depress it forever) and not a per-tick
+    /// walk of the frozen set (which measured as milliseconds of settle scan
+    /// at 11k frozen bodies). Entries leave with their bodies, so it stays
+    /// honest at O(log n).
     pub fn min_frozen_y(&self) -> f32 {
-        self.frozen
-            .iter()
-            .filter_map(|entity| self.bodies.get(entity))
-            .map(|body| body.anchor_pos[1])
-            .fold(f32::INFINITY, f32::min)
+        self.frozen_y
+            .first_key_value()
+            .map(|(&key, _)| y_from_key(key))
+            .unwrap_or(f32::INFINITY)
+    }
+
+    fn remove_frozen_y(frozen_y: &mut std::collections::BTreeMap<u32, u32>, y: f32) {
+        if let Some(count) = frozen_y.get_mut(&y_key(y)) {
+            *count -= 1;
+            if *count == 0 {
+                frozen_y.remove(&y_key(y));
+            }
+        }
     }
 
     fn cell_of(&self, pos: [f32; 3]) -> (i32, i32, i32) {
@@ -982,6 +1023,21 @@ impl FreezeTracker {
         };
         let cell = self.cell_of(body.anchor_pos);
         self.drop_from_cell(cell, entity);
+    }
+}
+
+/// f32 -> totally-ordered u32 key (IEEE 754 sortable-bits transform), so a
+/// BTreeMap can hold a multiset of heights with the minimum at the first key.
+fn y_key(y: f32) -> u32 {
+    let bits = y.to_bits();
+    if bits & 0x8000_0000 != 0 { !bits } else { bits | 0x8000_0000 }
+}
+
+fn y_from_key(key: u32) -> f32 {
+    if key & 0x8000_0000 != 0 {
+        f32::from_bits(key & 0x7fff_ffff)
+    } else {
+        f32::from_bits(!key)
     }
 }
 
