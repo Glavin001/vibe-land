@@ -136,6 +136,69 @@ The control's own census names the population it leaves behind: 462
 awake bodies pose-quiet at the end of the run — motionless, and never
 slept.
 
+### Sustained downtown ramp
+
+300 s of `record-city-trace` on `fractured-downtown.json` (24,105
+chunks), 2,000 shots ramping from one every 8 ticks to one every 3, same
+schedule both runs. Damage stops around t+170–190 s; the rest is quiet.
+
+| | freeze off | freeze on |
+|---|---:|---:|
+| broken bonds | 16,022 | **21,754** |
+| bodies created | 4,491 | **6,071** |
+| median awake while shooting | 1,944 | **96** |
+| p95 awake while shooting | 3,941 | **1,235** |
+| peak awake | 4,060 | **1,472** |
+| median sim ms while shooting | 11.6 | **7.7** |
+| p95 sim ms while shooting | 18.9 | 19.4 |
+| awake body-ticks over the run | 27,503,501 | **3,708,010** |
+| frozen at the end | 0 | 5,998 |
+| membership mismatches | 0 | 0 |
+
+The shape matters more than any single number: **freezing destroyed 36%
+more of the city while running with 95% fewer awake bodies and a 34%
+lower median tick.** Cost stopped tracking cumulative damage and started
+tracking only what is currently in motion.
+
+Where the tick sits, by awake population:
+
+| awake | freeze off | freeze on |
+|---|---:|---:|
+| 0–1k | 6,656 ticks (37%) | **16,847 ticks (94%)** |
+| 1–2k | 4,719 | 1,153 |
+| 2–3k | 4,936 | 0 |
+| 3–4k | 1,632 | 0 |
+| 4–5k | 57 | 0 |
+
+Per-bucket tick cost is nearly identical between the two runs (4.2 vs
+4.9 ms at 0–1k), which is the point: freezing does not make an awake
+body cheaper, it moves the population. The slight per-tick premium is
+the freeze run's larger scene — 6,071 bodies against 4,491, all of which
+still cost broadphase and readback.
+
+**The decay criterion is where the two runs stop resembling each other
+at all.** After the last damage:
+
+| seconds since last damage | 0 | 3 | 6 | 12 | to reach <1k |
+|---|---:|---:|---:|---:|---:|
+| freeze off | 2,549 | 2,549 | 2,549 | 2,549 | **30.4 s** |
+| freeze on | 2 | 1 | 0 | 0 | **0.0 s** |
+
+That flat 2,549 is the live session's pathology reproduced headlessly:
+the pile stops being touched and keeps being simulated anyway. The
+campaign's acceptance target — awake under 1k within ~5 s of a collapse
+ending — is met with freezing and missed by a factor of six without it.
+
+Two caveats stated plainly. p95 sim is unchanged (18.9 → 19.4 ms) and
+about 6% of ticks exceed the 16.7 ms budget in **both** runs: those are
+live collapses, where the bodies are genuinely in motion and must be
+simulated. Freezing does not address that and should not. And the
+headless shot plan saturates around 16–22k broken bonds, so the ≥40k
+sustained figure from the live human session was not reproduced here —
+16–22k does sit squarely in the 10k–22k band where the live capture
+bracketed the merge threshold, which is the interesting region, but the
+far tail remains unmeasured offline.
+
 ### Instrument check
 
 `city_bench::awake_and_sleeping_counters_agree` exists because the
