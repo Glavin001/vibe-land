@@ -1618,3 +1618,123 @@ fn awake_and_sleeping_counters_agree() {
         );
     }
 }
+
+/// Can a pose test retire the pile PhysX will not sleep?
+///
+/// The counter-agreement bench shows the shape of the waste: after a
+/// demolition ~390 bodies stay awake for 21 seconds at under 1 m/s, then
+/// sleep all at once. Every one of those 21 seconds is spent simulating,
+/// reading back and encoding a pile that is not moving -- and at merged-pile
+/// scale the live session showed the tail never ending at all (6,112 awake
+/// for the last eight minutes of a session with no further damage).
+///
+/// Velocity cannot see this: bodies in a deep pile trade contact impulses
+/// forever. Pose can. This measures how much of the tail a 2 cm / 1 s shell
+/// test removes, against the same scenario with only engine-sleep freezing.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
+    use vibe_land_destruction::freeze::FreezeConfig;
+
+    /// Returns (awake body-seconds over the settle, seconds until awake hits
+    /// zero, frozen at the end, total bodies).
+    fn run(freeze: FreezeConfig, label: &str) -> (u64, Option<u32>, u32, u32) {
+        let mut world = World::new(WorldConfig::default()).expect("GPU world");
+        world
+            .add_static_box(StaticBoxDesc {
+                entity_id: 1,
+                user_id: 0,
+                pose: Pose {
+                    position: BridgeVec3::new(0.0, -10.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                },
+                half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+                collision_group: GROUP_STATIC,
+                collision_mask: ALL_GROUPS,
+            })
+            .expect("ground");
+        let mut city =
+            crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+        city.set_freeze_config(freeze);
+        city.add_client(1);
+
+        let (tx, tz) = (-36.0f32, -36.0f32);
+        let origin = Vec3::new(tx, 1.6, tz - 26.0);
+        let mut tick = 0u32;
+        for shot in 0..40 {
+            let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+            let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+            let target = Vec3::new(tx + sweep, aim_y, tz);
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+            for _ in 0..8 {
+                world.step().expect("step");
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                tick += 1;
+            }
+        }
+
+        // Walk away. Charge every awake body for every second it stays awake:
+        // that integral, not the final count, is what the tick budget pays.
+        let mut awake_body_seconds = 0u64;
+        let mut quiet_at = None;
+        for second in 0..30u32 {
+            for _ in 0..60 {
+                world.step().expect("step");
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                tick += 1;
+            }
+            let s = city.stats();
+            awake_body_seconds += u64::from(s.awake_chunk_bodies);
+            if quiet_at.is_none() && s.awake_chunk_bodies == 0 {
+                quiet_at = Some(second + 1);
+            }
+        }
+        let s = city.stats();
+        println!(
+            "  {label:<14} bodies={:<5} frozen={:<5} awake-body-seconds={:<7} \
+             quiet_at={:<6} pose_quiet={} serial_blocks={}",
+            s.chunk_bodies,
+            s.frozen_chunk_bodies,
+            awake_body_seconds,
+            quiet_at.map(|q| format!("{q}s")).unwrap_or_else(|| "never".into()),
+            s.pose_quiet_awake_bodies,
+            s.frozen_serial_blocks,
+        );
+        assert_eq!(s.frozen_serial_blocks, 0, "frozen body reached a serial path");
+        (awake_body_seconds, quiet_at, s.frozen_chunk_bodies, s.chunk_bodies)
+    }
+
+    println!("\n=== retiring the pile PhysX will not sleep ===");
+    let sleep_only = FreezeConfig {
+        enabled: true,
+        after_ticks: 20,
+        batch: 4096,
+        census: true,
+        ..FreezeConfig::default()
+    };
+    let (sleep_seconds, sleep_quiet, sleep_frozen, _) = run(sleep_only, "engine-sleep");
+    let (pose_seconds, pose_quiet, pose_frozen, pose_bodies) = run(
+        FreezeConfig { pose_enabled: true, pose_ticks: 60, shell_m: 0.02, ..sleep_only },
+        "+ pose shell",
+    );
+
+    assert!(
+        pose_frozen > 0,
+        "pose freezing retired nothing out of {pose_bodies} bodies"
+    );
+    // The tail is the cost. Pose freezing has to cut it, not merely match the
+    // engine's own eventual sleep.
+    println!(
+        "  pose freezing cut awake body-seconds {sleep_seconds} -> {pose_seconds} \
+         ({:.0}%), quiet at {:?} -> {:?}",
+        100.0 * (1.0 - pose_seconds as f32 / sleep_seconds.max(1) as f32),
+        sleep_quiet,
+        pose_quiet,
+    );
+    assert!(
+        pose_seconds < sleep_seconds,
+        "pose freezing did not reduce the awake tail at all \
+         ({pose_seconds} vs {sleep_seconds} awake body-seconds); \
+         engine-sleep freezing alone retired {sleep_frozen}"
+    );
+}
