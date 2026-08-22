@@ -280,6 +280,32 @@ client-side ledger and asserts the island comes back un-parked.
 - The codec skill's island-stream reference was stale at 985,445 B;
   master measures 975,959, so a re-measure read as a 1% regression.
 
+### Frozen rubble is weightless, and what that cost to fix
+
+A kinematic body has infinite mass and is not accelerated by gravity, so
+a frozen chunk exerts no force on what it rests on. On the ground that
+is free. On a structure still standing it deletes load that should be
+helping bring the structure down.
+
+The industry design's answer is to freeze only what has "predominantly
+static support", and that test is implemented here
+(`FreezeTracker::is_supported`, using the spatial index already built:
+grounded, or resting on rubble already retired and therefore
+transitively grounded). **It defaults off, and that is a measurement.**
+
+Requiring support re-creates the problem the system exists to solve. A
+body that cannot find a grounded neighbour can never be retired, so it
+stays awake indefinitely. With the condition on, the one-shot bench saw
+the pile fail to come to rest at all — 431 bodies still awake after
+180 s, where the *unfrozen* control settled fully.
+
+So the trade is: an unquantified fidelity risk against a measured
+regression that undoes the win. The downtown ramp is the evidence that
+settles it in practice — freezing measures 34% *more* destruction than
+its control, so weightless rubble is not suppressing collapses at scale.
+`VIBE_CITY_FREEZE_GROUNDED=1` turns the condition on for anyone who
+wants to revisit it with a scene where the load path matters more.
+
 ## Configuration
 
 All default to current behaviour; nothing freezes unless switched on.
@@ -295,6 +321,7 @@ All default to current behaviour; nothing freezes unless switched on.
 | `VIBE_CITY_WAKE_RADIUS_SCALE` | 1.0 | multiplier on impact radius |
 | `VIBE_CITY_WAKE_ABOVE_M` | 2.0 | upward release above an impact |
 | `VIBE_CITY_POSE_CENSUS` | off | count pose-quiet bodies without acting |
+| `VIBE_CITY_FREEZE_GROUNDED` | off | freeze only ground-supported rubble (see above) |
 
 ## Open
 
