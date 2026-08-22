@@ -306,6 +306,45 @@ its control, so weightless rubble is not suppressing collapses at scale.
 `VIBE_CITY_FREEZE_GROUNDED=1` turns the condition on for anyone who
 wants to revisit it with a scene where the load path matters more.
 
+### Contact-driven wake: the engine detects the hit, we release the body
+
+The first live play sessions found the two real fidelity failures, in
+order. Chunks frozen while momentarily wedged hung in mid-air (fixed
+first by an interval sweep, then properly below). Worse: frozen pieces
+near a building became **invisible anchors** — when the building
+collapsed onto them, the falling debris struck immovable kinematic
+bodies and the collapse visibly broke against its own old rubble.
+
+The fix leverages the engine rather than policing around it. PhysX's
+faithfulness rule — a moving body wakes what it strikes — has no effect
+on kinematic bodies, so the bridge restores it through the engine's own
+contact reports (already flowing through `onContact` to feed damage into
+Blast). A reported impulse against a frozen body is compared to the
+*striker's* resting load (`m·g·dt`): debris lying on a frozen pile
+scores ~1 and never fires; an impact past ~0.7 m/s crosses the default
+ratio of 4 (`VIBE_CITY_CONTACT_WAKE_RATIO`) and releases exactly the
+body that was hit, that tick. Self-normalising across a 40 kg panel and
+a 4 t slab alike. No polling, no interval.
+
+The old measured prohibition on contact wakes does not apply: that
+negative was about sleeping *dynamic* bodies, where waking one member
+re-opens the whole island (94% of 14k bodies held awake). A frozen body
+belongs to no island; a contact releases one body, and propagation
+happens only through further real contacts — which is how a collapse
+actually spreads.
+
+Support-loss release is event-driven the same way: thaw, retire and
+adapter flip-back each queue a targeted check of the rubble above the
+removed body, run the next tick, so a stack whose base is dug out
+un-freezes upward over consecutive ticks. The interval sweep survives
+only as a backstop for bodies frozen unsupported from the start.
+
+Verified at three levels: unit (cascade, off-cadence release), GPU (a
+500 kg box dropped 5 m onto a frozen pile releases rubble through
+contact alone, locally), and live (the user's scenario driven in a real
+browser produced 438 contact wakes during a collapse onto frozen rubble,
+settling back to 509 frozen at 7.2 ms ticks).
+
 ## Configuration
 
 All default to current behaviour; nothing freezes unless switched on.
@@ -322,6 +361,9 @@ All default to current behaviour; nothing freezes unless switched on.
 | `VIBE_CITY_WAKE_ABOVE_M` | 2.0 | upward release above an impact |
 | `VIBE_CITY_POSE_CENSUS` | off | count pose-quiet bodies without acting |
 | `VIBE_CITY_FREEZE_GROUNDED` | off | freeze only ground-supported rubble (see above) |
+| `VIBE_CITY_CONTACT_WAKE_RATIO` | 4.0 | impulse/resting-load ratio that releases a struck frozen body; 0 disables |
+| `VIBE_CITY_FREEZE_SWEEP_TICKS` | 30 | interval backstop for the event-driven support-loss release; 0 disables |
+| `VIBE_CITY_FREEZE_SWEEP_BATCH` | 64 | max releases per sweep |
 
 ## Open
 
