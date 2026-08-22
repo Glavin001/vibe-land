@@ -28,6 +28,18 @@ interface CityServerStats {
   baseline_id: number;
   min_body_y: number;
   resettled_wakes: number;
+  /// Optional: servers older than the pile-freezing build do not send these.
+  sleeping_bodies?: number;
+  frozen_bodies?: number;
+  freeze_flips?: number;
+  unfreeze_flips?: number;
+  contact_wakes?: number;
+  chunk_sleep_events?: number;
+  chunk_wake_events?: number;
+  pose_quiet_awake_bodies?: number;
+  frozen_serial_blocks?: number;
+  solver_island_count?: number;
+  solver_islands_skipped?: number;
   solve_ms: number;
   begin_ms: number;
   end_ms: number;
@@ -463,13 +475,49 @@ export function CityStatsOverlay({
       )}
 
       <div style={heading}>destruction</div>
+      {/*
+        The body population, partitioned. awake is what the solver simulates
+        this tick (the measured knee on this hardware is ~3,000 -- warn as it
+        approaches); asleep is engine-slept dynamics; frozen is settled rubble
+        retired from the solver as kinematic, which costs ~nothing and is the
+        pile-freezing system working. total - awake - asleep - frozen is the
+        structures' kinematic support actors (one per intact building).
+      */}
+      <Stat label="bodies total" value={`${city?.chunk_bodies ?? 0}`} />
       <Stat
-        label="bodies (awake)"
-        value={`${city?.chunk_bodies ?? 0} (${city?.awake_bodies ?? 0})`}
-        warn={(city?.awake_bodies ?? 0) > 200}
+        label="├ awake"
+        value={`${city?.awake_bodies ?? 0}`}
+        warn={(city?.awake_bodies ?? 0) > 2500}
       />
+      <Stat label="├ asleep" value={`${city?.sleeping_bodies ?? 0}`} />
+      <Stat
+        label="└ frozen"
+        value={`${city?.frozen_bodies ?? 0}${
+          (city?.chunk_bodies ?? 0) > 0
+            ? ` (${Math.round((100 * (city?.frozen_bodies ?? 0)) / (city?.chunk_bodies ?? 1))}%)`
+            : ''
+        }`}
+      />
+      {/*
+        Wake plumbing health. contact wakes = frozen rubble released because
+        moving debris struck it (rises during collapses onto old rubble, flat
+        at rest). freeze/thaw = cumulative transitions; sustained churn with
+        no new damage means the policy is fighting the engine. serial blocks
+        must stay zero -- non-zero is identity aliasing.
+      */}
+      <Stat label="contact wakes" value={`${city?.contact_wakes ?? 0}`} />
+      <Stat
+        label="freeze / thaw"
+        value={`${city?.freeze_flips ?? 0} / ${city?.unfreeze_flips ?? 0}`}
+      />
+      {(city?.frozen_serial_blocks ?? 0) > 0 && (
+        <Stat label="serial blocks" value={`${city?.frozen_serial_blocks}`} warn />
+      )}
       <Stat label="broken bonds" value={`${city?.broken_bonds ?? 0}`} />
-      <Stat label="islands" value={`${clientStats?.liveIslands ?? 0}`} />
+      <Stat
+        label="islands (solver)"
+        value={`${clientStats?.liveIslands ?? 0} (${city?.solver_island_count ?? 0})`}
+      />
       <Stat
         label="city step"
         value={`${(city?.step_ms ?? 0).toFixed(1)} ms`}
