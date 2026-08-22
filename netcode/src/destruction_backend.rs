@@ -321,6 +321,13 @@ pub struct DestructionStats {
     /// Frozen bodies the adapter set dynamic again on its own, because they
     /// split under load. Expected; the rate is worth watching.
     pub frozen_adapter_releases: u64,
+    /// Resting bodies with nothing beneath them -- the floating-rubble
+    /// census. Counts frozen and engine-asleep bodies alike, so it can answer
+    /// whether freezing invents floaters or preserves ones the simulation was
+    /// already making. Bodies held by Blast bonds legitimately appear here, so
+    /// read it as a difference between runs, never as an absolute. Only
+    /// populated under VIBE_CITY_POSE_CENSUS.
+    pub unsupported_resting_bodies: u32,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

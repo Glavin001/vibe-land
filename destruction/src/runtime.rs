@@ -617,6 +617,29 @@ impl CityDestruction {
             }
         }
 
+        // Release frozen rubble that has lost whatever was holding it up.
+        //
+        // Freezing at rest is not the same as freezing when supported: a body
+        // can be still while wedged, or resting on debris that later slides
+        // away. Kinematic bodies cannot fall, so without this they hang in
+        // the air permanently -- measured as floaters resolving to zero
+        // without freezing but sticking at 4 with it, and immediately visible
+        // to a player. Released bodies fall, land, and freeze again, so the
+        // loop closes; the per-entity backoff keeps one that cannot find rest
+        // from cycling every sweep.
+        let stranded = self.freeze.unsupported_frozen(tick);
+        if !stranded.is_empty() {
+            match world.unfreeze_chunk_bodies(&stranded) {
+                Ok(_) => {
+                    for entity in self.freeze.mark_thawed(&stranded, tick) {
+                        let (structure_id, serial) = ids::body_entity_parts(entity);
+                        wakes.push((structure_id, serial));
+                    }
+                }
+                Err(_) => self.stats.freeze_failures += 1,
+            }
+        }
+
         let census = self.freeze.census();
         // Frozen bodies are kinematic, so the snapshot loop above never sees
         // them and min_body_y would silently stop covering them -- on exactly
@@ -630,6 +653,7 @@ impl CityDestruction {
         self.stats.chunk_sleep_events = census.sleep_edges;
         self.stats.chunk_wake_events = census.wake_edges;
         self.stats.pose_quiet_awake_bodies = census.pose_quiet_awake;
+        self.stats.unsupported_resting_bodies = census.unsupported_resting;
 
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();

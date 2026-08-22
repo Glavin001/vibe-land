@@ -933,12 +933,13 @@ fn main() -> Result<()> {
             writeln!(
                 log,
                 "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3},\
-                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{}}}",
+                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{},\"floating\":{}}}",
                 enc_started.elapsed().as_secs_f32() * 1000.0,
                 tick_stats.awake_chunk_bodies,
                 tick_stats.chunk_bodies,
                 tick_stats.frozen_chunk_bodies,
                 tick_stats.broken_bonds,
+                tick_stats.unsupported_resting_bodies,
             )?;
         }
 

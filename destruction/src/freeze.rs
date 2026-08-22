@@ -136,6 +136,21 @@ pub struct FreezeConfig {
     /// How far above y=0 a body's underside may sit and still count as
     /// resting on the ground.
     pub ground_epsilon_m: f32,
+    /// Ticks between sweeps that release frozen bodies which have lost their
+    /// support. 0 disables the sweep.
+    ///
+    /// Freezing at rest is not the same as freezing when *supported*: a body
+    /// can be momentarily still while wedged or resting on debris that later
+    /// slides away, and once frozen it is kinematic and cannot fall. Measured
+    /// on a 70 s high-rise run, transient floaters peak around 9 and resolve
+    /// to zero without freezing; with freezing they stick permanently. This
+    /// is the self-correcting answer to that, and it is preferable to
+    /// refusing to freeze unsupported bodies in the first place, which
+    /// strands them awake forever instead (see `require_grounded`).
+    pub unsupported_sweep_ticks: u32,
+    /// Bodies released per sweep, so a large collapse cannot turn one sweep
+    /// into a mass wake.
+    pub unsupported_sweep_batch: usize,
 }
 
 impl Default for FreezeConfig {
@@ -161,6 +176,8 @@ impl Default for FreezeConfig {
             cell_m: 4.0,
             require_grounded: false,
             ground_epsilon_m: 0.6,
+            unsupported_sweep_ticks: 30,
+            unsupported_sweep_batch: 64,
         }
     }
 }
@@ -203,6 +220,14 @@ impl FreezeConfig {
             ground_epsilon_m: number(
                 "VIBE_CITY_FREEZE_GROUND_EPSILON_M",
                 defaults.ground_epsilon_m,
+            ),
+            unsupported_sweep_ticks: number(
+                "VIBE_CITY_FREEZE_SWEEP_TICKS",
+                defaults.unsupported_sweep_ticks,
+            ),
+            unsupported_sweep_batch: number(
+                "VIBE_CITY_FREEZE_SWEEP_BATCH",
+                defaults.unsupported_sweep_batch,
             ),
         }
     }
@@ -260,6 +285,9 @@ pub struct FreezeCensus {
     /// Awake bodies inside their shell for a full window.
     pub pose_quiet_awake: u32,
     pub frozen: u32,
+    /// Resting bodies (frozen or engine-asleep) with nothing beneath them.
+    /// Only meaningful as a difference between two runs of one scenario.
+    pub unsupported_resting: u32,
     /// Lowest frozen body origin, metres, or +inf when nothing is frozen.
     ///
     /// A frozen body is kinematic, so it disappears from the snapshot stream
@@ -614,6 +642,11 @@ impl FreezeTracker {
         FreezeCensus {
             frozen: self.frozen.len() as u32,
             min_frozen_y: self.min_frozen_y(),
+            unsupported_resting: if self.config.census {
+                self.unsupported_resting()
+            } else {
+                0
+            },
             ..self.census
         }
     }
@@ -673,6 +706,167 @@ impl FreezeTracker {
             }
         }
         false
+    }
+
+    /// Frozen bodies that have lost their support and should fall.
+    ///
+    /// A body is frozen because it was at rest, which is not the same as
+    /// being *supported*: it may have been wedged, or resting on debris that
+    /// has since slid out from under it. A kinematic body cannot fall, so
+    /// without this it hangs in the air permanently — the artifact a player
+    /// notices immediately, and the one measurable difference this system
+    /// makes to how the pile looks.
+    ///
+    /// Returns at most `unsupported_sweep_batch` entities so a collapse that
+    /// strands many at once cannot turn one sweep into a mass wake.
+    ///
+    /// Only *frozen* bodies are candidates, and that is what makes the test
+    /// safe: a chunk still bonded to a structure belongs to that structure's
+    /// support actor, which is never frozen. So a frozen body has no bonds
+    /// holding it up, and contact is the only thing that can — if there is
+    /// nothing under it, it is genuinely floating.
+    pub fn unsupported_frozen(&self, tick: u64) -> Vec<u32> {
+        if self.config.unsupported_sweep_ticks == 0
+            || tick % u64::from(self.config.unsupported_sweep_ticks) != 0
+            || self.frozen.is_empty()
+        {
+            return Vec::new();
+        }
+        let mut stranded = Vec::new();
+        for &entity in &self.frozen {
+            let Some(body) = self.bodies.get(&entity) else {
+                continue;
+            };
+            if !self.is_supported_by_frozen(entity, body.anchor_pos, body.reach) {
+                stranded.push(entity);
+                if stranded.len() >= self.config.unsupported_sweep_batch.max(1) {
+                    break;
+                }
+            }
+        }
+        stranded
+    }
+
+    /// Ground, or another frozen body beneath. `entity` excludes self.
+    fn is_supported_by_frozen(
+        &self,
+        entity: u32,
+        position: [f32; 3],
+        reach: f32,
+    ) -> bool {
+        let bottom = position[1] - reach;
+        if bottom <= self.config.ground_epsilon_m {
+            return true;
+        }
+        let cell = self.config.cell_m.max(0.5);
+        let (cx, cy, cz) = cell_index(position, cell);
+        for x in (cx - 1)..=(cx + 1) {
+            for y in (cy - 1)..=cy {
+                for z in (cz - 1)..=(cz + 1) {
+                    let Some(bucket) = self.cells.get(&(x, y, z)) else {
+                        continue;
+                    };
+                    for &other in bucket {
+                        if other == entity {
+                            continue;
+                        }
+                        let Some(neighbour) = self.bodies.get(&other) else {
+                            continue;
+                        };
+                        if neighbour.phase != Phase::Frozen
+                            || neighbour.anchor_pos[1] > position[1]
+                        {
+                            continue;
+                        }
+                        if neighbour.anchor_pos[1] + neighbour.reach
+                            < bottom - self.config.ground_epsilon_m
+                        {
+                            continue;
+                        }
+                        let dx = neighbour.anchor_pos[0] - position[0];
+                        let dz = neighbour.anchor_pos[2] - position[2];
+                        if dx * dx + dz * dz <= (reach + neighbour.reach).powi(2) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Resting bodies with nothing under them: the floating-rubble census.
+    ///
+    /// Counts every body currently at rest -- frozen OR engine-asleep -- whose
+    /// underside is clear of the ground and which has no other resting body
+    /// beneath it. Deliberately blind to *why* a body is at rest, because the
+    /// question it answers is whether freezing invents floaters or merely
+    /// preserves ones the simulation was already producing, and a metric that
+    /// only sees frozen bodies cannot tell those apart.
+    ///
+    /// Bodies held up by Blast bonds are expected to appear here: a slab
+    /// bonded to a standing structure is legitimately in mid-air. So the
+    /// number is only meaningful as a difference between two runs of the same
+    /// scenario, never on its own.
+    ///
+    /// O(n) with a temporary grid, so it runs on the census cadence rather
+    /// than per tick.
+    pub fn unsupported_resting(&self) -> u32 {
+        let cell = self.config.cell_m.max(0.5);
+        let resting: Vec<(u32, [f32; 3], f32)> = self
+            .bodies
+            .iter()
+            .filter(|(_, body)| {
+                matches!(body.phase, Phase::Frozen | Phase::Sleeping { .. })
+            })
+            .map(|(entity, body)| (*entity, body.anchor_pos, body.reach))
+            .collect();
+        let mut grid: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        for (index, (_, pos, _)) in resting.iter().enumerate() {
+            grid.entry(cell_index(*pos, cell)).or_default().push(index);
+        }
+        let mut floating = 0;
+        for (index, (_, pos, reach)) in resting.iter().enumerate() {
+            let bottom = pos[1] - reach;
+            if bottom <= self.config.ground_epsilon_m {
+                continue;
+            }
+            let (cx, cy, cz) = cell_index(*pos, cell);
+            let mut supported = false;
+            'search: for x in (cx - 1)..=(cx + 1) {
+                for y in (cy - 1)..=cy {
+                    for z in (cz - 1)..=(cz + 1) {
+                        let Some(bucket) = grid.get(&(x, y, z)) else {
+                            continue;
+                        };
+                        for &other_index in bucket {
+                            if other_index == index {
+                                continue;
+                            }
+                            let (_, other_pos, other_reach) = resting[other_index];
+                            if other_pos[1] > pos[1] {
+                                continue;
+                            }
+                            if other_pos[1] + other_reach
+                                < bottom - self.config.ground_epsilon_m
+                            {
+                                continue;
+                            }
+                            let dx = other_pos[0] - pos[0];
+                            let dz = other_pos[2] - pos[2];
+                            if dx * dx + dz * dz <= (reach + other_reach).powi(2) {
+                                supported = true;
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+            if !supported {
+                floating += 1;
+            }
+        }
+        floating
     }
 
     /// Lowest frozen body origin, or +inf when nothing is frozen.
@@ -1096,6 +1290,88 @@ mod tests {
         assert!(tracker.is_supported([0.0, 400.0, 0.0], 0.5));
         // And off is the default, so nothing is stranded unless asked for.
         assert!(!FreezeConfig::default().require_grounded);
+    }
+
+    /// A frozen body whose support slides out from under it must be released.
+    ///
+    /// This is the artifact a player sees first: kinematic bodies cannot
+    /// fall, so a chunk frozen while wedged hangs in the air forever. Without
+    /// freezing the same chunk simply drops.
+    #[test]
+    fn frozen_rubble_that_loses_its_support_is_released() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            unsupported_sweep_ticks: 10,
+            ..config(true)
+        });
+        // A grounded body, and one perched on top of it.
+        for (entity, y) in [(1u32, 0.4f32), (2, 1.3)] {
+            tracker.promote(entity, 0.5);
+            let _ = tracker.observe(sample(entity, [0.0, y, 0.0], true, 1));
+            tracker.mark_frozen(&[FreezeCandidate {
+                entity,
+                position: [0.0, y, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                reach: 0.5,
+                needs_settle_record: false,
+            }]);
+        }
+        assert!(
+            tracker.unsupported_frozen(10).is_empty(),
+            "a stacked pair is supported: the lower body is on the ground and \
+             the upper one is on the lower"
+        );
+
+        // The lower body is dug out. The upper one is now hanging.
+        tracker.retire(1);
+        assert_eq!(
+            tracker.unsupported_frozen(10),
+            vec![2],
+            "the perched body lost its support and must be released to fall"
+        );
+        // Only on the sweep cadence, so this is not per-tick work.
+        assert!(tracker.unsupported_frozen(11).is_empty());
+    }
+
+    /// The sweep is bounded, so a collapse cannot turn one tick into a mass wake.
+    #[test]
+    fn the_unsupported_sweep_is_batched() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            unsupported_sweep_ticks: 10,
+            unsupported_sweep_batch: 3,
+            ..config(true)
+        });
+        for entity in 0..20u32 {
+            tracker.promote(entity, 0.5);
+            let _ = tracker.observe(sample(entity, [entity as f32 * 10.0, 40.0, 0.0], true, 1));
+            tracker.mark_frozen(&[FreezeCandidate {
+                entity,
+                position: [entity as f32 * 10.0, 40.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                reach: 0.5,
+                needs_settle_record: false,
+            }]);
+        }
+        assert_eq!(tracker.unsupported_frozen(10).len(), 3);
+    }
+
+    /// The sweep can be switched off entirely.
+    #[test]
+    fn the_unsupported_sweep_can_be_disabled() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            unsupported_sweep_ticks: 0,
+            ..config(true)
+        });
+        tracker.promote(1, 0.5);
+        let _ = tracker.observe(sample(1, [0.0, 40.0, 0.0], true, 1));
+        tracker.mark_frozen(&[FreezeCandidate {
+            entity: 1,
+            position: [0.0, 40.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
+            needs_settle_record: false,
+        }]);
+        assert!(tracker.unsupported_frozen(10).is_empty());
+        assert!(tracker.unsupported_frozen(0).is_empty());
     }
 
     #[test]
