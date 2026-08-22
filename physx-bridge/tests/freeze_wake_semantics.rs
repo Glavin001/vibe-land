@@ -416,3 +416,79 @@ fn unknown_and_repeated_ids_are_tolerated() {
     assert_eq!(world.unfreeze_chunk_bodies(&[pile[0]]).expect("unfreeze"), 1);
     assert_eq!(world.unfreeze_chunk_bodies(&[pile[0]]).expect("unfreeze"), 0);
 }
+
+/// The user's bug, reproduced: debris landing on frozen rubble must release
+/// it, not bounce off it as though it were bedrock.
+///
+/// Pieces that fell earlier freeze where they landed. A later collapse rains
+/// chunks onto them -- and a kinematic body is immovable, so without a
+/// release path the falling debris strikes invisible anchors and the
+/// collapse visibly "hits itself". PhysX's own rule -- a moving body wakes
+/// what it strikes -- has no effect on kinematic bodies, so the bridge
+/// listens to the engine's contact reports instead: an impulse well above
+/// the striker's resting load releases the frozen body it hit, that tick.
+///
+/// The striker here is a plain dynamic box dropped from height, deliberately:
+/// it goes nowhere near the weapon path or the stress solver, so the only
+/// mechanism that can register the hit is the engine's collision detection.
+/// This is the pure form of "the collapse lands on old rubble".
+#[test]
+fn debris_landing_on_frozen_rubble_releases_it_by_contact() {
+    use vibe_land_physx_bridge::DynamicBoxDesc;
+
+    let mut world = rubble_world(6, 5);
+    let pile = settled_pile(&mut world, 60 * 30);
+    assert!(pile.len() >= 4, "need a settled pile, got {} bodies", pile.len());
+
+    let frozen = world.freeze_chunk_bodies(&pile).expect("freeze");
+    assert!(frozen > 0);
+    let before = world.destruction_stats().expect("stats");
+    assert_eq!(before.contact_wakes, 0, "nothing has struck the pile yet");
+
+    // Where the pile actually is, so the drop cannot miss it.
+    let top = world
+        .chunk_body_snapshots()
+        .expect("snapshots")
+        .iter()
+        .filter(|body| pile.contains(&body.entity_id))
+        .map(|body| (body.position.x, body.position.y, body.position.z))
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .expect("pile has members");
+
+    world
+        .add_dynamic_box(DynamicBoxDesc {
+            entity_id: 0x4000_0001,
+            user_id: 0,
+            pose: Pose {
+                position: Vec3::new(top.0, top.1 + 5.0, top.2),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: Vec3::new(0.5, 0.5, 0.5),
+            mass: 500.0,
+            collision_group: GROUP_CHUNK,
+            collision_mask: ALL,
+        })
+        .expect("drop box");
+    for _ in 0..(60 * 3) {
+        tick(&mut world);
+    }
+
+    let after = world.destruction_stats().expect("stats");
+    assert!(
+        after.contact_wakes > 0,
+        "a 500 kg box fell 5 m onto a frozen pile and released nothing: \
+         debris is bouncing off kinematic anchors ({} frozen, {} awake)",
+        after.frozen_chunk_bodies,
+        after.awake_chunk_bodies,
+    );
+    // And the release is local: an impact does not thaw the whole pile.
+    assert!(
+        after.frozen_chunk_bodies > 0,
+        "one impact released the entire pile"
+    );
+    assert_eq!(after.frozen_serial_blocks, 0);
+    assert!(
+        world.validate_destruction_mappings().expect("validate"),
+        "mappings invalid after contact wakes"
+    );
+}

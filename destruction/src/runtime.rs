@@ -421,6 +421,28 @@ impl CityDestruction {
         }
 
         let drain_ms = drain_started.elapsed().as_secs_f32() * 1000.0;
+        let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
+
+        // Contact wakes: frozen bodies that dynamic debris struck during the
+        // physics step that just ran. This is the engine's own collision
+        // detection driving the release -- the equivalent, for frozen rubble,
+        // of PhysX waking a sleeping body that gets hit -- and it is what
+        // stops a collapse treating previously-frozen pieces as immovable
+        // anchors and visibly breaking against them.
+        if let Ok(struck) = world.take_frozen_contact_wakes() {
+            if !struck.is_empty() {
+                match world.unfreeze_chunk_bodies(&struck) {
+                    Ok(_) => {
+                        for entity in self.freeze.mark_thawed(&struck, tick) {
+                            let (structure_id, serial) = ids::body_entity_parts(entity);
+                            wakes.push((structure_id, serial));
+                        }
+                    }
+                    Err(_) => self.stats.freeze_failures += 1,
+                }
+            }
+        }
+
         let readback_started = std::time::Instant::now();
         let snapshots = world
             .chunk_body_snapshots()
@@ -442,9 +464,9 @@ impl CityDestruction {
         // Bodies the wire must be told are moving again. Two sources, both
         // below: the adapter flipping a frozen body back when it splits, and
         // spatial wakes staged by an impact since the last tick.
-        let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
         let mut freeze_candidates = Vec::new();
         self.freeze.begin_tick();
+
         // Lowest body this tick, over EVERY dynamic body -- sleeping included.
         // This field existed, was logged, asserted on and shown in the overlay,
         // but was never actually computed: it sat at its Default of 0.0
@@ -706,6 +728,7 @@ impl CityDestruction {
             self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
             self.stats.freeze_flips = bridge_stats.freeze_flips;
             self.stats.unfreeze_flips = bridge_stats.unfreeze_flips;
+            self.stats.contact_wakes = bridge_stats.contact_wakes;
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
             self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }

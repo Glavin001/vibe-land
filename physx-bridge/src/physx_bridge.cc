@@ -467,6 +467,32 @@ public:
             {entity_a, entity_b, from_px(total_impulse),
              from_px(weighted_point)});
       }
+#ifdef VIBE_LAND_DESTRUCTION
+      // Frozen rubble struck by moving debris must respond. PhysX wakes a
+      // sleeping body that is hit, but a frozen body is kinematic and has no
+      // sleep state -- without this, a collapse rains onto frozen rubble as
+      // though it were bedrock. The wake=false rule above is untouched: that
+      // prohibition is about sleeping DYNAMIC bodies, where one wake re-opens
+      // the whole contact island; a frozen body belongs to no island, so a
+      // contact releases exactly the body that was hit.
+      if (destruction_ && destruction_->has_frozen_bodies() &&
+          total_magnitude > 0.0f) {
+        const auto dynamic_mass = [](const PxActor *actor) -> float {
+          const PxRigidDynamic *dynamic =
+              actor != nullptr ? actor->is<PxRigidDynamic>() : nullptr;
+          if (dynamic == nullptr ||
+              dynamic->getRigidBodyFlags().isSet(
+                  PxRigidBodyFlag::eKINEMATIC)) {
+            return -1.0f;
+          }
+          return dynamic->getMass();
+        };
+        destruction_->note_contact_pair(entity_a, entity_b,
+                                        dynamic_mass(header.actors[0]),
+                                        dynamic_mass(header.actors[1]),
+                                        total_magnitude);
+      }
+#endif
     }
   }
 
@@ -1172,6 +1198,16 @@ public:
 #endif
   }
 
+  rust::Vec<std::uint32_t> take_frozen_contact_wakes() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_frozen_contact_wakes();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
   FfiDestructionStats destruction_stats() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1546,6 +1582,10 @@ std::uint32_t World::freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity
 
 std::uint32_t World::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
   return impl_->unfreeze_chunk_bodies(entity_ids);
+}
+
+rust::Vec<std::uint32_t> World::take_frozen_contact_wakes() {
+  return impl_->take_frozen_contact_wakes();
 }
 
 FfiDestructionStats World::destruction_stats() const {

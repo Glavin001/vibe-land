@@ -14,6 +14,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <unordered_set>
 #include <vector>
 
 namespace physx {
@@ -159,6 +160,35 @@ public:
   std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
   std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
 
+  /// A reported contact touched these two entities with this total impulse.
+  /// Called from the scene's onContact for every reported chunk pair; decides
+  /// whether a FROZEN participant should be released to respond.
+  ///
+  /// This is the mechanism that keeps frozen rubble physically honest: PhysX
+  /// wakes a sleeping body struck by a moving one, but a kinematic body has
+  /// no sleep state to wake, so without this a collapse rains onto frozen
+  /// rubble as though it were bedrock -- immovable anchors mid-pile, and the
+  /// collapse visibly "hits itself". The measured prohibition on contact
+  /// wakes (route_contact_shape's wake=false) is about SLEEPING DYNAMIC
+  /// bodies, where one wake re-opens the whole contact island; a frozen body
+  /// is kinematic, belongs to no island, and waking it wakes exactly one
+  /// body, so the cascade that killed that idea cannot happen here.
+  ///
+  /// Masses are the dynamic participants' (< 0 when a side is not a dynamic
+  /// body); the threshold is a RATIO against the striker's resting load
+  /// (m*g*dt), so it self-normalises across chunk masses: debris resting on
+  /// a frozen pile scores ~1 and never wakes it, an impact at >~0.7 m/s
+  /// scores past the default ratio of 4 and releases the chunk it hit.
+  void note_contact_pair(std::uint32_t entity_a, std::uint32_t entity_b,
+                         float mass_a, float mass_b, float impulse);
+
+  /// Frozen bodies contact-struck since the last drain, deduplicated.
+  rust::Vec<std::uint32_t> take_frozen_contact_wakes();
+
+  /// Whether contact reports need to consult the frozen set at all; lets the
+  /// scene callback skip the lookup on the hot path when nothing is frozen.
+  bool has_frozen_bodies() const { return !frozen_entities_.empty(); }
+
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
@@ -232,6 +262,20 @@ private:
   std::uint64_t frozen_adapter_releases_ = 0;
   std::uint64_t freeze_flips_ = 0;
   std::uint64_t unfreeze_flips_ = 0;
+  /// Frozen bodies released because dynamic debris struck them. The count
+  /// says whether piles are responding to collapses (healthy, proportional)
+  /// or being sanded awake by resting contacts (a ratio mis-tune).
+  std::uint64_t contact_wakes_ = 0;
+  /// Entity ids of every currently frozen body, for the contact hot path:
+  /// onContact fires per reported pair per tick and cannot afford the
+  /// slot walk. Kept in lockstep with each Slot::frozen everywhere that set
+  /// changes.
+  std::unordered_set<std::uint32_t> frozen_entities_;
+  /// Contact-struck frozen bodies awaiting the per-tick drain (deduped).
+  std::unordered_set<std::uint32_t> contact_wake_pending_;
+  std::vector<std::uint32_t> contact_wake_order_;
+  /// Fixed step from the last destruction_tick, for the resting-load ratio.
+  float last_dt_ = 1.0f / 60.0f;
   /// Promotions whose body reuses the parent actor, so its centre of mass is a
   /// local offset rather than its origin.
   std::uint64_t reused_parent_promotions_ = 0;

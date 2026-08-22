@@ -453,6 +453,9 @@ pub struct DestructionStats {
     pub frozen_chunk_bodies: u32,
     pub freeze_flips: u64,
     pub unfreeze_flips: u64,
+    /// Frozen bodies released because dynamic debris struck them: the
+    /// engine-driven wake that keeps a frozen pile responding to collapses.
+    pub contact_wakes: u64,
     /// Must stay zero: a frozen body reaching a serial-issuing path would
     /// alias settled rubble onto the structure's kinematic support actor.
     pub frozen_serial_blocks: u64,
@@ -1028,6 +1031,22 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Frozen bodies that dynamic debris struck since the last drain.
+    ///
+    /// The engine's own contact reports are the signal: PhysX wakes a
+    /// sleeping body that is hit, but a frozen body is kinematic and has no
+    /// sleep state, so this is how "a moving body wakes what it strikes" is
+    /// restored for retired rubble. Drained once per tick; the caller
+    /// unfreezes the result so the pile responds to a collapse landing on it
+    /// instead of behaving like bedrock.
+    #[cfg(feature = "destruction")]
+    pub fn take_frozen_contact_wakes(&mut self) -> Result<Vec<u32>, BridgeError> {
+        self.inner
+            .pin_mut()
+            .take_frozen_contact_wakes()
+            .map_err(operation_error)
+    }
+
     #[cfg(feature = "destruction")]
     pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
         self.inner
@@ -1367,6 +1386,8 @@ mod ffi {
         frozen_adapter_releases: u64,
         freeze_flips: u64,
         unfreeze_flips: u64,
+        /// Frozen bodies released because dynamic debris struck them.
+        contact_wakes: u64,
     }
 
     unsafe extern "C++" {
@@ -1460,6 +1481,7 @@ mod ffi {
         fn sleep_chunk_body(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
         fn freeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
         fn unfreeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
+        fn take_frozen_contact_wakes(self: Pin<&mut World>) -> Result<Vec<u32>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
     }
@@ -1875,6 +1897,7 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             frozen_chunk_bodies: value.frozen_chunk_bodies,
             freeze_flips: value.freeze_flips,
             unfreeze_flips: value.unfreeze_flips,
+            contact_wakes: value.contact_wakes,
             frozen_serial_blocks: value.frozen_serial_blocks,
             frozen_adapter_releases: value.frozen_adapter_releases,
         }

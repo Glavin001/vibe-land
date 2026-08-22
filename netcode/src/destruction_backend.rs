@@ -310,6 +310,12 @@ pub struct DestructionStats {
     /// signature of a freeze policy fighting the engine.
     pub freeze_flips: u64,
     pub unfreeze_flips: u64,
+    /// Frozen bodies released because dynamic debris struck them. This is the
+    /// engine's own collision detection driving the wake: resting contacts
+    /// score ~1 on the impulse/resting-load ratio and never fire, an impact
+    /// past ~0.7 m/s does. Healthy piles show this rising during collapses
+    /// and flat at rest.
+    pub contact_wakes: u64,
     /// Freeze calls the bridge refused. Non-zero disables freezing for the
     /// rest of the match rather than retrying every tick.
     pub freeze_failures: u64,

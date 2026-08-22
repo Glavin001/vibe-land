@@ -337,6 +337,9 @@ void DestructionManager::clear_destructibles() {
   max_island_serial_ = 0;
   total_broken_bonds_ = 0;
   last_stress_solve_ms_ = 0.0f;
+  frozen_entities_.clear();
+  contact_wake_pending_.clear();
+  contact_wake_order_.clear();
 }
 
 DestructionManager::Slot *
@@ -762,6 +765,10 @@ void DestructionManager::collect_events(Slot &slot) {
     // Rust sees the same body reappear in the snapshot and announces the wake.
     if (!bodies[i].kinematic && slot.frozen.erase(bodies[i].bodyId) != 0) {
       ++frozen_adapter_releases_;
+      const auto freed = slot.body_to_serial.find(bodies[i].bodyId);
+      if (freed != slot.body_to_serial.end()) {
+        frozen_entities_.erase(pack_body_entity(slot.structure_id, freed->second));
+      }
     }
     const bool frozen = slot.frozen.count(bodies[i].bodyId) != 0;
     const auto mapped = slot.body_to_serial.find(bodies[i].bodyId);
@@ -817,11 +824,17 @@ void DestructionManager::collect_events(Slot &slot) {
     }
   }
   for (ExtStressPhysXId id : retired_ids) {
-    slot.body_to_serial.erase(id);
     // A frozen body can still be destroyed under us (crushed, or merged away).
-    // Leaving it in the set would leak an entry and, once the adapter recycles
-    // the id, wrongly mark a brand new body as already frozen.
-    slot.frozen.erase(id);
+    // Leaving it in the sets would leak entries and, once the adapter
+    // recycles the id, wrongly mark a brand new body as already frozen.
+    // Serial read before the erase that invalidates it.
+    if (slot.frozen.erase(id) != 0) {
+      const auto freed = slot.body_to_serial.find(id);
+      if (freed != slot.body_to_serial.end()) {
+        frozen_entities_.erase(pack_body_entity(slot.structure_id, freed->second));
+      }
+    }
+    slot.body_to_serial.erase(id);
   }
 
   const auto &shapes = slot.shape_cache;
@@ -1042,6 +1055,11 @@ std::uint32_t DestructionManager::next_serial(Slot &slot) {
 }
 
 void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
+  // Remembered for the contact-wake resting-load ratio, which needs the
+  // step the reported impulses were integrated over.
+  if (dt > 0.0f) {
+    last_dt_ = dt;
+  }
   const PxVec3 g = to_px(gravity);
   using clock = std::chrono::steady_clock;
   const auto ms_since = [](clock::time_point from) {
@@ -1693,20 +1711,25 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       const bool already =
           body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
       if (already == kinematic) {
-        // Keep the set honest even when the flag needed no change.
+        // Keep the sets honest even when the flag needed no change.
         if (kinematic) {
           slot->frozen.insert(body_id);
+          frozen_entities_.insert(pack_body_entity(entry.first, serial));
         } else {
           slot->frozen.erase(body_id);
+          frozen_entities_.erase(pack_body_entity(entry.first, serial));
         }
         continue;
       }
+      const std::uint32_t entity = pack_body_entity(entry.first, serial);
       body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, kinematic);
       if (kinematic) {
         slot->frozen.insert(body_id);
+        frozen_entities_.insert(entity);
         ++freeze_flips_;
       } else {
         slot->frozen.erase(body_id);
+        frozen_entities_.erase(entity);
         // PhysX zeroes velocities across the dynamic transition, so the body
         // returns exactly at its frozen pose and at rest. The impulse that
         // released it arrives from the caller's deferred push pass on the next
@@ -1720,6 +1743,66 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
     }
   }
   return changed;
+}
+
+namespace {
+
+/// Impulse-to-resting-load ratio above which a contact releases a frozen
+/// body. A striker resting under gravity delivers exactly m*g*dt per step
+/// (ratio 1), so the ratio measures "how much harder than lying still is
+/// this touch" independent of chunk mass -- the same test works for a 40 kg
+/// panel and a 4 t slab. 4 corresponds to an impact at roughly 0.7 m/s.
+/// 0 disables contact wakes entirely.
+float contact_wake_ratio() {
+  static const float value = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_CONTACT_WAKE_RATIO")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 4.0f;
+  }();
+  return value;
+}
+
+} // namespace
+
+void DestructionManager::note_contact_pair(std::uint32_t entity_a,
+                                           std::uint32_t entity_b,
+                                           float mass_a, float mass_b,
+                                           float impulse) {
+  const float ratio = contact_wake_ratio();
+  if (ratio <= 0.0f || frozen_entities_.empty() || impulse <= 0.0f) {
+    return;
+  }
+  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+  // Each side: frozen participant, struck by the OTHER side's dynamic mass.
+  const auto consider = [&](std::uint32_t entity, float striker_mass) {
+    if (striker_mass <= 0.0f) {
+      return; // struck by a static or kinematic: no resting load to compare.
+    }
+    if (frozen_entities_.find(entity) == frozen_entities_.end()) {
+      return;
+    }
+    if (impulse < ratio * striker_mass * g_dt) {
+      return; // resting-scale contact: lying on a frozen pile is free.
+    }
+    if (contact_wake_pending_.insert(entity).second) {
+      contact_wake_order_.push_back(entity);
+      ++contact_wakes_;
+    }
+  };
+  consider(entity_a, mass_b);
+  consider(entity_b, mass_a);
+}
+
+rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
+  rust::Vec<std::uint32_t> out;
+  out.reserve(contact_wake_order_.size());
+  for (std::uint32_t entity : contact_wake_order_) {
+    out.push_back(entity);
+  }
+  contact_wake_order_.clear();
+  contact_wake_pending_.clear();
+  return out;
 }
 
 FfiDestructionStats DestructionManager::destruction_stats() const {
@@ -1752,6 +1835,7 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.frozen_adapter_releases = frozen_adapter_releases_;
   stats.freeze_flips = freeze_flips_;
   stats.unfreeze_flips = unfreeze_flips_;
+  stats.contact_wakes = contact_wakes_;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;

@@ -327,6 +327,10 @@ struct CityStatsSnapshot {
     frozen_bodies: u32,
     freeze_flips: u64,
     unfreeze_flips: u64,
+    /// Frozen bodies released because dynamic debris struck them -- the
+    /// engine's own contact reports driving the wake. Rises during collapses
+    /// onto old rubble; flat at rest.
+    contact_wakes: u64,
     /// Sleep/wake edges this tick. `awake_bodies` is a level and cannot say
     /// whether a pile is failing to settle or being repeatedly re-woken.
     chunk_sleep_events: u64,
@@ -3072,6 +3076,7 @@ impl MatchState {
                     frozen_bodies: stats.frozen_chunk_bodies,
                     freeze_flips: stats.freeze_flips,
                     unfreeze_flips: stats.unfreeze_flips,
+                    contact_wakes: stats.contact_wakes,
                     chunk_sleep_events: stats.chunk_sleep_events,
                     chunk_wake_events: stats.chunk_wake_events,
                     pose_quiet_awake_bodies: stats.pose_quiet_awake_bodies,

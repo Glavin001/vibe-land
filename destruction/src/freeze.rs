@@ -311,6 +311,13 @@ pub struct FreezeTracker {
     cells: HashMap<(i32, i32, i32), Vec<u32>>,
     frozen: HashSet<u32>,
     census: FreezeCensus,
+    /// Places where a frozen body was removed (thawed, retired, struck) and
+    /// the rubble above may now be hanging. Consumed by the next
+    /// `unsupported_frozen` call, so support-loss release is EVENT-DRIVEN --
+    /// the tick after the support disappears -- rather than waiting for the
+    /// interval sweep, which remains only as a backstop for anything the
+    /// targeted checks miss.
+    pending_support_checks: Vec<([f32; 3], f32)>,
 }
 
 impl FreezeTracker {
@@ -321,6 +328,7 @@ impl FreezeTracker {
             cells: HashMap::new(),
             frozen: HashSet::new(),
             census: FreezeCensus::default(),
+            pending_support_checks: Vec::new(),
         }
     }
 
@@ -378,7 +386,12 @@ impl FreezeTracker {
     /// The adapter destroyed this body (merge or recycle).
     pub fn retire(&mut self, entity: u32) {
         self.release_cell(entity);
-        self.frozen.remove(&entity);
+        if self.frozen.remove(&entity) {
+            if let Some(body) = self.bodies.get(&entity) {
+                // A frozen support vanished; check what sat on it.
+                self.pending_support_checks.push((body.anchor_pos, body.reach));
+            }
+        }
         self.bodies.remove(&entity);
     }
 
@@ -419,6 +432,8 @@ impl FreezeTracker {
         // it against its new pose would leave a stale entry pointing at a
         // body that is no longer frozen.
         let frozen_cell = was_frozen.then(|| cell_index(body.anchor_pos, config.cell_m));
+        // Same reason: the pose it was frozen at is where its dependents are.
+        let frozen_support = was_frozen.then(|| (body.anchor_pos, body.reach));
         if was_frozen {
             body.phase = Phase::Awake;
             body.quiet_ticks = 0;
@@ -514,6 +529,11 @@ impl FreezeTracker {
             self.frozen.remove(&entity);
             self.drop_from_cell(cell, entity);
             self.census.frozen = self.frozen.len() as u32;
+            if let Some(support) = frozen_support {
+                // The adapter took this frozen body back (it split): whatever
+                // was resting on it needs a support check, same as any thaw.
+                self.pending_support_checks.push(support);
+            }
         }
         observation
     }
@@ -625,6 +645,10 @@ impl FreezeTracker {
                 continue;
             }
             self.release_cell(entity);
+            if let Some(body) = self.bodies.get(&entity) {
+                // Whatever was resting on this body just lost its support.
+                self.pending_support_checks.push((body.anchor_pos, body.reach));
+            }
             if let Some(body) = self.bodies.get_mut(&entity) {
                 body.phase = Phase::Awake;
                 body.quiet_ticks = 0;
@@ -725,25 +749,81 @@ impl FreezeTracker {
     /// support actor, which is never frozen. So a frozen body has no bonds
     /// holding it up, and contact is the only thing that can — if there is
     /// nothing under it, it is genuinely floating.
-    pub fn unsupported_frozen(&self, tick: u64) -> Vec<u32> {
-        if self.config.unsupported_sweep_ticks == 0
-            || tick % u64::from(self.config.unsupported_sweep_ticks) != 0
-            || self.frozen.is_empty()
-        {
+    pub fn unsupported_frozen(&mut self, tick: u64) -> Vec<u32> {
+        if self.config.unsupported_sweep_ticks == 0 {
+            self.pending_support_checks.clear();
             return Vec::new();
         }
+        let batch = self.config.unsupported_sweep_batch.max(1);
         let mut stranded = Vec::new();
-        for &entity in &self.frozen {
-            let Some(body) = self.bodies.get(&entity) else {
-                continue;
-            };
-            if !self.is_supported_by_frozen(entity, body.anchor_pos, body.reach) {
-                stranded.push(entity);
-                if stranded.len() >= self.config.unsupported_sweep_batch.max(1) {
-                    break;
+        let mut seen = HashSet::new();
+
+        // Targeted pass, every tick: only rubble around places where a frozen
+        // support just disappeared. This is what makes support-loss release
+        // event-driven rather than interval-bound -- a hanging piece is
+        // checked the very next tick, and each release queues checks for the
+        // layer above it, so a stack un-freezes over consecutive ticks the
+        // way a real collapse propagates.
+        let checks = std::mem::take(&mut self.pending_support_checks);
+        if !self.frozen.is_empty() {
+            let cell = self.config.cell_m.max(0.5);
+            for (pos, reach) in checks {
+                // Everything whose support region could have included the
+                // removed body: within combined horizontal reach, at or above.
+                let (cx, cy, cz) = cell_index(pos, cell);
+                for x in (cx - 1)..=(cx + 1) {
+                    for y in cy..=(cy + 1) {
+                        for z in (cz - 1)..=(cz + 1) {
+                            let Some(bucket) = self.cells.get(&(x, y, z)) else {
+                                continue;
+                            };
+                            for &entity in bucket {
+                                if !seen.insert(entity) {
+                                    continue;
+                                }
+                                let Some(body) = self.bodies.get(&entity) else {
+                                    continue;
+                                };
+                                if body.phase != Phase::Frozen
+                                    || body.anchor_pos[1] < pos[1] - reach
+                                {
+                                    continue;
+                                }
+                                if !self.is_supported_by_frozen(
+                                    entity,
+                                    body.anchor_pos,
+                                    body.reach,
+                                ) {
+                                    stranded.push(entity);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        // Interval backstop: the full scan, for anything the targeted checks
+        // cannot see (a freeze that was unsupported from the start).
+        if tick % u64::from(self.config.unsupported_sweep_ticks) == 0
+            && !self.frozen.is_empty()
+        {
+            for &entity in &self.frozen {
+                if stranded.len() >= batch {
+                    break;
+                }
+                if seen.contains(&entity) {
+                    continue;
+                }
+                let Some(body) = self.bodies.get(&entity) else {
+                    continue;
+                };
+                if !self.is_supported_by_frozen(entity, body.anchor_pos, body.reach) {
+                    stranded.push(entity);
+                }
+            }
+        }
+        stranded.truncate(batch);
         stranded
     }
 
@@ -1321,15 +1401,52 @@ mod tests {
              the upper one is on the lower"
         );
 
-        // The lower body is dug out. The upper one is now hanging.
+        // The lower body is dug out. The upper one is now hanging -- and the
+        // check fires on the NEXT tick, off-cadence: support-loss release is
+        // event-driven, not interval-bound. Tick 11 is deliberately not a
+        // multiple of the 10-tick sweep.
         tracker.retire(1);
         assert_eq!(
-            tracker.unsupported_frozen(10),
+            tracker.unsupported_frozen(11),
             vec![2],
-            "the perched body lost its support and must be released to fall"
+            "the perched body lost its support and must be released the very \
+             next tick, without waiting for the sweep interval"
         );
-        // Only on the sweep cadence, so this is not per-tick work.
-        assert!(tracker.unsupported_frozen(11).is_empty());
+        // The pending check was consumed; quiet ticks stay free.
+        assert!(tracker.unsupported_frozen(12).is_empty());
+    }
+
+    /// Releasing one layer queues checks for the next: a frozen stack whose
+    /// base is removed un-freezes upward over consecutive ticks, like a real
+    /// collapse propagating, with no interval in the loop.
+    #[test]
+    fn support_loss_cascades_up_a_frozen_stack() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            unsupported_sweep_ticks: 1000, // interval effectively off
+            ..config(true)
+        });
+        for (entity, y) in [(1u32, 0.4f32), (2, 1.3), (3, 2.2)] {
+            tracker.promote(entity, 0.5);
+            let _ = tracker.observe(sample(entity, [0.0, y, 0.0], true, 1));
+            tracker.mark_frozen(&[FreezeCandidate {
+                entity,
+                position: [0.0, y, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                reach: 0.5,
+                needs_settle_record: false,
+            }]);
+        }
+        tracker.retire(1);
+        let first = tracker.unsupported_frozen(7);
+        assert_eq!(first, vec![2], "the middle of the stack hangs first");
+        // Releasing it (mark_thawed) queues the next layer's check.
+        tracker.mark_thawed(&first, 7);
+        assert_eq!(
+            tracker.unsupported_frozen(8),
+            vec![3],
+            "the top of the stack follows on the next tick"
+        );
+        assert!(tracker.unsupported_frozen(9).is_empty());
     }
 
     /// The sweep is bounded, so a collapse cannot turn one tick into a mass wake.

@@ -97,6 +97,9 @@ public:
   /// release it again. See DestructionManager::freeze_chunk_bodies.
   std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
   std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
+  /// Frozen bodies struck by dynamic debris since the last drain. See
+  /// DestructionManager::note_contact_pair.
+  rust::Vec<std::uint32_t> take_frozen_contact_wakes();
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
