@@ -116,25 +116,22 @@ EOF
       --port "$CONTROL_PLANE_PORT" --ip 0.0.0.0
   wait_for_http "http://127.0.0.1:$CONTROL_PLANE_PORT/healthz" "control plane" 90
 
-  # Asking to play is what provisions a box: with an empty fleet this is the
-  # request that makes the control plane go shopping.
-  echo "[orch] requesting a server via /join"
-  curl -fsS "http://127.0.0.1:$CONTROL_PLANE_PORT/join" | tee "$LOG_DIR/join-1.json"; echo
-
-  echo "[orch] waiting for the fleet to rent a box..."
-  local server_do_id=""
-  for _ in $(seq 1 30); do
-    server_do_id="$(curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
-      "http://127.0.0.1:$CONTROL_PLANE_PORT/fleet" \
-      | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const f=JSON.parse(s);const r=(f.servers||[]).find(x=>x.phase!=="DEAD");process.stdout.write(r?r.serverDoId:"")})')"
-    [[ -n "$server_do_id" ]] && break
-    sleep 1
-  done
-  if [[ -z "$server_do_id" ]]; then
-    echo "[orch] ERROR: control plane never registered a server" >&2
-    exit 1
-  fi
-  echo "[orch] fleet allocated server $server_do_id"
+  # Register this machine as a box the fleet did not rent.
+  #
+  # Going through the mock marketplace instead would make the fleet believe it
+  # can boot replacements, and it cannot: nothing here starts a game server on
+  # demand. The first time that box was reaped -- idle shutdown doing its job --
+  # every later /join waited forever on an instance that would never appear.
+  # A static box is never reaped for cost, so the loop cannot happen.
+  # Provisioning itself is covered by the control-plane tests and by
+  # mock-vast's own knobs.
+  local server_do_id="${DEV_SERVER_DO_ID:-dev-local}"
+  echo "[orch] registering $server_do_id as an operator-run box"
+  curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"server_do_id\":\"$server_do_id\"}" \
+    "http://127.0.0.1:$CONTROL_PLANE_PORT/admin/register-static" >/dev/null
+  echo "[orch] fleet is expecting heartbeats from $server_do_id"
 
   # In production this env arrives from the control plane through the Vast
   # create-instance call, and the entrypoint resolves the port mapping. Here the
