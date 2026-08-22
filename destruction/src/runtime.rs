@@ -231,6 +231,19 @@ impl CityDestruction {
         })
     }
 
+    /// Override the freeze policy after construction.
+    ///
+    /// The live server reads it from the environment once, at build. Tests
+    /// need to drive both sides of the A/B in one process, where a global
+    /// would make the answer depend on test ordering.
+    pub fn set_freeze_config(&mut self, config: FreezeConfig) {
+        self.freeze = FreezeTracker::new(config);
+    }
+
+    pub fn freeze_config(&self) -> FreezeConfig {
+        *self.freeze.config()
+    }
+
     pub fn manifest(&self) -> &DestructionManifest {
         &self.manifest
     }

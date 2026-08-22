@@ -1122,6 +1122,21 @@ impl CityRuntime {
         }
     }
 
+    /// Override the freeze policy the environment configured at open.
+    ///
+    /// For benches that need to run both sides of the freeze A/B in one
+    /// process, where an environment variable would make the result depend on
+    /// which test ran first.
+    #[cfg(feature = "destruction")]
+    pub fn set_freeze_config(
+        &mut self,
+        config: vibe_land_destruction::freeze::FreezeConfig,
+    ) {
+        if let CityBackend::Physx(backend) = &mut self.backend {
+            backend.set_freeze_config(config);
+        }
+    }
+
     pub fn encoder_stats(&self) -> vibe_land_destruction::encoder::EncoderStats {
         self.encoder.stats()
     }

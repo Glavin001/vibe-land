@@ -1394,3 +1394,227 @@ fn v3_span_encode_cost() {
         pick(0.5)
     );
 }
+
+/// The wake cascade, and whether freezing actually stops it.
+///
+/// This is the measured pathology the sleeping-piles campaign exists for. In
+/// a live session on the 24k-chunk downtown, one rifle round that broke 365
+/// bonds woke 6,065 bodies -- 94% of them untouched old rubble that happened
+/// to be in the same contact island -- and dropped the server 60 -> 34 Hz.
+/// A different shot in the same session broke *7* bonds and woke 2,218. The
+/// amplifier is the contact island, not the damage.
+///
+/// The bench demolishes a tower, lets it settle, then fires one shot into the
+/// resulting pile and counts what wakes. It runs the same scenario twice --
+/// freezing off, then on -- because the number only means something against
+/// its own control: absolute wake counts depend on how much rubble this run
+/// happened to produce, which GPU non-determinism moves 10-15% run to run.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
+    use vibe_land_destruction::freeze::FreezeConfig;
+
+    /// Demolish a tower, settle it, fire one shot into the pile, and report
+    /// (bodies awake one second after the shot, total bodies, frozen bodies).
+    fn run(freeze: FreezeConfig) -> (u32, u32, u32, u32) {
+        let mut world = World::new(WorldConfig::default()).expect("GPU world");
+        world
+            .add_static_box(StaticBoxDesc {
+                entity_id: 1,
+                user_id: 0,
+                pose: Pose {
+                    position: BridgeVec3::new(0.0, -10.0, 0.0),
+                    rotation: Quat::IDENTITY,
+                },
+                half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+                collision_group: GROUP_STATIC,
+                collision_mask: ALL_GROUPS,
+            })
+            .expect("ground");
+        let mut city =
+            crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+        city.set_freeze_config(freeze);
+        city.add_client(1);
+
+        let (tx, tz) = (-36.0f32, -36.0f32);
+        let origin = Vec3::new(tx, 1.6, tz - 26.0);
+        let mut tick = 0u32;
+        for shot in 0..40 {
+            let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+            let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+            let target = Vec3::new(tx + sweep, aim_y, tz);
+            city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+            for _ in 0..8 {
+                world.step().expect("step");
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                tick += 1;
+            }
+        }
+
+        // Walk away until the pile is at rest and (if enabled) frozen. The
+        // freeze batch is bounded per tick, so this also has to be long
+        // enough to drain it.
+        for _ in 0..(60 * 25) {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+        let settled = city.stats();
+        let awake_before = settled.awake_chunk_bodies;
+
+        // One shot into the middle of the pile, from above, the way a player
+        // standing over rubble would.
+        let pile_origin = Vec3::new(tx, 12.0, tz - 6.0);
+        let pile_target = Vec3::new(tx, 1.0, tz);
+        city.apply_shot_ray(
+            pile_origin,
+            (pile_target - pile_origin).normalize(),
+            Some(&mut world),
+        );
+
+        // One second later: the live capture showed the cascade complete
+        // inside a single second.
+        let mut peak_awake = 0;
+        for _ in 0..60 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+            peak_awake = peak_awake.max(city.stats().awake_chunk_bodies);
+        }
+        let after = city.stats();
+        println!(
+            "  freeze={:<5} bodies={:<5} frozen_before={:<5} awake_before={:<4} \
+             peak_awake_after_shot={:<5} bonds={} serial_blocks={}",
+            freeze.enabled,
+            after.chunk_bodies,
+            settled.frozen_chunk_bodies,
+            awake_before,
+            peak_awake,
+            after.broken_bonds,
+            after.frozen_serial_blocks,
+        );
+        assert_eq!(
+            after.frozen_serial_blocks, 0,
+            "a frozen body reached a serial-issuing path: settled rubble has \
+             aliased onto the structure's support actor"
+        );
+        (
+            peak_awake,
+            after.chunk_bodies,
+            settled.frozen_chunk_bodies,
+            settled.sleeping_chunk_bodies,
+        )
+    }
+
+    println!("\n=== one shot into settled rubble ===");
+    let (baseline_awake, baseline_bodies, baseline_frozen, baseline_asleep) =
+        run(FreezeConfig { enabled: false, ..FreezeConfig::default() });
+    let (frozen_awake, frozen_bodies, frozen_frozen, _) = run(FreezeConfig {
+        enabled: true,
+        // Shorter than production so the bench does not spend 30 s of
+        // simulated time waiting for the window.
+        after_ticks: 20,
+        batch: 4096,
+        ..FreezeConfig::default()
+    });
+
+    assert_eq!(baseline_frozen, 0, "control run must freeze nothing");
+    assert!(
+        baseline_asleep > 0,
+        "control run never settled, so there is no pile to test against"
+    );
+    assert!(
+        frozen_frozen > 0,
+        "freezing was enabled but nothing froze: {frozen_bodies} bodies, none retired"
+    );
+
+    // The claim under test: the shot's cost is proportional to the shot, not
+    // to the size of the pile it landed in.
+    let baseline_share = baseline_awake as f32 / baseline_bodies.max(1) as f32;
+    let frozen_share = frozen_awake as f32 / frozen_bodies.max(1) as f32;
+    println!(
+        "  woke {:.0}% of the pile without freezing, {:.0}% with it",
+        baseline_share * 100.0,
+        frozen_share * 100.0
+    );
+    assert!(
+        frozen_share < baseline_share * 0.5,
+        "one shot woke {:.0}% of a frozen pile against {:.0}% unfrozen -- \
+         spatial wake is not bounding the cascade",
+        frozen_share * 100.0,
+        baseline_share * 100.0
+    );
+}
+
+/// What the awake / sleeping / frozen counters actually report, side by side.
+///
+/// `awake_chunk_bodies` comes from the adapter's telemetry and
+/// `sleeping_chunk_bodies` from the bridge's own sweep of the snapshot cache.
+/// They are meant to partition the dynamic bodies, and a freeze policy that
+/// trusts the wrong one would retire the wrong population. Printed rather
+/// than asserted: this is an instrument check.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn awake_and_sleeping_counters_agree() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
+    city.add_client(1);
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+    }
+
+    println!("\n=== counter agreement over a settle ===");
+    println!(
+        "{:>4}  {:>7}  {:>6}  {:>8}  {:>9}  {:>8}  {:>8}",
+        "sec", "bodies", "awake", "sleeping", "unaccount", "islands", "maxspeed"
+    );
+    for second in 0..25 {
+        for _ in 0..60 {
+            world.step().expect("step");
+            let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+            tick += 1;
+        }
+        let s = city.stats();
+        // Bodies that are neither reported awake nor observed sleeping. If
+        // this is large the two counters are not partitioning anything and a
+        // freeze policy keyed on either is aiming at the wrong population.
+        let unaccounted =
+            s.chunk_bodies as i64 - s.awake_chunk_bodies as i64 - s.sleeping_chunk_bodies as i64;
+        println!(
+            "{:>4}  {:>7}  {:>6}  {:>8}  {:>9}  {:>8}  {:>8.2}",
+            second + 1,
+            s.chunk_bodies,
+            s.awake_chunk_bodies,
+            s.sleeping_chunk_bodies,
+            unaccounted,
+            s.solver_island_count,
+            s.max_body_speed,
+        );
+    }
+}
