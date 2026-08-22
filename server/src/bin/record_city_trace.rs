@@ -920,10 +920,21 @@ fn main() -> Result<()> {
         }
         if let Some(log) = timings_log.as_mut() {
             use std::io::Write as _;
+            // Awake count rides along with the timing, because sim ms against
+            // awake bodies IS the acceptance curve -- a tick cost with no
+            // population beside it cannot say whether a change made the
+            // simulation cheaper or merely destroyed less. `frozen` separates
+            // "retired from the solver" from "never woke".
+            let tick_stats = destruction.stats();
             writeln!(
                 log,
-                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3}}}",
-                enc_started.elapsed().as_secs_f32() * 1000.0
+                "{{\"t\":{tick_index},\"sim\":{sim_ms:.3},\"enc\":{:.3},\
+                 \"awake\":{},\"bodies\":{},\"frozen\":{},\"bonds\":{}}}",
+                enc_started.elapsed().as_secs_f32() * 1000.0,
+                tick_stats.awake_chunk_bodies,
+                tick_stats.chunk_bodies,
+                tick_stats.frozen_chunk_bodies,
+                tick_stats.broken_bonds,
             )?;
         }
 

@@ -610,6 +610,15 @@ impl CityDestruction {
         }
 
         let census = self.freeze.census();
+        // Frozen bodies are kinematic, so the snapshot loop above never sees
+        // them and min_body_y would silently stop covering them -- on exactly
+        // the population that cannot recover, since a kinematic body gets no
+        // depenetration and cannot climb out of the floor by itself. Fold
+        // them back in. With freezing off the set is empty and this is a
+        // no-op, so the number stays comparable across the A/B.
+        if census.min_frozen_y.is_finite() {
+            min_body_y = min_body_y.min(census.min_frozen_y);
+        }
         self.stats.chunk_sleep_events = census.sleep_edges;
         self.stats.chunk_wake_events = census.wake_edges;
         self.stats.pose_quiet_awake_bodies = census.pose_quiet_awake;

@@ -218,6 +218,14 @@ pub struct FreezeCensus {
     /// Awake bodies inside their shell for a full window.
     pub pose_quiet_awake: u32,
     pub frozen: u32,
+    /// Lowest frozen body origin, metres, or +inf when nothing is frozen.
+    ///
+    /// A frozen body is kinematic, so it disappears from the snapshot stream
+    /// the below-ground check reads -- which would make that check pass by
+    /// construction on exactly the bodies least able to recover, since a
+    /// kinematic body gets no depenetration and cannot climb out of the floor
+    /// on its own. Tracked here so the check keeps meaning what it did.
+    pub min_frozen_y: f32,
 }
 
 /// Tracks every chunk body's rest state, decides what to freeze, and answers
@@ -554,7 +562,25 @@ impl FreezeTracker {
     }
 
     pub fn census(&self) -> FreezeCensus {
-        FreezeCensus { frozen: self.frozen.len() as u32, ..self.census }
+        FreezeCensus {
+            frozen: self.frozen.len() as u32,
+            min_frozen_y: self.min_frozen_y(),
+            ..self.census
+        }
+    }
+
+    /// Lowest frozen body origin, or +inf when nothing is frozen.
+    ///
+    /// Walks the frozen set rather than caching a running minimum: a cached
+    /// one can only ever go down, so a body that thawed would keep depressing
+    /// it forever and the below-ground check would report a body that is no
+    /// longer frozen -- or no longer exists.
+    pub fn min_frozen_y(&self) -> f32 {
+        self.frozen
+            .iter()
+            .filter_map(|entity| self.bodies.get(entity))
+            .map(|body| body.anchor_pos[1])
+            .fold(f32::INFINITY, f32::min)
     }
 
     fn cell_of(&self, pos: [f32; 3]) -> (i32, i32, i32) {
@@ -845,6 +871,40 @@ mod tests {
         tracker.retire(1);
         assert_eq!(tracker.frozen_count(), 0);
         assert!(tracker.frozen_within([0.0; 3], 10.0, 0.0).is_empty());
+    }
+
+    /// Frozen bodies must stay inside the below-ground check.
+    ///
+    /// They are kinematic, so they leave the snapshot stream that check reads
+    /// -- and a kinematic body gets no depenetration, so a frozen body under
+    /// the floor is the one case that can never recover on its own. Dropping
+    /// them from the measurement would make the check pass by construction on
+    /// exactly the population it exists to catch.
+    #[test]
+    fn the_lowest_frozen_body_is_still_measured() {
+        let mut tracker = FreezeTracker::new(config(true));
+        assert_eq!(
+            tracker.min_frozen_y(),
+            f32::INFINITY,
+            "with nothing frozen the minimum must not read as a body at y=0"
+        );
+        for (entity, y) in [(1u32, 4.0f32), (2, -3.5), (3, 1.0)] {
+            tracker.promote(entity, 0.5);
+            let _ = tracker.observe(sample(entity, [0.0, y, 0.0], true, 1));
+            tracker.mark_frozen(&[FreezeCandidate {
+                entity,
+                position: [0.0, y, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                needs_settle_record: false,
+            }]);
+        }
+        assert_eq!(tracker.census().min_frozen_y, -3.5);
+
+        // Thawing the offender must raise the minimum again: a cached running
+        // minimum could only ever fall, and would keep reporting a body that
+        // is no longer frozen.
+        tracker.mark_thawed(&[2], 5);
+        assert_eq!(tracker.census().min_frozen_y, 1.0);
     }
 
     #[test]
