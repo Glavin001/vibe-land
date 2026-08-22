@@ -177,3 +177,29 @@ sleeping city multiplies *world size*. With piles asleep, the measured
 budget arithmetic (≈0.6 kbps per awake body, 5 Mbps world feed, ~4k-body
 60 Hz envelope) all holds at district-grid scale — the same numbers, more
 city.
+
+## Addendum: the wake cascade, measured live (same day)
+
+The user reproduced the thesis interactively, captured by the new telemetry
+(`/tmp/city-telemetry.jsonl` of the 05:11 world):
+
+| event | pile state before | shot's real damage | woke | time to wake | re-settle |
+|---|---|---:|---:|---|---|
+| t+104s | 10,171 bonds, 0 awake | +536 bonds | 2,158 | ≤1 s | ~20 s |
+| t+507s | 22,090 bonds, 0 awake | **+365 bonds** | **6,065** | **≤1 s** | still 6.1k awake 13 s later |
+
+One shot into a fully sleeping city woke 6,065 bodies of which ~94% were
+untouched old rubble -- the contact-island wake at city-block merge scale,
+and the direct cost was 60 → 34 Hz. The two events bracket the merge
+threshold: at ~10k bonds the wake radius is a third the size and the pile
+re-sleeps; at ~22k it wakes everything and stays awake. Solve direction A's
+wake policy must therefore be SPATIAL (blast neighborhood), not
+island-wide, or a single rifle round re-buys the entire pile's cost.
+
+Encoder corollary (new, against the codec's own ledger): the t+507 wake
+edge produced the worst encoder tick on record -- **57.8 ms in one tick**
+(6k lanes admitted + first span fitted at once; that second's average was
+11 ms). Steady-state ingest is fine (≤2 ms avg); the surge-admission path
+needs the same smearing the join restate already has (bounded lanes per
+span). Tracked henceforth by the window-max telemetry; fix is independent
+of, and made largely moot by, spatial wake.
