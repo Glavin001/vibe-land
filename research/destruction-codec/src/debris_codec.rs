@@ -1632,6 +1632,26 @@ impl Encoder {
         self.config.radii.copy_from_slice(radii);
     }
 
+    /// Set one lane's shell radius.
+    ///
+    /// Admitting a body used to rewrite the whole radii table, which is
+    /// O(lane capacity) -- 24,105 for a downtown pack -- for a one-element
+    /// change. That is invisible while bodies trickle in and quadratic when
+    /// they do not: the live capture's worst encoder tick, 57.8 ms, was one
+    /// wake admitting 6,000 bodies in a single tick, each rewriting 24k
+    /// floats. Out-of-range lanes are ignored, matching the tolerance the
+    /// rest of the lane API has for a caller whose view is a tick old.
+    pub fn set_lane_radius(&mut self, lane: usize, radius: f32) {
+        if let Some(slot) = self.config.radii.get_mut(lane) {
+            *slot = radius;
+        }
+    }
+
+    /// The radius one lane is currently held to.
+    pub fn lane_radius(&self, lane: usize) -> f32 {
+        self.config.radii.get(lane).copied().unwrap_or(0.0)
+    }
+
     /// One tick of one body. Emits into the span buffer; the span is finalized
     /// later, once hindsight is available.
     pub fn push(&mut self, body: usize, tick: u32, state: &ActorState) {

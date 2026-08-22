@@ -14,12 +14,12 @@ for candidate in "$HOME"/.rustup/toolchains/stable-*/bin/cargo; do
 done
 
 mkdir -p "$OUT"
-"${CARGO[@]}" run --release -- synthetic \
+"${CARGO[@]}" run --release -p destruction-codec --bin destruction-codec -- synthetic \
   --output "$TRACE" \
   --physics-hz 120 \
   --seconds 6 \
   --force
-"${CARGO[@]}" run --release -- archive \
+"${CARGO[@]}" run --release -p destruction-codec --bin destruction-codec -- archive \
   --trace "$TRACE" \
   --out-dir "$OUT/archive" \
   --shell-error-mm 5 \

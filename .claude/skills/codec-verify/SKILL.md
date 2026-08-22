@@ -111,7 +111,9 @@ Both thresholds (`IslandView::derivable`, `wide_roots`) are derived from the
 rotation quantum and the bound. If one looks wrong, the wire is wrong — do not
 tune them.
 
-Reference (2026-08-17): **985,445 B** total, gates PASS, err p95 0.380 cm,
+Reference (2026-08-22): **975,959 B** total, gates PASS, err p95 0.380 cm,
+(was 985,445 B on 2026-08-17; the improvement landed on the branch without
+this number being updated, so a re-measure read as a regression.)
 max 2.000 cm, 7 residual violations, peak 519 islands of 1032 chunks.
 Byte-stable across runs.
 

@@ -300,7 +300,10 @@ impl LiveEncoder {
         });
         self.by_key.insert(key, lane);
         self.assignments.push((lane as u32, key));
-        self.refresh_radii();
+        // One lane, not the whole table: see Encoder::set_lane_radius. This
+        // is the same value refresh_radii would have written for this lane,
+        // and no other lane's radius changed.
+        self.encoder.set_lane_radius(lane, radius.max(0.01));
     }
 
     pub fn remove_body(&mut self, key: u64) {
@@ -575,6 +578,16 @@ impl LiveEncoder {
 
     pub fn lane_of_key(&self, key: u64) -> Option<u32> {
         self.by_key.get(&key).map(|&lane| lane as u32)
+    }
+
+    /// The shell radius the encoder is holding one lane to.
+    ///
+    /// Exists so the admission tests can check the radius the encoder will
+    /// actually use, rather than the one the lane table says it should have.
+    /// Those were the same thing only while every admission rewrote the whole
+    /// table.
+    pub fn lane_radius(&self, lane: usize) -> f32 {
+        self.encoder.lane_radius(lane)
     }
 
     fn packetize(&mut self, span_tick: u32, records: Vec<Record>) -> Vec<LivePacket> {
@@ -1413,5 +1426,107 @@ mod overhead {
                 kind_counts[4], kind_bytes[4]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    fn encoder(capacity: usize) -> LiveEncoder {
+        LiveEncoder::new(LiveEncoderConfig {
+            dt: 1.0 / 60.0,
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            tolerances: Tolerances::new(0.02, 3.0, 0.15, 0.5, crate::mask::MaskConfig::default()),
+            sleep: SleepPolicy { linear_mps: 0.0, angular_rps: 0.0, ticks: 0 },
+            restate_period: 4,
+            initial_capacity: capacity,
+        })
+    }
+
+    /// Admitting a body must set that body's shell radius and disturb no
+    /// other lane's.
+    ///
+    /// Admission used to rewrite the whole radii table, so "did every other
+    /// lane survive" was a tautology. With a single-element write it is a
+    /// real question, and the radius is what both the fitter tolerance and
+    /// the park/wake shell are computed from.
+    #[test]
+    fn admission_sets_one_radius_and_leaves_the_others_alone() {
+        let mut live = encoder(64);
+        for body in 0..8u64 {
+            live.add_body(body, 1.0 + body as f32);
+        }
+        for body in 0..8u64 {
+            let lane = live.lane_of_key(body).expect("admitted") as usize;
+            assert_eq!(
+                live.lane_radius(lane),
+                1.0 + body as f32,
+                "lane {lane} lost its radius when a later body was admitted"
+            );
+        }
+        // A radius under the floor is clamped, exactly as the table rebuild did.
+        live.add_body(99, 0.0);
+        let lane = live.lane_of_key(99).expect("admitted") as usize;
+        assert!(live.lane_radius(lane) >= 0.01);
+    }
+
+    /// A lane reused by a new tenant must carry the NEW body's radius.
+    ///
+    /// A stale radius silently loosens the fidelity contract for the body
+    /// that inherited the lane -- it is the basis of the fitter's tolerance
+    /// and of the park shell, so the body would be allowed to drift further
+    /// than its size permits before anything noticed.
+    #[test]
+    fn a_reused_lane_takes_its_new_tenants_radius() {
+        let mut live = encoder(4);
+        live.add_body(1, 9.0);
+        let lane = live.lane_of_key(1).expect("admitted");
+        live.remove_body(1);
+        // Quarantine holds the lane until the span closes, so the departing
+        // tenant's frames ship under their own id.
+        let _ = live.finalize_span(0);
+        live.add_body(2, 0.5);
+        assert_eq!(live.lane_of_key(2), Some(lane), "expected the lane to be reused");
+        assert_eq!(
+            live.lane_radius(lane as usize),
+            0.5,
+            "the reused lane kept the previous tenant's shell radius"
+        );
+    }
+
+    /// The surge this fix is for: a wake's worth of bodies admitted in one
+    /// tick against a downtown-sized lane table.
+    ///
+    /// The old path rebuilt a 24k-entry radii table per admitted body --
+    /// 1.4e8 float writes and 6,000 allocations to make 6,000 one-element
+    /// changes. That was a large share of the worst encoder tick ever
+    /// recorded live, 57.8 ms, which was produced by exactly this: one
+    /// contact-island wake admitting 6,000 lanes at once. The bound is loose
+    /// because this runs in debug; the cost it excludes is orders of
+    /// magnitude above it.
+    #[test]
+    fn admitting_a_wake_worth_of_bodies_is_not_quadratic() {
+        const LANES: usize = 24_105;
+        const SURGE: u64 = 6_000;
+        let mut live = encoder(LANES);
+        let started = std::time::Instant::now();
+        for body in 0..SURGE {
+            live.add_body(body, 1.5);
+        }
+        let elapsed = started.elapsed();
+        assert_eq!(live.body_count(), SURGE as usize);
+        // Measured on this box: 57.2 ms rebuilding the table per body,
+        // 0.49 ms with the point update -- 117x, and the 57.2 ms figure
+        // essentially reproduces the 57.8 ms worst tick the live session
+        // recorded, which is how we know the table rebuild WAS that spike.
+        // The bound sits an order of magnitude above the fixed path and an
+        // order below the quadratic one, so it survives a slower machine and
+        // a debug build while still failing the regression.
+        assert!(
+            elapsed.as_millis() < 20,
+            "admitting {SURGE} bodies into {LANES} lanes took {elapsed:?}; \
+             admission is scaling with the lane table again"
+        );
     }
 }

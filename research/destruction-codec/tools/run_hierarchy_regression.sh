@@ -15,7 +15,7 @@ done
 mkdir -p "$OUT"
 
 # Approximate D6 topology fixture (shared global IDs, breakable edges).
-"${CARGO[@]}" run --release -- synthetic \
+"${CARGO[@]}" run --release -p destruction-codec --bin destruction-codec -- synthetic \
   --output "$OUT/d6-topology.towertrace" \
   --physics-hz 120 \
   --seconds 6 \
@@ -23,7 +23,7 @@ mkdir -p "$OUT"
   --force
 
 # Exact Blast-style rigid islands with baked locals and shared global IDs.
-"${CARGO[@]}" run --release -- synthetic \
+"${CARGO[@]}" run --release -p destruction-codec --bin destruction-codec -- synthetic \
   --output "$OUT/blast-exact-islands.towertrace" \
   --physics-hz 120 \
   --seconds 6 \
@@ -34,7 +34,7 @@ mkdir -p "$OUT"
 
 for TRACE in d6-topology blast-exact-islands; do
   DIR="$OUT/$TRACE"
-  "${CARGO[@]}" run --release -- archive \
+  "${CARGO[@]}" run --release -p destruction-codec --bin destruction-codec -- archive \
     --trace "$OUT/$TRACE.towertrace" \
     --out-dir "$DIR" \
     --shell-error-mm 5 \
