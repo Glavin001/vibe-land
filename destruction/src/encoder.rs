@@ -812,7 +812,7 @@ impl ChunkStreamEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vibe_netcode::destruction_backend::{FractureBatch, IslandPromotion};
+    use vibe_netcode::destruction_backend::{FractureBatch, IslandPromotion, SettleEvent};
 
     use crate::city::{build_city_scene, CitySceneDesc};
     use crate::scene_pack::parse_scene_pack;
@@ -933,6 +933,75 @@ mod tests {
         assert!(
             encoder.stats().duplicate_body_records > 0,
             "the dropped duplicate should be counted so the physics bug stays visible"
+        );
+    }
+
+    /// A frozen body released by a spatial wake must reach the client as a
+    /// wake record, and must clear the settle that parked it.
+    ///
+    /// The settle record is terminal on the wire: the client parks the body
+    /// at that pose and stops applying the pose stream to it. Freezing a body
+    /// emits one and then removes the body from the pose stream entirely, so
+    /// waking it back is invisible unless it is announced. Without this the
+    /// pile would visibly stay put while the server simulated it moving.
+    #[test]
+    fn a_woken_body_clears_its_settle_on_the_wire() {
+        let manifest = manifest();
+        let mut encoder = ChunkStreamEncoder::new(&manifest, EncoderConfig::validated(60));
+        encoder.add_client(1);
+        encoder.ingest_tick(10, &[snapshot(0.0)], &promotion_output(), &[]);
+        let promoted = encoder.take_topology_messages();
+
+        // Freeze: a settle record parks the body at its resting pose.
+        let settled = DestructionTickOutput {
+            settled: vec![SettleEvent {
+                structure_id: 0,
+                island_id: 1,
+                position: [1.0, 2.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+            }],
+            ..DestructionTickOutput::default()
+        };
+        encoder.ingest_tick(11, &[], &settled, &[]);
+        let parked = encoder.take_topology_messages();
+        let decoded = crate::wire::decode_topology(&parked[0]).expect("topology");
+        assert_eq!(decoded.settled.len(), 1, "the freeze must publish a rest pose");
+        assert!(decoded.wakes.is_empty());
+
+        // A shot lands nearby and the body is released.
+        let woken = DestructionTickOutput {
+            wakes: vec![(0, 1)],
+            ..DestructionTickOutput::default()
+        };
+        encoder.ingest_tick(12, &[snapshot(1.0)], &woken, &woken.wakes);
+        let released = encoder.take_topology_messages();
+        assert_eq!(released.len(), 1, "a wake must stage its own topology message");
+        let decoded = crate::wire::decode_topology(&released[0]).expect("topology");
+        assert_eq!(
+            decoded.wakes,
+            vec![(0u32, 1u32)],
+            "the wake did not survive the wire encoding"
+        );
+
+        // And the client-side ledger applying that message must un-park it.
+        // A real client builds its ledger from the manifest; a default one
+        // has no structures and silently drops every batch.
+        let mut client = CityLedger::from_manifest(&manifest);
+        for message in [&promoted[0], &parked[0], &released[0]] {
+            let decoded = crate::wire::decode_topology(message).expect("topology");
+            for batch in &decoded.batches {
+                client.apply_batch(batch);
+            }
+            for settle in &decoded.settled {
+                client.apply_settle(settle);
+            }
+            for &(structure_id, serial) in &decoded.wakes {
+                client.apply_wake(structure_id, serial);
+            }
+        }
+        assert!(
+            !client.island(0, 1).expect("island is live").settled,
+            "the client is still holding the body parked after a wake"
         );
     }
 
