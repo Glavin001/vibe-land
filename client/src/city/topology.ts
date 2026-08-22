@@ -99,6 +99,8 @@ export class CityTopology {
   private orphanedByRetire = 0;
   private lastTopoSeq = 0;
   private topoSeqGaps = 0;
+  /** Topology messages ignored as already-applied; see apply(). */
+  duplicateDrops = 0;
   /** Set when a gap was detected; cleared by bootstrap. */
   needsResync = false;
   /**
@@ -262,7 +264,16 @@ export class CityTopology {
   apply(message: TopologyMessage): boolean {
     if (this.lastTopoSeq !== 0 && message.topoSeq !== this.lastTopoSeq + 1) {
       if (message.topoSeq <= this.lastTopoSeq) {
-        return true; // duplicate/old — already applied
+        // Duplicate OR a new world whose sequence restarted below ours. The
+        // second case is invisible without this: every message of the fresh
+        // world is silently swallowed as "already applied".
+        this.duplicateDrops += 1;
+        if (this.duplicateDrops === 1 || this.duplicateDrops % 25 === 0) {
+          console.warn(
+            `[city] topology dropped as duplicate seq=${message.topoSeq} last=${this.lastTopoSeq} drops=${this.duplicateDrops}`,
+          );
+        }
+        return true;
       }
       this.topoSeqGaps += 1;
       this.needsResync = true;

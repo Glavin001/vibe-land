@@ -436,13 +436,18 @@ export class CityClient {
         this.topology.applyBootstrap(message);
         this.bodies.clear();
         this.pendingRecords = [];
-        // Keep held topology NEWER than the bootstrap: it arrived reliably and
-        // will never be resent, so dropping it here manufactured a permanent
-        // seq gap and a resync loop (netlab wifi-bad: 100 gaps).
-        const bootstrapSeq = this.topology.lastSeq();
-        const kept = this.pendingTopology.filter((p) => p.message.topoSeq > bootstrapSeq);
+        // Drop every held topology message. A bootstrap is a complete state
+        // snapshot, so anything queued before it is stale by construction --
+        // and comparing sequence numbers across it is WRONG, because a city
+        // reset rebuilds the encoder and restarts the sequence at zero. That
+        // comparison (added with the topology hold-back) kept 75 messages of
+        // the DESTROYED world, which drained after the bootstrap and dragged
+        // lastTopoSeq back up; every message of the fresh world then looked
+        // like a duplicate and was silently discarded. The city rendered
+        // intact and no shot ever changed it again. Messages that genuinely
+        // postdate the bootstrap arrive after it on the ordered reliable
+        // channel; the seq-gap resync path covers the same-tick race.
         this.pendingTopology.length = 0;
-        this.pendingTopology.push(...kept);
         // A bootstrap means the world was REPLACED (join, resync, or a city
         // reset). Every lane-keyed thing describes the old world: the server
         // rebuilds its encoder, so lane ids restart from zero and its epoch
