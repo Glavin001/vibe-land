@@ -1482,6 +1482,42 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
             peak_awake = peak_awake.max(city.stats().awake_chunk_bodies);
         }
         let after = city.stats();
+
+        // Then leave it alone, and see whether the loop closes: what a shot
+        // released has to come back to rest and be retired again, or the
+        // pile ratchets a little more expensive with every round fired at it
+        // and the whole mechanism only defers the cost it was meant to remove.
+        let mut refroze_at = None;
+        for second in 0..20u32 {
+            for _ in 0..60 {
+                world.step().expect("step");
+                let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+                tick += 1;
+            }
+            if refroze_at.is_none() && city.stats().awake_chunk_bodies == 0 {
+                refroze_at = Some(second + 1);
+            }
+        }
+        let settled_again = city.stats();
+        println!(
+            "  {:<14} after 20 s of quiet: awake={} frozen={} (was {} frozen before the shot) \
+             quiet_again={}",
+            if freeze.enabled { "freeze=true" } else { "freeze=false" },
+            settled_again.awake_chunk_bodies,
+            settled_again.frozen_chunk_bodies,
+            settled.frozen_chunk_bodies,
+            refroze_at.map(|s| format!("{s}s")).unwrap_or_else(|| "never".into()),
+        );
+        if freeze.enabled {
+            assert!(
+                settled_again.frozen_chunk_bodies >= settled.frozen_chunk_bodies,
+                "the pile did not re-freeze after the shot: {} frozen now against \
+                 {} before, so every round fired ratchets the pile permanently \
+                 more expensive",
+                settled_again.frozen_chunk_bodies,
+                settled.frozen_chunk_bodies,
+            );
+        }
         println!(
             "  freeze={:<5} bodies={:<5} frozen_before={:<5} awake_before={:<4} \
              peak_awake_after_shot={:<5} bonds={} serial_blocks={}",
