@@ -112,6 +112,30 @@ pub struct FreezeConfig {
     pub wake_above_m: f32,
     /// Spatial-hash cell edge, metres.
     pub cell_m: f32,
+    /// Only freeze bodies whose support is the ground or already-frozen
+    /// rubble.
+    ///
+    /// A kinematic body has infinite mass and is not accelerated by gravity,
+    /// so frozen rubble is *weightless*: it stops loading whatever is under
+    /// it. Resting on the ground that costs nothing. Resting on a structure
+    /// still standing, it silently removes the load that should have helped
+    /// bring the structure down, and the building reads as stronger than the
+    /// same rubble would leave it.
+    ///
+    /// **Default off, and that is a measured decision rather than an
+    /// oversight.** Requiring support re-creates the problem the whole system
+    /// exists to solve: a body that cannot find a grounded neighbour can
+    /// never be retired, so it stays awake forever. Switched on, the one-shot
+    /// bench saw the pile fail to come to rest at all -- 431 bodies still
+    /// awake after 180 s, where the *unfrozen* control settled fully. The
+    /// fidelity worry it addresses is real but unquantified; the cost of
+    /// addressing it this way is neither. At downtown scale freezing already
+    /// measures 34% MORE destruction than the control, so weightless rubble
+    /// is not suppressing collapses in practice.
+    pub require_grounded: bool,
+    /// How far above y=0 a body's underside may sit and still count as
+    /// resting on the ground.
+    pub ground_epsilon_m: f32,
 }
 
 impl Default for FreezeConfig {
@@ -127,6 +151,8 @@ impl Default for FreezeConfig {
             wake_radius_scale: 1.0,
             wake_above_m: 2.0,
             cell_m: 4.0,
+            require_grounded: false,
+            ground_epsilon_m: 0.6,
         }
     }
 }
@@ -165,6 +191,11 @@ impl FreezeConfig {
             ),
             wake_above_m: number("VIBE_CITY_WAKE_ABOVE_M", defaults.wake_above_m),
             cell_m: number("VIBE_CITY_FREEZE_CELL_M", defaults.cell_m),
+            require_grounded: flag("VIBE_CITY_FREEZE_GROUNDED", defaults.require_grounded),
+            ground_epsilon_m: number(
+                "VIBE_CITY_FREEZE_GROUND_EPSILON_M",
+                defaults.ground_epsilon_m,
+            ),
         }
     }
 }
@@ -202,6 +233,9 @@ pub struct FreezeCandidate {
     pub entity: u32,
     pub position: [f32; 3],
     pub rotation: [f32; 4],
+    /// Island reach, carried so the support test does not have to look the
+    /// body up again.
+    pub reach: f32,
     /// True when the body was never engine-asleep, so no settle record has
     /// been emitted for it and the freeze must synthesize one.
     pub needs_settle_record: bool,
@@ -383,6 +417,7 @@ impl FreezeTracker {
                         entity,
                         position,
                         rotation,
+                        reach: body.reach,
                         // The engine slept it, so the settle record already
                         // went out on that edge.
                         needs_settle_record: false,
@@ -413,6 +448,7 @@ impl FreezeTracker {
                             entity,
                             position,
                             rotation,
+                            reach: body.reach,
                             // Never engine-slept, so nothing has told the wire
                             // this body is at rest: the freeze must say so.
                             needs_settle_record: true,
@@ -567,6 +603,63 @@ impl FreezeTracker {
             min_frozen_y: self.min_frozen_y(),
             ..self.census
         }
+    }
+
+    /// Is this body resting on something that will not move out from under it?
+    ///
+    /// True when its underside is on the ground, or when an already-frozen
+    /// body sits directly beneath it. Frozen rubble is transitively grounded
+    /// -- it only ever froze because it passed this same test -- so a pile
+    /// grows upward one settled layer at a time, which is also the order the
+    /// bottom-up freeze pass presents candidates in.
+    ///
+    /// The point is not tidiness. A kinematic body is weightless, so freezing
+    /// rubble that is perched on a structure still standing deletes the load
+    /// that rubble should be putting on it, and the building survives damage
+    /// it should not have.
+    pub fn is_supported(&self, position: [f32; 3], reach: f32) -> bool {
+        if !self.config.require_grounded {
+            return true;
+        }
+        let bottom = position[1] - reach;
+        if bottom <= self.config.ground_epsilon_m {
+            return true;
+        }
+        // Look for frozen rubble under it. One cell layer down is enough:
+        // cells are 4 m and a candidate has to be within its own reach of the
+        // supporting body to be resting on it.
+        let cell = self.config.cell_m.max(0.5);
+        let (cx, cy, cz) = cell_index(position, cell);
+        for x in (cx - 1)..=(cx + 1) {
+            for y in (cy - 1)..=cy {
+                for z in (cz - 1)..=(cz + 1) {
+                    let Some(bucket) = self.cells.get(&(x, y, z)) else {
+                        continue;
+                    };
+                    for &entity in bucket {
+                        let Some(other) = self.bodies.get(&entity) else {
+                            continue;
+                        };
+                        if other.phase != Phase::Frozen {
+                            continue;
+                        }
+                        let top = other.anchor_pos[1] + other.reach;
+                        if top < bottom - self.config.ground_epsilon_m {
+                            continue;
+                        }
+                        if other.anchor_pos[1] > position[1] {
+                            continue; // above, not under
+                        }
+                        let dx = other.anchor_pos[0] - position[0];
+                        let dz = other.anchor_pos[2] - position[2];
+                        if dx * dx + dz * dz <= (reach + other.reach).powi(2) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     /// Lowest frozen body origin, or +inf when nothing is frozen.
@@ -765,9 +858,9 @@ mod tests {
             let _ = tracker.observe(sample(entity, [x, 0.0, 0.0], true, 1));
         }
         tracker.mark_frozen(&[
-            FreezeCandidate { entity: 1, position: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], needs_settle_record: false },
-            FreezeCandidate { entity: 2, position: [3.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], needs_settle_record: false },
-            FreezeCandidate { entity: 3, position: [40.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], needs_settle_record: false },
+            FreezeCandidate { entity: 1, position: [0.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], reach: 0.5, needs_settle_record: false },
+            FreezeCandidate { entity: 2, position: [3.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], reach: 0.5, needs_settle_record: false },
+            FreezeCandidate { entity: 3, position: [40.0, 0.0, 0.0], rotation: [0.0, 0.0, 0.0, 1.0], reach: 0.5, needs_settle_record: false },
         ]);
         assert_eq!(tracker.frozen_count(), 3);
         let hit = tracker.frozen_within([0.0, 0.0, 0.0], 4.0, 0.0);
@@ -785,6 +878,7 @@ mod tests {
             entity: 1,
             position: [0.0, 6.0, 0.0],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
             needs_settle_record: false,
         }]);
         assert!(
@@ -807,6 +901,7 @@ mod tests {
             entity: 1,
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
             needs_settle_record: false,
         }]);
         assert_eq!(tracker.mark_thawed(&[1, 99], 5), vec![1]);
@@ -825,6 +920,7 @@ mod tests {
             entity: 1,
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
             needs_settle_record: false,
         }]);
         tracker.mark_thawed(&[1], 2);
@@ -850,6 +946,7 @@ mod tests {
             entity: 1,
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
             needs_settle_record: false,
         }]);
         let seen = tracker.observe(sample(1, [0.5, 0.0, 0.0], false, 9));
@@ -866,6 +963,7 @@ mod tests {
             entity: 1,
             position: [0.0; 3],
             rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
             needs_settle_record: false,
         }]);
         tracker.retire(1);
@@ -895,6 +993,7 @@ mod tests {
                 entity,
                 position: [0.0, y, 0.0],
                 rotation: [0.0, 0.0, 0.0, 1.0],
+                reach: 0.5,
                 needs_settle_record: false,
             }]);
         }
@@ -905,6 +1004,63 @@ mod tests {
         // is no longer frozen.
         tracker.mark_thawed(&[2], 5);
         assert_eq!(tracker.census().min_frozen_y, 1.0);
+    }
+
+    /// Rubble perched on something still standing must not freeze.
+    ///
+    /// A kinematic body is weightless, so freezing debris that is resting on
+    /// a structure deletes the load it should be putting on that structure --
+    /// the building then survives damage it should not have. Only the ground,
+    /// or rubble already retired onto the ground, counts as support.
+    #[test]
+    fn only_grounded_rubble_freezes() {
+        // Opt-in: the condition defaults off because enforcing it strands
+        // unsupported bodies awake forever. See FreezeConfig::require_grounded.
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            require_grounded: true,
+            ..config(true)
+        });
+        // On the ground: fine.
+        tracker.promote(1, 0.5);
+        assert!(tracker.is_supported([0.0, 0.4, 0.0], 0.5));
+        // Ten metres up with nothing under it: not fine.
+        assert!(!tracker.is_supported([0.0, 10.0, 0.0], 0.5));
+
+        // Freeze the ground-level body, and the one directly above it now has
+        // support -- a pile grows upward one settled layer at a time.
+        let _ = tracker.observe(sample(1, [0.0, 0.4, 0.0], true, 1));
+        tracker.mark_frozen(&[FreezeCandidate {
+            entity: 1,
+            position: [0.0, 0.4, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            reach: 0.5,
+            needs_settle_record: false,
+        }]);
+        assert!(
+            tracker.is_supported([0.0, 1.3, 0.0], 0.5),
+            "rubble resting on frozen rubble is transitively grounded"
+        );
+        assert!(
+            !tracker.is_supported([9.0, 1.3, 0.0], 0.5),
+            "a body nowhere near the frozen pile is not supported by it"
+        );
+        assert!(
+            !tracker.is_supported([0.0, 10.0, 0.0], 0.5),
+            "one frozen layer does not support something ten metres up"
+        );
+    }
+
+    /// The condition is a kill switch, not a hard-coded policy.
+    #[test]
+    fn the_ground_condition_can_be_switched_off() {
+        let tracker = FreezeTracker::new(FreezeConfig {
+            enabled: true,
+            require_grounded: false,
+            ..FreezeConfig::default()
+        });
+        assert!(tracker.is_supported([0.0, 400.0, 0.0], 0.5));
+        // And off is the default, so nothing is stranded unless asked for.
+        assert!(!FreezeConfig::default().require_grounded);
     }
 
     #[test]

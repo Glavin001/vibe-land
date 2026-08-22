@@ -575,6 +575,14 @@ impl CityDestruction {
             freeze_candidates.sort_by(|a, b| {
                 a.position[1].partial_cmp(&b.position[1]).unwrap_or(std::cmp::Ordering::Equal)
             });
+            // Only retire what is resting on the ground or on rubble already
+            // retired. A kinematic body is weightless, so freezing debris
+            // perched on a structure that is still standing deletes the load
+            // it should be putting on that structure. Checked after the
+            // bottom-up sort, so a pile grows upward one settled layer per
+            // pass rather than needing several.
+            freeze_candidates
+                .retain(|candidate| self.freeze.is_supported(candidate.position, candidate.reach));
             let batch = self.freeze.config().batch.max(1).min(freeze_candidates.len());
             freeze_candidates.truncate(batch);
             let entities: Vec<u32> =
