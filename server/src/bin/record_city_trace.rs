@@ -60,6 +60,10 @@ const SHOT_STRESS_IMPULSE: f32 = 1.2e7;
 const SHOT_PUSH_SPEED: f32 = 12.0;
 const SHOT_BLAST_RADIUS_M: f32 = 2.5;
 const SHOT_BLAST_DEPTH_M: f32 = 0.5;
+/// Wider than the blast radius, matching the match server's deferred push
+/// pass (server/src/city.rs SHOT_PUSH_RADIUS_M): a shot moves more rubble
+/// than it stresses, so the wake has to cover the wider of the two.
+const SHOT_PUSH_RADIUS_M: f32 = 4.0;
 
 struct Args {
     scene: PathBuf,
@@ -1346,6 +1350,17 @@ fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, dire
     };
     let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
     let point = surface + direction * SHOT_BLAST_DEPTH_M;
+    // Release frozen rubble around the impact first, exactly as the match
+    // server's apply_shot_ray does.
+    //
+    // Without this the recorder measures freezing with the wake half missing:
+    // rubble retires and can never come back, so shots into a settled pile do
+    // nothing at all and the run looks cheap because it stopped simulating a
+    // city it also stopped destroying. Measured on the 10-floor high-rise,
+    // damage flatlined at 763 broken bonds from t+30 s while the unfrozen
+    // control went on to 2,112. The wider push radius is used so every body
+    // the push will reach is dynamic before it arrives.
+    let _ = destruction.wake_around(world, point.to_array(), SHOT_PUSH_RADIUS_M);
     let _ = destruction.apply_blast(
         world,
         point.to_array(),
