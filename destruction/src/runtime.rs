@@ -16,6 +16,7 @@ use vibe_netcode::destruction_backend::{
 };
 
 use crate::encoder::BodySnapshotInput;
+use crate::freeze::{BodySample, FreezeConfig, FreezeTracker};
 use crate::ids;
 use crate::manifest::{ChunkGeometry, DestructionManifest};
 use crate::settle::{SettleConfig, SettleSample, SettleTracker};
@@ -30,6 +31,11 @@ pub const GROUP_BATTERY: u32 = 1 << 4;
 /// chunk resting on the ground keeps its origin above it, so anything under
 /// this is sunk, not seated.
 pub const GROUND_PENETRATION_FLOOR_M: f32 = -0.25;
+
+/// Slack added to every wake radius, metres. A chunk whose shell only just
+/// touches the blast should still be released: the alternative is a visible
+/// seam where rubble one centimetre outside the radius stays welded in place.
+const WAKE_MARGIN_M: f32 = 0.5;
 
 pub const CHUNK_COLLISION_MASK: u32 =
     GROUP_STATIC | GROUP_DYNAMIC | GROUP_PLAYER | GROUP_VEHICLE | GROUP_BATTERY | GROUP_CHUNK;
@@ -60,8 +66,16 @@ pub struct CityDestruction {
     tick: u64,
     stats: DestructionStats,
     degraded: bool,
-    /// island serials already known so we can detect wakes after settle.
-    known_awake: HashMap<u32, bool>,
+    /// Per-body rest state: the settle/wake edges the wire is built on, and
+    /// (when enabled) the freeze decisions and spatial index over frozen
+    /// rubble. Replaces the old `known_awake` map, which tracked only the
+    /// awake bit and so could see the sleep edge but nothing about why a body
+    /// kept being woken.
+    freeze: FreezeTracker,
+    /// Wakes staged between ticks by impacts, drained into the next
+    /// `post_step`'s output. Shots are routed outside the tick, so a wake can
+    /// be decided when there is no batch open to put it in.
+    pending_wakes: Vec<(u32, u32)>,
 }
 
 impl CityDestruction {
@@ -212,7 +226,8 @@ impl CityDestruction {
             settle_config: SettleConfig::validated(sim_hz),
             tick: 0,
             degraded: false,
-            known_awake: HashMap::new(),
+            freeze: FreezeTracker::new(FreezeConfig::from_env()),
+            pending_wakes: Vec::new(),
         })
     }
 
@@ -348,7 +363,14 @@ impl CityDestruction {
             if event.kind == 0 {
                 let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.promote(body, tick);
-                self.known_awake.insert(body, true);
+                // Reach comes from the manifest, so a body's freeze shell is
+                // the same shell the wire holds it to.
+                let reach = crate::freeze::island_reach(
+                    &self.manifest,
+                    event.structure_id,
+                    &event.chunk_ids,
+                );
+                self.freeze.promote(body, reach);
                 batch.promoted_islands.push(IslandPromotion {
                     structure_id: event.structure_id,
                     island_id: event.island_id,
@@ -380,7 +402,7 @@ impl CityDestruction {
             } else {
                 let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.retire(body);
-                self.known_awake.remove(&body);
+                self.freeze.retire(body);
                 batch.retired_island_ids.push(event.island_id);
             }
         }
@@ -404,6 +426,12 @@ impl CityDestruction {
         // transition is the network-definitive "at rest now" moment the stream
         // needs.
         let mut settled = Vec::new();
+        // Bodies the wire must be told are moving again. Two sources, both
+        // below: the adapter flipping a frozen body back when it splits, and
+        // spatial wakes staged by an impact since the last tick.
+        let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
+        let mut freeze_candidates = Vec::new();
+        self.freeze.begin_tick();
         // Lowest body this tick, over EVERY dynamic body -- sleeping included.
         // This field existed, was logged, asserted on and shown in the overlay,
         // but was never actually computed: it sat at its Default of 0.0
@@ -457,31 +485,44 @@ impl CityDestruction {
                     snap.linear_velocity.z,
                 ];
             }
-            // One hash lookup per body, not two: this runs for every body
-            // every tick, and with sleep miscalibrated that is ~6000 bodies.
-            let entry = self.known_awake.entry(snap.entity_id).or_insert(true);
-            let previously = Some(*entry);
-            if snap.sleeping {
-                if previously != Some(false) {
-                    *entry = false;
-                    let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
-                    settled.push(SettleEvent {
-                        structure_id,
-                        island_id: serial as u32,
-                        position: [snap.position.x, snap.position.y, snap.position.z],
-                        rotation: [
-                            snap.rotation.x,
-                            snap.rotation.y,
-                            snap.rotation.z,
-                            snap.rotation.w,
-                        ],
-                    });
-                }
-            } else {
-                if previously == Some(false) {
-                    self.stats.resettled_wakes += 1;
-                }
-                *entry = true;
+            // One tracker call per body, and it is the only per-body work in
+            // this loop: it runs for every body every tick, and with sleep
+            // miscalibrated that is ~6000 bodies.
+            let position = [snap.position.x, snap.position.y, snap.position.z];
+            let rotation = [
+                snap.rotation.x,
+                snap.rotation.y,
+                snap.rotation.z,
+                snap.rotation.w,
+            ];
+            let observed = self.freeze.observe(BodySample {
+                entity: snap.entity_id,
+                position,
+                rotation,
+                sleeping: snap.sleeping,
+                tick,
+            });
+            if observed.settled {
+                let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
+                settled.push(SettleEvent {
+                    structure_id,
+                    island_id: serial as u32,
+                    position,
+                    rotation,
+                });
+            }
+            if observed.woke {
+                self.stats.resettled_wakes += 1;
+            }
+            if observed.thawed_by_adapter {
+                // The adapter set a frozen body dynamic again, which it does
+                // when the body splits. The client is still drawing it parked
+                // against its settle record, so it has to be told.
+                let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
+                wakes.push((structure_id, serial));
+            }
+            if let Some(candidate) = observed.freeze {
+                freeze_candidates.push(candidate);
             }
 
             // The encoder only streams awake, non-kinematic bodies.
@@ -512,6 +553,56 @@ impl CityDestruction {
         }
 
         self.encoder_input = encoder_input;
+
+        // Freeze pass. Bottom-up: the lowest candidates are the ones whose
+        // support is the ground rather than more debris, so freezing them
+        // first removes the deep stacked contacts that converge worst and
+        // lets the layer above settle in turn.
+        if !freeze_candidates.is_empty() {
+            freeze_candidates.sort_by(|a, b| {
+                a.position[1].partial_cmp(&b.position[1]).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let batch = self.freeze.config().batch.max(1).min(freeze_candidates.len());
+            freeze_candidates.truncate(batch);
+            let entities: Vec<u32> =
+                freeze_candidates.iter().map(|candidate| candidate.entity).collect();
+            match world.freeze_chunk_bodies(&entities) {
+                Ok(_) => {
+                    for candidate in &freeze_candidates {
+                        // A body frozen without ever having been slept by the
+                        // engine has never had a settle record: nothing else
+                        // will tell the client where it came to rest, and it
+                        // is about to vanish from the pose stream.
+                        if candidate.needs_settle_record {
+                            let (structure_id, serial) =
+                                ids::body_entity_parts(candidate.entity);
+                            settled.push(SettleEvent {
+                                structure_id,
+                                island_id: serial,
+                                position: candidate.position,
+                                rotation: candidate.rotation,
+                            });
+                        }
+                    }
+                    self.freeze.mark_frozen(&freeze_candidates);
+                    self.stats.freeze_flips += freeze_candidates.len() as u64;
+                }
+                Err(_) => {
+                    // Freezing is an optimisation; losing it must never take
+                    // the match down with it. It also will not fix itself, so
+                    // stop rather than re-attempting 60 times a second.
+                    self.stats.freeze_failures += 1;
+                    self.freeze.disable();
+                }
+            }
+        }
+
+        let census = self.freeze.census();
+        self.stats.frozen_chunk_bodies = census.frozen;
+        self.stats.chunk_sleep_events = census.sleep_edges;
+        self.stats.chunk_wake_events = census.wake_edges;
+        self.stats.pose_quiet_awake_bodies = census.pose_quiet_awake;
+
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();
 
@@ -555,10 +646,51 @@ impl CityDestruction {
             self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
         }
 
+        wakes.sort_unstable();
+        wakes.dedup();
         Ok(DestructionTickOutput {
             batches: batches.into_values().collect(),
             settled,
+            wakes,
         })
+    }
+
+    /// Wake frozen rubble around an impact, returning how many bodies were
+    /// released.
+    ///
+    /// Spatial, not island-wide, and that is the whole point. The measured
+    /// pathology is a single rifle round waking 6,065 bodies because they were
+    /// all one contact island; releasing only what the blast actually reaches
+    /// makes the cost of a shot proportional to the shot.
+    ///
+    /// The released bodies come back at rest. The impulse arrives from the
+    /// existing deferred push pass on the next tick, by which point they are
+    /// dynamic again and no longer skipped for being kinematic.
+    pub fn wake_around(
+        &mut self,
+        world: &mut World,
+        center: [f32; 3],
+        radius: f32,
+    ) -> Result<u32, CityDestructionError> {
+        if self.degraded || self.freeze.frozen_count() == 0 {
+            return Ok(0);
+        }
+        let config = *self.freeze.config();
+        let reach = (radius * config.wake_radius_scale).max(0.0) + WAKE_MARGIN_M;
+        let candidates = self.freeze.frozen_within(center, reach, config.wake_above_m);
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        world
+            .unfreeze_chunk_bodies(&candidates)
+            .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
+        let woken = self.freeze.mark_thawed(&candidates, self.tick);
+        self.stats.unfreeze_flips += woken.len() as u64;
+        for entity in &woken {
+            let (structure_id, serial) = ids::body_entity_parts(*entity);
+            self.pending_wakes.push((structure_id, serial));
+        }
+        Ok(woken.len() as u32)
     }
 
     /// Awake bodies for the encoder, captured during `post_step`.

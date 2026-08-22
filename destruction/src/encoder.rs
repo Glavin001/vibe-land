@@ -873,6 +873,7 @@ mod tests {
                 ..Default::default()
             }],
             settled: Vec::new(),
+            wakes: Vec::new(),
         }
     }
 

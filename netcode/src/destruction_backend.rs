@@ -185,6 +185,14 @@ pub struct SettleEvent {
 pub struct DestructionTickOutput {
     pub batches: Vec<FractureBatch>,
     pub settled: Vec<SettleEvent>,
+    /// Bodies that are moving again after a settle, as (structure, island).
+    ///
+    /// A settle record is terminal on the wire: the client parks the body at
+    /// that pose and stops applying the pose stream to it. Anything that puts
+    /// a settled body back into motion -- a spatial wake out of a freeze, or
+    /// the adapter splitting a frozen body -- must be announced here, or the
+    /// client keeps drawing it where it used to be.
+    pub wakes: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -276,6 +284,35 @@ pub struct DestructionStats {
     pub gpu_stress_solve_ms: f32,
     pub filters_ms: f32,
     pub sleeping_chunk_bodies: u32,
+    /// Contact islands the PhysX solver saw this tick, and how many it skipped
+    /// as settled. PhysX sleeps per island, never per body, so this is the
+    /// granularity every sleep decision is actually made at: thousands of
+    /// bodies in one island can only sleep together, and waking any member
+    /// wakes them all. `chunk_bodies` cannot tell that apart from thousands of
+    /// independent islands.
+    pub solver_island_count: u32,
+    pub solver_islands_skipped: u32,
+    pub sleeping_actors_skipped: u64,
+    /// Chunk actors PhysX woke and slept this tick, from its own callbacks.
+    /// The snapshot sweep gives a level (how many are awake); these give the
+    /// edges (how much churn produced it), which is what separates "a pile
+    /// that cannot settle" from "a pile that keeps being re-woken".
+    pub chunk_wake_events: u64,
+    pub chunk_sleep_events: u64,
+    /// Awake bodies whose pose has stayed inside a 2 cm shell for the last
+    /// second: the population a pose-based freeze could retire. Counted only
+    /// under VIBE_CITY_POSE_CENSUS; zero otherwise.
+    pub pose_quiet_awake_bodies: u32,
+    /// Settled bodies currently held kinematic, out of the rigid-body solver.
+    pub frozen_chunk_bodies: u32,
+    /// Cumulative freeze and wake transitions. A pile that has genuinely
+    /// settled shows these flat; sustained churn with no new damage is the
+    /// signature of a freeze policy fighting the engine.
+    pub freeze_flips: u64,
+    pub unfreeze_flips: u64,
+    /// Freeze calls the bridge refused. Non-zero disables freezing for the
+    /// rest of the match rather than retrying every tick.
+    pub freeze_failures: u64,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

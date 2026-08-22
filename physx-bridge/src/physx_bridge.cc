@@ -1150,6 +1150,28 @@ public:
 #endif
   }
 
+  std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->freeze_chunk_bodies(entity_ids);
+#else
+    (void)entity_ids;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->unfreeze_chunk_bodies(entity_ids);
+#else
+    (void)entity_ids;
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
   FfiDestructionStats destruction_stats() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1516,6 +1538,14 @@ rust::Slice<const FfiChunkBodySnapshot> World::chunk_body_snapshots() const {
 
 void World::sleep_chunk_body(std::uint32_t entity_id) {
   impl_->sleep_chunk_body(entity_id);
+}
+
+std::uint32_t World::freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+  return impl_->freeze_chunk_bodies(entity_ids);
+}
+
+std::uint32_t World::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+  return impl_->unfreeze_chunk_bodies(entity_ids);
 }
 
 FfiDestructionStats World::destruction_stats() const {

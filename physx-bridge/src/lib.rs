@@ -441,6 +441,23 @@ pub struct DestructionStats {
     pub repeated_body_snapshots: u64,
     pub gpu_stress_structures: u32,
     pub gpu_stress_solve_ms: f32,
+    /// Contact islands the solver saw, and how many it skipped as settled.
+    /// PhysX sleeps per island, so this is the granularity every sleep
+    /// decision is really made at -- body counts cannot distinguish one merged
+    /// city-block pile from thousands of independent ones.
+    pub solver_island_count: u32,
+    pub solver_islands_skipped: u32,
+    pub sleeping_actors_skipped: u64,
+    /// Bodies held kinematic to retire them from the solver, and the flip
+    /// counts that produced that level.
+    pub frozen_chunk_bodies: u32,
+    pub freeze_flips: u64,
+    pub unfreeze_flips: u64,
+    /// Must stay zero: a frozen body reaching a serial-issuing path would
+    /// alias settled rubble onto the structure's kinematic support actor.
+    pub frozen_serial_blocks: u64,
+    /// Frozen bodies the adapter set dynamic again when they split.
+    pub frozen_adapter_releases: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -987,6 +1004,30 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// Retire settled debris from the rigid-body solver by making it
+    /// kinematic, and release it again.
+    ///
+    /// See `DestructionManager::freeze_chunk_bodies`: a kinematic pile has no
+    /// contact island to wake, which is what stops one rifle round costing a
+    /// whole city block's simulation. Both calls are idempotent and skip ids
+    /// they do not recognise, because the caller's picture of what is live is
+    /// a tick old by construction. Returns bodies actually changed.
+    #[cfg(feature = "destruction")]
+    pub fn freeze_chunk_bodies(&mut self, entity_ids: &[u32]) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .freeze_chunk_bodies(entity_ids)
+            .map_err(operation_error)
+    }
+
+    #[cfg(feature = "destruction")]
+    pub fn unfreeze_chunk_bodies(&mut self, entity_ids: &[u32]) -> Result<u32, BridgeError> {
+        self.inner
+            .pin_mut()
+            .unfreeze_chunk_bodies(entity_ids)
+            .map_err(operation_error)
+    }
+
     #[cfg(feature = "destruction")]
     pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
         self.inner
@@ -1309,6 +1350,23 @@ mod ffi {
         repeated_body_snapshots: u64,
         gpu_stress_structures: u32,
         gpu_stress_solve_ms: f32,
+        /// PhysX contact islands the solver saw, and how many it skipped for
+        /// being settled. This is the unit PhysX actually sleeps on, so it is
+        /// the number that says whether a rubble field is thousands of
+        /// independent islands or one merged block that can only sleep or wake
+        /// as a whole. Body counts cannot distinguish those.
+        solver_island_count: u32,
+        solver_islands_skipped: u32,
+        sleeping_actors_skipped: u64,
+        /// Bodies the bridge is holding kinematic, out of the solver.
+        frozen_chunk_bodies: u32,
+        /// Must stay zero: a frozen body reaching a serial-issuing path would
+        /// alias settled rubble onto the structure's support actor.
+        frozen_serial_blocks: u64,
+        /// Frozen bodies the adapter set dynamic again when they split.
+        frozen_adapter_releases: u64,
+        freeze_flips: u64,
+        unfreeze_flips: u64,
     }
 
     unsafe extern "C++" {
@@ -1400,6 +1458,8 @@ mod ffi {
         fn take_island_events(self: Pin<&mut World>) -> Result<Vec<FfiIslandBodyEvent>>;
         fn chunk_body_snapshots(self: &World) -> Result<&[FfiChunkBodySnapshot]>;
         fn sleep_chunk_body(self: Pin<&mut World>, entity_id: u32) -> Result<()>;
+        fn freeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
+        fn unfreeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
     }
@@ -1809,6 +1869,14 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             repeated_body_snapshots: value.repeated_body_snapshots,
             gpu_stress_structures: value.gpu_stress_structures,
             gpu_stress_solve_ms: value.gpu_stress_solve_ms,
+            solver_island_count: value.solver_island_count,
+            solver_islands_skipped: value.solver_islands_skipped,
+            sleeping_actors_skipped: value.sleeping_actors_skipped,
+            frozen_chunk_bodies: value.frozen_chunk_bodies,
+            freeze_flips: value.freeze_flips,
+            unfreeze_flips: value.unfreeze_flips,
+            frozen_serial_blocks: value.frozen_serial_blocks,
+            frozen_adapter_releases: value.frozen_adapter_releases,
         }
     }
 }

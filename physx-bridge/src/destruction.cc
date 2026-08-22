@@ -30,6 +30,11 @@ constexpr std::uint32_t kNsChunk = 0x8000'0000u;
 /// Reserved for a structure's intact kinematic support actor.
 constexpr std::uint32_t kSupportIslandSerial = 0;
 
+/// Intra-structure index fields, mirroring destruction/src/ids.rs
+/// MAX_NODES_PER_STRUCTURE (1 << 16) and MAX_BONDS_PER_STRUCTURE (1 << 20).
+constexpr std::uint32_t kNodeIndexMask = 0x0000'FFFFu;
+constexpr std::uint32_t kBondIndexMask = 0x000F'FFFFu;
+
 /// World pose of a body's centre-of-mass frame.
 ///
 /// Bodies reach clients under one convention: the pose maps structure-rest
@@ -54,12 +59,18 @@ std::uint32_t pack_body_entity(std::uint32_t structure_id, std::uint32_t serial)
   return kNsChunk | (structure_id << 22) | (serial & 0x003F'FFFFu);
 }
 
+// Field widths must mirror destruction/src/ids.rs exactly: 16 bits of node,
+// 20 bits of bond. They were widened there (a district pack is 15,918 nodes, a
+// downtown 74,543 bonds) and this side was missed, so every id crossing the FFI
+// was packed into the old 12/16-bit fields. Latent only because production runs
+// a single structure, where the shift is a no-op; at grid > 1 the two sides
+// disagree about which structure a chunk or bond belongs to.
 std::uint32_t pack_chunk_id(std::uint32_t structure_id, std::uint32_t node_index) {
-  return (structure_id << 12) | node_index;
+  return (structure_id << 16) | (node_index & kNodeIndexMask);
 }
 
 std::uint32_t pack_bond_id(std::uint32_t structure_id, std::uint32_t bond_index) {
-  return (structure_id << 16) | bond_index;
+  return (structure_id << 20) | (bond_index & kBondIndexMask);
 }
 
 void tag_actor(PxActor &actor, std::uint32_t entity_id) {
@@ -232,6 +243,15 @@ struct DestructionManager::Slot {
   std::vector<ExtStressPhysXShapeSnapshot> shape_cache;
   std::uint32_t body_cache_count = 0;
   std::uint32_t shape_cache_count = 0;
+
+  /// Bodies we have made kinematic to retire them from the solver.
+  ///
+  /// Keyed by bodyId, never by PxRigidDynamic*: the adapter recycles actors,
+  /// so a pointer can outlive the body it belonged to and come back pointing
+  /// at a different one. Membership is pruned wherever the adapter can change
+  /// a body behind our back -- retirement, and the split path that sets a body
+  /// dynamic again.
+  std::unordered_set<ExtStressPhysXId> frozen;
 
   // Tracking for event diffs.
   std::unordered_map<ExtStressPhysXId, std::uint32_t> body_to_serial;
@@ -607,10 +627,20 @@ void DestructionManager::register_filters(Slot &slot) {
     if (body.body == nullptr) {
       continue;
     }
+    // Frozen rubble is kinematic too, so `kinematic` alone no longer means
+    // "support body". Every serial decision below has to exclude it, or a
+    // frozen chunk would be handed serial 0 and alias onto the structure's
+    // support actor together with every other frozen chunk.
+    const bool frozen = slot.frozen.count(body.bodyId) != 0;
     auto serial_it = slot.body_to_serial.find(body.bodyId);
     std::uint32_t serial = 0;
     if (serial_it == slot.body_to_serial.end()) {
-      serial = body.kinematic ? 0 : next_serial(slot);
+      // A body can only be frozen after we have seen it dynamic, so this is
+      // unreachable; count it rather than trusting that silently.
+      if (frozen) {
+        ++frozen_serial_blocks_;
+      }
+      serial = (body.kinematic && !frozen) ? 0 : next_serial(slot);
       slot.body_to_serial[body.bodyId] = serial;
     } else {
       serial = serial_it->second;
@@ -618,7 +648,9 @@ void DestructionManager::register_filters(Slot &slot) {
       // serial it was given the first time it was seen, so one that has since
       // become dynamic would hold 0 forever and alias onto the support -- and
       // onto every other such body. Re-issue a real serial when that happens.
-      if (serial == kSupportIslandSerial && !body.kinematic) {
+      // Never for a frozen body: it holds a real serial and is only kinematic
+      // because we made it so.
+      if (serial == kSupportIslandSerial && !body.kinematic && !frozen) {
         serial = next_serial(slot);
         slot.body_to_serial[body.bodyId] = serial;
       }
@@ -723,6 +755,15 @@ void DestructionManager::collect_events(Slot &slot) {
     // it needs its own serial, and clients need the promotion event, or its
     // chunks stay bound to the support body and move as one piece with it.
     // Read before this iteration's write, so it still sees prior state.
+    // A body we froze that reads dynamic again was flipped by the adapter --
+    // it split under load, and setBodyKinematic ran on our behalf. Drop it
+    // from the frozen set here, where every topology change is already
+    // observed, so the set never claims a body the adapter has taken back.
+    // Rust sees the same body reappear in the snapshot and announces the wake.
+    if (!bodies[i].kinematic && slot.frozen.erase(bodies[i].bodyId) != 0) {
+      ++frozen_adapter_releases_;
+    }
+    const bool frozen = slot.frozen.count(bodies[i].bodyId) != 0;
     const auto mapped = slot.body_to_serial.find(bodies[i].bodyId);
     const bool became_dynamic = mapped != slot.body_to_serial.end()
                                 && mapped->second == kSupportIslandSerial
@@ -731,8 +772,11 @@ void DestructionManager::collect_events(Slot &slot) {
       ++support_promotions_;
     }
     if (mapped == slot.body_to_serial.end() || became_dynamic) {
+      if (frozen) {
+        ++frozen_serial_blocks_;
+      }
       const std::uint32_t serial =
-          bodies[i].kinematic ? 0 : next_serial(slot);
+          (bodies[i].kinematic && !frozen) ? 0 : next_serial(slot);
       slot.body_to_serial[bodies[i].bodyId] = serial;
       if (!bodies[i].kinematic) {
         FfiIslandBodyEvent event{};
@@ -774,6 +818,10 @@ void DestructionManager::collect_events(Slot &slot) {
   }
   for (ExtStressPhysXId id : retired_ids) {
     slot.body_to_serial.erase(id);
+    // A frozen body can still be destroyed under us (crushed, or merged away).
+    // Leaving it in the set would leak an entry and, once the adapter recycles
+    // the id, wrongly mark a brand new body as already frozen.
+    slot.frozen.erase(id);
   }
 
   const auto &shapes = slot.shape_cache;
@@ -1261,7 +1309,7 @@ void DestructionManager::queue_chunk_damage(std::uint32_t structure_id,
                                             FfiVec3 impulse, FfiVec3 point) {
   Slot *slot = find_slot(structure_id);
   require(slot != nullptr && slot->dest != nullptr, "unknown structure");
-  const std::uint32_t node_index = chunk_id & 0x0fffu;
+  const std::uint32_t node_index = chunk_id & kNodeIndexMask;
   std::vector<ExtStressPhysXShapeSnapshot> shapes(slot->node_descs.size());
   const std::uint32_t shape_count = slot->dest->getShapeSnapshots(
       shapes.data(), static_cast<std::uint32_t>(shapes.size()));
@@ -1568,6 +1616,112 @@ void DestructionManager::sleep_chunk_body(std::uint32_t entity_id) {
   }
 }
 
+namespace {
+
+/// Unpack a chunk body entity. Must mirror pack_body_entity and
+/// destruction/src/ids.rs: 6 bits of structure, 22 of island serial.
+inline bool split_body_entity(std::uint32_t entity_id, std::uint32_t &structure_id,
+                              std::uint32_t &serial) {
+  if ((entity_id & 0xf000'0000u) != kNsChunk) {
+    return false;
+  }
+  structure_id = (entity_id & 0x0fff'ffffu) >> 22;
+  serial = entity_id & 0x003f'ffffu;
+  return true;
+}
+
+} // namespace
+
+std::uint32_t
+DestructionManager::freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+  return set_chunk_bodies_kinematic(entity_ids, true);
+}
+
+std::uint32_t
+DestructionManager::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids) {
+  return set_chunk_bodies_kinematic(entity_ids, false);
+}
+
+std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
+    rust::Slice<const std::uint32_t> entity_ids, bool kinematic) {
+  if (entity_ids.empty()) {
+    return 0;
+  }
+  // Group by structure so each slot's serial -> body index is built once.
+  // sleep_chunk_body's per-call getBodySnapshots scan is O(bodies) per body,
+  // which at a 6,000-body wake would be 36 million lookups; the per-tick
+  // body_cache already holds everything this needs.
+  std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> by_structure;
+  for (std::uint32_t entity : entity_ids) {
+    std::uint32_t structure_id = 0;
+    std::uint32_t serial = 0;
+    if (!split_body_entity(entity, structure_id, serial)) {
+      continue;
+    }
+    by_structure[structure_id].push_back(serial);
+  }
+
+  std::uint32_t changed = 0;
+  for (auto &entry : by_structure) {
+    Slot *slot = find_slot(entry.first);
+    if (slot == nullptr || slot->dest == nullptr) {
+      continue;
+    }
+    std::unordered_map<std::uint32_t, const ExtStressPhysXBodySnapshot *> by_serial;
+    by_serial.reserve(slot->body_cache_count);
+    for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
+      const auto &body = slot->body_cache[i];
+      auto serial_it = slot->body_to_serial.find(body.bodyId);
+      if (serial_it == slot->body_to_serial.end()) {
+        continue;
+      }
+      by_serial[serial_it->second] = &body;
+    }
+    for (std::uint32_t serial : entry.second) {
+      // The structure's intact support actor is kinematic by the adapter's
+      // own design and is not ours to touch: unfreezing it would turn a whole
+      // standing building into free-falling debris.
+      if (serial == kSupportIslandSerial) {
+        continue;
+      }
+      auto found = by_serial.find(serial);
+      if (found == by_serial.end() || found->second->body == nullptr) {
+        continue;
+      }
+      PxRigidDynamic *body = found->second->body;
+      const ExtStressPhysXId body_id = found->second->bodyId;
+      const bool already =
+          body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
+      if (already == kinematic) {
+        // Keep the set honest even when the flag needed no change.
+        if (kinematic) {
+          slot->frozen.insert(body_id);
+        } else {
+          slot->frozen.erase(body_id);
+        }
+        continue;
+      }
+      body->setRigidBodyFlag(PxRigidBodyFlag::eKINEMATIC, kinematic);
+      if (kinematic) {
+        slot->frozen.insert(body_id);
+        ++freeze_flips_;
+      } else {
+        slot->frozen.erase(body_id);
+        // PhysX zeroes velocities across the dynamic transition, so the body
+        // returns exactly at its frozen pose and at rest. The impulse that
+        // released it arrives from the caller's deferred push pass on the next
+        // tick, once the body is dynamic and no longer skipped for being
+        // kinematic. Waking explicitly because a body restored as dynamic can
+        // otherwise come back asleep and ignore that push.
+        body->wakeUp();
+        ++unfreeze_flips_;
+      }
+      ++changed;
+    }
+  }
+  return changed;
+}
+
 FfiDestructionStats DestructionManager::destruction_stats() const {
   FfiDestructionStats stats{};
   stats.structures = static_cast<std::uint32_t>(slots_.size());
@@ -1581,14 +1735,23 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.events_ms = last_events_ms_;
   stats.filters_ms = last_filters_ms_;
   std::uint32_t sleeping = 0;
+  std::uint32_t frozen = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr) continue;
     for (std::uint32_t i = 0; i < slot_ptr->body_cache_count; ++i) {
       const auto &body = slot_ptr->body_cache[i];
       if (!body.kinematic && body.sleeping) ++sleeping;
     }
+    frozen += static_cast<std::uint32_t>(slot_ptr->frozen.size());
   }
   stats.sleeping_chunk_bodies = sleeping;
+  // Counted from the bridge's own set rather than from Rust's, so a
+  // disagreement between the two is visible instead of silently papered over.
+  stats.frozen_chunk_bodies = frozen;
+  stats.frozen_serial_blocks = frozen_serial_blocks_;
+  stats.frozen_adapter_releases = frozen_adapter_releases_;
+  stats.freeze_flips = freeze_flips_;
+  stats.unfreeze_flips = unfreeze_flips_;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -1617,6 +1780,13 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     stats.overstressed_bonds += telemetry.overstressedBondCount;
     stats.contacts_processed += telemetry.contactsProcessed;
     stats.contacts_dropped += telemetry.contactsDropped;
+    // The granularity PhysX actually sleeps at. A merged rubble field is one
+    // island of thousands of bodies: it can only sleep as a whole, and any one
+    // member waking wakes all of it. Body counts alone read identically
+    // whether the same 6,000 bodies are one island or 6,000.
+    stats.solver_island_count += telemetry.solverIslandCount;
+    stats.solver_islands_skipped += telemetry.solverIslandsSkipped;
+    stats.sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
   }
   stats.bond_utilisation_max = last_bond_utilisation_max_;
   stats.bonds_above_half_utilisation = last_bonds_above_half_utilisation_;

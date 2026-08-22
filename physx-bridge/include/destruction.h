@@ -139,6 +139,26 @@ public:
   rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
 
   void sleep_chunk_body(std::uint32_t entity_id);
+
+  /// Take settled debris out of the rigid-body solver by making it kinematic,
+  /// and put it back.
+  ///
+  /// PhysX sleeps per contact island, so a merged rubble field can only sleep
+  /// as a whole and any one member waking wakes all of it -- measured as one
+  /// rifle round waking 6,065 bodies. A kinematic body generates no contact
+  /// pairs against other kinematic or static geometry, so an all-kinematic
+  /// pile has no island to wake and no contacts to converge, while dynamic
+  /// debris and the player controller still collide with it.
+  ///
+  /// The actor and its island serial survive the round trip, which is what
+  /// lets the network layer treat a freeze as the settle it already handles.
+  /// Bodies are addressed by packed entity id; unknown ids and the structure's
+  /// kinematic support actor are skipped rather than erroring, because the
+  /// caller's view of what is live is one tick old by construction.
+  /// Returns how many bodies actually changed state.
+  std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
+  std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
+
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
@@ -147,6 +167,9 @@ private:
 
   Slot *find_slot(std::uint32_t structure_id);
   const Slot *find_slot(std::uint32_t structure_id) const;
+  /// Shared body of freeze_chunk_bodies / unfreeze_chunk_bodies.
+  std::uint32_t set_chunk_bodies_kinematic(rust::Slice<const std::uint32_t> entity_ids,
+                                           bool kinematic);
   void register_filters(Slot &slot);
   /// Single GPU->CPU readback of body and shape state for one structure.
   void refresh_snapshots(Slot &slot) const;
@@ -197,6 +220,18 @@ private:
   mutable std::uint64_t aliased_body_entities_ = 0;
   /// Bodies re-issued a serial after going kinematic -> dynamic.
   std::uint64_t support_promotions_ = 0;
+  /// Tripwires for the freeze path. A frozen body is kinematic, which is also
+  /// how the adapter marks a structure's support actor, so every place that
+  /// keys off `kinematic` is a chance to mistake settled rubble for a support
+  /// body and re-issue its island serial -- which would present as the body
+  /// being retired and re-promoted on the wire, losing its chunks. These must
+  /// stay zero; they are asserted in the freeze tests.
+  std::uint64_t frozen_serial_blocks_ = 0;
+  /// Frozen bodies the adapter set dynamic again on its own (they split under
+  /// load). Expected and handled, but the rate is worth watching.
+  std::uint64_t frozen_adapter_releases_ = 0;
+  std::uint64_t freeze_flips_ = 0;
+  std::uint64_t unfreeze_flips_ = 0;
   /// Promotions whose body reuses the parent actor, so its centre of mass is a
   /// local offset rather than its origin.
   std::uint64_t reused_parent_promotions_ = 0;

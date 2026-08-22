@@ -93,6 +93,10 @@ public:
   /// manager's persistent buffer. Valid until the next call.
   rust::Slice<const FfiChunkBodySnapshot> chunk_body_snapshots() const;
   void sleep_chunk_body(std::uint32_t entity_id);
+  /// Retire settled debris from the solver by making it kinematic, and
+  /// release it again. See DestructionManager::freeze_chunk_bodies.
+  std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
+  std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 

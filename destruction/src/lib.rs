@@ -20,6 +20,7 @@ pub mod city;
 pub mod city_config;
 pub mod classify;
 pub mod encoder;
+pub mod freeze;
 pub mod ids;
 pub mod interest;
 pub mod manifest;
