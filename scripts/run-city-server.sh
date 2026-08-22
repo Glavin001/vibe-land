@@ -125,6 +125,10 @@ export VIBE_CITY_GRID="${VIBE_CITY_GRID:-1}"
 # slab, so varied heights stay off unless asked for.
 export VIBE_CITY_VARIED_HEIGHTS="${VIBE_CITY_VARIED_HEIGHTS:-0}"
 export RUST_LOG="${RUST_LOG:-info}"
+# Server-side telemetry: every ~1s stats snapshot appended as JSONL, so any
+# session is analyzable after the fact (bodies vs tick cost, governor state,
+# encoder spikes). One file per world lifetime -- restart truncates it.
+export VIBE_CITY_TELEMETRY="${VIBE_CITY_TELEMETRY:-/tmp/city-telemetry.jsonl}"
 export RUST_BACKTRACE="${RUST_BACKTRACE:-full}"
 
 : > "$LOG"

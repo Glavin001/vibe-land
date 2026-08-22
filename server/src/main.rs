@@ -228,6 +228,19 @@ struct MatchTimingStats {
 #[derive(serde::Serialize, Clone, Default)]
 struct CityStatsSnapshot {
     structures: u32,
+    /// Wire v3 governor internals -- the knobs the F9 panel cannot show.
+    /// Zero/1.0 on v2 matches.
+    v3_span_ticks: u32,
+    v3_rate_scale: f32,
+    v3_ema_mbps: f32,
+    v3_epoch: u8,
+    v3_span_encode_ms: f32,
+    /// Intra-window (since last publish) per-tick aggregates: what happened
+    /// WITHIN this second, not just the tick that coincided with publish.
+    window_step_ms: city::WindowSummary,
+    window_ingest_ms: city::WindowSummary,
+    window_span_encode_ms: city::WindowSummary,
+    window_awake: city::WindowSummary,
     chunk_bodies: u32,
     awake_bodies: u32,
     broken_bonds: u32,
@@ -2589,7 +2602,10 @@ impl MatchState {
         let awake_before = city.stats().awake_chunk_bodies;
         // 60 Hz: destruction step + reliable topology/baseline broadcast
         // (byte-identical for every client — encode once, clone the buffer).
+        let city_step_started = std::time::Instant::now();
         let reliable = city.step(self.server_tick, dt, [0.0, -9.81, 0.0], world);
+        let city_step_wall_ms = city_step_started.elapsed().as_secs_f32() * 1000.0;
+        city.record_tick_sample(city_step_wall_ms);
         let v3_datagrams = city.take_v3_datagrams();
         let broken_after = city.stats().broken_bonds;
         let awake_after = city.stats().awake_chunk_bodies;
@@ -2807,6 +2823,11 @@ impl MatchState {
 
         let (dynamic_body_count, vehicle_count, battery_count) = self.arena.counts();
         let physics_health = self.arena.health();
+        let city_window = self
+            .city
+            .as_mut()
+            .map(|city| city.tick_window.drain())
+            .unwrap_or_default();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
@@ -2965,11 +2986,21 @@ impl MatchState {
             players: player_snapshots,
             city: self.city.as_ref().map(|city| {
                 let stats = city.stats();
+                let city_window = city_window.clone();
                 let encoder = city.encoder_stats();
                 let (records, bytes, packets) = city.last_stream_counters();
                 let encode_timings = city.last_encode_timings();
                 CityStatsSnapshot {
                     structures: stats.structures,
+                    v3_span_ticks: city.governor_snapshot().0,
+                    v3_rate_scale: city.governor_snapshot().1,
+                    v3_ema_mbps: city.governor_snapshot().2,
+                    v3_epoch: city.governor_snapshot().3,
+                    v3_span_encode_ms: city.governor_snapshot().4,
+                    window_step_ms: city_window.0.clone(),
+                    window_ingest_ms: city_window.1.clone(),
+                    window_span_encode_ms: city_window.2.clone(),
+                    window_awake: city_window.3.clone(),
                     chunk_bodies: stats.chunk_bodies,
                     awake_bodies: stats.awake_chunk_bodies,
                     broken_bonds: stats.broken_bonds,
@@ -3023,6 +3054,12 @@ impl MatchState {
                 Err(err) => warn!(match_id = %self.id, error = ?err, "match stats serialize failed"),
             }
         }
+
+        // Persistent server-side telemetry: the exact snapshot players see,
+        // appended as JSONL so any session can be analyzed retroactively --
+        // bodies vs tick cost, governor behaviour, encoder spikes -- without
+        // anyone screenshotting a panel. Enabled by VIBE_CITY_TELEMETRY=path.
+        write_city_telemetry(self.server_tick, &match_stats);
 
         let global = {
             let mut registry = self
@@ -4579,6 +4616,36 @@ fn packet_vehicle_count(packet: &ServerPacket) -> usize {
 
 fn is_snapshot_packet_kind(kind: u8) -> bool {
     kind == PKT_SNAPSHOT || kind == PKT_SNAPSHOT_V2
+}
+
+/// Append one telemetry line: `{"ts_ms":..,"tick":..,"stats":{...}}`.
+/// File is opened (truncated) on first write per process, so one file = one
+/// world lifetime, matching "restart is the reset".
+fn write_city_telemetry(tick: u32, stats: &MatchStatsSnapshot) {
+    use std::io::Write as _;
+    static SINK: std::sync::OnceLock<
+        Option<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>,
+    > = std::sync::OnceLock::new();
+    let sink = SINK.get_or_init(|| {
+        let path = std::env::var("VIBE_CITY_TELEMETRY").ok()?;
+        let file = std::fs::File::create(&path)
+            .map_err(|error| {
+                warn!(path = %path, ?error, "city telemetry sink failed to open");
+                error
+            })
+            .ok()?;
+        Some(std::sync::Mutex::new(std::io::BufWriter::new(file)))
+    });
+    let Some(sink) = sink else { return };
+    let Ok(json) = serde_json::to_string(stats) else { return };
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut writer) = sink.lock() {
+        let _ = writeln!(writer, "{{\"ts_ms\":{ts_ms},\"tick\":{tick},\"stats\":{json}}}");
+        let _ = writer.flush();
+    }
 }
 
 fn wants_unreliable_delivery(kind: u8) -> bool {

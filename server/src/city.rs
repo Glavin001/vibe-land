@@ -487,7 +487,58 @@ impl V3Live {
     }
 }
 
+/// Min/avg/p95/max over every tick since the last telemetry publish. The
+/// 1 Hz snapshot otherwise reports one tick's instantaneous values and hides
+/// intra-second spikes (an 11.1 ms encoder-ingest spike was only ever seen
+/// because a human screenshotted the right second).
+#[derive(Default, Clone, serde::Serialize)]
+pub struct WindowSummary {
+    pub min: f32,
+    pub avg: f32,
+    pub p95: f32,
+    pub max: f32,
+    pub samples: u32,
+}
+
+#[derive(Default)]
+pub struct CityTickWindow {
+    step_ms: Vec<f32>,
+    ingest_ms: Vec<f32>,
+    span_encode_ms: Vec<f32>,
+    awake: Vec<f32>,
+}
+
+fn summarize_window(values: &mut Vec<f32>) -> WindowSummary {
+    if values.is_empty() {
+        return WindowSummary::default();
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let count = values.len();
+    let summary = WindowSummary {
+        min: values[0],
+        avg: values.iter().sum::<f32>() / count as f32,
+        p95: values[((count - 1) as f32 * 0.95).round() as usize],
+        max: values[count - 1],
+        samples: count as u32,
+    };
+    values.clear();
+    summary
+}
+
+impl CityTickWindow {
+    pub fn drain(&mut self) -> (WindowSummary, WindowSummary, WindowSummary, WindowSummary) {
+        (
+            summarize_window(&mut self.step_ms),
+            summarize_window(&mut self.ingest_ms),
+            summarize_window(&mut self.span_encode_ms),
+            summarize_window(&mut self.awake),
+        )
+    }
+}
+
 pub struct CityRuntime {
+    /// Per-tick samples between telemetry publishes; drained at each publish.
+    pub tick_window: CityTickWindow,
     /// Present when this match speaks wire v3; owns the live pose stream.
     live: Option<V3Live>,
     sim_hz: u32,
@@ -552,6 +603,7 @@ impl CityRuntime {
             .collect();
         Self {
             live: None,
+            tick_window: CityTickWindow::default(),
             sim_hz,
             backend,
             encoder,
@@ -974,6 +1026,35 @@ impl CityRuntime {
 
     /// A client reported these bodies' chains poisoned by packet loss; restate
     /// them absolutely on the next span.
+    /// Record one tick's samples into the telemetry window. Wall time comes
+    /// from the caller (it brackets the whole city step); the rest reads the
+    /// backend's per-tick stats so intra-second spikes survive to publish.
+    pub fn record_tick_sample(&mut self, step_wall_ms: f32) {
+        let stats = self.stats();
+        self.tick_window.step_ms.push(step_wall_ms);
+        self.tick_window.ingest_ms.push(stats.ingest_ms);
+        self.tick_window.awake.push(stats.awake_chunk_bodies as f32);
+        if let Some(live) = &self.live {
+            self.tick_window.span_encode_ms.push(live.last_span_encode_ms);
+        }
+    }
+
+    /// Wire v3 governor internals for telemetry:
+    /// (span_ticks, rate_scale, ema_mbps, epoch, last_span_encode_ms).
+    /// Zeros/identity on v2 matches.
+    pub fn governor_snapshot(&self) -> (u32, f32, f32, u8, f32) {
+        match &self.live {
+            Some(live) => (
+                live.governor.span_ticks(),
+                live.governor.rate_scale(),
+                live.governor.ema_mbps(),
+                live.encoder.epoch(),
+                live.last_span_encode_ms,
+            ),
+            None => (0, 1.0, 0.0, 0, 0.0),
+        }
+    }
+
     /// Wire v3: smear an absolute restate of every occupied lane (join /
     /// resync). No-op on v2 matches.
     pub fn begin_join_restate(&mut self) {
