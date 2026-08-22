@@ -314,6 +314,30 @@ struct CityStatsSnapshot {
     settle_deferred_penetrating: u64,
     unmapped_body_skips: u32,
     duplicate_body_records: u64,
+    /// Contact islands the PhysX solver saw, and how many it skipped as
+    /// settled. PhysX sleeps per island, never per body, so this is the only
+    /// field that distinguishes a merged city-block pile -- which can only
+    /// sleep or wake as a whole -- from the same body count spread over
+    /// thousands of independent islands.
+    solver_island_count: u32,
+    solver_islands_skipped: u32,
+    /// Settled debris held kinematic, out of the rigid-body solver, and the
+    /// transitions that produced it. Sustained flips with no new damage is
+    /// the signature of a freeze policy fighting the engine.
+    frozen_bodies: u32,
+    freeze_flips: u64,
+    unfreeze_flips: u64,
+    /// Sleep/wake edges this tick. `awake_bodies` is a level and cannot say
+    /// whether a pile is failing to settle or being repeatedly re-woken.
+    chunk_sleep_events: u64,
+    chunk_wake_events: u64,
+    /// Awake bodies that have not left a 2 cm shell in a second: the
+    /// population a pose-based freeze could retire. Only counted under
+    /// VIBE_CITY_POSE_CENSUS.
+    pose_quiet_awake_bodies: u32,
+    /// Must stay zero. Non-zero means a frozen body reached a serial-issuing
+    /// path and aliased onto the structure's support actor.
+    frozen_serial_blocks: u64,
     degraded: bool,
 }
 
@@ -3043,6 +3067,15 @@ impl MatchState {
                     settle_deferred_penetrating: stats.settle_deferred_penetrating,
                     unmapped_body_skips: stats.unmapped_body_skips,
                     duplicate_body_records: encoder.duplicate_body_records,
+                    solver_island_count: stats.solver_island_count,
+                    solver_islands_skipped: stats.solver_islands_skipped,
+                    frozen_bodies: stats.frozen_chunk_bodies,
+                    freeze_flips: stats.freeze_flips,
+                    unfreeze_flips: stats.unfreeze_flips,
+                    chunk_sleep_events: stats.chunk_sleep_events,
+                    chunk_wake_events: stats.chunk_wake_events,
+                    pose_quiet_awake_bodies: stats.pose_quiet_awake_bodies,
+                    frozen_serial_blocks: stats.frozen_serial_blocks,
                     degraded: city.is_degraded(),
                 }
             }),

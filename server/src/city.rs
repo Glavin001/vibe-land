@@ -851,6 +851,24 @@ impl CityRuntime {
 
                 let stress = physx_shot_stress_impulse();
                 let push = physx_shot_push_impulse();
+
+                // Release frozen rubble around the impact BEFORE the blast.
+                //
+                // Order matters twice over: the blast's push pass skips
+                // kinematic bodies, so anything still frozen would take the
+                // stress but none of the motion; and the wake is what makes
+                // the response local. The measured pathology is a single
+                // rifle round waking 6,065 bodies because a settled city
+                // block is one contact island -- waking only what the blast
+                // reaches keeps the cost of a shot proportional to the shot.
+                // The wider push radius is used so every body that will be
+                // pushed is dynamic by the time the push arrives.
+                match backend.wake_around(world, point.to_array(), SHOT_PUSH_RADIUS_M) {
+                    Ok(0) => {}
+                    Ok(woken) => tracing::debug!(woken, "city shot woke frozen rubble"),
+                    Err(error) => tracing::warn!(%error, "city spatial wake failed"),
+                }
+
                 match backend.apply_blast(
                     world,
                     point.to_array(),
@@ -907,7 +925,7 @@ impl CityRuntime {
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
-                    self.encoder.ingest_tick(sim_tick, &snapshots, &output, &[]);
+                    self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
                     if let Some(live) = self.live.as_mut() {
                         live.ingest(&self.manifest, sim_tick, &snapshots, &output);
                     }
@@ -949,7 +967,7 @@ impl CityRuntime {
                         match snapshot_result {
                             Ok(snapshots) => {
                                 let ingest_started = std::time::Instant::now();
-                                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &[]);
+                                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
                                 if let Some(live) = self.live.as_mut() {
                                     live.ingest(&self.manifest, sim_tick, snapshots, &output);
                                 }

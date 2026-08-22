@@ -313,6 +313,14 @@ pub struct DestructionStats {
     /// Freeze calls the bridge refused. Non-zero disables freezing for the
     /// rest of the match rather than retrying every tick.
     pub freeze_failures: u64,
+    /// Must stay zero: a frozen body reaching a serial-issuing path in the
+    /// bridge would alias settled rubble onto the structure's support actor,
+    /// which presents as the body being retired and re-promoted on the wire
+    /// with its chunks lost.
+    pub frozen_serial_blocks: u64,
+    /// Frozen bodies the adapter set dynamic again on its own, because they
+    /// split under load. Expected; the rate is worth watching.
+    pub frozen_adapter_releases: u64,
 }
 
 /// Runs after PhysX `fetchResults` and before the next `simulate`.

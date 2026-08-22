@@ -585,7 +585,6 @@ impl CityDestruction {
                         }
                     }
                     self.freeze.mark_frozen(&freeze_candidates);
-                    self.stats.freeze_flips += freeze_candidates.len() as u64;
                 }
                 Err(_) => {
                     // Freezing is an optimisation; losing it must never take
@@ -598,7 +597,6 @@ impl CityDestruction {
         }
 
         let census = self.freeze.census();
-        self.stats.frozen_chunk_bodies = census.frozen;
         self.stats.chunk_sleep_events = census.sleep_edges;
         self.stats.chunk_wake_events = census.wake_edges;
         self.stats.pose_quiet_awake_bodies = census.pose_quiet_awake;
@@ -644,6 +642,18 @@ impl CityDestruction {
             self.stats.contacts_dropped = bridge_stats.contacts_dropped;
             self.stats.bond_utilisation_max = bridge_stats.bond_utilisation_max;
             self.stats.bonds_above_half_utilisation = bridge_stats.bonds_above_half_utilisation;
+            self.stats.solver_island_count = bridge_stats.solver_island_count;
+            self.stats.solver_islands_skipped = bridge_stats.solver_islands_skipped;
+            self.stats.sleeping_actors_skipped = bridge_stats.sleeping_actors_skipped;
+            // Freeze levels and flips come from the bridge's own set, not
+            // from the tracker's: the two are meant to agree, and reporting
+            // the side that actually owns the PhysX flag is what makes a
+            // disagreement visible rather than self-confirming.
+            self.stats.frozen_chunk_bodies = bridge_stats.frozen_chunk_bodies;
+            self.stats.freeze_flips = bridge_stats.freeze_flips;
+            self.stats.unfreeze_flips = bridge_stats.unfreeze_flips;
+            self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
+            self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }
 
         wakes.sort_unstable();
@@ -685,7 +695,6 @@ impl CityDestruction {
             .unfreeze_chunk_bodies(&candidates)
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
         let woken = self.freeze.mark_thawed(&candidates, self.tick);
-        self.stats.unfreeze_flips += woken.len() as u64;
         for entity in &woken {
             let (structure_id, serial) = ids::body_entity_parts(*entity);
             self.pending_wakes.push((structure_id, serial));
