@@ -141,10 +141,18 @@ pub struct FreezeConfig {
 impl Default for FreezeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // On by default as of 2026-08-22, after the downtown ramp: 34%
+            // more of the city destroyed while carrying 57% fewer awake
+            // bodies, peak awake 4,041 -> 2,591 (under the ~3,000-body knee
+            // rather than past it), and a pile that comes to rest instead of
+            // holding ~2,500 bodies awake for the rest of the match.
+            // VIBE_CITY_FREEZE=0 is the kill switch.
+            enabled: true,
             after_ticks: 30,
             batch: 256,
-            pose_enabled: false,
+            // Engine-sleep freezing alone leaves the merged pile behind --
+            // the case that never sleeps is exactly the case that matters.
+            pose_enabled: true,
             pose_ticks: 60,
             shell_m: 0.02,
             census: false,
@@ -443,7 +451,12 @@ impl FreezeTracker {
                 }
                 if body.quiet_ticks >= Self::window(body, config.pose_ticks) {
                     pose_quiet = true;
-                    if config.pose_enabled {
+                    // Both switches, not just the pose one. Pose freezing is
+                    // an extension of freezing, so the master kill switch has
+                    // to cover it -- otherwise VIBE_CITY_FREEZE=0 would still
+                    // retire every motionless body, and the one control that
+                    // is supposed to restore old behaviour would not.
+                    if config.pose_enabled && config.enabled {
                         observation.freeze = Some(FreezeCandidate {
                             entity,
                             position,
@@ -821,6 +834,28 @@ mod tests {
         // record, since its pose may have changed.
         let again = tracker.observe(sample(7, [1.0, 0.0, 0.0], true, 3));
         assert!(again.settled);
+    }
+
+    /// VIBE_CITY_FREEZE=0 has to mean nothing freezes, by any route.
+    ///
+    /// Pose freezing is a separate switch, and once both default to on a
+    /// config with the master off but the pose flag left on is reachable --
+    /// at which point the kill switch would silently keep retiring every
+    /// motionless body, which is the one thing it exists to prevent.
+    #[test]
+    fn the_master_switch_covers_pose_freezing_too() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            enabled: false,
+            pose_enabled: true,
+            pose_ticks: 3,
+            ..FreezeConfig::default()
+        });
+        for tick in 1..=10 {
+            assert!(
+                tracker.observe(sample(1, [0.0; 3], false, tick)).freeze.is_none(),
+                "tick {tick} froze a body with the master switch off"
+            );
+        }
     }
 
     #[test]
