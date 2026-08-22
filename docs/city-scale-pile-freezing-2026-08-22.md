@@ -140,64 +140,82 @@ slept.
 
 300 s of `record-city-trace` on `fractured-downtown.json` (24,105
 chunks), 2,000 shots ramping from one every 8 ticks to one every 3, same
-schedule both runs. Damage stops around t+170–190 s; the rest is quiet.
+schedule both runs. Damage stops around t+180–215 s; the rest is quiet.
 
 | | freeze off | freeze on |
 |---|---:|---:|
-| broken bonds | 16,022 | **21,754** |
-| bodies created | 4,491 | **6,071** |
-| median awake while shooting | 1,944 | **96** |
-| p95 awake while shooting | 3,941 | **1,235** |
-| peak awake | 4,060 | **1,472** |
-| median sim ms while shooting | 11.6 | **7.7** |
-| p95 sim ms while shooting | 18.9 | 19.4 |
-| awake body-ticks over the run | 27,503,501 | **3,708,010** |
-| frozen at the end | 0 | 5,998 |
+| broken bonds | 16,087 | **21,523** |
+| bodies created | 4,458 | **6,164** |
+| median awake while shooting | 1,963 | **837** |
+| p95 awake while shooting | 4,031 | **2,126** |
+| peak awake | 4,041 | **2,591** |
+| median sim ms while shooting | 11.6 | **9.3** |
+| p95 sim ms while shooting | 19.0 | 20.5 |
+| awake body-ticks over the run | 41,834,860 | **12,925,123** |
+| frozen at the end | 0 | 6,090 |
 | membership mismatches | 0 | 0 |
 
-The shape matters more than any single number: **freezing destroyed 36%
-more of the city while running with 95% fewer awake bodies and a 34%
-lower median tick.** Cost stopped tracking cumulative damage and started
-tracking only what is currently in motion.
+The shape matters more than any single number: **freezing destroyed 34%
+more of the city while carrying 57% fewer awake bodies at the median and
+69% less awake work over the run.** Cost stopped tracking cumulative
+damage and started tracking only what is currently in motion.
 
-Where the tick sits, by awake population:
+The most load-bearing line is peak awake. The measured knee on this
+hardware is ~3,000 awake bodies; the baseline peaks at 4,041, past it,
+and spends 2,269 ticks (13% of the run) at 3k or above. The freeze run
+peaks at 2,591 and **never enters those buckets at all**:
 
 | awake | freeze off | freeze on |
 |---|---:|---:|
-| 0–1k | 6,656 ticks (37%) | **16,847 ticks (94%)** |
-| 1–2k | 4,719 | 1,153 |
-| 2–3k | 4,936 | 0 |
-| 3–4k | 1,632 | 0 |
-| 4–5k | 57 | 0 |
-
-Per-bucket tick cost is nearly identical between the two runs (4.2 vs
-4.9 ms at 0–1k), which is the point: freezing does not make an awake
-body cheaper, it moves the population. The slight per-tick premium is
-the freeze run's larger scene — 6,071 bodies against 4,491, all of which
-still cost broadphase and readback.
+| 0–1k | 925 ticks (5%) | **14,123 ticks (78%)** |
+| 1–2k | 6,128 | 3,143 |
+| 2–3k | 8,678 | 734 |
+| 3–4k | 1,105 | **0** |
+| 4–5k | 1,164 | **0** |
 
 **The decay criterion is where the two runs stop resembling each other
-at all.** After the last damage:
+at all.** After the last damage the baseline never drops under 1,000
+awake bodies for the remainder of the run; the freeze run is already
+there. That flat baseline tail is the live session's pathology
+reproduced headlessly — the pile stops being touched and keeps being
+simulated anyway — and the campaign's acceptance target (awake under 1k
+within ~5 s of a collapse ending) is met with freezing and never met
+without it.
 
-| seconds since last damage | 0 | 3 | 6 | 12 | to reach <1k |
-|---|---:|---:|---:|---:|---:|
-| freeze off | 2,549 | 2,549 | 2,549 | 2,549 | **30.4 s** |
-| freeze on | 2 | 1 | 0 | 0 | **0.0 s** |
+Two caveats stated plainly. p95 sim is slightly *worse* (19.0 → 20.5 ms)
+and about 7% of ticks exceed the 16.7 ms budget in **both** runs: those
+are live collapses, where the bodies are genuinely in motion and must be
+simulated. Freezing does not address that and should not — and the
+freeze run is doing 34% more collapsing. And the headless shot plan
+saturates around 16–22k broken bonds, so the ≥40k sustained figure from
+the live human session was not reproduced offline; 16–22k does sit in
+the band where the live capture bracketed the merge threshold, but the
+far tail remains unmeasured here.
 
-That flat 2,549 is the live session's pathology reproduced headlessly:
-the pile stops being touched and keeps being simulated anyway. The
-campaign's acceptance target — awake under 1k within ~5 s of a collapse
-ending — is met with freezing and missed by a factor of six without it.
+### A measurement bug worth recording
 
-Two caveats stated plainly. p95 sim is unchanged (18.9 → 19.4 ms) and
-about 6% of ticks exceed the 16.7 ms budget in **both** runs: those are
-live collapses, where the bodies are genuinely in motion and must be
-simulated. Freezing does not address that and should not. And the
-headless shot plan saturates around 16–22k broken bonds, so the ≥40k
-sustained figure from the live human session was not reproduced here —
-16–22k does sit squarely in the 10k–22k band where the live capture
-bracketed the merge threshold, which is the interesting region, but the
-far tail remains unmeasured offline.
+The first version of this ramp reported 95% fewer awake bodies. It was
+wrong, and the way it was wrong is the interesting part.
+
+`record-city-trace` fires shots through `destruction.apply_blast`
+directly rather than through `CityRuntime::apply_shot_ray`, so it never
+called `wake_around`. Frozen rubble in the offline harness could
+therefore never come back: shots into a settled pile did nothing, and
+the run looked cheap because it had stopped simulating a city it had
+also stopped destroying.
+
+It surfaced on the 10-floor high-rise with shots spaced 1.5 s apart, so
+later rounds land on settled rubble. Damage against wall-clock, freezing
+on: **763 broken bonds at t+30 s, and 763 for the remaining 15 s**,
+against an unfrozen control that went on to 2,112. A 60% *drop* in
+destruction was being reported as a performance win. With the wake wired
+in, the same scenario gives 2,122 against the control's 2,039 — equal
+within GPU non-determinism — at 341 peak bodies against 497.
+
+The lesson is that a freeze number is only meaningful next to a damage
+number. Every table above therefore carries broken bonds and bodies
+created alongside the cost, and the freeze run has to be doing *at
+least* as much destruction for its cheapness to mean anything.
 
 ### Instrument check
 
