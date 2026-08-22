@@ -476,12 +476,20 @@ export function CityStatsOverlay({
 
       <div style={heading}>destruction</div>
       {/*
-        The body population, partitioned. awake is what the solver simulates
-        this tick (the measured knee on this hardware is ~3,000 -- warn as it
-        approaches); asleep is engine-slept dynamics; frozen is settled rubble
-        retired from the solver as kinematic, which costs ~nothing and is the
-        pile-freezing system working. total - awake - asleep - frozen is the
-        structures' kinematic support actors (one per intact building).
+        The body population, fully partitioned -- the four rows sum to the
+        total, so a gap means something is misclassified.
+
+        awake   what the solver actually simulates this tick. The measured
+                knee on this hardware is ~3,000; past it the tick misses 60 Hz.
+        asleep  engine-slept dynamics, not yet retired.
+        frozen  settled rubble made kinematic and taken out of the solver.
+                Costs ~nothing; this rising is the pile-freezing working.
+        rooted  kinematic actors still anchored to the ground. NOT one per
+                building: every fracture fragment that keeps a support node
+                becomes its own rooted actor, so this climbs with damage --
+                measured 38 -> 153 over one downtown session. It is the count
+                of standing stumps, and it is derived rather than reported so
+                that it absorbs any residue and the partition always closes.
       */}
       <Stat label="bodies total" value={`${city?.chunk_bodies ?? 0}`} />
       <Stat
@@ -491,12 +499,22 @@ export function CityStatsOverlay({
       />
       <Stat label="├ asleep" value={`${city?.sleeping_bodies ?? 0}`} />
       <Stat
-        label="└ frozen"
+        label="├ frozen"
         value={`${city?.frozen_bodies ?? 0}${
           (city?.chunk_bodies ?? 0) > 0
             ? ` (${Math.round((100 * (city?.frozen_bodies ?? 0)) / (city?.chunk_bodies ?? 1))}%)`
             : ''
         }`}
+      />
+      <Stat
+        label="└ rooted"
+        value={`${Math.max(
+          0,
+          (city?.chunk_bodies ?? 0) -
+            (city?.awake_bodies ?? 0) -
+            (city?.sleeping_bodies ?? 0) -
+            (city?.frozen_bodies ?? 0),
+        )}`}
       />
       {/*
         Wake plumbing health. contact wakes = frozen rubble released because
