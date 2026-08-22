@@ -443,6 +443,21 @@ export class CityClient {
         const kept = this.pendingTopology.filter((p) => p.message.topoSeq > bootstrapSeq);
         this.pendingTopology.length = 0;
         this.pendingTopology.push(...kept);
+        // A bootstrap means the world was REPLACED (join, resync, or a city
+        // reset). Every lane-keyed thing describes the old world: the server
+        // rebuilds its encoder, so lane ids restart from zero and its epoch
+        // restarts with them. Keeping the old map silently routes the new
+        // world's poses to bodies that no longer exist -- the city renders
+        // intact and nothing ever moves again, which is exactly how a reset
+        // after heavy damage failed in play.
+        this.laneToEntity.clear();
+        this.entityToLane.clear();
+        this.lastSamplePos.clear();
+        this.debris?.reset_all_lanes();
+        // Pose-stream clocks belong to the old world too.
+        this.lastSpanTick = -1;
+        this.spanTicksEma = 6;
+        this.sampleDelaySmooth = 6;
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
         this.resyncRequested = false;

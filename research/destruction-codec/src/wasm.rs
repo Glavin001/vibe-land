@@ -208,6 +208,19 @@ impl DebrisDecoder {
         self.accept_after.insert(lane, tick);
     }
 
+    /// Forget EVERY lane: the world was replaced (city reset / bootstrap).
+    /// Lane ids are reused from zero by a rebuilt server encoder and its
+    /// epoch restarts, so any surviving per-lane state would misroute the
+    /// new world's records to the old world's bodies.
+    pub fn reset_all_lanes(&mut self) {
+        self.playbacks.clear();
+        self.accept_after.clear();
+        self.newest.clear();
+        self.assigned_epoch.clear();
+        self.history.clear();
+        self.latest_epoch = 0;
+    }
+
     /// Record that `lane` was (re)assigned at lane-map revision `epoch` and
     /// forget the previous tenant's trajectory. Records from packets stamped
     /// with an older epoch will be refused; records at or after it belong to

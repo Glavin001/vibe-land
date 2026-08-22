@@ -2579,9 +2579,19 @@ impl MatchState {
                     // no incremental topology event can say "start over", so
                     // every client needs a fresh bootstrap.
                     let bootstrap = city.bootstrap(self.server_tick);
+                    // Wire v3: the rebuilt encoder restarts lane ids and its
+                    // epoch, so a bootstrap alone leaves every client holding
+                    // a lane map for a world that no longer exists. Send the
+                    // new map beside it and restate every body, exactly as
+                    // join and resync do.
+                    let lanes = city.full_lane_map();
+                    city.begin_join_restate();
                     for runtime in self.players.values() {
                         let _ =
                             try_queue_packet(&runtime.tx, bootstrap.clone(), &self.io);
+                        if let Some(lanes) = lanes.clone() {
+                            let _ = try_queue_packet(&runtime.tx, lanes, &self.io);
+                        }
                     }
                     tracing::info!(
                         match_id = %self.id,
