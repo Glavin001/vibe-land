@@ -96,6 +96,16 @@ export class CityClient {
   private bytesWindow: Array<{ at: number; bytes: number }> = [];
   private latestSimTick = 0;
   private latestSimTickAtMs = 0;
+  /** Measured server tick rate (ticks per wall second). The server sheds
+   *  sim rate under load (60 -> 20 Hz at heavy demolition); extrapolating
+   *  the render clock at a hardcoded 60 made the clock outrun tick
+   *  production and snap back ~10 ticks on every re-anchor -- visible as
+   *  rubber-banding of flying debris whenever the sim was below 60 Hz. */
+  private tickRateEma = 60;
+  /** Continuous render clock (tick units); follows the extrapolated anchor
+   *  with a ~0.5 s pull so per-packet anchor jitter never steps it. */
+  private renderClockTick = -1;
+  private renderClockMs = 0;
   /** Wire v3: the wasm debris decoder; null means this match speaks v2. */
   private readonly debris: DebrisDecoder | null;
   private readonly simHz: number;
@@ -196,6 +206,37 @@ export class CityClient {
    * the same ledger slot the v2 path writes. Chains a lost packet poisoned are
    * drained here and nacked upstream, so the heal cost tracks actual loss.
    */
+  /** Fold a newest-seen sim tick into the anchor and the tick-rate EMA. */
+  private observeSimTick(tick: number): void {
+    const now = performance.now();
+    if (this.latestSimTickAtMs > 0) {
+      const dtS = (now - this.latestSimTickAtMs) / 1000;
+      const rate = (tick - this.latestSimTick) / Math.max(1e-3, dtS);
+      if (rate > 0.5 && rate < 240) {
+        this.tickRateEma += (rate - this.tickRateEma) * 0.1;
+      }
+    }
+    this.latestSimTick = tick;
+    this.latestSimTickAtMs = now;
+  }
+
+  /** The render clock: the newest-tick anchor extrapolated at the MEASURED
+   *  tick rate, followed through a bounded pull. A >2 s discontinuity
+   *  (join, reset, resync) snaps. */
+  private renderTickNow(nowMs: number): number {
+    const raw =
+      this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * this.tickRateEma;
+    if (this.renderClockTick < 0 || Math.abs(raw - this.renderClockTick) > 120) {
+      this.renderClockTick = raw;
+    } else {
+      const dt = Math.max(0, (nowMs - this.renderClockMs) / 1000);
+      const error = raw - this.renderClockTick;
+      this.renderClockTick += dt * this.tickRateEma + error * Math.min(1, dt * 2);
+    }
+    this.renderClockMs = nowMs;
+    return this.renderClockTick;
+  }
+
   private sampleDebris(renderTick: number, live: Set<number>): Set<number> {
     const debris = this.debris;
     if (debris === null) {
@@ -337,8 +378,7 @@ export class CityClient {
         const started = performance.now();
         const header = decodeDebrisHeader(bytes);
         if (header.spanTick > this.latestSimTick) {
-          this.latestSimTick = header.spanTick;
-          this.latestSimTickAtMs = performance.now();
+          this.observeSimTick(header.spanTick);
         }
         try {
           if (this.lastSpanTick >= 0 && header.spanTick > this.lastSpanTick) {
@@ -463,6 +503,7 @@ export class CityClient {
         this.lastSpanTick = -1;
         this.spanTicksEma = 6;
         this.sampleDelaySmooth = 6;
+        this.renderClockTick = -1;
         this.settledAtTick.clear();
         this.baselineGenerations.clear();
         this.resyncRequested = false;
@@ -590,8 +631,7 @@ export class CityClient {
     // walks render time backwards, which `PresentationTrack.sample` is
     // documented not to accept. Advance the anchor only with the tick.
     if (datagram.simTick > this.latestSimTick) {
-      this.latestSimTick = datagram.simTick;
-      this.latestSimTickAtMs = performance.now();
+      this.observeSimTick(datagram.simTick);
     }
     let deferred = false;
     for (const record of datagram.records) {
@@ -663,8 +703,7 @@ export class CityClient {
       // Nothing has been drawn yet, so there is no on-screen pose to hold.
       return;
     }
-    const renderTick =
-      this.latestSimTick + ((performance.now() - this.latestSimTickAtMs) / 1000) * 60;
+    const renderTick = this.renderTickNow(performance.now());
     for (const batch of message.batches) {
       for (const promotion of batch.promotions) {
         const key = bodyKey(promotion.structureId, promotion.islandId);
@@ -871,7 +910,7 @@ export class CityClient {
       return live;
     }
     // Render tick estimate: latest known sim tick + elapsed since it arrived.
-    const renderTick = this.latestSimTick + ((nowMs - this.latestSimTickAtMs) / 1000) * 60;
+    const renderTick = this.renderTickNow(nowMs);
     if (this.debris !== null) {
       return this.sampleDebris(renderTick, live);
     }
