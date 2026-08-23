@@ -38,7 +38,13 @@ test.describe('city destruction over wire v3', () => {
     expect(before.chunksTotal).toBeGreaterThan(1000);
     expect(before.topoSeqGaps).toBe(0);
 
-    const target = await tallestStructureTarget(page);
+    // 0.35, not the helper's 0.6 default: on the tallest tower that aim point
+    // sits ~102 m from the spawn, past the weapon's reach, so whether anything
+    // broke depended on where the player happened to spawn. A spec that only
+    // sometimes fires is worse than no spec -- this one's job is to notice when
+    // destruction stops reaching the client, and it missed a wire-version
+    // regression that did exactly that.
+    const target = await tallestStructureTarget(page, 0.35);
     await fireAt(page, target, 24);
     await waitUntilStill(page, { timeout: 30_000 });
 

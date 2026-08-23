@@ -712,6 +712,16 @@ impl CityRuntime {
             }
         };
         let mut rebuilt = Self::open(sim_hz, world)?;
+        // The wire version is NOT part of `open`: it is chosen once at match
+        // creation and announced in the session config. A rebuild that forgets
+        // it silently downgrades the server to v2 while every joined client
+        // stays in v3 -- and the failure is invisible from both ends. The
+        // client discards stray v2 pose records by design, and v3 holds
+        // topology back until the debris clock advances, which it never does
+        // without a v3 stream. Destruction then happens server-side and is
+        // never drawn: the city simply stops breaking, with no error, no
+        // sequence gap and no dropped packet anywhere. Observed live.
+        rebuilt.set_wire_version(self.wire_version());
         for client in clients {
             rebuilt.add_client(client);
         }
@@ -1190,5 +1200,47 @@ impl CityRuntime {
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.degraded(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rebuild must keep speaking the wire the session config announced.
+    ///
+    /// This is the regression for a failure with no error anywhere: reset
+    /// dropped the v3 encoder, the server fell back to v2 pose records that
+    /// v3 clients discard by design, and v3's topology hold-back then waited
+    /// forever on a debris clock that had stopped. Destruction kept happening
+    /// and was never drawn -- no gap, no drop, no warning, just a city that
+    /// stopped breaking.
+    #[test]
+    fn reset_preserves_the_wire_version() {
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_V3);
+        assert_eq!(city.wire_version(), vibe_land_destruction::wire::CITY_WIRE_V3);
+        assert!(city.live.is_some(), "v3 needs its live encoder");
+
+        city.reset(60, None).expect("synthetic reset");
+
+        assert_eq!(
+            city.wire_version(),
+            vibe_land_destruction::wire::CITY_WIRE_V3,
+            "reset silently downgraded the wire"
+        );
+        assert!(
+            city.live.is_some(),
+            "reset dropped the v3 live encoder, so no debris span can ever be sent"
+        );
+    }
+
+    #[test]
+    fn reset_keeps_a_v2_match_on_v2() {
+        let mut city = CityRuntime::synthetic(60).expect("synthetic city");
+        city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_VERSION);
+        city.reset(60, None).expect("synthetic reset");
+        assert_eq!(city.wire_version(), vibe_land_destruction::wire::CITY_WIRE_VERSION);
+        assert!(city.live.is_none(), "v2 must not gain a v3 encoder");
     }
 }
