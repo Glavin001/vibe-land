@@ -77,13 +77,23 @@ export async function allStructureTargets(
 /**
  * Point the WebTransport endpoint at a locally reachable address.
  *
- * The server advertises its public URL in `/session-config`. A test runner on
- * the same host usually cannot hairpin back through the NAT to that address,
- * so `E2E_CITY_WT_URL` lets the spec rewrite it. No-op when unset.
+ * The server advertises its PUBLIC url in `/session-config`, and a runner on
+ * the same host cannot hairpin UDP back through the NAT to reach it: the QUIC
+ * handshake times out and the client quietly falls back to WebSocket. That
+ * fallback is worse than a failure, because the suite then measures a
+ * transport no player uses -- reliable and ordered, where the real one is
+ * lossy datagrams. A whole investigation was run against the wrong wire
+ * before this was noticed.
+ *
+ * So the override is now the DEFAULT (the server always listens on 4434
+ * locally), not an opt-in. `E2E_CITY_WT_URL` still overrides it for a remote
+ * stack.
  */
+const DEFAULT_WT_URL = 'https://127.0.0.1:4434/game';
+
 export async function routeWebTransportOverride(page: Page): Promise<void> {
-  const override = process.env.E2E_CITY_WT_URL;
-  if (!override) return;
+  const override = process.env.E2E_CITY_WT_URL ?? DEFAULT_WT_URL;
+  if (!override || override === 'off') return;
   await page.route('**/session-config*', async (route) => {
     // Retry on an empty/!ok body. The dev server proxies this to the game
     // server, and a request that lands mid-restart comes back empty -- which
@@ -113,6 +123,31 @@ export async function routeWebTransportOverride(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Fail loudly if the session did not end up on WebTransport.
+ *
+ * The client falls back to WebSocket by design when QUIC will not connect,
+ * which is right for players and wrong for a test: the two transports differ
+ * in exactly the way that matters for the pose stream (unreliable datagrams
+ * versus an ordered reliable stream). Set E2E_ALLOW_WS=1 for the rare spec
+ * that genuinely wants the fallback path.
+ */
+async function assertRealTransport(page: Page): Promise<void> {
+  if (process.env.E2E_ALLOW_WS === '1') return;
+  const transport = await page.evaluate(
+    () => (window as unknown as { __VIBE_E2E__?: { snapshot: () => { transport: string } } })
+      .__VIBE_E2E__?.snapshot().transport ?? 'none',
+  );
+  if (transport !== 'webtransport') {
+    throw new Error(
+      `city spec is running over '${transport}', not WebTransport. The suite would `
+        + 'then exercise an ordered reliable stream while players get lossy datagrams. '
+        + 'Check the game server\'s UDP listener (4434) and E2E_CITY_WT_URL, or set '
+        + 'E2E_ALLOW_WS=1 if this spec really wants the fallback.',
+    );
+  }
+}
+
 /** Open the `/city` route and wait for the E2E bridge to install. */
 export async function openCity(page: Page): Promise<void> {
   await routeWebTransportOverride(page);
@@ -127,6 +162,18 @@ export async function openCity(page: Page): Promise<void> {
   if (viewport) {
     await page.mouse.click(viewport.width / 2, viewport.height / 2);
   }
+  // Wait for the transport to be decided, then insist it is the real one.
+  await page.waitForFunction(
+    () => {
+      const bridge = (window as unknown as {
+        __VIBE_E2E__?: { snapshot: () => { transport: string } };
+      }).__VIBE_E2E__;
+      const transport = bridge?.snapshot().transport ?? 'none';
+      return transport === 'webtransport' || transport === 'websocket';
+    },
+    { timeout: 30_000 },
+  );
+  await assertRealTransport(page);
 }
 
 /** Read city stats, throwing a useful error when the match is not a city match. */
