@@ -836,9 +836,23 @@ impl FreezeTracker {
     /// bound. Such a body is in unresolved contact conflict; freezing it (or
     /// around it) locks the conflict in.
     fn is_squeezed(&self, entity: u32) -> bool {
-        self.penetration_m
-            .get(&entity)
-            .is_some_and(|&sep| sep < -self.config.max_penetration_m)
+        let Some(&separation) = self.penetration_m.get(&entity) else {
+            return false;
+        };
+        // Reach-relative: resting penetration scales with body size and mass
+        // (a multi-tonne 10 m slab sits decimetres deep at equilibrium; live
+        // measurement found 79 large bodies parked at -150..-317 mm and
+        // permanently refused by a flat 15 mm bound). The floor keeps the
+        // original protection for small chunks -- the population where the
+        // squeeze pump actually happened.
+        let Some(body) = self.bodies.get(&entity) else {
+            return false;
+        };
+        let bound = self
+            .config
+            .max_penetration_m
+            .max(body.reach * 0.03);
+        separation < -bound
     }
 
     /// The freeze-admission and stay-frozen predicate: at least one valid
