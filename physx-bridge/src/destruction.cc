@@ -300,6 +300,12 @@ DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
   // Total parallelism for the stress solve, calling thread included.
   // VIBE_CITY_STRESS_WORKERS=1 forces the old fully-serial behaviour.
   unsigned workers = 8;
+  if (const char *value = std::getenv("VIBE_CITY_BOND_SAMPLE_TICKS")) {
+    const long parsed = std::strtol(value, nullptr, 10);
+    if (parsed > 0) {
+      bond_sample_interval_ = static_cast<std::uint32_t>(parsed);
+    }
+  }
   if (const char *value = std::getenv("VIBE_CITY_STRESS_WORKERS")) {
     const long parsed = std::strtol(value, nullptr, 10);
     if (parsed > 0 && parsed <= 64) {
@@ -1244,7 +1250,16 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // is near its limit" from "no load is reaching the bonds at all" -- the
   // broken-bond count cannot, because it is inferred from chunks landing on
   // different bodies and so stays zero until something actually separates.
-  {
+  //
+  // SAMPLED, not per tick: it reads and scans EVERY bond of every structure
+  // (74k citywide), which cost more than the GPU stress solve it reports on --
+  // it sat between the solve and end brackets, so it showed up only as a gap
+  // between the native tick and the sum of its phases. It feeds two telemetry
+  // numbers published once a second; measuring them 60 times a second bought
+  // nothing. VIBE_CITY_BOND_SAMPLE_TICKS=1 restores per-tick sampling.
+  ++bond_sample_counter_;
+  if (bond_sample_counter_ >= bond_sample_interval_) {
+    bond_sample_counter_ = 0;
     float utilisation_max = 0.0f;
     std::uint32_t above_half = 0;
     for (Slot *slot_ptr : live_slots_) {

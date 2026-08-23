@@ -277,6 +277,11 @@ private:
   std::unordered_map<const physx::PxRigidDynamic *, std::uint32_t> body_entity_stamp_;
   std::unordered_map<const physx::PxShape *, std::uint32_t> shape_entity_stamp_;
 
+  /// Bond-utilisation sampling cadence. The scan walks every bond of every
+  /// structure, so it runs on a cadence rather than per tick; the two numbers
+  /// it produces are published once a second.
+  std::uint32_t bond_sample_interval_ = 30;
+  std::uint32_t bond_sample_counter_ = 0;
   /// Slot-ticks where topology was unchanged and the event diff was skipped.
   std::uint64_t quiet_slot_ticks_ = 0;
   std::uint64_t serial_wraps_ = 0;
