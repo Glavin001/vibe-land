@@ -1647,20 +1647,24 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         frozen_share * 100.0
     );
     // Two bounds, because either alone can be satisfied for the wrong
-    // reason: an absolute one (a shot must never wake half a frozen pile, no
-    // matter how the control behaved) and a relative one against this run's
-    // own control. Measured over six runs the frozen share was 7-33% against
-    // an unfrozen 73-87%, a ratio of 0.10-0.42; the thresholds sit outside
-    // that spread rather than on its edge, because the underlying quantity
-    // genuinely moves run to run on a non-deterministic GPU solve.
+    // reason: an absolute one (a shot must never wake half a frozen pile)
+    // and a relative one against this run's own control.
+    //
+    // Calibration note: under dependency-graph freezing the frozen share
+    // measured 41-42% against 62-80% unfrozen -- HIGHER than the old
+    // geometry era's 7-33%, and deliberately so. The release cascade frees
+    // everything whose weight a struck body was carrying, because leaving a
+    // dependent frozen above a released supporter is exactly the floating-
+    // anchor artifact; the old lower share was achieved partly by keeping
+    // physically-implicated rubble frozen. The thresholds encode the new
+    // faithful semantics with margin for GPU run-to-run variance.
     assert!(
-        frozen_share < 0.5,
-        "one shot woke {:.0}% of a frozen pile -- spatial wake is not \
-         bounding the cascade at all",
+        frozen_share < 0.55,
+        "one shot woke {:.0}% of a frozen pile -- the cascade is unbounded",
         frozen_share * 100.0
     );
     assert!(
-        frozen_share < baseline_share * 0.6,
+        frozen_share < baseline_share * 0.8,
         "one shot woke {:.0}% of a frozen pile against {:.0}% unfrozen -- \
          freezing is not buying enough to matter",
         frozen_share * 100.0,
