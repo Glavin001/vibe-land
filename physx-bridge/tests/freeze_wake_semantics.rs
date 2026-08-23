@@ -492,3 +492,100 @@ fn debris_landing_on_frozen_rubble_releases_it_by_contact() {
         "mappings invalid after contact wakes"
     );
 }
+
+/// Phase-0 pin for the dependency-graph freeze design, with the measured
+/// results encoded as assertions so a driver/SDK bump that changes them
+/// fails loudly.
+///
+/// MEASURED on this stack (GPU dynamics + GPU broadphase, PhysX 5):
+///   - dynamic-vs-dynamic chunk pairs: thousands of threshold reports -- the
+///     supporter-edge data source for debris-on-debris is REAL;
+///   - dynamic-vs-KINEMATIC (chunk on a rooted stump): reports fire -- the
+///     stump-supporter data source is real;
+///   - dynamic-vs-STATIC (chunk on the ground): ZERO reports, ever. The GPU
+///     threshold stream excludes statics (the header's "CPU only" caveat is
+///     real for exactly this class).
+///
+/// Design consequence, not a compromise: static geometry is IMMUTABLE, so
+/// World support needs no invalidation events -- an analytic admission-time
+/// test (body bottom at the ground plane / against static geometry) is
+/// exactly as correct as a contact report, because no event can ever need to
+/// revoke it. Only movable support (other debris, stumps) needs event
+/// evidence, and those are precisely the classes that report.
+///
+/// Also encoded: the ground-reaction damage-sign audit is MOOT (ground pairs
+/// never reach route_contact_shape at all), and the chunk-chunk impulse sign
+/// is ordering-dependent (eINTERNAL_CONTACTS_ARE_FLIPPED, uncorrected), so
+/// support-edge orientation must come from relative COM height, never the
+/// sign -- the probe prints the mixed-sign distribution for the record.
+#[test]
+fn resting_contact_reports_fire_on_gpu_and_the_sign_is_measured() {
+    let mut world = rubble_world(6, 5);
+    let pile = settled_pile(&mut world, 60 * 30);
+    assert!(pile.len() >= 4, "need a settled pile, got {} bodies", pile.len());
+
+    // Wake the pile gently so pairs are simulated again (sleeping pairs do
+    // not report -- that is why the supporter map must be sticky).
+    world
+        .apply_destruction_blast(
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            6.0,
+            0.0,
+            0.5,
+        )
+        .expect("nudge");
+
+    let is_chunk = |entity: u32| entity & 0xf000_0000 == 0x8000_0000;
+    let mut chunk_chunk = 0u32;
+    let mut chunk_static = 0u32;
+    let mut chunk_support = 0u32; // vs kinematic support/stump actors
+    let mut up = 0u32;
+    let mut down = 0u32;
+
+    for _ in 0..90 {
+        tick(&mut world);
+        for event in world.take_contact_events().expect("events") {
+            let a_chunk = is_chunk(event.entity_a);
+            let b_chunk = is_chunk(event.entity_b);
+            match (a_chunk, b_chunk) {
+                (true, true) => {
+                    let a_serial = event.entity_a & 0x003f_ffff;
+                    let b_serial = event.entity_b & 0x003f_ffff;
+                    if a_serial == 0 || b_serial == 0 {
+                        chunk_support += 1;
+                    } else {
+                        chunk_chunk += 1;
+                        if event.impulse.y > 0.0 { up += 1 } else { down += 1 }
+                    }
+                }
+                (true, false) | (false, true) => chunk_static += 1,
+                _ => {}
+            }
+        }
+    }
+
+    println!(
+        "pin: chunk-chunk={chunk_chunk} chunk-stump={chunk_support} chunk-static={chunk_static}"
+    );
+    println!(
+        "chunk-chunk impulse.y sign: +{up} / -{down} (ordering-dependent, unusable for orientation)"
+    );
+
+    assert!(
+        chunk_chunk > 0,
+        "no chunk-chunk threshold reports: the dependency-graph data source is \
+         absent on this stack -- use the geometry fallback"
+    );
+    assert!(
+        chunk_support > 0,
+        "no chunk-vs-kinematic threshold reports: stump supporter edges have no \
+         data source on this stack"
+    );
+    assert_eq!(
+        chunk_static, 0,
+        "chunk-vs-static pairs started reporting -- the GPU threshold stream \
+         changed behaviour; revisit the analytic World-support rule (it stays \
+         correct, but ground edges could now also come from reports)"
+    );
+}
