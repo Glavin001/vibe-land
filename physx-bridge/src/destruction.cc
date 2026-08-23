@@ -243,6 +243,9 @@ struct DestructionManager::Slot {
   std::vector<ExtStressPhysXShapeSnapshot> shape_cache;
   std::uint32_t body_cache_count = 0;
   std::uint32_t shape_cache_count = 0;
+  /// Non-kinematic sleeping bodies as of the last readback, tallied during it.
+  /// Mutable for the same reason the caches are: refresh_snapshots is const.
+  mutable std::uint32_t sleeping_body_count = 0;
 
   /// Bodies we have made kinematic to retire them from the solver.
   ///
@@ -966,11 +969,20 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
   // The snapshot is sorted by bodyId, so a repeat is adjacent. A repeated id
   // maps two snapshot rows onto one island serial, which is exactly how two
   // distinct bodies end up sharing a network id downstream.
-  for (std::uint32_t i = 1; i < slot.body_cache_count && i < slot.body_cache.size(); ++i) {
-    if (slot.body_cache[i].bodyId == slot.body_cache[i - 1].bodyId) {
+  //
+  // The sleeping tally rides this walk. destruction_stats() used to do its own
+  // full pass over every body of every slot, every tick, purely to count them
+  // -- a second whole-population walk for one number.
+  std::uint32_t sleeping = 0;
+  for (std::uint32_t i = 0; i < slot.body_cache_count && i < slot.body_cache.size(); ++i) {
+    if (i > 0 && slot.body_cache[i].bodyId == slot.body_cache[i - 1].bodyId) {
       ++repeated_body_snapshots_;
     }
+    if (!slot.body_cache[i].kinematic && slot.body_cache[i].sleeping) {
+      ++sleeping;
+    }
   }
+  slot.sleeping_body_count = sleeping;
   if (slot.body_cache_count > slot.body_cache.size()) {
     slot.body_cache.resize(slot.body_cache_count);
     slot.body_cache_count = slot.dest->getBodySnapshots(
@@ -1617,8 +1629,9 @@ DestructionManager::chunk_body_snapshots() const {
   // Which body produced each entity this tick. Two bodies landing on one
   // entity is the aliasing bug; recording both sides of the collision names
   // the mechanism (same structure or cross-structure, and which serials).
-  std::unordered_map<std::uint32_t, std::pair<std::uint32_t, ExtStressPhysXId>>
-      emitted;
+  // Cleared, not rebuilt: it keeps its buckets across ticks.
+  auto &emitted = emitted_entities_;
+  emitted.clear();
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;
@@ -2162,10 +2175,8 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   std::uint32_t frozen = 0;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr) continue;
-    for (std::uint32_t i = 0; i < slot_ptr->body_cache_count; ++i) {
-      const auto &body = slot_ptr->body_cache[i];
-      if (!body.kinematic && body.sleeping) ++sleeping;
-    }
+    // Tallied during this tick's readback walk rather than re-walked here.
+    sleeping += slot_ptr->sleeping_body_count;
     frozen += static_cast<std::uint32_t>(slot_ptr->frozen.size());
   }
   stats.sleeping_chunk_bodies = sleeping;

@@ -314,10 +314,42 @@ impl ChunkStreamEncoder {
 
     /// 60 Hz ingest: apply topology output to the ledger, stage the reliable
     /// message, update classifiers from the active-body snapshots.
+    /// Wire v2: ledger/topology plus the per-body classifier the v2 pose
+    /// stream ranks with.
     pub fn ingest_tick(
         &mut self,
         sim_tick: u32,
         active: &[BodySnapshotInput],
+        output: &DestructionTickOutput,
+        wakes: &[(u32, u32)],
+    ) {
+        self.ingest_topology(sim_tick, output, wakes);
+        self.ingest_active(active, true);
+    }
+
+    /// Wire v3: the same ledger/topology work -- v3's reliable topology
+    /// messages come from this encoder -- without the classifier pass.
+    ///
+    /// On a v3 match nothing reads the classes: `encode_send`/`client_datagrams`
+    /// are skipped and baselines are not emitted (v3 records are
+    /// self-contained). Running the pass anyway cost two hash probes and a
+    /// classifier update per awake body per tick for output nobody consumed.
+    /// The order list itself is still built, so `awake_bodies` and the
+    /// duplicate-entity tripwire keep working.
+    pub fn ingest_tick_topology_only(
+        &mut self,
+        sim_tick: u32,
+        active: &[BodySnapshotInput],
+        output: &DestructionTickOutput,
+        wakes: &[(u32, u32)],
+    ) {
+        self.ingest_topology(sim_tick, output, wakes);
+        self.ingest_active(active, false);
+    }
+
+    fn ingest_topology(
+        &mut self,
+        sim_tick: u32,
         output: &DestructionTickOutput,
         wakes: &[(u32, u32)],
     ) {
@@ -387,11 +419,19 @@ impl ChunkStreamEncoder {
             };
             self.staged_topology.push(encode_topology(&message));
         }
+    }
 
+    /// Build this tick's awake-body order, and (when `classify`) the per-body
+    /// tracks the v2 stream ranks with.
+    fn ingest_active(&mut self, active: &[BodySnapshotInput], classify: bool) {
         // Classifier updates from the delta/active-only export.
         self.active_order.clear();
         for snapshot in active {
             let entity = snapshot.body_entity;
+            if !classify {
+                self.active_order.push(entity);
+                continue;
+            }
             let state = BodyState {
                 pose: Pose {
                     position: Vec3::from_array(snapshot.position),

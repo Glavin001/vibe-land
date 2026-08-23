@@ -967,7 +967,26 @@ impl CityRuntime {
                         match snapshot_result {
                             Ok(snapshots) => {
                                 let ingest_started = std::time::Instant::now();
-                                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
+                                // The v2 encoder still owns the ledger and the
+                                // reliable topology messages on every wire, so
+                                // it always ingests -- but its per-awake-body
+                                // classifier pass only feeds the v2 pose
+                                // stream, and a v3 match never reads it.
+                                if self.live.is_some() {
+                                    self.encoder.ingest_tick_topology_only(
+                                        sim_tick,
+                                        &snapshots,
+                                        &output,
+                                        &output.wakes,
+                                    );
+                                } else {
+                                    self.encoder.ingest_tick(
+                                        sim_tick,
+                                        &snapshots,
+                                        &output,
+                                        &output.wakes,
+                                    );
+                                }
                                 if let Some(live) = self.live.as_mut() {
                                     live.ingest(&self.manifest, sim_tick, snapshots, &output);
                                 }

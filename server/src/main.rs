@@ -3168,45 +3168,72 @@ impl MatchState {
             }),
         };
 
-        // Same snapshot the HTTP endpoint serves, pushed to the players it
-        // describes. Reliable rather than datagram: it is ~1 Hz and being
-        // truncated by an MTU would make it unparseable.
-        if !self.players.is_empty() {
-            match serde_json::to_vec(&match_stats) {
-                Ok(json) => {
-                    let mut packet = Vec::with_capacity(json.len() + 1);
-                    packet.push(vibe_land_shared::constants::PKT_MATCH_STATS);
-                    packet.extend_from_slice(&json);
-                    for runtime in self.players.values() {
-                        let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+        // Everything that follows -- JSON serialization, a packet clone per
+        // player, the registry writes, and a blocking telemetry file write --
+        // used to run inline on the tick thread once a second. It is the one
+        // block whose cost is unrelated to the simulation and lands entirely
+        // on a single tick, which is what a 182.9 ms outlier looks like from
+        // the outside. The tick thread now only CAPTURES (a struct build and
+        // a compact per-body state Vec) and hands the rest to a blocking
+        // task; nothing here feeds the next tick, so lateness is harmless.
+        let body_states = self
+            .city
+            .as_ref()
+            .map(|city| (self.id.clone(), city.debug_body_states()));
+        let player_txs: Vec<_> = self
+            .players
+            .values()
+            .map(|runtime| runtime.tx.clone())
+            .collect();
+        let io = Arc::clone(&self.io);
+        let stats_registry = Arc::clone(&self.stats_registry);
+        let body_states_registry = Arc::clone(&self.body_states_registry);
+        let stats_tx = Arc::clone(&self.stats_tx);
+        let match_id = self.id.clone();
+        let server_tick = self.server_tick;
+        let snapshot_hz = self.physics.snapshot_hz();
+        let published = match_stats.clone();
+        tokio::task::spawn_blocking(move || {
+            // Same snapshot the HTTP endpoint serves, pushed to the players it
+            // describes. Reliable rather than datagram: it is ~1 Hz and being
+            // truncated by an MTU would make it unparseable.
+            if !player_txs.is_empty() {
+                match serde_json::to_vec(&published) {
+                    Ok(json) => {
+                        let mut packet = Vec::with_capacity(json.len() + 1);
+                        packet.push(vibe_land_shared::constants::PKT_MATCH_STATS);
+                        packet.extend_from_slice(&json);
+                        for tx in &player_txs {
+                            let _ = try_queue_packet(tx, packet.clone(), &io);
+                        }
+                    }
+                    Err(err) => {
+                        warn!(match_id = %match_id, error = ?err, "match stats serialize failed")
                     }
                 }
-                Err(err) => warn!(match_id = %self.id, error = ?err, "match stats serialize failed"),
             }
-        }
 
-        // Persistent server-side telemetry: the exact snapshot players see,
-        // appended as JSONL so any session can be analyzed retroactively --
-        // bodies vs tick cost, governor behaviour, encoder spikes -- without
-        // anyone screenshotting a panel. Enabled by VIBE_CITY_TELEMETRY=path.
-        write_city_telemetry(self.server_tick, &match_stats);
+            // Persistent server-side telemetry: the exact snapshot players see,
+            // appended as JSONL so any session can be analyzed retroactively --
+            // bodies vs tick cost, governor behaviour, encoder spikes -- without
+            // anyone screenshotting a panel. Enabled by VIBE_CITY_TELEMETRY=path.
+            write_city_telemetry(server_tick, &published);
 
-        let global = {
-            let mut registry = self
-                .stats_registry
-                .write()
-                .expect("stats registry poisoned");
-            registry.insert(self.id.clone(), match_stats.clone());
-            global_stats_from_registry(&registry, self.physics.snapshot_hz())
-        };
-        if let Some(city) = self.city.as_ref() {
-            // Per-body freeze states for the body-color debug overlay,
-            // refreshed at the same cadence as the stats snapshot.
-            self.body_states_registry
-                .write()
-                .expect("body states registry poisoned")
-                .insert(self.id.clone(), city.debug_body_states());
-        }
+            let global = {
+                let mut registry = stats_registry.write().expect("stats registry poisoned");
+                registry.insert(match_id.clone(), published);
+                global_stats_from_registry(&registry, snapshot_hz)
+            };
+            if let Some((id, states)) = body_states {
+                // Per-body freeze states for the body-color debug overlay,
+                // refreshed at the same cadence as the stats snapshot.
+                body_states_registry
+                    .write()
+                    .expect("body states registry poisoned")
+                    .insert(id, states);
+            }
+            let _ = stats_tx.send(global);
+        });
 
         let datagram_fallbacks = self.io.datagram_fallbacks.load(Ordering::Relaxed);
         if datagram_fallbacks > self.last_logged_datagram_fallbacks {
@@ -3308,8 +3335,6 @@ impl MatchState {
                 "match health"
             );
         }
-
-        let _ = self.stats_tx.send(global);
     }
 
     fn process_respawns(&mut self, server_time_ms: u32) {

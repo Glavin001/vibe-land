@@ -720,7 +720,7 @@ impl CityDestruction {
             self.cascade_release(world, stranded, &mut wakes, tick);
         }
 
-        let census = self.freeze.census();
+        let census = self.freeze.census(tick);
         // Frozen bodies are kinematic, so the snapshot loop above never sees
         // them and min_body_y would silently stop covering them -- on exactly
         // the population that cannot recover, since a kinematic body gets no

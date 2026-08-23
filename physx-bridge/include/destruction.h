@@ -285,6 +285,15 @@ private:
   std::uint64_t wake_truncations_ = 0;
   /// Backing store for chunk_body_snapshots(); reused across ticks.
   mutable std::vector<FfiChunkBodySnapshot> body_snapshot_buffer_;
+  /// Entity-claim map for the same call's aliasing check. A member, not a
+  /// local: it is sized by live body count and the call runs twice per tick,
+  /// so building it fresh meant two whole-population hash maps allocated and
+  /// destroyed every tick purely to assert an invariant.
+  /// (structure_id, bodyId) per entity; bodyId is ExtStressPhysXId, spelled as
+  /// uint64_t because this header does not pull in the Blast extension.
+  mutable std::unordered_map<std::uint32_t,
+                             std::pair<std::uint32_t, std::uint64_t>>
+      emitted_entities_;
   /// Bodies with speculative CCD enabled. Applied once per body, outside the
   /// event diff, so a body that turns dynamic on a quiet tick cannot miss it.
   std::unordered_set<physx::PxRigidDynamic *> ccd_enabled_;

@@ -144,6 +144,10 @@ pub struct FreezeConfig {
     pub shell_m: f32,
     /// Count the pose-quiet population without acting on it.
     pub census: bool,
+    /// How often the O(resting) floating scan inside the census actually runs.
+    /// It is a tripwire expected to read zero, so it is sampled, not computed
+    /// every tick -- doing the latter made enabling the tripwire a real cost.
+    pub census_interval_ticks: u32,
     /// Multiplier on the impact radius when deciding which frozen bodies wake.
     pub wake_radius_scale: f32,
     /// Extra reach straight up from an impact. Rubble above the blast has lost
@@ -203,6 +207,7 @@ impl Default for FreezeConfig {
             pose_ticks: 60,
             shell_m: 0.02,
             census: false,
+            census_interval_ticks: 60,
             wake_radius_scale: 1.0,
             wake_above_m: 2.0,
             cell_m: 4.0,
@@ -243,6 +248,10 @@ impl FreezeConfig {
             pose_ticks: number("VIBE_CITY_FREEZE_POSE_TICKS", defaults.pose_ticks),
             shell_m: number("VIBE_CITY_FREEZE_SHELL_M", defaults.shell_m),
             census: flag("VIBE_CITY_POSE_CENSUS", defaults.census),
+            census_interval_ticks: number(
+                "VIBE_CITY_POSE_CENSUS_TICKS",
+                defaults.census_interval_ticks,
+            ),
             wake_radius_scale: number(
                 "VIBE_CITY_WAKE_RADIUS_SCALE",
                 defaults.wake_radius_scale,
@@ -394,6 +403,15 @@ pub struct FreezeTracker {
     /// Rotating start position for the interval backstop, so each pass scans
     /// a bounded slice of the frozen set instead of all of it.
     sweep_cursor: usize,
+    /// Last computed floating-census value and the tick it was computed on.
+    ///
+    /// The census is an O(resting) scan that builds a fresh grid; its doc
+    /// comment always claimed it "runs on the census cadence rather than per
+    /// tick", but nothing implemented the cadence, so enabling the tripwire
+    /// taxed every tick with a full rebuild. It is a slow-moving tripwire
+    /// expected to read zero -- sampling it is as informative as computing it.
+    last_unsupported_resting: u32,
+    last_census_tick: u64,
 }
 
 impl FreezeTracker {
@@ -411,6 +429,8 @@ impl FreezeTracker {
             penetration_m: HashMap::new(),
             frozen_y: std::collections::BTreeMap::new(),
             sweep_cursor: 0,
+            last_unsupported_resting: 0,
+            last_census_tick: 0,
         }
     }
 
@@ -776,15 +796,25 @@ impl FreezeTracker {
         woken
     }
 
-    pub fn census(&self) -> FreezeCensus {
+    /// Census for this tick. `tick` drives the floating-scan cadence: that
+    /// scan is O(resting) with a fresh grid, so it samples rather than running
+    /// every tick (`VIBE_CITY_POSE_CENSUS_TICKS`, default 60 = once a second).
+    /// Every other field is maintained incrementally and stays exact.
+    pub fn census(&mut self, tick: u64) -> FreezeCensus {
+        let unsupported_resting = if self.config.census {
+            let interval = u64::from(self.config.census_interval_ticks.max(1));
+            if self.last_census_tick == 0 || tick.saturating_sub(self.last_census_tick) >= interval {
+                self.last_census_tick = tick.max(1);
+                self.last_unsupported_resting = self.unsupported_resting();
+            }
+            self.last_unsupported_resting
+        } else {
+            0
+        };
         FreezeCensus {
             frozen: self.frozen.len() as u32,
             min_frozen_y: self.min_frozen_y(),
-            unsupported_resting: if self.config.census {
-                self.unsupported_resting()
-            } else {
-                0
-            },
+            unsupported_resting,
             ..self.census
         }
     }
@@ -1523,7 +1553,7 @@ mod tests {
         for tick in 1..=4 {
             let _ = tracker.observe(sample(1, [0.0, 0.0, 0.0], false, tick));
         }
-        assert!(tracker.census().pose_quiet_awake >= 1, "a motionless awake body must be counted");
+        assert!(tracker.census(1).pose_quiet_awake >= 1, "a motionless awake body must be counted");
     }
 
     #[test]
@@ -1543,7 +1573,7 @@ mod tests {
             let y = tick as f32 * (1.0 / 60.0); // 1 m/s at 60 Hz
             let _ = tracker.observe(sample(1, [0.0, y, 0.0], false, tick));
         }
-        assert_eq!(tracker.census().pose_quiet_awake, 0, "a creeping body is not at rest");
+        assert_eq!(tracker.census(1).pose_quiet_awake, 0, "a creeping body is not at rest");
     }
 }
 
@@ -1583,7 +1613,7 @@ mod dependency_tests {
                 sleeping: true,
                 tick: 1,
             });
-            tracker.ingest_support(*entity, supporters.clone());
+            tracker.ingest_support(*entity, supporters.clone(), 0.0);
         }
         tracker
     }
@@ -1897,7 +1927,7 @@ mod dependency_tests {
                 sleeping: true,
                 tick: 1,
             });
-            tracker.ingest_support(entity, supporters);
+            tracker.ingest_support(entity, supporters, 0.0);
         }
         freeze_to_fixed_point(&mut tracker, &[candidate(1, 0.4), candidate(2, 1.3)]);
         tracker.mark_thawed(&[1], 40);
@@ -1909,6 +1939,6 @@ mod dependency_tests {
                 "the backstop found stranded bodies the cascade should have released"
             );
         }
-        assert_eq!(tracker.census().backstop_releases, 0);
+        assert_eq!(tracker.census(1).backstop_releases, 0);
     }
 }
