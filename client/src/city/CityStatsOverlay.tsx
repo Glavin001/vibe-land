@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
 import { renderStats } from './renderStats';
+import { isTouchDevice } from '../device';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
 interface CityServerStats {
@@ -146,6 +147,47 @@ const heading: React.CSSProperties = {
   marginBottom: 2,
 };
 
+/**
+ * Client fps, server tick rate and stream rate, in one line that is on screen
+ * whether or not the panel is open.
+ *
+ * These three answer "is it running well right now", which is a question worth
+ * asking constantly and not worth opening a panel for -- especially on a phone,
+ * where the panel covers a third of the screen. Collapsed, this IS the panel's
+ * tap target; expanded, it is its header.
+ */
+function LiveHud({
+  fps,
+  serverHz,
+  mbps,
+  compact,
+}: {
+  fps: number;
+  serverHz: number;
+  mbps: number;
+  compact: boolean;
+}) {
+  const cell: React.CSSProperties = { fontVariantNumeric: 'tabular-nums' };
+  return (
+    <span style={{ display: 'inline-flex', gap: compact ? 8 : 10, alignItems: 'baseline' }}>
+      <span style={{ ...cell, color: fps < 45 ? '#ff8080' : '#d6f5d6' }}>
+        {fps.toFixed(0)}
+        <span style={{ opacity: 0.5 }}>fps</span>
+      </span>
+      {/* Zero means the server has not reported yet, which is not the same as
+          a server running at 0 Hz -- show a dash rather than a false alarm. */}
+      <span style={{ ...cell, color: serverHz > 0 && serverHz < 55 ? '#ff8080' : '#d6f5d6' }}>
+        {serverHz > 0 ? serverHz.toFixed(0) : '--'}
+        <span style={{ opacity: 0.5 }}>hz</span>
+      </span>
+      <span style={{ ...cell, opacity: 0.75 }}>
+        {mbps.toFixed(1)}
+        <span style={{ opacity: 0.6 }}>mb</span>
+      </span>
+    </span>
+  );
+}
+
 function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
     <div style={row}>
@@ -193,7 +235,10 @@ export function CityStatsOverlay({
   transport: string;
   pingMs: number;
 }) {
-  const [visible, setVisible] = useState(true);
+  // Collapsed by default on a phone: expanded, the panel covers most of a
+  // small screen, and the pill it collapses to now carries the numbers worth
+  // watching continuously. Desktop keeps the full panel open.
+  const [visible, setVisible] = useState(() => !isTouchDevice());
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [shadows, setShadows] = useState(shadowsEnabled);
   const [bodyColors, setBodyColors] = useState(false);
@@ -259,7 +304,9 @@ export function CityStatsOverlay({
   ) as MatchStats | null;
 
   useEffect(() => {
-    if (!visible) return undefined;
+    // Runs while collapsed too: the pill reports the server's tick rate, and
+    // a readout that goes stale the moment you hide the panel is worse than
+    // no readout at all.
     if (pushed) {
       setServer(pushed);
       setServerError(null);
@@ -294,21 +341,34 @@ export function CityStatsOverlay({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [matchId, pushed, statsBaseUrl, visible]);
+  }, [matchId, pushed, statsBaseUrl]);
+
+  const tickAvgMs = server?.timings?.total_ms?.avg ?? 0;
+  const serverHz = tickAvgMs > 0 ? Math.min(SIM_HZ, 1000 / tickAvgMs) : 0;
+  const streamMbps = ((clientStats?.bytesPerSecond ?? 0) * 8) / 1e6;
 
   // Touch devices have no F9, so the overlay needs a tap target to come back
-  // from. It doubles as the hidden-state indicator: without it there is no
-  // sign the overlay exists at all.
+  // from. It doubles as the hidden-state indicator and as the always-on
+  // readout: collapsed to a pill, it still answers "is it running well" without
+  // costing the screen space the full panel does.
   if (!visible) {
     return (
       <button
         type="button"
         onClick={() => setVisible(true)}
-        style={{ ...toggleButton, top: 56, left: 12 }}
+        style={{
+          ...toggleButton,
+          top: 56,
+          left: 12,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}
         data-testid="city-stats-show"
         aria-label="Show city stats"
       >
-        STATS
+        <LiveHud fps={frame.fps} serverHz={serverHz} mbps={streamMbps} compact />
+        <span style={{ opacity: 0.45 }}>▸</span>
       </button>
     );
   }
@@ -323,8 +383,8 @@ export function CityStatsOverlay({
   }
 
   const tick = server?.timings?.total_ms;
-  const tickAvg = tick?.avg ?? 0;
-  const effectiveHz = tickAvg > 0 ? Math.min(SIM_HZ, 1000 / tickAvg) : 0;
+  const tickAvg = tickAvgMs;
+  const effectiveHz = serverHz;
   const city = server?.city;
 
   // The children the server times inside its 60 Hz city step. The stream-encode
@@ -352,19 +412,46 @@ export function CityStatsOverlay({
         top: 56,
         left: 12,
         zIndex: 40,
-        width: 268,
+        // Never wider than the viewport allows: at 268 px the panel ran off
+        // the side of a phone, and the rows that mattered were the clipped
+        // ones. Height is capped the same way so the list scrolls instead of
+        // running off the bottom -- dvh rather than vh because mobile browser
+        // chrome is part of vh and the last rows ended up under it.
+        width: 'min(268px, calc(100vw - 24px))',
+        // The scroll area below is interactive, so the panel must not reach
+        // the on-screen controls: on a phone AIM and CROUCH sit in the
+        // bottom-left, exactly under a full-height panel, and an expanded
+        // panel would eat their taps. Desktop only needs to clear the edge.
+        maxHeight: `calc(100dvh - 76px - ${isTouchDevice() ? 200 : 20}px)`,
+        display: 'flex',
+        flexDirection: 'column',
         padding: '8px 10px',
         borderRadius: 6,
         background: 'rgba(8,12,10,0.82)',
         color: '#d6f5d6',
         font: '11px ui-monospace, SFMono-Regular, Menlo, monospace',
+        // The panel opts out of pointer events so it can never swallow a shot.
+        // The scroll area below opts back in -- safely, because while the
+        // pointer is locked the canvas receives every event regardless of
+        // where it is, and the one moment that is not true (clicking to
+        // re-lock) is forwarded by the handler on it.
         pointerEvents: 'none',
         lineHeight: 1.5,
       }}
       data-testid="city-stats-overlay"
     >
-      <div style={{ ...row, opacity: 0.9, fontWeight: 700 }}>
-        <span>CITY STATS</span>
+      <div
+        style={{
+          ...row,
+          opacity: 0.9,
+          fontWeight: 700,
+          flex: '0 0 auto',
+          alignItems: 'center',
+          paddingBottom: 4,
+          borderBottom: '1px solid rgba(214,245,214,0.15)',
+        }}
+      >
+        <LiveHud fps={frame.fps} serverHz={serverHz} mbps={streamMbps} compact={false} />
         {/* The panel itself is pointer-transparent so it never eats a shot;
             this control opts back in for its own hit box only. */}
         <button
@@ -378,6 +465,30 @@ export function CityStatsOverlay({
           F9 ✕
         </button>
       </div>
+
+      <div
+        style={{
+          flex: '1 1 auto',
+          minHeight: 0,
+          overflowY: 'auto',
+          overscrollBehavior: 'contain',
+          // Vertical drags scroll this list; anything else still reaches the
+          // game underneath.
+          touchAction: 'pan-y',
+          pointerEvents: 'auto',
+          marginTop: 2,
+          // Room for the scrollbar on platforms that reserve space for one.
+          paddingRight: 2,
+        }}
+        onPointerDown={(event) => {
+          // Clicking the panel to re-acquire pointer lock must still work: the
+          // canvas's own handler cannot see this event, so forward the intent.
+          if (event.pointerType === 'mouse' && !document.pointerLockElement) {
+            document.querySelector('canvas')?.requestPointerLock();
+          }
+        }}
+        data-testid="city-stats-scroll"
+      >
 
       <div style={{ ...row, marginTop: 4, marginBottom: 2 }}>
         <button
@@ -743,6 +854,7 @@ export function CityStatsOverlay({
           )}
         </>
       )}
+      </div>
     </div>
   );
 }
