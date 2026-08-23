@@ -892,6 +892,11 @@ impl CityDestruction {
         Ok(count)
     }
 
+    /// Per-body freeze-machine states for the debug overlay.
+    pub fn debug_body_states(&self) -> Vec<(u32, u8)> {
+        self.freeze.debug_states()
+    }
+
     /// Awake bodies for the encoder, captured during `post_step`.
     ///
     /// This used to make a second `chunk_body_snapshots()` call: another FFI

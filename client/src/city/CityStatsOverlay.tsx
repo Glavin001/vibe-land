@@ -12,6 +12,7 @@
 // Without server numbers on screen that reads as "the game is laggy".
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
 interface CityServerStats {
@@ -187,6 +188,39 @@ export function CityStatsOverlay({
   const [visible, setVisible] = useState(true);
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [shadows, setShadows] = useState(shadowsEnabled);
+  const [bodyColors, setBodyColors] = useState(false);
+  // Poll per-body freeze states only while the toggle is on: no reason to
+  // fetch thousands of pairs for a feature that is off.
+  useEffect(() => {
+    setBodyDebugEnabled(bodyColors);
+    if (!bodyColors || statsBaseUrl === null) {
+      return;
+    }
+    let cancelled = false;
+    const fetchStates = async () => {
+      try {
+        const response = await fetch(
+          `${statsBaseUrl}/match-stats/${encodeURIComponent(matchId)}/bodies`,
+        );
+        if (!response.ok || cancelled) {
+          return;
+        }
+        const pairs = (await response.json()) as Array<[number, number]>;
+        if (!cancelled) {
+          setBodyDebugStates(pairs);
+        }
+      } catch {
+        // Debug overlay: silence is fine, the colors just go stale.
+      }
+    };
+    void fetchStates();
+    const timer = window.setInterval(fetchStates, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [bodyColors, matchId, statsBaseUrl]);
+
   const tier = useQualityTier();
   // The tier the canvas was created with: antialias and tonemapping only apply
   // at context creation, so a mismatch means "reload to finish applying".
@@ -396,6 +430,30 @@ export function CityStatsOverlay({
         >
           {shadows ? 'SHADOWS: ON' : 'SHADOWS: OFF'}
         </button>
+      <button
+        style={{ ...toggleButton, position: 'static', width: '100%' }}
+        onClick={() => setBodyColors((value) => !value)}
+      >
+        {bodyColors ? 'BODY COLORS: ON' : 'BODY COLORS: OFF'}
+      </button>
+      {bodyColors && (
+        <div style={{ margin: '4px 0 6px' }}>
+          {BODY_DEBUG_STATES.map((entry) => (
+            <div key={entry.code} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  background: entry.css,
+                  display: 'inline-block',
+                  borderRadius: 2,
+                }}
+              />
+              <span style={{ opacity: 0.8 }}>{entry.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
       </div>
 
       {/* Which code is actually running. The client hot-reloads and the

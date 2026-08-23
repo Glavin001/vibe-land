@@ -27,6 +27,7 @@ import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/r
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
+import { bodyDebug, bodyDebugColor } from '../city/bodyDebugColors';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -470,6 +471,7 @@ export function CityChunksLayer({
 }): React.JSX.Element {
   const groupRef = useRef<THREE.Group>(null);
   const stateRef = useRef<CityMeshState | null>(null);
+  const bodyDebugVersionRef = useRef(-1);
   const clientRef = useRef<CityClient | null>(null);
   const dirtyBodiesRef = useRef<Set<number>>(new Set());
   const frameCounterRef = useRef(0);
@@ -526,6 +528,38 @@ export function CityChunksLayer({
       clientRef.current = client;
       buildFailedForRef.current = null;
       dirtyBodiesRef.current.clear();
+    }
+
+    // Body-state debug repaint: when the toggle flips or fresh states arrive
+    // (~1 Hz while enabled), repaint EVERY chunk once -- per-frame cost stays
+    // zero, and the ordinary dirty-body path keeps freshly-moving bodies
+    // correctly colored between refreshes.
+    if (stateRef.current && bodyDebugVersionRef.current !== bodyDebug.version) {
+      bodyDebugVersionRef.current = bodyDebug.version;
+      const state = stateRef.current;
+      const chunkBody = client.topology.chunkBody;
+      for (let slot = 0; slot < chunkBody.length; slot += 1) {
+        const instanceId = state.instanceIds[slot];
+        const mesh = state.meshes[state.meshOfSlot[slot]];
+        if (instanceId < 0 || !mesh) {
+          continue;
+        }
+        const key = chunkBody[slot];
+        // Support serial is 0: intact structure and rooted stumps both live
+        // on the client-side support body.
+        const isSupport = (key & 0x3f_ffff) === 0;
+        const debugColor = bodyDebug.enabled ? bodyDebugColor(key, isSupport) : null;
+        if (debugColor) {
+          mesh.setColorAt(instanceId, debugColor);
+        } else {
+          TMP_COLOR.setRGB(
+            state.baseColors[slot * 3],
+            state.baseColors[slot * 3 + 1],
+            state.baseColors[slot * 3 + 2],
+          );
+          mesh.setColorAt(instanceId, TMP_COLOR);
+        }
+      }
     }
 
     // Measurement bridge for the resync differential: snapshot every chunk's
@@ -840,6 +874,7 @@ export function CityChunksLayer({
         }
       }
       const settledTint = body.settled ? 0.75 : 1;
+      const debugColor = bodyDebug.enabled ? bodyDebugColor(key, false) : null;
       const probeCtx: ChunkWriteContext | undefined = recording
         ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
         : undefined;
@@ -853,12 +888,16 @@ export function CityChunksLayer({
           continue;
         }
         writeInstance(mesh, client, slot, state.scales, state.instanceIds, state.hiddenBySlot, probeCtx);
-        TMP_COLOR.setRGB(
-          state.baseColors[slot * 3] * settledTint,
-          state.baseColors[slot * 3 + 1] * settledTint,
-          state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
-        );
-        mesh.setColorAt(instanceId, TMP_COLOR);
+        if (debugColor) {
+          mesh.setColorAt(instanceId, debugColor);
+        } else {
+          TMP_COLOR.setRGB(
+            state.baseColors[slot * 3] * settledTint,
+            state.baseColors[slot * 3 + 1] * settledTint,
+            state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
+          );
+          mesh.setColorAt(instanceId, TMP_COLOR);
+        }
       }
       touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {

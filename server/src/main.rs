@@ -718,6 +718,10 @@ struct AppState {
     physics: PhysicsRuntimeConfig,
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    /// Per-body freeze-machine states, refreshed at the stats cadence, for
+    /// the body-color debug overlay. Cheap to keep warm (one small Vec per
+    /// match per second); only serialized when the endpoint is hit.
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
     /// Match ids awaiting a city reset. The HTTP handler cannot touch the
     /// simulation directly -- the match loop owns it -- so the request is left
     /// here and consumed on the next tick, between steps where rebuilding the
@@ -872,6 +876,10 @@ struct MatchState {
     last_logged_datagram_fallbacks: u64,
     last_logged_dropped_outbound_packets: u64,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    /// Per-body freeze-machine states, refreshed at the stats cadence, for
+    /// the body-color debug overlay. Cheap to keep warm (one small Vec per
+    /// match per second); only serialized when the endpoint is hit.
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
     next_player_handle: u16,
     reusable_player_handles: VecDeque<(u32, u8)>,
     free_player_handles: VecDeque<u8>,
@@ -982,6 +990,7 @@ async fn main() -> Result<()> {
             physics,
             stats_tx,
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
+            body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
         }),
     };
@@ -1034,6 +1043,7 @@ async fn main() -> Result<()> {
         .route("/session-config", get(session_config_handler))
         .route("/city-manifest/:hash", get(city_manifest_handler))
         .route("/match-stats/:match_id", get(match_stats_handler))
+        .route("/match-stats/:match_id/bodies", get(match_body_states_handler))
         .route("/city-reset/:match_id", post(city_reset_handler))
         .route("/ws/stats", get(ws_stats_handler))
         .route("/ws/:match_id", get(ws_handler))
@@ -1142,6 +1152,26 @@ async fn match_stats_handler(
         .cloned();
     match snapshot {
         Some(stats) => (StatusCode::OK, Json(stats)).into_response(),
+        None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
+    }
+}
+
+async fn match_body_states_handler(
+    Path(match_id): Path<String>,
+    State(state): State<SharedAppState>,
+) -> impl IntoResponse {
+    // Per-body freeze-machine states for the debug overlay: pairs of
+    // [packed body entity, state], state = 0 awake, 1 awake-quiet
+    // (admission pending), 2 asleep, 3 frozen, 4 foreign-blocked.
+    let states = state
+        .inner
+        .body_states_registry
+        .read()
+        .expect("body states registry poisoned")
+        .get(&match_id)
+        .cloned();
+    match states {
+        Some(states) => (StatusCode::OK, Json(states)).into_response(),
         None => (StatusCode::NOT_FOUND, "unknown match").into_response(),
     }
 }
@@ -1599,6 +1629,7 @@ async fn run_match_loop(
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)
@@ -1687,6 +1718,7 @@ async fn run_match_loop(
         last_logged_datagram_fallbacks: 0,
         last_logged_dropped_outbound_packets: 0,
         stats_registry,
+        body_states_registry,
         reset_requests,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
@@ -1750,6 +1782,7 @@ fn spawn_match_loop(
                     app.stats_tx.clone(),
                     telemetry,
                     app.stats_registry.clone(),
+                    app.body_states_registry.clone(),
                     app.reset_requests.clone(),
                 ))
                 .catch_unwind()
@@ -3117,6 +3150,14 @@ impl MatchState {
             registry.insert(self.id.clone(), match_stats.clone());
             global_stats_from_registry(&registry, self.physics.snapshot_hz())
         };
+        if let Some(city) = self.city.as_ref() {
+            // Per-body freeze states for the body-color debug overlay,
+            // refreshed at the same cadence as the stats snapshot.
+            self.body_states_registry
+                .write()
+                .expect("body states registry poisoned")
+                .insert(self.id.clone(), city.debug_body_states());
+        }
 
         let datagram_fallbacks = self.io.datagram_fallbacks.load(Ordering::Relaxed);
         if datagram_fallbacks > self.last_logged_datagram_fallbacks {

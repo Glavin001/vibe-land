@@ -965,6 +965,34 @@ impl FreezeTracker {
         released
     }
 
+    /// Per-body debug states for the body-color overlay: 0 awake, 1 awake
+    /// but pose-quiet (wants to freeze; admission pending), 2 engine-asleep,
+    /// 3 frozen, 4 blocked by a Foreign supporter (player/vehicle in the
+    /// support chain -- can never freeze while it stays).
+    pub fn debug_states(&self) -> Vec<(u32, u8)> {
+        let mut out = Vec::with_capacity(self.bodies.len());
+        for (&entity, body) in &self.bodies {
+            let foreign = self
+                .supporters
+                .get(&entity)
+                .is_some_and(|list| list.iter().any(|s| matches!(s, Supporter::Foreign)));
+            let state = match body.phase {
+                Phase::Frozen => 3,
+                _ if foreign => 4,
+                Phase::Sleeping { .. } => 2,
+                Phase::Awake => {
+                    if body.quiet_ticks >= Self::window(body, self.config.pose_ticks) {
+                        1
+                    } else {
+                        0
+                    }
+                }
+            };
+            out.push((entity, state));
+        }
+        out
+    }
+
     /// Validity backstop: a rotating slice of the frozen set re-proves its
     /// support each interval. With the event cascade correct this finds
     /// NOTHING -- every find is counted (`backstop_releases`) and means a
