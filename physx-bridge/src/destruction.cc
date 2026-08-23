@@ -252,6 +252,14 @@ struct DestructionManager::Slot {
   /// a body behind our back -- retirement, and the split path that sets a body
   /// dynamic again.
   std::unordered_set<ExtStressPhysXId> frozen;
+  /// Bodies the ADAPTER holds kinematic because they still contain a
+  /// world-anchored (zero-mass) node: the intact support actor and every
+  /// ground-rooted fragment ("stump") that fracture leaves standing. Distinct
+  /// from `frozen` (ours): a rooted body's kinematic-ness belongs to the
+  /// adapter, and freeze/unfreeze must never touch it -- releasing a stump
+  /// would drop a standing building. Maintained wherever the adapter flips
+  /// bodies: create seeding, first-seen kinematics, became-dynamic, retire.
+  std::unordered_set<ExtStressPhysXId> rooted;
 
   // Tracking for event diffs.
   std::unordered_map<ExtStressPhysXId, std::uint32_t> body_to_serial;
@@ -271,6 +279,7 @@ struct DestructionManager::Slot {
   std::uint64_t last_splits = 0;
   std::uint64_t last_bodies_created = 0;
   std::uint64_t last_shapes_migrated = 0;
+  std::uint64_t last_bodies_recycled = 0;
   bool topology_primed = false;
   // The adapter's gpuStressSolveMilliseconds is cumulative since the
   // destructible was created -- it is only ever `+=`d and never reset. Every
@@ -340,6 +349,11 @@ void DestructionManager::clear_destructibles() {
   frozen_entities_.clear();
   contact_wake_pending_.clear();
   contact_wake_order_.clear();
+  support_store_.clear();
+  pending_pair_loads_.clear();
+  staged_support_sets_.clear();
+  staged_support_rows_.clear();
+  support_edges_total_ = 0;
 }
 
 DestructionManager::Slot *
@@ -548,7 +562,12 @@ void DestructionManager::create_destructible(
   }
   slot->dest = dest;
 
-  // Seed support body as serial 0 before first filter pass.
+  // Seed the intact support body as serial 0 before the first filter pass.
+  // Serial 0 belongs to THIS body alone: rooted fragments that split off it
+  // later get real serials (see register_filters), because "one kinematic
+  // support actor per structure" stops being true after the first fracture
+  // -- a wrecked downtown measured 153 rooted fragments, and aliasing them
+  // all onto serial 0 made every one of them unaddressable.
   {
     std::vector<ExtStressPhysXBodySnapshot> bodies(slot->node_descs.size() + 4);
     const std::uint32_t body_count =
@@ -558,6 +577,8 @@ void DestructionManager::create_destructible(
       std::uint32_t serial = 0;
       if (!body.kinematic) {
         serial = next_serial(*slot);
+      } else {
+        slot->rooted.insert(body.bodyId);
       }
       slot->body_to_serial[body.bodyId] = serial;
     }
@@ -643,19 +664,26 @@ void DestructionManager::register_filters(Slot &slot) {
       if (frozen) {
         ++frozen_serial_blocks_;
       }
-      serial = (body.kinematic && !frozen) ? 0 : next_serial(slot);
+      // EVERY first-seen body gets a real serial. Kinematic first-seens are
+      // rooted fragments born from a split of the support actor; they used
+      // to alias onto serial 0, which made stumps unaddressable -- no
+      // dependency edges could name them, no retire event could announce
+      // their death. Serial 0 is reserved for the intact support actor
+      // seeded at create and is never issued here.
+      serial = next_serial(slot);
       slot.body_to_serial[body.bodyId] = serial;
+      if (body.kinematic && !frozen) {
+        slot.rooted.insert(body.bodyId);
+      }
     } else {
       serial = serial_it->second;
-      // Serial 0 is the structure's kinematic support. A body keeps whatever
-      // serial it was given the first time it was seen, so one that has since
-      // become dynamic would hold 0 forever and alias onto the support -- and
-      // onto every other such body. Re-issue a real serial when that happens.
-      // Never for a frozen body: it holds a real serial and is only kinematic
-      // because we made it so.
+      // Serial 0 is the intact support actor. If it has become dynamic the
+      // whole structure came off its anchors; it needs a real serial or it
+      // aliases onto nothing meaningful.
       if (serial == kSupportIslandSerial && !body.kinematic && !frozen) {
         serial = next_serial(slot);
         slot.body_to_serial[body.bodyId] = serial;
+        slot.rooted.erase(body.bodyId);
       }
     }
     const std::uint32_t entity = pack_body_entity(slot.structure_id, serial);
@@ -772,19 +800,43 @@ void DestructionManager::collect_events(Slot &slot) {
     }
     const bool frozen = slot.frozen.count(bodies[i].bodyId) != 0;
     const auto mapped = slot.body_to_serial.find(bodies[i].bodyId);
-    const bool became_dynamic = mapped != slot.body_to_serial.end()
-                                && mapped->second == kSupportIslandSerial
-                                && !bodies[i].kinematic;
-    if (became_dynamic) {
+    // The intact support actor (serial 0) coming off its anchors: the one
+    // case that still needs a serial REISSUE, because 0 cannot go on the
+    // wire as an island.
+    const bool support_became_dynamic = mapped != slot.body_to_serial.end()
+                                        && mapped->second == kSupportIslandSerial
+                                        && !bodies[i].kinematic;
+    // A rooted fragment (real serial, kinematic) that lost its last anchored
+    // node: the adapter flipped it dynamic. It KEEPS its serial -- it is the
+    // same body -- and is promoted onto the wire under it. This is also a
+    // supporter-death event for anything resting on it; the tracker sees the
+    // promotion and invalidates those dependency edges.
+    const bool rooted_became_dynamic = !support_became_dynamic
+                                       && !bodies[i].kinematic
+                                       && slot.rooted.count(bodies[i].bodyId) != 0;
+    if (support_became_dynamic || rooted_became_dynamic) {
       ++support_promotions_;
+      slot.rooted.erase(bodies[i].bodyId);
     }
-    if (mapped == slot.body_to_serial.end() || became_dynamic) {
+    if (mapped == slot.body_to_serial.end() || support_became_dynamic
+        || rooted_became_dynamic) {
       if (frozen) {
         ++frozen_serial_blocks_;
       }
-      const std::uint32_t serial =
-          (bodies[i].kinematic && !frozen) ? 0 : next_serial(slot);
-      slot.body_to_serial[bodies[i].bodyId] = serial;
+      std::uint32_t serial;
+      if (rooted_became_dynamic) {
+        serial = mapped->second; // identity continuity: same body, same serial
+      } else {
+        // Every first-seen body gets a real serial, kinematic or not.
+        // First-seen kinematics are rooted fragments from a split; aliasing
+        // them onto serial 0 made stumps unaddressable (no dependency edge
+        // could name them, no retire could announce their death).
+        serial = next_serial(slot);
+        slot.body_to_serial[bodies[i].bodyId] = serial;
+        if (bodies[i].kinematic && !frozen) {
+          slot.rooted.insert(bodies[i].bodyId);
+        }
+      }
       if (!bodies[i].kinematic) {
         FfiIslandBodyEvent event{};
         event.structure_id = slot.structure_id;
@@ -834,6 +886,12 @@ void DestructionManager::collect_events(Slot &slot) {
         frozen_entities_.erase(pack_body_entity(slot.structure_id, freed->second));
       }
     }
+    // A rooted fragment crushed to nothing retires like any body now that it
+    // holds a real serial -- the kind=1 event above already announced it,
+    // which is exactly the supporter-death signal its dependents need.
+    slot.rooted.erase(id);
+    // Its supporter entries (and any it was a dependent of) die with it.
+    support_store_.erase(support_key(slot.structure_id, id));
     slot.body_to_serial.erase(id);
   }
 
@@ -1258,10 +1316,15 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     // created or migrated, so the diff below would walk every body, every
     // shape and every bond only to conclude that nothing changed. Skip it.
     const ExtStressPhysXTelemetry &telemetry = slot.dest->getTelemetry();
+    // bodiesRecycled is in the set because a PURE-CRUSH tick erases bodies
+    // without splitting, creating or migrating anything -- a rooted fragment
+    // (or a dynamic body) could vanish on a tick this gate skipped, its
+    // retire event never firing and its dependents never released.
     const bool topology_changed =
         !slot.topology_primed || telemetry.splits != slot.last_splits ||
         telemetry.bodiesCreated != slot.last_bodies_created ||
-        telemetry.shapesMigrated != slot.last_shapes_migrated;
+        telemetry.shapesMigrated != slot.last_shapes_migrated ||
+        telemetry.bodiesRecycled != slot.last_bodies_recycled;
     if (!topology_changed && quiet_skip_enabled()) {
       ++quiet_slot_ticks_;
       continue;
@@ -1280,6 +1343,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     slot.last_splits = telemetry.splits;
     slot.last_bodies_created = telemetry.bodiesCreated;
     slot.last_shapes_migrated = telemetry.shapesMigrated;
+    slot.last_bodies_recycled = telemetry.bodiesRecycled;
     slot.topology_primed = true;
 
     // Diff membership first (assigns serials for new bodies), then stamp
@@ -1298,6 +1362,11 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   last_readback_ms_ = readback_ms;
   last_events_ms_ = events_ms;
   last_filters_ms_ = filters_ms;
+
+  // Serials are current for every slot that changed, so the contact loads
+  // captured during the physics step can be resolved into supporter edges.
+  resolve_support_loads();
+
   last_stress_solve_ms_ = ms_since(started);
 }
 
@@ -1696,9 +1765,12 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       by_serial[serial_it->second] = &body;
     }
     for (std::uint32_t serial : entry.second) {
-      // The structure's intact support actor is kinematic by the adapter's
-      // own design and is not ours to touch: unfreezing it would turn a whole
-      // standing building into free-falling debris.
+      // The adapter's own kinematic bodies -- the intact support actor and
+      // every rooted fragment -- are not ours to touch: unfreezing one would
+      // turn a standing building (or its stump) into free-falling debris.
+      // Class-based, not serial-based: rooted fragments hold REAL serials
+      // now, so "serial 0" stopped covering them. Counted, because a caller
+      // naming a rooted body is a bug upstream.
       if (serial == kSupportIslandSerial) {
         continue;
       }
@@ -1708,6 +1780,10 @@ std::uint32_t DestructionManager::set_chunk_bodies_kinematic(
       }
       PxRigidDynamic *body = found->second->body;
       const ExtStressPhysXId body_id = found->second->bodyId;
+      if (slot->rooted.count(body_id) != 0) {
+        ++rooted_guard_blocks_;
+        continue;
+      }
       const bool already =
           body->getRigidBodyFlags().isSet(PxRigidBodyFlag::eKINEMATIC);
       if (already == kinematic) {
@@ -1794,6 +1870,259 @@ void DestructionManager::note_contact_pair(std::uint32_t entity_a,
   consider(entity_b, mass_a);
 }
 
+void DestructionManager::note_pair_load(const PxShape *shape_a,
+                                        const PxShape *shape_b,
+                                        const PxActor *actor_a,
+                                        const PxActor *actor_b,
+                                        float sum_abs_impulse_y) {
+  if (sum_abs_impulse_y <= 0.0f) {
+    return;
+  }
+  const auto resolve = [this](const PxShape *shape,
+                              const PxActor *actor) -> PendingPairSide {
+    PendingPairSide side{};
+    const auto owner = shape_owners_.find(shape);
+    if (owner != shape_owners_.end()) {
+      side.is_chunk = true;
+      side.structure_id = owner->second.first;
+      side.node_index = owner->second.second;
+      // node -> body from the LAST topology registration: exactly the
+      // configuration the physics step (and therefore this contact) ran
+      // against. If fracture moves the node this tick, the impulse was
+      // still exchanged with the old body.
+      if (const Slot *slot = find_slot(side.structure_id)) {
+        const auto body = slot->node_to_body.find(side.node_index);
+        if (body != slot->node_to_body.end()) {
+          side.body_id = body->second;
+        } else {
+          side.is_chunk = false; // unmapped: treat as foreign, blocks freezing
+        }
+      } else {
+        side.is_chunk = false;
+      }
+      return side;
+    }
+    // Non-chunk. Static geometry is immutable and needs no events; anything
+    // else that can touch debris (players, vehicles, props) is movable and
+    // NOT event-observable, so it must block freezing.
+    side.is_static =
+        actor != nullptr && actor->is<physx::PxRigidStatic>() != nullptr;
+    return side;
+  };
+  PendingPairLoad load{};
+  load.a = resolve(shape_a, actor_a);
+  load.b = resolve(shape_b, actor_b);
+  if (!load.a.is_chunk && !load.b.is_chunk) {
+    return; // no debris involved; not our concern
+  }
+  load.sum_abs_impulse_y = sum_abs_impulse_y;
+  pending_pair_loads_.push_back(load);
+}
+
+void DestructionManager::resolve_support_loads() {
+  ++tick_count_;
+  if (pending_pair_loads_.empty()) {
+    return;
+  }
+  // How much harder than "lying still" a contact must press, vertically, to
+  // count as weight-bearing. A supporter carrying a body's full weight
+  // delivers m*g*dt per step; several sharing it deliver fractions, so the
+  // ratio sits well under 1.
+  static const float fy_ratio = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SUPPORT_FY_RATIO")) {
+      return static_cast<float>(std::atof(raw));
+    }
+    return 0.2f;
+  }();
+  // Pairs stop reporting when they sleep, so entries age only against ticks
+  // where the dependent was awake and reporting SOMETHING (its
+  // last_report_tick moves). This constant bounds how long a broken contact
+  // lingers while its body is still awake.
+  static const std::uint64_t age_ticks = [] {
+    if (const char *raw = std::getenv("VIBE_CITY_SUPPORT_AGE_TICKS")) {
+      return static_cast<std::uint64_t>(std::atoll(raw));
+    }
+    return static_cast<std::uint64_t>(10);
+  }();
+  const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
+
+  // Per-slot bodyId -> cache row, built lazily once per resolve.
+  std::unordered_map<const Slot *,
+                     std::unordered_map<ExtStressPhysXId, const ExtStressPhysXBodySnapshot *>>
+      row_maps;
+  const auto body_row = [&](std::uint32_t structure_id,
+                            std::uint64_t body_id)
+      -> const ExtStressPhysXBodySnapshot * {
+    const Slot *slot = find_slot(structure_id);
+    if (slot == nullptr) {
+      return nullptr;
+    }
+    auto &rows = row_maps[slot];
+    if (rows.empty()) {
+      rows.reserve(slot->body_cache_count);
+      for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
+        rows[slot->body_cache[i].bodyId] = &slot->body_cache[i];
+      }
+    }
+    const auto found = rows.find(body_id);
+    return found != rows.end() ? found->second : nullptr;
+  };
+
+  std::unordered_set<std::uint64_t> touched;
+  for (const PendingPairLoad &load : pending_pair_loads_) {
+    // Work out which side depends on which. Kinematic and non-chunk sides
+    // never depend on debris; between two dynamics the higher centre of
+    // mass depends on the lower (ties carry no information -- skip).
+    struct Resolved {
+      bool chunk = false;
+      bool kinematic = false;
+      bool frozen = false;
+      bool rooted = false;
+      float com_y = 0.0f;
+      float mass = 0.0f;
+      std::uint32_t serial = 0;
+      const PendingPairSide *side = nullptr;
+    };
+    const auto classify = [&](const PendingPairSide &side) -> Resolved {
+      Resolved out{};
+      out.side = &side;
+      if (!side.is_chunk) {
+        return out;
+      }
+      const Slot *slot = find_slot(side.structure_id);
+      const ExtStressPhysXBodySnapshot *row =
+          body_row(side.structure_id, side.body_id);
+      if (slot == nullptr || row == nullptr) {
+        return out; // body died this tick; retire/promote events cover it
+      }
+      const auto serial_it = slot->body_to_serial.find(side.body_id);
+      if (serial_it == slot->body_to_serial.end()) {
+        return out;
+      }
+      out.chunk = true;
+      out.kinematic = row->kinematic;
+      out.frozen = slot->frozen.count(side.body_id) != 0;
+      out.rooted = slot->rooted.count(side.body_id) != 0;
+      out.com_y = com_world_position(*row).y;
+      out.mass = row->body != nullptr ? row->body->getMass() : 0.0f;
+      out.serial = serial_it->second;
+      return out;
+    };
+    const Resolved a = classify(load.a);
+    const Resolved b = classify(load.b);
+
+    const auto record = [&](const Resolved &dependent, const Resolved &supporter) {
+      if (!dependent.chunk || dependent.kinematic) {
+        return; // kinematic bodies (frozen or rooted) depend on nothing
+      }
+      SupporterRec rec{};
+      if (!supporter.chunk) {
+        rec.kind = supporter.side->is_static ? 0 : 1; // World : Foreign
+      } else if (supporter.rooted) {
+        rec.kind = 2;
+        rec.entity = pack_body_entity(supporter.side->structure_id, supporter.serial);
+        rec.node = supporter.side->node_index;
+      } else {
+        rec.kind = 3; // another debris body, frozen or dynamic
+        rec.entity = pack_body_entity(supporter.side->structure_id, supporter.serial);
+      }
+      const std::uint64_t key =
+          support_key(dependent.side->structure_id, dependent.side->body_id);
+      DependentEntry &entry = support_store_[key];
+      entry.entity = pack_body_entity(dependent.side->structure_id, dependent.serial);
+      entry.last_report_tick = tick_count_;
+      touched.insert(key);
+      // Weight-bearing gate, scaled to the DEPENDENT's own resting load.
+      if (load.sum_abs_impulse_y < fy_ratio * dependent.mass * g_dt) {
+        return;
+      }
+      for (SupporterRec &existing : entry.supporters) {
+        if (existing.kind == rec.kind && existing.entity == rec.entity &&
+            existing.node == rec.node) {
+          existing.last_tick = tick_count_;
+          return;
+        }
+      }
+      rec.last_tick = tick_count_;
+      entry.supporters.push_back(rec);
+      entry.dirty = true;
+    };
+
+    if (a.chunk && b.chunk && !a.kinematic && !b.kinematic) {
+      // Two dynamics: strictly lower centre of mass supports the higher.
+      if (a.com_y < b.com_y) {
+        record(b, a);
+      } else if (b.com_y < a.com_y) {
+        record(a, b);
+      }
+    } else {
+      record(a, b);
+      record(b, a);
+    }
+  }
+  pending_pair_loads_.clear();
+
+  // Age out contacts that stopped reporting while their dependent kept
+  // reporting others, and stage dirty sets for the drain.
+  for (const std::uint64_t key : touched) {
+    auto entry_it = support_store_.find(key);
+    if (entry_it == support_store_.end()) {
+      continue;
+    }
+    DependentEntry &entry = entry_it->second;
+    const std::size_t before = entry.supporters.size();
+    entry.supporters.erase(
+        std::remove_if(entry.supporters.begin(), entry.supporters.end(),
+                       [&](const SupporterRec &rec) {
+                         return entry.last_report_tick - rec.last_tick > age_ticks;
+                       }),
+        entry.supporters.end());
+    if (entry.supporters.size() != before) {
+      entry.dirty = true;
+    }
+    if (entry.dirty) {
+      FfiSupportSet set{};
+      set.dependent_entity = entry.entity;
+      set.last_report_tick = entry.last_report_tick;
+      set.first_row = static_cast<std::uint32_t>(staged_support_rows_.size());
+      set.row_count = static_cast<std::uint32_t>(entry.supporters.size());
+      for (const SupporterRec &rec : entry.supporters) {
+        FfiSupportRow row{};
+        row.kind = rec.kind;
+        row.supporter_entity = rec.entity;
+        row.supporter_node = rec.node;
+        staged_support_rows_.push_back(row);
+      }
+      staged_support_sets_.push_back(set);
+      entry.dirty = false;
+    }
+  }
+  support_edges_total_ = 0;
+  for (const auto &entry : support_store_) {
+    support_edges_total_ += entry.second.supporters.size();
+  }
+}
+
+rust::Vec<FfiSupportSet> DestructionManager::take_support_sets() {
+  rust::Vec<FfiSupportSet> out;
+  out.reserve(staged_support_sets_.size());
+  for (const FfiSupportSet &set : staged_support_sets_) {
+    out.push_back(set);
+  }
+  staged_support_sets_.clear();
+  return out;
+}
+
+rust::Vec<FfiSupportRow> DestructionManager::take_support_rows() {
+  rust::Vec<FfiSupportRow> out;
+  out.reserve(staged_support_rows_.size());
+  for (const FfiSupportRow &row : staged_support_rows_) {
+    out.push_back(row);
+  }
+  staged_support_rows_.clear();
+  return out;
+}
+
 rust::Vec<std::uint32_t> DestructionManager::take_frozen_contact_wakes() {
   rust::Vec<std::uint32_t> out;
   out.reserve(contact_wake_order_.size());
@@ -1836,6 +2165,16 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.freeze_flips = freeze_flips_;
   stats.unfreeze_flips = unfreeze_flips_;
   stats.contact_wakes = contact_wakes_;
+  stats.support_promotions = support_promotions_;
+  stats.rooted_guard_blocks = rooted_guard_blocks_;
+  stats.support_edges = support_edges_total_;
+  std::uint32_t rooted_count = 0;
+  for (const auto &slot_ptr : slots_) {
+    if (slot_ptr) {
+      rooted_count += static_cast<std::uint32_t>(slot_ptr->rooted.size());
+    }
+  }
+  stats.rooted_chunk_bodies = rooted_count;
   for (const auto &slot_ptr : slots_) {
     if (!slot_ptr || slot_ptr->dest == nullptr) {
       continue;

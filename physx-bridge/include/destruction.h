@@ -14,10 +14,10 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
-#include <unordered_set>
 #include <vector>
 
 namespace physx {
+class PxActor;
 class PxMaterial;
 class PxPhysics;
 class PxRigidDynamic;
@@ -42,6 +42,8 @@ struct FfiBrokenBondEvent;
 struct FfiChunkMigrationEvent;
 struct FfiIslandBodyEvent;
 struct FfiChunkBodySnapshot;
+struct FfiSupportSet;
+struct FfiSupportRow;
 struct FfiDestructionStats;
 
 /// Owns ExtStressPhysXDestructible slots for one PxScene / World.
@@ -160,6 +162,44 @@ public:
   std::uint32_t freeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
   std::uint32_t unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> entity_ids);
 
+  /// A reported contact pair, resolved to stable identities at capture time.
+  ///
+  /// Resolution happens in the scene callback, not later: the adapter's
+  /// endTick can release shapes on the same tick, so a stored PxShape* would
+  /// dangle by resolve time. What is stored is pure data about the bodies
+  /// the contact ACTUALLY happened between (the pre-fracture configuration,
+  /// which is the physically correct one -- the impulse was exchanged with
+  /// that body).
+  struct PendingPairSide {
+    bool is_chunk = false;
+    /// Non-chunk side: static world geometry (immutable) or a foreign
+    /// movable (player, vehicle, prop) that can never be a valid supporter.
+    bool is_static = false;
+    std::uint32_t structure_id = 0;
+    std::uint32_t node_index = 0;
+    std::uint64_t body_id = 0;
+  };
+  struct PendingPairLoad {
+    PendingPairSide a;
+    PendingPairSide b;
+    /// Sum of |impulse.y| over the pair's contact points this step, N*s.
+    /// The absolute value is deliberate: the reported sign is
+    /// ordering-dependent (eINTERNAL_CONTACTS_ARE_FLIPPED, uncorrected by
+    /// extractContacts) and must never be read.
+    float sum_abs_impulse_y = 0.0f;
+  };
+
+  /// Record one reported pair's vertical contact load. Called from onContact.
+  void note_pair_load(const physx::PxShape *shape_a, const physx::PxShape *shape_b,
+                      const physx::PxActor *actor_a, const physx::PxActor *actor_b,
+                      float sum_abs_impulse_y);
+
+  /// Support-set drains: one FfiSupportSet per dependent whose supporter set
+  /// changed this tick, indexing into the rows drain. Both are cleared
+  /// together; callers must consume them as a pair.
+  rust::Vec<FfiSupportSet> take_support_sets();
+  rust::Vec<FfiSupportRow> take_support_rows();
+
   /// A reported contact touched these two entities with this total impulse.
   /// Called from the scene's onContact for every reported chunk pair; decides
   /// whether a FROZEN participant should be released to respond.
@@ -262,6 +302,46 @@ private:
   std::uint64_t frozen_adapter_releases_ = 0;
   std::uint64_t freeze_flips_ = 0;
   std::uint64_t unfreeze_flips_ = 0;
+  /// Freeze/unfreeze calls that named a ROOTED body and were refused.
+  /// Releasing a stump would drop a standing building; must stay zero.
+  std::uint64_t rooted_guard_blocks_ = 0;
+
+  /// The weight-bearing dependency store: who is holding each body up,
+  /// according to the engine's own contact reports.
+  ///
+  /// kind: 0 = World (static geometry -- immutable, needs no events),
+  ///       1 = Foreign (player/vehicle/prop -- movable and NOT event-
+  ///           observable, so it blocks freezing),
+  ///       2 = Rooted (a stump, named by its real serial + supporting node),
+  ///       3 = ChunkBody (another debris body, frozen or dynamic).
+  struct SupporterRec {
+    std::uint8_t kind = 0;
+    std::uint32_t entity = 0; // packed body entity for kinds 2/3
+    std::uint32_t node = 0xffff'ffff; // supporting node for kind 2
+    std::uint64_t last_tick = 0;
+  };
+  struct DependentEntry {
+    std::uint32_t entity = 0;
+    std::uint64_t last_report_tick = 0;
+    bool dirty = false;
+    std::vector<SupporterRec> supporters;
+  };
+  /// Keyed by (structure_id << 48) | bodyId. bodyIds are per-structure
+  /// monotone counters, far below 2^48.
+  std::unordered_map<std::uint64_t, DependentEntry> support_store_;
+  static std::uint64_t support_key(std::uint32_t structure_id, std::uint64_t body_id) {
+    return (static_cast<std::uint64_t>(structure_id) << 48) |
+           (body_id & 0x0000'ffff'ffff'ffffULL);
+  }
+  std::vector<PendingPairLoad> pending_pair_loads_;
+  /// Dependents whose supporter set changed, staged for the paired drains.
+  std::vector<FfiSupportSet> staged_support_sets_;
+  std::vector<FfiSupportRow> staged_support_rows_;
+  std::uint64_t tick_count_ = 0;
+  std::uint64_t support_edges_total_ = 0;
+  /// Resolve pending pair loads into the store; runs once per
+  /// destruction_tick after serials are current.
+  void resolve_support_loads();
   /// Frozen bodies released because dynamic debris struck them. The count
   /// says whether piles are responding to collapses (healthy, proportional)
   /// or being sanded awake by resting contacts (a ratio mis-tune).

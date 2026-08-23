@@ -729,6 +729,10 @@ impl CityDestruction {
             self.stats.freeze_flips = bridge_stats.freeze_flips;
             self.stats.unfreeze_flips = bridge_stats.unfreeze_flips;
             self.stats.contact_wakes = bridge_stats.contact_wakes;
+            self.stats.support_promotions = bridge_stats.support_promotions;
+            self.stats.rooted_guard_blocks = bridge_stats.rooted_guard_blocks;
+            self.stats.rooted_chunk_bodies = bridge_stats.rooted_chunk_bodies;
+            self.stats.support_edges = bridge_stats.support_edges;
             self.stats.frozen_serial_blocks = bridge_stats.frozen_serial_blocks;
             self.stats.frozen_adapter_releases = bridge_stats.frozen_adapter_releases;
         }

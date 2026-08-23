@@ -500,8 +500,8 @@ fn debris_landing_on_frozen_rubble_releases_it_by_contact() {
 /// MEASURED on this stack (GPU dynamics + GPU broadphase, PhysX 5):
 ///   - dynamic-vs-dynamic chunk pairs: thousands of threshold reports -- the
 ///     supporter-edge data source for debris-on-debris is REAL;
-///   - dynamic-vs-KINEMATIC (chunk on a rooted stump): reports fire -- the
-///     stump-supporter data source is real;
+///   - dynamic-vs-KINEMATIC (chunk on a rooted stump): reports fire -- proven
+///     class-aware by the support-edge test below (kind==2 rows);
 ///   - dynamic-vs-STATIC (chunk on the ground): ZERO reports, ever. The GPU
 ///     threshold stream excludes statics (the header's "CPU only" caveat is
 ///     real for exactly this class).
@@ -539,7 +539,6 @@ fn resting_contact_reports_fire_on_gpu_and_the_sign_is_measured() {
     let is_chunk = |entity: u32| entity & 0xf000_0000 == 0x8000_0000;
     let mut chunk_chunk = 0u32;
     let mut chunk_static = 0u32;
-    let mut chunk_support = 0u32; // vs kinematic support/stump actors
     let mut up = 0u32;
     let mut down = 0u32;
 
@@ -550,14 +549,12 @@ fn resting_contact_reports_fire_on_gpu_and_the_sign_is_measured() {
             let b_chunk = is_chunk(event.entity_b);
             match (a_chunk, b_chunk) {
                 (true, true) => {
-                    let a_serial = event.entity_a & 0x003f_ffff;
-                    let b_serial = event.entity_b & 0x003f_ffff;
-                    if a_serial == 0 || b_serial == 0 {
-                        chunk_support += 1;
-                    } else {
-                        chunk_chunk += 1;
-                        if event.impulse.y > 0.0 { up += 1 } else { down += 1 }
-                    }
+                    // Rooted fragments hold REAL serials now, so entity ids
+                    // alone cannot split debris pairs from stump pairs here;
+                    // the class-aware evidence lives in the support-edge
+                    // test below (kind==2 rows are stump supporters).
+                    chunk_chunk += 1;
+                    if event.impulse.y > 0.0 { up += 1 } else { down += 1 }
                 }
                 (true, false) | (false, true) => chunk_static += 1,
                 _ => {}
@@ -565,9 +562,7 @@ fn resting_contact_reports_fire_on_gpu_and_the_sign_is_measured() {
         }
     }
 
-    println!(
-        "pin: chunk-chunk={chunk_chunk} chunk-stump={chunk_support} chunk-static={chunk_static}"
-    );
+    println!("pin: chunk-pair={chunk_chunk} chunk-static={chunk_static}");
     println!(
         "chunk-chunk impulse.y sign: +{up} / -{down} (ordering-dependent, unusable for orientation)"
     );
@@ -577,15 +572,91 @@ fn resting_contact_reports_fire_on_gpu_and_the_sign_is_measured() {
         "no chunk-chunk threshold reports: the dependency-graph data source is \
          absent on this stack -- use the geometry fallback"
     );
-    assert!(
-        chunk_support > 0,
-        "no chunk-vs-kinematic threshold reports: stump supporter edges have no \
-         data source on this stack"
-    );
     assert_eq!(
         chunk_static, 0,
         "chunk-vs-static pairs started reporting -- the GPU threshold stream \
          changed behaviour; revisit the analytic World-support rule (it stays \
          correct, but ground edges could now also come from reports)"
+    );
+}
+
+/// The dependency store end-to-end: settling debris must arrive in Rust with
+/// supporter sets naming World, stumps (by real serial + node) and other
+/// debris -- the data the freeze rule is built on.
+#[test]
+fn support_edges_arrive_with_world_stump_and_debris_supporters() {
+    let mut world = rubble_world(6, 5);
+    for _ in 0..30 {
+        tick(&mut world);
+    }
+    world
+        .apply_destruction_blast(
+            Vec3::new(0.0, 3.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.2),
+            8.0,
+            5.0e6,
+            6.0,
+        )
+        .expect("blast");
+
+    let mut kinds = [0u64; 4]; // World, Foreign, Rooted, ChunkBody
+    let mut sets = 0u64;
+    let mut fresh_stamp_ok = true;
+    for _ in 0..(60 * 10) {
+        tick(&mut world);
+        let (set_batch, rows) = world.take_support_updates().expect("updates");
+        for set in &set_batch {
+            sets += 1;
+            if set.row_count > 0 && set.last_report_tick == 0 {
+                fresh_stamp_ok = false;
+            }
+            let start = set.first_row as usize;
+            let end = start + set.row_count as usize;
+            for row in &rows[start..end] {
+                kinds[usize::from(row.kind).min(3)] += 1;
+            }
+        }
+        if awake(&world) == 0 {
+            break;
+        }
+    }
+    println!(
+        "support edges: sets={sets} world={} foreign={} rooted={} debris={}",
+        kinds[0], kinds[1], kinds[2], kinds[3]
+    );
+    assert!(sets > 0, "no supporter sets ever arrived");
+    assert!(fresh_stamp_ok, "a supporter set arrived without a freshness stamp");
+    assert!(
+        kinds[3] > 0,
+        "no debris-on-debris supporter edges: the pile's internal structure is \
+         invisible"
+    );
+    assert!(
+        kinds[2] > 0,
+        "no stump supporter edges (kind==2): rubble resting against the \
+         standing support course went uncaptured"
+    );
+    // World edges CANNOT come from contact reports on this stack (statics
+    // never report -- see the pin above); they come from the analytic ground
+    // rule in the tracker, not from the bridge. Asserting the bridge produces
+    // none keeps the division of labour honest.
+    assert_eq!(
+        kinds[0], 0,
+        "the bridge produced World supporter edges, but statics never report \
+         on this stack -- something reclassified"
+    );
+
+    let stats = world.destruction_stats().expect("stats");
+    println!(
+        "rooted={} support_edges={} promotions={}",
+        stats.rooted_chunk_bodies, stats.support_edges, stats.support_promotions
+    );
+    assert!(stats.rooted_chunk_bodies > 0, "no rooted fragments after a partial collapse");
+    assert!(stats.support_edges > 0);
+    assert_eq!(stats.rooted_guard_blocks, 0);
+    assert_eq!(stats.frozen_serial_blocks, 0);
+    assert!(
+        world.validate_destruction_mappings().expect("validate"),
+        "mappings invalid after support capture"
     );
 }

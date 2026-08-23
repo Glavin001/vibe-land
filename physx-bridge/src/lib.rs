@@ -456,6 +456,14 @@ pub struct DestructionStats {
     /// Frozen bodies released because dynamic debris struck them: the
     /// engine-driven wake that keeps a frozen pile responding to collapses.
     pub contact_wakes: u64,
+    /// Rooted fragments that went dynamic (supporter deaths).
+    pub support_promotions: u64,
+    /// Freeze/unfreeze calls refused for naming a rooted body. Must stay 0.
+    pub rooted_guard_blocks: u64,
+    /// Ground-anchored kinematic fragments currently standing.
+    pub rooted_chunk_bodies: u32,
+    /// Weight-bearing dependency edges currently held by the bridge.
+    pub support_edges: u64,
     /// Must stay zero: a frozen body reaching a serial-issuing path would
     /// alias settled rubble onto the structure's kinematic support actor.
     pub frozen_serial_blocks: u64,
@@ -1047,6 +1055,26 @@ impl World {
             .map_err(operation_error)
     }
 
+    /// This tick's weight-bearing dependency updates. The engine's contact
+    /// reports are the source: each set replaces one body's supporter list.
+    /// The two vecs are a pair (sets index into rows); drain both together.
+    #[cfg(feature = "destruction")]
+    pub fn take_support_updates(
+        &mut self,
+    ) -> Result<(Vec<ffi::FfiSupportSet>, Vec<ffi::FfiSupportRow>), BridgeError> {
+        let sets = self
+            .inner
+            .pin_mut()
+            .take_support_sets()
+            .map_err(operation_error)?;
+        let rows = self
+            .inner
+            .pin_mut()
+            .take_support_rows()
+            .map_err(operation_error)?;
+        Ok((sets, rows))
+    }
+
     #[cfg(feature = "destruction")]
     pub fn destruction_stats(&self) -> Result<DestructionStats, BridgeError> {
         self.inner
@@ -1388,6 +1416,38 @@ mod ffi {
         unfreeze_flips: u64,
         /// Frozen bodies released because dynamic debris struck them.
         contact_wakes: u64,
+        /// Rooted fragments that lost their last anchored node and went
+        /// dynamic (each is a supporter-death for whatever rested on it).
+        support_promotions: u64,
+        /// Freeze/unfreeze calls that named a rooted body and were refused.
+        /// Must stay zero.
+        rooted_guard_blocks: u64,
+        /// Ground-anchored kinematic fragments currently standing.
+        rooted_chunk_bodies: u32,
+        /// Weight-bearing dependency edges currently held.
+        support_edges: u64,
+    }
+
+    /// One dependent whose supporter set changed this tick, indexing into
+    /// the rows drain. The two drains are a pair; consume them together.
+    #[derive(Clone, Copy, Debug)]
+    struct FfiSupportSet {
+        dependent_entity: u32,
+        /// The last tick this body reported ANY contact -- the freshness
+        /// stamp freeze admission checks against its quiet window.
+        last_report_tick: u64,
+        first_row: u32,
+        row_count: u32,
+    }
+
+    /// One supporter of a dependent. kind: 0 = World (immutable static),
+    /// 1 = Foreign (movable non-debris; blocks freezing), 2 = Rooted (stump,
+    /// with the supporting node), 3 = ChunkBody (debris, frozen or dynamic).
+    #[derive(Clone, Copy, Debug)]
+    struct FfiSupportRow {
+        kind: u8,
+        supporter_entity: u32,
+        supporter_node: u32,
     }
 
     unsafe extern "C++" {
@@ -1482,6 +1542,8 @@ mod ffi {
         fn freeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
         fn unfreeze_chunk_bodies(self: Pin<&mut World>, entity_ids: &[u32]) -> Result<u32>;
         fn take_frozen_contact_wakes(self: Pin<&mut World>) -> Result<Vec<u32>>;
+        fn take_support_sets(self: Pin<&mut World>) -> Result<Vec<FfiSupportSet>>;
+        fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
     }
@@ -1898,6 +1960,10 @@ impl From<ffi::FfiDestructionStats> for DestructionStats {
             freeze_flips: value.freeze_flips,
             unfreeze_flips: value.unfreeze_flips,
             contact_wakes: value.contact_wakes,
+            support_promotions: value.support_promotions,
+            rooted_guard_blocks: value.rooted_guard_blocks,
+            rooted_chunk_bodies: value.rooted_chunk_bodies,
+            support_edges: value.support_edges,
             frozen_serial_blocks: value.frozen_serial_blocks,
             frozen_adapter_releases: value.frozen_adapter_releases,
         }

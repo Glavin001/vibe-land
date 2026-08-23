@@ -430,12 +430,19 @@ public:
       PxVec3 total_impulse(0.0f);
       PxVec3 weighted_point(0.0f);
       float total_magnitude = 0.0f;
+      float sum_abs_impulse_y = 0.0f;
       for (PxU32 point_index = 0; point_index < extracted; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
         const float magnitude = point.impulse.magnitude();
         total_impulse += point.impulse;
         weighted_point += point.position * magnitude;
         total_magnitude += magnitude;
+        // |y| only: the impulse SIGN is ordering-dependent
+        // (eINTERNAL_CONTACTS_ARE_FLIPPED, never corrected) and must not be
+        // read; the magnitude of the vertical component is what says a
+        // contact carries weight.
+        sum_abs_impulse_y += point.impulse.y < 0.0f ? -point.impulse.y
+                                                    : point.impulse.y;
 #ifdef VIBE_LAND_DESTRUCTION
         if (destruction_) {
           const FfiVec3 position = from_px(point.position);
@@ -475,6 +482,15 @@ public:
       // prohibition is about sleeping DYNAMIC bodies, where one wake re-opens
       // the whole contact island; a frozen body belongs to no island, so a
       // contact releases exactly the body that was hit.
+      // Supporter-edge capture: which side is carrying whose weight. Runs
+      // for every reported debris pair, not just frozen ones -- the
+      // dependency graph must exist BEFORE a body freezes, since it is what
+      // decides whether freezing is admissible at all.
+      if (destruction_ && sum_abs_impulse_y > 0.0f) {
+        destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
+                                     header.actors[0], header.actors[1],
+                                     sum_abs_impulse_y);
+      }
       if (destruction_ && destruction_->has_frozen_bodies() &&
           total_magnitude > 0.0f) {
         const auto dynamic_mass = [](const PxActor *actor) -> float {
@@ -1208,6 +1224,26 @@ public:
 #endif
   }
 
+  rust::Vec<FfiSupportSet> take_support_sets() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_support_sets();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
+  rust::Vec<FfiSupportRow> take_support_rows() {
+#ifdef VIBE_LAND_DESTRUCTION
+    require(destruction_ != nullptr, "destruction manager missing");
+    return destruction_->take_support_rows();
+#else
+    throw std::runtime_error(
+        "physx-bridge built without feature `destruction`");
+#endif
+  }
+
   FfiDestructionStats destruction_stats() const {
 #ifdef VIBE_LAND_DESTRUCTION
     require(destruction_ != nullptr, "destruction manager missing");
@@ -1586,6 +1622,14 @@ std::uint32_t World::unfreeze_chunk_bodies(rust::Slice<const std::uint32_t> enti
 
 rust::Vec<std::uint32_t> World::take_frozen_contact_wakes() {
   return impl_->take_frozen_contact_wakes();
+}
+
+rust::Vec<FfiSupportSet> World::take_support_sets() {
+  return impl_->take_support_sets();
+}
+
+rust::Vec<FfiSupportRow> World::take_support_rows() {
+  return impl_->take_support_rows();
 }
 
 FfiDestructionStats World::destruction_stats() const {

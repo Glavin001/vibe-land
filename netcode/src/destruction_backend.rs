@@ -316,6 +316,17 @@ pub struct DestructionStats {
     /// past ~0.7 m/s does. Healthy piles show this rising during collapses
     /// and flat at rest.
     pub contact_wakes: u64,
+    /// Rooted fragments (ground-anchored kinematic stumps) that lost their
+    /// last anchor and went dynamic -- each one a supporter-death for
+    /// whatever rested on it.
+    pub support_promotions: u64,
+    /// Freeze/unfreeze calls refused for naming a rooted body. Releasing a
+    /// stump would drop a standing building; must stay zero.
+    pub rooted_guard_blocks: u64,
+    /// Ground-anchored kinematic fragments currently standing.
+    pub rooted_chunk_bodies: u32,
+    /// Weight-bearing dependency edges currently held by the bridge.
+    pub support_edges: u64,
     /// Freeze calls the bridge refused. Non-zero disables freezing for the
     /// rest of the match rather than retrying every tick.
     pub freeze_failures: u64,

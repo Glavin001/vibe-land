@@ -30,6 +30,8 @@ struct FfiBrokenBondEvent;
 struct FfiChunkMigrationEvent;
 struct FfiIslandBodyEvent;
 struct FfiChunkBodySnapshot;
+struct FfiSupportSet;
+struct FfiSupportRow;
 struct FfiDestructionStats;
 
 class World final {
@@ -100,6 +102,9 @@ public:
   /// Frozen bodies struck by dynamic debris since the last drain. See
   /// DestructionManager::note_contact_pair.
   rust::Vec<std::uint32_t> take_frozen_contact_wakes();
+  /// Weight-bearing dependency updates (paired drains; consume together).
+  rust::Vec<FfiSupportSet> take_support_sets();
+  rust::Vec<FfiSupportRow> take_support_rows();
   FfiDestructionStats destruction_stats() const;
   bool validate_destruction_mappings() const;
 
