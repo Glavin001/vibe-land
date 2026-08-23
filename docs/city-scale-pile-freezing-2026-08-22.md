@@ -381,3 +381,40 @@ All default to current behaviour; nothing freezes unless switched on.
   quadratic fix removed the measured spike, and spatial wake bounds the
   wake sets that would produce another. The smear mechanism
   (`join_restates_per_span`) is there if it is ever needed.
+
+## 2026-08-23: the dependency-graph rework (correct by construction)
+
+The geometry-heuristic support model above is superseded. The freeze
+rule is now the design's correctness condition verbatim: **a body may
+freeze only when every supporter is event-observable, and is released
+the same tick any supporter dies.** Supporters come from the engine's
+own contact reports (|impulse.y| against the dependent's resting load
+m·g·dt; orientation by relative COM height, never the broken sign);
+the ground is analytic (statics never report on this GPU stack —
+measured and pinned — and static geometry is immutable, so no event
+can ever need to revoke it); rooted stumps hold real island serials
+(serial-0 aliasing removed) and die through ordinary topology events,
+node-level via migrations; Foreign supporters (players, vehicles) veto
+freezing outright. Releases are dependency-cascade invalidations —
+contact wakes, blast wakes, stump deaths, retires, adapter flip-backs —
+with no timer anywhere; the interval sweep survives only as a validity
+backstop whose finds are counted and expected zero.
+
+Measured, matched CUDA-solver ramps (earlier tables above were inflated
+by accidental CPU-solver builds): destruction identical within noise
+(8,230 vs 8,185 bonds), sim p50 11.2 → 8.8 ms, awake p50 1,947 → 918,
+awake body-ticks −28%, quiet 5.0 s → 0.0 s after damage, and the
+floating census shows the SAME transient profile as the unfrozen sim
+(peak 12 vs 12, both resolving to 0). A shot into a frozen pile now
+wakes 41–42% vs 62–80% unfrozen — higher than the geometry era on
+purpose: the cascade frees everything a struck body was carrying,
+because leaving dependents frozen above a released supporter IS the
+floating-anchor artifact.
+
+Verified by: the Phase-0 pin (GPU threshold-report behaviour, sign
+distribution), 8 dependency tests incl. a 64-seed property suite against
+an independent reachability oracle (mutation-verified both directions),
+9 GPU semantics tests incl. end-to-end supporter sets naming stumps by
+serial+node, recalibrated benches, and a live two-phase collapse onto
+frozen rubble (261 contact wakes, re-settled to 0 awake at 4.8 ms,
+serial blocks 0).
