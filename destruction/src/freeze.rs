@@ -332,6 +332,19 @@ pub struct FreezeTracker {
     /// Rotating start position for the interval backstop, so each pass scans
     /// a bounded slice of the frozen set instead of all of it.
     sweep_cursor: usize,
+    /// Bodies that were frozen WITHOUT frozen-or-ground support, with a count
+    /// of consecutive unsupported re-checks.
+    ///
+    /// The event-driven support checks only fire when a FROZEN support
+    /// disappears -- a body frozen while resting on dynamic debris gets no
+    /// event when that debris slides away, because the support was never in
+    /// the frozen set. Those were the floaters that lingered: their only
+    /// rescue was the rotating backstop, which at 12k frozen bodies takes the
+    /// better part of a minute to come around. Bodies on this list are
+    /// re-checked every sweep tick and released after two consecutive
+    /// unsupported checks -- about a second -- unless the pile freezes
+    /// beneath them first, which removes them from the list.
+    unsupported_watch: HashMap<u32, u32>,
 }
 
 impl FreezeTracker {
@@ -345,6 +358,7 @@ impl FreezeTracker {
             pending_support_checks: Vec::new(),
             frozen_y: std::collections::BTreeMap::new(),
             sweep_cursor: 0,
+            unsupported_watch: HashMap::new(),
         }
     }
 
@@ -403,6 +417,7 @@ impl FreezeTracker {
     pub fn retire(&mut self, entity: u32) {
         self.release_cell(entity);
         if self.frozen.remove(&entity) {
+            self.unsupported_watch.remove(&entity);
             if let Some(body) = self.bodies.get(&entity) {
                 // A frozen support vanished; check what sat on it.
                 self.pending_support_checks.push((body.anchor_pos, body.reach));
@@ -419,6 +434,8 @@ impl FreezeTracker {
         self.census = FreezeCensus::default();
         self.pending_support_checks.clear();
         self.frozen_y.clear();
+        self.unsupported_watch.clear();
+        self.sweep_cursor = 0;
     }
 
     /// Observe one body from this tick's snapshot, returning what changed.
@@ -561,8 +578,18 @@ impl FreezeTracker {
     /// Freeze window for a body, lengthened for bodies that keep being woken.
     /// Without this a chunk sitting under a firefight pays the freeze/unfreeze
     /// property write every few ticks forever.
+    ///
+    /// The cap is 64x, not the earlier 8x, because of bodies resting on
+    /// ROOTED support -- a structure's kinematic stump, which the support
+    /// geometry cannot see (stumps are adapter actors, not tracked islands).
+    /// The watch list releases such a body as "unsupported"; it lands exactly
+    /// where it was, sleeps, refreezes, and cycles. The backoff is what damps
+    /// that loop: a genuine floater is released on its FIRST watch pass
+    /// (~1 s, before any backoff exists), while a stump-top body's cycle
+    /// stretches to once per ~half-minute -- two property writes it can
+    /// afford, invisible on screen.
     fn window(body: &Body, base: u32) -> u32 {
-        let factor = 1u32 << body.unfreezes.min(3);
+        let factor = 1u32 << body.unfreezes.min(6);
         base.saturating_mul(factor)
     }
 
@@ -580,6 +607,17 @@ impl FreezeTracker {
             if self.frozen.insert(candidate.entity) {
                 self.cells.entry(cell).or_default().push(candidate.entity);
                 *self.frozen_y.entry(y_key(candidate.position[1])).or_insert(0) += 1;
+                // Frozen without frozen-or-ground support: legitimate (it may
+                // be resting on dynamic debris that will freeze soon), but
+                // nothing event-driven can see that support leave, so it goes
+                // under watch until the pile catches up with it.
+                if !self.is_supported_by_frozen(
+                    candidate.entity,
+                    candidate.position,
+                    candidate.reach,
+                ) {
+                    self.unsupported_watch.insert(candidate.entity, 0);
+                }
             }
         }
         self.census.frozen = self.frozen.len() as u32;
@@ -666,6 +704,7 @@ impl FreezeTracker {
                 continue;
             }
             self.release_cell(entity);
+            self.unsupported_watch.remove(&entity);
             if let Some(body) = self.bodies.get(&entity) {
                 // Whatever was resting on this body just lost its support.
                 self.pending_support_checks.push((body.anchor_pos, body.reach));
@@ -739,8 +778,16 @@ impl FreezeTracker {
                         if top < bottom - self.config.ground_epsilon_m {
                             continue;
                         }
-                        if other.anchor_pos[1] > position[1] {
-                            continue; // above, not under
+                        // STRICTLY below. `>` here once let two bodies at
+                        // equal height support each other -- a mutual ring
+                        // hanging in the air that no sweep could ever release,
+                        // because each member vouched for the other. Requiring
+                        // the support to be lower makes heights strictly
+                        // decrease along any support chain, so a chain either
+                        // reaches the ground or runs out of members; rings
+                        // cannot exist.
+                        if other.anchor_pos[1] >= position[1] {
+                            continue; // beside or above, not under
                         }
                         let dx = other.anchor_pos[0] - position[0];
                         let dz = other.anchor_pos[2] - position[2];
@@ -825,6 +872,39 @@ impl FreezeTracker {
             }
         }
 
+        // Watch list, on the sweep cadence: bodies that froze without
+        // frozen-or-ground support. Two consecutive unsupported checks (~one
+        // second) release them; gaining support -- the pile freezing beneath
+        // them -- retires the watch instead. This is what bounds the lifetime
+        // of a chunk frozen on dynamic debris that slid away, which no
+        // event-driven check can see.
+        if tick % u64::from(self.config.unsupported_sweep_ticks) == 0
+            && !self.unsupported_watch.is_empty()
+        {
+            let watched: Vec<u32> = self.unsupported_watch.keys().copied().collect();
+            for entity in watched {
+                let Some(body) = self.bodies.get(&entity) else {
+                    self.unsupported_watch.remove(&entity);
+                    continue;
+                };
+                if body.phase != Phase::Frozen
+                    || self.is_supported_by_frozen(entity, body.anchor_pos, body.reach)
+                {
+                    // Thawed by other means, or the pile caught up under it.
+                    self.unsupported_watch.remove(&entity);
+                    continue;
+                }
+                let strikes = self.unsupported_watch.entry(entity).or_insert(0);
+                *strikes += 1;
+                if *strikes >= 2 {
+                    self.unsupported_watch.remove(&entity);
+                    if stranded.len() < batch && seen.insert(entity) {
+                        stranded.push(entity);
+                    }
+                }
+            }
+        }
+
         // Interval backstop, for anything the targeted checks cannot see (a
         // freeze that was unsupported from the start). A rotating slice, not
         // the whole set: at 11k frozen bodies a full scan with a neighbour
@@ -885,8 +965,10 @@ impl FreezeTracker {
                         let Some(neighbour) = self.bodies.get(&other) else {
                             continue;
                         };
+                        // Strictly below: see is_supported. Equal-height
+                        // neighbours must not vouch for each other.
                         if neighbour.phase != Phase::Frozen
-                            || neighbour.anchor_pos[1] > position[1]
+                            || neighbour.anchor_pos[1] >= position[1]
                         {
                             continue;
                         }
@@ -956,7 +1038,9 @@ impl FreezeTracker {
                                 continue;
                             }
                             let (_, other_pos, other_reach) = resting[other_index];
-                            if other_pos[1] > pos[1] {
+                            // Strictly below, or the census is blind to the
+                            // same mutual-support rings the sweep was.
+                            if other_pos[1] >= pos[1] {
                                 continue;
                             }
                             if other_pos[1] + other_reach
@@ -1334,6 +1418,235 @@ mod tests {
         tracker.retire(1);
         assert_eq!(tracker.frozen_count(), 0);
         assert!(tracker.frozen_within([0.0; 3], 10.0, 0.0).is_empty());
+    }
+
+    /// Property test: over many randomized pile shapes, the release loop must
+    /// converge to exactly the transitively grounded set.
+    ///
+    /// The scenario tests above each pin one shape; the user kept finding
+    /// shapes they did not cover (mutual-support rings at equal height were
+    /// invisible to every hand-written case). This generates diverse
+    /// configurations from seeded randomness -- stacks with jitter,
+    /// equal-height rings, bridges, isolated floaters, dense piles -- runs
+    /// freeze plus the release loop to a fixed point, and checks the result
+    /// against an INDEPENDENT oracle: a BFS from the grounded set over the
+    /// same strictly-below support geometry, written separately from the
+    /// implementation so a shared bug cannot vouch for itself.
+    ///
+    /// Invariant, both directions: every body the oracle says is grounded
+    /// stays frozen, and every body it says is not gets released. The second
+    /// half is what catches ring shapes; the first catches over-eager
+    /// releases.
+    #[test]
+    fn release_converges_to_the_transitively_grounded_set_on_random_piles() {
+        // Deterministic LCG so a failure is reproducible by seed.
+        fn next(state: &mut u64) -> f32 {
+            *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((*state >> 33) as f32) / (u32::MAX >> 1) as f32
+        }
+
+        for seed in 0..64u64 {
+            let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15).max(1);
+            let mut bodies: Vec<(u32, [f32; 3], f32)> = Vec::new();
+            let mut id = 1u32;
+            let shapes = 2 + (next(&mut rng) * 4.0) as usize;
+            for _ in 0..shapes {
+                let cx = (next(&mut rng) - 0.5) * 30.0;
+                let cz = (next(&mut rng) - 0.5) * 30.0;
+                match (next(&mut rng) * 5.0) as u32 {
+                    // Grounded stack with horizontal jitter.
+                    0 => {
+                        let layers = 1 + (next(&mut rng) * 6.0) as u32;
+                        for layer in 0..layers {
+                            bodies.push((
+                                id,
+                                [
+                                    cx + (next(&mut rng) - 0.5) * 0.4,
+                                    0.4 + layer as f32 * 0.9,
+                                    cz + (next(&mut rng) - 0.5) * 0.4,
+                                ],
+                                0.5,
+                            ));
+                            id += 1;
+                        }
+                    }
+                    // Equal-height ring, floating: the shape that was
+                    // invisible before strict-below support.
+                    1 => {
+                        let height = 3.0 + next(&mut rng) * 6.0;
+                        let members = 3 + (next(&mut rng) * 4.0) as u32;
+                        for member in 0..members {
+                            let angle = member as f32 / members as f32
+                                * std::f32::consts::TAU;
+                            bodies.push((
+                                id,
+                                [cx + angle.cos() * 0.8, height, cz + angle.sin() * 0.8],
+                                0.5,
+                            ));
+                            id += 1;
+                        }
+                    }
+                    // Bridge: two grounded pillars and a floating span --
+                    // the span IS grounded, through the pillars.
+                    2 => {
+                        let half_span = 1.0 + next(&mut rng) * 1.0;
+                        for side in [-1.0f32, 1.0] {
+                            for layer in 0..3 {
+                                bodies.push((
+                                    id,
+                                    [cx + side * half_span, 0.4 + layer as f32 * 0.9, cz],
+                                    0.5,
+                                ));
+                                id += 1;
+                            }
+                        }
+                        let deck = 1 + (next(&mut rng) * 3.0) as u32;
+                        for plank in 0..deck {
+                            let t = (plank as f32 + 0.5) / deck as f32 * 2.0 - 1.0;
+                            bodies.push((id, [cx + t * half_span, 3.1, cz], 0.7));
+                            id += 1;
+                        }
+                    }
+                    // Isolated floater.
+                    3 => {
+                        bodies.push((id, [cx, 2.0 + next(&mut rng) * 10.0, cz], 0.5));
+                        id += 1;
+                    }
+                    // Dense grounded clump with a couple of hangers-on.
+                    _ => {
+                        for _ in 0..6 {
+                            bodies.push((
+                                id,
+                                [
+                                    cx + (next(&mut rng) - 0.5) * 2.0,
+                                    0.3 + next(&mut rng) * 1.2,
+                                    cz + (next(&mut rng) - 0.5) * 2.0,
+                                ],
+                                0.5,
+                            ));
+                            id += 1;
+                        }
+                        bodies.push((id, [cx, 6.0 + next(&mut rng) * 2.0, cz], 0.5));
+                        id += 1;
+                    }
+                }
+            }
+
+            // Freeze everything where it stands.
+            let mut tracker = FreezeTracker::new(FreezeConfig {
+                unsupported_sweep_ticks: 1,
+                unsupported_sweep_batch: 10_000,
+                ..config(true)
+            });
+            for &(entity, pos, reach) in &bodies {
+                tracker.promote(entity, reach);
+                let _ = tracker.observe(sample(entity, pos, true, 1));
+                tracker.mark_frozen(&[FreezeCandidate {
+                    entity,
+                    position: pos,
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    reach,
+                    needs_settle_record: false,
+                }]);
+            }
+
+            // Independent oracle: BFS from the grounded set over the same
+            // strictly-below geometry.
+            let epsilon = tracker.config().ground_epsilon_m;
+            let grounded_by_oracle: HashSet<u32> = {
+                let mut grounded: HashSet<u32> = bodies
+                    .iter()
+                    .filter(|(_, pos, reach)| pos[1] - reach <= epsilon)
+                    .map(|&(entity, _, _)| entity)
+                    .collect();
+                loop {
+                    let mut grew = false;
+                    for &(entity, pos, reach) in &bodies {
+                        if grounded.contains(&entity) {
+                            continue;
+                        }
+                        let held = bodies.iter().any(|&(other, opos, oreach)| {
+                            other != entity
+                                && grounded.contains(&other)
+                                && opos[1] < pos[1]
+                                && opos[1] + oreach >= (pos[1] - reach) - epsilon
+                                && {
+                                    let dx = opos[0] - pos[0];
+                                    let dz = opos[2] - pos[2];
+                                    dx * dx + dz * dz <= (reach + oreach).powi(2)
+                                }
+                        });
+                        if held {
+                            grounded.insert(entity);
+                            grew = true;
+                        }
+                    }
+                    if !grew {
+                        break;
+                    }
+                }
+                grounded
+            };
+
+            // Run the release loop to a fixed point. Two passes per tick
+            // (watch strikes need two) and a generous tick budget.
+            let mut tick = 2u64;
+            for _ in 0..200 {
+                let stranded = tracker.unsupported_frozen(tick);
+                if stranded.is_empty() && tracker.unsupported_frozen(tick + 1).is_empty()
+                {
+                    break;
+                }
+                tracker.mark_thawed(&stranded, tick);
+                tick += 2;
+            }
+
+            for &(entity, pos, _) in &bodies {
+                let grounded = grounded_by_oracle.contains(&entity);
+                assert_eq!(
+                    tracker.is_frozen(entity),
+                    grounded,
+                    "seed {seed}: body {entity} at {pos:?} should be {} but is {} \
+                     ({} bodies in scene)",
+                    if grounded { "frozen (grounded)" } else { "released (floating)" },
+                    if tracker.is_frozen(entity) { "frozen" } else { "released" },
+                    bodies.len(),
+                );
+            }
+        }
+    }
+
+    /// An equal-height pair must not hold each other up. The minimal ring,
+    /// pinned explicitly on top of the randomized coverage above.
+    #[test]
+    fn an_equal_height_pair_is_not_mutual_support() {
+        let mut tracker = FreezeTracker::new(FreezeConfig {
+            unsupported_sweep_ticks: 1,
+            ..config(true)
+        });
+        for (entity, x) in [(1u32, 0.0f32), (2, 0.6)] {
+            tracker.promote(entity, 0.5);
+            let _ = tracker.observe(sample(entity, [x, 5.0, 0.0], true, 1));
+            tracker.mark_frozen(&[FreezeCandidate {
+                entity,
+                position: [x, 5.0, 0.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                reach: 0.5,
+                needs_settle_record: false,
+            }]);
+        }
+        let mut released = HashSet::new();
+        for tick in 2..12u64 {
+            for entity in tracker.unsupported_frozen(tick) {
+                tracker.mark_thawed(&[entity], tick);
+                released.insert(entity);
+            }
+        }
+        assert_eq!(
+            released,
+            HashSet::from([1, 2]),
+            "two floaters at the same height held each other up"
+        );
     }
 
     /// Frozen bodies must stay inside the below-ground check.
