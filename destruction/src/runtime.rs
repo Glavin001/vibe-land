@@ -347,6 +347,11 @@ impl CityDestruction {
             .take_island_events()
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
 
+        // Supporter deaths discovered while draining this tick's events:
+        // promoted rooted fragments (a stump going dynamic is a supporter
+        // death), retired bodies, and nodes migrating off still-standing
+        // stumps. Cascaded after `wakes` exists.
+        let mut supporter_deaths: Vec<u32> = Vec::new();
         let mut batches: HashMap<u32, FractureBatch> = HashMap::new();
         for event in broken {
             let batch = batches.entry(event.structure_id).or_insert_with(|| FractureBatch {
@@ -362,6 +367,13 @@ impl CityDestruction {
                 ..FractureBatch::default()
             });
             self.stats.chunk_migrations += 1;
+            // A node leaving a rooted fragment is a node-level supporter
+            // death: whatever weight that node carried must re-prove its
+            // support. No-op unless the source was actually a rooted
+            // supporter some edge named.
+            let from_entity = ids::body_entity(event.structure_id, event.from_island);
+            let (_, node) = ids::chunk_id_parts(event.chunk_id);
+            supporter_deaths.extend(self.freeze.rooted_node_died(from_entity, node));
             batch.migrations.push(ShapeMigration {
                 chunk_id: event.chunk_id,
                 from_island_id: event.from_island,
@@ -384,6 +396,10 @@ impl CityDestruction {
                     &event.chunk_ids,
                 );
                 self.freeze.promote(body, reach);
+                // If this entity was serving as a ROOTED supporter, its
+                // promotion means the stump went dynamic: a supporter death
+                // for everything leaning on it.
+                supporter_deaths.extend(self.freeze.supporter_died(body, true));
                 batch.promoted_islands.push(IslandPromotion {
                     structure_id: event.structure_id,
                     island_id: event.island_id,
@@ -416,12 +432,38 @@ impl CityDestruction {
                 let body = ids::body_entity(event.structure_id, event.island_id);
                 self.settle.retire(body);
                 self.freeze.retire(body);
+                // Crushed or merged away: dead as a supporter, whether it was
+                // frozen debris or a rooted stump.
+                supporter_deaths.extend(self.freeze.supporter_died(body, true));
                 batch.retired_island_ids.push(event.island_id);
             }
         }
 
         let drain_ms = drain_started.elapsed().as_secs_f32() * 1000.0;
         let mut wakes: Vec<(u32, u32)> = std::mem::take(&mut self.pending_wakes);
+
+        // Supporter-set updates from the engine's contact reports: who is
+        // holding each body up, refreshed for every body whose set changed
+        // during the physics step that just ran.
+        if let Ok((sets, rows)) = world.take_support_updates() {
+            for set in &sets {
+                let start = set.first_row as usize;
+                let end = (start + set.row_count as usize).min(rows.len());
+                let supporters = rows[start..end]
+                    .iter()
+                    .map(|row| match row.kind {
+                        0 => crate::freeze::Supporter::World,
+                        2 => crate::freeze::Supporter::Rooted {
+                            entity: row.supporter_entity,
+                            node: row.supporter_node,
+                        },
+                        3 => crate::freeze::Supporter::Body { entity: row.supporter_entity },
+                        _ => crate::freeze::Supporter::Foreign,
+                    })
+                    .collect();
+                self.freeze.ingest_support(set.dependent_entity, supporters);
+            }
+        }
 
         // Contact wakes: frozen bodies that dynamic debris struck during the
         // physics step that just ran. This is the engine's own collision
@@ -431,16 +473,16 @@ impl CityDestruction {
         // anchors and visibly breaking against them.
         if let Ok(struck) = world.take_frozen_contact_wakes() {
             if !struck.is_empty() {
-                match world.unfreeze_chunk_bodies(&struck) {
-                    Ok(_) => {
-                        for entity in self.freeze.mark_thawed(&struck, tick) {
-                            let (structure_id, serial) = ids::body_entity_parts(entity);
-                            wakes.push((structure_id, serial));
-                        }
-                    }
-                    Err(_) => self.stats.freeze_failures += 1,
-                }
+                // A struck body releases, and everything whose weight it
+                // carried follows in the same cascade.
+                self.cascade_release(world, struck, &mut wakes, tick);
             }
+        }
+
+        // Supporter deaths from this tick's fracture events release their
+        // dependents NOW -- same tick as the event, no interval in the loop.
+        if !supporter_deaths.is_empty() {
+            self.cascade_release(world, supporter_deaths, &mut wakes, tick);
         }
 
         let readback_started = std::time::Instant::now();
@@ -465,6 +507,7 @@ impl CityDestruction {
         // below: the adapter flipping a frozen body back when it splits, and
         // spatial wakes staged by an impact since the last tick.
         let mut freeze_candidates = Vec::new();
+        let mut adapter_thawed: Vec<u32> = Vec::new();
         self.freeze.begin_tick();
 
         // Lowest body this tick, over EVERY dynamic body -- sleeping included.
@@ -552,9 +595,12 @@ impl CityDestruction {
             if observed.thawed_by_adapter {
                 // The adapter set a frozen body dynamic again, which it does
                 // when the body splits. The client is still drawing it parked
-                // against its settle record, so it has to be told.
+                // against its settle record, so it has to be told -- and the
+                // body stops being a valid supporter, so its dependents are
+                // cascaded after this loop.
                 let (structure_id, serial) = ids::body_entity_parts(snap.entity_id);
                 wakes.push((structure_id, serial));
+                adapter_thawed.push(snap.entity_id);
             }
             if let Some(candidate) = observed.freeze {
                 freeze_candidates.push(candidate);
@@ -589,24 +635,34 @@ impl CityDestruction {
 
         self.encoder_input = encoder_input;
 
+        // Bodies the adapter took back mid-split stopped being valid
+        // supporters the moment they went dynamic; their dependents release
+        // in the same tick's cascade.
+        if !adapter_thawed.is_empty() {
+            let mut seeds = Vec::new();
+            for entity in adapter_thawed {
+                seeds.extend(self.freeze.supporter_died(entity, true));
+            }
+            if !seeds.is_empty() {
+                self.cascade_release(world, seeds, &mut wakes, tick);
+            }
+        }
+
         // Freeze pass. Bottom-up: the lowest candidates are the ones whose
         // support is the ground rather than more debris, so freezing them
         // first removes the deep stacked contacts that converge worst and
         // lets the layer above settle in turn.
         if !freeze_candidates.is_empty() {
-            freeze_candidates.sort_by(|a, b| {
-                a.position[1].partial_cmp(&b.position[1]).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            // Only retire what is resting on the ground or on rubble already
-            // retired. A kinematic body is weightless, so freezing debris
-            // perched on a structure that is still standing deletes the load
-            // it should be putting on that structure. Checked after the
-            // bottom-up sort, so a pile grows upward one settled layer per
-            // pass rather than needing several.
-            freeze_candidates
-                .retain(|candidate| self.freeze.is_supported(candidate.position, candidate.reach));
-            let batch = self.freeze.config().batch.max(1).min(freeze_candidates.len());
-            freeze_candidates.truncate(batch);
+            // The dependency fold: admit only candidates whose every needed
+            // supporter is already immovable (ground, rooted stump, frozen
+            // body) or becomes so earlier in this same fold -- a settled
+            // stack freezes in one call, dependency-first. Rejected
+            // candidates re-fire next tick automatically; no timers.
+            let freeze_candidates = self.freeze.plan_freeze_batch(&freeze_candidates);
+            if freeze_candidates.is_empty() {
+                // Nothing admissible this tick (e.g. everything quiet is
+                // resting on still-dynamic debris).
+            } else {
             let entities: Vec<u32> =
                 freeze_candidates.iter().map(|candidate| candidate.entity).collect();
             match world.freeze_chunk_bodies(&entities) {
@@ -637,6 +693,7 @@ impl CityDestruction {
                     self.freeze.disable();
                 }
             }
+            }
         }
 
         // Release frozen rubble that has lost whatever was holding it up.
@@ -651,15 +708,10 @@ impl CityDestruction {
         // from cycling every sweep.
         let stranded = self.freeze.unsupported_frozen(tick);
         if !stranded.is_empty() {
-            match world.unfreeze_chunk_bodies(&stranded) {
-                Ok(_) => {
-                    for entity in self.freeze.mark_thawed(&stranded, tick) {
-                        let (structure_id, serial) = ids::body_entity_parts(entity);
-                        wakes.push((structure_id, serial));
-                    }
-                }
-                Err(_) => self.stats.freeze_failures += 1,
-            }
+            // Backstop finds are counted (census.backstop_releases) and mean
+            // a release event was missed somewhere upstream -- a tripwire
+            // firing, not the mechanism working.
+            self.cascade_release(world, stranded, &mut wakes, tick);
         }
 
         let census = self.freeze.census();
@@ -746,6 +798,41 @@ impl CityDestruction {
         })
     }
 
+    /// Release frozen bodies and chase the dependency cascade to its end,
+    /// within this tick.
+    ///
+    /// Every released body is itself a dead supporter, so its frozen
+    /// dependents that lose their last valid support release too -- link by
+    /// link, exactly as far as the physical dependency chain reaches, and no
+    /// further (a dependent with other live support stays frozen). This is
+    /// the event-driven core of the design: no timer ever runs between a
+    /// support disappearing and its dependents falling.
+    fn cascade_release(
+        &mut self,
+        world: &mut World,
+        seed: Vec<u32>,
+        wakes: &mut Vec<(u32, u32)>,
+        tick: u64,
+    ) {
+        let mut queue = seed;
+        while !queue.is_empty() {
+            queue.sort_unstable();
+            queue.dedup();
+            if world.unfreeze_chunk_bodies(&queue).is_err() {
+                self.stats.freeze_failures += 1;
+                return;
+            }
+            let woken = self.freeze.mark_thawed(&queue, tick);
+            let mut next = Vec::new();
+            for entity in woken {
+                let (structure_id, serial) = ids::body_entity_parts(entity);
+                wakes.push((structure_id, serial));
+                next.extend(self.freeze.supporter_died(entity, false));
+            }
+            queue = next;
+        }
+    }
+
     /// Wake frozen rubble around an impact, returning how many bodies were
     /// released.
     ///
@@ -776,11 +863,33 @@ impl CityDestruction {
             .unfreeze_chunk_bodies(&candidates)
             .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
         let woken = self.freeze.mark_thawed(&candidates, self.tick);
+        let mut count = woken.len() as u32;
+        let mut seeds = Vec::new();
         for entity in &woken {
             let (structure_id, serial) = ids::body_entity_parts(*entity);
             self.pending_wakes.push((structure_id, serial));
+            seeds.extend(self.freeze.supporter_died(*entity, false));
         }
-        Ok(woken.len() as u32)
+        // Blast-released bodies were supporters too: their dependents follow
+        // in the same cascade, announced through the same pending wakes.
+        let mut queue = seeds;
+        while !queue.is_empty() {
+            queue.sort_unstable();
+            queue.dedup();
+            world
+                .unfreeze_chunk_bodies(&queue)
+                .map_err(|error| CityDestructionError::Bridge(error.to_string()))?;
+            let released = self.freeze.mark_thawed(&queue, self.tick);
+            let mut next = Vec::new();
+            for entity in released {
+                let (structure_id, serial) = ids::body_entity_parts(entity);
+                self.pending_wakes.push((structure_id, serial));
+                count += 1;
+                next.extend(self.freeze.supporter_died(entity, false));
+            }
+            queue = next;
+        }
+        Ok(count)
     }
 
     /// Awake bodies for the encoder, captured during `post_step`.
