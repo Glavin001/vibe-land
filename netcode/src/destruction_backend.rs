@@ -327,6 +327,9 @@ pub struct DestructionStats {
     pub rooted_chunk_bodies: u32,
     /// Weight-bearing dependency edges currently held by the bridge.
     pub support_edges: u64,
+    /// Frozen bodies the validity backstop had to release. Expected zero;
+    /// every count is a missed release event upstream.
+    pub backstop_releases: u64,
     /// Freeze calls the bridge refused. Non-zero disables freezing for the
     /// rest of the match rather than retrying every tick.
     pub freeze_failures: u64,

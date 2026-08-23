@@ -496,6 +496,12 @@ export function CityStatsOverlay({
         warn={renderStats.triangles > 1_500_000}
       />
       <Stat
+        label="gl.render"
+        value={`${renderStats.glRenderMs.toFixed(1)} ms`}
+        warn={renderStats.glRenderMs > 12}
+      />
+      <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
+      <Stat
         label="rendered"
         value={clientStats?.rendered ? 'yes' : 'NO'}
         warn={clientStats != null && !clientStats.rendered}

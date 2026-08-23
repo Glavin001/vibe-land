@@ -729,6 +729,7 @@ impl CityDestruction {
         self.stats.chunk_wake_events = census.wake_edges;
         self.stats.pose_quiet_awake_bodies = census.pose_quiet_awake;
         self.stats.unsupported_resting_bodies = census.unsupported_resting;
+        self.stats.backstop_releases = census.backstop_releases;
 
         let settle_ms = settle_started.elapsed().as_secs_f32() * 1000.0;
         let stats_ffi_started = std::time::Instant::now();

@@ -28,7 +28,7 @@ import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
 import { bodyDebug, bodyDebugColor } from '../city/bodyDebugColors';
-import { markFrameEndAndSample } from '../city/renderStats';
+import { markFrameEndAndSample, patchRendererTiming, renderStats } from '../city/renderStats';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -507,6 +507,8 @@ export function CityChunksLayer({
     // Last frame's renderer totals (info.render resets each render pass, so
     // reading here captures the completed frame).
     markFrameEndAndSample(frameState.gl.info as never);
+    patchRendererTiming(frameState.gl as never);
+    renderStats.instanceWrites = 0;
     const client = getCityClient();
     const group = groupRef.current;
     if (!client || !group) {
@@ -891,6 +893,7 @@ export function CityChunksLayer({
         if (!mesh) {
           continue;
         }
+        renderStats.instanceWrites += 1;
         writeInstance(mesh, client, slot, state.scales, state.instanceIds, state.hiddenBySlot, probeCtx);
         if (debugColor) {
           mesh.setColorAt(instanceId, debugColor);

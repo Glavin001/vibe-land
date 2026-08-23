@@ -339,6 +339,8 @@ struct CityStatsSnapshot {
     /// population a pose-based freeze could retire. Only counted under
     /// VIBE_CITY_POSE_CENSUS.
     pose_quiet_awake_bodies: u32,
+    unsupported_resting_bodies: u32,
+    backstop_releases: u64,
     /// Must stay zero. Non-zero means a frozen body reached a serial-issuing
     /// path and aliased onto the structure's support actor.
     frozen_serial_blocks: u64,
@@ -3113,6 +3115,8 @@ impl MatchState {
                     chunk_sleep_events: stats.chunk_sleep_events,
                     chunk_wake_events: stats.chunk_wake_events,
                     pose_quiet_awake_bodies: stats.pose_quiet_awake_bodies,
+                    unsupported_resting_bodies: stats.unsupported_resting_bodies,
+                    backstop_releases: stats.backstop_releases,
                     frozen_serial_blocks: stats.frozen_serial_blocks,
                     degraded: city.is_degraded(),
                 }

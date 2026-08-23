@@ -12,7 +12,26 @@ export const renderStats = {
   /// CPU time inside the last requestAnimationFrame tick (three render +
   /// React work), measured by the frame wrapper below.
   cpuFrameMs: 0,
+  /// Time inside WebGLRenderer.render itself -- includes BatchedMesh data-
+  /// texture uploads, the suspect invisible to call/triangle counters.
+  glRenderMs: 0,
+  /// Chunk instances written (matrix+color) this frame; frozen chunks should
+  /// make this small, and a large number with low triangles convicts upload
+  /// bandwidth.
+  instanceWrites: 0,
 };
+
+let patched = false;
+export function patchRendererTiming(gl: { render: (...args: never[]) => void }): void {
+  if (patched) return;
+  patched = true;
+  const original = gl.render.bind(gl);
+  (gl as { render: (...args: never[]) => void }).render = (...args: never[]) => {
+    const started = performance.now();
+    original(...args);
+    renderStats.glRenderMs = performance.now() - started;
+  };
+}
 
 let lastFrameStart = 0;
 
