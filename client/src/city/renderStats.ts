@@ -55,6 +55,11 @@ export const renderStats = {
   /// in the datagram reader's microtasks, so it lands in offFrame, not cpuFrame.
   decodeMs: 0,
 
+  /// Chunks culled for being under the world since load. Non-zero means the
+  /// hide heuristic fired, which is worth knowing: it is the only thing that
+  /// makes geometry disappear, so a hole in a building starts here.
+  chunksHidden: 0,
+
   /// Chunk instances written (matrix+color) this frame; frozen chunks should
   /// make this small, and a large number with low triangles convicts upload
   /// bandwidth.

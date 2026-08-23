@@ -624,6 +624,13 @@ export function CityStatsOverlay({
         warn={renderStats.glRenderMs > 12}
       />
       <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
+      {/* The only thing that makes chunk geometry disappear. A hole opening
+          in a building starts here, so it is on screen rather than inferred. */}
+      <Stat
+        label="chunks hidden"
+        value={`${renderStats.chunksHidden}`}
+        warn={renderStats.chunksHidden > 0}
+      />
       <Stat label="frame total" value={`${renderStats.frameTotalMs.toFixed(1)} ms`} />
       {/*
         cpu frame is the number a worker offload can shrink: frame start

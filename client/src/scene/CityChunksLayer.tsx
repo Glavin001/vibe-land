@@ -79,6 +79,8 @@ type CityMeshState = {
   baseColors: Float32Array;
   /** 1 = hidden via setVisibleAt (sunk below CHUNK_HIDE_Y_M). */
   hiddenBySlot: Uint8Array;
+  /** Consecutive writes below the hide threshold; see CHUNK_HIDE_STREAK. */
+  belowStreakBySlot: Uint8Array;
   /**
    * Bounding radius per chunk, for growing a batch's sphere from the poses the
    * write loop already computed instead of re-walking every instance.
@@ -204,6 +206,7 @@ function buildMesh(client: CityClient): CityMeshState {
   const instanceIds = new Int32Array(count).fill(-1);
   const baseColors = new Float32Array(count * 3);
   const hiddenBySlot = new Uint8Array(count);
+  const belowStreak = new Uint8Array(count);
   let totalVertices = 0;
 
   for (const structure of manifest.structures) {
@@ -272,6 +275,7 @@ function buildMesh(client: CityClient): CityMeshState {
           scales,
           instanceIds,
           hiddenBySlot,
+          belowStreak,
         );
         mesh.setColorAt(instanceIds[slot], color);
       }
@@ -293,6 +297,7 @@ function buildMesh(client: CityClient): CityMeshState {
     baseColors,
     hiddenBySlot,
     radii,
+    belowStreakBySlot: belowStreak,
     colorStateBySlot: new Uint8Array(count),
   };
 }
@@ -309,6 +314,18 @@ function buildMesh(client: CityClient): CityMeshState {
  * chunks have been observed at -74 m, each still costing a draw.
  */
 const CHUNK_HIDE_Y_M = -4;
+
+/**
+ * Consecutive writes a chunk must read below the threshold before it is hidden.
+ *
+ * Hiding is a cull for chunks that have genuinely escaped the world, and those
+ * stay escaped -- so waiting costs nothing real. Acting on a SINGLE frame does
+ * cost something: one bad pose blanks the geometry instantly, which is visible
+ * as a hole opening in a building mid-fracture and closing again. And a chunk
+ * hidden on a blip could stay hidden, because the hidden path used to skip its
+ * matrix write entirely, so nothing corrected it once it stopped being drawn.
+ */
+const CHUNK_HIDE_STREAK = 8;
 
 /**
  * Frames between exact bounding-sphere recomputes, round-robin across batches.
@@ -336,6 +353,7 @@ function writeInstance(
   scales: Float32Array,
   instanceIds: Int32Array,
   hiddenBySlot?: Uint8Array,
+  belowStreakBySlot?: Uint8Array,
   probeCtx?: ChunkWriteContext,
 ): void {
   const instanceId = instanceIds[slot];
@@ -352,17 +370,20 @@ function writeInstance(
     TMP_PROBE_POS[2] = TMP_POSE[2];
     chunkTeleportProbe(slot, TMP_PROBE_POS, probeCtx);
   }
-  if (hiddenBySlot) {
-    const hide = TMP_POSE[1] < CHUNK_HIDE_Y_M;
+  if (hiddenBySlot && belowStreakBySlot) {
+    const below = TMP_POSE[1] < CHUNK_HIDE_Y_M;
+    const streak = below ? Math.min(255, belowStreakBySlot[slot] + 1) : 0;
+    belowStreakBySlot[slot] = streak;
+    const hide = streak >= CHUNK_HIDE_STREAK;
     if (hide !== (hiddenBySlot[slot] === 1)) {
       mesh.setVisibleAt(instanceId, !hide);
       hiddenBySlot[slot] = hide ? 1 : 0;
+      if (hide) renderStats.chunksHidden += 1;
     }
-    if (hide) {
-      // No point composing a matrix nothing will draw; the write path will run
-      // again the moment the pose moves, and un-hide then.
-      return;
-    }
+    // The matrix is written either way. Skipping it while hidden saved a
+    // compose and cost correctness: a chunk that settled while hidden kept
+    // whatever pose it had when it vanished, so un-hiding drew it in the
+    // wrong place -- or never, since a settled body stops being dirty.
   }
   TMP_POSITION.set(TMP_POSE[0], TMP_POSE[1], TMP_POSE[2]);
   TMP_QUATERNION.set(TMP_POSE[3], TMP_POSE[4], TMP_POSE[5], TMP_POSE[6]);
@@ -1042,6 +1063,7 @@ export function CityChunksLayer({
           state.scales,
           state.instanceIds,
           state.hiddenBySlot,
+          state.belowStreakBySlot,
           probeCtx,
         );
         // Grow the batch's culling sphere from the pose just written (left in
