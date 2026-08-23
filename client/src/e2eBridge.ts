@@ -128,6 +128,15 @@ export interface CityE2EStats {
   chunkUpdateP95Ms: number;
   /** Chunks whose owning body vanished from the ledger. Must be 0. */
   orphanedChunks: number;
+  /**
+   * Chunks DRAWN somewhere other than where the ledger says they are.
+   *
+   * The only counter that can see a mis-composed chunk: triangle counts, draw
+   * calls, awake bodies and topology gaps are all unchanged when geometry is
+   * merely in the wrong place. Requires the netlab recorder to be running,
+   * which owns the per-slot last-drawn positions; 0 when it is not.
+   */
+  staleDrawnChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /**

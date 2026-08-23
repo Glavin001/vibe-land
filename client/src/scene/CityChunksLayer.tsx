@@ -86,14 +86,6 @@ type CityMeshState = {
    * write loop already computed instead of re-walking every instance.
    */
   radii: Float32Array;
-  /**
-   * Colour last written per slot, encoded: 0 unwritten, 1 settled tint,
-   * 2 awake tint, 16+code for a debug state. Instance colour is a pure
-   * function of the settle flag (or the debug state), so writing it on every
-   * dirty frame re-uploaded the colour texture for a value that had not
-   * changed -- which in debug mode is most of the city, most of the time.
-   */
-  colorStateBySlot: Uint8Array;
 };
 
 /**
@@ -304,7 +296,6 @@ function buildMesh(client: CityClient): CityMeshState {
     hiddenBySlot,
     radii,
     belowStreakBySlot: belowStreak,
-    colorStateBySlot: new Uint8Array(count),
   };
 }
 
@@ -332,16 +323,6 @@ const CHUNK_HIDE_Y_M = -4;
  * matrix write entirely, so nothing corrected it once it stopped being drawn.
  */
 const CHUNK_HIDE_STREAK = 8;
-
-/**
- * Frames between exact bounding-sphere recomputes, round-robin across batches.
- *
- * Spheres only ever grow during play (the write loop expands them to cover
- * what it draws), so this pass exists purely to shrink them back after debris
- * settles or is culled -- a slow-moving concern. At 60 fps and ~16 batches
- * each is re-tightened about every 30 s.
- */
-const SPHERE_REFRESH_FRAMES = 120;
 
 /// Scratch for one composed chunk pose (x,y,z, qx,qy,qz,qw). Module-level so
 /// the write path allocates nothing per chunk: the allocating compose built
@@ -717,11 +698,6 @@ export function CityChunksLayer({
         // on the client-side support body.
         const isSupport = (key & 0x3f_ffff) === 0;
         const debugColor = bodyDebug.enabled ? bodyDebugColor(key, isSupport) : null;
-        // Whatever this pass writes, the per-slot colour cache no longer
-        // describes it -- especially on the way OUT of debug mode, where the
-        // base colour goes back untinted and the settle tint has to be
-        // re-applied by the next ordinary write.
-        state.colorStateBySlot[slot] = 0;
         if (debugColor) {
           mesh.setColorAt(instanceId, debugColor);
         } else {
@@ -950,6 +926,9 @@ export function CityChunksLayer({
         chunkUpdateP95Ms: percentile(updateSamplesRef.current, 0.95),
         orphanedChunks: stats.orphanedChunks,
         orphanedByRetire: stats.orphanedByRetire,
+        // Same probe as the netlab line above: the only signal that catches a
+        // chunk drawn away from its ledger pose.
+        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
         deepest,
       });
       renderStats.telemetryMs = performance.now() - telemetryStartedAt;
@@ -1001,6 +980,7 @@ export function CityChunksLayer({
     // redrawn, it never changes where it is.
     const camera = frameState.camera.position;
     const frame = frameCounterRef.current;
+    const touchedMeshes = new Set<number>();
     const updateStartedAt = performance.now();
     for (const key of dirty) {
       const body = client.topology.body(key);
@@ -1072,28 +1052,12 @@ export function CityChunksLayer({
           state.belowStreakBySlot,
           probeCtx,
         );
-        // Grow the batch's culling sphere from the pose just written (left in
-        // TMP_POSE by writeInstance) rather than re-walking every instance of
-        // the batch afterwards. Expand-only, so it can over-include but never
-        // wrong-cull; a staggered exact recompute below re-tightens it.
-        const sphere = mesh.boundingSphere;
-        if (sphere) {
-          const reach = Math.hypot(
-            TMP_POSE[0] - sphere.center.x,
-            TMP_POSE[1] - sphere.center.y,
-            TMP_POSE[2] - sphere.center.z,
-          ) + state.radii[slot];
-          if (reach > sphere.radius) sphere.radius = reach;
-        }
-        // Colour is a pure function of settled/debug state, so it is written
-        // on the transition, not on every frame the chunk moves. In debug mode
-        // the state CODE is what is tracked (offset past the two ordinary
-        // tints), so a body sitting in one state costs nothing per frame --
-        // previously debug mode forced a write, and therefore a colour-texture
-        // re-upload, for every dirty chunk of every frame.
-        const wantColor = debugCode >= 0 ? 16 + debugCode : body.settled ? 1 : 2;
-        if (state.colorStateBySlot[slot] !== wantColor) {
-          state.colorStateBySlot[slot] = wantColor;
+        // Written every dirty frame, deliberately. Skipping writes when the
+        // encoded state matched was a real saving and is REVERTED: it changes
+        // what ends up in the colour texture as a function of history rather
+        // than of current state, and a report of a mis-coloured, patchy city
+        // is not worth a millisecond. Re-land it only with a visual check.
+        {
           const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
           if (debugColor) {
             mesh.setColorAt(instanceId, debugColor);
@@ -1107,21 +1071,24 @@ export function CityChunksLayer({
           }
         }
       }
+      touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {
         dirty.delete(key);
       }
     }
     // A batch is culled against its bounding sphere, and debris falls outside
-    // the footprint the sphere was built from. The write loop already grew
-    // each touched batch's sphere to cover what it wrote, so culling is
-    // correct every frame; three's computeBoundingSphere walks EVERY instance
-    // of the batch (thousands of frozen ones included) to move a sphere a few
-    // chunks changed, which is why it is now a staggered re-tightening pass
-    // -- one batch per SPHERE_REFRESH_FRAMES -- rather than a per-frame cost.
+    // the footprint the sphere was built from. Recomputing it for batches that
+    // moved keeps a spreading pile from being culled while still on screen.
+    //
+    // The cheaper scheme (grow the sphere from each written pose, re-tighten
+    // one batch every 120 frames) is REVERTED. It is only correct if every
+    // growth is seen, and a wrongly small sphere culls a whole batch -- a
+    // block of city gone. That is indistinguishable from the report being
+    // chased, and unlike the exact recompute it cannot be verified by any
+    // counter this client has.
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
-    if (state.meshes.length > 0 && frame % SPHERE_REFRESH_FRAMES === 0) {
-      const index = (frame / SPHERE_REFRESH_FRAMES) % state.meshes.length;
+    for (const index of touchedMeshes) {
       state.meshes[index]?.computeBoundingSphere();
     }
     const sphereEndedAt = performance.now();

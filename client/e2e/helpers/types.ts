@@ -109,6 +109,7 @@ export interface CityE2EStats {
   chunksBelowGround: number;
   /** Chunks whose owning body vanished from the ledger. Must be 0. */
   orphanedChunks: number;
+  staleDrawnChunks: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
 }
