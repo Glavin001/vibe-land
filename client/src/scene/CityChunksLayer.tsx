@@ -28,6 +28,7 @@ import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
 import { bodyDebug, bodyDebugColor } from '../city/bodyDebugColors';
+import { markFrameEndAndSample } from '../city/renderStats';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -503,6 +504,9 @@ export function CityChunksLayer({
   );
 
   useFrame((frameState) => {
+    // Last frame's renderer totals (info.render resets each render pass, so
+    // reading here captures the completed frame).
+    markFrameEndAndSample(frameState.gl.info as never);
     const client = getCityClient();
     const group = groupRef.current;
     if (!client || !group) {

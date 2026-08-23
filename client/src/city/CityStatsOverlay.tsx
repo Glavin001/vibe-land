@@ -482,6 +482,18 @@ export function CityStatsOverlay({
         value={`${(clientStats?.chunkUpdateP95Ms ?? 0).toFixed(1)} ms`}
         warn={(clientStats?.chunkUpdateP95Ms ?? 0) > 8}
       />
+      {/*
+        GPU-load proxies (mobile exposes no GPU timers): triangles in the
+        millions means vertex-bound -- the win is geometry LOD / distance
+        culling of small debris; high calls means batching; both low with low
+        fps means pixel fill or React orchestration.
+      */}
+      <Stat label="draw calls" value={`${renderStats.drawCalls}`} />
+      <Stat
+        label="triangles"
+        value={`${(renderStats.triangles / 1e6).toFixed(2)} M`}
+        warn={renderStats.triangles > 1_500_000}
+      />
       <Stat
         label="rendered"
         value={clientStats?.rendered ? 'yes' : 'NO'}
