@@ -164,6 +164,10 @@ pub struct FreezeConfig {
     /// How far above y=0 a body's underside may sit and still count as
     /// resting on the ground.
     pub ground_epsilon_m: f32,
+    /// Deepest contact interpenetration (metres) a freeze candidate may
+    /// carry. Beyond it the body is squeezed and admission defers until the
+    /// solver relaxes the overlap.
+    pub max_penetration_m: f32,
     /// Ticks between sweeps that release frozen bodies which have lost their
     /// support. 0 disables the sweep.
     ///
@@ -203,6 +207,7 @@ impl Default for FreezeConfig {
             wake_above_m: 2.0,
             cell_m: 4.0,
             require_supported: true,
+            max_penetration_m: 0.015,
             ground_epsilon_m: 0.6,
             unsupported_sweep_ticks: 30,
             unsupported_sweep_batch: 64,
@@ -255,6 +260,10 @@ impl FreezeConfig {
             ground_epsilon_m: number(
                 "VIBE_CITY_FREEZE_GROUND_EPSILON_M",
                 defaults.ground_epsilon_m,
+            ),
+            max_penetration_m: number(
+                "VIBE_CITY_FREEZE_MAX_PENETRATION_M",
+                defaults.max_penetration_m,
             ),
             unsupported_sweep_ticks: number(
                 "VIBE_CITY_FREEZE_SWEEP_TICKS",
@@ -363,6 +372,14 @@ pub struct FreezeTracker {
     /// Nodes that migrated OFF a still-standing rooted fragment: edges
     /// naming (entity, node) are dead even though the entity survives.
     dead_rooted_nodes: HashSet<(u32, u32)>,
+    /// Most negative contact separation per body (metres), from the last
+    /// report. Deep negative = squeezed between neighbours; freezing such a
+    /// body bakes the overlap into an immovable anchor, and the neighbour it
+    /// squeezes becomes a depenetration pump -- rising and dropping forever,
+    /// never pose-quiet, spiking contact wakes into the pile around it.
+    /// Measured live as a 198-body permanently-awake cluster plus ~2/s of
+    /// bursty freeze-thrash. Admission refuses these until they relax.
+    penetration_m: HashMap<u32, f32>,
     /// Multiset of frozen anchor heights, keyed by sortable float bits.
     ///
     /// Exists so `min_frozen_y` is O(log n) instead of a walk of the whole
@@ -391,6 +408,7 @@ impl FreezeTracker {
             dependents: HashMap::new(),
             rooted_live: HashSet::new(),
             dead_rooted_nodes: HashSet::new(),
+            penetration_m: HashMap::new(),
             frozen_y: std::collections::BTreeMap::new(),
             sweep_cursor: 0,
         }
@@ -460,6 +478,7 @@ impl FreezeTracker {
             }
         }
         self.supporters.remove(&entity);
+        self.penetration_m.remove(&entity);
         self.bodies.remove(&entity);
     }
 
@@ -472,6 +491,7 @@ impl FreezeTracker {
         self.dependents.clear();
         self.rooted_live.clear();
         self.dead_rooted_nodes.clear();
+        self.penetration_m.clear();
         self.frozen_y.clear();
         self.sweep_cursor = 0;
     }
@@ -776,7 +796,8 @@ impl FreezeTracker {
     /// presumed alive until their death event arrives; the bridge classifies
     /// by its CURRENT rooted set at resolve time, so a post-death report can
     /// never resurrect one.
-    pub fn ingest_support(&mut self, entity: u32, supporters: Vec<Supporter>) {
+    pub fn ingest_support(&mut self, entity: u32, supporters: Vec<Supporter>, min_separation: f32) {
+        self.penetration_m.insert(entity, min_separation);
         for supporter in &supporters {
             if let Supporter::Rooted { entity: rooted, .. } = supporter {
                 self.rooted_live.insert(*rooted);
@@ -809,6 +830,15 @@ impl FreezeTracker {
                     || accepted.is_some_and(|set| set.contains(entity))
             }
         }
+    }
+
+    /// Squeezed = interpenetrating a neighbour deeper than the admission
+    /// bound. Such a body is in unresolved contact conflict; freezing it (or
+    /// around it) locks the conflict in.
+    fn is_squeezed(&self, entity: u32) -> bool {
+        self.penetration_m
+            .get(&entity)
+            .is_some_and(|&sep| sep < -self.config.max_penetration_m)
     }
 
     /// The freeze-admission and stay-frozen predicate: at least one valid
@@ -878,6 +908,9 @@ impl FreezeTracker {
                 }
                 if accepted_set.contains(&candidate.entity) {
                     continue;
+                }
+                if self.is_squeezed(candidate.entity) {
+                    continue; // penetrating: freezing would bake the overlap
                 }
                 if self.supported(
                     candidate.entity,
@@ -969,7 +1002,7 @@ impl FreezeTracker {
     /// but pose-quiet (wants to freeze; admission pending), 2 engine-asleep,
     /// 3 frozen, 4 blocked by a Foreign supporter (player/vehicle in the
     /// support chain -- can never freeze while it stays).
-    pub fn debug_states(&self) -> Vec<(u32, u8)> {
+    pub fn debug_states(&self) -> Vec<(u32, u8, u32, i32)> {
         let mut out = Vec::with_capacity(self.bodies.len());
         for (&entity, body) in &self.bodies {
             let foreign = self
@@ -981,14 +1014,18 @@ impl FreezeTracker {
                 _ if foreign => 4,
                 Phase::Sleeping { .. } => 2,
                 Phase::Awake => {
-                    if body.quiet_ticks >= Self::window(body, self.config.pose_ticks) {
+                    if self.is_squeezed(entity) {
+                        7
+                    } else if body.quiet_ticks >= Self::window(body, self.config.pose_ticks) {
                         1
                     } else {
                         0
                     }
                 }
             };
-            out.push((entity, state));
+            let pen_mm = (self.penetration_m.get(&entity).copied().unwrap_or(0.0)
+                * 1000.0) as i32;
+            out.push((entity, state, body.unfreezes, pen_mm));
         }
         out
     }

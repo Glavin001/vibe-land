@@ -1874,7 +1874,8 @@ void DestructionManager::note_pair_load(const PxShape *shape_a,
                                         const PxShape *shape_b,
                                         const PxActor *actor_a,
                                         const PxActor *actor_b,
-                                        float sum_abs_impulse_y) {
+                                        float sum_abs_impulse_y,
+                                        float min_separation) {
   if (sum_abs_impulse_y <= 0.0f) {
     return;
   }
@@ -1916,6 +1917,7 @@ void DestructionManager::note_pair_load(const PxShape *shape_a,
     return; // no debris involved; not our concern
   }
   load.sum_abs_impulse_y = sum_abs_impulse_y;
+  load.min_separation = min_separation;
   pending_pair_loads_.push_back(load);
 }
 
@@ -2030,8 +2032,17 @@ void DestructionManager::resolve_support_loads() {
           support_key(dependent.side->structure_id, dependent.side->body_id);
       DependentEntry &entry = support_store_[key];
       entry.entity = pack_body_entity(dependent.side->structure_id, dependent.serial);
+      if (entry.last_report_tick != tick_count_) {
+        entry.min_separation = load.min_separation;
+      } else if (load.min_separation < entry.min_separation) {
+        entry.min_separation = load.min_separation;
+      }
+      if (entry.min_separation != entry.min_separation) {
+        entry.min_separation = 0.0f; // NaN guard
+      }
       entry.last_report_tick = tick_count_;
       touched.insert(key);
+      entry.dirty = true;
       // Weight-bearing gate, scaled to the DEPENDENT's own resting load.
       if (load.sum_abs_impulse_y < fy_ratio * dependent.mass * g_dt) {
         return;
@@ -2084,6 +2095,7 @@ void DestructionManager::resolve_support_loads() {
       FfiSupportSet set{};
       set.dependent_entity = entry.entity;
       set.last_report_tick = entry.last_report_tick;
+      set.min_separation = entry.min_separation;
       set.first_row = static_cast<std::uint32_t>(staged_support_rows_.size());
       set.row_count = static_cast<std::uint32_t>(entry.supporters.size());
       for (const SupporterRec &rec : entry.supporters) {

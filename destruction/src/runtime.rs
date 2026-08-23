@@ -461,7 +461,8 @@ impl CityDestruction {
                         _ => crate::freeze::Supporter::Foreign,
                     })
                     .collect();
-                self.freeze.ingest_support(set.dependent_entity, supporters);
+                self.freeze
+                    .ingest_support(set.dependent_entity, supporters, set.min_separation);
             }
         }
 
@@ -893,7 +894,7 @@ impl CityDestruction {
     }
 
     /// Per-body freeze-machine states for the debug overlay.
-    pub fn debug_body_states(&self) -> Vec<(u32, u8)> {
+    pub fn debug_body_states(&self) -> Vec<(u32, u8, u32, i32)> {
         self.freeze.debug_states()
     }
 

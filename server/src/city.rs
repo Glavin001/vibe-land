@@ -1115,7 +1115,7 @@ impl CityRuntime {
     }
 
     /// Per-body freeze states for the debug overlay (empty on synthetic).
-    pub fn debug_body_states(&self) -> Vec<(u32, u8)> {
+    pub fn debug_body_states(&self) -> Vec<(u32, u8, u32, i32)> {
         match &self.backend {
             CityBackend::Synthetic(_) => Vec::new(),
             #[cfg(feature = "destruction")]

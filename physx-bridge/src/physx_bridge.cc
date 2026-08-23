@@ -431,8 +431,12 @@ public:
       PxVec3 weighted_point(0.0f);
       float total_magnitude = 0.0f;
       float sum_abs_impulse_y = 0.0f;
+      float min_separation = 1.0e6f;
       for (PxU32 point_index = 0; point_index < extracted; ++point_index) {
         const PxContactPairPoint &point = points[point_index];
+        if (point.separation < min_separation) {
+          min_separation = point.separation;
+        }
         const float magnitude = point.impulse.magnitude();
         total_impulse += point.impulse;
         weighted_point += point.position * magnitude;
@@ -489,7 +493,7 @@ public:
       if (destruction_ && sum_abs_impulse_y > 0.0f) {
         destruction_->note_pair_load(pair.shapes[0], pair.shapes[1],
                                      header.actors[0], header.actors[1],
-                                     sum_abs_impulse_y);
+                                     sum_abs_impulse_y, min_separation);
       }
       if (destruction_ && destruction_->has_frozen_bodies() &&
           total_magnitude > 0.0f) {

@@ -20,6 +20,7 @@ export const BODY_DEBUG_STATES: ReadonlyArray<{ code: number; label: string; css
   { code: 4, label: 'foreign-blocked', css: '#ff4bd8' },
   { code: 5, label: 'structure / rooted', css: '#6f6f7d' },
   { code: 6, label: 'unknown to server', css: '#ffffff' },
+  { code: 7, label: 'squeezed (penetrating)', css: '#ff8800' },
 ];
 
 const COLORS = new Map<number, Color>(

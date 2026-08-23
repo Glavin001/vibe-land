@@ -1436,6 +1436,10 @@ mod ffi {
         /// The last tick this body reported ANY contact -- the freshness
         /// stamp freeze admission checks against its quiet window.
         last_report_tick: u64,
+        /// Most negative contact separation, metres: deep negative means the
+        /// body is squeezed/interpenetrating and must not be frozen (baking
+        /// the overlap turns its neighbours into depenetration pumps).
+        min_separation: f32,
         first_row: u32,
         row_count: u32,
     }

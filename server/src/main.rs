@@ -721,7 +721,7 @@ struct AppState {
     /// Per-body freeze-machine states, refreshed at the stats cadence, for
     /// the body-color debug overlay. Cheap to keep warm (one small Vec per
     /// match per second); only serialized when the endpoint is hit.
-    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
     /// Match ids awaiting a city reset. The HTTP handler cannot touch the
     /// simulation directly -- the match loop owns it -- so the request is left
     /// here and consumed on the next tick, between steps where rebuilding the
@@ -879,7 +879,7 @@ struct MatchState {
     /// Per-body freeze-machine states, refreshed at the stats cadence, for
     /// the body-color debug overlay. Cheap to keep warm (one small Vec per
     /// match per second); only serialized when the endpoint is hit.
-    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
     next_player_handle: u16,
     reusable_player_handles: VecDeque<(u32, u8)>,
     free_player_handles: VecDeque<u8>,
@@ -1629,7 +1629,7 @@ async fn run_match_loop(
     stats_tx: Arc<tokio::sync::watch::Sender<GlobalStatsSnapshot>>,
     telemetry: Arc<MatchIoTelemetry>,
     stats_registry: Arc<StdRwLock<HashMap<String, MatchStatsSnapshot>>>,
-    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8)>>>>,
+    body_states_registry: Arc<StdRwLock<HashMap<String, Vec<(u32, u8, u32, i32)>>>>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
 ) {
     let mut arena = PhysicsArena::new(MoveConfig::default(), physics.backend)

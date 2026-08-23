@@ -187,12 +187,17 @@ public:
     /// ordering-dependent (eINTERNAL_CONTACTS_ARE_FLIPPED, uncorrected by
     /// extractContacts) and must never be read.
     float sum_abs_impulse_y = 0.0f;
+    /// Most negative contact separation this step, metres. Deep negative =
+    /// the pair is interpenetrating -- freezing either side would bake the
+    /// overlap into an immovable anchor and turn its neighbour into a
+    /// depenetration pump.
+    float min_separation = 0.0f;
   };
 
   /// Record one reported pair's vertical contact load. Called from onContact.
   void note_pair_load(const physx::PxShape *shape_a, const physx::PxShape *shape_b,
                       const physx::PxActor *actor_a, const physx::PxActor *actor_b,
-                      float sum_abs_impulse_y);
+                      float sum_abs_impulse_y, float min_separation);
 
   /// Support-set drains: one FfiSupportSet per dependent whose supporter set
   /// changed this tick, indexing into the rows drain. Both are cleared
@@ -323,6 +328,8 @@ private:
   struct DependentEntry {
     std::uint32_t entity = 0;
     std::uint64_t last_report_tick = 0;
+    /// Most negative separation across this body's contacts, last report.
+    float min_separation = 0.0f;
     bool dirty = false;
     std::vector<SupporterRec> supporters;
   };
