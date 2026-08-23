@@ -329,12 +329,17 @@ impl CityDestruction {
         }
         self.tick += 1;
         let tick = self.tick;
+        // Host wall time of the native tick, including the FFI hop and the
+        // per-slot dispatch the native counters cannot see. `stress_solve_ms`
+        // is the manager's own bracket inside it; the gap between them is real.
+        let tick_ffi_started = std::time::Instant::now();
         if let Err(error) =
             world.destruction_tick(dt, Vec3::new(gravity[0], gravity[1], gravity[2]))
         {
             self.degraded = true;
             return Err(CityDestructionError::Bridge(error.to_string()));
         }
+        let tick_ffi_ms = tick_ffi_started.elapsed().as_secs_f32() * 1000.0;
 
         let drain_started = std::time::Instant::now();
         let broken = world
@@ -747,6 +752,7 @@ impl CityDestruction {
         self.stats.peak_body_angular_speed =
             self.stats.peak_body_angular_speed.max(max_angular);
         self.stats.drain_ms = drain_ms;
+        self.stats.tick_ffi_ms = tick_ffi_ms;
         self.stats.min_body_pos = min_pos;
         self.stats.min_body_vel = min_vel;
 

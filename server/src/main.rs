@@ -280,6 +280,25 @@ struct CityStatsSnapshot {
     readback_ms_host: f32,
     settle_ms: f32,
     ingest_ms: f32,
+    /// Host wall time of the whole native destruction tick, FFI hop included.
+    /// A parent of the Blast phases and measurably larger than their sum.
+    tick_ffi_ms: f32,
+    /// Event drain (broken bonds, migrations, island events) and the
+    /// destruction-stats FFI readback: two stages that were measured all along
+    /// and never published, so `step_ms` minus its children over-reported the
+    /// unattributed remainder.
+    drain_ms: f32,
+    stats_ffi_ms: f32,
+    /// `backend.post_step` in full -- the parent of the destruction phases,
+    /// measured by the host rather than summed from them.
+    post_step_ms: f32,
+    /// Broadcasting this tick's reliable and v3 packets to every viewer. Scales
+    /// with packets x players and clones each packet per viewer.
+    fan_out_ms: f32,
+    /// The 1 Hz stats publish (JSON, per-player packets, registry writes,
+    /// telemetry line). Lands entirely on one tick, so it shows up as a spike
+    /// in the tick window rather than in any average.
+    publish_ms: f32,
     /// The 30 Hz stream encode: shared record build, then per-client interest
     /// and datagram packing.
     ///
@@ -679,6 +698,11 @@ struct MatchStatsSnapshot {
     /// `fetch` carries GPU compute plus the result readback.
     physics_simulate_ms: f32,
     physics_fetch_ms: f32,
+    /// The split inside `fetch`, only under `VIBE_PHYSX_PROFILE_FETCH=1`:
+    /// blocked-on-GPU versus result copy. A large `gpu_wait` is dead time the
+    /// tick could be spending on encode.
+    physics_gpu_wait_ms: f32,
+    physics_fetch_copy_ms: f32,
     physics_controller_ms: f32,
     server_tick: u32,
     player_count: usize,
@@ -890,6 +914,13 @@ struct MatchState {
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Last tick's packet fan-out cost, and the last 1 Hz publish block's cost.
+    /// Both were untimed while being O(packets x players) and "serialize the
+    /// world to JSON, then write a file, on the tick thread" respectively.
+    /// `last_publish_ms` is necessarily one second stale in the snapshot it
+    /// appears in -- it measures the block that builds that snapshot.
+    last_fan_out_ms: f32,
+    last_publish_ms: f32,
 }
 
 #[tokio::main]
@@ -1722,6 +1753,8 @@ async fn run_match_loop(
         stats_registry,
         body_states_registry,
         reset_requests,
+        last_fan_out_ms: 0.0,
+        last_publish_ms: 0.0,
         next_player_handle: 1,
         reusable_player_handles: VecDeque::new(),
         free_player_handles: VecDeque::new(),
@@ -2523,9 +2556,11 @@ impl MatchState {
         }
 
         if self.server_tick % SERVER_PING_INTERVAL_TICKS == 0 {
+            let publish_started = Instant::now();
             self.send_server_latency_pings();
             self.publish_stats();
             self.log_city_telemetry();
+            self.last_publish_ms = publish_started.elapsed().as_secs_f32() * 1000.0;
         }
 
         self.timings
@@ -2694,6 +2729,7 @@ impl MatchState {
                 "city stress fracture (queueContact → broken bonds)"
             );
         }
+        let fan_out_started = std::time::Instant::now();
         for packet in &reliable {
             for runtime in self.players.values() {
                 let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
@@ -2708,6 +2744,7 @@ impl MatchState {
                 let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
             }
         }
+        self.last_fan_out_ms = fan_out_started.elapsed().as_secs_f32() * 1000.0;
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
         let v2_pose_stream = v3_datagrams.is_empty()
@@ -2915,6 +2952,8 @@ impl MatchState {
             physics_last_step_ms: physics_health.last_step_ms,
             physics_simulate_ms: physics_health.last_simulate_ms,
             physics_fetch_ms: physics_health.last_fetch_ms,
+            physics_gpu_wait_ms: physics_health.last_gpu_wait_ms,
+            physics_fetch_copy_ms: physics_health.last_fetch_copy_ms,
             physics_controller_ms: physics_health.last_controller_ms,
             server_tick: self.server_tick,
             player_count: self.players.len(),
@@ -3087,6 +3126,12 @@ impl MatchState {
                     readback_ms_host: stats.readback_ms_host,
                     settle_ms: stats.settle_ms,
                     ingest_ms: stats.ingest_ms,
+                    tick_ffi_ms: stats.tick_ffi_ms,
+                    drain_ms: stats.drain_ms,
+                    stats_ffi_ms: stats.stats_ffi_ms,
+                    post_step_ms: stats.post_step_ms,
+                    fan_out_ms: self.last_fan_out_ms,
+                    publish_ms: self.last_publish_ms,
                     encode_shared_ms: encode_timings.0,
                     client_datagrams_ms: encode_timings.1,
                     gpu_stress_structures: stats.gpu_stress_structures,

@@ -1019,6 +1019,8 @@ impl PhysxPhysicsArena {
             last_controller_ms: stats.last_controller_ms,
             last_simulate_ms: stats.last_simulate_ms,
             last_fetch_ms: stats.last_fetch_ms,
+            last_gpu_wait_ms: stats.last_gpu_wait_ms,
+            last_fetch_copy_ms: stats.last_fetch_copy_ms,
         }
     }
 

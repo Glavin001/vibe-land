@@ -48,6 +48,13 @@ interface CityServerStats {
   readback_ms_host: number;
   settle_ms: number;
   ingest_ms: number;
+  /// Optional: added with the tick-accounting pass; older servers omit them.
+  tick_ffi_ms?: number;
+  drain_ms?: number;
+  stats_ffi_ms?: number;
+  post_step_ms?: number;
+  fan_out_ms?: number;
+  publish_ms?: number;
   encode_shared_ms: number;
   client_datagrams_ms: number;
   gpu_stress_structures: number;
@@ -322,12 +329,15 @@ export function CityStatsOverlay({
 
   // The children the server times inside its 60 Hz city step. The stream-encode
   // pair is excluded on purpose: that is a separate 30 Hz pass.
+  // `tick_ffi_ms` is the host bracket around the whole native destruction tick
+  // and is the PARENT of begin/solve/end, so it replaces them in the sum
+  // rather than adding to them.
   const cityStepChildrenMs = city
-    ? city.begin_ms
-      + city.solve_ms
-      + city.end_ms
+    ? (city.tick_ffi_ms ?? city.begin_ms + city.solve_ms + city.end_ms)
+      + (city.drain_ms ?? 0)
       + city.readback_ms_host
       + city.settle_ms
+      + (city.stats_ffi_ms ?? 0)
       + city.ingest_ms
     : 0;
   // Clamped at 0: the children are sampled from the last native tick while
@@ -652,8 +662,14 @@ export function CityStatsOverlay({
       />
       <Stat label="blast solve" value={`${(city?.solve_ms ?? 0).toFixed(1)} ms`} />
       <Stat label="blast end" value={`${(city?.end_ms ?? 0).toFixed(1)} ms`} />
+      {/* Host bracket around the whole native tick: the parent of the three
+          blast rows above, and measurably larger than their sum (per-slot
+          dispatch and the topology-diff decision live in the gap). */}
+      <Stat label="native tick" value={`${(city?.tick_ffi_ms ?? 0).toFixed(1)} ms`} />
+      <Stat label="event drain" value={`${(city?.drain_ms ?? 0).toFixed(1)} ms`} />
       <Stat label="readback" value={`${(city?.readback_ms_host ?? 0).toFixed(1)} ms`} />
       <Stat label="settle scan" value={`${(city?.settle_ms ?? 0).toFixed(1)} ms`} />
+      <Stat label="stats ffi" value={`${(city?.stats_ffi_ms ?? 0).toFixed(1)} ms`} warn={(city?.stats_ffi_ms ?? 0) > 2} />
       <Stat
         label="encoder ingest"
         value={`${(city?.ingest_ms ?? 0).toFixed(1)} ms`}
@@ -667,6 +683,12 @@ export function CityStatsOverlay({
         "city step is big"; it has run to a quarter of the step under load.
       */}
       <Stat label="↳ unattributed" value={`${cityStepUnattributedMs.toFixed(1)} ms`} warn={cityStepUnattributedMs > 4} />
+      {/* Outside the city step but on the same tick thread: broadcasting the
+          tick's packets to every viewer, and the once-a-second stats publish
+          (JSON per player + a blocking telemetry write) that lands on one
+          tick and shows up only as a spike. */}
+      <Stat label="fan-out" value={`${(city?.fan_out_ms ?? 0).toFixed(1)} ms`} warn={(city?.fan_out_ms ?? 0) > 2} />
+      <Stat label="1Hz publish" value={`${(city?.publish_ms ?? 0).toFixed(1)} ms`} warn={(city?.publish_ms ?? 0) > 8} />
       {/*
         Below here is the SEPARATE 30 Hz stream pass, not part of city step.
         Listed flush with the step's children it invited adding the whole

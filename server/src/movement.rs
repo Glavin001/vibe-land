@@ -53,6 +53,13 @@ pub struct PhysicsHealth {
     pub last_controller_ms: f32,
     pub last_simulate_ms: f32,
     pub last_fetch_ms: f32,
+    /// The split inside `fetch`: time blocked waiting on the GPU versus the
+    /// call that copies results back. Only populated under
+    /// `VIBE_PHYSX_PROFILE_FETCH=1` (it polls, which burns a core), and it is
+    /// the number that says whether overlapping CPU work with the simulate
+    /// window would buy anything.
+    pub last_gpu_wait_ms: f32,
+    pub last_fetch_copy_ms: f32,
 }
 
 enum PhysicsBackend {
