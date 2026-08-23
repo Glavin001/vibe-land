@@ -28,7 +28,12 @@ import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/r
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
-import { bodyDebug, bodyDebugColor } from '../city/bodyDebugColors';
+import {
+  bodyDebug,
+  bodyDebugColor,
+  bodyDebugColorForCode,
+  bodyDebugStateCode,
+} from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 
 const TMP_MATRIX = new THREE.Matrix4();
@@ -81,9 +86,10 @@ type CityMeshState = {
   radii: Float32Array;
   /**
    * Colour last written per slot, encoded: 0 unwritten, 1 settled tint,
-   * 2 awake tint, 255 debug-coloured. Instance colour is a pure function of
-   * the settle flag, so writing it on every dirty frame re-uploaded the
-   * colour texture for a value that had not changed.
+   * 2 awake tint, 16+code for a debug state. Instance colour is a pure
+   * function of the settle flag (or the debug state), so writing it on every
+   * dirty frame re-uploaded the colour texture for a value that had not
+   * changed -- which in debug mode is most of the city, most of the time.
    */
   colorStateBySlot: Uint8Array;
 };
@@ -1014,7 +1020,7 @@ export function CityChunksLayer({
         }
       }
       const settledTint = body.settled ? 0.75 : 1;
-      const debugColor = bodyDebug.enabled ? bodyDebugColor(key, false) : null;
+      const debugCode = bodyDebug.enabled ? bodyDebugStateCode(key, false) : -1;
       const probeCtx: ChunkWriteContext | undefined = recording
         ? { bodyKey: key, settling, bodySettled: body.settled, source: writeSource }
         : undefined;
@@ -1052,10 +1058,15 @@ export function CityChunksLayer({
           if (reach > sphere.radius) sphere.radius = reach;
         }
         // Colour is a pure function of settled/debug state, so it is written
-        // on the transition, not on every frame the chunk moves.
-        const wantColor = debugColor ? 255 : body.settled ? 1 : 2;
-        if (state.colorStateBySlot[slot] !== wantColor || debugColor) {
+        // on the transition, not on every frame the chunk moves. In debug mode
+        // the state CODE is what is tracked (offset past the two ordinary
+        // tints), so a body sitting in one state costs nothing per frame --
+        // previously debug mode forced a write, and therefore a colour-texture
+        // re-upload, for every dirty chunk of every frame.
+        const wantColor = debugCode >= 0 ? 16 + debugCode : body.settled ? 1 : 2;
+        if (state.colorStateBySlot[slot] !== wantColor) {
           state.colorStateBySlot[slot] = wantColor;
+          const debugColor = debugCode >= 0 ? bodyDebugColorForCode(debugCode) : null;
           if (debugColor) {
             mesh.setColorAt(instanceId, debugColor);
           } else {
