@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { BODY_DEBUG_STATES, setBodyDebugEnabled, setBodyDebugStates } from './bodyDebugColors';
+import { renderStats } from './renderStats';
 
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
 interface CityServerStats {
