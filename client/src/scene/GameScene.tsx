@@ -10,6 +10,7 @@ import {
 } from '../app/renderQuality';
 import { isTouchDevice } from '../device';
 import type { InputBindings } from '../input/bindings';
+import { FrameClock } from './FrameClock';
 import { GameWorld } from './GameWorld';
 import type { InputFamilyMode, InputSample } from '../input/types';
 import type { WorldDocument } from '../world/worldDocument';
@@ -128,6 +129,7 @@ export function GameScene({
       }}
     >
       <DprController />
+      <FrameClock />
       <Suspense fallback={null}>
         {showRenderStats && (
           <StatsGl

@@ -12,6 +12,7 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { addDebugE2eMs } from '../city/renderStats';
 import { isRecording, recordFrame } from '../netlab/recorder';
 import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
@@ -2387,6 +2388,7 @@ export function GameWorld({
     updatePooledShotTraceVisuals(activeShotTracesRef.current, now, shotTracePoolRef.current);
 
     // Debug overlay stats
+    const debugStartedAt = performance.now();
     if (onDebugFrameRef.current) {
       const vehicleServerSpeedMs = drivenVehicleState
         ? Math.hypot(
@@ -2649,6 +2651,8 @@ export function GameWorld({
     // E2E bridge: publish frame state for read-only snapshot
     {
       const remoteSummaries: Array<{ id: number; position: [number, number, number] }> = [];
+      // (bracket continues from debugStartedAt: the two blocks are adjacent and
+      // are gated together, so they are reported as one "debug/e2e" figure.)
       for (const [id, rp] of state.remotePlayers) {
         const sample = state.remoteInterpolator.sample(
           id,
@@ -2735,6 +2739,7 @@ export function GameWorld({
         });
       }
     }
+    addDebugE2eMs(performance.now() - debugStartedAt);
 
     // Update remote player meshes
     const group = remoteGroupRef.current;

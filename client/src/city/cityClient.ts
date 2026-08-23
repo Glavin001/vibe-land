@@ -38,6 +38,7 @@ import {
   PKT_CITY_TOPOLOGY,
 } from '../net/sharedConstants';
 import { isCitySuspect, isRecording, recordCityEvent } from '../netlab/recorder';
+import { addDecodeMs } from './renderStats';
 
 export interface CityClientStats {
   chunksTotal: number;
@@ -521,6 +522,10 @@ export class CityClient {
       default:
         break;
     }
+    // Packet handling runs in the datagram reader's microtasks, between frames
+    // -- it never shows up in the frame's CPU span, so it is accumulated here
+    // and attributed to the frame that follows it.
+    addDecodeMs(performance.now() - now);
   }
 
   /**

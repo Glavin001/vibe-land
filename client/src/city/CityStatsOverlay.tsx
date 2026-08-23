@@ -502,10 +502,31 @@ export function CityStatsOverlay({
       />
       <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
       <Stat label="frame total" value={`${renderStats.frameTotalMs.toFixed(1)} ms`} />
+      {/*
+        cpu frame is the number a worker offload can shrink: frame start
+        through the end of gl.render. frame total minus it is vsync idle plus
+        whatever ran between frames (decode, below) -- headroom, not work.
+        The phases below sum to cpu frame, with "of which" rows indented.
+      */}
+      <Stat
+        label="cpu frame"
+        value={`${renderStats.cpuFrameMs.toFixed(1)} ms`}
+        warn={renderStats.cpuFrameMs > 12}
+      />
+      <Stat label="off-frame" value={`${renderStats.offFrameMs.toFixed(1)} ms`} />
+      <Stat label="↳ decode" value={`${renderStats.decodeMs.toFixed(1)} ms`} warn={renderStats.decodeMs > 6} />
+      <Stat label="world frame" value={`${renderStats.beforeCityMs.toFixed(1)} ms`} warn={renderStats.beforeCityMs > 6} />
+      <Stat label="↳ debug/e2e" value={`${renderStats.debugE2eMs.toFixed(1)} ms`} warn={renderStats.debugE2eMs > 3} />
+      <Stat label="city frame" value={`${renderStats.cityFrameMs.toFixed(1)} ms`} warn={renderStats.cityFrameMs > 6} />
+      <Stat label="↳ sample" value={`${renderStats.sampleMs.toFixed(1)} ms`} />
+      <Stat label="↳ dirty write" value={`${renderStats.dirtyWriteMs.toFixed(1)} ms`} />
+      <Stat label="↳ spheres" value={`${renderStats.sphereMs.toFixed(1)} ms`} />
+      {/* Once every 30 frames; this is the cost of one occurrence. */}
+      <Stat label="↳ 2Hz block" value={`${renderStats.telemetryMs.toFixed(1)} ms`} warn={renderStats.telemetryMs > 4} />
       <Stat
         label="unattributed"
         value={`${renderStats.unattributedMs.toFixed(1)} ms`}
-        warn={renderStats.unattributedMs > 15}
+        warn={renderStats.unattributedMs > 3}
       />
       <Stat
         label="rendered"

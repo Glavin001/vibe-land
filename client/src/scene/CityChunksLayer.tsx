@@ -28,7 +28,7 @@ import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
 import { bodyDebug, bodyDebugColor } from '../city/bodyDebugColors';
-import { markFrameEndAndSample, patchRendererTiming, renderStats, sampleFrameTotals } from '../city/renderStats';
+import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
@@ -506,13 +506,20 @@ export function CityChunksLayer({
   useFrame((frameState) => {
     // Last frame's renderer totals (info.render resets each render pass, so
     // reading here captures the completed frame).
+    const cityFrameStartedAt = performance.now();
+    renderStats.beforeCityMs = cityFrameStartedAt - frameStartTime();
     markFrameEndAndSample(frameState.gl.info as never);
-    patchRendererTiming(frameState.gl as never);
-    sampleFrameTotals(renderStats.instanceWrites > 0 ? 0 : 0);
     renderStats.instanceWrites = 0;
+    renderStats.sampleMs = 0;
+    renderStats.dirtyWriteMs = 0;
+    renderStats.sphereMs = 0;
+    // telemetryMs is deliberately NOT reset: it runs once every 30 frames, so
+    // the useful figure is the cost of one occurrence, not a zero on the 29
+    // frames in between (divide by 30 for its amortised share).
     const client = getCityClient();
     const group = groupRef.current;
     if (!client || !group) {
+      renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
     if (clientRef.current !== client) {
@@ -650,6 +657,7 @@ export function CityChunksLayer({
     // observable even when rendering is broken.
     frameCounterRef.current += 1;
     if (frameCounterRef.current % 30 === 0) {
+      const telemetryStartedAt = performance.now();
       const stats = client.stats();
       const prevBroken = (window as unknown as { __VIBE_CITY_BROKEN__?: number }).__VIBE_CITY_BROKEN__ ?? 0;
       if (stats.brokenBonds > prevBroken) {
@@ -790,14 +798,18 @@ export function CityChunksLayer({
         orphanedByRetire: stats.orphanedByRetire,
         deepest,
       });
+      renderStats.telemetryMs = performance.now() - telemetryStartedAt;
     }
 
     const state = stateRef.current;
     if (!state) {
+      renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
 
+    const sampleStartedAt = performance.now();
     const live = client.samplePresentation(performance.now());
+    renderStats.sampleMs = performance.now() - sampleStartedAt;
     const dirty = dirtyBodiesRef.current;
     for (const key of live) {
       dirty.add(key);
@@ -820,6 +832,7 @@ export function CityChunksLayer({
       }
     }
     if (dirty.size === 0) {
+      renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
     // Rewriting every moving chunk every frame is the client's dominant cost
@@ -915,10 +928,15 @@ export function CityChunksLayer({
     // A batch is culled against its bounding sphere, and debris falls outside
     // the footprint the sphere was built from. Recomputing it for batches that
     // moved keeps a spreading pile from being culled while still on screen.
+    const writeEndedAt = performance.now();
+    renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
     for (const index of touchedMeshes) {
       state.meshes[index]?.computeBoundingSphere();
     }
-    recordUpdateMs(updateSamplesRef.current, performance.now() - updateStartedAt);
+    const sphereEndedAt = performance.now();
+    renderStats.sphereMs = sphereEndedAt - writeEndedAt;
+    recordUpdateMs(updateSamplesRef.current, sphereEndedAt - updateStartedAt);
+    renderStats.cityFrameMs = sphereEndedAt - cityFrameStartedAt;
     // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
     // straight into its own data textures and flags them itself.
   });
