@@ -57,6 +57,10 @@ const UNKNOWN_TRACKING_LIMIT = 4096;
 
 export function setBodyDebugEnabled(enabled: boolean): void {
   bodyDebug.enabled = enabled;
+  // Toggling the mode restarts the observation: bodies recorded as missing
+  // during an earlier session of it would otherwise be judged unknown on their
+  // first frame back, which is the same latency artefact one level up.
+  unknownSince.clear();
   bodyDebug.version += 1;
 }
 

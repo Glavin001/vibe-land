@@ -556,6 +556,7 @@ export function CityStatsOverlay({
       <button
         style={{ ...toggleButton, position: 'static', width: '100%' }}
         onClick={() => setBodyColors((value) => !value)}
+        data-testid="city-body-colors"
       >
         {bodyColors ? 'BODY COLORS: ON' : 'BODY COLORS: OFF'}
       </button>
