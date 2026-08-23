@@ -17,6 +17,7 @@ import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 
 import type { CityClient } from '../city/cityClient';
+import type { LedgerBody } from '../city/topology';
 import { buildBoxGeometry, buildHullGeometry, chunkShape } from '../city/chunkGeometry';
 import {
   partitionSlotsByCell,
@@ -73,6 +74,18 @@ type CityMeshState = {
   baseColors: Float32Array;
   /** 1 = hidden via setVisibleAt (sunk below CHUNK_HIDE_Y_M). */
   hiddenBySlot: Uint8Array;
+  /**
+   * Bounding radius per chunk, for growing a batch's sphere from the poses the
+   * write loop already computed instead of re-walking every instance.
+   */
+  radii: Float32Array;
+  /**
+   * Colour last written per slot, encoded: 0 unwritten, 1 settled tint,
+   * 2 awake tint, 255 debug-coloured. Instance colour is a pure function of
+   * the settle flag, so writing it on every dirty frame re-uploaded the
+   * colour texture for a value that had not changed.
+   */
+  colorStateBySlot: Uint8Array;
 };
 
 /**
@@ -120,6 +133,7 @@ function buildMesh(client: CityClient): CityMeshState {
   // the total vertex and index budget up front, which is only knowable once
   // the distinct hulls are known.
   const scales = new Float32Array(count * 3);
+  const radii = new Float32Array(count);
   const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
   const hullGeometries = new Map<string, THREE.BufferGeometry>();
   // Rest-pose XZ per slot, relative to its own structure's origin, used only to
@@ -166,6 +180,11 @@ function buildMesh(client: CityClient): CityMeshState {
         scales[slot * 3 + 1] = shape.scale[1];
         scales[slot * 3 + 2] = shape.scale[2];
       }
+      // The manifest's own bounding radius where it has one; otherwise the
+      // box half-diagonal, which bounds the drawn unit cube exactly.
+      radii[slot] = chunk.radius > 0
+        ? chunk.radius
+        : 0.5 * Math.hypot(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
     }
   }
 
@@ -239,7 +258,15 @@ function buildMesh(client: CityClient): CityMeshState {
         baseColors[slot * 3] = color.r;
         baseColors[slot * 3 + 1] = color.g;
         baseColors[slot * 3 + 2] = color.b;
-        writeInstance(mesh, client, slot, scales, instanceIds, hiddenBySlot);
+        writeInstance(
+          mesh,
+          client,
+          slot,
+          client.topology.body(client.topology.bodyKeyOf(slot)),
+          scales,
+          instanceIds,
+          hiddenBySlot,
+        );
         mesh.setColorAt(instanceIds[slot], color);
       }
       meshes.push(mesh);
@@ -252,7 +279,16 @@ function buildMesh(client: CityClient): CityMeshState {
     batches: meshes.length,
     vertices: totalVertices,
   });
-  return { meshes, meshOfSlot, instanceIds, scales, baseColors, hiddenBySlot };
+  return {
+    meshes,
+    meshOfSlot,
+    instanceIds,
+    scales,
+    baseColors,
+    hiddenBySlot,
+    radii,
+    colorStateBySlot: new Uint8Array(count),
+  };
 }
 
 /**
@@ -268,10 +304,29 @@ function buildMesh(client: CityClient): CityMeshState {
  */
 const CHUNK_HIDE_Y_M = -4;
 
+/**
+ * Frames between exact bounding-sphere recomputes, round-robin across batches.
+ *
+ * Spheres only ever grow during play (the write loop expands them to cover
+ * what it draws), so this pass exists purely to shrink them back after debris
+ * settles or is culled -- a slow-moving concern. At 60 fps and ~16 batches
+ * each is re-tightened about every 30 s.
+ */
+const SPHERE_REFRESH_FRAMES = 120;
+
+/// Scratch for one composed chunk pose (x,y,z, qx,qy,qz,qw). Module-level so
+/// the write path allocates nothing per chunk: the allocating compose built
+/// seven arrays and an object per chunk, which at thousands of dirty chunks a
+/// frame was the layer's largest source of garbage.
+const TMP_POSE = new Float32Array(7);
+/// `chunkTeleportProbe` wants a Vec3; only built while recording.
+const TMP_PROBE_POS: [number, number, number] = [0, 0, 0];
+
 function writeInstance(
   mesh: THREE.BatchedMesh,
   client: CityClient,
   slot: number,
+  body: LedgerBody | undefined,
   scales: Float32Array,
   instanceIds: Int32Array,
   hiddenBySlot?: Uint8Array,
@@ -281,13 +336,18 @@ function writeInstance(
   if (instanceId < 0) {
     return;
   }
-  const pose = client.topology.chunkWorldPose(slot);
+  client.topology.chunkWorldPoseInto(slot, body, TMP_POSE, 0);
   // Teleport probe: this is the last point every chunk transform passes
   // through, so a jump seen here is a jump the player saw, whatever produced
   // it upstream.
-  if (chunkTeleportProbe) chunkTeleportProbe(slot, pose.position, probeCtx);
+  if (chunkTeleportProbe) {
+    TMP_PROBE_POS[0] = TMP_POSE[0];
+    TMP_PROBE_POS[1] = TMP_POSE[1];
+    TMP_PROBE_POS[2] = TMP_POSE[2];
+    chunkTeleportProbe(slot, TMP_PROBE_POS, probeCtx);
+  }
   if (hiddenBySlot) {
-    const hide = pose.position[1] < CHUNK_HIDE_Y_M;
+    const hide = TMP_POSE[1] < CHUNK_HIDE_Y_M;
     if (hide !== (hiddenBySlot[slot] === 1)) {
       mesh.setVisibleAt(instanceId, !hide);
       hiddenBySlot[slot] = hide ? 1 : 0;
@@ -298,8 +358,8 @@ function writeInstance(
       return;
     }
   }
-  TMP_POSITION.set(pose.position[0], pose.position[1], pose.position[2]);
-  TMP_QUATERNION.set(pose.rotation[0], pose.rotation[1], pose.rotation[2], pose.rotation[3]);
+  TMP_POSITION.set(TMP_POSE[0], TMP_POSE[1], TMP_POSE[2]);
+  TMP_QUATERNION.set(TMP_POSE[3], TMP_POSE[4], TMP_POSE[5], TMP_POSE[6]);
   TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
   TMP_MATRIX.compose(TMP_POSITION, TMP_QUATERNION, TMP_SCALE);
   mesh.setMatrixAt(instanceId, TMP_MATRIX);
@@ -330,39 +390,100 @@ interface ChunkWriteContext {
  * resync differential) has floating settled islands, the fault is physics
  * settling, not synchronisation. Coarse XZ hashing keeps the 2 Hz scan cheap.
  */
-function countFloatingSettledIslands(client: CityClient): number {
-  const topology = client.topology;
-  const cell = 2.5;
-  const columns = new Map<string, number>();
-  const count = topology.chunkCount;
-  const poses: Array<{ x: number; y: number; z: number }> = new Array(count);
-  for (let slot = 0; slot < count; slot += 1) {
-    const pose = topology.chunkWorldPose(slot);
-    const p = { x: pose.position[0], y: pose.position[1], z: pose.position[2] };
-    poses[slot] = p;
-    const key = `${Math.round(p.x / cell)},${Math.round(p.z / cell)}`;
-    const lowest = columns.get(key);
-    if (lowest === undefined || p.y < lowest) columns.set(key, p.y);
-  }
+const FLOATING_CELL_M = 2.5;
+/// XZ column key. Integer, not `${qx},${qz}`: the string form built 24k
+/// throwaway strings twice a second and hashed them, for a scan whose whole
+/// justification was being cheap.
+function columnKey(x: number, z: number): number {
+  return ((Math.round(x / FLOATING_CELL_M) & 0xffff) << 16)
+    | (Math.round(z / FLOATING_CELL_M) & 0xffff);
+}
+
+function countFloatingSettledIslands(
+  client: CityClient,
+  positions: Float32Array,
+  columns: Map<number, number>,
+): number {
   let floating = 0;
-  for (const body of topology.allBodies()) {
+  for (const body of client.topology.allBodies()) {
     if (!body.settled || body.islandSerial === 0 || body.chunkSlots.length === 0) continue;
     let minY = Infinity;
     let minSlot = -1;
     for (const slot of body.chunkSlots) {
-      if (poses[slot].y < minY) {
-        minY = poses[slot].y;
+      const y = positions[slot * 3 + 1];
+      if (y < minY) {
+        minY = y;
         minSlot = slot;
       }
     }
     if (minY < 1.5) continue; // near ground — supported or close enough
-    const p = poses[minSlot];
-    const key = `${Math.round(p.x / cell)},${Math.round(p.z / cell)}`;
-    const columnFloor = columns.get(key) ?? minY;
+    const columnFloor =
+      columns.get(columnKey(positions[minSlot * 3], positions[minSlot * 3 + 2])) ?? minY;
     // Nothing beneath it in its own column within 1.5 m → hovering.
     if (minY - columnFloor < 0.01 && minY > 1.5) floating += 1;
   }
   return floating;
+}
+
+/**
+ * One pass over every chunk, feeding every 2 Hz diagnostic.
+ *
+ * These numbers used to cost five separate full sweeps -- ground probe,
+ * floating-island columns, stale-draw check, island span, island size -- each
+ * recomposing all 24k chunk poses through the allocating path, roughly 170k
+ * arrays per sweep. They are all functions of the same position array, so it
+ * is built once into reused storage and everything else reads it.
+ */
+const sweepPositions = { data: new Float32Array(0) };
+const sweepColumns = new Map<number, number>();
+
+function sweepChunkPositions(client: CityClient): {
+  positions: Float32Array;
+  columns: Map<number, number>;
+  minChunkY: number;
+  deepestSlot: number;
+  chunksBelowGround: number;
+} {
+  const topology = client.topology;
+  const count = topology.chunkCount;
+  if (sweepPositions.data.length < count * 3) {
+    sweepPositions.data = new Float32Array(count * 3);
+  }
+  const positions = sweepPositions.data;
+  const columns = sweepColumns;
+  columns.clear();
+  let minChunkY = Infinity;
+  let deepestSlot = -1;
+  let chunksBelowGround = 0;
+  // Body lookups are hoisted across a run of slots sharing one body: chunk
+  // slots of the same body are contiguous far more often than not, and the
+  // Map lookup was previously repeated for every chunk.
+  let lastKey = -1;
+  let lastBody: LedgerBody | undefined;
+  for (let slot = 0; slot < count; slot += 1) {
+    const key = topology.bodyKeyOf(slot);
+    if (key !== lastKey) {
+      lastKey = key;
+      lastBody = topology.body(key);
+    }
+    const at = slot * 3;
+    topology.chunkWorldPoseInto(slot, lastBody, TMP_POSE, 0);
+    const x = TMP_POSE[0];
+    const y = TMP_POSE[1];
+    const z = TMP_POSE[2];
+    positions[at] = x;
+    positions[at + 1] = y;
+    positions[at + 2] = z;
+    if (y < minChunkY) {
+      minChunkY = y;
+      deepestSlot = slot;
+    }
+    if (y < CHUNK_SUNK_Y_M) chunksBelowGround += 1;
+    const column = columnKey(x, z);
+    const lowest = columns.get(column);
+    if (lowest === undefined || y < lowest) columns.set(column, y);
+  }
+  return { positions, columns, minChunkY, deepestSlot, chunksBelowGround };
 }
 
 /** Set while recording; see `installChunkTeleportProbe`. */
@@ -563,6 +684,11 @@ export function CityChunksLayer({
         // on the client-side support body.
         const isSupport = (key & 0x3f_ffff) === 0;
         const debugColor = bodyDebug.enabled ? bodyDebugColor(key, isSupport) : null;
+        // Whatever this pass writes, the per-slot colour cache no longer
+        // describes it -- especially on the way OUT of debug mode, where the
+        // base colour goes back untinted and the settle tint has to be
+        // re-applied by the next ordinary write.
+        state.colorStateBySlot[slot] = 0;
         if (debugColor) {
           mesh.setColorAt(instanceId, debugColor);
         } else {
@@ -667,21 +793,13 @@ export function CityChunksLayer({
         });
       }
       (window as unknown as { __VIBE_CITY_BROKEN__?: number }).__VIBE_CITY_BROKEN__ = stats.brokenBonds;
-      // Ground-penetration probe: the server world is a flat plane at y=0, so
-      // any chunk whose centroid sits below it has sunk into the floor. Cheap
-      // enough at ~2 Hz over a few thousand chunks, and the only way to see
-      // this without eyeballing a screenshot.
-      let minChunkY = Infinity;
-      let chunksBelowGround = 0;
-      let deepestSlot = -1;
-      for (let slot = 0; slot < client.topology.chunkCount; slot += 1) {
-        const y = client.topology.chunkWorldPose(slot).position[1];
-        if (y < minChunkY) {
-          minChunkY = y;
-          deepestSlot = slot;
-        }
-        if (y < CHUNK_SUNK_Y_M) chunksBelowGround += 1;
-      }
+      // One pass for every position-derived diagnostic below: ground
+      // penetration (the server world is a flat plane at y=0, so a chunk
+      // centroid below it has sunk into the floor), the floating-island
+      // columns, and the island-span AABBs.
+      const sweep = sweepChunkPositions(client);
+      const positions = sweep.positions;
+      const { minChunkY, chunksBelowGround, deepestSlot } = sweep;
       // Name the offending chunk rather than only counting it. The server is
       // measured to hold every body at y >= 0, so a chunk drawn hundreds of
       // metres down is this client composing a body pose with a local offset
@@ -742,7 +860,7 @@ export function CityChunksLayer({
         // 0.5 m: comfortably above quantisation and strided-motion lag, far
         // below a chunk left at its intact pose while its island has fallen.
         staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
-        floatingSettledIslands: countFloatingSettledIslands(client),
+        floatingSettledIslands: countFloatingSettledIslands(client, positions, sweep.columns),
         largestIslandSpanM: (() => {
           // What the player sees is SIZE, not chunk count: a 5-chunk island of
           // bonded slabs is still a wall-sized panel. Span = longest edge of
@@ -753,13 +871,16 @@ export function CityChunksLayer({
             let minX = Infinity, minY = Infinity, minZ = Infinity;
             let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
             for (const slot of body.chunkSlots) {
-              const p = client.topology.chunkWorldPose(slot).position;
-              if (p[0] < minX) minX = p[0];
-              if (p[1] < minY) minY = p[1];
-              if (p[2] < minZ) minZ = p[2];
-              if (p[0] > maxX) maxX = p[0];
-              if (p[1] > maxY) maxY = p[1];
-              if (p[2] > maxZ) maxZ = p[2];
+              const at = slot * 3;
+              const px = positions[at];
+              const py = positions[at + 1];
+              const pz = positions[at + 2];
+              if (px < minX) minX = px;
+              if (py < minY) minY = py;
+              if (pz < minZ) minZ = pz;
+              if (px > maxX) maxX = px;
+              if (py > maxY) maxY = py;
+              if (pz > maxZ) maxZ = pz;
             }
             const s = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
             if (s > span) span = s;
@@ -847,7 +968,6 @@ export function CityChunksLayer({
     // redrawn, it never changes where it is.
     const camera = frameState.camera.position;
     const frame = frameCounterRef.current;
-    const touchedMeshes = new Set<number>();
     const updateStartedAt = performance.now();
     for (const key of dirty) {
       const body = client.topology.body(key);
@@ -908,29 +1028,61 @@ export function CityChunksLayer({
           continue;
         }
         renderStats.instanceWrites += 1;
-        writeInstance(mesh, client, slot, state.scales, state.instanceIds, state.hiddenBySlot, probeCtx);
-        if (debugColor) {
-          mesh.setColorAt(instanceId, debugColor);
-        } else {
-          TMP_COLOR.setRGB(
-            state.baseColors[slot * 3] * settledTint,
-            state.baseColors[slot * 3 + 1] * settledTint,
-            state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
-          );
-          mesh.setColorAt(instanceId, TMP_COLOR);
+        writeInstance(
+          mesh,
+          client,
+          slot,
+          body,
+          state.scales,
+          state.instanceIds,
+          state.hiddenBySlot,
+          probeCtx,
+        );
+        // Grow the batch's culling sphere from the pose just written (left in
+        // TMP_POSE by writeInstance) rather than re-walking every instance of
+        // the batch afterwards. Expand-only, so it can over-include but never
+        // wrong-cull; a staggered exact recompute below re-tightens it.
+        const sphere = mesh.boundingSphere;
+        if (sphere) {
+          const reach = Math.hypot(
+            TMP_POSE[0] - sphere.center.x,
+            TMP_POSE[1] - sphere.center.y,
+            TMP_POSE[2] - sphere.center.z,
+          ) + state.radii[slot];
+          if (reach > sphere.radius) sphere.radius = reach;
+        }
+        // Colour is a pure function of settled/debug state, so it is written
+        // on the transition, not on every frame the chunk moves.
+        const wantColor = debugColor ? 255 : body.settled ? 1 : 2;
+        if (state.colorStateBySlot[slot] !== wantColor || debugColor) {
+          state.colorStateBySlot[slot] = wantColor;
+          if (debugColor) {
+            mesh.setColorAt(instanceId, debugColor);
+          } else {
+            TMP_COLOR.setRGB(
+              state.baseColors[slot * 3] * settledTint,
+              state.baseColors[slot * 3 + 1] * settledTint,
+              state.baseColors[slot * 3 + 2] * (body.settled ? 0.75 : 0.9),
+            );
+            mesh.setColorAt(instanceId, TMP_COLOR);
+          }
         }
       }
-      touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {
         dirty.delete(key);
       }
     }
     // A batch is culled against its bounding sphere, and debris falls outside
-    // the footprint the sphere was built from. Recomputing it for batches that
-    // moved keeps a spreading pile from being culled while still on screen.
+    // the footprint the sphere was built from. The write loop already grew
+    // each touched batch's sphere to cover what it wrote, so culling is
+    // correct every frame; three's computeBoundingSphere walks EVERY instance
+    // of the batch (thousands of frozen ones included) to move a sphere a few
+    // chunks changed, which is why it is now a staggered re-tightening pass
+    // -- one batch per SPHERE_REFRESH_FRAMES -- rather than a per-frame cost.
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
-    for (const index of touchedMeshes) {
+    if (state.meshes.length > 0 && frame % SPHERE_REFRESH_FRAMES === 0) {
+      const index = (frame / SPHERE_REFRESH_FRAMES) % state.meshes.length;
       state.meshes[index]?.computeBoundingSphere();
     }
     const sphereEndedAt = performance.now();

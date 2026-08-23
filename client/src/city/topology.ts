@@ -228,6 +228,81 @@ export class CityTopology {
     return composePose(body.position, body.rotation, local.position, local.rotation);
   }
 
+  /**
+   * Same compose, written into caller storage: 7 floats (x,y,z, qx,qy,qz,qw)
+   * at `out[at..at+7]`.
+   *
+   * The allocating form builds two arrays for the local offset, four more
+   * inside composePose and a wrapper object -- seven allocations per chunk,
+   * per call. That is invisible for one chunk and ruinous for the paths that
+   * do it per dirty chunk per frame, or across all 24k slots in the telemetry
+   * sweep. `body` is passed in because every caller already holds it, and the
+   * Map lookup was being repeated for every chunk of the same body.
+   */
+  chunkWorldPoseInto(
+    slot: number,
+    body: LedgerBody | undefined,
+    out: Float32Array,
+    at: number,
+  ): void {
+    const l3 = slot * 3;
+    const l4 = slot * 4;
+    const lx = this.localPos[l3];
+    const ly = this.localPos[l3 + 1];
+    const lz = this.localPos[l3 + 2];
+    const lqx = this.localRot[l4];
+    const lqy = this.localRot[l4 + 1];
+    const lqz = this.localRot[l4 + 2];
+    const lqw = this.localRot[l4 + 3];
+    if (!body) {
+      out[at] = lx;
+      out[at + 1] = ly;
+      out[at + 2] = lz;
+      out[at + 3] = lqx;
+      out[at + 4] = lqy;
+      out[at + 5] = lqz;
+      out[at + 6] = lqw;
+      return;
+    }
+    const bp = body.position;
+    const bq = body.rotation;
+    const bqx = bq[0];
+    const bqy = bq[1];
+    const bqz = bq[2];
+    const bqw = bq[3];
+    // v' = q * v * q^-1, expanded (t = 2 * q_vec x v).
+    const tx = 2 * (bqy * lz - bqz * ly);
+    const ty = 2 * (bqz * lx - bqx * lz);
+    const tz = 2 * (bqx * ly - bqy * lx);
+    out[at] = bp[0] + lx + bqw * tx + bqy * tz - bqz * ty;
+    out[at + 1] = bp[1] + ly + bqw * ty + bqz * tx - bqx * tz;
+    out[at + 2] = bp[2] + lz + bqw * tz + bqx * ty - bqy * tx;
+    // Hamilton product, then normalise: the body rotation is streamed and
+    // quantised, so the product drifts off the unit sphere without it.
+    let rx = bqw * lqx + bqx * lqw + bqy * lqz - bqz * lqy;
+    let ry = bqw * lqy - bqx * lqz + bqy * lqw + bqz * lqx;
+    let rz = bqw * lqz + bqx * lqy - bqy * lqx + bqz * lqw;
+    let rw = bqw * lqw - bqx * lqx - bqy * lqy - bqz * lqz;
+    const lengthSq = rx * rx + ry * ry + rz * rz + rw * rw;
+    if (!Number.isFinite(lengthSq) || lengthSq <= 1e-6) {
+      // Matches qNormalize's degenerate case: identity, not NaN.
+      rx = 0;
+      ry = 0;
+      rz = 0;
+      rw = 1;
+    } else {
+      const inv = 1 / Math.sqrt(lengthSq);
+      rx *= inv;
+      ry *= inv;
+      rz *= inv;
+      rw *= inv;
+    }
+    out[at + 3] = rx;
+    out[at + 4] = ry;
+    out[at + 5] = rz;
+    out[at + 6] = rw;
+  }
+
   stats(): CityTopologyStats {
     let live = 0;
     let settled = 0;

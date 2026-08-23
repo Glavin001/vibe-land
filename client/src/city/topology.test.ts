@@ -611,3 +611,41 @@ describe('CityTopology migration into an emptied body', () => {
     expect(destination?.position[1]).toBeCloseTo(poseBefore[1] as number, 5);
   });
 });
+
+describe('CityTopology allocation-free pose compose', () => {
+  it('matches chunkWorldPose exactly, including under body rotation', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    // A rotation with all four components non-trivial: an identity or an
+    // axis-aligned quarter turn would pass even with a transposed rotate or a
+    // swapped Hamilton product.
+    const body = topology.body(bodyKey(0, 1));
+    expect(body).toBeDefined();
+    const n = Math.hypot(0.3, -0.5, 0.2, 0.79);
+    body!.rotation = [0.3 / n, -0.5 / n, 0.2 / n, 0.79 / n];
+    body!.position = [3.25, -1.5, 7.75];
+
+    const out = new Float32Array(7);
+    for (let slot = 0; slot < topology.chunkCount; slot += 1) {
+      const expected = topology.chunkWorldPose(slot);
+      topology.chunkWorldPoseInto(slot, topology.body(topology.bodyKeyOf(slot)), out, 0);
+      for (let i = 0; i < 3; i += 1) {
+        expect(out[i]).toBeCloseTo(expected.position[i], 5);
+      }
+      for (let i = 0; i < 4; i += 1) {
+        // Same quaternion, same sign convention -- not merely the same
+        // rotation, since callers compare components.
+        expect(out[3 + i]).toBeCloseTo(expected.rotation[i], 5);
+      }
+    }
+  });
+
+  it('falls back to the local offset when the body is gone, like the allocating form', () => {
+    const topology = new CityTopology(manifest());
+    const out = new Float32Array(7);
+    const slot = 0;
+    topology.chunkWorldPoseInto(slot, undefined, out, 0);
+    const local = topology.chunkLocalOffset(slot);
+    expect(Array.from(out.slice(0, 3))).toEqual(local.position.map((v) => Math.fround(v)));
+  });
+});

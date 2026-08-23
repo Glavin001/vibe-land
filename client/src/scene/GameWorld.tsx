@@ -2389,6 +2389,9 @@ export function GameWorld({
 
     // Debug overlay stats
     const debugStartedAt = performance.now();
+    // Once per frame, not three times: each call trims five sample windows,
+    // runs five p95 sorts over copies of them, and formats event strings.
+    const debugTelemetry = client?.getDebugTelemetrySnapshot();
     if (onDebugFrameRef.current) {
       const vehicleServerSpeedMs = drivenVehicleState
         ? Math.hypot(
@@ -2590,7 +2593,7 @@ export function GameWorld({
             cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
           },
         },
-        client?.getDebugTelemetrySnapshot() ?? {
+        debugTelemetry ?? {
           lastSnapshotGapMs: 0,
           snapshotGapP95Ms: 0,
           snapshotGapMaxMs: 0,
@@ -2707,8 +2710,8 @@ export function GameWorld({
           playerCorrectionMagnitude: physStats.playerCorrectionMagnitude,
           vehicleCorrectionMagnitude: physStats.vehicleCorrectionMagnitude,
           physicsStepMs: physStats.physicsStepMs,
-          shotsFired: client?.getDebugTelemetrySnapshot().shotsFired ?? 0,
-          lastShotOutcome: client?.getDebugTelemetrySnapshot().lastShotOutcome ?? 'none',
+          shotsFired: debugTelemetry?.shotsFired ?? 0,
+          lastShotOutcome: debugTelemetry?.lastShotOutcome ?? 'none',
           vehicleDebugId: drivenVehicleId ?? 0,
           playerId: state.playerId,
           position: pos as [number, number, number],
