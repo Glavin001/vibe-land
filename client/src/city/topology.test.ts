@@ -649,3 +649,29 @@ describe('CityTopology allocation-free pose compose', () => {
     expect(Array.from(out.slice(0, 3))).toEqual(local.position.map((v) => Math.fround(v)));
   });
 });
+
+describe('CityTopology pose compose during membership churn', () => {
+  it('composes against the slot owner even when handed a stale body', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    const slot = topology.slotOf(0, 2);
+    const owner = topology.body(topology.bodyKeyOf(slot));
+    expect(owner).toBeDefined();
+    owner!.position = [40, 9, -3];
+
+    // A body that no longer owns this slot -- the state a caller iterating a
+    // stale chunkSlots list would hand in mid-migration.
+    const stale = topology.body(bodyKey(0, 0));
+    expect(stale).toBeDefined();
+    stale!.position = [-500, -500, -500];
+
+    const out = new Float32Array(7);
+    topology.chunkWorldPoseInto(slot, stale, out, 0);
+    const expected = topology.chunkWorldPose(slot);
+    for (let i = 0; i < 3; i += 1) {
+      expect(out[i]).toBeCloseTo(expected.position[i], 4);
+    }
+    // Specifically: it must NOT have been drawn at the stale body's position.
+    expect(out[0]).toBeGreaterThan(0);
+  });
+});

@@ -279,6 +279,12 @@ function buildMesh(client: CityClient): CityMeshState {
         );
         mesh.setColorAt(instanceIds[slot], color);
       }
+      // Seed the culling sphere now rather than leaving it null for three to
+      // compute lazily on the first frustum test. The write path only GROWS
+      // this sphere, so it needs a correct starting value to grow from -- and
+      // a batch culled against a sphere that never existed is a whole block of
+      // city missing.
+      mesh.computeBoundingSphere();
       meshes.push(mesh);
     }
   }

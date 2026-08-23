@@ -245,6 +245,16 @@ export class CityTopology {
     out: Float32Array,
     at: number,
   ): void {
+    // The caller's body is a hint, not the authority. The allocating form
+    // always resolved the slot's CURRENT owner, so it was correct even mid
+    // migration; taking the caller's word for it instead meant that during a
+    // fracture -- exactly when membership is churning -- a chunk could be
+    // composed against the body it just LEFT, and get drawn somewhere it is
+    // not. On screen that is a hole opening where the building was, with the
+    // pieces appearing a moment later once the write path caught up.
+    if (body !== undefined && this.chunkBody[slot] !== body.key) {
+      body = this.bodies.get(this.chunkBody[slot]);
+    }
     const l3 = slot * 3;
     const l4 = slot * 4;
     const lx = this.localPos[l3];
