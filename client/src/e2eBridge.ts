@@ -12,6 +12,7 @@
 
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
+import { renderStats } from './city/renderStats';
 
 export interface GameE2ESnapshot {
   // Identity
@@ -151,6 +152,14 @@ export interface CityE2EStats {
 export interface VibeE2EBridge {
   version: number;
   snapshot(): GameE2ESnapshot;
+  /**
+   * Last frame's CPU breakdown (see city/renderStats).
+   *
+   * Separate from `snapshot()` so a harness can poll it every frame without
+   * paying for the whole snapshot, and so perf work can be measured from a
+   * script instead of read off a screenshot.
+   */
+  frameProfile(): Record<string, number>;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +315,7 @@ declare global {
 const bridge: VibeE2EBridge = {
   version: 1,
   snapshot: buildSnapshot,
+  frameProfile: () => ({ ...renderStats }),
 };
 
 // Always install — not gated behind a flag
