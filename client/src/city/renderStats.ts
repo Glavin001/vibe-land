@@ -19,7 +19,26 @@ export const renderStats = {
   /// make this small, and a large number with low triangles convicts upload
   /// bandwidth.
   instanceWrites: 0,
+  /// RAF-to-RAF delta: the whole frame the user experiences.
+  frameTotalMs: 0,
+  /// frameTotal - gl.render - chunk update: everything not yet bracketed
+  /// (stream decode, interpolation/compose, React, browser scheduling).
+  /// This row is the to-do list: shrinking it means adding brackets until
+  /// every millisecond has an owner.
+  unattributedMs: 0,
 };
+let lastRafStamp = 0;
+export function sampleFrameTotals(chunkUpdateMs: number): void {
+  const now = performance.now();
+  if (lastRafStamp > 0) {
+    renderStats.frameTotalMs = now - lastRafStamp;
+    renderStats.unattributedMs = Math.max(
+      0,
+      renderStats.frameTotalMs - renderStats.glRenderMs - chunkUpdateMs,
+    );
+  }
+  lastRafStamp = now;
+}
 
 let patched = false;
 export function patchRendererTiming(gl: { render: (...args: never[]) => void }): void {

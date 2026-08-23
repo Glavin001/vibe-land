@@ -501,6 +501,12 @@ export function CityStatsOverlay({
         warn={renderStats.glRenderMs > 12}
       />
       <Stat label="inst writes" value={`${renderStats.instanceWrites}`} />
+      <Stat label="frame total" value={`${renderStats.frameTotalMs.toFixed(1)} ms`} />
+      <Stat
+        label="unattributed"
+        value={`${renderStats.unattributedMs.toFixed(1)} ms`}
+        warn={renderStats.unattributedMs > 15}
+      />
       <Stat
         label="rendered"
         value={clientStats?.rendered ? 'yes' : 'NO'}
