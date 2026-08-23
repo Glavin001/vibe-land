@@ -56,6 +56,7 @@ interface CityServerStats {
   post_step_ms?: number;
   fan_out_ms?: number;
   publish_ms?: number;
+  city_desync_repairs?: number;
   encode_shared_ms: number;
   client_datagrams_ms: number;
   gpu_stress_structures: number;
@@ -800,6 +801,13 @@ export function CityStatsOverlay({
           tick and shows up only as a spike. */}
       <Stat label="fan-out" value={`${(city?.fan_out_ms ?? 0).toFixed(1)} ms`} warn={(city?.fan_out_ms ?? 0) > 2} />
       <Stat label="1Hz publish" value={`${(city?.publish_ms ?? 0).toFixed(1)} ms`} warn={(city?.publish_ms ?? 0) > 8} />
+      {/* Every repair means a client's ledger had a hole: it was rendering a
+          city that had stopped being destroyed until the server noticed. */}
+      <Stat
+        label="desync repairs"
+        value={`${city?.city_desync_repairs ?? 0}`}
+        warn={(city?.city_desync_repairs ?? 0) > 0}
+      />
       {/*
         Below here is the SEPARATE 30 Hz stream pass, not part of city step.
         Listed flush with the step's children it invited adding the whole

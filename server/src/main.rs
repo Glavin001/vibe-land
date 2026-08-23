@@ -65,7 +65,7 @@ use crate::{
         DamageEventPacket, FireCmd, InputCmd, LocalPlayerEnergyPacket, MeleeCmd, NetBatteryState,
         ServerPacket, ShotResultPacket, SnapshotPacket, WelcomePacket, BTN_JUMP, BTN_RELOAD,
         HIT_ZONE_BODY,
-        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS,
+        HIT_ZONE_HEAD, HIT_ZONE_NONE, PKT_BATTERY_SYNC, PKT_CITY_CHUNKS, PKT_CITY_DEBRIS,
         PKT_LOCAL_PLAYER_ENERGY, PKT_PING, PKT_SNAPSHOT, PKT_SNAPSHOT_V2,
         SHOT_RESOLUTION_BLOCKED_BY_WORLD, SHOT_RESOLUTION_DYNAMIC, SHOT_RESOLUTION_MISS,
         SHOT_RESOLUTION_PLAYER,
@@ -79,7 +79,14 @@ const MAX_CLIENT_FIRE_FUTURE_MS: u32 = 50;
 const RESPAWN_DELAY_MS: u32 = 3_000;
 const NEARBY_PLAYER_RADIUS_M: f32 = 12.0;
 const ROLLING_METRIC_SAMPLES: usize = 180;
-const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 64;
+/// Per-player outbound queue depth.
+///
+/// Raised from 64 after topology messages were measured being dropped on a
+/// full queue during a collapse: a burst of reliable city state plus a phone's
+/// drain rate filled 64 slots in a tick. The queue is the only buffer between
+/// a 60 Hz producer and a client's link, and overflowing it costs correctness
+/// for city state, not just latency.
+const PLAYER_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 /// A session that opens a stream and then says nothing holds a task and a QUIC
 /// stream open; drop it rather than letting it accumulate.
 const CLIENT_HELLO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -295,6 +302,10 @@ struct CityStatsSnapshot {
     /// Broadcasting this tick's reliable and v3 packets to every viewer. Scales
     /// with packets x players and clones each packet per viewer.
     fan_out_ms: f32,
+    /// Clients re-bootstrapped after a reliable city packet was dropped on a
+    /// full outbound queue. MUST stay 0 in normal play: every repair means a
+    /// player briefly saw a city that had stopped being destroyed.
+    city_desync_repairs: u64,
     /// The 1 Hz stats publish (JSON, per-player packets, registry writes,
     /// telemetry line). Lands entirely on one tick, so it shows up as a spike
     /// in the tick window rather than in any average.
@@ -914,6 +925,10 @@ struct MatchState {
     vehicle_handles: HashMap<u32, u8>,
     city: Option<city::CityRuntime>,
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Players whose city ledger is known to be holed by a dropped reliable
+    /// packet, awaiting a re-bootstrap once their queue drains.
+    city_desync_players: HashSet<u32>,
+    city_desync_repairs: u64,
     /// Last tick's packet fan-out cost, and the last 1 Hz publish block's cost.
     /// Both were untimed while being O(packets x players) and "serialize the
     /// world to JSON, then write a file, on the tick thread" respectively.
@@ -1753,6 +1768,8 @@ async fn run_match_loop(
         stats_registry,
         body_states_registry,
         reset_requests,
+        city_desync_players: HashSet::new(),
+        city_desync_repairs: 0,
         last_fan_out_ms: 0.0,
         last_publish_ms: 0.0,
         next_player_handle: 1,
@@ -2043,9 +2060,22 @@ impl MatchState {
                         packet.extend_from_slice(gzipped);
                         let _ = try_queue_packet(&conn.tx, packet, &self.io);
                     }
-                    let _ = try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
+                    // A bootstrap dropped here is the worst case of all: the
+                    // client never had a ledger, so it never sees a sequence
+                    // gap either -- it renders the intact manifest forever and
+                    // reports nothing wrong. Enrol it for repair instead.
+                    let mut delivered =
+                        try_queue_packet(&conn.tx, city.bootstrap(self.server_tick), &self.io);
                     if let Some(lanes) = city.full_lane_map() {
-                        let _ = try_queue_packet(&conn.tx, lanes, &self.io);
+                        delivered = try_queue_packet(&conn.tx, lanes, &self.io) && delivered;
+                    }
+                    if !delivered {
+                        warn!(
+                            match_id = %self.id,
+                            player_id = conn.player_id,
+                            "city bootstrap dropped at join; scheduling repair"
+                        );
+                        self.city_desync_players.insert(conn.player_id);
                     }
                 }
 
@@ -2568,6 +2598,65 @@ impl MatchState {
             .record(tick_started.elapsed().as_secs_f32() * 1000.0);
     }
 
+    /// Re-bootstrap clients whose ledger we know is holed.
+    ///
+    /// The same repair the client asks for when it spots a sequence gap, driven
+    /// from the server instead -- because the gap it would spot is not
+    /// guaranteed to exist. A client that loses topology from the very first
+    /// message never sees a discontinuity at all: it holds an intact city,
+    /// reports zero gaps, and waits forever. The server is the only party that
+    /// knows a drop happened, so it is the party that has to fix it.
+    ///
+    /// Deferred until the client's queue has drained, since re-sending into a
+    /// full queue is what caused the hole in the first place.
+    fn repair_city_desyncs(&mut self) {
+        if self.city_desync_players.is_empty() {
+            return;
+        }
+        // Enough headroom for bootstrap + lane map plus the tick's ordinary
+        // traffic; a queue that is merely no longer full will overflow again.
+        const REPAIR_HEADROOM: usize = PLAYER_OUTBOUND_QUEUE_CAPACITY / 2;
+        let ready: Vec<u32> = self
+            .city_desync_players
+            .iter()
+            .copied()
+            .filter(|player_id| {
+                self.players
+                    .get(player_id)
+                    .is_none_or(|runtime| runtime.tx.capacity() >= REPAIR_HEADROOM)
+            })
+            .collect();
+        for player_id in ready {
+            self.city_desync_players.remove(&player_id);
+            let Some(runtime) = self.players.get(&player_id) else {
+                // Gone; nothing to repair.
+                continue;
+            };
+            let Some(city) = self.city.as_mut() else {
+                continue;
+            };
+            let bootstrap = city.bootstrap(self.server_tick);
+            let lanes = city.full_lane_map();
+            // The datagram half: every lane restates absolutely over the
+            // coming spans, so poses match the freshly-bootstrapped ledger.
+            city.begin_join_restate();
+            let queued = try_queue_packet(&runtime.tx, bootstrap, &self.io)
+                && lanes.is_none_or(|lanes| try_queue_packet(&runtime.tx, lanes, &self.io));
+            if queued {
+                self.city_desync_repairs += 1;
+                info!(
+                    match_id = %self.id,
+                    player_id,
+                    "city ledger repaired: bootstrap re-sent after a dropped reliable packet"
+                );
+            } else {
+                // Still congested -- try again next tick rather than leaving
+                // the client holed.
+                self.city_desync_players.insert(player_id);
+            }
+        }
+    }
+
     /// Route queued hitscan shots into city destruction before
     /// `process_hitscan` drains them (players/vehicles still take the same
     /// hitscan resolution afterwards).
@@ -2730,9 +2819,21 @@ impl MatchState {
             );
         }
         let fan_out_started = std::time::Instant::now();
+        // A dropped topology message is NOT a lost frame -- it is a permanent
+        // hole in the client's world model. The ledger is a delta stream, so a
+        // client that misses one renders a city that stops being destroyed and
+        // never recovers on its own (observed live: server at topo_seq 951 and
+        // 1,980 broken bonds while the client's ledger read zero). The drop is
+        // detectable exactly when it happens, so record who it happened to and
+        // repair them authoritatively below.
+        let mut desynced: Vec<u32> = Vec::new();
         for packet in &reliable {
-            for runtime in self.players.values() {
-                let _ = try_queue_packet(&runtime.tx, packet.clone(), &self.io);
+            for (player_id, runtime) in self.players.iter() {
+                if !try_queue_packet(&runtime.tx, packet.clone(), &self.io)
+                    && !desynced.contains(player_id)
+                {
+                    desynced.push(*player_id);
+                }
             }
         }
         // Wire v3: span-based, encode-once pose datagrams -- the same bytes go
@@ -2745,6 +2846,16 @@ impl MatchState {
             }
         }
         self.last_fan_out_ms = fan_out_started.elapsed().as_secs_f32() * 1000.0;
+        for player_id in desynced {
+            if self.city_desync_players.insert(player_id) {
+                warn!(
+                    match_id = %self.id,
+                    player_id,
+                    "city ledger desynced: reliable packet dropped on a full client queue"
+                );
+            }
+        }
+        self.repair_city_desyncs();
         // Chunk stream cadence (wire v2 only): shared encode once, per-client
         // interest + ceiling selection, own datagram sequence space per client.
         let v2_pose_stream = v3_datagrams.is_empty()
@@ -3131,6 +3242,7 @@ impl MatchState {
                     stats_ffi_ms: stats.stats_ffi_ms,
                     post_step_ms: stats.post_step_ms,
                     fan_out_ms: self.last_fan_out_ms,
+                    city_desync_repairs: self.city_desync_repairs,
                     publish_ms: self.last_publish_ms,
                     encode_shared_ms: encode_timings.0,
                     client_datagrams_ms: encode_timings.1,
@@ -4849,11 +4961,16 @@ fn try_queue_packet(
     telemetry: &MatchIoTelemetry,
 ) -> bool {
     let is_snapshot = packet.first().copied().is_some_and(is_snapshot_packet_kind);
+    // Droppable = the receiver recovers on its own. Pose streams do: v2 chunk
+    // records are re-sent every tick, and v3 debris spans heal through the nack
+    // loop and lane restatement (they ride unreliable datagrams by design
+    // anyway). City TOPOLOGY does not -- it is a delta stream over the client's
+    // ledger, so a hole in it is permanent. Under congestion the queue must
+    // therefore shed poses, never state.
     let is_droppable = is_snapshot
-        || packet
-            .first()
-            .copied()
-            .is_some_and(|kind| kind == PKT_PING || kind == PKT_CITY_CHUNKS);
+        || packet.first().copied().is_some_and(|kind| {
+            kind == PKT_PING || kind == PKT_CITY_CHUNKS || kind == PKT_CITY_DEBRIS
+        });
     match tx.try_send(packet) {
         Ok(()) => true,
         Err(tokio::sync::mpsc::error::TrySendError::Full(packet)) => {
