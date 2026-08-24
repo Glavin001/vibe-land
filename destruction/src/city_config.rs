@@ -24,6 +24,33 @@ pub fn stress_limit_scale() -> f32 {
         .unwrap_or(1.0)
 }
 
+/// Debris velocity damping, per second.
+///
+/// Zero by default, and that is the physical answer: damping is air drag on a
+/// body moving through empty space, and a concrete slab the size of a washing
+/// machine does not meaningfully feel it. The shipped 0.25 capped debris
+/// terminal velocity at 39 m/s and slowed every fall by roughly 20% -- a
+/// velocity sink with no source, standing in for the energy loss that should
+/// happen when the slab actually *hits* something.
+///
+/// Energy loss on impact is restitution and friction on the contact material,
+/// not damping. See `VIBE_WORLD_RESTITUTION` / `VIBE_WORLD_FRICTION`.
+///
+/// Override with VIBE_CITY_DEBRIS_LINEAR_DAMPING / _ANGULAR_DAMPING.
+pub fn debris_damping() -> (f32, f32) {
+    let read = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| *v >= 0.0)
+            .unwrap_or(0.0)
+    };
+    (
+        read("VIBE_CITY_DEBRIS_LINEAR_DAMPING"),
+        read("VIBE_CITY_DEBRIS_ANGULAR_DAMPING"),
+    )
+}
+
 pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings {
     // ExtStressPhysX takes absolute stress limits (Pa-scale). The synthetic
     // defaults (0.008/0.01) are for the unitless Rapier path before
@@ -111,6 +138,9 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     // stalled large fractures; the per-tick cost it guarded against is now
     // covered by the parallel + CUDA solve.
     settings.maximum_fractures_per_actor_per_tick = 0;
+    let (linear, angular) = debris_damping();
+    settings.linear_damping = linear;
+    settings.angular_damping = angular;
     // Excess forces off by default. The adapter's excess-force path applies
     // an UNBOUNDED impulse and torque at split time
     // (NvBlastExtStressPhysX.cpp:1914, addTorque(..., eIMPULSE)): the

@@ -369,7 +369,10 @@ impl V3Live {
         );
         let encoder = LiveEncoder::new(LiveEncoderConfig {
             dt: 1.0 / sim_hz as f32,
-            gravity: glam::Vec3::new(0.0, -9.81, 0.0),
+            gravity: {
+                let g = vibe_netcode::movement::default_world_gravity();
+                glam::Vec3::new(g[0], g[1], g[2])
+            },
             // The same fidelity contract every offline number was measured
             // against: 0.5 cm shell, masked to 20 mm for fast movers.
             tolerances: LiveTolerances::new(
@@ -746,7 +749,7 @@ impl CityRuntime {
                 scene_ptr,
                 physics,
                 &path,
-                [0.0, -9.81, 0.0],
+                vibe_netcode::movement::default_world_gravity(),
                 grid,
                 varied_heights,
                 // The host's own chunk group and mask, so its raycasts and its

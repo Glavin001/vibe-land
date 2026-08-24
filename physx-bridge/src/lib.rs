@@ -82,14 +82,46 @@ pub struct WorldConfig {
     pub gpu_collision_stack_size: u32,
 }
 
+/// Read an f32 from the environment, falling back to `default`.
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .unwrap_or(default)
+}
+
+/// World gravity magnitude, m/s^2. Default 20.0.
+///
+/// One world, one gravity. The player already falls at 20 m/s^2 -- roughly 2x
+/// Earth, and near-exactly the Source engine's `sv_gravity 800` (800 in/s^2 =
+/// 20.32 m/s^2) that Half-Life, Counter-Strike and Team Fortress ship. Raising
+/// gravity for jump feel is standard practice; applying it to only part of the
+/// world is not. Source applies `sv_gravity` to players, props and ragdolls
+/// alike.
+///
+/// This scene previously ran the player at 20 and every rigid body at 9.81, so
+/// the player was the only reference frame the eye had and all debris read as
+/// falling in slow motion: an 84 m drop took 4.1 s instead of 2.9 s.
+///
+/// Override with VIBE_WORLD_GRAVITY (a positive magnitude).
+pub fn world_gravity_magnitude() -> f32 {
+    env_f32("VIBE_WORLD_GRAVITY", 20.0).abs()
+}
+
 impl Default for WorldConfig {
     fn default() -> Self {
         Self {
-            gravity: Vec3::new(0.0, -9.81, 0.0),
+            gravity: Vec3::new(0.0, -world_gravity_magnitude(), 0.0),
             cpu_threads: 4,
-            static_friction: 0.5,
-            dynamic_friction: 0.5,
-            restitution: 0.1,
+            // Contact response, which is where debris should actually lose
+            // energy -- on impact, not while falling through empty air.
+            // Concrete on concrete is roughly 0.6-0.8 friction and barely
+            // rebounds. Overridable so the feel can be dialled without a
+            // rebuild: VIBE_WORLD_FRICTION, VIBE_WORLD_RESTITUTION.
+            static_friction: env_f32("VIBE_WORLD_FRICTION", 0.5),
+            dynamic_friction: env_f32("VIBE_WORLD_FRICTION", 0.5),
+            restitution: env_f32("VIBE_WORLD_RESTITUTION", 0.1),
             contact_report_threshold: 50.0,
             gpu_max_partitions: 8,
             gpu_max_rigid_contacts: 2_097_152,
