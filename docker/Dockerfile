@@ -51,6 +51,12 @@ COPY dist/physx-server/ /out/
 # wasm-pack installer fetches a prebuilt binary, which is far quicker than
 # `cargo install`.
 FROM node:22-bookworm AS web
+# clang, because the client's wasm pulls in zstd -- a C library built through
+# cc-rs. gcc cannot target wasm32, so cc-rs reaches for clang specifically and
+# fails with `failed to find tool "clang"` without it. This is what breaks the
+# Vercel build of the same bundle.
+RUN apt-get update && apt-get install -y --no-install-recommends clang \
+ && rm -rf /var/lib/apt/lists/*
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
       --target wasm32-unknown-unknown
 ENV PATH=/root/.cargo/bin:$PATH
