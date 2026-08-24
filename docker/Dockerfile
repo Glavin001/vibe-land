@@ -15,6 +15,20 @@ ARG BUILDER_IMAGE=ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5
 ARG BUNDLE_STAGE=build
 
 FROM ${BUILDER_IMAGE} AS build
+# Which GPUs the CUDA stress kernel gets native code for. This is a decision
+# about what the fleet may be scheduled onto, not a property of the toolchain,
+# so it lives here rather than in the builder image.
+#
+# The floor is Volta (sm_70). Below that there is no cubin and PTX cannot help:
+# PTX only ever JITs *forward*, so a compute_70 image cannot run on sm_61. The
+# ceiling is Blackwell -- sm_100 (B200) and sm_120 (RTX 50xx), both of which
+# CUDA 12.8 introduced. build.rs also emits PTX for the highest entry, so a card
+# newer than anything listed still JITs rather than failing to launch.
+#
+# Concretely this covers: V100/T4/RTX 20xx (sm_70/75), A100 (80), A10/A40/RTX
+# 30xx (86), L4/L40/RTX 40xx (89), H100 (90), B200 (100), RTX 50xx (120).
+ARG VIBE_CUDA_ARCH=sm_70,sm_75,sm_80,sm_86,sm_89,sm_90,sm_100,sm_120
+ENV VIBE_CUDA_ARCH=${VIBE_CUDA_ARCH}
 WORKDIR /src
 COPY . .
 # The CUDA driver library is not present on a build machine with no GPU. The

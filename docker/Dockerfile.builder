@@ -74,11 +74,10 @@ RUN git clone https://github.com/Glavin001/blast-stress-solver \
 ENV PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
     BLAST_ROOT=/root/workspace/blast-stress-solver/blast \
     CUDA_HOME=/usr/local/cuda
-# Every GPU generation the fleet is likely to be scheduled onto: A100 (sm_80),
-# A10/3090 (sm_86), 4090 (sm_89), H100 (sm_90). build.rs turns this into one
-# -gencode per entry plus a PTX fallback, so a newer card JITs rather than
-# failing to launch the stress kernel.
-ENV VIBE_CUDA_ARCH=sm_80,sm_86,sm_89,sm_90
+# Default for builds that run directly in this image (a dev box compiling by
+# hand). The server image overrides it -- see docker/Dockerfile, which owns the
+# decision about which GPUs the fleet may land on.
+ENV VIBE_CUDA_ARCH=sm_70,sm_75,sm_80,sm_86,sm_89,sm_90,sm_100,sm_120
 
 # Fail the build here rather than three stages later with a confusing linker
 # error. The .cu file is asserted too: without it the `cuda-stress` feature

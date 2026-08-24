@@ -112,8 +112,12 @@ The server binary is built with `--features cuda-stress`, not just
 stress solver silently falls back to the CPU, which cannot afford to converge:
 on the dense downtown the CPU solver broke 7,024 bonds where the GPU broke
 3,283 on the same scenario. The extra breakage is solver residual, not physics.
-The CUDA kernel is compiled for `sm_80,sm_86,sm_89,sm_90` with a PTX fallback,
-because the fleet rents whatever the marketplace has spare.
+The CUDA kernel is compiled for `sm_70` through `sm_120` -- Volta to Blackwell,
+eight architectures -- with a PTX fallback above that, because the fleet rents
+whatever the marketplace has spare and the cheapest supply is the oldest. The
+floor is Volta rather than Pascal because PTX only JITs forward: below the
+lowest cubin there is no rescue. The list lives in `docker/Dockerfile`, not the
+toolchain image, since it is a decision about where the fleet may land.
 
 ```bash
 ./scripts/build-image.sh                  # tags sha-<commit>

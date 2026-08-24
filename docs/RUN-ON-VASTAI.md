@@ -30,10 +30,25 @@ be added later.
 | A Vast.ai account with credit | https://vast.ai |
 | ~$0.30/hr | a 24 GB datacenter GPU |
 
-The image needs an NVIDIA GPU. Any card the CUDA kernels were compiled for
-works: `sm_80` (A100), `sm_86` (A10, 3090), `sm_89` (4090), `sm_90` (H100).
-Anything newer JITs from PTX. **24 GB VRAM or more** — the destruction city is
-what sets that floor.
+The image needs an NVIDIA GPU, and two constraints on it are invisible in the
+Vast UI — both look like "the GPU just doesn't work" when you get them wrong.
+
+**Architecture: Volta or newer (`sm_70`+).** The CUDA stress kernel ships native
+code for `sm_70`, `75`, `80`, `86`, `89`, `90`, `100` and `120`, plus PTX for
+anything newer. That covers V100, T4, RTX 20xx/30xx/40xx/50xx, A10, A40, A100,
+L4, L40, H100 and B200. Below `sm_70` — Pascal, Maxwell — there is no cubin and
+PTX cannot rescue it, because PTX only JITs *forward*.
+
+**Driver: CUDA 12.8 or newer**, i.e. driver ≥ 570.26. The image bundles
+`libcudart.so.12.8`; only the driver comes from the host. Vast shows this as
+"Max CUDA" on each offer, and the sidebar has a **Min Cuda Version** filter —
+set it to 12.8.
+
+**VRAM depends on how many matches you run.** PhysX allocates per *scene*, and
+there is one scene per match: a 256 MiB heap plus a 64 MiB collision stack and
+contact buffers each, on top of ~1 GB of shared CUDA context. One match fits
+comfortably in 8–12 GB; the default `MATCHES_PER_BOX=6` is what pushes it to
+~24 GB. Set `-e MATCHES_PER_BOX=1` for a test box and a 12 GB card is plenty.
 
 ### No credentials needed
 
@@ -63,8 +78,9 @@ pushes to `main` — prefer a `sha-` tag so you know exactly what you are runnin
 In the Vast.ai console:
 
 1. **Search** for an offer. Filter to **On-Demand**, **Datacenter**, GPU RAM
-   **≥ 24 GB**. Reliability ≥ 0.98 and download ≥ 300 Mbps are what the fleet
-   asks for and are a good idea by hand too.
+   sized per the VRAM note above. Filter on **upload**, not download: the
+   server streams ~2.5 Mbps per player, so a full box wants ≥ 300 Mbps up,
+   while download only affects how fast the image pulls.
 2. **Edit Image & Config**:
    - **Image path**: `ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3`
    - **Launch mode**: `Entrypoint` (the image has its own — do **not** pick
@@ -83,7 +99,7 @@ set up (`pip install vastai && vastai set api-key <key>`):
 
 ```bash
 vastai search offers \
-  'verified=true rentable=true datacenter=true gpu_ram>=24000 inet_down>=300 dph<0.5' \
+  'verified=true rentable=true compute_cap>=700 cuda_vers>=12.8 gpu_ram>=12000 inet_up>=300 dph<0.5' \
   --order 'dph_total' --limit 5
 
 vastai create instance <OFFER_ID> \
