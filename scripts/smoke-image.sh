@@ -45,6 +45,7 @@ missing="$(docker run --rm --entrypoint /bin/bash "$IMAGE" -c '
     [[ -e "/opt/vibe-land/$f" ]] || echo "$f"
   done
   ls /opt/vibe-land/lib/libcudart.so.* >/dev/null 2>&1 || echo "lib/libcudart.so.*"
+  [[ -e /opt/vibe-land/lib-stubs/libcuda.so.1 ]] || echo "lib-stubs/libcuda.so.1"
   ls /opt/vibe-land/assets/scenes/*.json >/dev/null 2>&1 || echo "assets/scenes/*.json"
 ')"
 [[ -z "$missing" ]] || fail "image is missing: $missing"
@@ -78,7 +79,14 @@ gpu_args=(--gpus all)
 backend_env=()
 if [[ -n "$CPU_ONLY" ]]; then
   gpu_args=()
-  backend_env=(-e VIBE_PHYSICS_BACKEND=rapier)
+  # libcuda.so.1 is a hard DT_NEEDED on the binary, so with no driver present
+  # the loader kills the process before VIBE_PHYSICS_BACKEND is ever read. The
+  # bundled stub satisfies the link so the rest of the contract can be checked.
+  # run.sh prepends its own lib/, so this ends up second on the path.
+  backend_env=(
+    -e VIBE_PHYSICS_BACKEND=rapier
+    -e LD_LIBRARY_PATH=/opt/vibe-land/lib-stubs
+  )
 fi
 docker run -d --name "$NAME" "${gpu_args[@]}" "${backend_env[@]}" \
   -p "$HTTP_PORT:4001" -p "$EXTERNAL_UDP_PORT:$UDP_PORT/udp" \

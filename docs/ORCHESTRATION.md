@@ -97,8 +97,8 @@ and the toolchain must not travel to production.
 
 | Image | Contents | Rebuilt |
 |---|---|---|
-| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust (~15 GB) | when `docker/Dockerfile.builder` changes, or on dispatch |
-| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes | every push that touches the server (~400 MB) |
+| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust (19 GB) | when `docker/Dockerfile.builder` changes, or on dispatch |
+| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes | every push that touches the server (657 MB) |
 
 The split is about caching, not compile time. Building PhysX is not the ordeal
 it looks like: `libPhysXGpu_64.so` is a 347 MB closed CUDA blob that packman
@@ -214,6 +214,16 @@ Worker vars, all in `control-plane/wrangler.jsonc`:
   well-formed but not that PhysX validated a CUDA scene. Clear a new image for
   deploy by running `smoke-image.sh` without `--cpu` on a rented host, which is
   the only place `"physics_backend":"physx_gpu"` can be observed.
+- **There is no automatic CPU fallback, and the image needs a driver to start
+  at all.** `physx_gpu` and `rapier` are separate backends chosen by
+  `VIBE_PHYSICS_BACKEND`; PhysX itself has none (`physx-bridge/src/lib.rs`).
+  Worse, the binary carries `libcuda.so.1` as a hard `DT_NEEDED`, so with no
+  driver the loader kills it before the backend is ever read. That is why the
+  bundle carries a CUDA driver stub in `lib-stubs/`, off the library path, which
+  only `smoke-image.sh --cpu` opts into. Adding a real fallback would be worse
+  than the failure: a box whose CUDA init quietly failed would serve a different
+  snapshot rate and client movement mode while heartbeating healthy, and the
+  fleet would keep paying for it.
 - **The first build has to wait for the toolchain.** `builder-image` and
   `server-image` are triggered by the same push and run concurrently, so a
   commit that changes both will build the server against a toolchain image that

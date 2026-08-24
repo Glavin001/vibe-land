@@ -45,6 +45,27 @@ if (( ${#cudart[@]} == 0 )); then
 fi
 cp -P "${cudart[@]}" "${output_dir}/lib/"
 
+# The CUDA driver stub, for contract checks on a machine with no GPU.
+#
+# The binary has libcuda.so.1 as a hard DT_NEEDED -- physx-bridge links the
+# driver -- so without one it cannot start at all, whatever VIBE_PHYSICS_BACKEND
+# says: the loader fails before any of our code runs. On a real host the NVIDIA
+# container runtime injects the driver.
+#
+# This goes in lib-stubs/, NOT lib/, and lib-stubs/ is deliberately absent from
+# the LD_LIBRARY_PATH run.sh sets. Nothing loads it unless something opts in by
+# naming it explicitly, which only `smoke-image.sh --cpu` does. On the path it
+# would shadow the real driver -- though not silently: every entry point returns
+# an error and PhysX has no CPU fallback, so it would fail loudly rather than
+# quietly serve degraded physics.
+stub="${cuda_home}/lib64/stubs/libcuda.so"
+if [[ -f "${stub}" ]]; then
+  mkdir -p "${output_dir}/lib-stubs"
+  cp "${stub}" "${output_dir}/lib-stubs/libcuda.so.1"
+else
+  echo "warning: no CUDA driver stub at ${stub}; GPU-less contract checks will not run" >&2
+fi
+
 cat >"${output_dir}/run.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
