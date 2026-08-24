@@ -32,16 +32,33 @@ ENV PATH=/root/.cargo/bin:$PATH
 # release preset produces the static libs plus libPhysXGpu_64.so that
 # physx-bridge links against.
 ARG PHYSX_REF=ovphysx-0.5.10
+# `set -e` and a separate install line, because `a && b || true` binds the
+# `|| true` to the whole preceding chain -- which is how a failed cmake
+# configure previously produced a green layer and an empty build tree.
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN git clone https://github.com/NVIDIA-Omniverse/PhysX.git /root/PhysX \
  && cd /root/PhysX \
  && git checkout ${PHYSX_REF} \
  && cd physx \
+ # The snippets are OpenGL demos. They want a GL/GLX dev stack this image has
+ # no use for, and without one cmake configure fails outright -- while
+ # generate_projects.sh still exits 0, so the failure only surfaces much later.
+ # We build the SDK, not the demos.
+ && sed -i 's/\("PX_BUILDSNIPPETS" *value=\)"True"/\1"False"/' \
+      buildtools/presets/public/linux-clang.xml \
+ && grep -q 'PX_BUILDSNIPPETS" value="False"' buildtools/presets/public/linux-clang.xml \
  && ./generate_projects.sh linux-clang \
- && cmake --build compiler/linux-clang-release --parallel "$(nproc)" \
- && cmake --install compiler/linux-clang-release 2>/dev/null || true \
- # Drop intermediates but keep install/ and the shipped .so -- they are what
- # the runtime image copies out.
- && find /root/PhysX/physx/compiler -name '*.o' -delete \
+ # generate_projects.sh swallows a cmake configure error, so check its output
+ # exists rather than trusting its exit status.
+ && test -f compiler/linux-clang-release/Makefile \
+ && cmake --build compiler/linux-clang-release --parallel "$(nproc)"
+# Separate layer so its `|| true` cannot swallow the build above. Some presets
+# have no install target and stage the tree during the build instead; the
+# assertion at the end of this file is what actually decides.
+RUN cmake --install /root/PhysX/physx/compiler/linux-clang-release 2>/dev/null || true
+# Drop intermediates but keep install/ and the shipped .so -- they are what the
+# runtime image copies out.
+RUN find /root/PhysX/physx/compiler -name '*.o' -delete \
  && rm -rf /root/PhysX/.git
 
 # NVIDIA Blast fork with the stress solver. The repository is public, so this
