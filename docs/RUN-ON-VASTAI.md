@@ -289,6 +289,52 @@ SERVER_HOST=<instance ip> SERVER_PORT=<external port for 4001> \
 which browsers exempt from the secure-context rule. Only metadata crosses the
 proxy; QUIC still goes straight to the box.
 
+## When a host silently drops your UDP
+
+Some hosts accept the UDP port mapping and then never forward the datagrams.
+The box looks perfect from every angle a machine can check -- it boots,
+heartbeats, serves `/city`, answers `/healthz` with `"ok"` -- and every player
+times out on the QUIC handshake. It bills by the hour the whole time. Two hosts
+did exactly this before any of it was detectable.
+
+The server now proves its own advertised endpoint before trusting it. At boot
+it opens a real WebTransport connection to its own public address, pinning the
+certificate it just minted the way a browser does:
+
+```
+INFO UDP reachability verified: the advertised endpoint reaches this process
+     endpoint=https://38.247.78.21:48298 handshake=true
+```
+
+On a host that forwards nothing you get an `ERROR` naming the cause and the
+container exits 78, so you find out in `vastai logs` within about twelve
+seconds instead of by opening a browser:
+
+```
+ERROR UDP UNREACHABLE: nothing sent to the advertised endpoint came back to
+      this process ... exiting to have this box replaced.
+```
+
+Two environment variables control it, and the entrypoint picks the default
+from whether it is running on Vast:
+
+| Variable | On Vast | Elsewhere | What it does |
+| --- | --- | --- | --- |
+| `UDP_VERIFY` | `fatal` | `warn` | boot probe; `off` disables |
+| `UDP_WATCHDOG` | `fatal` | `warn` | later backstop: clients fetched `/session-config` but no QUIC packet ever arrived |
+
+The split is deliberate. On Vast a port mapping cannot be added to a running
+instance, so a box that cannot serve players is worth nothing and replacing it
+is automatic and cheap. A laptop behind a home router frequently will not route
+traffic back to itself even though inbound works fine, so there the same probe
+only warns.
+
+`/healthz` carries the evidence either way:
+
+```json
+{"udp_verified": true, "wt_connection_attempts": 1, "session_configs_served": 0}
+```
+
 ## Troubleshooting
 
 **Container exits immediately, logs show `exit 78` and `VAST_UDP_PORT_4433 is

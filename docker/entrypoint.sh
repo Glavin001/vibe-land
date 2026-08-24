@@ -122,6 +122,14 @@ export MATCHES_PER_BOX="${MATCHES_PER_BOX:-6}"
 # server while its owner is still opening a tab.
 export UDP_WATCHDOG="${UDP_WATCHDOG:-$([[ -n "$on_vast" ]] && echo fatal || echo warn)}"
 
+# And the same split for the boot-time probe, which catches it ~12s in without
+# waiting for anyone to try connecting. Measured before enabling: on a Vast
+# host known to carry players, the probe reaches its own public address and
+# completes the handshake (attempts=1, handshake=true), so hairpin works there
+# and a failed probe means something real. A laptop behind a home router often
+# will not hairpin, so it only warns.
+export UDP_VERIFY="${UDP_VERIFY:-$([[ -n "$on_vast" ]] && echo fatal || echo warn)}"
+
 if [[ -z "${CONTROL_PLANE_URL:-}" ]]; then
   if [[ -n "$on_vast" ]]; then
     log "WARNING: CONTROL_PLANE_URL unset -- heartbeats disabled, this box will not"
