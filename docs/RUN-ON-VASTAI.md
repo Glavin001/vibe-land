@@ -9,6 +9,55 @@ Budget 10 minutes; most of it is the image pull. The container serves the game
 page as well as the game, so one `docker run` is the whole deployment — no
 control plane, and nothing to run on your own machine.
 
+## Picking a host that works
+
+Measured across four rented boxes, not reasoned from the search filters.
+
+**The only thing that actually fails is UDP forwarding, and no search field
+predicts it.** A box can report a hundred direct ports, take the `4433/udp`
+mapping, show it back in `vastai show instance`, and still deliver none of it.
+When that happens the failure is quiet and looks like a server bug:
+
+| what you see | what it means |
+|---|---|
+| `/city` loads over HTTPS, `/healthz` returns `"status":"ok"` | the box is fine; TCP works |
+| `/match-stats/<id>` says `unknown match`, `active_matches: 0` | nobody has connected — a match is created *on connect* |
+| console: `QUIC_NETWORK_IDLE_TIMEOUT ... num_undecryptable_packets: 0` | the client's packets got **no reply**: UDP is not arriving |
+
+One rented box with 124 direct ports failed this; another with 99 passed. So
+do not shop for it — **rent, test in two minutes, destroy and re-rent if it
+fails.** At $0.07/hr a discarded box costs a fraction of a cent.
+
+### The two-minute acceptance test
+
+```bash
+vastai logs <instance-id> | tail -5     # expect: "starting game server"
+```
+then open `https://<ip>:<web-port>/city` and watch the console for
+`[netcode] ✓ connected via WebTransport`. That single line clears the whole
+chain: image pulled, GPU claimed, certificate minted and pinned, UDP routed.
+
+Do **not** use the absence of the `[destruction] CUDA stress solver active`
+line as a health signal. It is printed on the first *destructible creation*
+(`physx-bridge/src/destruction.cc`), guarded by a `static bool warned` — so it
+appears on the first player connect, not at boot. On a box where UDP is broken
+it never prints, which reads like a CUDA fault and is not one.
+
+### What does not matter (do not pay for it)
+
+- **Driver / CUDA version beyond the cubin floor.** The image carries native
+  code for `sm_70` through `sm_120`, so anything Volta-or-newer runs. A box on
+  driver 570.195 served the GPU fine. Only `sm_100`/`sm_120` hosts need
+  ≥ 570.26, and every such card ships with a newer driver anyway.
+- **Datacenter.** A residential host worked; a non-datacenter host failed. It
+  correlates with neither.
+- **24 GB of VRAM.** PhysX allocates per scene and there is one scene per
+  match, so 24 GB was sizing `MATCHES_PER_BOX=6`. One match fits in 10–12 GB —
+  an RTX 3060 12 GB is enough.
+
+What *is* worth paying for is **upload bandwidth** (~2.5 Mbps per player) and
+being geographically near your players.
+
 ## The one thing that will bite you
 
 **Declare the ports when you create the instance. They cannot be added later.**
@@ -70,7 +119,7 @@ gh api /users/glavin001/packages/container/vibe-land-server/versions \
 Or take the tag from the most recent green `server-image` run:
 https://github.com/Glavin001/vibe-land/actions/workflows/server-image.yml
 
-It looks like `sha-eccdc209a2d3`. There is a `latest`, but it only moves on
+It looks like `sha-d688653eaf1d`. There is a `latest`, but it only moves on
 pushes to `main` — prefer a `sha-` tag so you know exactly what you are running.
 
 ### Checking what a tag was actually built from
@@ -111,7 +160,7 @@ In the Vast.ai console:
    server streams ~2.5 Mbps per player, so a full box wants ≥ 300 Mbps up,
    while download only affects how fast the image pulls.
 2. **Edit Image & Config**:
-   - **Image path**: `ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3`
+   - **Image path**: `ghcr.io/glavin001/vibe-land-server:sha-d688653eaf1d`
    - **Launch mode**: `Entrypoint` (the image has its own — do **not** pick
      Jupyter or SSH, they replace it)
    - **Docker options** — this is the part that cannot be fixed later:
@@ -128,11 +177,12 @@ set up (`pip install vastai && vastai set api-key <key>`):
 
 ```bash
 vastai search offers \
-  'verified=true rentable=true compute_cap>=700 cuda_vers>=12.8 gpu_ram>=12000 inet_up>=300 dph<0.5' \
-  --order 'dph_total' --limit 5
+  'rentable=true reliability>0.98 num_gpus=1 compute_cap>=700 gpu_ram>=10 \
+   direct_port_count>=20 inet_up>=300 disk_space>=30' \
+  --order 'dph_total' --limit 10
 
 vastai create instance <OFFER_ID> \
-  --image ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3 \
+  --image ghcr.io/glavin001/vibe-land-server:sha-d688653eaf1d \
   --disk 30 \
   --args '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
 ```
@@ -274,7 +324,7 @@ NVIDIA GPU and the
 docker run --gpus all \
   -p 4001:4001 -p 4443:4443 -p 4433:4433/udp \
   -e PUBLIC_IPADDR=<address players will reach you on> \
-  ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3
+  ghcr.io/glavin001/vibe-land-server:sha-d688653eaf1d
 ```
 
 With no `VAST_*` variables present the entrypoint runs standalone and publishes
