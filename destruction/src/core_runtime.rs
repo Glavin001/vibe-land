@@ -25,9 +25,17 @@ use blast_stress_solver::pipeline::{
 };
 use blast_stress_solver::scenarios::load_scenario_file;
 use blast_stress_solver::types::Vec3 as CoreVec3;
+use crate::encoder::BodySnapshotInput;
 use vibe_netcode::destruction_backend::{
     DestructionTickOutput, FractureBatch, IslandPromotion, SettleEvent, ShapeMigration,
 };
+
+/// Street width left between building footprints.
+///
+/// Not decoration: with the facades touching, PhysX depenetrates them and the
+/// weak infill shears on the first tick, so the city demolishes itself before
+/// anyone fires a shot.
+const CITY_STREET_CLEARANCE_M: f32 = 6.0;
 
 /// Errors that keep the core path from starting.
 #[derive(Debug)]
@@ -60,6 +68,10 @@ pub struct CoreCityDestruction {
     backend: PhysXWorld,
     set: DestructibleSet<PhysXWorld>,
     layout: IdLayout,
+    /// Sleep/wake edges seen in the current tick, so `body_snapshots` can carry
+    /// them as flags. Cleared at the start of every `post_step_output`.
+    settled_this_tick: std::collections::HashSet<u32>,
+    woke_this_tick: std::collections::HashSet<u32>,
     ticks: u64,
     totals: Totals,
 }
@@ -128,9 +140,102 @@ impl CoreCityDestruction {
             backend,
             set,
             layout: DEFAULT_LAYOUT,
+            settled_this_tick: std::collections::HashSet::new(),
+            woke_this_tick: std::collections::HashSet::new(),
             ticks: 0,
             totals: Totals::default(),
         })
+    }
+
+    /// Build the whole city grid, the way `/city` actually ships it.
+    ///
+    /// One scene pack becomes a variant ladder (truncated at floor boundaries)
+    /// laid out on a square grid, every building its own structure in one
+    /// `DestructibleSet` sharing one PxScene. That last part is what makes a
+    /// city one simulation rather than N isolated ones -- debris from one tower
+    /// lands on its neighbour.
+    ///
+    /// The grid pitch is derived from the pack's own footprint rather than
+    /// hardcoded. At the C++ demo's fixed 18 m the high-rise's facades touch,
+    /// PhysX depenetrates them, the weak infill shears on tick one, and the
+    /// city demolishes itself before anyone fires.
+    ///
+    /// # Safety
+    /// As [`Self::attach`].
+    pub unsafe fn attach_city(
+        scene: usize,
+        physics: usize,
+        scene_pack: &Path,
+        gravity: [f32; 3],
+        grid: u32,
+        varied_heights: bool,
+    ) -> Result<Self, CoreRuntimeError> {
+        use blast_stress_solver::scene_pack::{
+            building_offsets, load_scene_pack_file, make_building_variants, pitch_for_pack,
+            solver_settings_for, to_scenario_desc, variant_for_building,
+        };
+
+        if scene == 0 || physics == 0 {
+            return Err(CoreRuntimeError::SceneUnavailable);
+        }
+        let mut backend = PhysXWorld::attach_scene(
+            scene as *mut std::ffi::c_void,
+            physics as *mut std::ffi::c_void,
+            std::ptr::null_mut(),
+        )
+        .ok_or(CoreRuntimeError::SceneUnavailable)?;
+        backend.check().map_err(|e| CoreRuntimeError::Contract(e.to_string()))?;
+
+        let pack = load_scene_pack_file(scene_pack)
+            .map_err(|e| CoreRuntimeError::Scene(e.to_string()))?;
+        let variants = make_building_variants(&pack, varied_heights);
+        if variants.is_empty() {
+            return Err(CoreRuntimeError::Scene("no building variants".into()));
+        }
+        let pitch = pitch_for_pack(&pack, CITY_STREET_CLEARANCE_M);
+        let offsets = building_offsets(grid, pitch);
+
+        let layout = DEFAULT_LAYOUT;
+        if offsets.len() as u32 > layout.max_structures() {
+            return Err(CoreRuntimeError::Scene(format!(
+                "{} buildings exceeds the {} the id layout can address",
+                offsets.len(),
+                layout.max_structures()
+            )));
+        }
+
+        let mut set = DestructibleSet::new();
+        for (building, offset) in offsets.iter().enumerate() {
+            let variant = &variants[variant_for_building(building, variants.len())];
+            let mut cfg = DestructibleConfig {
+                gravity: CoreVec3::new(gravity[0], gravity[1], gravity[2]),
+                solver: solver_settings_for(&variant.pack, 0),
+                ..Default::default()
+            };
+            cfg.world_pose.translation = *offset;
+            set.attach(
+                &mut backend,
+                StructureId(building as u32),
+                &to_scenario_desc(&variant.pack),
+                cfg,
+            )
+            .map_err(|_| CoreRuntimeError::Attach)?;
+        }
+
+        Ok(Self {
+            backend,
+            set,
+            layout,
+            settled_this_tick: std::collections::HashSet::new(),
+            woke_this_tick: std::collections::HashSet::new(),
+            ticks: 0,
+            totals: Totals::default(),
+        })
+    }
+
+    /// Structures currently in the set.
+    pub fn structure_count(&self) -> usize {
+        self.set.len()
     }
 
     /// Add another structure at a world pose. The set shares one backend and
@@ -197,6 +302,8 @@ impl CoreCityDestruction {
     pub fn post_step_output(&mut self, dt: f32) -> (StepReport, DestructionTickOutput, IdOverflow) {
         let report = self.post_step(dt);
         let mut overflow = IdOverflow::default();
+        self.settled_this_tick.clear();
+        self.woke_this_tick.clear();
 
         // Sampled once, before draining, so a settle record carries the pose
         // the body actually came to rest at rather than one a later event moved.
@@ -330,10 +437,13 @@ impl CoreCityDestruction {
                     let Some(island_id) = serial(s, &mut overflow) else { continue };
                     let (position, rotation) =
                         pose_of.get(&(structure_id, s.0)).copied().unwrap_or_default();
+                    self.settled_this_tick
+                        .insert(layout.body_entity(structure_id, island_id));
                     settled.push(SettleEvent { structure_id, island_id, position, rotation });
                 }
                 DestructionEvent::IslandWoke { serial: s } => {
                     if let Some(id) = serial(s, &mut overflow) {
+                        self.woke_this_tick.insert(layout.body_entity(structure_id, id));
                         wakes.push((structure_id, id));
                     }
                 }
@@ -355,6 +465,55 @@ impl CoreCityDestruction {
         });
 
         (report, DestructionTickOutput { batches, settled, wakes }, overflow)
+    }
+
+    /// The per-tick pose stream the encoder ingests.
+    ///
+    /// Built from the pipeline's COM-frame island poses, so it composes with
+    /// the manifest's rest-local offsets exactly as the wire contract requires.
+    ///
+    /// `flags` carries what the pipeline actually knows: sleep level, plus the
+    /// sleep and wake *edges* from the event stream. `contacts` is left at zero
+    /// and `FLAG_CONTACT_BEGIN`/`_END` are never set -- the core does not yet
+    /// consume the PhysX contact stream, so there is nothing to report. They
+    /// are encoder prioritisation hints rather than correctness inputs, so the
+    /// stream stays correct and loses some scheduling quality; that is stated
+    /// here rather than papered over with a plausible-looking number.
+    pub fn body_snapshots(&self) -> Vec<BodySnapshotInput> {
+        self.set
+            .island_poses(&self.backend)
+            .into_iter()
+            .filter_map(|(sid, m)| {
+                if !self.layout.serial_fits(m.serial.0) {
+                    return None;
+                }
+                let body_entity = self.layout.body_entity(sid.0, m.serial.0 as u32);
+                let mut flags = 0u8;
+                if m.sleeping {
+                    flags |= crate::types::FLAG_SLEEP;
+                }
+                if self.settled_this_tick.contains(&body_entity) {
+                    flags |= crate::types::FLAG_SLEEP_EVENT;
+                }
+                if self.woke_this_tick.contains(&body_entity) {
+                    flags |= crate::types::FLAG_WAKE_EVENT;
+                }
+                Some(BodySnapshotInput {
+                    body_entity,
+                    position: [m.pose.translation.x, m.pose.translation.y, m.pose.translation.z],
+                    rotation: [
+                        m.pose.rotation.x,
+                        m.pose.rotation.y,
+                        m.pose.rotation.z,
+                        m.pose.rotation.w,
+                    ],
+                    linear_velocity: [m.linvel.x, m.linvel.y, m.linvel.z],
+                    angular_velocity: [m.angvel.x, m.angvel.y, m.angvel.z],
+                    contacts: 0,
+                    flags,
+                })
+            })
+            .collect()
     }
 
     /// Route one contact from the host's own `onContact`.

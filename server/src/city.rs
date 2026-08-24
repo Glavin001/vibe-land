@@ -104,6 +104,17 @@ pub fn city_wire_version(match_id: &str) -> u8 {
         .unwrap_or(vibe_land_destruction::wire::CITY_WIRE_VERSION)
 }
 
+
+/// Drive /city through the standardized blast-stress-solver core.
+///
+/// Off by default: the old path stays authoritative until the two have been
+/// compared against the same scene. Deliberately not inferred from anything --
+/// an A/B is only worth running if you can be certain which side you got.
+#[cfg(feature = "blast-core")]
+fn prefer_blast_core() -> bool {
+    std::env::var("VIBE_CITY_BLAST_CORE").is_ok_and(|v| v == "1")
+}
+
 fn prefer_synthetic() -> bool {
     matches!(
         std::env::var("VIBE_CITY_SYNTHETIC").as_deref(),
@@ -258,6 +269,14 @@ enum CityBackend {
     Synthetic(SyntheticDestruction),
     #[cfg(feature = "destruction")]
     Physx(CityDestruction),
+    /// The standardized blast-stress-solver core, attached to the game's own
+    /// PxScene. Selected by `VIBE_CITY_BLAST_CORE=1`.
+    ///
+    /// Lives beside `Physx` rather than replacing it so the two can be run
+    /// against the same scene and compared before anything is deleted. The old
+    /// path stays the default until that comparison is green.
+    #[cfg(feature = "blast-core")]
+    Core(vibe_land_destruction::core_runtime::CoreCityDestruction),
 }
 
 /// The wire-v3 pose stream: the live debris codec fed beside the v2 encoder.
@@ -648,6 +667,60 @@ impl CityRuntime {
         Ok(Self::from_parts(CityBackend::Physx(backend), manifest, sim_hz))
     }
 
+    /// The same city, driven by the standardized core instead.
+    ///
+    /// Attaches to the world the game already owns -- players, vehicles and the
+    /// city share one PxScene -- and never steps it; the server's own loop
+    /// still does.
+    #[cfg(feature = "blast-core")]
+    pub fn blast_core(sim_hz: u32, world: &mut World) -> anyhow::Result<Self> {
+        use vibe_land_destruction::core_runtime::CoreCityDestruction;
+        let (_, manifest, _) = manifest_asset()
+            .context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let manifest = manifest.clone();
+        // Read from the same place `build_scene` does, and with the same grid
+        // and height options, so the simulation and the manifest the client is
+        // handed describe the same city.
+        let scene = build_scene().context("building the city scene for the core path")?;
+        let path = asset_path();
+        let grid = scene.desc.grid;
+        let varied_heights = scene.desc.varied_heights;
+        let scene_ptr = world
+            .scene_ptr()
+            .map_err(|error| anyhow::anyhow!("host PhysX scene pointer unavailable: {error}"))?;
+        let physics = world
+            .physics_ptr()
+            .map_err(|error| anyhow::anyhow!("host PhysX physics pointer unavailable: {error}"))?;
+        // SAFETY: both pointers come from the World borrowed here, and the
+        // caller keeps that World alive for at least as long as the backend.
+        let backend = unsafe {
+            CoreCityDestruction::attach_city(
+                scene_ptr,
+                physics,
+                &path,
+                [0.0, -9.81, 0.0],
+                grid,
+                varied_heights,
+            )
+        }
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+        tracing::info!(
+            scene = %scene_file(),
+            gpu = backend.gpu_active(),
+            structures = backend.structure_count(),
+            expected = scene.instances.len(),
+            "city on blast core"
+        );
+        anyhow::ensure!(
+            backend.structure_count() == scene.instances.len(),
+            "core built {} structures but the manifest describes {}; the client \
+             would be handed a city that does not exist",
+            backend.structure_count(),
+            scene.instances.len()
+        );
+        Ok(Self::from_parts(CityBackend::Core(backend), manifest, sim_hz))
+    }
+
     /// Prefer PhysX when the feature is on and a world is supplied, unless
     /// `VIBE_CITY_SYNTHETIC=1`.
     pub fn open(
@@ -659,6 +732,13 @@ impl CityRuntime {
         {
             if !prefer_synthetic() {
                 if let Some(world) = world {
+                    #[cfg(feature = "blast-core")]
+                    if prefer_blast_core() {
+                        // Opt-in, and it fails rather than falling back: a
+                        // silent fall-through to the old path would make an A/B
+                        // measure the same code twice and agree with itself.
+                        return Self::blast_core(sim_hz, world);
+                    }
                     return Self::physx(sim_hz, world);
                 }
             }
@@ -734,6 +814,8 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => false,
             #[cfg(feature = "destruction")]
             CityBackend::Physx(_) => true,
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => true,
         }
     }
 
@@ -802,6 +884,23 @@ impl CityRuntime {
         };
 
         match &mut self.backend {
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // The library's own hitscan entry point: find the nearest
+                // load-bearing node to the impact and drive the load through
+                // it. Support nodes are skipped by the lookup because they are
+                // world-anchored and absorb any load without ever failing.
+                let Some((_, point, _)) = sphere_hit() else {
+                    return false;
+                };
+                let at = point.to_array();
+                let Some(node) = backend.nearest_node(at) else {
+                    return false;
+                };
+                let dir = direction * physx_shot_stress_impulse();
+                backend.apply_force_at_node(node, at, [dir.x, dir.y, dir.z]);
+                true
+            }
             CityBackend::Synthetic(backend) => {
                 let Some((distance, point, structure_index)) = sphere_hit() else {
                     return false;
@@ -932,6 +1031,33 @@ impl CityRuntime {
         let mut reliable = Vec::new();
         let pending_pushes = std::mem::take(&mut self.pending_pushes);
         match &mut self.backend {
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // The whole point of the migration: the pipeline emits the
+                // topology output natively, so this arm only feeds it onward.
+                // The Physx arm below reconstructs the same thing by diffing
+                // PhysX snapshots.
+                let post_step_started = std::time::Instant::now();
+                let (_, output, overflow) = backend.post_step_output(dt);
+                let post_step_ms = post_step_started.elapsed().as_secs_f32() * 1000.0;
+                if overflow.islands > 0 || overflow.chunks > 0 {
+                    // Dropped, never truncated: truncating aliases a new island
+                    // onto a live one and the client draws two chunk sets with
+                    // one pose. Loud, because it means lost events.
+                    tracing::error!(
+                        islands = overflow.islands,
+                        chunks = overflow.chunks,
+                        "city ids exceeded the wire fields; events dropped"
+                    );
+                }
+                let snapshots = backend.body_snapshots();
+                self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
+                if let Some(live) = self.live.as_mut() {
+                    live.ingest(&self.manifest, sim_tick, &snapshots, &output);
+                }
+                reliable.extend(self.encoder.take_topology_messages());
+                let _ = post_step_ms;
+            }
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
@@ -1149,6 +1275,10 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => Vec::new(),
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.debug_body_states(),
+            // Freeze has not been absorbed into the core yet, so there are no
+            // per-body freeze states to show. Empty rather than invented.
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => Vec::new(),
         }
     }
 
@@ -1157,6 +1287,21 @@ impl CityRuntime {
             CityBackend::Synthetic(backend) => backend.stats(),
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.stats(),
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(backend) => {
+                // Only the fields the core actually measures. The rest stay at
+                // their defaults rather than being filled with plausible
+                // numbers: this struct's own contract is that a stat which
+                // cannot be produced is worse than no stat, because it is a
+                // confident wrong answer.
+                let totals = backend.totals();
+                DestructionStats {
+                    chunk_bodies: backend.body_count() as u32,
+                    broken_bonds: totals.fractures as u32,
+                    structures: 1,
+                    ..DestructionStats::default()
+                }
+            }
         }
     }
 
@@ -1199,6 +1344,10 @@ impl CityRuntime {
             CityBackend::Synthetic(_) => false,
             #[cfg(feature = "destruction")]
             CityBackend::Physx(backend) => backend.degraded(),
+            // The core path has no degraded mode: attach either succeeds or the
+            // backend is never constructed.
+            #[cfg(feature = "blast-core")]
+            CityBackend::Core(_) => false,
         }
     }
 }

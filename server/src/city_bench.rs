@@ -1872,3 +1872,161 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
          engine-sleep freezing alone retired {sleep_frozen}"
     );
 }
+
+/// `/city` running on the standardized blast-stress-solver core.
+///
+/// The A/B against the old path: same scene, same stimulus, same server loop,
+/// the backend chosen by `CityRuntime::blast_core` instead of
+/// `CityRuntime::physx`. What this asserts is that the core path reaches the
+/// server's own encoder with a stream it can ingest -- fractures happen,
+/// bodies appear, and topology messages come out the other side.
+///
+/// It does not assert the two paths agree numerically, and it should not: they
+/// are separate simulations of a GPU solver whose measured run-to-run spread on
+/// this stack is ~12%, so equality would be a false claim. What is comparable
+/// is the categorical outcome, which is what is checked here.
+///
+/// # The measured gap, as of this commit
+///
+/// Same stimulus, same grid, run side by side:
+///
+/// ```text
+/// old  : 604 bonds broken, 0 -> 167 bodies, 79 topology messages
+/// core :  33 bonds broken, 16 -> 19 bodies, 19 topology messages
+/// ```
+///
+/// That is not noise, and the core path is not at parity. Two causes, both
+/// known and neither mysterious:
+///
+/// 1. **The damage entry path has not been ported.** The old path raycasts the
+///    real chunk colliders and applies a blast over a radius; the core path
+///    resolves the nearest load-bearing node from a bounding sphere and drives
+///    a single load through it. Far less energy reaches the stress graph. This
+///    is the next work item, and it is worth doing properly rather than
+///    reproducing: the old path's radius, falloff and direction blend are tuned
+///    constants standing in front of the physics.
+/// 2. **The body counts are not measuring the same thing.** The old path's
+///    `chunk_bodies` counts fragments only, starting at 0; the core path counts
+///    every island body, so an intact 16-building grid starts at 16. Comparing
+///    the two numbers directly is a category error.
+///
+/// This test exists so that gap is a number someone can watch shrink, rather
+/// than a claim that the migration is finished.
+/// The same stimulus on the old path, for the side-by-side.
+///
+/// Printed rather than asserted against the core path's numbers. They are two
+/// separate runs of a GPU solver whose measured run-to-run spread on this stack
+/// is ~12%, and the two paths differ in a way that is not noise: the old shot
+/// path raycasts the real chunk colliders and applies a blast over a radius,
+/// while the core path resolves the nearest load-bearing node from a bounding
+/// sphere and drives a single load through it. Asserting equality would be
+/// asserting something false. What the pair is for is making the gap visible.
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn the_old_path_drives_the_city_through_the_server_loop() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city = crate::city::CityRuntime::physx(60, &mut world).expect("city opens on physx");
+    city.add_client(1);
+    let bodies_at_rest = city.stats().chunk_bodies;
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    let mut topology_messages = 0usize;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            topology_messages += city.step(tick, DT, GRAVITY, Some(&mut world)).len();
+            tick += 1;
+        }
+    }
+    let stats = city.stats();
+    eprintln!(
+        "[old /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
+}
+
+#[cfg(feature = "blast-core")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn the_core_path_drives_the_city_through_the_server_loop() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+
+    // Constructed directly rather than through `open`, so the test cannot be
+    // silently reading an environment variable set by whichever test ran first.
+    let mut city =
+        crate::city::CityRuntime::blast_core(60, &mut world).expect("city opens on the core");
+    city.add_client(1);
+
+    let bodies_at_rest = city.stats().chunk_bodies;
+    assert!(bodies_at_rest > 0, "the city instantiated no bodies");
+
+    let (tx, tz) = (-36.0f32, -36.0f32);
+    let origin = Vec3::new(tx, 1.6, tz - 26.0);
+    let mut tick = 0u32;
+    let mut topology_messages = 0usize;
+    for shot in 0..40 {
+        let sweep = -4.0 + (shot % 9) as f32 * 1.0;
+        let aim_y = 2.0 + (shot % 12) as f32 * 2.2;
+        let target = Vec3::new(tx + sweep, aim_y, tz);
+        city.apply_shot_ray(origin, (target - origin).normalize(), Some(&mut world));
+        for _ in 0..8 {
+            world.step().expect("step");
+            topology_messages += city.step(tick, DT, GRAVITY, Some(&mut world)).len();
+            tick += 1;
+        }
+    }
+
+    let stats = city.stats();
+    assert!(
+        stats.broken_bonds > 0,
+        "40 shots broke no bonds on the core path; the shot never reached the stress graph"
+    );
+    assert!(
+        stats.chunk_bodies > bodies_at_rest,
+        "bonds broke but no fragment bodies appeared ({} -> {})",
+        bodies_at_rest,
+        stats.chunk_bodies
+    );
+    assert!(
+        topology_messages > 0,
+        "the encoder produced no topology messages, so nothing would reach a client"
+    );
+    assert!(!city.is_degraded(), "the core path degraded mid-run");
+
+    eprintln!(
+        "[blast-core /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
+}
