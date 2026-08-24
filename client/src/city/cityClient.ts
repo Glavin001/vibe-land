@@ -61,6 +61,9 @@ export interface CityClientStats {
   /// Settles refused because their pose would have teleported the body --
   /// membership disagreement, caught before it could be drawn.
   settleRejects: number;
+  /// Topology released by the wall-clock valve, ahead of the pose clock.
+  valveApplies: number;
+  valveTicksAhead: number;
   bytesReceived: number;
   bytesPerSecond: number;
   manifestHash: string;
@@ -158,6 +161,17 @@ export class CityClient {
   private readonly settledAtTick: Map<number, number> = new Map();
   /** One resync request per divergence, cleared when the bootstrap lands. */
   private resyncRequested = false;
+  /**
+   * Topology messages released by the wall-clock valve rather than by the
+   * sample clock reaching their tick, and how far ahead they were.
+   *
+   * The valve exists so a stalled pose clock cannot delay fracture forever,
+   * but anything it releases is applied AHEAD of the poses on screen, so its
+   * absolute poses land as a jump. Non-zero means the pose clock is not
+   * keeping up with the reliable channel.
+   */
+  topologyValveApplies = 0;
+  topologyValveTicksAhead = 0;
   /**
    * Bodies whose ledger pose changed without a streaming update to carry it
    * to the screen — settles, promotions, migrations, wakes. The render layer
@@ -271,6 +285,15 @@ export class CityClient {
       const head = this.pendingTopology[0];
       if (head.message.simTick > sampleTick && nowMs - head.receivedAtMs < 1000) {
         break;
+      }
+      // Count the valve firing SEPARATELY from an on-time apply. A message
+      // released by the valve is applied ahead of the pose clock, so every
+      // absolute pose it carries -- settles especially -- states where a body
+      // will be, not where this client is drawing it. For fast debris that is
+      // metres per released tick.
+      if (head.message.simTick > sampleTick) {
+        this.topologyValveApplies += 1;
+        this.topologyValveTicksAhead += head.message.simTick - sampleTick;
       }
       this.pendingTopology.shift();
       this.applyTopologyMessage(head.message);
@@ -1000,6 +1023,8 @@ export class CityClient {
       chunksSettled,
       bootstraps: this.bootstrapCount,
       settleRejects: this.topology.settleFrameRejects,
+      valveApplies: this.topologyValveApplies,
+      valveTicksAhead: this.topologyValveTicksAhead,
       brokenBonds: topologyStats.brokenBonds,
       liveIslands: topologyStats.liveIslands,
       topoSeqGaps: topologyStats.topoSeqGaps,

@@ -65,7 +65,7 @@ if not rows:
     print('no results -- did the spec run?'); sys.exit(1)
 keys = ['bonds', 'worstJumpM', 'worstDrawnM', 'framesDrawnOff', 'framesJumping',
         'belowWorld', 'hidden', 'unplaced', 'orphans', 'orphanedByRetire',
-        'bootstraps', 'settleRejects', 'topoGaps']
+        'bootstraps', 'settleRejects', 'valveApplies', 'valveTicksAhead', 'topoGaps']
 by = {}
 for r in rows:
     by.setdefault(r['wire'], []).append(r)

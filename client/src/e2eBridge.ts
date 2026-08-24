@@ -140,6 +140,8 @@ export interface CityE2EStats {
   /// Ledger rebuilds this session, and settles refused for a frame mismatch.
   bootstraps: number;
   settleRejects: number;
+  valveApplies: number;
+  valveTicksAhead: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /**

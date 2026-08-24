@@ -200,6 +200,8 @@ test.describe('fracture continuity', () => {
       orphanedByRetire: stats.orphanedByRetire,
       bootstraps: stats.bootstraps,
       settleRejects: stats.settleRejects,
+      valveApplies: stats.valveApplies,
+      valveTicksAhead: stats.valveTicksAhead,
       topoGaps: stats.topoSeqGaps,
       datagrams: stats.datagramsReceived,
     }));

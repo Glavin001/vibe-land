@@ -974,6 +974,8 @@ export function CityChunksLayer({
         staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
         bootstraps: stats.bootstraps,
         settleRejects: stats.settleRejects,
+        valveApplies: stats.valveApplies,
+        valveTicksAhead: stats.valveTicksAhead,
         deepest,
       });
       renderStats.telemetryMs = performance.now() - telemetryStartedAt;
