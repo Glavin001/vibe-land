@@ -67,6 +67,16 @@ export interface CityTopologyStats {
   orphanedByRetire: number;
 }
 
+/**
+ * How far a settle may legitimately move a body.
+ *
+ * A settling body is where the stream last showed it, give or take the
+ * interpolation delay and a distance stride -- debris travels tens of metres
+ * per second, so a few metres is normal and generous. Tens of metres is not
+ * lag; it is a different frame.
+ */
+const SETTLE_MAX_DRIFT_M = 10;
+
 export class CityTopology {
   /** Flat chunk addressing: slotOf[structureId][nodeIndex] -> global slot. */
   readonly chunkCount: number;
@@ -103,6 +113,13 @@ export class CityTopology {
   duplicateDrops = 0;
   /** Set when a gap was detected; cleared by bootstrap. */
   needsResync = false;
+  /**
+   * Settles refused because their pose would have teleported the body.
+   *
+   * Must be 0. Each one is a body whose membership this client and the server
+   * disagree about, caught before it could be drawn in the wrong place.
+   */
+  settleFrameRejects = 0;
   /**
    * Notified when a body's centre-of-mass frame shifts, with the body-local
    * delta. The pose stream is buffered for smoothing, so whoever holds that
@@ -437,9 +454,33 @@ export class CityTopology {
     for (const settle of message.settled) {
       const body = this.bodies.get(bodyKey(settle.structureId, settle.islandId));
       if (body) {
+        // A settle says a body STOPPED MOVING. The pose it carries is where
+        // the body already is -- that is the whole meaning of the event. So a
+        // settle pose that relocates the body by tens of metres is not a
+        // settle at all: it is proof that the two sides disagree about this
+        // body's MEMBERSHIP, because both derive the pose from the centre of
+        // mass of their own member set and a mismatched set moves the COM.
+        //
+        // Applying it anyway composes every member through a frame the offsets
+        // were not built for, which is a whole island jumping and coming back
+        // -- seen as a fracture-shaped hole opening in a building for a frame.
+        // Measured here at 74 m from a message carrying nothing but one settle.
+        //
+        // So: take the rest state, refuse the impossible pose, and repair the
+        // real fault by rebuilding the ledger.
+        const drift = Math.hypot(
+          settle.position[0] - body.position[0],
+          settle.position[1] - body.position[1],
+          settle.position[2] - body.position[2],
+        );
         body.settled = true;
-        body.position = vClone(settle.position);
-        body.rotation = [...settle.rotation] as Quat;
+        if (drift > SETTLE_MAX_DRIFT_M) {
+          this.settleFrameRejects += 1;
+          this.needsResync = true;
+        } else {
+          body.position = vClone(settle.position);
+          body.rotation = [...settle.rotation] as Quat;
+        }
       }
     }
     for (const wake of message.wakes) {

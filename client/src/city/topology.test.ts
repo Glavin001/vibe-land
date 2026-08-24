@@ -818,3 +818,54 @@ describe('CityTopology unresolved chunks', () => {
     expect(invented).toBeGreaterThan(1);
   });
 });
+
+/**
+ * A settle means "this body stopped moving", so its pose is where the body
+ * already is. A settle that would relocate the body by tens of metres is
+ * evidence that the two sides disagree about which chunks belong to it --
+ * both derive the pose from the centre of mass of their own member set, and a
+ * mismatched set moves the COM. Applying it composes every member through the
+ * wrong frame: a whole island jumps and comes back, seen as a hole in the
+ * building.
+ */
+describe('CityTopology settle cannot teleport a body', () => {
+  const settleMessage = (position: [number, number, number]): TopologyMessage => ({
+    topoSeq: 2,
+    simTick: 30,
+    batches: [],
+    settled: [{ structureId: 0, islandId: 1, position, rotation: [0, 0, 0, 1] }],
+    wakes: [],
+  } as unknown as TopologyMessage);
+
+  it('applies an ordinary settle', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    const body = topology.body(bodyKey(0, 1))!;
+    const nudged: [number, number, number] = [
+      body.position[0] + 0.4, body.position[1] - 0.2, body.position[2],
+    ];
+    topology.apply(settleMessage(nudged));
+    expect(topology.body(bodyKey(0, 1))!.settled).toBe(true);
+    expect(topology.body(bodyKey(0, 1))!.position[0]).toBeCloseTo(nudged[0], 4);
+    expect(topology.settleFrameRejects).toBe(0);
+  });
+
+  it('refuses a settle that would move the body across the map, and asks for repair', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    const slot = topology.slotOf(0, 2);
+    const before = topology.chunkWorldPose(slot).position.slice() as number[];
+    const body = topology.body(bodyKey(0, 1))!;
+
+    topology.apply(settleMessage([body.position[0], body.position[1] - 74.8, body.position[2]]));
+
+    const after = topology.chunkWorldPose(slot).position;
+    const moved = Math.hypot(after[0] - before[0], after[1] - before[1], after[2] - before[2]);
+    expect(moved, 'the settle teleported the body').toBeLessThan(1e-3);
+    // Still at rest -- the rest state is not in doubt, only the pose.
+    expect(topology.body(bodyKey(0, 1))!.settled).toBe(true);
+    // And the real fault -- membership disagreement -- is escalated.
+    expect(topology.settleFrameRejects).toBe(1);
+    expect(topology.needsResync).toBe(true);
+  });
+});

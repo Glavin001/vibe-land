@@ -761,6 +761,9 @@ export function CityChunksLayer({
           const n = Math.max(1, body.chunkSlots.length);
           return { key: best.key, chunks: best.chunks, center: [x / n, y / n, z / n] };
         },
+        /// The live ledger, so a probe can wrap `apply` and attribute a jump
+        /// to the exact topology message that caused it.
+        topology: client.topology,
         /**
          * What is actually IN the mesh versus what the ledger says.
          *
