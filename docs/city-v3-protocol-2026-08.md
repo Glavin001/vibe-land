@@ -1,5 +1,15 @@
 # Wire v3.1: the whole-world destruction streaming protocol
 
+> **STATUS 2026-08-24: v3 is NOT the live wire.** It was rolled back to v2
+> after a visible flicker was pinned to the v3 pose stream (worst jump
+> 75.40 m vs v2's 1.16 m on the same collapse, `a5a36e5`). Four v3-only
+> live-path defects have been fixed since; the A/B gate has **not** been
+> re-run, so nothing here should be read as "v3 is shipping". The numbers
+> below are offline-pipeline measurements and they still stand -- every
+> defect found since lived in that pipeline's blind spot, between the
+> ledger and the drawn frame. Current state, the defects, and the gate:
+> **`docs/city-v3-status-2026-08-24.md`**. Read it first.
+
 2026-08-21. This is the protocol record: what v3.1 is, what it measures as,
 what it trades away, and why it replaces wire v2. Every number names its run;
 the matrix that reproduces them is
