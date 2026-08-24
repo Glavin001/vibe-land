@@ -275,6 +275,16 @@ export class NetcodeClient {
   /**
    * Try WebTransport first; fall back to WebSocket on failure or if unsupported.
    */
+  /**
+   * Connect over WebTransport. WebSocket is opt-in, not a fallback.
+   *
+   * The two transports are not interchangeable for this game: WebTransport
+   * carries poses on unreliable datagrams, WebSocket on an ordered reliable
+   * stream. Falling back silently means the player is on a different wire from
+   * the one the game is designed and measured against -- and it hides the real
+   * failure, which is that QUIC could not connect. `?transport=ws` opts in
+   * explicitly for debugging.
+   */
   async connectWithFallback(
     matchId: string,
     wsUrl: string,
@@ -283,7 +293,9 @@ export class NetcodeClient {
   ): Promise<void> {
     this.closedByClient = false;
     const hasWebTransport = typeof window !== 'undefined' && 'WebTransport' in window;
-    console.info('[netcode] connectWithFallback', { matchId, wsUrl, browserSupportsWT: hasWebTransport });
+    // Default DENY: only an explicit opt-in reaches the WebSocket path.
+    const allowWs = options.allowWsFallback === true;
+    console.info('[netcode] connect', { matchId, browserSupportsWT: hasWebTransport, allowWs });
 
     if (hasWebTransport) {
       console.info('[netcode] attempting WebTransport (QUIC/UDP)...');
@@ -302,7 +314,7 @@ export class NetcodeClient {
         console.info('[netcode] ✓ connected via WebTransport (QUIC/UDP)', wt.sessionConfig.url);
         return;
       } catch (err) {
-        if (options.allowWsFallback === false) {
+        if (!allowWs) {
           // Rethrow rather than fail twice: the fallback targets the same
           // untrusted-certificate origin and would only mask the real cause.
           // The note is set first so the player sees the reason instead of
@@ -318,15 +330,17 @@ export class NetcodeClient {
         setTransportNote(
           'WebTransport unavailable (' +
             (err instanceof Error ? `${err.name}: ${err.message}` : String(err)) +
-            ') — using WebSocket',
+            ') — using WebSocket (?transport=ws)',
         );
-        console.warn('[netcode] WebTransport failed — falling back to WebSocket', err);
+        console.warn('[netcode] WebTransport failed — WebSocket opted in via ?transport=ws', err);
       }
     } else {
-      setTransportNote('This browser has no WebTransport — using WebSocket');
-      console.info('[netcode] WebTransport not supported in this browser — using WebSocket');
-      if (options.allowWsFallback === false) {
-        throw new Error('This server requires WebTransport, which this browser does not support');
+      console.info('[netcode] WebTransport not supported in this browser');
+      if (!allowWs) {
+        setTransportNote(
+          'This game requires WebTransport, which this browser does not support.',
+        );
+        throw new Error('This game requires WebTransport, which this browser does not support');
       }
     }
 

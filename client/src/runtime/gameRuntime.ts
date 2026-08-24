@@ -1,4 +1,5 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { wantsWebSocketTransport } from '../net/transportPolicy';
 import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
@@ -1306,10 +1307,12 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       setConnectPhase('waiting for server welcome');
       await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint, {
         sessionConfig: this.options.sessionConfig,
-        // The WebSocket fallback would need to reach the same self-signed
-        // origin over TLS the browser will not trust, so on a control-plane
-        // session it can only produce a confusing second failure.
-        allowWsFallback: this.options.sessionConfig === undefined,
+        // WebTransport only. The two transports differ in exactly the property
+        // the pose stream depends on -- unreliable datagrams versus an ordered
+        // reliable stream -- so a session that quietly lands on WebSocket is
+        // playing a different game from the one that gets tested and tuned.
+        // `?transport=ws` opts back in for debugging.
+        allowWsFallback: wantsWebSocketTransport(),
       });
       void this.initCityClient(client);
     } catch (error) {
