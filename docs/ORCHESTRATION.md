@@ -92,18 +92,57 @@ for instead of renting a second one.
 
 ## The image
 
-Two images, because compiling PhysX takes tens of minutes and image pull time is
-cold-start time a player waits through.
+Two images, because image pull time is cold-start time a player waits through
+and the toolchain must not travel to production.
 
 | Image | Contents | Rebuilt |
 |---|---|---|
-| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust | manually, via the `builder-image` workflow |
-| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, scenes | every deploy (~400 MB) |
+| `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust (~15 GB) | when `docker/Dockerfile.builder` changes, or on dispatch |
+| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes | every push that touches the server (~400 MB) |
+
+The split is about caching, not compile time. Building PhysX is not the ordeal
+it looks like: `libPhysXGpu_64.so` is a 347 MB closed CUDA blob that packman
+downloads prebuilt, and what actually compiles is ~17 MB of static libs — a
+short clang build. The builder image earns its place because it is built once
+and reused by every deploy, so a per-commit build pays neither the download nor
+the compile.
+
+The server binary is built with `--features cuda-stress`, not just
+`destruction`. Without it `NVBLAST_ENABLE_CUDA_STRESS` is undefined and the
+stress solver silently falls back to the CPU, which cannot afford to converge:
+on the dense downtown the CPU solver broke 7,024 bonds where the GPU broke
+3,283 on the same scenario. The extra breakage is solver residual, not physics.
+The CUDA kernel is compiled for `sm_80,sm_86,sm_89,sm_90` with a PTX fallback,
+because the fleet rents whatever the marketplace has spare.
 
 ```bash
 ./scripts/build-image.sh                  # tags sha-<commit>
 ./scripts/smoke-image.sh <image:tag>      # needs a GPU host with Docker
+./scripts/smoke-image.sh --cpu <image>    # everything but the GPU assertions
 ```
+
+### Run one yourself
+
+The image is self-contained: the only thing it needs from the host is the
+driver, which arrives through the [NVIDIA container
+toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+```bash
+docker run --gpus all \
+  -p 4001:4001 -p 4433:4433/udp \
+  -e PUBLIC_IPADDR=<the address players will reach you on> \
+  ghcr.io/glavin001/vibe-land-server:latest
+```
+
+`CONTROL_PLANE_URL` is optional. Without it the server runs unmanaged — no
+heartbeats, no fleet, clients connect to it directly — which is the whole point
+of the standalone path. `PUBLIC_UDP_PORT` overrides the advertised port when
+the published port differs from the container's.
+
+On Vast the entrypoint behaves differently on purpose: a `VAST_*` environment
+with no UDP mapping exits 78 rather than starting, because the port cannot be
+added to a running instance and a box that can never serve players should be
+replaced rather than kept.
 
 The entrypoint (`docker/entrypoint.sh`) resolves `VAST_UDP_PORT_<internal>` and
 `PUBLIC_IPADDR`, mints a 12-day ECDSA P-256 certificate with the public IP as a
@@ -118,9 +157,15 @@ can never serve players, and failing fast gets it replaced.
 
 ## Deploying
 
-`.github/workflows/deploy.yml` runs on pushes to `main`: build and push the
-image, run the control-plane tests, deploy the Worker with `SERVER_IMAGE` set to
-the image just built, then check `/fleet` reports it. Live instances are
+`.github/workflows/server-image.yml` is the single definition of the image
+build. A push to any branch but `main` builds and publishes
+`vibe-land-server:sha-<commit>` and then verifies it on a GPU-less runner —
+every library resolves, the bundle is complete, and the container serves
+`/healthz`, the right advertised endpoint and a pinned certificate hash.
+`.github/workflows/deploy.yml` runs on pushes to `main` and *calls* that same
+workflow, so what deploys is exactly what a branch exercised; it then runs the
+control-plane tests, deploys the Worker with `SERVER_IMAGE` set to the image
+just built, and checks `/fleet` reports it. Live instances are
 unaffected — fleet state lives in the Durable Object and running boxes keep
 serving the image they booted with until their uptime cap retires them.
 
@@ -133,7 +178,6 @@ serving the image they booted with until their uptime cap retires them.
 | `HEARTBEAT_TOKEN` | shared with every game server; authenticates heartbeats |
 | `ADMIN_TOKEN` | `/fleet` and `/kill` |
 | `GHCR_PULL_TOKEN` | `read:packages`; handed to Vast to pull the private image |
-| `BLAST_REPO_TOKEN` | read access to `blast-stress-solver`, builder image only |
 
 | Variable | Purpose |
 |---|---|
@@ -165,9 +209,14 @@ Worker vars, all in `control-plane/wrangler.jsonc`:
 - **`vast.ts` is written against the v0 API from documentation.** The mock
   mirrors it exactly, but the shapes need confirming against the real
   marketplace before the first production deploy.
-- **No image has been built yet.** A Vast instance is itself an unprivileged
-  container, so Docker can start its daemon here but cannot unpack a layer;
-  the first build has to happen in CI or on another host.
+- **The GPU assertions only run on a real box.** CI has no GPU, so
+  `server-image.yml` runs `smoke-image.sh --cpu`: it proves the image is
+  well-formed but not that PhysX validated a CUDA scene. Clear a new image for
+  deploy by running `smoke-image.sh` without `--cpu` on a rented host, which is
+  the only place `"physics_backend":"physx_gpu"` can be observed.
+- **`BUILDER_IMAGE_TAG` is a manual pointer.** `builder-image.yml` publishes a
+  toolchain image and prints the tag; nothing sets the repository variable for
+  you, and the server build fails with an explicit error until you do.
 
 ## Verified on a phone
 

@@ -1,11 +1,16 @@
 # Rebuild the toolchain image (CUDA + PhysX + Blast).
 #
-# Manual on purpose: it takes tens of minutes and only needs to change when the
-# PhysX SDK, the Blast fork, or the Rust toolchain moves. Everyday deploys reuse
-# whatever tag `BUILDER_IMAGE_TAG` points at.
+# It runs automatically when its own inputs change -- the Dockerfile or this
+# workflow -- because the previous manual-dispatch-only gate is the reason the
+# image had never been built at all. Everyday deploys still reuse whatever tag
+# `BUILDER_IMAGE_TAG` points at; this only publishes a new one.
 name: builder-image
 
 on:
+  push:
+    paths:
+      - 'docker/Dockerfile.builder'
+      - '.github/workflows/builder-image.yml'
   workflow_dispatch:
     inputs:
       physx_ref:
@@ -13,10 +18,15 @@ on:
         default: ovphysx-0.5.10
       blast_ref:
         description: blast-stress-solver git ref
-        default: main
+        default: feature/physx-gpu-destruction
       tag:
         description: Tag for the resulting builder image
         default: cuda12.8-physx-ovphysx-5.5.1
+
+# Two of these at once would race for the same tag and thrash the GHA cache.
+concurrency:
+  group: builder-image
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -44,22 +54,40 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A push-triggered run has no inputs, so the defaults live here rather
+      # than only in the dispatch form.
+      - id: meta
+        run: |
+          {
+            echo "physx_ref=${{ inputs.physx_ref || 'ovphysx-0.5.10' }}"
+            echo "blast_ref=${{ inputs.blast_ref || 'feature/physx-gpu-destruction' }}"
+            echo "tag=${{ inputs.tag || 'cuda12.8-physx-ovphysx-5.5.1' }}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push builder image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.builder
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ inputs.tag }}
+          tags: ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ steps.meta.outputs.tag }}
           build-args: |
-            PHYSX_REF=${{ inputs.physx_ref }}
-            BLAST_REF=${{ inputs.blast_ref }}
-          # Blast is a private repo; a BuildKit secret keeps the token out of
-          # the image layers, unlike a build-arg.
-          secrets: |
-            gh_token=${{ secrets.BLAST_REPO_TOKEN }}
+            PHYSX_REF=${{ steps.meta.outputs.physx_ref }}
+            BLAST_REF=${{ steps.meta.outputs.blast_ref }}
 
-      - name: Remind about the deploy pointer
+      - name: Report the tag to set
         run: |
-          echo "Set repository variable BUILDER_IMAGE_TAG=${{ inputs.tag }}"
-          echo "so deploy.yml builds against this image."
+          image="ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ steps.meta.outputs.tag }}"
+          {
+            echo "### Builder image published"
+            echo
+            echo '```'
+            echo "$image"
+            echo '```'
+            echo
+            echo "PhysX: \`${{ steps.meta.outputs.physx_ref }}\`  "
+            echo "Blast: \`${{ steps.meta.outputs.blast_ref }}\`"
+            echo
+            echo "Set repository variable \`BUILDER_IMAGE_TAG=${{ steps.meta.outputs.tag }}\`"
+            echo "so the server image builds against it."
+          } >> "$GITHUB_STEP_SUMMARY"

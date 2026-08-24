@@ -1,12 +1,13 @@
 # Toolchain image: CUDA, a built PhysX 5 SDK, and the Blast checkout.
 #
-# Split from the runtime image because building PhysX takes tens of minutes and
-# changes only when the SDK or toolchain is bumped -- perhaps a few times a
-# year. Rebuilding it per commit would dominate every deploy.
+# Split from the runtime image not because PhysX is expensive to compile -- most
+# of what lands here is a ~350 MB packman download of the prebuilt
+# libPhysXGpu_64.so plus a short clang build of ~17 MB of static libs -- but
+# because it is cached across every deploy while the runtime image is rebuilt
+# per commit. It changes only when the SDK, the Blast fork, or Rust moves.
 #
-# Build (needs a token with read access to the private Blast repo):
-#   echo "$BLAST_TOKEN" | docker buildx build -f docker/Dockerfile.builder \
-#     --secret id=gh_token,src=/dev/stdin \
+# Build:
+#   docker buildx build -f docker/Dockerfile.builder \
 #     -t ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 .
 #
 # The paths below are the defaults compiled into physx-bridge/build.rs, so the
@@ -43,23 +44,32 @@ RUN git clone https://github.com/NVIDIA-Omniverse/PhysX.git /root/PhysX \
  && find /root/PhysX/physx/compiler -name '*.o' -delete \
  && rm -rf /root/PhysX/.git
 
-# NVIDIA Blast fork with the stress solver. Private, so the token arrives as a
-# BuildKit secret: it is never written to a layer, unlike an ARG or ENV.
-ARG BLAST_REF=main
-RUN --mount=type=secret,id=gh_token \
-    git clone "https://x-access-token:$(cat /run/secrets/gh_token)@github.com/Glavin001/blast-stress-solver" \
+# NVIDIA Blast fork with the stress solver. The repository is public, so this
+# clones anonymously -- no build secret, which is what kept this image from
+# ever being built in CI.
+ARG BLAST_REF=feature/physx-gpu-destruction
+RUN git clone https://github.com/Glavin001/blast-stress-solver \
       /root/workspace/blast-stress-solver \
  && cd /root/workspace/blast-stress-solver \
  && git checkout ${BLAST_REF} \
- # Strip the credentialed remote so no token survives in the image's git config.
- && git remote set-url origin https://github.com/Glavin001/blast-stress-solver \
  && rm -rf .git
 
 ENV PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
     BLAST_ROOT=/root/workspace/blast-stress-solver/blast \
-    VIBE_CUDA_ARCH=sm_89
+    CUDA_HOME=/usr/local/cuda
+# Every GPU generation the fleet is likely to be scheduled onto: A100 (sm_80),
+# A10/3090 (sm_86), 4090 (sm_89), H100 (sm_90). build.rs turns this into one
+# -gencode per entry plus a PTX fallback, so a newer card JITs rather than
+# failing to launch the stress kernel.
+ENV VIBE_CUDA_ARCH=sm_80,sm_86,sm_89,sm_90
 
-# Fail the build here rather than three stages later with a confusing linker error.
+# Fail the build here rather than three stages later with a confusing linker
+# error. The .cu file is asserted too: without it the `cuda-stress` feature
+# panics in build.rs, and the whole point of this image is that the GPU stress
+# solver is available.
 RUN test -f "$PHYSX_ROOT/include/PxPhysicsAPI.h" \
  && test -f "$PHYSX_ROOT/bin/linux.x86_64/release/libPhysXGpu_64.so" \
- && test -d "$BLAST_ROOT"
+ && test -d "$BLAST_ROOT" \
+ && test -f "$BLAST_ROOT/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu" \
+ && test -f "$CUDA_HOME/bin/nvcc" \
+ && ls "$CUDA_HOME"/lib64/libcudart.so.* >/dev/null

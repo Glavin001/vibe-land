@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Container entrypoint for a rented GPU box.
+# Container entrypoint for a GPU game server.
 #
 # Four steps, in this order:
 #   1. resolve the address players will actually connect to
@@ -7,11 +7,18 @@
 #   3. hand both to the game server
 #   4. exec it, so the server is PID 1 and signals reach it directly
 #
-# Step 1 is the one that fails loudly on purpose. Vast assigns each declared
-# internal port a random external port; without that mapping the server would
-# come up advertising an address nobody can reach, heartbeat happily, and take
-# players who then cannot connect. Exiting nonzero instead gets the box
-# destroyed and another host tried, which is the cheaper failure.
+# Step 1 has two modes, and picking the wrong one is the expensive mistake.
+#
+# On a Vast box, each declared internal port gets a random external port. If
+# that mapping is missing the server would come up advertising an address
+# nobody can reach, heartbeat happily, and take players who then cannot
+# connect -- and ports cannot be added to a running instance. So on Vast, a
+# missing mapping exits nonzero to get the box destroyed and another host
+# tried, which is the cheaper failure.
+#
+# Anywhere else -- `docker run --gpus all -p 4433:4433/udp` on your own box --
+# there is no mapping to find and none is needed: the published port is the
+# container port unless PUBLIC_UDP_PORT says otherwise.
 set -euo pipefail
 
 root="${SERVER_ROOT:-/opt/vibe-land}"
@@ -24,22 +31,41 @@ log() { echo "[entrypoint] $*"; }
 udp_var="VAST_UDP_PORT_${internal_udp_port}"
 external_udp_port="${!udp_var:-}"
 
+# Vast injects a whole family of VAST_* variables, so their presence is what
+# distinguishes "the mapping is missing" from "there is no mapping to look for".
+# REQUIRE_PORT_MAP=1 forces the strict reading on a host that is not Vast.
+on_vast=""
+if [[ "${REQUIRE_PORT_MAP:-}" == "1" ]] || compgen -v | grep -q '^VAST_'; then
+  on_vast=1
+fi
+
 if [[ -z "$external_udp_port" ]]; then
-  log "FATAL: ${udp_var} is not set."
-  log "The instance was created without a UDP mapping for ${internal_udp_port},"
-  log "which cannot be added to a running instance. Exiting so this host is replaced."
-  env | grep -E '^VAST_(TCP|UDP)_PORT_' | sort || log "(no VAST port variables at all)"
-  exit 78 # EX_CONFIG
+  if [[ -n "$on_vast" ]]; then
+    log "FATAL: ${udp_var} is not set."
+    log "The instance was created without a UDP mapping for ${internal_udp_port},"
+    log "which cannot be added to a running instance. Exiting so this host is replaced."
+    env | grep -E '^VAST_(TCP|UDP)_PORT_' | sort || log "(no VAST port variables at all)"
+    exit 78 # EX_CONFIG
+  fi
+  external_udp_port="${PUBLIC_UDP_PORT:-$internal_udp_port}"
+  log "standalone mode: no orchestrator port mapping, publishing ${external_udp_port}/udp"
 fi
 
 public_ip="${PUBLIC_IPADDR:-}"
 if [[ -z "$public_ip" ]]; then
   # Falling back to an external lookup keeps a host with a missing variable
-  # usable; the port mapping above has no such fallback.
+  # usable; on Vast the port mapping above has no such fallback.
   public_ip="$(curl -fsS --max-time 5 https://api.ipify.org || true)"
 fi
+if [[ -z "$public_ip" && -z "$on_vast" ]]; then
+  # Last resort for a box with no route to the outside: the address on the
+  # interface that carries the default route. Enough for a LAN or a laptop.
+  public_ip="$(ip -4 -o route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' || true)"
+  [[ -n "$public_ip" ]] && log "no public IP available; advertising the local address ${public_ip}"
+fi
 if [[ -z "$public_ip" ]]; then
-  log "FATAL: could not determine the public IP (PUBLIC_IPADDR unset, lookup failed)."
+  log "FATAL: could not determine the address to advertise."
+  log "Set PUBLIC_IPADDR to the address players will reach this server on."
   exit 78
 fi
 
@@ -73,8 +99,12 @@ export HEARTBEAT_UDP_PORT="$external_udp_port"
 export MATCHES_PER_BOX="${MATCHES_PER_BOX:-6}"
 
 if [[ -z "${CONTROL_PLANE_URL:-}" ]]; then
-  log "WARNING: CONTROL_PLANE_URL unset -- heartbeats disabled, this box will not"
-  log "be routed players and the fleet will destroy it once its boot window ends."
+  if [[ -n "$on_vast" ]]; then
+    log "WARNING: CONTROL_PLANE_URL unset -- heartbeats disabled, this box will not"
+    log "be routed players and the fleet will destroy it once its boot window ends."
+  else
+    log "no CONTROL_PLANE_URL: running unmanaged, clients connect to this server directly."
+  fi
 fi
 
 # --- 4. hand off --------------------------------------------------------------

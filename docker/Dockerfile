@@ -32,8 +32,10 @@ COPY dist/physx-server/ /out/
 FROM ubuntu:24.04
 ARG BUNDLE_STAGE=build
 ENV DEBIAN_FRONTEND=noninteractive
+# iproute2 is only for the entrypoint's last-resort local-address lookup when
+# a standalone host has no route to an IP echo service.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl openssl libstdc++6 libssl3t64 \
+      ca-certificates curl openssl libstdc++6 libssl3t64 iproute2 \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/vibe-land

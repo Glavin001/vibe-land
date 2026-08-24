@@ -21,6 +21,7 @@ on:
       - 'control-plane/**'
       - 'docker/**'
       - 'scripts/package-physx-server.sh'
+      - '.github/workflows/server-image.yml'
       - '.github/workflows/deploy.yml'
       - 'Cargo.lock'
   workflow_dispatch:
@@ -30,48 +31,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One definition of the image build, shared with the pull-request path in
+  # server-image.yml, so what deploys is exactly what a PR exercised.
   build-image:
-    runs-on: ubuntu-latest
+    uses: ./.github/workflows/server-image.yml
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Reclaim disk space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          large-packages: true
-          docker-images: false
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: meta
-        run: |
-          tag="sha-$(echo "${GITHUB_SHA}" | cut -c1-12)"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${{ github.repository_owner }}/vibe-land-server:${tag}" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push server image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.image }}
-          build-args: |
-            BUILDER_IMAGE=ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ vars.BUILDER_IMAGE_TAG }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+    with:
+      publish_latest: true
 
   deploy-control-plane:
     needs: build-image
