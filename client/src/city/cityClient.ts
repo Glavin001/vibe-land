@@ -84,6 +84,16 @@ interface BodyStreamState {
  */
 const PRESENTATION_EPSILON_M = 1e-4;
 
+/**
+ * Minimum spacing between resync requests.
+ *
+ * A resync rebuilds the entire ledger, so it is the heaviest repair available
+ * and must not be driven at the rate faults are discovered. One bootstrap
+ * repairs every outstanding fault at once, so spacing them loses nothing but
+ * time.
+ */
+const RESYNC_MIN_INTERVAL_MS = 3000;
+
 export class CityClient {
   readonly topology: CityTopology;
   private readonly bodies: Map<number, BodyStreamState> = new Map();
@@ -161,6 +171,10 @@ export class CityClient {
   private readonly settledAtTick: Map<number, number> = new Map();
   /** One resync request per divergence, cleared when the bootstrap lands. */
   private resyncRequested = false;
+  private lastResyncAtMs = -1e9;
+  /// Resyncs skipped by the rate limit. Each one is a full world rebuild that
+  /// did not happen; the next one repairs whatever they would have.
+  resyncsSuppressed = 0;
   /**
    * Topology messages released by the wall-clock valve rather than by the
    * sample clock reaching their tick, and how far ahead they were.
@@ -649,8 +663,25 @@ export class CityClient {
         // this when a migration names an island the client does not have, and
         // that chunk stays on the wrong body until a bootstrap replaces it.
         if (this.topology.needsResync && !this.resyncRequested) {
-          this.resyncRequested = true;
-          this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+          // Rate limited. A resync is a FULL ledger rebuild: every body
+          // replaced, every lane reset, all 24k chunks repainted. The trigger
+          // is usually one chunk -- a migration naming an island this client
+          // has not been told about -- and during a heavy collapse those
+          // arrive in a stream: measured at 22 missing destinations in one
+          // building, and 65 bootstraps on a session panel. Rebuilding the
+          // world 65 times to re-home a handful of chunks trades a small
+          // wrongness for a large, repeated one.
+          //
+          // The bootstrap that does land repairs everything outstanding, so
+          // spacing them costs only the delay, not the repair.
+          const nowMs = performance.now();
+          if (nowMs - this.lastResyncAtMs >= RESYNC_MIN_INTERVAL_MS) {
+            this.lastResyncAtMs = nowMs;
+            this.resyncRequested = true;
+            this.sendResync(encodeCityResyncRequest(this.topology.lastSeq()));
+          } else {
+            this.resyncsSuppressed += 1;
+          }
         }
   }
 
