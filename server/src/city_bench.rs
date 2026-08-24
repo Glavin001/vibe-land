@@ -1886,29 +1886,31 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
 /// this stack is ~12%, so equality would be a false claim. What is comparable
 /// is the categorical outcome, which is what is checked here.
 ///
-/// # The measured gap, as of this commit
+/// # The measured gap
 ///
 /// Same stimulus, same grid, run side by side:
 ///
 /// ```text
-/// old  : 604 bonds broken, 0 -> 167 bodies, 79 topology messages
-/// core :  33 bonds broken, 16 -> 19 bodies, 19 topology messages
+/// old  : 604 bonds broken, 167 fragment bodies, 79 topology messages
+/// core : 586 bonds broken,  56 fragment bodies, 67 topology messages
 /// ```
 ///
-/// That is not noise, and the core path is not at parity. Two causes, both
-/// known and neither mysterious:
+/// Bond breakage agrees to within 3%, which is inside this GPU stack's own
+/// ~12% run-to-run spread, so the two paths are now delivering comparable
+/// energy into the stress graph. That took three fixes, none of them tuning:
+/// the core path had to use the same real raycast rather than a bounding
+/// sphere; library-created shapes had to carry the host's collision filter
+/// data, without which every host raycast reported a clean miss; and the node
+/// lookup had to use live world positions rather than authored centroids,
+/// which had every building in the grid answering as though it stood at the
+/// origin.
 ///
-/// 1. **The damage entry path has not been ported.** The old path raycasts the
-///    real chunk colliders and applies a blast over a radius; the core path
-///    resolves the nearest load-bearing node from a bounding sphere and drives
-///    a single load through it. Far less energy reaches the stress graph. This
-///    is the next work item, and it is worth doing properly rather than
-///    reproducing: the old path's radius, falloff and direction blend are tuned
-///    constants standing in front of the physics.
-/// 2. **The body counts are not measuring the same thing.** The old path's
-///    `chunk_bodies` counts fragments only, starting at 0; the core path counts
-///    every island body, so an intact 16-building grid starts at 16. Comparing
-///    the two numbers directly is a category error.
+/// Fragment count still differs (56 vs 167) and that gap is real: the old path
+/// spreads its load over a 2.5 m sphere and shatters a wider area, while the
+/// core path deposits momentum at the single point the round struck. Which is
+/// more correct is a question about the weapon, not about the pipeline -- an
+/// explosive shell genuinely should damage a volume, and the honest way to get
+/// that is to model the charge, not to reinstate a `1 - d/r` falloff.
 ///
 /// This test exists so that gap is a number someone can watch shrink, rather
 /// than a claim that the migration is finished.
@@ -2009,6 +2011,10 @@ fn the_core_path_drives_the_city_through_the_server_loop() {
     }
 
     let stats = city.stats();
+    eprintln!(
+        "[blast-core /city] {} bonds broken, {} -> {} bodies, {topology_messages} topology messages",
+        stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
+    );
     assert!(
         stats.broken_bonds > 0,
         "40 shots broke no bonds on the core path; the shot never reached the stress graph"

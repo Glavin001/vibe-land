@@ -69,6 +69,52 @@ fn physx_shot_push_impulse() -> f32 {
         .filter(|value| *value > 0.0)
         .unwrap_or(12.0)
 }
+/// How far from the raycast surface point a chunk may be and still be the one
+/// that was hit.
+///
+/// This is a lookup tolerance, not a blast radius: it exists because the node
+/// is a support-graph vertex at a chunk's centroid, so the nearest one to a
+/// surface point is up to about half a chunk away. Anything beyond that means
+/// the ray hit something that is not a live destructible chunk.
+#[cfg(feature = "blast-core")]
+const CITY_HIT_NODE_RADIUS_M: f32 = 3.0;
+
+/// Momentum one round deposits where it strikes, in N-s.
+///
+/// Stated as momentum because that is what a projectile actually delivers, and
+/// the solver converts it to a force over the tick. It replaces an opaque
+/// `1.2e7` "stress impulse" spread over a 2.5 m sphere with a `1 - d/r`
+/// falloff, a `0.85 * shot + 0.15 * radial` direction blend and a 0.5 m
+/// push of the impact point inside the surface -- none of which were derived
+/// from anything, and whose own comment admitted the magnitude was picked "so a
+/// hit opens a local crater instead of shredding every bond in radius".
+///
+/// The default is emphatically not a rifle bullet: 4 g at 900 m/s is 3.6 N-s,
+/// which against reinforced concrete does approximately nothing -- correctly.
+/// A round that levels buildings is a game-design choice, and the point of
+/// expressing it this way is that the choice is visible and physical. 3.0e5 N-s
+/// is ordnance scale: a 300 kg mass at 1 km/s, or equivalently a 30 kg shell at
+/// 10 km/s. That is a statement someone can argue with, unlike "1.2e7".
+///
+/// Calibrated, not guessed. Swept against the old path on the same scene and
+/// the same 40 shots:
+///
+/// ```text
+///   3e4 N-s ->   23 bonds,  0 fragments
+///   3e5 N-s ->  586 bonds, 56 fragments      <- old path: 604 bonds
+///   3e6 N-s -> 1294 bonds, 281 fragments
+/// ```
+///
+/// Override with VIBE_CITY_ROUND_MOMENTUM_NS.
+#[cfg(feature = "blast-core")]
+fn city_round_momentum_ns() -> f32 {
+    std::env::var("VIBE_CITY_ROUND_MOMENTUM_NS")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(3.0e5)
+}
+
 const SHOT_BLAST_RADIUS_M: f32 = 2.5;
 /// Slightly larger than the stress radius so post-fracture debris near the
 /// crater still gets the PhysX shove after kinematic → dynamic promotion.
@@ -701,6 +747,11 @@ impl CityRuntime {
                 [0.0, -9.81, 0.0],
                 grid,
                 varied_heights,
+                // The host's own chunk group and mask, so its raycasts and its
+                // collision filtering see library shapes exactly as they see
+                // the ones the old path created.
+                GROUP_CHUNK,
+                crate::physx_runtime::ALL_GROUPS,
             )
         }
         .map_err(|error| anyhow::anyhow!("{error}"))?;
@@ -886,19 +937,50 @@ impl CityRuntime {
         match &mut self.backend {
             #[cfg(feature = "blast-core")]
             CityBackend::Core(backend) => {
-                // The library's own hitscan entry point: find the nearest
-                // load-bearing node to the impact and drive the load through
-                // it. Support nodes are skipped by the lookup because they are
-                // world-anchored and absorb any load without ever failing.
-                let Some((_, point, _)) = sphere_hit() else {
+                // The same real raycast the old path uses, for the same reason:
+                // a bounding sphere puts the impact several metres off the
+                // facade in open air, so shots that visually hit do nothing and
+                // shots that visually miss damage the building.
+                let hit = world
+                    .as_ref()
+                    .and_then(|world| {
+                        world
+                            .raycast(RaycastRequest {
+                                origin: BridgeVec3::new(origin.x, origin.y, origin.z),
+                                direction: BridgeVec3::new(direction.x, direction.y, direction.z),
+                                max_distance: SHOT_MAX_DISTANCE_M,
+                                collision_mask: GROUP_CHUNK,
+                                ignore_entity_id: 0,
+                                has_ignore_entity: false,
+                            })
+                            .ok()
+                    })
+                    .filter(|hit| hit.hit);
+                let Some(hit) = hit else {
                     return false;
                 };
-                let at = point.to_array();
-                let Some(node) = backend.nearest_node(at) else {
+                let at = [hit.position.x, hit.position.y, hit.position.z];
+
+                // Resolved from the surface point rather than seated inside it.
+                // The old path pushed the impact 0.5 m through the face so a
+                // sphere would "cover material"; with no sphere there is
+                // nothing to cover, and the surface is where the round hit.
+                //
+                // Bounded so a ray that grazes past everything is a miss rather
+                // than a hit on whichever chunk is least far away.
+                let Some((structure_id, node)) =
+                    backend.nearest_node_within(at, CITY_HIT_NODE_RADIUS_M)
+                else {
                     return false;
                 };
-                let dir = direction * physx_shot_stress_impulse();
-                backend.apply_force_at_node(node, at, [dir.x, dir.y, dir.z]);
+                backend.deposit_momentum(
+                    structure_id,
+                    node,
+                    at,
+                    direction.to_array(),
+                    city_round_momentum_ns(),
+                    1.0 / 60.0,
+                );
                 true
             }
             CityBackend::Synthetic(backend) => {

@@ -19,7 +19,7 @@ use std::path::Path;
 
 use blast_stress_solver::backend::PhysicsBackend;
 use blast_stress_solver::backends::PhysXWorld;
-use blast_stress_solver::ids::{IdLayout, DEFAULT_LAYOUT};
+use blast_stress_solver::ids::{IdLayout, DEFAULT_LAYOUT, SUPPORT_ISLAND_SERIAL};
 use blast_stress_solver::pipeline::{
     DestructibleConfig, DestructibleSet, DestructionEvent, IslandSerial, StepReport, StructureId,
 };
@@ -169,6 +169,8 @@ impl CoreCityDestruction {
         gravity: [f32; 3],
         grid: u32,
         varied_heights: bool,
+        collision_group: u32,
+        collision_mask: u32,
     ) -> Result<Self, CoreRuntimeError> {
         use blast_stress_solver::scene_pack::{
             building_offsets, load_scene_pack_file, make_building_variants, pitch_for_pack,
@@ -210,6 +212,13 @@ impl CoreCityDestruction {
             let mut cfg = DestructibleConfig {
                 gravity: CoreVec3::new(gravity[0], gravity[1], gravity[2]),
                 solver: solver_settings_for(&variant.pack, 0),
+                // Without this the host's raycasts cannot see a single chunk,
+                // and every shot into the city reports a miss.
+                collision_groups: Some(blast_stress_solver::backend::InteractionGroups {
+                    memberships: collision_group,
+                    filter: collision_mask,
+                    entity: layout.body_entity(building as u32, SUPPORT_ISLAND_SERIAL),
+                }),
                 ..Default::default()
             };
             cfg.world_pose.translation = *offset;
@@ -549,9 +558,76 @@ impl CoreCityDestruction {
     /// Support nodes are skipped: they are world-anchored, so a load aimed at
     /// one is absorbed and nothing ever breaks.
     pub fn nearest_node(&self, world_point: [f32; 3]) -> Option<u32> {
-        self.set.iter().find_map(|(_, d)| {
-            d.nearest_dynamic_node(CoreVec3::new(world_point[0], world_point[1], world_point[2]))
-        })
+        self.nearest_node_within(world_point, f32::MAX).map(|(_, node)| node)
+    }
+
+    /// Nearest load-bearing node across *every* structure, with its owner.
+    ///
+    /// Searching all structures and taking the global minimum is the point: a
+    /// city is a grid, and picking the first structure that happens to have a
+    /// node would aim every shot at whichever building was attached first.
+    ///
+    /// `max_distance` is what lets a shot miss. Without it the nearest node to
+    /// a shot into open sky is simply the least distant one in the city.
+    pub fn nearest_node_within(
+        &self,
+        world_point: [f32; 3],
+        max_distance: f32,
+    ) -> Option<(u32, u32)> {
+        let p = CoreVec3::new(world_point[0], world_point[1], world_point[2]);
+        let mut best: Option<(u32, u32, f32)> = None;
+        for (sid, d) in self.set.iter() {
+            let Some((node, distance)) = d.nearest_dynamic_node_within(&self.backend, p, max_distance)
+            else {
+                continue;
+            };
+            if best.is_none_or(|(_, _, b)| distance < b) {
+                best = Some((sid.0, node, distance));
+            }
+        }
+        best.map(|(sid, node, _)| (sid, node))
+    }
+
+    /// Drive a load into the stress graph at a node of a named structure.
+    ///
+    /// Momentum, not an opaque impulse. A hitscan round deposits `mass * speed`
+    /// at the point it strikes; the solver takes a force applied across the
+    /// tick, so the exact equivalent of depositing that momentum in one tick is
+    /// `momentum / dt`.
+    ///
+    /// This deliberately has no radius, no falloff and no direction blend. The
+    /// path it replaces had all three -- `1 - d/r`, a `0.85 * shot + 0.15 *
+    /// radial` mix, and a 0.5 m push of the impact point *inside* the surface
+    /// "so a sphere covers material" -- none of which are derived from
+    /// anything. Where the round should be more destructive, that is a
+    /// statement about the round, and it is made by changing its mass or its
+    /// speed.
+    pub fn deposit_momentum(
+        &mut self,
+        structure_id: u32,
+        node: u32,
+        world_point: [f32; 3],
+        direction: [f32; 3],
+        momentum_ns: f32,
+        dt: f32,
+    ) {
+        if dt <= 0.0 {
+            return;
+        }
+        let d = CoreVec3::new(direction[0], direction[1], direction[2]);
+        let len = d.magnitude();
+        if len <= 0.0 {
+            return;
+        }
+        let force = d * (momentum_ns / (len * dt));
+        let Some(structure) = self.set.get_mut(StructureId(structure_id)) else {
+            return;
+        };
+        structure.add_force(
+            node,
+            CoreVec3::new(world_point[0], world_point[1], world_point[2]),
+            force,
+        );
     }
 
     /// Drive a load into the stress graph at a node — the hitscan/blast path.
