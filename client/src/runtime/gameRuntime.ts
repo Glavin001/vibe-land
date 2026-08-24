@@ -1,4 +1,5 @@
 import { resolveMultiplayerBackend } from '../app/runtimeConfig';
+import { setActiveSession, setConnectPhase, setMatchStats } from '../app/connectPhase';
 import { initSharedPhysics, WasmSimWorld, type WasmDebugRenderBuffers, type WasmSimWorldInstance } from '../wasm/sharedPhysics';
 import { LocalPracticeClient, type PracticeBotHost } from '../net/localPracticeClient';
 import { NetDebugTelemetry } from '../net/debugTelemetry';
@@ -31,11 +32,24 @@ import { PredictionManager } from '../physics/predictionManager';
 import { VehiclePredictionManager } from '../physics/vehiclePredictionManager';
 import { DynamicBodyPredictionManager } from '../physics/dynamicBodyPredictionManager';
 import { CosmeticPhysicsWorld } from './cosmeticPhysicsWorld';
-import type { RenderBlock } from '../world/voxelWorld';
+import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
 import { decodeVehicleDebugSnapshot, type VehicleDebugSnapshot } from './vehicleDebug';
 import { FixedInputBundler } from './fixedInputBundler';
+import { ThinAuthoritativePredictor } from '../physics/thinAuthoritativePredictor';
+import { FLAG_IN_VEHICLE, FLAG_ON_GROUND } from '../net/protocol';
+import { fetchSessionConfig, type SessionConfigResponse } from '../net/webTransportClient';
+import { CityClient } from '../city/cityClient';
+import { PKT_CITY_MANIFEST, PKT_MATCH_STATS } from '../net/sharedConstants';
+import { decodeCityManifestPayload, fetchCityManifest } from '../city/manifest';
+import { CLIENT_MAX_CATCHUP_STEPS, FIXED_DT } from './clientSimConstants';
+import {
+  shouldCreateGameplayWasmWorld,
+  usesThinAuthoritativeRuntime,
+} from './movementRuntimeStrategy';
 
 type MultiplayerBackend = ReturnType<typeof resolveMultiplayerBackend>;
+const THIN_PRESENTATION_PREDICTION_ENABLED =
+  import.meta.env.VITE_THIN_PRESENTATION_PREDICTION !== '0';
 
 export type RuntimeDebugStats = {
   pendingInputs: number;
@@ -118,6 +132,8 @@ export interface GameRuntimeClient {
   connect(): Promise<void>;
   disconnect(): void;
   resetInputState(): void;
+  /** Destructible-city client, when the match is a city world (server-authoritative). */
+  getCityClient?(): CityClient | null;
   submitInput(frameDeltaSec: number, input: SemanticInputState): void;
   peekNextInputSeq(): number;
   supportsBlockEditing(): boolean;
@@ -606,6 +622,10 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
+    // Runs on every connect, including the thin-authoritative path that needs
+    // no local gameplay simulation, so the WASM module is always on the
+    // critical path to the transport.
+    setConnectPhase('building local world');
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
     try {
       const client = await LocalPracticeClient.connect({
@@ -967,8 +987,24 @@ export class LocalGameRuntime extends BaseGameRuntime {
   }
 }
 
+export type MultiplayerRuntimeOptions = {
+  /**
+   * Connect metadata handed over by the control plane. Present only for
+   * matchmade sessions; when absent the runtime fetches it from the server
+   * itself, which is the direct-connect path used in local development.
+   */
+  sessionConfig?: SessionConfigResponse;
+};
+
 export class MultiplayerGameRuntime extends BaseGameRuntime {
   private client: NetcodeClient | null = null;
+  private cityClient: CityClient | null = null;
+  private pendingCityPackets: Uint8Array[] = [];
+  private pushedCityManifest: Uint8Array | null = null;
+  private resolvePushedManifest: (() => void) | null = null;
+  private readonly pushedManifestArrived = new Promise<void>((resolve) => {
+    this.resolvePushedManifest = resolve;
+  });
   private sim: WasmSimWorldInstance | null = null;
   private cosmeticWorld: CosmeticPhysicsWorld | null = null;
   private prediction: PredictionManager | null = null;
@@ -977,6 +1013,78 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   private pendingWorldPackets: ServerWorldPacket[] = [];
   private lastPredictedDynamicShot: { bodyId: number; atMs: number } | null = null;
   private readonly knownVehicleIds = new Set<number>();
+  private readonly authoritativeInputBundler = new FixedInputBundler(
+    FIXED_DT,
+    CLIENT_MAX_CATCHUP_STEPS,
+  );
+  private readonly thinPredictor = new ThinAuthoritativePredictor();
+  private thinAuthoritative = false;
+  private thinPosition: [number, number, number] | null = null;
+  private thinVoxelWorld: ClientVoxelWorld | null = null;
+
+  getCityClient(): CityClient | null {
+    return this.cityClient;
+  }
+
+  /** After connect: if the session is a city world, fetch the manifest and
+   * bring up the city client, then drain any buffered city packets. */
+  /**
+   * Manifest from the session if the server pushed one, otherwise over HTTP.
+   *
+   * The push is the only path that works on a rented box, but the fetch still
+   * matters: it keeps same-origin development working and lets a client talk to
+   * a server built before the manifest packet existed.
+   */
+  private async loadCityManifest(manifestHash: string) {
+    if (!this.pushedCityManifest) {
+      // It may still be in flight -- it is sent immediately after Welcome.
+      await Promise.race([
+        this.pushedManifestArrived,
+        new Promise((resolve) => setTimeout(resolve, 4000)),
+      ]);
+    }
+    if (this.pushedCityManifest) {
+      return decodeCityManifestPayload(this.pushedCityManifest, manifestHash);
+    }
+    return fetchCityManifest('', manifestHash);
+  }
+
+  private async initCityClient(client: NetcodeClient): Promise<void> {
+    try {
+      let { cityWorld, manifestHash } = client.citySessionConfig();
+      if (!cityWorld) {
+        // WebSocket fallback has no cached WT session config — ask directly.
+        try {
+          const config = await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint);
+          cityWorld = Boolean(config.city_world && config.city_manifest_hash);
+          manifestHash = config.city_manifest_hash;
+        } catch {
+          /* not a city match or config unavailable */
+        }
+      }
+      if (!cityWorld || !manifestHash) {
+        this.pendingCityPackets = [];
+        return;
+      }
+      const manifest = await this.loadCityManifest(manifestHash);
+      console.info('[city] manifest loaded', {
+        hash: manifest.hashHex,
+        source: this.pushedCityManifest ? 'pushed over session' : 'fetched over HTTP',
+        structures: manifest.manifest.structures.length,
+        chunks: manifest.totalChunks,
+        bonds: manifest.totalBonds,
+      });
+      const cityClient = new CityClient(manifest, (bytes) => client.sendCityResync(bytes));
+      this.cityClient = cityClient;
+      const pending = this.pendingCityPackets.splice(0);
+      for (const bytes of pending) {
+        cityClient.handlePacket(bytes);
+      }
+    } catch (error) {
+      console.warn('[city] disabled — manifest unavailable', error);
+      this.pendingCityPackets = [];
+    }
+  }
 
   constructor(
     callbacks: GameRuntimeCallbacks,
@@ -984,6 +1092,7 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     private readonly matchId: string,
     private readonly worldJson: string | undefined,
     private readonly localRenderSmoothingEnabled: boolean,
+    private readonly options: MultiplayerRuntimeOptions = {},
   ) {
     super(callbacks);
   }
@@ -1053,28 +1162,54 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   async connect(): Promise<void> {
-    await initSharedPhysics();
+    // A control-plane-issued session arrives pre-resolved: the box serves a
+    // self-signed certificate, so fetching `/session-config` from it directly
+    // would be blocked by the browser even though WebTransport can pin it.
+    setConnectPhase('fetching session config');
+    const sessionConfig =
+      this.options.sessionConfig ??
+      (await fetchSessionConfig(this.matchId, this.backend.sessionConfigEndpoint));
+    this.thinAuthoritative = usesThinAuthoritativeRuntime(sessionConfig);
+    // A matchmade session runs on a box this page cannot reach over HTTP, so
+    // its per-match stats are simply unavailable here.
+    setMatchStats(null);
+    setActiveSession({
+      matchId: this.matchId,
+      statsBaseUrl: this.options.sessionConfig ? null : '',
+    });
 
-    const sim = new WasmSimWorld();
-    if (this.worldJson) {
-      sim.loadWorldDocument(this.worldJson);
-    } else {
-      sim.seedDemoTerrain();
+    let sim: WasmSimWorldInstance | null = null;
+    if (shouldCreateGameplayWasmWorld(sessionConfig)) {
+      setConnectPhase('loading physics');
+      await initSharedPhysics();
+      sim = new WasmSimWorld();
+      if (this.worldJson) {
+        sim.loadWorldDocument(this.worldJson);
+      } else {
+        sim.seedDemoTerrain();
+      }
+      sim.spawnPlayer(0, 2, 0);
+      sim.rebuildBroadPhase();
+      this.sim = sim;
     }
-    sim.spawnPlayer(0, 2, 0);
-    sim.rebuildBroadPhase();
-    this.sim = sim;
     this.cosmeticWorld = await CosmeticPhysicsWorld.create(this.worldJson);
 
     try {
-      this.prediction = new PredictionManager(sim);
-      this.prediction.enableTerrainWorld();
-      this.vehiclePrediction = new VehiclePredictionManager(sim);
-      this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
-      this.setRenderBlocks(this.prediction.getRenderBlocks());
+      if (sim) {
+        this.prediction = new PredictionManager(sim);
+        this.prediction.enableTerrainWorld();
+        this.vehiclePrediction = new VehiclePredictionManager(sim);
+        this.dynamicBodiesPrediction = new DynamicBodyPredictionManager(sim);
+        this.setRenderBlocks(this.prediction.getRenderBlocks());
+      } else {
+        this.authoritativeInputBundler.reset();
+        this.thinPredictor.reset();
+        this.thinVoxelWorld = new ClientVoxelWorld(null, false);
+      }
 
       const client = new NetcodeClient({
         onWelcome: (playerId) => {
+          setConnectPhase(null);
           this.syncState();
           this.callbacks.onWelcome(playerId);
         },
@@ -1109,6 +1244,32 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
             this.callbacks.onSnapshot?.();
           }
         },
+        onCityPacket: (bytes) => {
+          if (bytes.length > 1 && bytes[0] === PKT_MATCH_STATS) {
+            try {
+              setMatchStats(JSON.parse(new TextDecoder().decode(bytes.subarray(1))));
+            } catch (error) {
+              console.warn('[stats] unreadable match stats packet', error);
+            }
+            return;
+          }
+          if (bytes.length > 1 && bytes[0] === PKT_CITY_MANIFEST) {
+            // The manifest describes the geometry every other city packet
+            // refers to, so it is consumed here rather than buffered.
+            this.pushedCityManifest = bytes.subarray(1);
+            this.resolvePushedManifest?.();
+            return;
+          }
+          if (this.cityClient) {
+            this.cityClient.handlePacket(bytes);
+          } else {
+            // Buffer until the manifest fetch finishes after welcome.
+            this.pendingCityPackets.push(bytes);
+            if (this.pendingCityPackets.length > 256) {
+              this.pendingCityPackets.shift();
+            }
+          }
+        },
       });
 
       this.client = client;
@@ -1126,7 +1287,18 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
       const identity = 'player-' + Math.random().toString(36).slice(2, 8);
       const token = 'mvp-token';
       const wsUrl = this.backend.createMatchWebSocketUrl(this.matchId, identity, token);
-      await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint);
+      // Covers both opening the transport and waiting to be admitted: the
+      // call now returns only once the Welcome has arrived, and `onWelcome`
+      // clears the phase.
+      setConnectPhase('waiting for server welcome');
+      await client.connectWithFallback(this.matchId, wsUrl, this.backend.sessionConfigEndpoint, {
+        sessionConfig: this.options.sessionConfig,
+        // The WebSocket fallback would need to reach the same self-signed
+        // origin over TLS the browser will not trust, so on a control-plane
+        // session it can only produce a confusing second failure.
+        allowWsFallback: this.options.sessionConfig === undefined,
+      });
+      void this.initCityClient(client);
     } catch (error) {
       this.client?.disconnect();
       this.client = null;
@@ -1156,6 +1328,11 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
     this.cosmeticWorld = null;
     this.sim = null;
     this.knownVehicleIds.clear();
+    this.thinAuthoritative = false;
+    this.thinPosition = null;
+    this.thinPredictor.reset();
+    this.authoritativeInputBundler.reset();
+    this.thinVoxelWorld = null;
   }
 
   resetInputState(): void {
@@ -1163,6 +1340,35 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   submitInput(frameDeltaSec: number, input: SemanticInputState): void {
+    if (this.thinAuthoritative) {
+      const cmds = this.authoritativeInputBundler.produce(frameDeltaSec, input);
+      if (cmds.length > 0) {
+        this.sendInputs(cmds);
+      }
+      const client = this.client;
+      if (client && client.playerId !== 0) {
+        const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+        const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+        if (sample) {
+          if (THIN_PRESENTATION_PREDICTION_ENABLED) {
+            this.thinPredictor.observeAuthoritative(
+              {
+                position: sample.position,
+                velocity: sample.velocity,
+                grounded: (sample.flags & FLAG_ON_GROUND) !== 0,
+                supportVelocity: client.localSupport?.velocity,
+              },
+              frameDeltaSec,
+            );
+            this.thinPosition = this.thinPredictor.update(sample.position, frameDeltaSec, input);
+          } else {
+            this.thinPosition = sample.position;
+          }
+          this.setLocalPosition(this.thinPosition);
+        }
+      }
+      return;
+    }
     if (this.isInVehicle()) {
       this.updateVehicle(frameDeltaSec, input, (cmds) => this.sendInputs(cmds));
       return;
@@ -1171,7 +1377,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   peekNextInputSeq(): number {
-    return this.prediction?.getNextSeq() ?? 0;
+    return this.thinAuthoritative
+      ? this.authoritativeInputBundler.peekNextSeq()
+      : (this.prediction?.getNextSeq() ?? 0);
   }
 
   supportsBlockEditing(): boolean {
@@ -1315,6 +1523,17 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyWorldPacket(packet: ServerWorldPacket): void {
+    if (this.thinAuthoritative) {
+      const world = this.thinVoxelWorld;
+      if (!world) return;
+      if (packet.type === 'chunkFull') {
+        world.applyFullChunk(packet);
+      } else {
+        world.applyChunkDiff(packet);
+      }
+      this.setRenderBlocks(world.getRenderBlocks());
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       this.pendingWorldPackets.push(packet);
@@ -1344,6 +1563,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getPosition(): [number, number, number] | null {
+    if (this.thinAuthoritative) {
+      return this.thinPosition ?? this.state.localPosition;
+    }
     const prediction = this.prediction;
     if (!prediction) {
       return null;
@@ -1438,6 +1660,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   buildBlockEdit(cell: [number, number, number], op: number, material: number): BlockEditCmd | null {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.buildEditRequest(cell[0], cell[1], cell[2], op, material) ?? null;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return null;
@@ -1446,6 +1671,13 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   applyOptimisticEdit(cmd: BlockEditCmd): void {
+    if (this.thinAuthoritative) {
+      this.thinVoxelWorld?.applyOptimisticEdit(cmd);
+      if (this.thinVoxelWorld) {
+        this.setRenderBlocks(this.thinVoxelWorld.getRenderBlocks());
+      }
+      return;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return;
@@ -1455,6 +1687,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getBlockMaterial(cell: [number, number, number]): number {
+    if (this.thinAuthoritative) {
+      return this.thinVoxelWorld?.getMaterial(cell[0], cell[1], cell[2]) ?? 0;
+    }
     const prediction = this.prediction;
     if (!prediction || !prediction.hasEditableWorld()) {
       return 0;
@@ -1467,11 +1702,28 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   advanceDynamicBodies(frameDeltaSec: number, allowProxyStep: boolean): void {
-    this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    if (!this.thinAuthoritative) {
+      this.dynamicBodiesPrediction?.advance(frameDeltaSec, allowProxyStep);
+    }
     this.cosmeticWorld?.advance(frameDeltaSec);
   }
 
   getDynamicBodyRenderState(id: number): DynamicBodyStateMeters | null {
+    if (this.thinAuthoritative) {
+      const renderTimeUs = this.client?.getDynamicBodyRenderTimeUs();
+      const sample = this.client?.sampleRemoteDynamicBody(id, renderTimeUs);
+      const authoritative = this.dynamicBodies.get(id);
+      if (!authoritative) return null;
+      return sample
+        ? {
+            ...authoritative,
+            position: sample.position,
+            quaternion: sample.quaternion,
+            velocity: sample.velocity,
+            angularVelocity: sample.angularVelocity,
+          }
+        : authoritative;
+    }
     return this.dynamicBodiesPrediction?.getRenderedBodyState(id) ?? null;
   }
 
@@ -1634,7 +1886,21 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   getDebugStats(): RuntimeDebugStats {
     const prediction = this.prediction;
     if (!prediction) {
-      return defaultDebugStats();
+      const stats = defaultDebugStats();
+      if (this.thinAuthoritative) {
+        stats.playerCorrectionMagnitude = THIN_PRESENTATION_PREDICTION_ENABLED
+          ? this.thinPredictor.correctionMagnitude()
+          : 0;
+        const client = this.client;
+        if (client && client.playerId !== 0) {
+          const renderTimeUs = client.serverClock.renderTimeUs(client.interpolationDelayMs * 1000);
+          const sample = client.interpolator.sample(client.playerId, renderTimeUs);
+          if (sample) {
+            stats.velocity = sample.velocity;
+          }
+        }
+      }
+      return stats;
     }
     const offset = prediction.getCorrectionOffset();
     const playerPosition = prediction.getPosition();
@@ -1811,10 +2077,22 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   getVehiclePose(): { position: [number, number, number]; quaternion: [number, number, number, number] } | null {
+    if (this.thinAuthoritative) {
+      const vehicleId = this.client?.getLocalDrivenVehicleId();
+      if (vehicleId == null) return null;
+      const renderTimeUs = this.serverClock.renderTimeUs(this.interpolationDelayMs * 1000);
+      const sample = this.client?.sampleRemoteVehicle(vehicleId, renderTimeUs);
+      return sample
+        ? { position: sample.position, quaternion: sample.quaternion }
+        : null;
+    }
     return this.vehiclePrediction?.getInterpolatedChassisPose() ?? null;
   }
 
   getDrivenVehicleId(): number | null {
+    if (this.thinAuthoritative) {
+      return this.client?.getLocalDrivenVehicleId() ?? null;
+    }
     return this.vehiclePrediction?.getVehicleId() ?? null;
   }
 
@@ -1823,6 +2101,9 @@ export class MultiplayerGameRuntime extends BaseGameRuntime {
   }
 
   isInVehicle(): boolean {
+    if (this.thinAuthoritative) {
+      return (this.localPlayerFlags & FLAG_IN_VEHICLE) !== 0;
+    }
     return this.vehiclePrediction?.isActive() ?? false;
   }
 

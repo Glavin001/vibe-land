@@ -1,5 +1,7 @@
 import { forwardRef, memo, useEffect, useMemo } from 'react';
 import type { MeshProps } from '@react-three/fiber';
+
+import { useShadowsEnabled } from '../app/renderQuality';
 import * as THREE from 'three';
 import type { WorldDocument, WorldTerrainTile, TerrainMaterial } from '../world/worldDocument';
 import {
@@ -174,11 +176,15 @@ const TerrainTileMesh = memo(function TerrainTileMesh({
     geometry.dispose();
   }, [geometry]);
 
+  // Follows the shadows toggle: a 512 m receiver is pure shadow-pass cost when
+  // nothing is casting, and it was always-on even with city shadows disabled.
+  const receiveShadow = useShadowsEnabled();
+
   return (
     <mesh
       geometry={geometry}
       material={material}
-      receiveShadow
+      receiveShadow={receiveShadow}
       userData={{ terrainTileX: tile.tileX, terrainTileZ: tile.tileZ }}
       {...meshProps}
     />

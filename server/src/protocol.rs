@@ -11,6 +11,8 @@ pub use vibe_land_shared::unit_conv::*;
 #[derive(Clone, Debug)]
 pub struct ClientHello {
     pub match_id: String,
+    pub protocol_version: u16,
+    pub movement_capabilities: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -23,6 +25,9 @@ pub enum ClientPacket {
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
     DebugStats { correction_m: f32, physics_ms: f32 },
+    /// City topology stream gap detected client-side; server replies with a
+    /// fresh PKT_CITY_BOOTSTRAP.
+    CityResyncRequest { last_topo_seq: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +58,7 @@ pub enum ClientDatagram {
     VehicleExit(VehicleExitCmd),
     Ping(u32),
     DebugStats { correction_m: f32, physics_ms: f32 },
+    CityResyncRequest { last_topo_seq: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +90,11 @@ pub struct SelfPlayerStateV2 {
     pub pitch_i16: i16,
     pub hp: u8,
     pub flags: u8,
+    pub support_handle: u16,
+    pub support_local_q2_5mm: [i16; 3],
+    pub support_velocity_cms: [i16; 3],
+    pub support_flags: u8,
+    pub support_angular_velocity_mrads: [i16; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -217,7 +228,22 @@ pub fn decode_client_hello(bytes: &[u8]) -> Result<ClientHello> {
     let match_len = buf.get_u16_le() as usize;
     ensure!(buf.remaining() >= match_len, "truncated match id");
     let match_id = std::str::from_utf8(&buf[..match_len])?.to_string();
-    Ok(ClientHello { match_id })
+    buf.advance(match_len);
+    let protocol_version = if buf.remaining() >= 2 {
+        buf.get_u16_le()
+    } else {
+        1
+    };
+    let movement_capabilities = if buf.has_remaining() {
+        buf.get_u8()
+    } else {
+        CLIENT_MOVEMENT_CAP_FULL_PREDICTION
+    };
+    Ok(ClientHello {
+        match_id,
+        protocol_version,
+        movement_capabilities,
+    })
 }
 
 pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
@@ -308,6 +334,12 @@ pub fn decode_client_datagram(bytes: &[u8]) -> Result<ClientDatagram> {
                 physics_ms,
             }
         }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync datagram");
+            ClientDatagram::CityResyncRequest {
+                last_topo_seq: buf.get_u32_le(),
+            }
+        }
         other => bail!("unknown client datagram packet kind {other}"),
     })
 }
@@ -329,6 +361,9 @@ pub fn client_datagram_to_packet(d: ClientDatagram) -> ClientPacket {
             correction_m,
             physics_ms,
         },
+        ClientDatagram::CityResyncRequest { last_topo_seq } => {
+            ClientPacket::CityResyncRequest { last_topo_seq }
+        }
     }
 }
 
@@ -338,6 +373,9 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         ServerReliablePacket::Welcome(pkt) => {
             out.put_u8(PKT_WELCOME);
             out.put_u32_le(pkt.player_id);
+            out.put_u16_le(pkt.protocol_version);
+            out.put_u8(pkt.physics_backend);
+            out.put_u8(pkt.client_movement_mode);
             out.put_u16_le(pkt.sim_hz);
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
@@ -433,7 +471,10 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         }
         ServerReliablePacket::PlayerRoster(pkt) => {
             out.put_u8(PKT_PLAYER_ROSTER);
-            out.put_u8(pkt.entries.len() as u8);
+            out.put_u8(
+                u8::try_from(pkt.entries.len())
+                    .expect("player roster exceeds snapshot V2 handle capacity"),
+            );
             for entry in &pkt.entries {
                 out.put_u8(entry.handle);
                 out.put_u32_le(entry.player_id);
@@ -441,7 +482,10 @@ pub fn encode_server_reliable(packet: &ServerReliablePacket) -> Vec<u8> {
         }
         ServerReliablePacket::DynamicBodyMeta(pkt) => {
             out.put_u8(PKT_DYNAMIC_BODY_META);
-            out.put_u16_le(pkt.entries.len() as u16);
+            out.put_u16_le(
+                u16::try_from(pkt.entries.len())
+                    .expect("dynamic metadata exceeds snapshot V2 handle capacity"),
+            );
             for entry in &pkt.entries {
                 out.put_u16_le(entry.handle);
                 out.put_u32_le(entry.body_id);
@@ -534,6 +578,17 @@ pub fn encode_server_datagram(packet: &ServerDatagramPacket) -> Vec<u8> {
             out.put_i16_le(s.pitch_i16);
             out.put_u8(s.hp);
             out.put_u8(s.flags);
+            out.put_u16_le(s.support_handle);
+            for value in s.support_local_q2_5mm {
+                out.put_i16_le(value);
+            }
+            for value in s.support_velocity_cms {
+                out.put_i16_le(value);
+            }
+            out.put_u8(s.support_flags);
+            for value in s.support_angular_velocity_mrads {
+                out.put_i16_le(value);
+            }
 
             for player in &pkt.remote_players {
                 out.put_u8(player.handle);
@@ -688,6 +743,12 @@ pub fn decode_client_packet(bytes: &[u8]) -> Result<ClientPacket> {
                 physics_ms,
             }
         }
+        PKT_CITY_RESYNC_REQUEST => {
+            ensure!(buf.remaining() >= 4, "short city resync packet");
+            ClientPacket::CityResyncRequest {
+                last_topo_seq: buf.get_u32_le(),
+            }
+        }
         other => bail!("unknown client packet kind {other}"),
     })
 }
@@ -742,6 +803,9 @@ pub fn encode_server_packet(packet: &ServerPacket) -> Vec<u8> {
         ServerPacket::Welcome(pkt) => {
             out.put_u8(PKT_WELCOME);
             out.put_u32_le(pkt.player_id);
+            out.put_u16_le(pkt.protocol_version);
+            out.put_u8(pkt.physics_backend);
+            out.put_u8(pkt.client_movement_mode);
             out.put_u16_le(pkt.sim_hz);
             out.put_u16_le(pkt.snapshot_hz);
             out.put_u64_le(pkt.server_time_us);
@@ -927,6 +991,9 @@ mod tests {
     fn welcome_encode_decode_roundtrip() {
         let packet = ServerPacket::Welcome(WelcomePacket {
             player_id: 42,
+            protocol_version: PROTOCOL_VERSION,
+            physics_backend: PHYSICS_BACKEND_RAPIER,
+            client_movement_mode: CLIENT_MOVEMENT_FULL_PREDICTION,
             sim_hz: 60,
             snapshot_hz: 30,
             server_time_us: 5_000_000,
@@ -936,7 +1003,8 @@ mod tests {
         assert_eq!(encoded[0], PKT_WELCOME);
         let view = &encoded[1..];
         assert_eq!(u32::from_le_bytes([view[0], view[1], view[2], view[3]]), 42);
-        assert_eq!(u16::from_le_bytes([view[4], view[5]]), 60);
+        assert_eq!(u16::from_le_bytes([view[4], view[5]]), PROTOCOL_VERSION);
+        assert_eq!(u16::from_le_bytes([view[8], view[9]]), 60);
     }
 
     #[test]
@@ -983,6 +1051,28 @@ mod tests {
         let encoded = encode_server_packet(&packet);
         let view = &encoded[1..];
         assert_eq!(u16::from_le_bytes([view[14], view[15]]), 0);
+    }
+
+    #[test]
+    fn snapshot_v2_encodes_complete_moving_support_state() {
+        let packet = ServerPacket::SnapshotV2(SnapshotV2Packet {
+            self_state: SelfPlayerStateV2 {
+                support_handle: 0x8003,
+                support_local_q2_5mm: [400, -200, 100],
+                support_velocity_cms: [150, 0, -50],
+                support_flags: 1,
+                support_angular_velocity_mrads: [250, -500, 750],
+                ..SelfPlayerStateV2::default()
+            },
+            ..SnapshotV2Packet::default()
+        });
+        let encoded = encode_server_packet(&packet);
+        assert_eq!(encoded[0], PKT_SNAPSHOT_V2);
+        assert_eq!(u16::from_le_bytes([encoded[35], encoded[36]]), 0x8003);
+        assert_eq!(encoded[49], 1);
+        assert_eq!(i16::from_le_bytes([encoded[50], encoded[51]]), 250);
+        assert_eq!(i16::from_le_bytes([encoded[52], encoded[53]]), -500);
+        assert_eq!(i16::from_le_bytes([encoded[54], encoded[55]]), 750);
     }
 
     #[test]

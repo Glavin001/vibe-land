@@ -1,0 +1,33 @@
+{
+  "name": "city-downtown-idle",
+  "description": "Dense downtown (27 buildings, 24,105 chunks, 131x153 m, 84 m spire) standing under its own weight with no shots fired.",
+  "symptom": [
+    "jitter",
+    "freeze",
+    "bandwidth",
+    "teleporting"
+  ],
+  "path": "/city?portal=true",
+  "matchId": "city-downtown-idle-{iter}",
+  "durationMs": 60000,
+  "join": "auto",
+  "serverEnv": {
+    "VIBE_PHYSICS_BACKEND": "physx_gpu",
+    "WT_STRICT_SNAPSHOT_DATAGRAMS": "1",
+    "VIBE_CITY_SCENE": "fractured-downtown.json",
+    "VIBE_CITY_GRID": "1",
+    "VIBE_CITY_STRESS_LIMIT_SCALE": "1.0"
+  },
+  "clients": [
+    {
+      "role": "observer",
+      "drive": [
+        {
+          "at": 3000,
+          "cmd": "faceCity"
+        }
+      ]
+    }
+  ],
+  "iterations": 1
+}

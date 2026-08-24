@@ -1,8 +1,8 @@
 use std::f32::consts::PI;
 
 use vibe_land_shared::world_document::{
-    DynamicEntity, DynamicEntityKind, SpawnArea, WorldDocument, WorldDocumentError, WorldMeta,
-    WorldTerrain, WorldTerrainTile,
+    DynamicEntity, DynamicEntityKind, StaticProp, StaticPropKind, WorldDocument,
+    WorldDocumentError, WorldMeta, WorldTerrain, WorldTerrainTile,
 };
 
 use crate::movement::PhysicsArena;
@@ -11,6 +11,21 @@ pub const FLAT_VEHICLE_TEST_MATCH_ID: &str = "flat_vehicle_test";
 pub const VEHICLE_BUMPS_TEST_MATCH_ID: &str = "vehicle_bumps_test";
 const BENCHMARK_TERRAIN_GRID_SIZE: usize = 129;
 const BENCHMARK_TERRAIN_HALF_EXTENT_M: f32 = 256.0;
+/// Solid ground slab under the city.
+///
+/// Sized for where debris actually goes, not for where the buildings are. The
+/// grid is only ~36 m half-extent, but a chunk that reaches the slab's edge
+/// falls off it and then free-falls forever: nothing slows it, because friction
+/// only acts on contact. A measured escapee was at x=-46, z=+1052, y=-2280 --
+/// a kilometre out and 2.3 km down, still travelling. The client renders that
+/// faithfully, which is what "chunks below ground" has been reporting.
+///
+/// A static box costs one collider and no per-tick work, so the cheap fix is to
+/// make the floor bigger than anything can cross in a match rather than to
+/// catch escapees afterwards. Retiring out-of-bounds bodies is still the
+/// principled fix and needs the retirement path, which is dead code today.
+const CITY_GROUND_HALF_EXTENT_M: f32 = 2000.0;
+const CITY_GROUND_THICKNESS_M: f32 = 20.0;
 
 pub fn seed_default_world(arena: &mut PhysicsArena) -> Result<(), WorldDocumentError> {
     let world = WorldDocument::demo();
@@ -34,9 +49,71 @@ fn benchmark_world_document(match_id: &str) -> Option<WorldDocument> {
         Some(flat_vehicle_benchmark_world())
     } else if match_id.starts_with(VEHICLE_BUMPS_TEST_MATCH_ID) {
         Some(vehicle_bumps_benchmark_world())
+    } else if match_id.starts_with(crate::city::CITY_MATCH_PREFIX) {
+        Some(city_world())
     } else {
         None
     }
+}
+
+/// Open flat terrain for the destructible city. The buildings themselves live
+/// in the destruction runtime (PhysX/Blast or synthetic), not the movement
+/// arena; spawn areas ring the 4×4 grid (half extent 27 m + tallest building
+/// footprint) so players never spawn inside a structure.
+fn city_world() -> WorldDocument {
+    let mut world = benchmark_vehicle_world(
+        "Destructible City",
+        "Flat open world hosting the destructible mini-city grid.",
+        BENCHMARK_TERRAIN_GRID_SIZE,
+        BENCHMARK_TERRAIN_HALF_EXTENT_M,
+        vec![0.0; BENCHMARK_TERRAIN_GRID_SIZE * BENCHMARK_TERRAIN_GRID_SIZE],
+    );
+    // No vehicle. The benchmark template parks one at the origin -- the centre
+    // of the city grid -- and the vehicle sim keeps it permanently awake.
+    // PhysX sleeps bodies per contact island, so one always-awake actor
+    // resting among the rubble held every chunk touching that pile awake
+    // forever: the live server sat at 19k awake indefinitely while the
+    // vehicle-free bench slept the same demolition to zero in 22 seconds.
+    world.dynamic_entities.clear();
+    // Solid ground under the flat terrain.
+    //
+    // A PhysX heightfield is a surface, not a volume: anything that ends up
+    // beneath it keeps going. Debris from a collapse was doing exactly that,
+    // reaching -3627 m and still falling at the body velocity clamp, and
+    // bodies straddling the surface bounced in and out of it, which reads
+    // in-game as chunks vibrating up and down. Neither body ever comes to
+    // rest, so they also never sleep, and the match loop keeps simulating,
+    // snapshotting and encoding all of them.
+    //
+    // The city floor is perfectly flat, so a box is the honest collider for
+    // it: its top sits at y=0 with the terrain, and it is thick and wide
+    // enough that nothing can get underneath.
+    world.static_props.push(StaticProp {
+        id: 1,
+        kind: StaticPropKind::Cuboid,
+        position: [0.0, -CITY_GROUND_THICKNESS_M * 0.5, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+        half_extents: [
+            CITY_GROUND_HALF_EXTENT_M,
+            CITY_GROUND_THICKNESS_M * 0.5,
+            CITY_GROUND_HALF_EXTENT_M,
+        ],
+        material: None,
+    });
+
+    // Derived from the scene pack: a wider building pack widens the grid, and a
+    // fixed ring would drop players inside a tower.
+    let ring = crate::city::spawn_ring_radius_m();
+    world.spawn_areas = [[ring, 0.0], [-ring, 0.0], [0.0, ring], [0.0, -ring]]
+    .into_iter()
+    .enumerate()
+    .map(|(index, [x, z])| vibe_land_shared::world_document::SpawnArea {
+        id: index as u32 + 1,
+        position: [x, 0.5, z],
+        radius: 6.0,
+    })
+    .collect();
+    world
 }
 
 fn benchmark_vehicle_world(
@@ -123,37 +200,37 @@ fn vehicle_bumps_benchmark_world() -> WorldDocument {
 mod tests {
     use super::*;
     use crate::movement::MoveConfig;
+    use vibe_land_shared::world_document::SpawnArea;
 
     #[test]
     fn default_world_bootstrap_matches_expected_multiplayer_counts() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 51);
-        assert_eq!(arena.vehicles.len(), 2);
-        assert_eq!(arena.batteries.len(), 4);
+        assert_eq!(arena.counts(), (51, 2, 4));
     }
 
     #[test]
     fn default_world_stays_within_multiplayer_dynamic_budget() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
+        let (dynamic_count, vehicle_count, _) = arena.counts();
         assert!(
-            arena.dynamic.dynamic_bodies.len() <= 51,
+            dynamic_count <= 51,
             "default multiplayer world spawned {} dynamic rigid bodies; keep it at or under 51 to match the authored default world",
-            arena.dynamic.dynamic_bodies.len()
+            dynamic_count
         );
         assert!(
-            arena.vehicles.len() <= 2,
+            vehicle_count <= 2,
             "default multiplayer world spawned {} vehicles; keep it at or under 2",
-            arena.vehicles.len()
+            vehicle_count
         );
     }
 
     #[test]
     fn default_world_keeps_entities_supported_after_settling() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
 
         for _ in 0..300 {
@@ -185,12 +262,12 @@ mod tests {
 
     #[test]
     fn flat_vehicle_benchmark_world_keeps_single_vehicle_supported() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, FLAT_VEHICLE_TEST_MATCH_ID)
             .expect("instantiate flat vehicle benchmark world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 0);
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().0, 0);
+        assert_eq!(arena.counts().1, 1);
 
         for _ in 0..300 {
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
@@ -203,25 +280,25 @@ mod tests {
 
     #[test]
     fn benchmark_world_prefixes_create_isolated_vehicle_worlds() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, "flat_vehicle_test__run_123")
             .expect("instantiate isolated flat benchmark world");
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().1, 1);
 
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, "vehicle_bumps_test__run_123")
             .expect("instantiate isolated bumps benchmark world");
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().1, 1);
     }
 
     #[test]
     fn vehicle_bumps_benchmark_world_keeps_single_vehicle_supported() {
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_world_for_match(&mut arena, VEHICLE_BUMPS_TEST_MATCH_ID)
             .expect("instantiate vehicle bumps benchmark world");
 
-        assert_eq!(arena.dynamic.dynamic_bodies.len(), 0);
-        assert_eq!(arena.vehicles.len(), 1);
+        assert_eq!(arena.counts().0, 0);
+        assert_eq!(arena.counts().1, 1);
 
         for _ in 0..300 {
             arena.step_vehicles_and_dynamics(1.0 / 60.0);
@@ -261,12 +338,12 @@ mod tests {
             spawn_areas: vec![area],
         };
 
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         world.instantiate(&mut arena).expect("instantiate");
         arena.set_spawn_areas(world.spawn_areas.clone());
 
         assert_eq!(
-            arena.spawn_areas.len(),
+            arena.spawn_areas().len(),
             1,
             "spawn area should be registered on arena"
         );
@@ -285,10 +362,10 @@ mod tests {
     #[test]
     fn default_world_spawn_areas_are_loaded_and_player_lands_within_one() {
         // trail.world.json defines authored spawn areas; players must spawn inside one.
-        let mut arena = PhysicsArena::new(MoveConfig::default());
+        let mut arena = PhysicsArena::new_rapier(MoveConfig::default());
         seed_default_world(&mut arena).expect("instantiate default world");
         assert!(
-            !arena.spawn_areas.is_empty(),
+            !arena.spawn_areas().is_empty(),
             "default world should load spawn areas from trail.world.json"
         );
         let spawn = arena.spawn_player(42);
@@ -297,7 +374,7 @@ mod tests {
             "spawn should land above ground, got y={:.2}",
             spawn.y
         );
-        let inside_any_area = arena.spawn_areas.iter().any(|area| {
+        let inside_any_area = arena.spawn_areas().iter().any(|area| {
             let dx = spawn.x as f32 - area.position[0];
             let dz = spawn.z as f32 - area.position[2];
             dx * dx + dz * dz <= area.radius * area.radius
@@ -307,7 +384,7 @@ mod tests {
             "player spawn ({:.1}, {:.1}) not inside any of the {} spawn areas",
             spawn.x,
             spawn.z,
-            arena.spawn_areas.len(),
+            arena.spawn_areas().len(),
         );
     }
 }

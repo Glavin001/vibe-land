@@ -1,0 +1,88 @@
+{
+  "startedAt": "2026-08-09T13:27:34.099Z",
+  "finishedAt": "2026-08-09T13:27:48.268Z",
+  "config": {
+    "mode": "moq",
+    "viewers": 4,
+    "bodies": 1000,
+    "hz": 20,
+    "shards": 4,
+    "mbps": 5,
+    "warmupMs": 2000,
+    "durationMs": 5000,
+    "staggerMs": 0,
+    "render": false
+  },
+  "pass": true,
+  "allVisible": true,
+  "allStreaming": true,
+  "pageErrors": [
+    "viewer 0: Unexpected identifier 'a'",
+    "viewer 1: Unexpected identifier 'a'",
+    "viewer 2: Unexpected identifier 'a'",
+    "viewer 3: Unexpected identifier 'a'"
+  ],
+  "fatalPageErrors": [],
+  "timelineWithinOnePercent": 100,
+  "maxTimelineDivergence": 1,
+  "minDeliveryRatio": 0.9921156373193167,
+  "comparedFrames": 200,
+  "hashMismatches": 0,
+  "interViewerSkewP50Ms": 0,
+  "interViewerSkewP95Ms": 1,
+  "interViewerSkewP99Ms": 5,
+  "publisherToFirstViewerP95Ms": 2.492,
+  "publisherToLastViewerP50Ms": 2.205,
+  "publisherToLastViewerP95Ms": 4.402,
+  "publisherToLastViewerP99Ms": 10.289,
+  "viewers": [
+    {
+      "index": 0,
+      "latestFrame": 1365902996,
+      "datagrams": 8267,
+      "missingPackets": 47,
+      "visibleBodies": 1000,
+      "bodyUpdates": 217567,
+      "fps": 0,
+      "frameMs": 0,
+      "renderedUpdates": 0,
+      "latencyP95Ms": null
+    },
+    {
+      "index": 1,
+      "latestFrame": 1365902996,
+      "datagrams": 8010,
+      "missingPackets": 62,
+      "visibleBodies": 1000,
+      "bodyUpdates": 210784,
+      "fps": 0,
+      "frameMs": 0,
+      "renderedUpdates": 0,
+      "latencyP95Ms": null
+    },
+    {
+      "index": 2,
+      "latestFrame": 1365902996,
+      "datagrams": 7812,
+      "missingPackets": 44,
+      "visibleBodies": 1000,
+      "bodyUpdates": 205594,
+      "fps": 0,
+      "frameMs": 0,
+      "renderedUpdates": 0,
+      "latencyP95Ms": null
+    },
+    {
+      "index": 3,
+      "latestFrame": 1365902996,
+      "datagrams": 7550,
+      "missingPackets": 60,
+      "visibleBodies": 1000,
+      "bodyUpdates": 198676,
+      "fps": 0,
+      "frameMs": 0,
+      "renderedUpdates": 0,
+      "latencyP95Ms": null
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import type { SemanticInputState } from '../input/types';
 import { CLIENT_MAX_CATCHUP_STEPS, CLIENT_PREDICTION_MAX_PENDING_INPUTS, FIXED_DT } from '../runtime/clientSimConstants';
 import { buildInputFromButtons, buildInputFromState } from '../scene/inputBuilder';
 import { ClientVoxelWorld, type RenderBlock } from '../world/voxelWorld';
+import { recordEvent } from '../netlab/recorder';
 
 export { FIXED_DT, CLIENT_MAX_CATCHUP_STEPS as MAX_CATCHUP_STEPS };
 export const HARD_SNAP_DISTANCE = 3.0;
@@ -151,12 +152,14 @@ export class PredictionManager {
     const replayError = Math.hypot(dx, dy, dz);
 
     if (replayError > HARD_SNAP_DISTANCE) {
+      recordEvent('hard_snap', { distM: replayError, ackInputSeq });
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];
       this.prevPosition = [...this.currPosition] as [number, number, number];
       this.currVelocity = [...m.velocity] as [number, number, number];
       this.correctionOffset = [0, 0, 0];
     } else {
+      recordEvent('correction', { magM: replayError, ackInputSeq });
       this.correctionOffset = [-dx, -dy, -dz];
       const p = this.sim.getPosition();
       this.currPosition = [p[0], p[1], p[2]];

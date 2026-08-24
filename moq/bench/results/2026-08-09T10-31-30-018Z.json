@@ -1,0 +1,2425 @@
+{
+  "startedAt": "2026-08-09T10:31:30.428Z",
+  "relay": "https://draft-16.cloudflare.mediaoverquic.com",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "chrome": "151.0.7922.108"
+  },
+  "config": {
+    "warmupMs": 3000,
+    "durationMs": 15000,
+    "quick": false,
+    "rampTargetsMbps": [
+      15,
+      20,
+      25,
+      30,
+      40,
+      50
+    ],
+    "viewerCounts": [
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "cases": [
+    {
+      "id": "throughput-15mbps-1v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 23438,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-15mbps-1v-1786271490428/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-15mbps-1v-1786271490428/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-15mbps-1v-1786271490428/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-15mbps-1v-1786271490428/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 28125600,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 15.0002199985095,
+            "gaps": 2,
+            "outOfOrder": 1,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 8.729,
+              "p95": 56.865,
+              "p99": 95.25,
+              "max": 210.144,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 7031400,
+                "gaps": 2,
+                "outOfOrder": 1,
+                "malformed": 0,
+                "lastSequence": 380,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 7031400,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 380,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 7031400,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 380,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 7031400,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 380,
+                "latencySeen": 300
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-15mbps-1v-1786271490428",
+      "startedAt": "2026-08-09T10:31:30.430Z",
+      "finishedAt": "2026-08-09T10:31:49.545Z",
+      "requestedMbps": 15.00032,
+      "requestedAggregateEgressMbps": 15.00032,
+      "publisherMbps": 15.020042105263157,
+      "meanViewerMbps": 15.0002199985095,
+      "minViewerMbps": 15.0002199985095,
+      "aggregateViewerMbps": 15.0002199985095,
+      "minDeliveryRatio": 0.999993333376188,
+      "maxP99LatencyMs": 95.25,
+      "malformedObjects": 0,
+      "sequenceReordering": 3,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    },
+    {
+      "id": "throughput-20mbps-1v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 31250,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-20mbps-1v-1786271510048/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-20mbps-1v-1786271510048/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-20mbps-1v-1786271510048/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-20mbps-1v-1786271510048/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.200000047684,
+            "objects": 1200,
+            "bytes": 37500000,
+            "objectsPerSecond": 79.99893334730106,
+            "megabitsPerSecond": 19.999733336825262,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 28.29575,
+              "p95": 61.62875,
+              "p99": 107.66675,
+              "max": 179.95175,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 9375000,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 9375000,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 9375000,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 9375000,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-20mbps-1v-1786271510048",
+      "startedAt": "2026-08-09T10:31:50.050Z",
+      "finishedAt": "2026-08-09T10:32:09.006Z",
+      "requestedMbps": 20,
+      "requestedAggregateEgressMbps": 20,
+      "publisherMbps": 20.013866666666665,
+      "meanViewerMbps": 19.999733336825262,
+      "minViewerMbps": 19.999733336825262,
+      "aggregateViewerMbps": 19.999733336825262,
+      "minDeliveryRatio": 0.9999866668412631,
+      "maxP99LatencyMs": 107.66675,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    },
+    {
+      "id": "throughput-25mbps-1v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 39063,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-25mbps-1v-1786271529509/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-25mbps-1v-1786271529509/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-25mbps-1v-1786271529509/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-25mbps-1v-1786271529509/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1235,
+            "bytes": 48242805,
+            "objectsPerSecond": 82.33278444797281,
+            "megabitsPerSecond": 25.7293244711293,
+            "gaps": 4906,
+            "outOfOrder": 122,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 76.804,
+              "p95": 4194.489,
+              "p99": 6473.30275,
+              "max": 7450.575,
+              "samples": 1235
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 329,
+                "bytes": 12851727,
+                "gaps": 4885,
+                "outOfOrder": 115,
+                "malformed": 0,
+                "lastSequence": 407,
+                "latencySeen": 329
+              },
+              "benchmark-1": {
+                "objects": 302,
+                "bytes": 11797026,
+                "gaps": 21,
+                "outOfOrder": 7,
+                "malformed": 0,
+                "lastSequence": 407,
+                "latencySeen": 302
+              },
+              "benchmark-2": {
+                "objects": 302,
+                "bytes": 11797026,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 407,
+                "latencySeen": 302
+              },
+              "benchmark-3": {
+                "objects": 302,
+                "bytes": 11797026,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 407,
+                "latencySeen": 302
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-25mbps-1v-1786271529509",
+      "startedAt": "2026-08-09T10:32:09.511Z",
+      "finishedAt": "2026-08-09T10:32:29.921Z",
+      "requestedMbps": 25.00032,
+      "requestedAggregateEgressMbps": 25.00032,
+      "publisherMbps": 25.06276,
+      "meanViewerMbps": 25.7293244711293,
+      "minViewerMbps": 25.7293244711293,
+      "aggregateViewerMbps": 25.7293244711293,
+      "minDeliveryRatio": 1.0291598055996602,
+      "maxP99LatencyMs": 6473.30275,
+      "malformedObjects": 0,
+      "sequenceReordering": 5028,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": false
+    },
+    {
+      "id": "throughput-10mbps-2v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 15625,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.099999904633,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667073083,
+            "megabitsPerSecond": 9.999933333841351,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 9.584,
+              "p95": 26.47975,
+              "p99": 41.58175,
+              "max": 56.391,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 373,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 373,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 373,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 373,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-2v-1786271550424/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 10.655,
+              "p95": 24.738,
+              "p99": 39.616,
+              "max": 50.496,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-10mbps-2v-1786271550424",
+      "startedAt": "2026-08-09T10:32:30.427Z",
+      "finishedAt": "2026-08-09T10:32:49.440Z",
+      "requestedMbps": 10,
+      "requestedAggregateEgressMbps": 20,
+      "publisherMbps": 10.020844444444444,
+      "meanViewerMbps": 9.999966666920676,
+      "minViewerMbps": 9.999933333841351,
+      "aggregateViewerMbps": 19.99993333384135,
+      "minDeliveryRatio": 0.9999933333841351,
+      "maxP99LatencyMs": 41.58175,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    },
+    {
+      "id": "throughput-10mbps-4v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 15625,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 18.671,
+              "p95": 38.102,
+              "p99": 51.984,
+              "max": 67.139,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 18.98525,
+              "p95": 38.09825,
+              "p99": 54.39,
+              "max": 67.43925,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 378,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 2,
+            "outOfOrder": 1,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 19.958,
+              "p95": 41.54075,
+              "p99": 56.33975,
+              "max": 84.83875,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 2,
+                "outOfOrder": 1,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 379,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-4v-1786271569942/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1198,
+            "bytes": 18718750,
+            "objectsPerSecond": 79.86613422564488,
+            "megabitsPerSecond": 9.98326677820561,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 21.00025,
+              "p95": 39.273,
+              "p99": 56.53625,
+              "max": 88.34025,
+              "samples": 1198
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 299
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 377,
+                "latencySeen": 299
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-10mbps-4v-1786271569942",
+      "startedAt": "2026-08-09T10:32:49.944Z",
+      "finishedAt": "2026-08-09T10:33:09.927Z",
+      "requestedMbps": 10,
+      "requestedAggregateEgressMbps": 40,
+      "publisherMbps": 10.013221052631579,
+      "meanViewerMbps": 9.995783361432343,
+      "minViewerMbps": 9.98326677820561,
+      "aggregateViewerMbps": 39.98313344572937,
+      "minDeliveryRatio": 0.9983266778205611,
+      "maxP99LatencyMs": 56.53625,
+      "malformedObjects": 0,
+      "sequenceReordering": 3,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    },
+    {
+      "id": "throughput-10mbps-8v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 15625,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1202,
+            "bytes": 18781250,
+            "objectsPerSecond": 80.13279911454521,
+            "megabitsPerSecond": 10.01659988931815,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 23.304,
+              "p95": 41.416,
+              "p99": 52.477,
+              "max": 65.856,
+              "samples": 1202
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 301
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.099999904633,
+            "objects": 1199,
+            "bytes": 18734375,
+            "objectsPerSecond": 79.9328004485052,
+            "megabitsPerSecond": 9.99160005606315,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 21.078,
+              "p95": 38.312,
+              "p99": 53.066,
+              "max": 93.957,
+              "samples": 1199
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 299
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 23.326,
+              "p95": 44.49,
+              "p99": 67.08475,
+              "max": 109.573,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 22.08,
+              "p95": 41.214,
+              "p99": 52.657,
+              "max": 86.356,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 22.225,
+              "p95": 41.169,
+              "p99": 56.769,
+              "max": 86.42375,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1199,
+            "bytes": 18734375,
+            "objectsPerSecond": 79.93280044786997,
+            "megabitsPerSecond": 9.991600055983744,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 20.57525,
+              "p95": 38.21225,
+              "p99": 51.528,
+              "max": 62.52025,
+              "samples": 1199
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 299
+              },
+              "benchmark-2": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 299
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 21.678,
+              "p95": 40.68,
+              "p99": 52.924,
+              "max": 61.301,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-8v-1786271590429/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 22.682,
+              "p95": 41.353,
+              "p99": 59.22,
+              "max": 90.624,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-10mbps-8v-1786271590429",
+      "startedAt": "2026-08-09T10:33:10.431Z",
+      "finishedAt": "2026-08-09T10:33:30.470Z",
+      "requestedMbps": 10,
+      "requestedAggregateEgressMbps": 80,
+      "publisherMbps": 10.026315789473685,
+      "meanViewerMbps": 9.99994166705157,
+      "minViewerMbps": 9.991600055983744,
+      "aggregateViewerMbps": 79.99953333641255,
+      "minDeliveryRatio": 0.9991600055983744,
+      "maxP99LatencyMs": 67.08475,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    },
+    {
+      "id": "throughput-10mbps-16v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 15625,
+      "viewers": [
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 25.412,
+              "p95": 50.205,
+              "p99": 65.13,
+              "max": 81.643,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 22.843,
+              "p95": 42.159,
+              "p99": 53.173,
+              "max": 72.443,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1201,
+            "bytes": 18765625,
+            "objectsPerSecond": 80.06613289232013,
+            "megabitsPerSecond": 10.008266611540016,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 26.086,
+              "p95": 47.77925,
+              "p99": 63.724,
+              "max": 83.643,
+              "samples": 1201
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 385,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 26.055,
+              "p95": 46.781,
+              "p99": 57.409,
+              "max": 78.334,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 24.909,
+              "p95": 48.16,
+              "p99": 57.509,
+              "max": 69.157,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1201,
+            "bytes": 18765625,
+            "objectsPerSecond": 80.06613289232013,
+            "megabitsPerSecond": 10.008266611540016,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 25.379,
+              "p95": 49.348,
+              "p99": 64.1,
+              "max": 81.743,
+              "samples": 1201
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1201,
+            "bytes": 18765625,
+            "objectsPerSecond": 80.06613289232013,
+            "megabitsPerSecond": 10.008266611540016,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 23.107,
+              "p95": 41.99125,
+              "p99": 54.827,
+              "max": 74.04425,
+              "samples": 1201
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 388,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.099999904633,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667073083,
+            "megabitsPerSecond": 9.999933333841351,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 25.614,
+              "p95": 46.25,
+              "p99": 58.232,
+              "max": 77.049,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 299,
+                "bytes": 4671875,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 381,
+                "latencySeen": 299
+              },
+              "benchmark-3": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 301
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 27.812,
+              "p95": 51.068,
+              "p99": 66.757,
+              "max": 83.744,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1202,
+            "bytes": 18781250,
+            "objectsPerSecond": 80.13333333333334,
+            "megabitsPerSecond": 10.016666666666666,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 23.965,
+              "p95": 43.343,
+              "p99": 54.62625,
+              "max": 73.643,
+              "samples": 1202
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 301
+              },
+              "benchmark-2": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 301
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 387,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 26.97375,
+              "p95": 50.149,
+              "p99": 60.061,
+              "max": 69.457,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 22.79575,
+              "p95": 41.58275,
+              "p99": 52.126,
+              "max": 65.462,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1203,
+            "bytes": 18796875,
+            "objectsPerSecond": 80.2,
+            "megabitsPerSecond": 10.025,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 28.251,
+              "p95": 53.59,
+              "p99": 67.996,
+              "max": 84.244,
+              "samples": 1203
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 301
+              },
+              "benchmark-2": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 301
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 383,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 80,
+            "megabitsPerSecond": 10,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 23.52475,
+              "p95": 42.52275,
+              "p99": 52.837,
+              "max": 66.162,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1201,
+            "bytes": 18765625,
+            "objectsPerSecond": 80.06613289232013,
+            "megabitsPerSecond": 10.008266611540016,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 24.04525,
+              "p95": 46.61525,
+              "p99": 60.192,
+              "max": 69.634,
+              "samples": 1201
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 301,
+                "bytes": 4703125,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 301
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 384,
+                "latencySeen": 300
+              }
+            }
+          }
+        },
+        {
+          "status": "completed",
+          "error": null,
+          "logs": [
+            "info: MoQ session established",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-0 (alias 0)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-1 (alias 2)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-2 (alias 4)",
+            "info: subscribed to vibe-land/bench/throughput-10mbps-16v-1786271610972/benchmark-3 (alias 6)",
+            "closed: benchmark complete"
+          ],
+          "result": {
+            "durationMs": 15000.100000023842,
+            "objects": 1200,
+            "bytes": 18750000,
+            "objectsPerSecond": 79.99946667009505,
+            "megabitsPerSecond": 9.99993333376188,
+            "gaps": 0,
+            "outOfOrder": 0,
+            "malformed": 0,
+            "latencyMs": {
+              "p50": 26.905,
+              "p95": 46.792,
+              "p99": 59.095,
+              "max": 78.234,
+              "samples": 1200
+            },
+            "tracks": {
+              "benchmark-0": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-1": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-2": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              },
+              "benchmark-3": {
+                "objects": 300,
+                "bytes": 4687500,
+                "gaps": 0,
+                "outOfOrder": 0,
+                "malformed": 0,
+                "lastSequence": 382,
+                "latencySeen": 300
+              }
+            }
+          }
+        }
+      ],
+      "warmupMs": 3000,
+      "durationMs": 15000,
+      "namespace": "vibe-land/bench/throughput-10mbps-16v-1786271610972",
+      "startedAt": "2026-08-09T10:33:30.975Z",
+      "finishedAt": "2026-08-09T10:33:51.107Z",
+      "requestedMbps": 10,
+      "requestedAggregateEgressMbps": 160,
+      "publisherMbps": 10.025,
+      "meanViewerMbps": 10.004645819717345,
+      "minViewerMbps": 9.99993333376188,
+      "aggregateViewerMbps": 160.07433311547751,
+      "minDeliveryRatio": 0.9999933333761881,
+      "maxP99LatencyMs": 67.996,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [],
+      "publisherErrors": [],
+      "pass": true
+    }
+  ],
+  "finishedAt": "2026-08-09T10:33:51.610Z"
+}

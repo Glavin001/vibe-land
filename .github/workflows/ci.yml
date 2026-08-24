@@ -104,6 +104,32 @@ jobs:
           fi
 
   # ── E2E tests (only after both check jobs pass) ────────────────────────────
+  control-plane-check:
+    name: Control plane typecheck & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: control-plane/package-lock.json
+
+      - name: Install deps
+        working-directory: control-plane
+        run: npm ci
+
+      - name: TypeScript check
+        working-directory: control-plane
+        run: npx tsc --noEmit
+
+      # These cover the paths that cost money when they break: reaping a dead
+      # box, retrying a failed destroy, and not renting two boxes for one player.
+      - name: Unit tests
+        working-directory: control-plane
+        run: npm test
+
   e2e:
     name: E2E tests
     runs-on: ubuntu-latest

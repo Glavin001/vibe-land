@@ -1,0 +1,25 @@
+# Build context hygiene: the Rust target dir alone is tens of GB and would be
+# uploaded to the daemon on every build.
+.git
+.github
+node_modules
+target
+dist
+# ...except a bundle staged for the --prebuilt build path.
+!dist/physx-server
+client/node_modules
+client/dist
+client/test-results
+control-plane/node_modules
+control-plane/.wrangler
+e2e/test-results
+worlds
+moq
+infra/webtransport-demo
+spacetimedb-module
+docs
+*.tar.gz
+*.log
+.env
+.dev.vars
+.certs

@@ -1,0 +1,560 @@
+{
+  "startedAt": "2026-08-09T10:51:00.622Z",
+  "relay": "https://draft-16.cloudflare.mediaoverquic.com",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "chrome": "151.0.7922.108"
+  },
+  "config": {
+    "warmupMs": 2000,
+    "durationMs": 8000,
+    "quick": false,
+    "rampTargetsMbps": [
+      1,
+      5,
+      10,
+      25,
+      50,
+      100,
+      200,
+      400
+    ],
+    "viewerCounts": [
+      80
+    ]
+  },
+  "cases": [
+    {
+      "id": "throughput-5mbps-80v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 7813,
+      "viewers": [
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "session closed: Connection lost.",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "Connection lost.",
+          "logs": [],
+          "result": null
+        }
+      ],
+      "warmupMs": 2000,
+      "durationMs": 8000,
+      "namespace": "vibe-land/bench/throughput-5mbps-80v-1786272660622",
+      "startedAt": "2026-08-09T10:51:00.624Z",
+      "finishedAt": "2026-08-09T10:51:02.589Z",
+      "requestedMbps": 5.00032,
+      "requestedAggregateEgressMbps": 400.02560000000005,
+      "publisherMbps": null,
+      "meanViewerMbps": 0,
+      "minViewerMbps": 0,
+      "aggregateViewerMbps": 0,
+      "minDeliveryRatio": 0,
+      "maxP99LatencyMs": null,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [],
+      "publisherErrors": [
+        "2026-08-09T10:51:00.658148Z  WARN moq_transport::session::reader: [READER] decode: stream ended while waiting for data (have=0 bytes, need=1)",
+        "Error: session error"
+      ],
+      "publisherLogTail": [
+        "2026-08-09T10:51:00.631937Z  INFO moq_native_ietf::quic: UDP socket bound bind=[::]:0 local=[::]:37730 dual_stack=true",
+        "2026-08-09T10:51:00.632051Z  INFO vibe_moq_publisher: connecting to relay url=https://<relay>/<token>",
+        "2026-08-09T10:51:00.651514Z  INFO vibe_moq_publisher: session established connection_id=\"eb716826224005f64768b6e8cd322df1\"",
+        "2026-08-09T10:51:00.651526Z  INFO vibe_moq_publisher: starting world simulation seed=1786272660 namespace=vibe-land/bench/throughput-5mbps-80v-1786272660622",
+        "2026-08-09T10:51:00.651534Z  INFO vibe_moq_publisher: publishing track track=benchmark-0 hz=20.0 priority=0",
+        "2026-08-09T10:51:00.651544Z  INFO vibe_moq_publisher: publishing track track=benchmark-1 hz=20.0 priority=1",
+        "2026-08-09T10:51:00.651549Z  INFO vibe_moq_publisher: publishing track track=benchmark-2 hz=20.0 priority=2",
+        "2026-08-09T10:51:00.651554Z  INFO vibe_moq_publisher: publishing track track=benchmark-3 hz=20.0 priority=3",
+        "2026-08-09T10:51:00.658148Z  WARN moq_transport::session::reader: [READER] decode: stream ended while waiting for data (have=0 bytes, need=1)",
+        "Error: session error",
+        "",
+        "Caused by:",
+        "    0: decode error: fill buffer",
+        "    1: fill buffer",
+        ""
+      ],
+      "pass": false
+    }
+  ],
+  "finishedAt": "2026-08-09T10:51:03.090Z"
+}

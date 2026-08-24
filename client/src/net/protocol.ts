@@ -28,10 +28,17 @@ import {
   BTN_BACK,
   BTN_LEFT,
   BTN_RIGHT,
+  PROTOCOL_VERSION,
+  CLIENT_MOVEMENT_CAP_FULL_PREDICTION,
+  CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE,
+  CLIENT_MOVEMENT_FULL_PREDICTION,
+  PHYSICS_BACKEND_RAPIER,
 } from './sharedConstants';
 
 export type ClientHello = {
   matchId: string;
+  protocolVersion?: number;
+  movementCapabilities?: number;
 };
 
 export type InputFrame = {
@@ -141,6 +148,9 @@ export type DynamicBodyStateMeters = {
 export type WelcomePacket = {
   type: 'welcome';
   playerId: number;
+  protocolVersion: number;
+  physicsBackend: number;
+  clientMovementMode: number;
   simHz: number;
   snapshotHz: number;
   serverTimeUs: number;
@@ -221,6 +231,11 @@ export type SelfPlayerStateV2 = {
   pitchI16: number;
   hp: number;
   flags: number;
+  supportHandle?: number;
+  supportLocalPosition?: [number, number, number];
+  supportVelocity?: [number, number, number];
+  supportAngularVelocity?: [number, number, number];
+  supportFlags?: number;
 };
 
 export type RemotePlayerStateV2 = {
@@ -448,13 +463,20 @@ const TEXT_DECODER = new TextDecoder();
 
 export function encodeClientHello(packet: ClientHello): Uint8Array {
   const encodedMatchId = TEXT_ENCODER.encode(packet.matchId);
-  const out = new Uint8Array(1 + 2 + encodedMatchId.length);
+  const out = new Uint8Array(1 + 2 + encodedMatchId.length + 2 + 1);
   const view = new DataView(out.buffer);
   let o = 0;
   view.setUint8(o++, PKT_CLIENT_HELLO);
   view.setUint16(o, encodedMatchId.length, true);
   o += 2;
   out.set(encodedMatchId, o);
+  o += encodedMatchId.length;
+  view.setUint16(o, packet.protocolVersion ?? PROTOCOL_VERSION, true); o += 2;
+  view.setUint8(
+    o,
+    packet.movementCapabilities
+      ?? (CLIENT_MOVEMENT_CAP_FULL_PREDICTION | CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE),
+  );
   return out;
 }
 
@@ -528,6 +550,13 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
   switch (kind) {
     case PKT_WELCOME: {
       const playerId = view.getUint32(o, true); o += 4;
+      const hasCapabilities = view.byteLength >= 23;
+      const protocolVersion = hasCapabilities ? view.getUint16(o, true) : 1;
+      if (hasCapabilities) o += 2;
+      const physicsBackend = hasCapabilities ? view.getUint8(o++) : PHYSICS_BACKEND_RAPIER;
+      const clientMovementMode = hasCapabilities
+        ? view.getUint8(o++)
+        : CLIENT_MOVEMENT_FULL_PREDICTION;
       const simHz = view.getUint16(o, true); o += 2;
       const snapshotHz = view.getUint16(o, true); o += 2;
       const serverTimeUs = getUint64(view, o); o += 8;
@@ -535,6 +564,9 @@ export function decodeServerReliablePacket(data: ArrayBuffer | Uint8Array): Serv
       return {
         type: 'welcome',
         playerId,
+        protocolVersion,
+        physicsBackend,
+        clientMovementMode,
         simHz,
         snapshotHz,
         serverTimeUs,
@@ -742,6 +774,13 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
   const sphereCount = view.getUint8(o++);
   const boxCount = view.getUint8(o++);
   const vehicleCount = view.getUint8(o++);
+  const entityBytes = remotePlayerCount * 19
+    + sphereCount * 20
+    + boxCount * 28
+    + vehicleCount * 30;
+  const hasAngularSupportMetadata = view.byteLength - o >= 33 + entityBytes;
+  const hasSupportMetadata = hasAngularSupportMetadata
+    || view.byteLength - o >= 27 + entityBytes;
 
   const selfState: SelfPlayerStateV2 = {
     vxCms: view.getInt16(o, true),
@@ -751,8 +790,31 @@ export function decodeSnapshotV2Packet(view: DataView, o: number): SnapshotV2Pac
     pitchI16: view.getInt16(o + 8, true),
     hp: view.getUint8(o + 10),
     flags: view.getUint8(o + 11),
+    supportHandle: hasSupportMetadata ? view.getUint16(o + 12, true) : 0,
+    supportLocalPosition: hasSupportMetadata
+      ? [
+          view.getInt16(o + 14, true) / 400,
+          view.getInt16(o + 16, true) / 400,
+          view.getInt16(o + 18, true) / 400,
+        ]
+      : [0, 0, 0],
+    supportVelocity: hasSupportMetadata
+      ? [
+          view.getInt16(o + 20, true) / 100,
+          view.getInt16(o + 22, true) / 100,
+          view.getInt16(o + 24, true) / 100,
+        ]
+      : [0, 0, 0],
+    supportFlags: hasSupportMetadata ? view.getUint8(o + 26) : 0,
+    supportAngularVelocity: hasAngularSupportMetadata
+      ? [
+          view.getInt16(o + 27, true) / 1000,
+          view.getInt16(o + 29, true) / 1000,
+          view.getInt16(o + 31, true) / 1000,
+        ]
+      : [0, 0, 0],
   };
-  o += 12;
+  o += hasAngularSupportMetadata ? 33 : hasSupportMetadata ? 27 : 12;
 
   const remotePlayers: RemotePlayerStateV2[] = [];
   for (let i = 0; i < remotePlayerCount; i += 1) {

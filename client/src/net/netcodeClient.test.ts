@@ -48,6 +48,9 @@ function makeWelcome(playerId = 1): WelcomePacket {
   return {
     type: 'welcome',
     playerId,
+    protocolVersion: 2,
+    physicsBackend: 0,
+    clientMovementMode: 0,
     simHz: 60,
     snapshotHz: 30,
     serverTimeUs: 1_000_000,

@@ -1,0 +1,115 @@
+{
+  "startedAt": "2026-08-09T10:34:06.795Z",
+  "relay": "https://draft-16.cloudflare.mediaoverquic.com",
+  "host": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "chrome": "151.0.7922.108"
+  },
+  "config": {
+    "warmupMs": 2500,
+    "durationMs": 10000,
+    "quick": false,
+    "rampTargetsMbps": [
+      20
+    ],
+    "viewerCounts": [
+      2,
+      4,
+      8,
+      16
+    ]
+  },
+  "cases": [
+    {
+      "id": "throughput-20mbps-1v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 31250,
+      "viewers": [
+        {
+          "status": "error",
+          "error": "The stream was aborted by the remote server",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        }
+      ],
+      "warmupMs": 2500,
+      "durationMs": 10000,
+      "namespace": "vibe-land/bench/throughput-20mbps-1v-1786271646795",
+      "startedAt": "2026-08-09T10:34:06.797Z",
+      "finishedAt": "2026-08-09T10:34:07.472Z",
+      "requestedMbps": 20,
+      "requestedAggregateEgressMbps": 20,
+      "publisherMbps": null,
+      "meanViewerMbps": 0,
+      "minViewerMbps": 0,
+      "aggregateViewerMbps": 0,
+      "minDeliveryRatio": 0,
+      "maxP99LatencyMs": null,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [
+        "viewer 0: session closed: Connection lost."
+      ],
+      "publisherErrors": [
+        "Error: session error"
+      ],
+      "pass": false
+    },
+    {
+      "id": "throughput-20mbps-2v",
+      "tracks": 4,
+      "hz": 20,
+      "payloadBytes": 31250,
+      "viewers": [
+        {
+          "status": "error",
+          "error": "session closed: stream ended mid-varint",
+          "logs": [
+            "info: MoQ session established",
+            "error: control stream ended: stream ended mid-varint",
+            "closed: stream ended mid-varint"
+          ],
+          "result": null
+        },
+        {
+          "status": "error",
+          "error": "The stream was aborted by the remote server",
+          "logs": [
+            "info: MoQ session established",
+            "closed: Connection lost."
+          ],
+          "result": null
+        }
+      ],
+      "warmupMs": 2500,
+      "durationMs": 10000,
+      "namespace": "vibe-land/bench/throughput-20mbps-2v-1786271647973",
+      "startedAt": "2026-08-09T10:34:07.975Z",
+      "finishedAt": "2026-08-09T10:34:08.639Z",
+      "requestedMbps": 20,
+      "requestedAggregateEgressMbps": 40,
+      "publisherMbps": null,
+      "meanViewerMbps": 0,
+      "minViewerMbps": 0,
+      "aggregateViewerMbps": 0,
+      "minDeliveryRatio": 0,
+      "maxP99LatencyMs": null,
+      "malformedObjects": 0,
+      "sequenceReordering": 0,
+      "pageErrors": [
+        "viewer 1: session closed: Connection lost."
+      ],
+      "publisherErrors": [
+        "Error: session error"
+      ],
+      "pass": false
+    }
+  ],
+  "finishedAt": "2026-08-09T10:34:09.140Z"
+}

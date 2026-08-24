@@ -44,6 +44,43 @@ export const PKT_BATTERY_SYNC = 116;
 export const PKT_SHOT_FIRED = 117;
 export const PKT_DAMAGE_EVENT = 118;
 
+// ── Destructible city streams (destruction/src/wire.rs defines the layouts) ──
+export const PKT_CITY_RESYNC_REQUEST = 9;
+export const PKT_CITY_CHUNKS = 119;
+export const PKT_CITY_TOPOLOGY = 120;
+export const PKT_CITY_BASELINE = 121;
+export const PKT_CITY_BOOTSTRAP = 122;
+/// The city manifest itself, gzipped, pushed on join.
+///
+/// Clients used to fetch this over HTTP from the game server. That works only
+/// when the page and the server share an origin: a rented GPU box serves plain
+/// HTTP on a random port, which an HTTPS page may not fetch, and its
+/// WebTransport certificate is self-signed so an HTTPS fetch is refused too.
+/// Sending it down the session that is already open sidesteps all of it.
+export const PKT_CITY_MANIFEST = 123;
+/// Per-match server telemetry as JSON, pushed roughly once a second.
+///
+/// The overlay used to poll `/match-stats` over HTTP, which a browser cannot
+/// reach on a rented box for the same reason it cannot fetch the manifest.
+/// Sent on the session so the numbers describe the server actually being
+/// played on, rather than whichever one the page happens to share an origin
+/// with.
+export const PKT_MATCH_STATS = 124;
+// Chunk kinematic stream rate (sim ticks between sends: SIM_HZ / this).
+export const CITY_CHUNK_STREAM_HZ = 30;
+export const CITY_BASELINE_INTERVAL_MS = 1000;
+// Per-client byte ceiling per 30 Hz send (~2.5 Mbps); a cap, never a fill target.
+export const CITY_CLIENT_CEILING_BYTES_PER_SEND = 10400;
+
+// ── Protocol/runtime capabilities ───────────────
+export const PROTOCOL_VERSION = 3;
+export const PHYSICS_BACKEND_RAPIER = 0;
+export const PHYSICS_BACKEND_PHYSX_GPU = 1;
+export const CLIENT_MOVEMENT_FULL_PREDICTION = 0;
+export const CLIENT_MOVEMENT_THIN_AUTHORITATIVE = 1;
+export const CLIENT_MOVEMENT_CAP_FULL_PREDICTION = 1 << 0;
+export const CLIENT_MOVEMENT_CAP_THIN_AUTHORITATIVE = 1 << 1;
+
 // ── Weapon types ────────────────────────────────
 export const WEAPON_HITSCAN = 1;
 export const WEAPON_ROCKET = 2;
@@ -60,6 +97,9 @@ export const BLOCK_REMOVE = 2;
 // ── Shape types ─────────────────────────────────
 export const SHAPE_BOX = 0;
 export const SHAPE_SPHERE = 1;
+
+// ── Vehicle interaction ─────────────────────────
+export const VEHICLE_INTERACT_RADIUS_M = 4.0;
 
 // ── Area-of-interest (AOI) radii ────────────────
 // The server uses these to decide which players, dynamic bodies, and vehicles
@@ -78,6 +118,10 @@ export const SNAPSHOT_HZ_MULTIPLAYER = 30;
 export const SNAPSHOT_HZ_LOCAL = SIM_HZ;
 export const MAX_PENDING_INPUTS = 120;
 export const VEHICLE_INPUT_CATCHUP_THRESHOLD = 4;
+/// On-foot backlog depth that triggers a jump to the newest input. Small on
+/// purpose: the point is to track the player's current intent, not to replay
+/// a queue. MAX_PENDING_INPUTS remains the hard cap for pathological cases.
+export const PLAYER_INPUT_CATCHUP_THRESHOLD = 3;
 export const RIFLE_FIRE_INTERVAL_MS = 100;
 export const RIFLE_BODY_DAMAGE = 14;
 export const RIFLE_HEAD_DAMAGE = 16;

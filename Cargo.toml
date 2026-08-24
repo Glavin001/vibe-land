@@ -1,5 +1,5 @@
 [workspace]
-members = ["netcode", "shared", "server"]
+members = ["destruction", "netcode", "physx-bridge", "shared", "server"]
 resolver = "2"
 
 [profile.release]

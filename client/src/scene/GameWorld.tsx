@@ -1,5 +1,7 @@
 import { useRef, useEffect, useMemo, type MutableRefObject, type ReactNode, type RefObject } from 'react';
 import { Sky } from '@react-three/drei';
+
+import { useQualityTier } from '../app/renderQuality';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { GameMode } from '../app/gameMode';
@@ -10,6 +12,8 @@ import type { RemotePlayer } from '../net/netcodeClient';
 import { useGameRuntime } from '../runtime/useGameRuntime';
 import type { GameRuntimeClient } from '../runtime/gameRuntime';
 import { updateE2EBridgeFrameState } from '../e2eBridge';
+import { isRecording, recordFrame } from '../netlab/recorder';
+import { isAgentDriveActive, sampleAgentDrive } from '../agentDrive';
 import { DEFAULT_STATS } from '../ui/DebugOverlay';
 import { GameInputManager } from '../input/manager';
 import {
@@ -52,6 +56,7 @@ import {
   MELEE_RANGE_M,
   RIFLE_FIRE_INTERVAL_MS,
   SPAWN_PROTECTION_MS,
+  VEHICLE_INTERACT_RADIUS_M,
   WEAPON_HITSCAN,
 } from '../net/protocol';
 import type {
@@ -109,8 +114,9 @@ import { DEFAULT_FOG_SETTINGS } from '../graphics/fogSettings';
 import { WEATHER_PRESETS, type WeatherPreset } from '../graphics/weatherPresets';
 import { WeatherParticles } from './WeatherParticles';
 import { useWeatherAmbience } from '../graphics/weatherAudio';
+import { CityChunksLayer } from './CityChunksLayer';
 
-const VEHICLE_INTERACT_RADIUS = 4.0;
+const VEHICLE_INTERACT_RADIUS = VEHICLE_INTERACT_RADIUS_M;
 const REMOTE_HIT_FLASH_MS = 180;
 const CROSSHAIR_MAX_DISTANCE = 1000;
 const PLAYER_EYE_HEIGHT = 0.8;
@@ -1130,6 +1136,8 @@ export function GameWorld({
 }: GameWorldProps) {
   const resolvedFogColor = fogColor ?? WEATHER_PRESETS[weather].fogColor;
   const effectiveFogDensity = fogDensity * intensity;
+  const qualityIsPretty = useQualityTier() === 'pretty';
+  const weatherOn = qualityIsPretty;
   useWeatherAmbience(weather, windStrengthMps);
   const practiceMode = isPracticeMode(mode);
   const localPlayerDebugHelper = useMemo(() => createPlayerDebugHelper(0x8cff66), []);
@@ -1878,6 +1886,7 @@ export function GameWorld({
       && botBrainRef.current
       && !isDrivingNow,
     );
+    const agentDriveActive = isAgentDriveActive();
 
     if (inputSample.action?.materialSlot1Pressed) selectedMaterialRef.current = 1;
     if (inputSample.action?.materialSlot2Pressed) selectedMaterialRef.current = 2;
@@ -1888,6 +1897,7 @@ export function GameWorld({
       isDrivingNow,
       localDead,
       botAutopilotEnabled,
+      agentDriveActive,
     );
     const isAiming = !!inputSample.action?.aimSecondary && canUseAimControls;
 
@@ -1904,7 +1914,7 @@ export function GameWorld({
       if (updatedCamera.hadLookInput) {
         lastVehicleLookAtMsRef.current = now;
       }
-    } else {
+    } else if (!agentDriveActive) {
       const look = advanceLookAngles(
         yawRef.current,
         pitchRef.current,
@@ -1927,7 +1937,14 @@ export function GameWorld({
       onScopeActiveChangeRef.current?.(isAiming);
     }
 
-    const autopilotInput = vehicleBenchmarkEnabled
+    const driveInput = sampleAgentDrive(now, yawRef.current, pitchRef.current);
+    if (driveInput) {
+      yawRef.current = driveInput.yaw;
+      pitchRef.current = driveInput.pitch;
+    }
+    const autopilotInput = driveInput
+      ? null
+      : vehicleBenchmarkEnabled
       ? resolveVehicleBenchmarkInput(
           benchmarkVehicleDriverRef.current,
           now,
@@ -1964,7 +1981,7 @@ export function GameWorld({
           return resolvedInputFromBotIntent(intent.buttons, intent.yaw, intent.pitch, intent.firePrimary);
         })()
         : null;
-    const resolvedInput = autopilotInput ?? (isDrivingNow
+    const resolvedInput = driveInput ?? autopilotInput ?? (isDrivingNow
       ? resolveVehicleInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily)
       : resolveOnFootInput(inputSample.action, yawRef.current, pitchRef.current, inputSample.activeFamily));
 
@@ -2642,10 +2659,28 @@ export function GameWorld({
           position: sample?.position ?? rp.position,
         });
       }
-      updateE2EBridgeFrameState({
+      const localAuthoritativeSample = state.playerId !== 0
+        ? state.remoteInterpolator.sample(
+            state.playerId,
+            state.serverClock.renderTimeUs(state.interpolationDelayMs * 1000),
+          )
+        : null;
+      const authoritativePosition = localAuthoritativeSample?.position ?? pos;
+      const frameState: Parameters<typeof updateE2EBridgeFrameState>[0] = {
         cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
         cameraYaw: yawRef.current,
         cameraPitch: pitchRef.current,
+        movementTelemetry: {
+          renderedPosition: pos as [number, number, number],
+          authoritativePosition,
+          presentationOffset: [
+            pos[0] - authoritativePosition[0],
+            pos[1] - authoritativePosition[1],
+            pos[2] - authoritativePosition[2],
+          ],
+          authoritativeVelocity: localAuthoritativeSample?.velocity ?? physStats.velocity,
+          frameDeltaMs: frameDelta * 1000,
+        },
         drivenVehicleId: drivenVehicleId ?? null,
         nearestVehicleId: nearestVehicleIdRef.current,
         remotePlayers: remoteSummaries,
@@ -2680,7 +2715,25 @@ export function GameWorld({
           inVehicle: ((client?.localPlayerFlags ?? 0) & 0x2) !== 0,
           dead: ((client?.localPlayerFlags ?? 0) & 0x4) !== 0,
         },
-      });
+      };
+      updateE2EBridgeFrameState(frameState);
+
+      if (isRecording()) {
+        const observed = remoteSummaries[0] ?? null;
+        recordFrame({
+          tMs: now,
+          frameDeltaMs: frameDelta * 1000,
+          renderedPosition: pos,
+          authoritativePosition,
+          authoritativeVelocity: frameState.movementTelemetry.authoritativeVelocity,
+          camYaw: yawRef.current,
+          camPitch: pitchRef.current,
+          stats: frameState.stats,
+          transport: frameState.stats.transport,
+          remote: observed,
+          remoteCount: remoteSummaries.length,
+        });
+      }
     }
 
     // Update remote player meshes
@@ -3092,7 +3145,15 @@ export function GameWorld({
     <>
       <color attach="background" args={[resolvedFogColor]} />
       {fogEnabled && <fogExp2 attach="fog" args={[resolvedFogColor, effectiveFogDensity]} />}
-      {fogEnabled && (
+      {/*
+        FAST-tier cuts, all fill/shader costs on a phone: weather particles are
+        transparent overdraw, the drei Sky runs an atmospheric shader over every
+        sky pixel (the plain background colour + fog above still give a
+        horizon), and the second directional light makes every Standard-material
+        pixel in the scene more expensive. The shadow light stays -- shadows
+        have their own toggle.
+      */}
+      {fogEnabled && weatherOn && (
         <WeatherParticles
           weather={weather}
           windStrengthMps={windStrengthMps}
@@ -3102,14 +3163,16 @@ export function GameWorld({
           intensity={intensity}
         />
       )}
-      <Sky
-        distance={450000}
-        sunPosition={[120, 28, 40]}
-        turbidity={7}
-        rayleigh={2.2}
-        mieCoefficient={0.008}
-        mieDirectionalG={0.86}
-      />
+      {qualityIsPretty && (
+        <Sky
+          distance={450000}
+          sunPosition={[120, 28, 40]}
+          turbidity={7}
+          rayleigh={2.2}
+          mieCoefficient={0.008}
+          mieDirectionalG={0.86}
+        />
+      )}
       <ambientLight intensity={0.18} color={0xfdf6eb} />
       <hemisphereLight args={[0xc3dcff, 0x7f6543, 1.05]} />
       <directionalLight
@@ -3128,7 +3191,9 @@ export function GameWorld({
         shadow-bias={-0.00015}
         shadow-normalBias={0.03}
       />
-      <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
+      {qualityIsPretty && (
+        <directionalLight position={[-28, 20, -32]} intensity={0.55} color={0xa8c8ff} />
+      )}
       <WorldTerrain world={worldDocument} />
       <WorldStaticProps world={worldDocument} />
       <Portals runtimeRef={runtimeRef} />
@@ -3153,6 +3218,9 @@ export function GameWorld({
 
       {/* Dynamic body group */}
       <group ref={dynamicBodyGroupRef} />
+
+      {/* Destructible city chunks (instanced; only active in city-* matches) */}
+      <CityChunksLayer getCityClient={() => runtimeRef.current?.getCityClient?.() ?? null} />
 
       {/* Battery group */}
       <group ref={batteryGroupRef} />
