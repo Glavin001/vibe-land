@@ -181,7 +181,7 @@ serving the image they booted with until their uptime cap retires them.
 
 | Variable | Purpose |
 |---|---|
-| `BUILDER_IMAGE_TAG` | which toolchain image to compile against |
+| `BUILDER_IMAGE_TAG` | which toolchain image to compile against; optional, defaults to the tag `builder-image` publishes |
 | `CONTROL_PLANE_URL` | public Worker URL, injected into every instance |
 
 ## Tuning
@@ -214,9 +214,11 @@ Worker vars, all in `control-plane/wrangler.jsonc`:
   well-formed but not that PhysX validated a CUDA scene. Clear a new image for
   deploy by running `smoke-image.sh` without `--cpu` on a rented host, which is
   the only place `"physics_backend":"physx_gpu"` can be observed.
-- **`BUILDER_IMAGE_TAG` is a manual pointer.** `builder-image.yml` publishes a
-  toolchain image and prints the tag; nothing sets the repository variable for
-  you, and the server build fails with an explicit error until you do.
+- **The first build has to wait for the toolchain.** `builder-image` and
+  `server-image` are triggered by the same push and run concurrently, so a
+  commit that changes both will build the server against a toolchain image that
+  does not exist yet. Re-run `server-image` once the builder lands. Only the
+  first one is affected; after that the toolchain is already published.
 
 ## Verified on a phone
 

@@ -81,11 +81,13 @@ jobs:
         env:
           BUILDER_TAG: ${{ inputs.builder_tag || vars.BUILDER_IMAGE_TAG }}
         run: |
+          # Falls back to the tag builder-image.yml publishes by default, so a
+          # fresh clone needs no repository variable set by hand. Point
+          # BUILDER_IMAGE_TAG at something else to compile against a different
+          # toolchain -- that is what a PhysX or Blast bump looks like.
           if [ -z "$BUILDER_TAG" ]; then
-            echo "::error::No toolchain image to build against. Run the" \
-                 "builder-image workflow, then set the repository variable" \
-                 "BUILDER_IMAGE_TAG to the tag it published."
-            exit 1
+            BUILDER_TAG=cuda12.8-physx-ovphysx-5.5.1
+            echo "::notice::BUILDER_IMAGE_TAG is unset; using ${BUILDER_TAG}."
           fi
           owner="${{ github.repository_owner }}"
           # Tags are immutable and traceable to a commit: the fleet records
