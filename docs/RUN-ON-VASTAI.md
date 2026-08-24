@@ -73,6 +73,35 @@ https://github.com/Glavin001/vibe-land/actions/workflows/server-image.yml
 It looks like `sha-eccdc209a2d3`. There is a `latest`, but it only moves on
 pushes to `main` — prefer a `sha-` tag so you know exactly what you are running.
 
+### Checking what a tag was actually built from
+
+The `sha-` tag names the vibe-land commit, but the native code — PhysX and the
+Blast stress solver — comes from the toolchain image, and `BLAST_REF` is a
+*branch*. A branch is a moving target, so two images built a week apart from the
+same tag can contain different Blast code. The image records all three commits:
+
+```bash
+docker run --rm --entrypoint cat \
+  ghcr.io/glavin001/vibe-land-server:<tag> /opt/vibe-land/manifest.txt
+```
+
+```
+physics_backend=physx_gpu
+stress_solver=gpu
+cuda_arch=sm_70,sm_75,sm_80,sm_86,sm_89,sm_90,sm_100,sm_120
+vibe_land_commit=<40 hex>
+physx_ref=ovphysx-0.5.10
+physx_commit=<40 hex>
+blast_ref=feature/physx-gpu-destruction
+blast_commit=<40 hex>
+```
+
+`unknown` for `physx_commit`/`blast_commit` means the image was built against a
+toolchain image published before this stamping existed; rebuild `builder-image`
+and then the server image to pin it. The vibe-land commit is also an OCI label,
+so `docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`
+answers that one without starting a container.
+
 ## 2. Create the instance
 
 In the Vast.ai console:

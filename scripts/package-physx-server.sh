@@ -90,7 +90,19 @@ snapshot_hz=60
 strict_snapshot_datagrams=true
 physx_root=${physx_root}
 cuda_arch=${VIBE_CUDA_ARCH:-sm_89}
+vibe_land_commit=${VIBE_LAND_COMMIT:-unknown}
 EOF
+
+# What the native code in this bundle was actually compiled from. The toolchain
+# image records it because it deletes the checkouts' .git directories, so this
+# is the only place the answer survives to the runtime image -- and Blast is
+# pinned by branch, which names a moving target rather than a commit.
+if [[ -f /opt/toolchain/sources.txt ]]; then
+  cat /opt/toolchain/sources.txt >>"${output_dir}/manifest.txt"
+else
+  echo "physx_commit=unknown" >>"${output_dir}/manifest.txt"
+  echo "blast_commit=unknown" >>"${output_dir}/manifest.txt"
+fi
 
 tar -C "$(dirname "${output_dir}")" -czf "${output_dir}.tar.gz" "$(basename "${output_dir}")"
 echo "Packaged ${output_dir}.tar.gz"

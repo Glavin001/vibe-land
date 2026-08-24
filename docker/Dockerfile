@@ -29,6 +29,12 @@ FROM ${BUILDER_IMAGE} AS build
 # 30xx (86), L4/L40/RTX 40xx (89), H100 (90), B200 (100), RTX 50xx (120).
 ARG VIBE_CUDA_ARCH=sm_70,sm_75,sm_80,sm_86,sm_89,sm_90,sm_100,sm_120
 ENV VIBE_CUDA_ARCH=${VIBE_CUDA_ARCH}
+# .dockerignore excludes .git, so the build cannot read its own commit; it is
+# passed in and lands in the bundle manifest next to the PhysX and Blast
+# commits the toolchain image recorded. All three answer "what is in this
+# image", which was previously not answerable from the image at all.
+ARG VIBE_LAND_COMMIT=unknown
+ENV VIBE_LAND_COMMIT=${VIBE_LAND_COMMIT}
 WORKDIR /src
 COPY . .
 # The CUDA driver library is not present on a build machine with no GPU. The
@@ -72,6 +78,9 @@ RUN cd client && npm ci --no-audit --no-fund && npm run build
 FROM ${BUNDLE_STAGE} AS bundle
 
 FROM ubuntu:24.04
+ARG VIBE_LAND_COMMIT=unknown
+LABEL org.opencontainers.image.source=https://github.com/Glavin001/vibe-land \
+      org.opencontainers.image.revision=${VIBE_LAND_COMMIT}
 ENV DEBIAN_FRONTEND=noninteractive
 # iproute2 is only for the entrypoint's last-resort local-address lookup when
 # a standalone host has no route to an IP echo service.

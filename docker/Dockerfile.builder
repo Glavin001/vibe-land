@@ -39,6 +39,11 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN git clone https://github.com/NVIDIA-Omniverse/PhysX.git /root/PhysX \
  && cd /root/PhysX \
  && git checkout ${PHYSX_REF} \
+ # Recorded now, because .git is deleted two layers down and a tag is not a
+ # commit -- a moved tag would otherwise be invisible in the finished image.
+ && mkdir -p /opt/toolchain \
+ && echo "physx_ref=${PHYSX_REF}" > /opt/toolchain/sources.txt \
+ && echo "physx_commit=$(git rev-parse HEAD)" >> /opt/toolchain/sources.txt \
  && cd physx \
  # The snippets are OpenGL demos. They want a GL/GLX dev stack this image has
  # no use for, and without one cmake configure fails outright -- while
@@ -69,7 +74,13 @@ RUN git clone https://github.com/Glavin001/blast-stress-solver \
       /root/workspace/blast-stress-solver \
  && cd /root/workspace/blast-stress-solver \
  && git checkout ${BLAST_REF} \
- && rm -rf .git
+ # BLAST_REF is a branch, so it names a moving target. The commit is the only
+ # thing that says what this image actually contains -- and `rm -rf .git` below
+ # is what previously made that unanswerable after the fact.
+ && echo "blast_ref=${BLAST_REF}" >> /opt/toolchain/sources.txt \
+ && echo "blast_commit=$(git rev-parse HEAD)" >> /opt/toolchain/sources.txt \
+ && rm -rf .git \
+ && cat /opt/toolchain/sources.txt
 
 ENV PHYSX_ROOT=/root/PhysX/physx/install/linux-clang/PhysX \
     BLAST_ROOT=/root/workspace/blast-stress-solver/blast \
@@ -88,4 +99,6 @@ RUN test -f "$PHYSX_ROOT/include/PxPhysicsAPI.h" \
  && test -d "$BLAST_ROOT" \
  && test -f "$BLAST_ROOT/source/sdk/extensions/stressgpu/NvBlastExtStressGpu.cu" \
  && test -f "$CUDA_HOME/bin/nvcc" \
- && ls "$CUDA_HOME"/lib64/libcudart.so.* >/dev/null
+ && ls "$CUDA_HOME"/lib64/libcudart.so.* >/dev/null \
+ && grep -q '^blast_commit=[0-9a-f]\{40\}$' /opt/toolchain/sources.txt \
+ && grep -q '^physx_commit=[0-9a-f]\{40\}$' /opt/toolchain/sources.txt

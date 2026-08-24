@@ -121,6 +121,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             BUILDER_IMAGE=${{ steps.meta.outputs.builder }}
+            VIBE_LAND_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -158,6 +159,36 @@ jobs:
 
       - name: Smoke the image without a GPU
         run: ./scripts/smoke-image.sh --cpu "${{ needs.build.outputs.image }}"
+
+      # The sha- tag says which vibe-land commit built the image, but not which
+      # PhysX or Blast commit is compiled into it -- and BLAST_REF is a branch,
+      # so the toolchain tag alone cannot answer that either. Printing it here
+      # puts the answer in the run log for whoever has to reproduce a result.
+      - name: Report what the image was built from
+        run: |
+          manifest="$(docker run --rm --entrypoint cat \
+            "${{ needs.build.outputs.image }}" /opt/vibe-land/manifest.txt)"
+          echo "$manifest"
+          # This one is passed straight in as a build-arg, so an unresolved
+          # value means the wiring is broken and the whole point is lost.
+          grep -q '^vibe_land_commit=[0-9a-f]\{40\}$' <<<"$manifest" \
+            || { echo "the image does not record its own commit"; exit 1; }
+          # These two come from the toolchain image, which is published under a
+          # fixed tag by a workflow that fires on the *same* push as this one.
+          # So a build that lands first legitimately sees a toolchain image
+          # predating the stamping, and failing here would block the image on a
+          # race rather than on a defect. It resolves on the next build.
+          for key in physx_commit blast_commit; do
+            grep -q "^${key}=[0-9a-f]\{40\}$" <<<"$manifest" \
+              || echo "::warning::${key} unresolved; rebuild builder-image"
+          done
+          {
+            echo "### Built from"
+            echo
+            echo '```'
+            echo "$manifest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Report the image size a player waits through
         run: |
