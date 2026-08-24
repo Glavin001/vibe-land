@@ -21,6 +21,7 @@ import { expect, test } from '@playwright/test';
 
 import {
   aimAt,
+  allStructureTargets,
   cityStats,
   fireAt,
   openCity,
@@ -113,7 +114,7 @@ test.describe('fracture continuity', () => {
           });
         }
         previous = now;
-        if (samples.length < 240) requestAnimationFrame(tick);
+        if (samples.length < 900) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     });
@@ -122,8 +123,14 @@ test.describe('fracture continuity', () => {
     // Several shots, not one: the re-basing fault this catches is load
     // dependent -- a light fracture (a couple of hundred bonds) stays clean,
     // and it appears once islands are large enough to be re-based.
-    await fireAt(page, target, 4, { intervalMs: 220 });
-    await page.waitForTimeout(2500);
+    // A COLLAPSE, not a chip: the reported flicker is repeated, on bodies
+    // that have already fractured off, while a building comes down. Four
+    // shots into an intact wall never reaches that state.
+    const lower = await allStructureTargets(page, 0.2);
+    for (const t of [target, ...lower.slice(0, 2)]) {
+      await fireAt(page, t, 12, { intervalMs: 150 });
+    }
+    await page.waitForTimeout(4000);
 
     const samples = (await page.evaluate(
       () => (window as unknown as { __CONT__: FrameSample[] }).__CONT__,
@@ -154,6 +161,11 @@ test.describe('fracture continuity', () => {
       console.log(`[cont]   adoption jump: ${JSON.stringify(e)}`);
     }
 
+    // How OFTEN, not just how far: a repeated flicker is many bad frames.
+    const badFrames = samples.filter((s) => s.drawnOver > 0).length;
+    const jumpFrames = samples.filter((s) => s.jumpers > 0).length;
+    console.log(`[cont] frames with chunks drawn off-ledger: ${badFrames}; `
+      + `frames with ledger jumps: ${jumpFrames}`);
     const worstJump = samples.reduce((a, b) => (b.maxJump > a.maxJump ? b : a), samples[0]);
     const worstBelow = samples.reduce((a, b) => (b.belowWorld > a.belowWorld ? b : a), samples[0]);
     console.log(`[cont] frames=${samples.length} bonds=${stats.brokenBonds} islands=${stats.liveIslands}`);
