@@ -108,6 +108,20 @@ export HEARTBEAT_PUBLIC_IP="$public_ip"
 export HEARTBEAT_UDP_PORT="$external_udp_port"
 export MATCHES_PER_BOX="${MATCHES_PER_BOX:-6}"
 
+# A bound UDP socket does not mean players can reach it. Some hosts accept the
+# port mapping and then never forward the datagrams, and the box looks entirely
+# healthy from the outside: it boots, heartbeats, serves /city, and answers
+# /healthz with "ok" -- while every player it is handed times out on the QUIC
+# handshake. Two hosts did exactly this.
+#
+# The server watches for that (clients fetched /session-config, no QUIC packet
+# ever arrived) and can exit so the box is replaced. That is the right response
+# only where something replaces it: on Vast the port mapping cannot be changed
+# on a running instance, so a box that cannot serve players is worth nothing
+# and the fleet should rent another. On a laptop the same exit would kill the
+# server while its owner is still opening a tab.
+export UDP_WATCHDOG="${UDP_WATCHDOG:-$([[ -n "$on_vast" ]] && echo fatal || echo warn)}"
+
 if [[ -z "${CONTROL_PLANE_URL:-}" ]]; then
   if [[ -n "$on_vast" ]]; then
     log "WARNING: CONTROL_PLANE_URL unset -- heartbeats disabled, this box will not"

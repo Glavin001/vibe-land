@@ -17,7 +17,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, RwLock as StdRwLock,
     },
     time::{Duration, Instant},
@@ -769,6 +769,24 @@ struct AppState {
     /// here and consumed on the next tick, between steps where rebuilding the
     /// scene is safe.
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Inbound-UDP reachability evidence.
+    ///
+    /// A box cannot test its own reachability from inside: a bind succeeding
+    /// says the socket exists, not that anything on the internet can send to
+    /// it, and hairpinning a probe back through the host's own NAT fails on
+    /// plenty of hosts that forward player traffic perfectly well. So instead
+    /// of probing, this records what actually happened.
+    ///
+    /// `session_configs_served` counts clients that asked where to connect --
+    /// each one is a browser about to open QUIC. `wt_attempts` counts
+    /// connection attempts that reached the socket. A gap between them is the
+    /// signature of a black-holed UDP path, and it is the only evidence that
+    /// distinguishes that from "nobody has tried yet".
+    wt_attempts: Arc<AtomicU64>,
+    session_configs_served: AtomicU64,
+    /// Milliseconds since process start at the first `/session-config`, or 0.
+    first_session_config_ms: AtomicU64,
+    started: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -1036,6 +1054,12 @@ async fn main() -> Result<()> {
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
 
+    // Declared before the state so /healthz and the accept loop share one
+    // counter: a second Arc would leave health reporting a number nobody
+    // increments, which is the same class of silent-wrong this whole change
+    // exists to remove.
+    let wt_attempts = Arc::new(AtomicU64::new(0));
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: AsyncRwLock::new(HashMap::new()),
@@ -1054,8 +1078,14 @@ async fn main() -> Result<()> {
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
             body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
+            wt_attempts: wt_attempts.clone(),
+            session_configs_served: AtomicU64::new(0),
+            first_session_config_ms: AtomicU64::new(0),
+            started: std::time::Instant::now(),
         }),
     };
+    // Taken before the router consumes `state`.
+    let watchdog_state = state.inner.clone();
 
     // Start WebTransport server
     let wt_config = ServerConfig::builder()
@@ -1067,6 +1097,7 @@ async fn main() -> Result<()> {
 
     {
         let app_inner = state.inner.clone();
+        let attempts = wt_attempts.clone();
         tokio::spawn(async move {
             // Counts every QUIC connection attempt that actually reached this
             // socket. This is the one number that separates the two failures
@@ -1083,10 +1114,9 @@ async fn main() -> Result<()> {
             //
             // Diagnosing this by staring at logs that were never emitted cost
             // real time and two wrong conclusions.
-            let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             loop {
                 let incoming = wt_endpoint.accept().await;
-                let seen = attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let seen = attempts.fetch_add(1, Ordering::Relaxed) + 1;
                 info!(
                     remote = %incoming.remote_address(),
                     attempts = seen,
@@ -1151,6 +1181,8 @@ async fn main() -> Result<()> {
     // the dev-server proxy and the fleet all still use it.
     // Never `?`: a certificate problem must not take down a game server that is
     // otherwise healthy. The listener reports and stays down instead.
+    spawn_udp_reachability_watchdog(watchdog_state);
+
     if let Err(error) = spawn_web_listener(app.clone()).await {
         error!(%error, "web listener failed to start; continuing without it");
     }
@@ -1176,6 +1208,89 @@ async fn main() -> Result<()> {
 /// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
 /// up and serves the API -- useful for a server-only image -- it just has no
 /// page to hand out.
+/// Notice a box whose UDP path is black-holed, and stop pretending it is
+/// healthy.
+///
+/// Binding the socket is fatal on failure, so a running server always has a
+/// listening socket -- which is exactly why this failure was invisible. The
+/// box boots, heartbeats, serves its page, answers /healthz with "ok", and is
+/// handed players who then cannot connect. Two hosts did this before anyone
+/// worked out the datagrams were being dropped upstream.
+///
+/// There is no way to test inbound reachability from inside the box. A probe
+/// to our own public address has to hairpin back through the host's NAT,
+/// which fails on plenty of hosts that carry player traffic perfectly well --
+/// so a failed probe would condemn good boxes. Instead this waits for the one
+/// piece of evidence that is unambiguous: a client fetched /session-config,
+/// so a browser was told where to open QUIC and is trying right now. If no
+/// connection attempt reaches the socket within the grace window after that,
+/// the packets are not arriving.
+///
+/// On an orchestrated box, exiting is the useful response: the port mapping
+/// cannot be changed on a running instance, so the box can never serve
+/// players and the fleet should replace it. `UDP_WATCHDOG=fatal` selects
+/// that; the entrypoint turns it on where a replacement is automatic, and it
+/// stays off by default so a `docker run` on a laptop is not killed while its
+/// owner is still opening a browser tab.
+fn spawn_udp_reachability_watchdog(state: Arc<AppState>) {
+    let mode = std::env::var("UDP_WATCHDOG").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let fatal = mode == "fatal";
+    let grace_ms: u64 = std::env::var("UDP_WATCHDOG_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(45_000);
+
+    tokio::spawn(async move {
+        let mut reported = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let attempts = state.wt_attempts.load(Ordering::Relaxed);
+            if attempts > 0 {
+                // Reachability is proven for the life of the process; a later
+                // quiet spell is just nobody playing.
+                return;
+            }
+            let first = state.first_session_config_ms.load(Ordering::Relaxed);
+            if first == 0 {
+                continue; // nobody has asked where to connect yet
+            }
+            let waited = state.started.elapsed().as_millis() as u64 - first;
+            if waited < grace_ms {
+                continue;
+            }
+
+            let served = state.session_configs_served.load(Ordering::Relaxed);
+            if !reported {
+                error!(
+                    session_configs_served = served,
+                    wt_connection_attempts = 0,
+                    waited_ms = waited,
+                    wt_base_url = %state.wt_base_url,
+                    "UDP appears unreachable: clients were told where to connect but not one \
+                     QUIC packet has reached this socket. The listener is bound (a bind failure \
+                     is fatal at startup), so the datagrams are being dropped upstream -- the \
+                     host is not forwarding this UDP port."
+                );
+                reported = true;
+            }
+            if fatal {
+                error!(
+                    "UDP_WATCHDOG=fatal: exiting so this box is replaced. A port mapping \
+                     cannot be added to a running instance, so this one can never serve players."
+                );
+                // 78 = EX_CONFIG, the same code the entrypoint uses for a
+                // missing port mapping. Both mean "this host cannot do the
+                // job", which is what the orchestrator acts on.
+                std::process::exit(78);
+            }
+        }
+    });
+}
+
 async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
     let Some(bind) = std::env::var("WEB_BIND_ADDR")
         .ok()
@@ -1242,6 +1357,14 @@ struct HealthResponse {
     /// "listening" apart from "listening and actually running matches".
     active_matches: u32,
     players: u32,
+    /// Whether any QUIC connection attempt has ever reached the UDP socket.
+    /// False is not a fault on its own -- it also means "no client has tried
+    /// yet" -- but false while `session_configs_served` climbs is a box that
+    /// cannot serve players, which used to be indistinguishable from a
+    /// healthy one.
+    udp_verified: bool,
+    wt_connection_attempts: u64,
+    session_configs_served: u64,
 }
 
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
@@ -1254,6 +1377,9 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         snapshot_hz: state.inner.physics.snapshot_hz(),
         active_matches,
         players,
+        udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
+        wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
+        session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
     })
 }
 
@@ -1275,6 +1401,18 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    // Each of these is a browser being told where to open QUIC. Recording the
+    // first one starts the clock the reachability watchdog measures against.
+    state
+        .inner
+        .session_configs_served
+        .fetch_add(1, Ordering::Relaxed);
+    let _ = state.inner.first_session_config_ms.compare_exchange(
+        0,
+        state.inner.started.elapsed().as_millis() as u64,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
     let config_match_id = query.match_id.clone();
     let city_world = city::is_city_match(&query.match_id);
     let city_manifest_hash = if city_world {
