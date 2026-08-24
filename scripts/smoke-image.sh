@@ -28,6 +28,7 @@ NAME="vibe-smoke-$$"
 HTTP_PORT="${SMOKE_HTTP_PORT:-4011}"
 UDP_PORT="${SMOKE_UDP_PORT:-4433}"
 EXTERNAL_UDP_PORT="${SMOKE_EXTERNAL_UDP_PORT:-40687}"
+WEB_PORT="${SMOKE_WEB_PORT:-4443}"
 PUBLIC_IP="${SMOKE_PUBLIC_IP:-203.0.113.77}"
 
 pass() { echo "  ok   $*"; }
@@ -47,6 +48,7 @@ missing="$(docker run --rm --entrypoint /bin/bash "$IMAGE" -c '
   ls /opt/vibe-land/lib/libcudart.so.* >/dev/null 2>&1 || echo "lib/libcudart.so.*"
   [[ -e /opt/vibe-land/lib-stubs/libcuda.so.1 ]] || echo "lib-stubs/libcuda.so.1"
   ls /opt/vibe-land/assets/scenes/*.json >/dev/null 2>&1 || echo "assets/scenes/*.json"
+  [[ -e /opt/vibe-land/web/index.html ]] || echo "web/index.html"
 ')"
 [[ -z "$missing" ]] || fail "image is missing: $missing"
 pass "binary, PhysX GPU library, CUDA runtime, scenes and entrypoint all present"
@@ -89,7 +91,7 @@ if [[ -n "$CPU_ONLY" ]]; then
   )
 fi
 docker run -d --name "$NAME" "${gpu_args[@]}" "${backend_env[@]}" \
-  -p "$HTTP_PORT:4001" -p "$EXTERNAL_UDP_PORT:$UDP_PORT/udp" \
+  -p "$HTTP_PORT:4001" -p "$WEB_PORT:4443" -p "$EXTERNAL_UDP_PORT:$UDP_PORT/udp" \
   -e "PUBLIC_IPADDR=$PUBLIC_IP" \
   -e "VAST_UDP_PORT_${UDP_PORT}=$EXTERNAL_UDP_PORT" \
   -e MATCHES_PER_BOX=4 \
@@ -122,8 +124,23 @@ echo "$session" | grep -qE '"server_certificate_hash_hex":"[a-f0-9]{64}"' \
   || fail "no usable certificate hash published"
 pass "published a 64-hex certificate hash for pinning"
 
+echo "[smoke] 6. serves the client over TLS"
+# The whole point of the web listener: a browser will not open a WebTransport
+# session from an insecure context, so the page has to arrive over HTTPS. -k
+# because the certificate is self-signed by design; the browser pins it by hash.
+web="https://127.0.0.1:$WEB_PORT"
+curl -fsSk --max-time 5 "$web/city" | grep -qi "<!doctype html" \
+  || fail "/city did not return the client (SPA fallback broken?)"
+pass "/city returns the client over https"
+
+# Same-origin is what removes both the CORS and the mixed-content problem.
+session_tls="$(curl -fsSk --max-time 5 "$web/session-config?match_id=city-default")"
+echo "$session_tls" | grep -qE '"server_certificate_hash_hex":"[a-f0-9]{64}"' \
+  || fail "session-config not served on the https listener: $session_tls"
+pass "session-config is same-origin on the https listener"
+
 if [[ -z "$CPU_ONLY" ]]; then
-  echo "[smoke] 6. reports the driver it was given"
+  echo "[smoke] 7. reports the driver it was given"
   docker exec "$NAME" nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null \
     | head -1 | sed 's/^/  gpu: /' || echo "  (nvidia-smi unavailable; compute still validated above)"
 fi
