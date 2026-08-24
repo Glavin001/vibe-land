@@ -675,3 +675,107 @@ describe('CityTopology pose compose during membership churn', () => {
     expect(out[0]).toBeGreaterThan(0);
   });
 });
+
+/**
+ * At the instant of fracture, nothing has moved.
+ *
+ * The server splits a body and reports it; no time has passed and no physics
+ * has run. So every chunk -- the ones promoted into the new island AND the
+ * ones left behind -- must still compose to exactly the world pose it had a
+ * moment earlier. Any deviation is a visible discontinuity at the exact frame
+ * the player is looking at the impact, which is the worst possible moment for
+ * one: reported as the building showing its post-fracture cutout before the
+ * fractured pieces appear.
+ */
+describe('CityTopology fracture is pose-neutral', () => {
+  /** A slab of `count` stacked unit chunks on one support, at a world offset. */
+  const tower = (count: number): CityManifest => ({
+    version: 1,
+    structures: [
+      {
+        structureId: 0,
+        worldPosition: [10, 0, -4],
+        worldRotation: [0, 0, 0, 1],
+        chunks: Array.from({ length: count }, (_, node) => ({
+          nodeIndex: node,
+          centroid: [0, node + 0.5, 0],
+          mass: node === 0 ? 0 : 10,
+          volume: 1,
+          size: [1, 1, 1],
+          geometry: { kind: 'Cuboid', halfExtents: [0.5, 0.5, 0.5] },
+          radius: 0.87,
+          support: node === 0,
+        })),
+        bonds: Array.from({ length: count - 1 }, (_, i) => ({
+          bondIndex: i,
+          node0: i,
+          node1: i + 1,
+          centroid: [0, i + 1, 0],
+          normal: [0, 1, 0],
+          area: 1,
+        })),
+      },
+    ],
+  });
+
+  /** Island COM in world, exactly as the adapter re-centres a split child. */
+  const islandPose = (m: CityManifest, nodes: number[]): [number, number, number] => {
+    const s = m.structures[0];
+    let x = 0, y = 0, z = 0, w = 0;
+    for (const node of nodes) {
+      const chunk = s.chunks[node];
+      const weight = chunk.mass > 0 ? chunk.mass : 1;
+      x += chunk.centroid[0] * weight;
+      y += chunk.centroid[1] * weight;
+      z += chunk.centroid[2] * weight;
+      w += weight;
+    }
+    return [
+      s.worldPosition[0] + x / w,
+      s.worldPosition[1] + y / w,
+      s.worldPosition[2] + z / w,
+    ];
+  };
+
+  it('leaves every chunk exactly where it was when a blast radius is promoted', () => {
+    const m = tower(12);
+    const topology = new CityTopology(m);
+    const before = Array.from({ length: topology.chunkCount }, (_, slot) =>
+      topology.chunkWorldPose(slot).position.slice() as number[]);
+
+    // A shot mid-tower frees a contiguous group, exactly like a blast radius.
+    const freed = [5, 6, 7];
+    expect(topology.apply({
+      topoSeq: 1,
+      simTick: 10,
+      batches: [{
+        structureId: 0,
+        brokenBondIndices: [4, 7],
+        promotions: [{
+          structureId: 0,
+          islandId: 1,
+          nodes: freed,
+          position: islandPose(m, freed),
+          rotation: [0, 0, 0, 1],
+          linearVelocity: [0, 0, 0],
+          angularVelocity: [0, 0, 0],
+        }],
+        retiredIslandIds: [],
+        migrations: [],
+      }],
+      settled: [],
+      wakes: [],
+    } as unknown as TopologyMessage)).toBe(true);
+
+    for (let slot = 0; slot < topology.chunkCount; slot += 1) {
+      const after = topology.chunkWorldPose(slot).position;
+      const moved = Math.hypot(
+        after[0] - before[slot][0],
+        after[1] - before[slot][1],
+        after[2] - before[slot][2],
+      );
+      expect(moved, `chunk slot ${slot} moved ${moved.toFixed(3)} m at the fracture instant`)
+        .toBeLessThan(1e-3);
+    }
+  });
+});
