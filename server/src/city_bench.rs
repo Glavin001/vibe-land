@@ -213,8 +213,7 @@ fn view_clustering_reduction_on_realistic_layouts() {
         let mut seeds: Vec<(Vec3, Vec3)> = Vec::new();
         for &(eye, direction) in cameras {
             let joined = seeds.iter().any(|&(seed_eye, seed_dir)| {
-                eye.distance(seed_eye) <= eye_radius_m
-                    && direction.dot(seed_dir) >= cos_tolerance
+                eye.distance(seed_eye) <= eye_radius_m && direction.dot(seed_dir) >= cos_tolerance
             });
             if !joined {
                 seeds.push((eye, direction));
@@ -229,7 +228,10 @@ fn view_clustering_reduction_on_realistic_layouts() {
     let eye_radius_m = 25.0;
 
     println!("\n=== view clustering: clusters per layout ===");
-    println!("{:>8}  {:>10}  {:>10}  {:>10}", "players", "ring", "clumped", "scattered");
+    println!(
+        "{:>8}  {:>10}  {:>10}  {:>10}",
+        "players", "ring", "clumped", "scattered"
+    );
     for &players in &[4usize, 16, 32, 64, 128] {
         // Ring: everyone around the edge looking inward (the bench layout).
         let ring: Vec<(Vec3, Vec3)> = (0..players)
@@ -333,7 +335,10 @@ fn player_scaling_of_the_stream() {
 
     let stats = city.stats();
     println!("\n=== stream cost vs player count ===");
-    println!("bodies {}  awake {}", stats.chunk_bodies, stats.awake_chunk_bodies);
+    println!(
+        "bodies {}  awake {}",
+        stats.chunk_bodies, stats.awake_chunk_bodies
+    );
     println!(
         "\n{:>8}  {:>12}  {:>12}  {:>14}",
         "players", "shared p50", "pack p50", "pack/client"
@@ -432,10 +437,8 @@ fn full_demolition_cost() {
         .flat_map(|&x| [-36.0f32, -12.0, 12.0, 36.0].iter().map(move |&z| (x, z)))
         .collect();
 
-    let (mut tick_ms, mut begin_ms, mut solve_ms, mut end_ms) =
-        (vec![], vec![], vec![], vec![]);
-    let (mut post_ms, mut snap_ms, mut ing_ms, mut dyn_ms) =
-        (vec![], vec![], vec![], vec![]);
+    let (mut tick_ms, mut begin_ms, mut solve_ms, mut end_ms) = (vec![], vec![], vec![], vec![]);
+    let (mut post_ms, mut snap_ms, mut ing_ms, mut dyn_ms) = (vec![], vec![], vec![], vec![]);
     let (mut rb_ms, mut set_ms, mut sf_ms) = (vec![], vec![], vec![]);
     let (mut ev_ms, mut fl_ms, mut dr_ms) = (vec![], vec![], vec![]);
     let mut cpp_rb_ms = vec![];
@@ -487,7 +490,10 @@ fn full_demolition_cost() {
     // whether that is "settling, slowly" or "a wake loop holding the pile
     // open". Wall-clock sampling of a moving demolition cannot answer it.
     println!("\n=== settle curve (no further shots) ===");
-    println!("{:>6} {:>8} {:>8} {:>6} {:>10}", "sec", "bodies", "awake", "pct", "maxspeed");
+    println!(
+        "{:>6} {:>8} {:>8} {:>6} {:>10}",
+        "sec", "bodies", "awake", "pct", "maxspeed"
+    );
     for quiet in 0..1800u32 {
         world.step().expect("step");
         let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
@@ -796,8 +802,12 @@ fn city_destruction_cost_is_stable() {
     println!("migrations     {}", stats.chunk_migrations);
     println!(
         "worst body     pos ({:.0}, {:.0}, {:.0})  vel ({:.0}, {:.0}, {:.0})",
-        stats.min_body_pos[0], stats.min_body_pos[1], stats.min_body_pos[2],
-        stats.min_body_vel[0], stats.min_body_vel[1], stats.min_body_vel[2]
+        stats.min_body_pos[0],
+        stats.min_body_pos[1],
+        stats.min_body_pos[2],
+        stats.min_body_vel[0],
+        stats.min_body_vel[1],
+        stats.min_body_vel[2]
     );
     println!(
         "peak speeds    linear {:.0} m/s  angular {:.0} rad/s",
@@ -843,7 +853,10 @@ fn city_destruction_cost_is_stable() {
     let duplicates = city.encoder_stats().duplicate_body_records;
     println!(
         "repeated snapshot rows {}",
-        world.destruction_stats().map(|s| s.repeated_body_snapshots).unwrap_or(0)
+        world
+            .destruction_stats()
+            .map(|s| s.repeated_body_snapshots)
+            .unwrap_or(0)
     );
     let mappings_ok = world
         .validate_destruction_mappings()
@@ -1071,7 +1084,10 @@ fn reliable_channel_cost() {
         100.0 * reliable as f64 / (reliable + pose_bytes).max(1) as f64
     );
 
-    assert!(peak_bodies > 100, "scene never fractured ({peak_bodies} bodies)");
+    assert!(
+        peak_bodies > 100,
+        "scene never fractured ({peak_bodies} bodies)"
+    );
 }
 
 /// Does the v2 pose stream starve at scale, and by how much?
@@ -1160,8 +1176,7 @@ fn pose_stream_starvation() {
     let mut staleness_samples: Vec<f64> = Vec::new();
     let mut resting_samples = 0u64;
     let mut culled_samples = 0u64;
-    let interest =
-        vibe_land_destruction::interest::InterestConfig::validated(60);
+    let interest = vibe_land_destruction::interest::InterestConfig::validated(60);
 
     for tick in 0..total_ticks {
         if tick % shot_interval == 0 {
@@ -1221,7 +1236,8 @@ fn pose_stream_starvation() {
                     interest.pane_width,
                     interest.pane_height,
                     interest.fov_margin_degrees,
-                ) || record.position.distance(camera.eye) <= interest.proximity_meters;
+                ) || record.position.distance(camera.eye)
+                    <= interest.proximity_meters;
                 if !visible {
                     culled_samples += 1;
                     continue;
@@ -1242,8 +1258,8 @@ fn pose_stream_starvation() {
         if staleness_samples.is_empty() {
             return 0.0;
         }
-        let index = ((staleness_samples.len() as f64 * q) as usize)
-            .min(staleness_samples.len() - 1);
+        let index =
+            ((staleness_samples.len() as f64 * q) as usize).min(staleness_samples.len() - 1);
         staleness_samples[index]
     };
     let mean_awake = awake_total as f64 / sends.max(1) as f64;
@@ -1545,9 +1561,7 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
                 tick += 1;
             }
             let live = city.stats();
-            if refroze_at.is_none()
-                && live.awake_chunk_bodies <= (live.chunk_bodies / 4).max(8)
-            {
+            if refroze_at.is_none() && live.awake_chunk_bodies <= (live.chunk_bodies / 4).max(8) {
                 refroze_at = Some(second + 1);
             }
         }
@@ -1555,11 +1569,17 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
         println!(
             "  {:<14} after 30 s of quiet: awake={} frozen={} (was {} frozen before the shot) \
              quiet_again={}",
-            if freeze.enabled { "freeze=true" } else { "freeze=false" },
+            if freeze.enabled {
+                "freeze=true"
+            } else {
+                "freeze=false"
+            },
             settled_again.awake_chunk_bodies,
             settled_again.frozen_chunk_bodies,
             settled.frozen_chunk_bodies,
-            refroze_at.map(|s| format!("{s}s")).unwrap_or_else(|| "never".into()),
+            refroze_at
+                .map(|s| format!("{s}s"))
+                .unwrap_or_else(|| "never".into()),
         );
         if freeze.enabled {
             // Compared as a FRACTION, not a count. The shot breaks bonds, so
@@ -1569,10 +1589,9 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
             // the pile ending up a smaller proportion retired than it
             // started, because then every round fired ratchets it permanently
             // more expensive and freezing only defers the cost.
-            let before = settled.frozen_chunk_bodies as f32
-                / settled.chunk_bodies.max(1) as f32;
-            let after = settled_again.frozen_chunk_bodies as f32
-                / settled_again.chunk_bodies.max(1) as f32;
+            let before = settled.frozen_chunk_bodies as f32 / settled.chunk_bodies.max(1) as f32;
+            let after =
+                settled_again.frozen_chunk_bodies as f32 / settled_again.chunk_bodies.max(1) as f32;
             // Gated on the run having started from rest. A pile that was
             // still collapsing when the shot landed has no "before" worth
             // comparing against, and asserting anyway is how this check spent
@@ -1616,8 +1635,10 @@ fn one_shot_into_settled_rubble_wakes_only_its_neighbourhood() {
     }
 
     println!("\n=== one shot into settled rubble ===");
-    let (baseline_awake, baseline_bodies, baseline_frozen, baseline_asleep) =
-        run(FreezeConfig { enabled: false, ..FreezeConfig::default() });
+    let (baseline_awake, baseline_bodies, baseline_frozen, baseline_asleep) = run(FreezeConfig {
+        enabled: false,
+        ..FreezeConfig::default()
+    });
     let (frozen_awake, frozen_bodies, frozen_frozen, _) = run(FreezeConfig {
         enabled: true,
         // Shorter than production so the bench does not spend 30 s of
@@ -1822,12 +1843,22 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
             s.chunk_bodies,
             s.frozen_chunk_bodies,
             awake_body_seconds,
-            quiet_at.map(|q| format!("{q}s")).unwrap_or_else(|| "never".into()),
+            quiet_at
+                .map(|q| format!("{q}s"))
+                .unwrap_or_else(|| "never".into()),
             s.pose_quiet_awake_bodies,
             s.frozen_serial_blocks,
         );
-        assert_eq!(s.frozen_serial_blocks, 0, "frozen body reached a serial path");
-        (awake_body_seconds, quiet_at, s.frozen_chunk_bodies, s.chunk_bodies)
+        assert_eq!(
+            s.frozen_serial_blocks, 0,
+            "frozen body reached a serial path"
+        );
+        (
+            awake_body_seconds,
+            quiet_at,
+            s.frozen_chunk_bodies,
+            s.chunk_bodies,
+        )
     }
 
     println!("\n=== retiring the pile PhysX will not sleep ===");
@@ -1840,7 +1871,12 @@ fn pose_freezing_retires_the_pile_physx_will_not_sleep() {
     };
     let (sleep_seconds, sleep_quiet, sleep_frozen, _) = run(sleep_only, "engine-sleep");
     let (pose_seconds, pose_quiet, pose_frozen, pose_bodies) = run(
-        FreezeConfig { pose_enabled: true, pose_ticks: 60, shell_m: 0.02, ..sleep_only },
+        FreezeConfig {
+            pose_enabled: true,
+            pose_ticks: 60,
+            shell_m: 0.02,
+            ..sleep_only
+        },
         "+ pose shell",
     );
 

@@ -29,23 +29,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use destruction_codec::debris_codec::{
+    SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances,
+};
+use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
+use destruction_codec::mask::MaskConfig as LiveMaskConfig;
 use destruction_codec::replay::ReplayWriter;
 use destruction_codec::trace::{
     ActorDef, ActorState, Camera, Header, Pose as TracePose, Shape, Tick, TopologyEdge,
     TopologyTick, TraceTopology, TraceWriter,
 };
-use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
-use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
-use destruction_codec::mask::MaskConfig as LiveMaskConfig;
-use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
-use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use glam::{Quat, Vec3};
 use vibe_land_destruction::city::{build_city_scene, CitySceneDesc};
 use vibe_land_destruction::city_config::stress_settings;
+use vibe_land_destruction::encoder::{BodySnapshotInput, ChunkStreamEncoder, EncoderConfig};
 use vibe_land_destruction::ids;
 use vibe_land_destruction::manifest::{ChunkGeometry, DestructionManifest};
 use vibe_land_destruction::runtime::CityDestruction;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
+use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
 use vibe_land_physx_bridge::{
     Pose as BridgePose, Quat as BridgeQuat, StaticBoxDesc, Vec3 as BridgeVec3, World, WorldConfig,
 };
@@ -125,8 +127,7 @@ impl Args {
         let mut args = std::env::args().skip(1);
         while let Some(flag) = args.next() {
             let mut value = || -> Result<String> {
-                args.next()
-                    .with_context(|| format!("{flag} needs a value"))
+                args.next().with_context(|| format!("{flag} needs a value"))
             };
             match flag.as_str() {
                 "--scene" => scene = PathBuf::from(value()?),
@@ -159,7 +160,10 @@ impl Args {
         }
         if grid == 0 || grid > 8 {
             // 6 structure-id bits; grid 8 is 64 structures, the packing limit.
-            bail!("--grid must be 1..=8 ({} structures max)", ids::MAX_STRUCTURES);
+            bail!(
+                "--grid must be 1..=8 ({} structures max)",
+                ids::MAX_STRUCTURES
+            );
         }
         Ok(Self {
             scene,
@@ -183,8 +187,8 @@ impl Args {
 }
 
 fn default_scene_path() -> PathBuf {
-    let file = std::env::var("VIBE_CITY_SCENE")
-        .unwrap_or_else(|_| "high-rise-10f-local.json".to_string());
+    let file =
+        std::env::var("VIBE_CITY_SCENE").unwrap_or_else(|_| "high-rise-10f-local.json".to_string());
     if let Ok(dir) = std::env::var("VIBE_DESTRUCTION_ASSET_DIR") {
         return PathBuf::from(dir).join(&file);
     }
@@ -259,9 +263,7 @@ fn build_chunk_table(manifest: &DestructionManifest) -> ChunkTable {
             let global = ids::chunk_id(structure.structure_id, chunk.node_index);
             table.by_global.insert(global, index);
             table.global_ids.push(global);
-            table
-                .rest
-                .push(Vec3::from_array(chunk.centroid));
+            table.rest.push(Vec3::from_array(chunk.centroid));
             table.mass.push(chunk.mass);
             table.structure.push(structure.structure_id);
             table.structure_pose.push(structure_pose);
@@ -292,8 +294,7 @@ fn build_chunk_table(manifest: &DestructionManifest) -> ChunkTable {
         for bond in &structure.bonds {
             let a = ids::chunk_id(structure.structure_id, bond.node0);
             let b = ids::chunk_id(structure.structure_id, bond.node1);
-            let (Some(&first), Some(&second)) =
-                (table.by_global.get(&a), table.by_global.get(&b))
+            let (Some(&first), Some(&second)) = (table.by_global.get(&a), table.by_global.get(&b))
             else {
                 continue;
             };
@@ -342,7 +343,8 @@ impl Membership {
             // Everything starts on its structure's intact support body, which
             // is serial 0 by convention and the only body that exists before
             // the first fracture.
-            let body = ids::body_entity(table.structure[index as usize], ids::SUPPORT_ISLAND_SERIAL);
+            let body =
+                ids::body_entity(table.structure[index as usize], ids::SUPPORT_ISLAND_SERIAL);
             body_of[index as usize] = body;
             members.entry(body).or_default().insert(index);
         }
@@ -416,7 +418,6 @@ impl Membership {
         }
     }
 }
-
 
 /// Appends every client-bound packet as JSONL `{tick, chan, hex}`.
 ///
@@ -604,8 +605,12 @@ impl V3ServerTap {
         let mut log = PacketLog::create(dir)?;
         log.push(0, 'r', &topology_encoder.bootstrap_message(0))?;
         let min_ticks = (hz * span_ms / 1000).max(1);
-        let governor =
-            RateGovernor::new(budget_mbps, min_ticks, (hz * span_max_ms / 1000).max(min_ticks), hz);
+        let governor = RateGovernor::new(
+            budget_mbps,
+            min_ticks,
+            (hz * span_max_ms / 1000).max(min_ticks),
+            hz,
+        );
         Ok(Self {
             topology_encoder,
             live,
@@ -630,10 +635,14 @@ impl V3ServerTap {
         output: &vibe_netcode::destruction_backend::DestructionTickOutput,
     ) -> Result<()> {
         let started = std::time::Instant::now();
-        self.topology_encoder.ingest_tick(tick, snapshots, output, &[]);
+        self.topology_encoder
+            .ingest_tick(tick, snapshots, output, &[]);
         for batch in &output.batches {
             for promotion in &batch.promoted_islands {
-                let key = u64::from(ids::body_entity(promotion.structure_id, promotion.island_id));
+                let key = u64::from(ids::body_entity(
+                    promotion.structure_id,
+                    promotion.island_id,
+                ));
                 let reach = island_reach(manifest, promotion.structure_id, &promotion.chunks);
                 self.radii.insert(key, reach);
                 self.live.add_body(key, reach);
@@ -807,8 +816,9 @@ fn main() -> Result<()> {
         actor_global_ids: table.global_ids.iter().map(|&id| id as u64).collect(),
         edges: table.edges.clone(),
     };
-    let mut writer = TraceWriter::create_with_topology(&args.output, &header, &table.actors, &topology)
-        .context("open trace for writing")?;
+    let mut writer =
+        TraceWriter::create_with_topology(&args.output, &header, &table.actors, &topology)
+            .context("open trace for writing")?;
 
     let mut membership = Membership::new(&table);
     // The view path: dump client-bound bytes; `replay-city-client.mts` turns
@@ -899,8 +909,7 @@ fn main() -> Result<()> {
                 args.shot_ramp_min_ticks.min(start)
             };
             let span = start.saturating_sub(floor);
-            let interval =
-                start - (span * next_shot as u32) / shot_plan.len().max(1) as u32;
+            let interval = start - (span * next_shot as u32) / shot_plan.len().max(1) as u32;
             next_fire_tick = tick_index + interval.max(floor);
         }
 
@@ -1079,15 +1088,15 @@ fn main() -> Result<()> {
                     // omits precisely because it never moves.
                     let (origin, rotation) = table.structure_pose[index as usize];
                     ActorState {
-                    pose: TracePose {
-                        position: origin + rotation * table.rest[index as usize],
-                        rotation,
-                    },
-                    linear_velocity: Vec3::ZERO,
-                    angular_velocity: Vec3::ZERO,
-                    contacts: 0,
-                    intact_joints: 0,
-                    flags: 1 | 2,
+                        pose: TracePose {
+                            position: origin + rotation * table.rest[index as usize],
+                            rotation,
+                        },
+                        linear_velocity: Vec3::ZERO,
+                        angular_velocity: Vec3::ZERO,
+                        contacts: 0,
+                        intact_joints: 0,
+                        flags: 1 | 2,
                     }
                 }
             };
@@ -1286,11 +1295,7 @@ fn overview_cameras(extent: f32) -> [Camera; 4] {
 /// Shots that rake each building around a height band, cycling structures so a
 /// multi-building scene collapses broadly instead of felling one tower while
 /// the rest stand untouched.
-fn build_shot_plan(
-    manifest: &DestructionManifest,
-    shots: u32,
-    targets: u32,
-) -> Vec<(Vec3, Vec3)> {
+fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> Vec<(Vec3, Vec3)> {
     let mut plan = Vec::with_capacity(shots as usize);
     if manifest.structures.is_empty() {
         return plan;

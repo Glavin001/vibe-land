@@ -1171,16 +1171,16 @@ async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
 
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
 
-    let web_dir = std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
+    let web_dir =
+        std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
     let app = match std::path::Path::new(&web_dir).join("index.html") {
         // A single-page app: unknown paths are client routes such as /city, so
         // they must fall back to index.html rather than 404.
         index if index.is_file() => {
             info!(%web_dir, %addr, "serving the client over https");
             app.fallback_service(
-                tower_http::services::ServeDir::new(&web_dir).fallback(
-                    tower_http::services::ServeFile::new(index),
-                ),
+                tower_http::services::ServeDir::new(&web_dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
             )
         }
         _ => {
