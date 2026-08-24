@@ -20,11 +20,50 @@ a verification method, and a stated risk.
 | **T4** | Kill spurious thaws | **83%** of freezes undone | large, indirect | medium |
 | **T5** | Instrument the unattributed **4.06 ms** inside `stress_solve_ms` | 25% of the city step | unknown | none |
 | **T6** | Make `begin_ms` incremental — serial, single-threaded, growing | 1.3 → **4.72 ms** | ~3 ms | medium |
-| **T7** | Surface `events_ms`/`filters_ms`; confirm the `0.0` is real | both exactly `0.0` | none (diagnostic) | none |
+| **T7** | Prove the `0.0` in `events_ms`/`filters_ms` — run with `VIBE_CITY_QUIET_SKIP=0` | both exactly `0.0`; `quiet_slot_ticks_` **never exposed** | none (diagnostic, but gates T5) | none |
 | **T8** | Explain `physics_contact_pairs: 0` with 2,126 awake bodies | looks unpopulated | none (diagnostic) | none |
 
 **Do T2 first.** It is free and it determines whether T1's 6.4 ms is real or partly
 an artefact of how we measured it.
+
+---
+
+## 0. Data sources and provenance
+
+Everything in this document derives from four collections. Nothing else was
+used; where a number is inferred rather than read, it is marked **[inferred]**.
+
+| # | Source | When | Config | What it gives |
+| --- | --- | --- | --- | --- |
+| **S1** | `/match-stats/city-default` JSON | `server_tick 468840` | 0 players, rubble settled | the idle baseline |
+| **S2** | `/match-stats/city-default` JSON | `server_tick 478020` | 1 player, standing still | the loaded baseline |
+| **S3** | In-game overlay screenshots | during active demolition | 1–2 players, desktop + iOS Safari | scale progression 10k → 33.7k bonds |
+| **S4** | Source code at `b5eddaa` | — | — | file:line anchors, defaults, contracts |
+
+**Both JSON samples came from the same box and the same process**
+(`server_started: 20:50:20` in both), so they differ only in load and elapsed
+time. That is what makes the idle→loaded comparison in §3 meaningful.
+
+**Known limitations of this dataset, stated up front:**
+
+1. **n = 1 box.** All timings are one RTX 3060 with 12 effective cores at
+   4.3 GHz. Nothing here establishes how these costs scale across CPU or GPU
+   models. The 5060 Ti comparison in S3 is not scale-matched (see §4.5) and is
+   used only for direction, never for ratios.
+2. **Both JSON samples had `VIBE_PHYSX_PROFILE_FETCH=1`**, which busy-polls a
+   core by design. See §4.1 and T2 — this may inflate every number in §3.
+3. **No scripted run.** Every demolition was hand-driven, so S3's samples reach
+   different extents and cannot be compared to each other quantitatively.
+4. **`structures: 1`.** The scene is one Blast structure, so any per-structure
+   behaviour (notably the quiet-skip in T7) is all-or-nothing here. A
+   multi-structure scene may behave differently.
+5. **Instantaneous vs windowed.** `step_ms` is last-tick; `timings.total_ms` is
+   a rolling average; `window_step_ms` is a 60-sample window. Comparing them
+   directly is a category error.
+
+**How to challenge any of this:** every claim below is written as
+*Claim / Evidence / Assumptions / How to disprove*. If an assumption is wrong,
+the claim it supports should be discarded, not patched.
 
 ---
 
@@ -135,6 +174,12 @@ Same box, same scene. The only difference is load.
 **The idle row is the headline.** With **zero players connected** and the rubble
 at rest, the server still needs 20.9 ms a tick. It cannot hold 60 Hz doing
 nothing.
+
+> **Both columns are probably lower bounds.** `events_ms` and `filters_ms` are
+> `0.0` in both, which (per T7) most likely means the quiet-skip gate took the
+> cheap path on the sampled tick. Under sustained fracturing that gate cannot
+> fire, so real demolition costs **more** than the loaded column shows. Do not
+> treat 26.79 ms as the worst case.
 
 **Correctness is not a problem anywhere.** `city_desync_repairs: 0`,
 `settle_deferred_penetrating: 0`, `unmapped_body_skips: 0`,
@@ -383,29 +428,117 @@ incremental approach.
 
 ---
 
-### T7 — Confirm `events_ms`/`filters_ms: 0.0` is real, and surface it
+### T7 — Are `events_ms`/`filters_ms: 0.0` real? (traced, not proven)
 
-**Symptom:** both are exactly `0.0` in **both** samples, including the loaded one
-with active destruction.
+**Why this got scrutiny:** "exactly zero" is the signature of *both* a working
+skip and a broken pipe, and the two are indistinguishable from the value alone.
+What follows is the trace, so the next person can attack the assumptions rather
+than repeat the work.
 
-**Two possible explanations, and they need distinguishing:**
+#### Claim
 
-1. **Working as designed.** The quiet-skip gate at
-   `physx-bridge/src/destruction.cc:1341-1357` skips the whole membership diff
-   when `splits`, `bodiesCreated`, `shapesMigrated` and `bodiesRecycled` have not
-   moved. The player in the loaded sample was standing still
-   (`vel_ms: [-7e-7, -0.5, -5.7e-7]`), so topology may genuinely have been quiet.
-2. **A plumbing bug** — the accumulators are only assigned inside the
-   non-skipped branch (`destruction.cc:1389-1395`), so a mis-wiring would also
-   read `0.0` forever.
+The zeros are **consistent with the quiet-skip firing** — i.e. most likely
+correct — but this is **not proven**, and one decisive test remains unrun.
 
-**How to distinguish:** sample `/match-stats` *while actively shooting*. If they
-stay `0.0` during real fracturing, it is a bug.
+#### Evidence for the plumbing being sound
 
-**Also do:** add rows for both to `client/src/city/CityStatsOverlay.tsx`. They are
-already plumbed C++ → Rust (`destruction/src/runtime.rs:771,774`) → JSON
-(`server/src/main.rs:283,333`). Two lines of UI closes a blind spot that already
-cost one wrong root-cause.
+1. **Assignment is by name, not by offset.** `destruction.cc:2187-2188` does
+   `stats.events_ms = last_events_ms_`. `FfiDestructionStats` is a `cxx` shared
+   struct (`physx-bridge/src/lib.rs:1385-1400`), so C++ and Rust layouts are
+   generated from one definition. A field-order mismatch is not possible here.
+2. **Neighbouring fields assigned in the same block report non-zero.**
+   `begin_ms` (4.72), `solve_ms` (3.43), `end_ms` (1.66) and `readback_ms`
+   (2.09) are all set on adjacent lines from the identical `last_*_ms_` pattern.
+   A broken struct would break those too.
+3. **The Rust hop is direct:** `destruction/src/runtime.rs:771,774` copies
+   `bridge_stats.events_ms` / `.filters_ms` straight through, and
+   `server/src/main.rs:283,333` serialises them.
+
+#### Evidence for the skip being the explanation
+
+Both accumulators live **after** the `continue` in the per-slot loop:
+
+```cpp
+// destruction.cc:1355-1357
+if (!topology_changed && quiet_skip_enabled()) {
+  ++quiet_slot_ticks_;
+  continue;                    // <- everything below is skipped
+}
+...
+collect_events(slot);   events_ms  += ms_since(phase);   // :1380
+register_filters(slot); filters_ms += ms_since(phase);   // :1384
+```
+
+`quiet_skip_enabled()` (`destruction.cc:159-165`) is **on unless
+`VIBE_CITY_QUIET_SKIP=0`**, and `structures: 1` means one slot — so a single
+quiet structure zeroes both fields for that tick.
+
+In S2 the player was stationary (`vel_ms: [-7.1e-7, -0.5, -5.7e-7]`,
+`on_ground: true`), so no new fracture was being caused at the sampled instant.
+Topology plausibly *was* quiet.
+
+#### A test I tried that does NOT work — and why
+
+It is tempting to argue: `readback_ms` also accumulates after the `continue`
+(`:1366`), so `readback_ms: 2.09` proves the slot was **not** skipped, which
+would make the zeros a bug.
+
+**That argument is wrong.** `readback_ms` accumulates in *two* places:
+
+| line | in loop? | conditional? |
+| --- | --- | --- |
+| `:1194` | own loop at `:1191-1193`, **before** the topology loop | **no — every tick** |
+| `:1366` | inside the topology loop | yes — after the `continue` |
+
+So 2.09 ms can come entirely from the unconditional pre-solve pass at `:1194`,
+with `:1366` contributing nothing. **No contradiction.** Recorded here because
+it looks like a proof and is not.
+
+#### The observability gap — the actual defect
+
+`quiet_slot_ticks_` is incremented at `destruction.cc:1356` and declared at
+`destruction.h:286`, but is **never read, never exposed in
+`FfiDestructionStats`, never published.** It is the one counter that would
+settle this instantly, and nothing can see it.
+
+#### How to disprove the claim (decisive, ~5 minutes)
+
+Boot one instance with the skip disabled:
+
+```
+-e VIBE_CITY_QUIET_SKIP=0
+```
+
+The `continue` can then never fire, so `collect_events` and `register_filters`
+**must** run on every tick for every live slot.
+
+- `events_ms` / `filters_ms` become **non-zero** → plumbing is fine, the zeros
+  were the skip working. Claim holds.
+- They stay **exactly 0.0** → **plumbing bug.** Start at
+  `destruction.cc:1380,1384`, then the `last_*_ms_` assignment at `:1390-1391`,
+  then `:2187-2188`.
+
+A weaker but cheaper check: sample `/match-stats` *while actively shooting*
+rather than standing still. Non-zero values there also confirm the claim,
+though a zero result would be inconclusive.
+
+#### Regardless of outcome — do these
+
+1. **Expose `quiet_slot_ticks_`** in `FfiDestructionStats` and the JSON. Without
+   it there is no way to know what fraction of ticks take the cheap path, which
+   makes every idle-vs-loaded comparison in §3 partly guesswork.
+2. **Add `events_ms` / `filters_ms` rows** to
+   `client/src/city/CityStatsOverlay.tsx`. They are already plumbed all the way
+   to JSON; the overlay simply has no row. That omission is what sent this
+   investigation down a wrong path once already (see Appendix C.3).
+
+#### What this changes about T5
+
+If the skip is firing, then the **4.06 ms unattributed gap is *not* explained by
+the membership diff**, and it is also **measured on ticks that took the cheap
+path**. Under sustained fracturing — when the skip cannot fire — the true city
+step is **higher than 17.48 ms**, and T5's gap may be larger still. §3's loaded
+sample is therefore probably a *lower bound* on cost during real demolition.
 
 ---
 
@@ -494,6 +627,7 @@ the tree.
 | Variable | Effect |
 | --- | --- |
 | `VIBE_PHYSX_PROFILE_FETCH=1` | splits `fetch` into `gpu_wait` + `copy` — **burns a core, see T2** |
+| `VIBE_CITY_QUIET_SKIP` | `1`. Skips the membership diff when topology did not change (`destruction.cc:159`). Set `0` for the T7 test — **not documented anywhere else** |
 | `VIBE_CITY_TELEMETRY=<path>` | per-tick JSONL trace |
 | `RUST_LOG` | `info` by default in the image |
 | `UDP_VERIFY` / `UDP_WATCHDOG` | boot-time reachability check (`fatal` on Vast) |
@@ -625,6 +759,10 @@ the useful part.
    the solver works on intact bonds, which *fall* as the city breaks. Measured
    38–39 Hz where 25 was predicted.
 3. **"The unattributed gap is `collect_events`/`register_filters`."** Wrong:
-   both report `0.0` — see T7.
+   both report `0.0`. The follow-up reasoning ("`readback_ms` is non-zero and
+   also sits after the `continue`, so the slot cannot have been skipped") was
+   **also wrong** — `readback_ms` has a second, unconditional accumulation site
+   at `destruction.cc:1194`. See T7 for the full trace and the decisive test
+   that has not yet been run.
 4. **"The GPU is idle 4.7 ms per tick."** Imprecise: the **CPU** is idle; the GPU
    is busy. The opportunity is overlap (T1), not a smaller GPU.
