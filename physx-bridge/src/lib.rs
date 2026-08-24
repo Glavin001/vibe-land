@@ -1089,6 +1089,22 @@ impl World {
             .validate_destruction_mappings()
             .map_err(operation_error)
     }
+
+    /// Raw `PxScene*` as an integer, for handing this scene to another
+    /// subsystem.
+    ///
+    /// The destructible city, players and vehicles all have to live in one
+    /// scene, so the blast-stress-solver core attaches to this rather than
+    /// standing up a second world. The pointer is valid for the lifetime of
+    /// this `World`.
+    pub fn scene_ptr(&self) -> Result<usize, BridgeError> {
+        self.inner.scene_ptr().map_err(operation_error)
+    }
+
+    /// Raw `PxPhysics*` as an integer. See [`scene_ptr`](Self::scene_ptr).
+    pub fn physics_ptr(&self) -> Result<usize, BridgeError> {
+        self.inner.physics_ptr().map_err(operation_error)
+    }
 }
 
 #[cfg(not(feature = "gpu"))]
@@ -1550,6 +1566,11 @@ mod ffi {
         fn take_support_rows(self: Pin<&mut World>) -> Result<Vec<FfiSupportRow>>;
         fn destruction_stats(self: &World) -> Result<FfiDestructionStats>;
         fn validate_destruction_mappings(self: &World) -> Result<bool>;
+
+        /// Raw PhysX handles, so the blast-stress-solver core can attach a
+        /// backend to this scene instead of creating a second one.
+        fn scene_ptr(self: &World) -> Result<usize>;
+        fn physics_ptr(self: &World) -> Result<usize>;
     }
 }
 

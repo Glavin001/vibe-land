@@ -1450,6 +1450,17 @@ private:
     return output;
   }
 
+public:
+  // --- Bring-your-own-world hand-off ---------------------------------------
+  // Lend the scene so the blast-stress-solver core can attach a backend to it
+  // instead of standing up a second scene. Players, vehicles and the
+  // destructible city all have to live in one scene.
+  std::uintptr_t scene_ptr() const { return reinterpret_cast<std::uintptr_t>(scene_); }
+  std::uintptr_t physics_ptr() const {
+    return reinterpret_cast<std::uintptr_t>(runtime_ ? &runtime_->physics() : nullptr);
+  }
+
+private:
   std::shared_ptr<SharedPhysxRuntime> runtime_;
   PxDefaultCpuDispatcher *dispatcher_ = nullptr;
   PxScene *scene_ = nullptr;
@@ -1643,6 +1654,10 @@ FfiDestructionStats World::destruction_stats() const {
 bool World::validate_destruction_mappings() const {
   return impl_->validate_destruction_mappings();
 }
+
+std::uintptr_t World::scene_ptr() const { return impl_->scene_ptr(); }
+
+std::uintptr_t World::physics_ptr() const { return impl_->physics_ptr(); }
 
 std::unique_ptr<World> new_world(const FfiWorldConfig &config) {
   return std::make_unique<World>(config);

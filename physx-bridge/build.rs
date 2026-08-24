@@ -140,6 +140,12 @@ fn main() {
     ] {
         println!("cargo:rustc-link-lib=static={library}");
     }
+    // PhysX also dlopens libPhysXGpu_64.so at CUDA-context creation, and a
+    // dlopen ignores the link search path. Without an rpath the GPU scene fails
+    // to construct and the bridge reports "no GPU" -- which reads as missing
+    // hardware rather than a missing runtime path, and silently downgrades
+    // every GPU test to a skip.
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
     println!("cargo:rustc-link-lib=dylib=PhysXGpu_64");
     println!("cargo:rustc-link-lib=dylib=cuda");
     // The .cu uses both the runtime API and the driver API (cuCtxPushCurrent).
