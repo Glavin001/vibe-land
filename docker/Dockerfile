@@ -10,6 +10,9 @@
 # Run:    scripts/smoke-image.sh <tag>
 
 ARG BUILDER_IMAGE=ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1
+# Global scope on purpose: `COPY --from=` rejects a variable, but `FROM` accepts
+# one, so the choice of bundle source is made by the indirection stage below.
+ARG BUNDLE_STAGE=build
 
 FROM ${BUILDER_IMAGE} AS build
 WORKDIR /src
@@ -29,8 +32,11 @@ RUN RUSTFLAGS="-L /usr/local/cuda/lib64/stubs" \
 FROM scratch AS prebuilt
 COPY dist/physx-server/ /out/
 
+# Resolves to whichever of the two stages above was selected. BuildKit builds
+# only the one this points at and skips the other entirely.
+FROM ${BUNDLE_STAGE} AS bundle
+
 FROM ubuntu:24.04
-ARG BUNDLE_STAGE=build
 ENV DEBIAN_FRONTEND=noninteractive
 # iproute2 is only for the entrypoint's last-resort local-address lookup when
 # a standalone host has no route to an IP echo service.
@@ -39,7 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/vibe-land
-COPY --from=${BUNDLE_STAGE} /out/ ./
+COPY --from=bundle /out/ ./
 COPY docker/entrypoint.sh /opt/vibe-land/entrypoint.sh
 RUN chmod +x /opt/vibe-land/entrypoint.sh /opt/vibe-land/run.sh
 
