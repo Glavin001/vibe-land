@@ -58,6 +58,13 @@ run_wire() {
 run_wire 2
 run_wire 3
 
+# ALWAYS leave the live server on the shipping wire. The harness restarts the
+# server to test, and finishing on whichever wire happened to be last put a
+# real session on the broken one -- which is exactly how a player ended up
+# playing v3 while it was known bad.
+echo "--- restoring live server to the shipping wire (v2)" >&2
+start_server 2
+
 python3 - "$OUT" <<'PY'
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
