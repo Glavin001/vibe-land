@@ -98,6 +98,10 @@ RUN chmod +x /opt/vibe-land/entrypoint.sh /opt/vibe-land/run.sh
 # covers CUDA; `utility` brings nvidia-smi along for debugging a sick box.
 ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    # Without this the server's EnvFilter resolves to an empty filter and the
+    # whole log stream is discarded -- which is how two rented boxes were
+    # debugged from silence. Override to `debug` when a box misbehaves.
+    RUST_LOG=info \
     BIND_ADDR=0.0.0.0:4001 \
     WT_BIND_ADDR=0.0.0.0:4433 \
     WEB_BIND_ADDR=0.0.0.0:4443 \

@@ -947,8 +947,17 @@ struct MatchState {
 async fn main() -> Result<()> {
     load_repo_env();
 
+    // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
+    // discards everything -- not even ERROR survives. A container image does
+    // not set RUST_LOG, so every rented box has been running with the log
+    // stream silently switched off, and diagnosing one meant inferring from
+    // the absence of output that was never going to appear. Default to `info`
+    // and let RUST_LOG override it as usual.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
     install_panic_hook();
     let physics = PhysicsRuntimeConfig::from_env()?;
@@ -1059,8 +1068,30 @@ async fn main() -> Result<()> {
     {
         let app_inner = state.inner.clone();
         tokio::spawn(async move {
+            // Counts every QUIC connection attempt that actually reached this
+            // socket. This is the one number that separates the two failures
+            // that look identical from a browser -- both present as
+            // QUIC_NETWORK_IDLE_TIMEOUT with no packets back:
+            //
+            //   attempts stay 0  -> the datagrams never arrive. The listener
+            //                       is bound (a bind failure is fatal well
+            //                       before this point), so the loss is
+            //                       upstream: host port forwarding, or a
+            //                       missing UDP mapping.
+            //   attempts climb   -> packets arrive and the handshake itself
+            //                       is failing. Look at the certificate.
+            //
+            // Diagnosing this by staring at logs that were never emitted cost
+            // real time and two wrong conclusions.
+            let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             loop {
                 let incoming = wt_endpoint.accept().await;
+                let seen = attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                info!(
+                    remote = %incoming.remote_address(),
+                    attempts = seen,
+                    "WT connection attempt reached the listener"
+                );
                 let app = app_inner.clone();
                 tokio::spawn(async move {
                     let request = match incoming.await {
