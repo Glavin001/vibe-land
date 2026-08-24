@@ -49,7 +49,10 @@ fn physx_shot_stress_impulse() -> f32 {
         .filter(|value| *value > 0.0)
         // Keep this below the old "nuke the whole tower" 5e9 / 8e7 band so a
         // hit opens a local crater instead of shredding every bond in radius.
-        .unwrap_or(1.2e7)
+        // Bullet-scale. 1.2e7 was chosen against a 2.5 m radius; with a
+        // 0.4 m radius the same number concentrates ~40x the load density
+        // into the bonds it does reach.
+        .unwrap_or(4.0e5)
 }
 /// Rigid-body push on dynamic debris after / during a hit (rocket feel), as a
 /// velocity change in m/s at the blast centre, falling off quadratically.
@@ -113,6 +116,45 @@ fn city_round_momentum_ns() -> f32 {
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| *value > 0.0)
         .unwrap_or(3.0e5)
+}
+
+/// Radius of the stress load a single round deposits.
+///
+/// Bullet-scale, not shell-scale. This was 2.5 m, which is an artillery
+/// footprint: a single burst removed most of a building because every round
+/// drove load into every bond within a 5 m diameter. A rifle round against
+/// concrete spalls a crater measured in centimetres, and the weapon here is
+/// full-auto, so the destruction budget wants to come from *many* small
+/// precise hits rather than one enormous one.
+///
+/// Override with VIBE_CITY_SHOT_BLAST_RADIUS.
+fn shot_blast_radius_m() -> f32 {
+    std::env::var("VIBE_CITY_SHOT_BLAST_RADIUS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(0.4)
+}
+
+/// Radius of the rigid-body shove on already-loose debris. Slightly wider than
+/// the stress radius so fragments right at the crater still get pushed.
+///
+/// Override with VIBE_CITY_SHOT_PUSH_RADIUS.
+fn shot_push_radius_m() -> f32 {
+    std::env::var("VIBE_CITY_SHOT_PUSH_RADIUS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| *v > 0.0)
+        .unwrap_or(0.7)
+}
+
+/// How far past the surface to seat the blast centre.
+///
+/// Scaled to the radius rather than fixed. The old 0.5 m was half the old
+/// radius; against a 0.4 m radius it would bury the entire load inside the
+/// slab and never touch the face that was actually hit.
+fn shot_blast_depth_m() -> f32 {
+    shot_blast_radius_m() * 0.4
 }
 
 const SHOT_BLAST_RADIUS_M: f32 = 2.5;
@@ -1005,7 +1047,7 @@ impl CityRuntime {
                 };
                 let affected = backend.apply_explosion(
                     point.to_array(),
-                    SHOT_BLAST_RADIUS_M,
+                    shot_blast_radius_m(),
                     SYNTHETIC_SHOT_IMPULSE,
                 );
                 tracing::debug!(
@@ -1053,7 +1095,7 @@ impl CityRuntime {
                 // Seat the blast just inside the surface so the radius covers
                 // material rather than straddling the face.
                 let surface = Vec3::new(hit.position.x, hit.position.y, hit.position.z);
-                let point = surface + direction * SHOT_BLAST_DEPTH_M;
+                let point = surface + direction * shot_blast_depth_m();
                 let structure_id = ids::body_entity_parts(hit.entity_id).0;
 
                 let stress = physx_shot_stress_impulse();
@@ -1070,7 +1112,7 @@ impl CityRuntime {
                 // reaches keeps the cost of a shot proportional to the shot.
                 // The wider push radius is used so every body that will be
                 // pushed is dynamic by the time the push arrives.
-                match backend.wake_around(world, point.to_array(), SHOT_PUSH_RADIUS_M) {
+                match backend.wake_around(world, point.to_array(), shot_push_radius_m()) {
                     Ok(0) => {}
                     Ok(woken) => tracing::debug!(woken, "city shot woke frozen rubble"),
                     Err(error) => tracing::warn!(%error, "city spatial wake failed"),
@@ -1080,7 +1122,7 @@ impl CityRuntime {
                     world,
                     point.to_array(),
                     direction.to_array(),
-                    SHOT_BLAST_RADIUS_M,
+                    shot_blast_radius_m(),
                     stress,
                     push,
                 ) {
@@ -1092,7 +1134,7 @@ impl CityRuntime {
                             self.pending_pushes.push((
                                 point,
                                 direction,
-                                SHOT_PUSH_RADIUS_M,
+                                shot_push_radius_m(),
                                 push,
                             ));
                         }
