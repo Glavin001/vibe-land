@@ -172,6 +172,9 @@ impl CoreCityDestruction {
         collision_group: u32,
         collision_mask: u32,
         stress_limit_scale: f32,
+        solver_iterations: u32,
+        apply_excess_forces: bool,
+        excess_force_scale: f32,
     ) -> Result<Self, CoreRuntimeError> {
         use blast_stress_solver::scene_pack::{
             building_offsets, load_scene_pack_file, make_building_variants, pitch_for_pack,
@@ -216,6 +219,13 @@ impl CoreCityDestruction {
             // first and so changes how the building comes apart rather than
             // just how easily.
             let mut solver = solver_settings_for(&variant.pack, 0);
+            // Iteration count is part of the physics, not a speed dial: below
+            // convergence the solver reports residual as stress, and residual
+            // breaks bonds. Both backends must run the same count or their
+            // fracture counts are not comparable.
+            if solver_iterations > 0 {
+                solver.max_solver_iterations_per_frame = solver_iterations;
+            }
             if stress_limit_scale > 0.0 && (stress_limit_scale - 1.0).abs() > f32::EPSILON {
                 solver.compression_elastic_limit *= stress_limit_scale;
                 solver.compression_fatal_limit *= stress_limit_scale;
@@ -224,9 +234,33 @@ impl CoreCityDestruction {
                 solver.shear_elastic_limit *= stress_limit_scale;
                 solver.shear_fatal_limit *= stress_limit_scale;
             }
+            // The pack's real table, scaled as a whole. Without this every
+            // bond runs on material 0 and the foundation -- authored strongest
+            // precisely because it carries the most load -- ends up weaker than
+            // the load it was sized for, so the city collapses at rest.
+            let materials: Vec<blast_stress_solver::types::StressLimits> = variant
+                .pack
+                .materials
+                .iter()
+                .map(|m| {
+                    let l = m.limits;
+                    let k = if stress_limit_scale > 0.0 { stress_limit_scale } else { 1.0 };
+                    blast_stress_solver::types::StressLimits {
+                        compression_elastic_limit: l.compression_elastic * k,
+                        compression_fatal_limit: l.compression_fatal * k,
+                        tension_elastic_limit: l.tension_elastic * k,
+                        tension_fatal_limit: l.tension_fatal * k,
+                        shear_elastic_limit: l.shear_elastic * k,
+                        shear_fatal_limit: l.shear_fatal * k,
+                    }
+                })
+                .collect();
             let mut cfg = DestructibleConfig {
                 gravity: CoreVec3::new(gravity[0], gravity[1], gravity[2]),
+                materials,
                 solver,
+                apply_excess_forces,
+                excess_force_scale,
                 // Without this the host's raycasts cannot see a single chunk,
                 // and every shot into the city reports a miss.
                 collision_groups: Some(blast_stress_solver::backend::InteractionGroups {

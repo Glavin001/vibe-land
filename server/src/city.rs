@@ -728,6 +728,8 @@ impl CityRuntime {
         // and height options, so the simulation and the manifest the client is
         // handed describe the same city.
         let scene = build_scene().context("building the city scene for the core path")?;
+        let settings =
+            vibe_land_destruction::city_config::stress_settings(&scene_stress_materials());
         let path = asset_path();
         let grid = scene.desc.grid;
         let varied_heights = scene.desc.varied_heights;
@@ -755,6 +757,14 @@ impl CityRuntime {
                 // Same knob the old path reads, so the two are configured
                 // identically and a comparison between them is meaningful.
                 vibe_land_destruction::city_config::stress_limit_scale(),
+                // Every remaining knob read from the same place the old path
+                // reads it. A backend comparison is only meaningful if the two
+                // are configured identically, and solver iterations in
+                // particular are physics: below convergence the solver reports
+                // residual as stress, and residual breaks bonds.
+                settings.max_solver_iterations_per_frame,
+                settings.apply_excess_forces,
+                settings.excess_force_scale,
             )
         }
         .map_err(|error| anyhow::anyhow!("{error}"))?;

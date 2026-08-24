@@ -2036,3 +2036,59 @@ fn the_core_path_drives_the_city_through_the_server_loop() {
         stats.broken_bonds, bodies_at_rest, stats.chunk_bodies
     );
 }
+
+/// A city standing on its own must not destroy itself.
+///
+/// This is the gate that was missing. The core path shipped with every bond on
+/// material 0 -- a single global strength -- because the library could not
+/// express a table. That reads like a strength rescale and is not one: a
+/// district pack authors its foundation bonds strongest *precisely because*
+/// they carry the most load, so flattening the table leaves the foundation
+/// weaker than the load it was sized for. `fractured-downtown` then broke 867
+/// bonds and woke 18,143 of 24,105 chunks under gravity alone, with nobody
+/// firing a shot.
+///
+/// Nothing aggregate would have caught it. Bonds broke, bodies appeared and
+/// topology messages flowed, so every "did destruction happen" assertion was
+/// satisfied -- by the building falling down on its own.
+#[cfg(feature = "blast-core")]
+#[test]
+#[ignore = "benchmark: needs a GPU"]
+fn a_city_at_rest_does_not_destroy_itself_on_the_core_path() {
+    let mut world = World::new(WorldConfig::default()).expect("GPU world");
+    world
+        .add_static_box(StaticBoxDesc {
+            entity_id: 1,
+            user_id: 0,
+            pose: Pose {
+                position: BridgeVec3::new(0.0, -10.0, 0.0),
+                rotation: Quat::IDENTITY,
+            },
+            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
+            collision_group: GROUP_STATIC,
+            collision_mask: ALL_GROUPS,
+        })
+        .expect("ground");
+    let mut city =
+        crate::city::CityRuntime::blast_core(60, &mut world).expect("city opens on the core");
+    city.add_client(1);
+
+    // Ten seconds of gravity and nothing else.
+    let mut tick = 0u32;
+    for _ in 0..600 {
+        world.step().expect("step");
+        let _ = city.step(tick, DT, GRAVITY, Some(&mut world));
+        tick += 1;
+    }
+
+    let stats = city.stats();
+    assert_eq!(
+        stats.broken_bonds, 0,
+        "the city broke {} bonds under gravity alone. An anchored structure on \
+         its authored materials carries its own weight -- if it does not, the \
+         load path is wrong, most likely because the material table was \
+         flattened and the foundation is no longer the strongest thing in it.",
+        stats.broken_bonds
+    );
+    eprintln!("[blast-core /city] at rest for 10 s: {} bonds broken", stats.broken_bonds);
+}
