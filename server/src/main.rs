@@ -1183,12 +1183,21 @@ async fn main() -> Result<()> {
     // otherwise healthy. The listener reports and stays down instead.
     // Actively prove the advertised endpoint is reachable, before anyone is
     // billed for a box that cannot serve players.
-    verify_public_udp_or_exit(
-        &watchdog_state.wt_base_url,
-        &watchdog_state.cert_hash_hex,
-        &wt_attempts,
-    )
-    .await;
+    //
+    // Blocking only matters when the result can end the process. In `warn`
+    // mode nothing is decided by it, so waiting would just delay serving --
+    // and by a full timeout precisely on the hosts that do not hairpin, which
+    // is the common case for someone running this on a laptop.
+    {
+        let url = watchdog_state.wt_base_url.clone();
+        let hash = watchdog_state.cert_hash_hex.clone();
+        let counter = wt_attempts.clone();
+        if std::env::var("UDP_VERIFY").as_deref() == Ok("fatal") {
+            verify_public_udp_or_exit(&url, &hash, &counter).await;
+        } else {
+            tokio::spawn(async move { verify_public_udp_or_exit(&url, &hash, &counter).await });
+        }
+    }
 
     spawn_udp_reachability_watchdog(watchdog_state.clone());
 

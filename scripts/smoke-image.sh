@@ -33,7 +33,13 @@ PUBLIC_IP="${SMOKE_PUBLIC_IP:-203.0.113.77}"
 
 pass() { echo "  ok   $*"; }
 fail() { echo "  FAIL $*" >&2; docker logs "$NAME" 2>&1 | tail -30 || true; exit 1; }
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+TMP_UNREACHABLE="$(mktemp)"
+# One handler, deliberately: a second `trap ... EXIT` replaces the first rather
+# than adding to it, which would have left containers running after a failure.
+cleanup() {
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  rm -f "$TMP_UNREACHABLE"
+}
 trap cleanup EXIT
 
 if [[ -n "$CPU_ONLY" ]]; then echo "[smoke] --cpu: GPU assertions skipped"; fi
@@ -90,10 +96,17 @@ if [[ -n "$CPU_ONLY" ]]; then
     -e LD_LIBRARY_PATH=/opt/vibe-land/lib-stubs
   )
 fi
+# UDP_VERIFY=off for this case, and it is not a workaround. PUBLIC_IP here is
+# 203.0.113.77 -- TEST-NET-3, reserved for documentation and routable from
+# nowhere. The boot probe correctly reports it unreachable and, because the
+# VAST_* variable above puts the entrypoint in fatal mode, correctly exits 78
+# mid-boot. This case is about whether the container starts and serves, so the
+# probe is switched off here and given its own case below instead.
 docker run -d --name "$NAME" "${gpu_args[@]}" "${backend_env[@]}" \
   -p "$HTTP_PORT:4001" -p "$WEB_PORT:4443" -p "$EXTERNAL_UDP_PORT:$UDP_PORT/udp" \
   -e "PUBLIC_IPADDR=$PUBLIC_IP" \
   -e "VAST_UDP_PORT_${UDP_PORT}=$EXTERNAL_UDP_PORT" \
+  -e UDP_VERIFY=off \
   -e MATCHES_PER_BOX=4 \
   "$IMAGE" >/dev/null
 
@@ -113,6 +126,32 @@ if [[ -z "$CPU_ONLY" ]]; then
     || fail "GPU physics not active -- driver injection or CUDA is broken"
   pass "PhysX GPU validated inside the container"
 fi
+
+echo "[smoke] 4b. refuses to run when the advertised endpoint is unreachable"
+# The failure this guards is a box that boots, heartbeats, serves /city and
+# reports healthz "ok" while forwarding no UDP at all -- indistinguishable from
+# a working box, and billing the whole time. Two rented hosts did exactly that.
+#
+# 203.0.113.77 is TEST-NET-3, reserved for documentation, so nothing can route
+# to it: the probe must find it unreachable. The VAST_* variable puts the
+# entrypoint in fatal mode, where the right answer is to exit rather than
+# advertise an address that reaches nobody.
+#
+# Exercised organically before it was written down -- this is the case that
+# failed CI when the probe first shipped.
+set +e
+docker run --rm --name "${NAME}-unreachable" "${backend_env[@]}" \
+  -e "PUBLIC_IPADDR=$PUBLIC_IP" \
+  -e "VAST_UDP_PORT_${UDP_PORT}=$EXTERNAL_UDP_PORT" \
+  -e UDP_VERIFY=fatal -e UDP_VERIFY_TIMEOUT_MS=6000 \
+  "$IMAGE" >"$TMP_UNREACHABLE" 2>&1
+code=$?
+set -e
+[[ $code -eq 78 ]] \
+  || fail "expected exit 78 for an unreachable advertised endpoint, got $code"
+grep -q 'UDP UNREACHABLE' "$TMP_UNREACHABLE" \
+  || fail "exited 78 but never said why; the log is the only diagnostic a rented box has"
+pass "exited 78 and named the cause"
 
 echo "[smoke] 5. advertises the external endpoint"
 session="$(curl -fsS --max-time 3 "http://127.0.0.1:$HTTP_PORT/session-config?match_id=smoke")"
