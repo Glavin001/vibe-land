@@ -123,9 +123,17 @@ because the fleet rents whatever the marketplace has spare.
 
 ### Run one yourself
 
-The image is self-contained: the only thing it needs from the host is the
-driver, which arrives through the [NVIDIA container
+To rent a single Vast box by hand and get a server on it, follow
+[`RUN-ON-VASTAI.md`](RUN-ON-VASTAI.md) — a step-by-step runbook, including the
+one mistake that cannot be undone (the UDP port has to be declared when the
+instance is created).
+
+Anywhere else, the image is self-contained: the only thing it needs from the
+host is the driver, which arrives through the [NVIDIA container
 toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+The package is private, so `docker login ghcr.io` with a `read:packages` token
+first. `latest` only moves on pushes to `main`; a `sha-` tag is what a branch
+build publishes and what the fleet is pinned to.
 
 ```bash
 docker run --gpus all \
