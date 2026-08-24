@@ -54,6 +54,13 @@ export interface CityClientStats {
   /** 2 = ranked per-client records; 3 = LiveEncoder debris spans via wasm. */
   wireVersion: number;
   recordsBuffered: number;
+  /// Ledger rebuilds this session. Each one is a full restatement of the
+  /// world; a climbing count means the client keeps losing agreement with the
+  /// server and asking for a fresh copy.
+  bootstraps: number;
+  /// Settles refused because their pose would have teleported the body --
+  /// membership disagreement, caught before it could be drawn.
+  settleRejects: number;
   bytesReceived: number;
   bytesPerSecond: number;
   manifestHash: string;
@@ -975,6 +982,8 @@ export class CityClient {
       chunksTotal: this.topology.chunkCount,
       chunksAwake,
       chunksSettled,
+      bootstraps: this.bootstrapCount,
+      settleRejects: this.topology.settleFrameRejects,
       brokenBonds: topologyStats.brokenBonds,
       liveIslands: topologyStats.liveIslands,
       topoSeqGaps: topologyStats.topoSeqGaps,

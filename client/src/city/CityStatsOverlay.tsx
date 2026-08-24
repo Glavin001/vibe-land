@@ -19,6 +19,7 @@ import { isTouchDevice } from '../device';
 /** Matches the server's CityStatsSnapshot in server/src/main.rs. */
 interface CityServerStats {
   structures: number;
+  wire_version?: number;
   chunk_bodies: number;
   awake_bodies: number;
   broken_bonds: number;
@@ -232,6 +233,9 @@ export function CityStatsOverlay({
     chunkUpdateP95Ms: number;
     orphanedChunks: number;
     rendered: boolean;
+    wireVersion: number;
+    bootstraps: number;
+    settleRejects: number;
   } | null;
   transport: string;
   pingMs: number;
@@ -284,6 +288,12 @@ export function CityStatsOverlay({
   const frame = useFrameTime();
   const clientStats = getCityStats();
   const datagramsRef = useRef({ last: 0, perSec: 0, at: 0 });
+  // Freeze churn per second. The cumulative total means nothing on its own; the
+  // RATE is what separates a healthy server (a few hundred flips over a whole
+  // session) from one that has fallen into a freeze/thaw loop and stopped
+  // settling anything -- measured at 407,984 flips with 0 bodies asleep, while
+  // every other number on this panel looked ordinary.
+  const freezeRef = useRef({ last: 0, perSec: 0, at: 0 });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -381,6 +391,16 @@ export function CityStatsOverlay({
     tracker.perSec = ((clientStats.datagramsReceived - tracker.last) * 1000) / (now - tracker.at || 1);
     tracker.last = clientStats.datagramsReceived;
     tracker.at = now;
+  }
+
+  const freezeFlips = server?.city?.freeze_flips ?? 0;
+  const freezeTracker = freezeRef.current;
+  if (freezeFlips > 0 && now - freezeTracker.at > 900) {
+    if (freezeTracker.last > 0) {
+      freezeTracker.perSec = ((freezeFlips - freezeTracker.last) * 1000) / (now - freezeTracker.at || 1);
+    }
+    freezeTracker.last = freezeFlips;
+    freezeTracker.at = now;
   }
 
   const tick = server?.timings?.total_ms;
@@ -596,6 +616,59 @@ export function CityStatsOverlay({
           {server?.server_started ?? '?'}
         </span>
       </div>
+
+      {/*
+        The three agreement checks. Every one of these was missing during a
+        multi-day hunt where the city silently stopped being destroyed on
+        screen while the server kept fracturing, and each would have shown it
+        at a glance.
+      */}
+      <div style={heading}>agreement</div>
+      {/* Wire: client and server pick this independently -- the server per
+          match, the client from the session config -- and a rebuild used to
+          reset the server's half. A mismatch means the client DISCARDS the
+          other wire's pose records by design, so the city freezes on screen
+          with no error anywhere. */}
+      <Stat
+        label="wire cli/srv"
+        value={`${clientStats?.wireVersion ?? '?'} / ${city?.wire_version ?? '?'}`}
+        warn={
+          clientStats != null
+          && city?.wire_version != null
+          && clientStats.wireVersion !== city.wire_version
+        }
+      />
+      {/* Does this client's ledger agree with the simulation? The single most
+          diagnostic number here: server climbing while client sits at zero is
+          exactly "my shots do nothing". */}
+      <Stat
+        label="bonds cli/srv"
+        value={`${clientStats?.brokenBonds ?? 0} / ${city?.broken_bonds ?? 0}`}
+        warn={
+          (city?.broken_bonds ?? 0) > 50
+          && (clientStats?.brokenBonds ?? 0) < (city?.broken_bonds ?? 0) * 0.9
+        }
+      />
+      {/* Ledger rebuilds. One at join is normal; a climbing count means the
+          client keeps losing agreement and asking for a fresh world. */}
+      <Stat
+        label="bootstraps"
+        value={`${clientStats?.bootstraps ?? 0}`}
+        warn={(clientStats?.bootstraps ?? 0) > 1}
+      />
+      <Stat
+        label="settle rejects"
+        value={`${clientStats?.settleRejects ?? 0}`}
+        warn={(clientStats?.settleRejects ?? 0) > 0}
+      />
+      {/* Freeze churn RATE, not the total. A server that has stopped settling
+          anything spins this into the hundreds per second while looking
+          otherwise healthy. */}
+      <Stat
+        label="freeze flips/s"
+        value={`${freezeTracker.perSec.toFixed(0)}`}
+        warn={freezeTracker.perSec > 200}
+      />
 
       <div style={heading}>browser</div>
       <Stat label="fps" value={frame.fps.toFixed(0)} warn={frame.fps < 45} />

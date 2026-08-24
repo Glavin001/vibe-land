@@ -235,6 +235,11 @@ struct MatchTimingStats {
 #[derive(serde::Serialize, Clone, Default)]
 struct CityStatsSnapshot {
     structures: u32,
+    /// Which city wire this match speaks. On the panel beside the client's own
+    /// view of it: a mismatch is invisible in play -- the client discards the
+    /// other wire's pose records by design -- and it silently stops the city
+    /// being destroyed on screen while the server keeps fracturing.
+    wire_version: u8,
     /// Wire v3 governor internals -- the knobs the F9 panel cannot show.
     /// Zero/1.0 on v2 matches.
     v3_span_ticks: u32,
@@ -3215,6 +3220,7 @@ impl MatchState {
                 let encode_timings = city.last_encode_timings();
                 CityStatsSnapshot {
                     structures: stats.structures,
+                    wire_version: city.wire_version(),
                     v3_span_ticks: city.governor_snapshot().0,
                     v3_rate_scale: city.governor_snapshot().1,
                     v3_ema_mbps: city.governor_snapshot().2,

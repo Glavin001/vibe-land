@@ -137,6 +137,9 @@ export interface CityE2EStats {
    * which owns the per-slot last-drawn positions; 0 when it is not.
    */
   staleDrawnChunks: number;
+  /// Ledger rebuilds this session, and settles refused for a frame mismatch.
+  bootstraps: number;
+  settleRejects: number;
   /** Cumulative chunks orphaned by a retire, including transient windows. */
   orphanedByRetire: number;
   /**

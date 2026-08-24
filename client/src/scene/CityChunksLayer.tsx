@@ -972,6 +972,8 @@ export function CityChunksLayer({
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
         staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
+        bootstraps: stats.bootstraps,
+        settleRejects: stats.settleRejects,
         deepest,
       });
       renderStats.telemetryMs = performance.now() - telemetryStartedAt;
