@@ -481,3 +481,93 @@ describe('CityClient repaint requests', () => {
     expect(second.bodies).toHaveLength(0);
   });
 });
+
+/**
+ * Wire v3: a settled body is owned by the reliable channel.
+ *
+ * The v2 record path has always known this -- `applyRecord` drops any record
+ * at or before a body's settle tick, because "the settle arrived on the
+ * reliable channel carrying the authoritative rest pose". The v3 sampling path
+ * had no such guard, and v3 makes it matter far more: a parked lane stays
+ * SAMPLABLE indefinitely by design, so every frame after a settle the sampled
+ * pose overwrote the authoritative one, the next reliable message put it back,
+ * and the body oscillated between the two.
+ *
+ * Measured on an identical scripted collapse: settles disagreeing with the
+ * client's pose 118 times on v3 versus 0 on v2, worst displacement 151 m
+ * versus 2.4 m.
+ */
+describe('CityClient wire v3 settled-body guard', () => {
+  /** Minimal decoder that reports one lane holding one pose, forever. */
+  const parkedLaneDecoder = (pose: [number, number, number]) => ({
+    lane_count: () => 1,
+    sample_into: (_tick: number, lanes: Uint32Array, poses: Float32Array): number => {
+      lanes[0] = 0;
+      poses[0] = pose[0];
+      poses[1] = pose[1];
+      poses[2] = pose[2];
+      poses[3] = 0; poses[4] = 0; poses[5] = 0; poses[6] = 1;
+      return 1;
+    },
+    drain_poisoned: () => new Uint32Array(0),
+    assign_lane: () => {},
+    clear_lane_until: () => {},
+    reset_all_lanes: () => {},
+    push_payload: () => 0,
+  });
+
+  interface V3Internals {
+    sampleDebris(renderTick: number, live: Set<number>): Set<number>;
+    settledAtTick: Map<number, number>;
+    laneToEntity: Map<number, number>;
+    entityToLane: Map<number, number>;
+  }
+
+  it('does not let a parked lane overwrite an authoritative settled pose', () => {
+    const key = bodyKey(0, 1);
+    const client = new CityClient(
+      loaded(),
+      () => {},
+      { decoder: parkedLaneDecoder([500, 500, 500]) as never },
+    );
+    bootstrap(client);
+    promote(client, 1, 1, [1], [10, 2, 0]);
+    const body = client.topology.body(key)!;
+    body.position = [10, 2, 0];
+
+    const v3 = client as unknown as V3Internals;
+    v3.laneToEntity.set(0, key);
+    v3.entityToLane.set(key, 0);
+    // Settled at tick 50 by the reliable channel.
+    v3.settledAtTick.set(key, 50);
+
+    // Sampling at a tick the settle already covers must change nothing.
+    v3.sampleDebris(50, new Set());
+    expect(client.topology.body(key)!.position).toEqual([10, 2, 0]);
+
+    // ...and a sample from BEFORE the settle is older news too.
+    v3.sampleDebris(40, new Set());
+    expect(client.topology.body(key)!.position).toEqual([10, 2, 0]);
+  });
+
+  it('still applies samples once the body wakes past its settle tick', () => {
+    const key = bodyKey(0, 1);
+    const client = new CityClient(
+      loaded(),
+      () => {},
+      { decoder: parkedLaneDecoder([7, 8, 9]) as never },
+    );
+    bootstrap(client);
+    promote(client, 1, 1, [1], [10, 2, 0]);
+    client.topology.body(key)!.position = [10, 2, 0];
+
+    const v3 = client as unknown as V3Internals;
+    v3.laneToEntity.set(0, key);
+    v3.entityToLane.set(key, 0);
+    v3.settledAtTick.set(key, 50);
+
+    // A sample from after the settle is genuinely newer, so it wins.
+    v3.sampleDebris(80, new Set());
+    expect(client.topology.body(key)!.position[0]).toBeCloseTo(7, 4);
+  });
+});

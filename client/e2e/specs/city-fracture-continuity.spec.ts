@@ -182,6 +182,27 @@ test.describe('fracture continuity', () => {
     console.log(`[cont] chunk writes skipped for an unresolved body: ${unplaced}`);
     console.log(`[cont] chunks hidden during the window: ${hiddenDelta}`);
     console.log(`[cont] triangles ${minTri}..${maxTri} (a dip means geometry left the draw)`);
+    // One machine-readable line so the two wires can be compared by a script
+    // rather than by reading logs.
+    console.log('[cont-json] ' + JSON.stringify({
+      wire: stats.wireVersion,
+      bonds: stats.brokenBonds,
+      islands: stats.liveIslands,
+      frames: samples.length,
+      worstJumpM: +worstJump.maxJump.toFixed(2),
+      worstDrawnM: +worstDrawn.drawnWorst.toFixed(2),
+      framesDrawnOff: badFrames,
+      framesJumping: jumpFrames,
+      belowWorld: worstBelow.belowWorld,
+      hidden: hiddenDelta,
+      unplaced,
+      orphans: stats.orphanedChunks,
+      orphanedByRetire: stats.orphanedByRetire,
+      bootstraps: stats.bootstraps,
+      settleRejects: stats.settleRejects,
+      topoGaps: stats.topoSeqGaps,
+      datagrams: stats.datagramsReceived,
+    }));
     for (const s of samples.filter((x) => x.belowWorld > 0 || x.jumpers > 0).slice(0, 10)) {
       console.log(`[cont]   t=${s.t} maxJump=${s.maxJump.toFixed(2)} jumpers=${s.jumpers} `
         + `below=${s.belowWorld} minY=${s.minY.toFixed(1)}`);

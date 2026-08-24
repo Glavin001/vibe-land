@@ -292,6 +292,22 @@ export class CityClient {
       if (this.entityToLane.get(entity) !== lane) {
         continue;
       }
+      // A settled body is owned by the reliable channel, which carried the
+      // authoritative rest pose. The v2 record path has always enforced this
+      // (see applyRecord); v3 did not, and v3 is where it matters most,
+      // because a parked lane stays SAMPLABLE indefinitely by design. So
+      // every frame after a settle the sampled pose overwrote the settled
+      // one, the next reliable message put it back, and the body oscillated
+      // between the two -- measured as 118 settle disagreements and a 151 m
+      // worst displacement per collapse on v3, against 0 and 2.4 m on v2.
+      //
+      // `clear_lane_until` already tries to stop this at the decoder, but it
+      // is conditional on the lane maps agreeing; this is the guard at the
+      // point of use, where correctness does not depend on that bookkeeping.
+      const settledAt = this.settledAtTick.get(entity);
+      if (settledAt !== undefined && sampleTick <= settledAt) {
+        continue;
+      }
       const at = index * 7;
       // Epoch ordering in the decoder now guarantees a lane's samples belong
       // to its current tenant; the 5 m discontinuity hold that used to guard
