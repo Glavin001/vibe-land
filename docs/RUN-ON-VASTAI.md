@@ -5,9 +5,8 @@ control plane, no Cloudflare, no fleet — just the image running somewhere with
 GPU, verified with `curl`. For how the automated fleet does this, see
 `ORCHESTRATION.md`.
 
-Budget 10 minutes; most of it is the image pull. Note up front that this gets
-you a **verified running server, not a playable one** — a browser reaches a box
-through a control plane, never by URL. Step 4 explains why.
+Budget 10 minutes; most of it is the image pull. Step 4 gets a browser onto the
+box with `/city` rendering, no control plane involved.
 
 ## The one thing that will bite you
 
@@ -139,27 +138,67 @@ The `url` host and port must be the **external** ones. If you see `4433` there,
 the port mapping was missing and the box is unusable — destroy it and recreate
 with the Docker options above.
 
-## 4. Connecting a browser to it
+## 4. Play on it from a browser
 
-The two `curl` checks above are the real verification, and for most purposes
-they are where you stop: they prove the GPU is in use and that the box is
-advertising a reachable endpoint with a pinnable certificate.
+This is the part that looks impossible and is not. Point the **dev server's
+proxy** at your box and open `/city`:
 
-Getting a *browser* onto a hand-rented box is a different matter, and worth
-being clear about: **the client has no direct-connect URL.** It takes
-`?controlPlane=<url>`, asks that control plane for a server via `/join`, and
-connects to whatever it is handed. There is no `?server=` flag.
+```bash
+# from the repo root
+SERVER_HOST=<instance ip> SERVER_PORT=<external port mapped to 4001> \
+  npm --prefix client run dev
+```
 
-That is not an oversight — the box serves a self-signed certificate, which
-browsers accept for WebTransport only if the client pins its exact hash, and a
-browser cannot `fetch()` `/session-config` off that origin to learn the hash.
-The certificate hash has to arrive out of band, which is what the control plane
-relays. See "Heartbeats carry the connect metadata" in `ORCHESTRATION.md`.
+Then open **http://localhost:5555/city** (or whatever `CLIENT_PORT` says).
 
-So to actually play on a box you rented by hand, you need a control plane that
-knows about it — which means running the fleet rather than a standalone box.
-`./scripts/dev-orchestration.sh up` does that end to end against a local server,
-and "Joining the fleet" below is the same for a rented one.
+That is the whole recipe. `client/src/app/join.ts` says why it works: with no
+control plane configured it is inert and the client "keeps connecting straight
+to whatever `VITE_MULTIPLAYER_HTTP_ORIGIN` points at, which is how local
+development and the hand-run box keep working."
+
+### Why the proxy rather than a direct URL
+
+There is no `?server=<ip>` parameter, and pointing
+`VITE_MULTIPLAYER_HTTP_ORIGIN` straight at `http://<ip>:4001` from a page served
+over HTTPS will not work either. Two constraints collide:
+
+- WebTransport needs a **secure context**, so the page must be HTTPS — except on
+  `localhost`, which browsers exempt.
+- The box's certificate is self-signed. `serverCertificateHashes` rescues the
+  QUIC handshake, but a plain `fetch()` for `/session-config` over HTTPS to that
+  origin is rejected, and over plain HTTP from an HTTPS page it is blocked as
+  mixed content.
+
+`client/vite.config.ts` already proxies `/session-config`, `/healthz`, `/ws` and
+`/city-manifest` to `SERVER_HOST:SERVER_PORT`, so the page fetches them
+**same-origin** from `localhost` and neither constraint applies. The browser
+learns the certificate hash, then dials the box's UDP port directly over QUIC.
+Game traffic never goes through the proxy — only the metadata does.
+
+This is the same problem the control plane exists to solve, and the same shape
+of answer: connect metadata has to arrive out of band. For a hand-run box the
+dev-server proxy is that band; in production it is the Worker. Note the
+consequence — a **deployed** HTTPS client cannot reach a hand-run box, which is
+why this is a testing path and not a shipping one.
+
+### Verified
+
+Against the real image with the dev proxy pointed at it:
+
+```
+$ curl http://localhost:5555/session-config?match_id=city-default
+{"url":"https://203.0.113.55:40999/game",
+ "server_certificate_hash_hex":"56a9da57...","city_world":true,
+ "city_manifest_hash":"1aba012b..."}
+
+$ curl -o /dev/null -w '%{http_code} %{size_download}' \
+    http://localhost:5555/city-manifest/1aba012b...
+200 158711
+```
+
+The manifest matters: fetching it over HTTP from an HTTPS page is one of the
+three failures recorded in `NETCODE_NOTES.md` — a match that connects and
+simulates while rendering nothing. Through the proxy it is same-origin and fine.
 
 ## Troubleshooting
 
