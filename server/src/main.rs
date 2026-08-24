@@ -1181,7 +1181,16 @@ async fn main() -> Result<()> {
     // the dev-server proxy and the fleet all still use it.
     // Never `?`: a certificate problem must not take down a game server that is
     // otherwise healthy. The listener reports and stays down instead.
-    spawn_udp_reachability_watchdog(watchdog_state);
+    // Actively prove the advertised endpoint is reachable, before anyone is
+    // billed for a box that cannot serve players.
+    verify_public_udp_or_exit(
+        &watchdog_state.wt_base_url,
+        &watchdog_state.cert_hash_hex,
+        &wt_attempts,
+    )
+    .await;
+
+    spawn_udp_reachability_watchdog(watchdog_state.clone());
 
     if let Err(error) = spawn_web_listener(app.clone()).await {
         error!(%error, "web listener failed to start; continuing without it");
@@ -1208,6 +1217,174 @@ async fn main() -> Result<()> {
 /// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
 /// up and serves the API -- useful for a server-only image -- it just has no
 /// page to hand out.
+/// Prove at boot that the address we are about to advertise actually reaches
+/// this process, and refuse to run if it does not.
+///
+/// The failure this exists for: a host accepts the UDP port mapping, forwards
+/// nothing, and the box looks perfect from every angle a machine can check --
+/// it boots, heartbeats, serves /city, answers /healthz "ok" -- while every
+/// player times out. It bills by the hour the whole time. Nothing short of a
+/// human opening a browser noticed, which is the thing worth removing.
+///
+/// The probe opens a real WebTransport connection to our *own public*
+/// endpoint, pinning the certificate hash we just generated the way a browser
+/// would. It deliberately asks for a path the session handler rejects, so a
+/// successful probe cannot create a phantom player.
+///
+/// Reachability is judged on whether the packets arrived, not on whether the
+/// handshake finished: `wt_attempts` moving means a QUIC Initial reached the
+/// listener, which is the property under test. A handshake that then fails for
+/// its own reasons still proves the path.
+///
+/// The caveat, stated because it decides the default: this traverses the
+/// host's NAT back to itself. A host that forwards player traffic correctly
+/// can still fail to hairpin, so a failed probe is not proof of a bad box.
+/// That is why `UDP_VERIFY` defaults to `warn` -- loud, and visible in the
+/// logs, without destroying working hosts on a signal that has known false
+/// negatives. Set `UDP_VERIFY=fatal` once a host is known to hairpin, and a
+/// bad box kills itself at boot instead of billing quietly.
+async fn verify_public_udp_or_exit(public_url: &str, cert_hash_hex: &str, attempts: &AtomicU64) {
+    let mode = std::env::var("UDP_VERIFY").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let timeout_ms: u64 = std::env::var("UDP_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12_000);
+
+    let before = attempts.load(Ordering::Relaxed);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        probe_public_udp(public_url, cert_hash_hex),
+    )
+    .await;
+    // Give the server side a moment to register the attempt it just saw.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let arrived = attempts.load(Ordering::Relaxed) > before;
+
+    match (&result, arrived) {
+        // Either signal is sufficient: the handshake completing, or packets
+        // simply showing up at the listener.
+        (Ok(Ok(())), _) | (_, true) => {
+            info!(
+                endpoint = %public_url,
+                handshake = result.as_ref().map(|r| r.is_ok()).unwrap_or(false),
+                "UDP reachability verified: the advertised endpoint reaches this process"
+            );
+        }
+        _ => {
+            let (detail, network_evidence) = match &result {
+                Ok(Err(ProbeFailure::NoResponse(detail))) => (detail.clone(), true),
+                Ok(Err(ProbeFailure::Local(detail))) => (detail.clone(), false),
+                Err(_) => (format!("timed out after {timeout_ms}ms"), true),
+                Ok(Ok(())) => unreachable!("handled above"),
+            };
+            if !network_evidence {
+                warn!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP reachability probe could not run. This says nothing about the host -- \
+                     the probe never reached the network -- so it is not treated as a failure \
+                     even under UDP_VERIFY=fatal."
+                );
+                return;
+            }
+            if mode == "fatal" {
+                error!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP UNREACHABLE: nothing sent to the advertised endpoint came back to \
+                     this process. Players would load the page and then time out on the QUIC \
+                     handshake. The listener is bound -- a bind failure is fatal earlier -- so \
+                     this host is not forwarding the UDP port. A port mapping cannot be added \
+                     to a running instance, so exiting to have this box replaced."
+                );
+                std::process::exit(78); // EX_CONFIG, same as a missing mapping
+            }
+            warn!(
+                endpoint = %public_url,
+                detail = %detail,
+                "could not verify UDP reachability. This host may simply not route traffic \
+                 back to itself (NAT hairpin), which is common and harmless -- but it is also \
+                 what a host that forwards nothing looks like. If players cannot connect, this \
+                 is why. Set UDP_VERIFY=fatal to refuse to run unverified."
+            );
+        }
+    }
+}
+
+/// One WebTransport connection to our own public address, pinning our own
+/// certificate hash exactly as a browser does.
+async fn probe_public_udp(public_url: &str, cert_hash_hex: &str) -> Result<(), ProbeFailure> {
+    let mut digest = [0u8; 32];
+    let bytes = (0..cert_hash_hex.len().min(64))
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cert_hash_hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|error| ProbeFailure::Local(format!("certificate hash is not hex: {error}")))?;
+    if bytes.len() != 32 {
+        return Err(ProbeFailure::Local(format!(
+            "certificate hash is {} bytes, expected 32",
+            bytes.len()
+        )));
+    }
+    digest.copy_from_slice(&bytes);
+
+    // Bind the probe socket in the same address family as the target. The
+    // default is a dual-stack v6 bind, which fails outright with "Address
+    // family not supported" on an IPv4-only host -- and that error arrives
+    // looking exactly like unreachability. Running this caught it; a host
+    // without IPv6 would otherwise have been declared dead and destroyed.
+    let target_is_v4 = public_url
+        .trim_start_matches("https://")
+        .trim_start_matches('[')
+        .split(':')
+        .next()
+        .map(|host| host.parse::<std::net::Ipv4Addr>().is_ok())
+        .unwrap_or(false);
+    let bind: SocketAddr = if target_is_v4 {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+
+    let config = wtransport::ClientConfig::builder()
+        .with_bind_address(bind)
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
+    let endpoint = wtransport::Endpoint::client(config)
+        .map_err(|error| ProbeFailure::Local(format!("could not open a probe socket: {error}")))?;
+    // A path the session handler rejects: this must never become a player.
+    let url = format!("{}/__reachability-probe", public_url.trim_end_matches('/'));
+    match endpoint.connect(&url).await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(ProbeFailure::NoResponse(format!("{error}"))),
+    }
+}
+
+/// Why a probe did not succeed.
+///
+/// The distinction is the whole safety of this feature. `NoResponse` means the
+/// probe was sent and nothing came back, which is evidence about the network.
+/// `Local` means the probe never left the building -- a socket we could not
+/// open, a hash we could not parse -- which is evidence about *us* and says
+/// nothing about the host. Only the former may ever be fatal; treating a local
+/// error as unreachability would destroy working boxes, which is exactly what
+/// the first version of this did on an IPv4-only host.
+enum ProbeFailure {
+    Local(String),
+    NoResponse(String),
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(detail) | Self::NoResponse(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
 /// Notice a box whose UDP path is black-holed, and stop pretending it is
 /// healthy.
 ///
