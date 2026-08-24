@@ -37,6 +37,9 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 # the page that opens it has to be served over HTTPS -- see WEB_BIND_ADDR in
 # main.rs. rustls/ring are already in the tree via wtransport.
 axum-server = { version = "0.7", features = ["tls-rustls"] }
+# Only to install the process-level crypto provider; see main.rs. ring is
+# what wtransport already pulls in, so this adds no new crypto stack.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"

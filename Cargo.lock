@@ -3243,6 +3243,7 @@ dependencies = [
  "rapier3d",
  "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

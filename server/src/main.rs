@@ -1118,7 +1118,11 @@ async fn main() -> Result<()> {
     //
     // Plain HTTP on BIND_ADDR stays exactly as it was: the Docker HEALTHCHECK,
     // the dev-server proxy and the fleet all still use it.
-    spawn_web_listener(app.clone()).await?;
+    // Never `?`: a certificate problem must not take down a game server that is
+    // otherwise healthy. The listener reports and stays down instead.
+    if let Err(error) = spawn_web_listener(app.clone()).await {
+        error!(%error, "web listener failed to start; continuing without it");
+    }
 
     // Both listeners are up, so the first beat can truthfully claim the server
     // is reachable -- that beat is what promotes this box to READY.
@@ -1157,6 +1161,14 @@ async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
     };
 
     let addr: SocketAddr = bind.parse()?;
+
+    // rustls panics -- does not return an error -- when no process-level crypto
+    // provider is installed, and axum-server does not install one. wtransport
+    // sets its own up internally, which is not the same thing. Installing ring
+    // here is idempotent by intent: a second call returns Err, which is the
+    // "someone already did it" case and not a failure.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
 
     let web_dir = std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
