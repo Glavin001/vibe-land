@@ -89,7 +89,8 @@ jobs:
             BUILDER_TAG=cuda12.8-physx-ovphysx-5.5.1
             echo "::notice::BUILDER_IMAGE_TAG is unset; using ${BUILDER_TAG}."
           fi
-          owner="${{ github.repository_owner }}"
+          # Lowercase: OCI repository names must be, and the owner is not.
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           # Tags are immutable and traceable to a commit: the fleet records
           # exactly which build is deployed, and a moving tag would make a
           # rollback ambiguous. `latest` exists only so a person can pull one.

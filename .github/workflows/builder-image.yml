@@ -58,10 +58,15 @@ jobs:
       # than only in the dispatch form.
       - id: meta
         run: |
+          # OCI repository names must be lowercase and the GitHub owner is not
+          # (Glavin001), so this cannot be interpolated straight into a tag.
+          owner="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          tag="${{ inputs.tag || 'cuda12.8-physx-ovphysx-5.5.1' }}"
           {
             echo "physx_ref=${{ inputs.physx_ref || 'ovphysx-0.5.10' }}"
             echo "blast_ref=${{ inputs.blast_ref || 'feature/physx-gpu-destruction' }}"
-            echo "tag=${{ inputs.tag || 'cuda12.8-physx-ovphysx-5.5.1' }}"
+            echo "tag=${tag}"
+            echo "image=ghcr.io/${owner}/vibe-land-builder:${tag}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push builder image
@@ -70,14 +75,14 @@ jobs:
           context: .
           file: docker/Dockerfile.builder
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ steps.meta.outputs.tag }}
+          tags: ${{ steps.meta.outputs.image }}
           build-args: |
             PHYSX_REF=${{ steps.meta.outputs.physx_ref }}
             BLAST_REF=${{ steps.meta.outputs.blast_ref }}
 
       - name: Report the tag to set
         run: |
-          image="ghcr.io/${{ github.repository_owner }}/vibe-land-builder:${{ steps.meta.outputs.tag }}"
+          image="${{ steps.meta.outputs.image }}"
           {
             echo "### Builder image published"
             echo
@@ -88,6 +93,7 @@ jobs:
             echo "PhysX: \`${{ steps.meta.outputs.physx_ref }}\`  "
             echo "Blast: \`${{ steps.meta.outputs.blast_ref }}\`"
             echo
-            echo "Set repository variable \`BUILDER_IMAGE_TAG=${{ steps.meta.outputs.tag }}\`"
-            echo "so the server image builds against it."
+            echo "\`server-image\` uses this tag by default. To compile against"
+            echo "a different toolchain, set the repository variable"
+            echo "\`BUILDER_IMAGE_TAG\` to that tag instead."
           } >> "$GITHUB_STEP_SUMMARY"
