@@ -32,6 +32,21 @@ RUN RUSTFLAGS="-L /usr/local/cuda/lib64/stubs" \
 FROM scratch AS prebuilt
 COPY dist/physx-server/ /out/
 
+# The web client, built into the image so a box someone rents is playable on its
+# own. Node rather than the toolchain image because this stage needs npm; the
+# wasm-pack installer fetches a prebuilt binary, which is far quicker than
+# `cargo install`.
+FROM node:22-bookworm AS web
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+      --target wasm32-unknown-unknown
+ENV PATH=/root/.cargo/bin:$PATH
+RUN curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+WORKDIR /src
+COPY . .
+# `build` runs gen:constants, wasm-pack and vite in turn -- the same sequence
+# ci.yml uses, so the bundle here matches the deployed one.
+RUN cd client && npm ci --no-audit --no-fund && npm run build
+
 # Resolves to whichever of the two stages above was selected. BuildKit builds
 # only the one this points at and skips the other entirely.
 FROM ${BUNDLE_STAGE} AS bundle
@@ -46,6 +61,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /opt/vibe-land
 COPY --from=bundle /out/ ./
+COPY --from=web /src/client/dist/ /opt/vibe-land/web/
 COPY docker/entrypoint.sh /opt/vibe-land/entrypoint.sh
 RUN chmod +x /opt/vibe-land/entrypoint.sh /opt/vibe-land/run.sh
 
@@ -55,11 +71,12 @@ ENV NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     BIND_ADDR=0.0.0.0:4001 \
     WT_BIND_ADDR=0.0.0.0:4433 \
+    WEB_BIND_ADDR=0.0.0.0:4443 \
     MATCHES_PER_BOX=6
 
 # Declared here and published at instance creation. Vast maps each to a random
 # external port; the entrypoint reads the mapping back out of the environment.
-EXPOSE 4001/tcp 4433/udp
+EXPOSE 4001/tcp 4443/tcp 4433/udp
 
 # Generous start period: PhysX validates its CUDA scene before binding, and a
 # cold GPU context takes a few seconds.

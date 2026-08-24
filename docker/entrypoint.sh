@@ -71,6 +71,13 @@ fi
 
 log "public endpoint: ${public_ip}:${external_udp_port}/udp (container ${internal_udp_port})"
 
+# --- 1b. the web UI -----------------------------------------------------------
+# Same treatment as the UDP port: Vast remaps it, everywhere else it is itself.
+internal_web_port="${WEB_BIND_ADDR##*:}"
+internal_web_port="${internal_web_port:-4443}"
+web_var="VAST_TCP_PORT_${internal_web_port}"
+external_web_port="${!web_var:-${PUBLIC_WEB_PORT:-$internal_web_port}}"
+
 # --- 2. certificate -----------------------------------------------------------
 # ECDSA P-256, short-lived, with the public IP as a SAN: the exact shape
 # `serverCertificateHashes` requires. Browsers reject RSA there, and reject
@@ -78,6 +85,9 @@ log "public endpoint: ${public_ip}:${external_udp_port}/udp (container ${interna
 # image, which would ship an already-expired certificate.
 cert_dir="${CERT_DIR:-$root/certs}"
 mkdir -p "$cert_dir"
+if [[ -n "${WT_CERT_PEM:-}" && -n "${WT_KEY_PEM:-}" ]]; then
+  export WT_CERT_PEM_SUPPLIED=1
+fi
 if [[ -z "${WT_CERT_PEM:-}" || -z "${WT_KEY_PEM:-}" ]]; then
   log "minting a self-signed P-256 certificate for IP:${public_ip} (12 days)"
   openssl ecparam -name prime256v1 -genkey -noout -out "$cert_dir/key.pem"
@@ -108,5 +118,21 @@ if [[ -z "${CONTROL_PLANE_URL:-}" ]]; then
 fi
 
 # --- 4. hand off --------------------------------------------------------------
+# The address to actually open. WebTransport refuses to start from an insecure
+# context, so the page has to come from this HTTPS listener rather than the
+# plain-HTTP one on BIND_ADDR -- which stays put for health checks and the fleet.
+if [[ -n "${WEB_BIND_ADDR:-}" ]]; then
+  log ""
+  log "  open:  https://${public_ip}:${external_web_port}/city"
+  log ""
+  if [[ -z "${WT_CERT_PEM_SUPPLIED:-}" ]]; then
+    log "  The certificate is self-signed, so the browser will warn once."
+    log "  Accept it and the page loads; WebTransport pins the same certificate"
+    log "  by hash, so the game connects regardless. Mount a real certificate"
+    log "  via WT_CERT_PEM/WT_KEY_PEM to remove the warning."
+    log ""
+  fi
+fi
+
 log "starting game server"
 exec "$root/run.sh" "$@"

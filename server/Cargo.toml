@@ -32,7 +32,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+# TLS for the standalone web listener. WebTransport needs a secure context, so
+# the page that opens it has to be served over HTTPS -- see WEB_BIND_ADDR in
+# main.rs. rustls/ring are already in the tree via wtransport.
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"

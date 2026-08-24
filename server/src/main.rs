@@ -1109,6 +1109,17 @@ async fn main() -> Result<()> {
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // The standalone web listener: the same API plus the built client, over
+    // TLS. It exists because a browser will not open a WebTransport session
+    // from an insecure context, and `http://<public-ip>` is not one -- only
+    // localhost is exempt. Serving the page over HTTPS from the box makes the
+    // context secure and puts /session-config same-origin, so no CORS and no
+    // mixed content either.
+    //
+    // Plain HTTP on BIND_ADDR stays exactly as it was: the Docker HEALTHCHECK,
+    // the dev-server proxy and the fleet all still use it.
+    spawn_web_listener(app.clone()).await?;
+
     // Both listeners are up, so the first beat can truthfully claim the server
     // is reachable -- that beat is what promotes this box to READY.
     match heartbeat::HeartbeatConfig::from_env() {
@@ -1117,6 +1128,63 @@ async fn main() -> Result<()> {
     }
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Serves the built client and the API over TLS, for a box someone runs by hand.
+///
+/// Skipped unless a certificate is configured: without `WT_CERT_PEM`/`WT_KEY_PEM`
+/// there is nothing to serve HTTPS with. In the container the entrypoint always
+/// mints one, so this is always on there; under a bare `cargo run` it stays off
+/// and nothing changes.
+///
+/// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
+/// up and serves the API -- useful for a server-only image -- it just has no
+/// page to hand out.
+async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
+    let Some(bind) = std::env::var("WEB_BIND_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let (Some(cert_path), Some(key_path)) = (
+        std::env::var("WT_CERT_PEM").ok(),
+        std::env::var("WT_KEY_PEM").ok(),
+    ) else {
+        info!("WEB_BIND_ADDR set but no WT_CERT_PEM/WT_KEY_PEM; web listener disabled");
+        return Ok(());
+    };
+
+    let addr: SocketAddr = bind.parse()?;
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+
+    let web_dir = std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
+    let app = match std::path::Path::new(&web_dir).join("index.html") {
+        // A single-page app: unknown paths are client routes such as /city, so
+        // they must fall back to index.html rather than 404.
+        index if index.is_file() => {
+            info!(%web_dir, %addr, "serving the client over https");
+            app.fallback_service(
+                tower_http::services::ServeDir::new(&web_dir).fallback(
+                    tower_http::services::ServeFile::new(index),
+                ),
+            )
+        }
+        _ => {
+            info!(%web_dir, %addr, "no client bundle; https listener serves the api only");
+            app
+        }
+    };
+
+    tokio::spawn(async move {
+        if let Err(error) = axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!(%error, "web listener stopped");
+        }
+    });
     Ok(())
 }
 
