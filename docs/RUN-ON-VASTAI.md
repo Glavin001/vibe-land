@@ -5,13 +5,13 @@ control plane, no Cloudflare, no fleet — just the image running somewhere with
 GPU, verified with `curl`. For how the automated fleet does this, see
 `ORCHESTRATION.md`.
 
-Budget 10 minutes; most of it is the image pull. Step 4 gets a browser onto the
-box with `/city` rendering, no control plane involved.
+Budget 10 minutes; most of it is the image pull. The container serves the game
+page as well as the game, so one `docker run` is the whole deployment — no
+control plane, and nothing to run on your own machine.
 
 ## The one thing that will bite you
 
-**Declare the UDP port when you create the instance. It cannot be added
-later.**
+**Declare the ports when you create the instance. They cannot be added later.**
 
 Vast gives each declared container port a random external port and injects the
 mapping as `VAST_UDP_PORT_<internal>`. There is no way to add a port to a
@@ -19,15 +19,15 @@ running instance, so a box created without one can never serve players — the
 entrypoint detects this and exits `78` on purpose, rather than coming up and
 advertising an address nobody can reach.
 
-If you take one thing from this page: the ports go in **Docker options** at
-create time.
+If you take one thing from this page: **both** ports go in **Docker options** at
+create time — `4443` for the game page and `4433/udp` for the game. Neither can
+be added later.
 
 ## What you need
 
 | | |
 |---|---|
 | A Vast.ai account with credit | https://vast.ai |
-| A GitHub token with `read:packages` | the image is private — see below |
 | ~$0.30/hr | a 24 GB datacenter GPU |
 
 The image needs an NVIDIA GPU. Any card the CUDA kernels were compiled for
@@ -35,11 +35,12 @@ works: `sm_80` (A100), `sm_86` (A10, 3090), `sm_89` (4090), `sm_90` (H100).
 Anything newer JITs from PTX. **24 GB VRAM or more** — the destruction city is
 what sets that floor.
 
-### Pull credentials
+### No credentials needed
 
-`ghcr.io/glavin001/vibe-land-server` is a private package, so an anonymous pull
-gets a `401`. Create a classic GitHub token with the **`read:packages`** scope
-at https://github.com/settings/tokens and keep it handy; Vast needs it to pull.
+`ghcr.io/glavin001/vibe-land-server` is **public**. Anonymous `docker pull`
+works, and Vast needs no registry login. (A bare `curl` against the GHCR API
+answers `401` even for public packages — it wants a token exchange first — so
+that is not evidence of the package being private.)
 
 ## 1. Pick the image tag
 
@@ -66,14 +67,14 @@ In the Vast.ai console:
    asks for and are a good idea by hand too.
 2. **Edit Image & Config**:
    - **Image path**: `ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3`
-   - **Docker repository authentication**: username = your GitHub login,
-     password = the `read:packages` token
    - **Launch mode**: `Entrypoint` (the image has its own — do **not** pick
      Jupyter or SSH, they replace it)
    - **Docker options** — this is the part that cannot be fixed later:
      ```
-     -p 4001:4001 -p 4433:4433/udp
+     -p 4001:4001 -p 4443:4443 -p 4433:4433/udp
      ```
+     `4443` is the HTTPS port the game page is served on; `4433/udp` carries
+     the game itself; `4001` is plain HTTP for health checks.
    - **Disk**: **30 GB**
 3. **Rent**.
 
@@ -87,9 +88,8 @@ vastai search offers \
 
 vastai create instance <OFFER_ID> \
   --image ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3 \
-  --login '-u <GITHUB_USER> -p <READ_PACKAGES_TOKEN> ghcr.io' \
   --disk 30 \
-  --args '-p 4001:4001 -p 4433:4433/udp'
+  --args '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
 ```
 
 Nothing else is required. `PUBLIC_IPADDR` and `VAST_UDP_PORT_4433` are injected
@@ -140,65 +140,59 @@ with the Docker options above.
 
 ## 4. Play on it from a browser
 
-This is the part that looks impossible and is not. Point the **dev server's
-proxy** at your box and open `/city`:
+The container serves the game page itself. The entrypoint prints the address on
+startup — check the instance logs for:
+
+```
+[entrypoint]   open:  https://<ip>:<external-4443-port>/city
+```
+
+Open it. The browser will warn once about the certificate; accept it and the
+page loads. Then the city streams over WebTransport.
+
+### Why HTTPS, and why the warning
+
+A browser refuses to open a WebTransport session from an insecure context, and
+`http://<public-ip>` is not one — only `localhost` is exempt. So the page has to
+arrive over HTTPS or the game cannot connect at all. The box serves it with the
+same self-signed certificate the entrypoint mints for WebTransport, which is why
+there is a warning and why accepting it is enough: the page and the game session
+are pinned to the very same certificate.
+
+Two consequences worth knowing:
+
+- `/session-config` is fetched **same-origin** from that page, so there is no
+  CORS and no mixed content to trip over.
+- Plain HTTP on `4001` is still there and unchanged, for health checks and for
+  the dev-server proxy. It just cannot host the page.
+
+To lose the warning entirely, mount a real certificate and point
+`WT_CERT_PEM`/`WT_KEY_PEM` at it — the entrypoint prefers a supplied certificate
+over minting one, and the same pair serves both the page and WebTransport:
 
 ```bash
-# from the repo root
-SERVER_HOST=<instance ip> SERVER_PORT=<external port mapped to 4001> \
+docker run --gpus all \
+  -p 4001:4001 -p 4443:4443 -p 4433:4433/udp \
+  -v /etc/letsencrypt/live/example.com:/certs:ro \
+  -e WT_CERT_PEM=/certs/fullchain.pem -e WT_KEY_PEM=/certs/privkey.pem \
+  -e PUBLIC_IPADDR=<your ip> \
+  ghcr.io/glavin001/vibe-land-server:<tag>
+```
+
+### Alternative: run the client locally
+
+Still supported, and useful when iterating on client code against a remote box.
+Point the dev server's proxy at the instance and open `/city` on localhost:
+
+```bash
+SERVER_HOST=<instance ip> SERVER_PORT=<external port for 4001> \
   npm --prefix client run dev
 ```
 
-Then open **http://localhost:5555/city** (or whatever `CLIENT_PORT` says).
-
-That is the whole recipe. `client/src/app/join.ts` says why it works: with no
-control plane configured it is inert and the client "keeps connecting straight
-to whatever `VITE_MULTIPLAYER_HTTP_ORIGIN` points at, which is how local
-development and the hand-run box keep working."
-
-### Why the proxy rather than a direct URL
-
-There is no `?server=<ip>` parameter, and pointing
-`VITE_MULTIPLAYER_HTTP_ORIGIN` straight at `http://<ip>:4001` from a page served
-over HTTPS will not work either. Two constraints collide:
-
-- WebTransport needs a **secure context**, so the page must be HTTPS — except on
-  `localhost`, which browsers exempt.
-- The box's certificate is self-signed. `serverCertificateHashes` rescues the
-  QUIC handshake, but a plain `fetch()` for `/session-config` over HTTPS to that
-  origin is rejected, and over plain HTTP from an HTTPS page it is blocked as
-  mixed content.
-
-`client/vite.config.ts` already proxies `/session-config`, `/healthz`, `/ws` and
-`/city-manifest` to `SERVER_HOST:SERVER_PORT`, so the page fetches them
-**same-origin** from `localhost` and neither constraint applies. The browser
-learns the certificate hash, then dials the box's UDP port directly over QUIC.
-Game traffic never goes through the proxy — only the metadata does.
-
-This is the same problem the control plane exists to solve, and the same shape
-of answer: connect metadata has to arrive out of band. For a hand-run box the
-dev-server proxy is that band; in production it is the Worker. Note the
-consequence — a **deployed** HTTPS client cannot reach a hand-run box, which is
-why this is a testing path and not a shipping one.
-
-### Verified
-
-Against the real image with the dev proxy pointed at it:
-
-```
-$ curl http://localhost:5555/session-config?match_id=city-default
-{"url":"https://203.0.113.55:40999/game",
- "server_certificate_hash_hex":"56a9da57...","city_world":true,
- "city_manifest_hash":"1aba012b..."}
-
-$ curl -o /dev/null -w '%{http_code} %{size_download}' \
-    http://localhost:5555/city-manifest/1aba012b...
-200 158711
-```
-
-The manifest matters: fetching it over HTTP from an HTTPS page is one of the
-three failures recorded in `NETCODE_NOTES.md` — a match that connects and
-simulates while rendering nothing. Through the proxy it is same-origin and fine.
+`client/vite.config.ts` proxies `/session-config`, `/healthz`, `/ws` and
+`/city-manifest` there, so the page fetches them same-origin from `localhost` —
+which browsers exempt from the secure-context rule. Only metadata crosses the
+proxy; QUIC still goes straight to the box.
 
 ## Troubleshooting
 
@@ -217,9 +211,9 @@ Something set `VIBE_PHYSICS_BACKEND=rapier`. The image defaults to `physx_gpu`;
 GPU. Unset it. There is deliberately **no** automatic fallback — if PhysX cannot
 get a CUDA scene it fails loudly rather than quietly serving degraded physics.
 
-**Pull fails with `denied` or `401`.**
-The package is private. Check the token has `read:packages` and that the Vast
-registry login used your GitHub username, not your email.
+**Pull fails with `denied`.**
+The package is public, so this is not a credentials problem — check the image
+path and tag are spelled right.
 
 **It runs but nobody can connect.**
 Confirm `/session-config` advertises the external port, and that you are dialling
@@ -232,9 +226,8 @@ NVIDIA GPU and the
 [container toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html):
 
 ```bash
-docker login ghcr.io -u <GITHUB_USER> -p <READ_PACKAGES_TOKEN>
 docker run --gpus all \
-  -p 4001:4001 -p 4433:4433/udp \
+  -p 4001:4001 -p 4443:4443 -p 4433:4433/udp \
   -e PUBLIC_IPADDR=<address players will reach you on> \
   ghcr.io/glavin001/vibe-land-server:sha-eccdc209a2d3
 ```

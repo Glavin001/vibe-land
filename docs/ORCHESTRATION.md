@@ -98,7 +98,7 @@ and the toolchain must not travel to production.
 | Image | Contents | Rebuilt |
 |---|---|---|
 | `vibe-land-builder` | CUDA 12.8 devel, PhysX 5, Blast, Rust (19 GB) | when `docker/Dockerfile.builder` changes, or on dispatch |
-| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes | every push that touches the server (657 MB) |
+| `vibe-land-server` | Ubuntu + the binary, `libPhysXGpu_64.so`, `libcudart`, scenes, the built client | every push that touches the server (689 MB) |
 
 The split is about caching, not compile time. Building PhysX is not the ordeal
 it looks like: `libPhysXGpu_64.so` is a 347 MB closed CUDA blob that packman
@@ -137,10 +137,18 @@ build publishes and what the fleet is pinned to.
 
 ```bash
 docker run --gpus all \
-  -p 4001:4001 -p 4433:4433/udp \
+  -p 4001:4001 -p 4443:4443 -p 4433:4433/udp \
   -e PUBLIC_IPADDR=<the address players will reach you on> \
   ghcr.io/glavin001/vibe-land-server:latest
 ```
+
+Then open `https://<ip>:4443/city`. The image carries the built client and
+serves it over TLS on `WEB_BIND_ADDR`, because a browser will not open a
+WebTransport session from an insecure context and `http://<public-ip>` is not
+one. The certificate is the same self-signed one WebTransport pins, so the
+browser warns once; supplying `WT_CERT_PEM`/`WT_KEY_PEM` removes the warning.
+Plain HTTP on `4001` is unchanged and still serves health checks and the
+dev-server proxy — it just cannot host the page.
 
 `CONTROL_PLANE_URL` is optional. Without it the server runs unmanaged — no
 heartbeats, no fleet, clients connect to it directly — which is the whole point
