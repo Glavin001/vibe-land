@@ -347,7 +347,16 @@ function writeInstance(
   if (instanceId < 0) {
     return;
   }
-  client.topology.chunkWorldPoseInto(slot, body, TMP_POSE, 0);
+  if (!client.topology.chunkWorldPoseInto(slot, body, TMP_POSE, 0)) {
+    // The ledger cannot resolve this chunk's body right now -- a migration
+    // naming an island whose promotion has not been applied yet, or a retire
+    // that outran its replacement. It has no known world pose, so the only
+    // correct thing to draw is what is already on screen. Writing the
+    // body-local offset instead would teleport it to near the world origin
+    // for as long as the gap lasts, which reads as a hole in the building.
+    renderStats.chunksUnresolved += 1;
+    return;
+  }
   // Teleport probe: this is the last point every chunk transform passes
   // through, so a jump seen here is a jump the player saw, whatever produced
   // it upstream.
@@ -751,6 +760,37 @@ export function CityChunksLayer({
           }
           const n = Math.max(1, body.chunkSlots.length);
           return { key: best.key, chunks: best.chunks, center: [x / n, y / n, z / n] };
+        },
+        /**
+         * What is actually IN the mesh versus what the ledger says.
+         *
+         * Everything else compares the ledger with itself, which cannot see a
+         * chunk that is drawn somewhere the ledger never put it -- and "drawn
+         * in the wrong place for a frame" is precisely the reported artifact.
+         * This reads the instance matrices back out of the BatchedMesh.
+         */
+        drawnVsLedger: (): { worst: number; slot: number; over: number } => {
+          const meshState = stateRef.current;
+          if (!meshState) return { worst: 0, slot: -1, over: 0 };
+          let worst = 0;
+          let worstSlot = -1;
+          let over = 0;
+          const count = client.topology.chunkCount;
+          for (let slot = 0; slot < count; slot += 1) {
+            const instanceId = meshState.instanceIds[slot];
+            const mesh = meshState.meshes[meshState.meshOfSlot[slot]];
+            if (instanceId < 0 || !mesh) continue;
+            if (meshState.hiddenBySlot[slot] === 1) continue;
+            mesh.getMatrixAt(instanceId, TMP_MATRIX);
+            const pose = client.topology.chunkWorldPose(slot).position;
+            const dx = TMP_MATRIX.elements[12] - pose[0];
+            const dy = TMP_MATRIX.elements[13] - pose[1];
+            const dz = TMP_MATRIX.elements[14] - pose[2];
+            const delta = Math.hypot(dx, dy, dz);
+            if (delta > worst) { worst = delta; worstSlot = slot; }
+            if (delta > 0.5) over += 1;
+          }
+          return { worst, slot: worstSlot, over };
         },
       };
     }

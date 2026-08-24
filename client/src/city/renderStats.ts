@@ -60,6 +60,12 @@ export const renderStats = {
   /// makes geometry disappear, so a hole in a building starts here.
   chunksHidden: 0,
 
+  /// Chunk writes skipped because the ledger could not resolve the chunk's
+  /// body. Cumulative. Must stay 0: every one is a frame where a chunk had no
+  /// known pose, and before this it was drawn at its body-local offset --
+  /// effectively at the world origin.
+  chunksUnresolved: 0,
+
   /// Chunk instances written (matrix+color) this frame; frozen chunks should
   /// make this small, and a large number with low triangles convicts upload
   /// bandwidth.

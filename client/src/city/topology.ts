@@ -239,12 +239,23 @@ export class CityTopology {
    * sweep. `body` is passed in because every caller already holds it, and the
    * Map lookup was being repeated for every chunk of the same body.
    */
+  /**
+   * Returns false when the chunk's body is missing from the ledger.
+   *
+   * The allocating form answers that case with the chunk's BODY-LOCAL offset,
+   * which is not a world pose at all -- for a structure sited away from the
+   * origin it is tens or hundreds of metres from where the chunk belongs. Any
+   * caller that draws it puts the chunk somewhere it has never been, which on
+   * screen is a hole in the building. A chunk whose body the ledger cannot
+   * resolve has no known pose, and the only correct thing to draw is whatever
+   * was drawn last, so this reports the failure instead of inventing one.
+   */
   chunkWorldPoseInto(
     slot: number,
     body: LedgerBody | undefined,
     out: Float32Array,
     at: number,
-  ): void {
+  ): boolean {
     // The caller's body is a hint, not the authority. The allocating form
     // always resolved the slot's CURRENT owner, so it was correct even mid
     // migration; taking the caller's word for it instead meant that during a
@@ -272,7 +283,7 @@ export class CityTopology {
       out[at + 4] = lqy;
       out[at + 5] = lqz;
       out[at + 6] = lqw;
-      return;
+      return false;
     }
     const bp = body.position;
     const bq = body.rotation;
@@ -311,6 +322,7 @@ export class CityTopology {
     out[at + 4] = ry;
     out[at + 5] = rz;
     out[at + 6] = rw;
+    return true;
   }
 
   stats(): CityTopologyStats {

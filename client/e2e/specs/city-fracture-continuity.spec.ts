@@ -40,6 +40,10 @@ interface FrameSample {
   hidden: number;
   writes: number;
   tri: number;
+  drawnWorst: number;
+  drawnSlot: number;
+  drawnOver: number;
+  unplaced: number;
 }
 
 test.describe('fracture continuity', () => {
@@ -64,7 +68,10 @@ test.describe('fracture continuity', () => {
     // per-frame summaries cross the bridge.
     await page.evaluate(() => {
       const debug = (window as unknown as {
-        __VIBE_CITY_DEBUG__: { snapshotLedger: () => number[] };
+        __VIBE_CITY_DEBUG__: {
+          snapshotLedger: () => number[];
+          drawnVsLedger: () => { worst: number; slot: number; over: number };
+        };
       }).__VIBE_CITY_DEBUG__;
       const samples: unknown[] = [];
       (window as unknown as { __CONT__: unknown[] }).__CONT__ = samples;
@@ -93,12 +100,16 @@ test.describe('fracture continuity', () => {
           const profile = (window as unknown as {
             __VIBE_E2E__: { frameProfile: () => Record<string, number> };
           }).__VIBE_E2E__.frameProfile();
+          // What is in the MESH, not what the ledger believes.
+          const drawn = debug.drawnVsLedger();
           samples.push({
             t: Math.round(performance.now()), maxJump, jumpSlot, jumpers, belowWorld, minY,
             // The only per-instance visibility control there is: if geometry
             // disappears, this is what did it.
             hidden: profile.chunksHidden, writes: profile.instanceWrites,
             tri: profile.triangles,
+            drawnWorst: drawn.worst, drawnSlot: drawn.slot, drawnOver: drawn.over,
+            unplaced: profile.chunksUnresolved,
           });
         }
         previous = now;
@@ -108,13 +119,40 @@ test.describe('fracture continuity', () => {
     });
 
     await page.waitForTimeout(400);
-    await fireAt(page, target, 1);
-    await page.waitForTimeout(3000);
+    // Several shots, not one: the re-basing fault this catches is load
+    // dependent -- a light fracture (a couple of hundred bonds) stays clean,
+    // and it appears once islands are large enough to be re-based.
+    await fireAt(page, target, 4, { intervalMs: 220 });
+    await page.waitForTimeout(2500);
 
     const samples = (await page.evaluate(
       () => (window as unknown as { __CONT__: FrameSample[] }).__CONT__,
     )) as FrameSample[];
     const stats = await cityStats(page);
+    // The ledger's own instrumentation: a topology batch that MOVES a chunk's
+    // world pose is by definition a re-basing fault, since applying topology
+    // must never move anything.
+    const adoption = await page.evaluate(() => {
+      const rec = (window as unknown as {
+        __VIBE_RECORDER__: { drainEvents: (f: number, m: number) => { events: Array<Record<string, unknown>> } };
+      }).__VIBE_RECORDER__;
+      const out: Record<string, unknown>[] = [];
+      for (const e of rec.drainEvents(0, 8000).events) {
+        const name = String((e as { name?: string; kind?: string }).name
+          ?? (e as { kind?: string }).kind ?? '');
+        if (name.startsWith('city_')) {
+          const data = ((e as { data?: Record<string, unknown> }).data ?? e);
+          out.push({ name, ...data });
+        }
+      }
+      return out;
+    });
+    const byName = new Map<string, number>();
+    for (const e of adoption) byName.set(String(e.name), (byName.get(String(e.name)) ?? 0) + 1);
+    console.log(`[cont] city events: ${JSON.stringify(Object.fromEntries(byName))}`);
+    for (const e of adoption.filter((x) => String(x.name) === 'city_adoption_jump').slice(0, 6)) {
+      console.log(`[cont]   adoption jump: ${JSON.stringify(e)}`);
+    }
 
     const worstJump = samples.reduce((a, b) => (b.maxJump > a.maxJump ? b : a), samples[0]);
     const worstBelow = samples.reduce((a, b) => (b.belowWorld > a.belowWorld ? b : a), samples[0]);
@@ -125,6 +163,11 @@ test.describe('fracture continuity', () => {
     const hiddenDelta = samples[samples.length - 1].hidden - samples[0].hidden;
     const minTri = samples.reduce((m, s) => Math.min(m, s.tri), Infinity);
     const maxTri = samples.reduce((m, s) => Math.max(m, s.tri), 0);
+    const worstDrawn = samples.reduce((a, b) => (b.drawnWorst > a.drawnWorst ? b : a), samples[0]);
+    console.log(`[cont] worst DRAWN-vs-ledger ${worstDrawn.drawnWorst.toFixed(2)} m `
+      + `(slot ${worstDrawn.drawnSlot}, ${worstDrawn.drawnOver} chunks over 0.5 m)`);
+    const unplaced = samples[samples.length - 1].unplaced - samples[0].unplaced;
+    console.log(`[cont] chunk writes skipped for an unresolved body: ${unplaced}`);
     console.log(`[cont] chunks hidden during the window: ${hiddenDelta}`);
     console.log(`[cont] triangles ${minTri}..${maxTri} (a dip means geometry left the draw)`);
     for (const s of samples.filter((x) => x.belowWorld > 0 || x.jumpers > 0).slice(0, 10)) {
@@ -140,5 +183,10 @@ test.describe('fracture continuity', () => {
     // Nothing may be culled by the fracture itself.
     expect(samples[samples.length - 1].hidden - samples[0].hidden,
       'the under-world cull fired during a fracture').toBe(0);
+    // The one the ledger-only checks cannot see: geometry drawn where the
+    // ledger never put it. Debris on a distance stride lags by a frame or two
+    // of its own motion, so this is generous -- a mis-placed chunk is metres
+    // out, not centimetres.
+    expect(worstDrawn.drawnOver, 'chunks DRAWN far from their ledger pose').toBe(0);
   });
 });

@@ -779,3 +779,42 @@ describe('CityTopology fracture is pose-neutral', () => {
     }
   });
 });
+
+/**
+ * A chunk whose body the ledger cannot resolve has NO world pose.
+ *
+ * The allocating form answers that case with the chunk's body-local offset,
+ * which for a structure sited away from the origin is a completely different
+ * place -- so anything that draws it teleports the chunk, and a group of them
+ * reads as a hole punched in the building. The into-form reports the failure
+ * so the caller can leave the last known pose on screen instead.
+ */
+describe('CityTopology unresolved chunks', () => {
+  it('reports failure rather than inventing a pose from the local offset', () => {
+    const topology = new CityTopology(manifest());
+    topology.apply(fractureMessage(1));
+    const slot = topology.slotOf(0, 2);
+    const key = topology.bodyKeyOf(slot);
+    expect(topology.body(key)).toBeDefined();
+
+    const out = new Float32Array(7);
+    expect(topology.chunkWorldPoseInto(slot, topology.body(key), out, 0)).toBe(true);
+    const resolved = [out[0], out[1], out[2]];
+
+    // Retire the body without re-homing its chunks: the transient state a
+    // migration or retire can leave between messages.
+    const orphaned = new Float32Array(7);
+    const bodies = topology as unknown as { bodies: Map<number, unknown> };
+    bodies.bodies.delete(key);
+    expect(topology.chunkWorldPoseInto(slot, undefined, orphaned, 0)).toBe(false);
+
+    // And the pose it would have handed back is NOT where the chunk belongs,
+    // which is exactly why drawing it is wrong.
+    const invented = Math.hypot(
+      orphaned[0] - resolved[0],
+      orphaned[1] - resolved[1],
+      orphaned[2] - resolved[2],
+    );
+    expect(invented).toBeGreaterThan(1);
+  });
+});

@@ -631,6 +631,13 @@ export function CityStatsOverlay({
         value={`${renderStats.chunksHidden}`}
         warn={renderStats.chunksHidden > 0}
       />
+      {/* Chunks the ledger could not place. Must be 0: each one is a frame
+          where a chunk had no known pose at all. */}
+      <Stat
+        label="chunks unplaced"
+        value={`${renderStats.chunksUnresolved}`}
+        warn={renderStats.chunksUnresolved > 0}
+      />
       <Stat label="frame total" value={`${renderStats.frameTotalMs.toFixed(1)} ms`} />
       {/*
         cpu frame is the number a worker offload can shrink: frame start
