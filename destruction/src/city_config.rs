@@ -10,6 +10,20 @@ use crate::scene_pack::StressLimits;
 /// directly -- the trace recorder -- gets the same tuning the match server
 /// uses instead of a second copy that drifts. `pack_materials` is the scene
 /// pack's own material table; empty falls back to reference concrete.
+/// The sensitivity dial on authored stress limits; 1.0 means "the concrete the
+/// pack claims to be made of".
+///
+/// Read from one place so every backend is configured identically -- the core
+/// path and the old path have to agree on this or a comparison between them is
+/// measuring the dial rather than the pipeline.
+pub fn stress_limit_scale() -> f32 {
+    std::env::var("VIBE_CITY_STRESS_LIMIT_SCALE")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| *value > 0.0)
+        .unwrap_or(1.0)
+}
+
 pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings {
     // ExtStressPhysX takes absolute stress limits (Pa-scale). The synthetic
     // defaults (0.008/0.01) are for the unitless Rapier path before
@@ -18,11 +32,7 @@ pub fn stress_settings(pack_materials: &[StressLimits]) -> StressSolverSettings 
     // back to the reference concrete numbers. VIBE_CITY_STRESS_LIMIT_SCALE
     // stays available as a sensitivity dial; 1.0 means "the concrete the
     // pack claims to be made of".
-    let scale = std::env::var("VIBE_CITY_STRESS_LIMIT_SCALE")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|value| *value > 0.0)
-        .unwrap_or(1.0);
+    let scale = stress_limit_scale();
     let from_pack = !pack_materials.is_empty();
     // The whole table scales together. Scaling only the first entry would
     // silently change the RATIO between frame, slab and cladding -- the

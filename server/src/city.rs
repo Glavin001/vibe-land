@@ -752,6 +752,9 @@ impl CityRuntime {
                 // the ones the old path created.
                 GROUP_CHUNK,
                 crate::physx_runtime::ALL_GROUPS,
+                // Same knob the old path reads, so the two are configured
+                // identically and a comparison between them is meaningful.
+                vibe_land_destruction::city_config::stress_limit_scale(),
             )
         }
         .map_err(|error| anyhow::anyhow!("{error}"))?;

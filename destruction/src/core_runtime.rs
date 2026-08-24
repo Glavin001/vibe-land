@@ -171,6 +171,7 @@ impl CoreCityDestruction {
         varied_heights: bool,
         collision_group: u32,
         collision_mask: u32,
+        stress_limit_scale: f32,
     ) -> Result<Self, CoreRuntimeError> {
         use blast_stress_solver::scene_pack::{
             building_offsets, load_scene_pack_file, make_building_variants, pitch_for_pack,
@@ -209,9 +210,23 @@ impl CoreCityDestruction {
         let mut set = DestructibleSet::new();
         for (building, offset) in offsets.iter().enumerate() {
             let variant = &variants[variant_for_building(building, variants.len())];
+            // The pack's own authored limits, optionally scaled as a whole.
+            // Scaling every limit together is the point: scaling one, or only
+            // the first material, changes which failure mode a bond reaches
+            // first and so changes how the building comes apart rather than
+            // just how easily.
+            let mut solver = solver_settings_for(&variant.pack, 0);
+            if stress_limit_scale > 0.0 && (stress_limit_scale - 1.0).abs() > f32::EPSILON {
+                solver.compression_elastic_limit *= stress_limit_scale;
+                solver.compression_fatal_limit *= stress_limit_scale;
+                solver.tension_elastic_limit *= stress_limit_scale;
+                solver.tension_fatal_limit *= stress_limit_scale;
+                solver.shear_elastic_limit *= stress_limit_scale;
+                solver.shear_fatal_limit *= stress_limit_scale;
+            }
             let mut cfg = DestructibleConfig {
                 gravity: CoreVec3::new(gravity[0], gravity[1], gravity[2]),
-                solver: solver_settings_for(&variant.pack, 0),
+                solver,
                 // Without this the host's raycasts cannot see a single chunk,
                 // and every shot into the city reports a miss.
                 collision_groups: Some(blast_stress_solver::backend::InteractionGroups {
