@@ -74,13 +74,32 @@ export function boxScale(chunk: ManifestChunk): [number, number, number] {
  * Rounded to a tenth of a millimetre so two shards that are the same shape
  * survive a float round-trip through JSON as one geometry, and joined with a
  * separator so `[1, 23]` and `[12, 3]` cannot collide.
+ *
+ * Canonical rather than literal: the distinct points, sorted. What is drawn is
+ * the CONVEX HULL of these points, and that depends only on the set -- so two
+ * arrays holding the same points in a different order, or with different
+ * duplicates, are the same solid and must share one geometry.
+ *
+ * Both cases are real and common in the packs:
+ *
+ * - `nodeColliders` reuses the render prism's positions, which repeat every
+ *   vertex three times so faces can carry flat normals. Measured on downtown:
+ *   exactly 3.00x redundancy on all 7,160 hulls, 18-54 stored points for a
+ *   6-18 point solid.
+ * - A wall's four faces bake their orientation into the points, and the +/-
+ *   facing pair differs only by the sign of the thickness axis -- the same set,
+ *   walked in a different order. Literal keying saw those as two shapes and
+ *   duplicated every one: 320 keys for 160 distinct solids at SHARD_PATTERNS=2.
  */
 export function hullKey(points: Float32Array): string {
-  let key = '';
-  for (let i = 0; i < points.length; i++) {
-    key += `${Math.round(points[i] * 1e4)},`;
+  const distinct = new Set<string>();
+  for (let i = 0; i + 2 < points.length; i += 3) {
+    distinct.add(
+      `${Math.round(points[i] * 1e4)},${Math.round(points[i + 1] * 1e4)},`
+      + `${Math.round(points[i + 2] * 1e4)}`,
+    );
   }
-  return key;
+  return [...distinct].sort().join(';');
 }
 
 /**

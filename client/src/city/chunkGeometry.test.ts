@@ -145,3 +145,29 @@ describe('batching layout', () => {
     }).not.toThrow();
   });
 });
+
+describe('hullKey canonicalisation', () => {
+  it('ignores vertex order: the same points are the same solid', () => {
+    const a = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const b = Float32Array.from([0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0]);
+    expect(hullKey(a)).toBe(hullKey(b));
+  });
+
+  it('ignores duplicates: a prism repeats every vertex three times', () => {
+    const once = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const thrice = Float32Array.from([...once, ...once, ...once]);
+    expect(hullKey(thrice)).toBe(hullKey(once));
+  });
+
+  it('still separates genuinely different shapes', () => {
+    const a = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const b = Float32Array.from([0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1]);
+    expect(hullKey(a)).not.toBe(hullKey(b));
+  });
+
+  it('separates points that differ by more than the rounding grid', () => {
+    const a = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
+    const b = Float32Array.from([0, 0, 0, 1.001, 0, 0, 0, 1, 0, 0, 0, 1]);
+    expect(hullKey(a)).not.toBe(hullKey(b));
+  });
+});

@@ -263,16 +263,56 @@ function buildMesh(client: CityClient): CityMeshState {
     radiusOf: (slot) => radii[slot],
     poolSize,
   });
-  const pooling = pool.patterns.length > 0;
-  // A pooled shard is drawn at the pattern's shape scaled to this chunk's own
-  // radius, so the substitution never changes how big anything looks.
-  if (pooling) {
+  const substituting = pool.patterns.length > 0;
+  // A substituted shard is drawn at the pattern's shape scaled to this chunk's
+  // own radius, so it never changes how big anything looks.
+  if (substituting) {
     for (const slot of hullSlotsAll) {
       const scale = pool.scaleOfSlot[slot];
       scales[slot * 3] = scale;
       scales[slot * 3 + 1] = scale;
       scales[slot * 3 + 2] = scale;
     }
+  }
+
+  // Which geometry each hull actually draws, and how many chunks share it.
+  //
+  // This is the payoff for authoring the pack with a bounded fracture-pattern
+  // library: shards that were one-of-a-kind become a few hundred shapes used
+  // tens of times each, and a shape used many times can be an InstancedMesh
+  // instead of one multi-draw range per chunk. Nothing is substituted here --
+  // the key is the shard's own, so the wall still tiles exactly.
+  //
+  // It is automatic and self-disabling. Against a pack whose shards are all
+  // distinct (downtown before pooling: 7,160 hulls, 7,160 shapes) no key clears
+  // the threshold, every hull stays in its cell batch, and this costs one pass
+  // over the hull slots.
+  const hullKeyOfSlot = new Map<number, string>();
+  const hullPointsOfKey = new Map<string, Float32Array>();
+  const slotsOfHullKey = new Map<string, number[]>();
+  for (const slot of hullSlotsAll) {
+    const shape = shapeBySlot[slot] as { key: string; points: Float32Array };
+    let key = shape.key;
+    let points = shape.points;
+    if (substituting) {
+      const pattern = pool.patterns[pool.patternOfSlot[slot]];
+      key = `pool:${pattern.key}`;
+      points = pattern.points;
+    }
+    hullKeyOfSlot.set(slot, key);
+    if (!hullPointsOfKey.has(key)) hullPointsOfKey.set(key, points);
+    const existing = slotsOfHullKey.get(key);
+    if (existing) existing.push(slot);
+    else slotsOfHullKey.set(key, [slot]);
+  }
+  // Below this, a shape is not worth its own city-wide instanced mesh: it would
+  // trade N sub-draws for one real draw call, and a real draw call costs more
+  // than a sub-draw. Those shapes stay in their cell batch, where they also
+  // keep frustum culling.
+  const MIN_SHARE_TO_INSTANCE = 8;
+  const instancedHullKeys = new Set<string>();
+  for (const [key, slots] of slotsOfHullKey) {
+    if (slots.length >= MIN_SHARE_TO_INSTANCE) instancedHullKeys.add(key);
   }
 
   const renderables: CityRenderable[] = [];
@@ -325,7 +365,7 @@ function buildMesh(client: CityClient): CityMeshState {
         // With a pool active the hulls are drawn by the city-wide per-pattern
         // meshes built below, so the cell keeps only its boxes.
         if (shapeBySlot[slot].kind === 'box') boxSlots.push(slot);
-        else if (!pooling) hullSlots.push(slot);
+        else if (!instancedHullKeys.has(hullKeyOfSlot.get(slot) ?? '')) hullSlots.push(slot);
       }
 
       /** Common per-slot bookkeeping, whichever object the slot landed in. */
@@ -466,22 +506,19 @@ function buildMesh(client: CityClient): CityMeshState {
   // always intersects and every instance is submitted every frame. That is
   // vertex work on ~30-vertex shards, not fill, and it measured far cheaper
   // than the sub-draws it replaces.
-  if (pooling) {
-    const slotsOfPattern: number[][] = pool.patterns.map(() => []);
-    for (const slot of hullSlotsAll) {
-      const pattern = pool.patternOfSlot[slot];
-      if (pattern >= 0) slotsOfPattern[pattern].push(slot);
-    }
-    for (let pattern = 0; pattern < pool.patterns.length; pattern += 1) {
-      const patternSlots = slotsOfPattern[pattern];
+  if (instancedHullKeys.size > 0) {
+    for (const key of instancedHullKeys) {
+      const patternSlots = slotsOfHullKey.get(key) ?? [];
       if (patternSlots.length === 0) continue;
-      const geometry = buildHullGeometry(pool.patterns[pattern].points);
+      const geometry = buildHullGeometry(hullPointsOfKey.get(key)!);
       totalVertices += geometry.attributes.position.count;
       const mesh = new THREE.InstancedMesh(geometry, material, patternSlots.length);
       mesh.castShadow = shadowsEnabled();
       mesh.receiveShadow = shadowsEnabled();
-      // Deliberately off; see above. The frame loop keys on this to skip a
-      // bounding-sphere recompute that nothing would ever test.
+      // Off deliberately: this mesh holds every chunk in the city that draws
+      // this shape, so its sphere always intersects the frustum and the test
+      // could never drop it. The frame loop keys on this flag to skip a
+      // bounding-sphere recompute that nothing would ever read.
       mesh.frustumCulled = false;
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
@@ -510,10 +547,10 @@ function buildMesh(client: CityClient): CityMeshState {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
       renderables.push(renderable);
-      // Its own stagger phase, continuing past the real cells: a pattern mesh
-      // IS an upload unit, so every body drawing that pattern must defer
-      // together for the stride to save anything.
-      cellOfRenderableList.push(cellIndex + pattern);
+      // Its own stagger phase, continuing past the real cells: this mesh IS an
+      // upload unit, so every body drawing this shape must defer together for
+      // the stride to save anything.
+      cellOfRenderableList.push(cellIndex + instancedCount);
       instancedCount += 1;
       subDraws += 1;
     }
@@ -524,8 +561,12 @@ function buildMesh(client: CityClient): CityMeshState {
     structures: manifest.structures.length,
     instancedCells: instancedCount,
     hullBatches: batchCount,
-    hullPatterns: pool.patterns.length,
-    pooledHulls: pooling ? hullSlotsAll.length : 0,
+    // Distinct shard shapes, and how many of them were shared widely enough to
+    // instance city-wide. `sharedHulls` is the number this whole line of work
+    // is about: 7,160 shapes for 7,160 shards means nothing can be instanced.
+    hullShapes: slotsOfHullKey.size,
+    instancedHullShapes: instancedHullKeys.size,
+    substituted: substituting ? pool.patterns.length : 0,
     // Sub-draws, not draw calls: this is the number the frame time tracks.
     subDraws,
     vertices: totalVertices,
