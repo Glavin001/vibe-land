@@ -13,6 +13,10 @@
 import type { DebugStats } from './ui/DebugOverlay';
 import { DEFAULT_STATS } from './ui/DebugOverlay';
 import { renderStats } from './city/renderStats';
+import { acquireCityDiagnostics } from './city/cityDiagnostics';
+
+/** Held while a spec has forced the diagnostic sweeps on. */
+let diagnosticsHold: (() => void) | null = null;
 
 export interface GameE2ESnapshot {
   // Identity
@@ -174,6 +178,15 @@ export interface VibeE2EBridge {
    * script instead of read off a screenshot.
    */
   frameProfile(): Record<string, number>;
+  /**
+   * Force the per-chunk diagnostic sweeps on for this session.
+   *
+   * They are gated on the panel being visible, because they cost 3.1 ms at
+   * downtown's chunk count and a player never sees them. A spec that asserts on
+   * `minChunkY`, `chunksBelowGround`, `deepest` or `staleDrawnChunks` has to
+   * ask for them, or it reads whatever the last sweep left behind.
+   */
+  setDiagnostics(on: boolean): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +343,14 @@ const bridge: VibeE2EBridge = {
   version: 1,
   snapshot: buildSnapshot,
   frameProfile: () => ({ ...renderStats }),
+  setDiagnostics: (on: boolean) => {
+    if (on) {
+      if (!diagnosticsHold) diagnosticsHold = acquireCityDiagnostics();
+    } else if (diagnosticsHold) {
+      diagnosticsHold();
+      diagnosticsHold = null;
+    }
+  },
 };
 
 // Always install — not gated behind a flag

@@ -174,6 +174,15 @@ export async function openCity(page: Page): Promise<void> {
     { timeout: 30_000 },
   );
   await assertRealTransport(page);
+  // The per-chunk diagnostic sweeps are gated on the panel being visible,
+  // because they cost 3.1 ms at downtown's chunk count and a player never reads
+  // them. Specs assert on `minChunkY`, `chunksBelowGround`, `deepest` and
+  // `staleDrawnChunks`, so ask for them explicitly rather than depending on
+  // whether the overlay happened to be on screen.
+  await page.evaluate(() => {
+    (window as unknown as { __VIBE_E2E__?: { setDiagnostics?: (on: boolean) => void } })
+      .__VIBE_E2E__?.setDiagnostics?.(true);
+  });
 }
 
 /** Read city stats, throwing a useful error when the match is not a city match. */

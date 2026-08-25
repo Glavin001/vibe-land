@@ -61,12 +61,15 @@ import {
   bodyDebugStateCode,
 } from '../city/bodyDebugColors';
 import { frameStartTime, markFrameEndAndSample, renderStats } from '../city/renderStats';
+import { cityDiagnosticsWanted } from '../city/cityDiagnostics';
 
 const TMP_MATRIX = new THREE.Matrix4();
 const TMP_POSITION = new THREE.Vector3();
 const TMP_QUATERNION = new THREE.Quaternion();
 const TMP_SCALE = new THREE.Vector3();
 const TMP_COLOR = new THREE.Color();
+/** Stand-in when the diagnostic sweep is skipped; consumers read length 0. */
+const EMPTY_POSITIONS = new Float32Array(0);
 
 /**
  * Centroid depth below the flat city ground (y=0) that counts as "sunk".
@@ -1161,9 +1164,18 @@ export function CityChunksLayer({
       // penetration (the server world is a flat plane at y=0, so a chunk
       // centroid below it has sunk into the floor), the floating-island
       // columns, and the island-span AABBs.
-      const sweep = sweepChunkPositions(client);
-      const positions = sweep.positions;
-      const { minChunkY, chunksBelowGround, deepestSlot } = sweep;
+      // The sweep composes the world pose of every chunk -- 3.1 ms at
+      // downtown's 33,221 -- purely to derive the diagnostics below. It runs
+      // only while something is reading them: the panel on screen, the netlab
+      // recorder, or a spec that called `__VIBE_E2E__.setDiagnostics(true)`.
+      // Unconditionally it was a 3.1 ms spike twice a second for every player,
+      // including phones, where the panel is hidden by default.
+      const wantSweep = cityDiagnosticsWanted() || recording;
+      const sweep = wantSweep ? sweepChunkPositions(client) : null;
+      const positions = sweep ? sweep.positions : EMPTY_POSITIONS;
+      const minChunkY = sweep ? sweep.minChunkY : 0;
+      const chunksBelowGround = sweep ? sweep.chunksBelowGround : 0;
+      const deepestSlot = sweep ? sweep.deepestSlot : -1;
       // Name the offending chunk rather than only counting it. The server is
       // measured to hold every body at y >= 0, so a chunk drawn hundreds of
       // metres down is this client composing a body pose with a local offset
@@ -1223,8 +1235,12 @@ export function CityChunksLayer({
         minChunkY: Number.isFinite(minChunkY) ? minChunkY : 0,
         // 0.5 m: comfortably above quantisation and strided-motion lag, far
         // below a chunk left at its intact pose while its island has fallen.
-        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
-        floatingSettledIslands: countFloatingSettledIslands(client, positions, sweep.columns),
+        staleDrawnChunks: wantSweep && countStaleDrawnChunks
+          ? countStaleDrawnChunks(client, 0.5)
+          : 0,
+        floatingSettledIslands: sweep
+          ? countFloatingSettledIslands(client, positions, sweep.columns)
+          : 0,
         largestIslandSpanM: (() => {
           // What the player sees is SIZE, not chunk count: a 5-chunk island of
           // bonded slabs is still a wall-sized panel. Span = longest edge of
@@ -1283,7 +1299,9 @@ export function CityChunksLayer({
         orphanedByRetire: stats.orphanedByRetire,
         // Same probe as the netlab line above: the only signal that catches a
         // chunk drawn away from its ledger pose.
-        staleDrawnChunks: countStaleDrawnChunks ? countStaleDrawnChunks(client, 0.5) : 0,
+        staleDrawnChunks: wantSweep && countStaleDrawnChunks
+          ? countStaleDrawnChunks(client, 0.5)
+          : 0,
         bootstraps: stats.bootstraps,
         settleRejects: stats.settleRejects,
         valveApplies: stats.valveApplies,

@@ -213,6 +213,7 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 }
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
+import { acquireCityDiagnostics } from './cityDiagnostics';
 import {
   HULL_POOL_CHOICES,
   setHullPoolSize,
@@ -312,6 +313,10 @@ export function CityStatsOverlay({
 
   const tier = useQualityTier();
   const hullPool = useHullPoolSize();
+  // The per-chunk sweeps behind these rows cost 3.1 ms at 33k chunks, so they
+  // only run while the panel is actually on screen. Collapsed to the pill --
+  // and hidden by default on touch -- nobody is reading them.
+  useEffect(() => (visible ? acquireCityDiagnostics() : undefined), [visible]);
   // The tier the canvas was created with: antialias and tonemapping only apply
   // at context creation, so a mismatch means "reload to finish applying".
   const [mountTier] = useState(tier);
