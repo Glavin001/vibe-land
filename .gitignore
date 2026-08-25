@@ -20,3 +20,4 @@ logs/
 dist/
 control-plane/.wrangler/
 control-plane/.dev.vars
+client/tools/profiles/

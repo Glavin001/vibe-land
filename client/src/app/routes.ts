@@ -10,7 +10,8 @@ export type AppRoute =
   | { kind: 'gallery' }
   | { kind: 'ragdollLab' }
   | { kind: 'moqDemo' }
-  | { kind: 'bodiesLab' };
+  | { kind: 'bodiesLab' }
+  | { kind: 'renderBench' };
 
 function normalizePathname(pathname: string): string {
   if (!pathname || pathname === '/') {
@@ -63,6 +64,10 @@ export function resolveAppRoute(pathname: string, search?: string): AppRoute {
       return { kind: 'moqDemo' };
     case '/bodies':
       return { kind: 'bodiesLab' };
+    case '/renderbench':
+      // Reproducible render benchmark: a seeded synthetic city on the real
+      // batching path, with no server and no streamed poses.
+      return { kind: 'renderBench' };
     default:
       return { kind: 'launcher' };
   }

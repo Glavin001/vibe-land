@@ -1,16 +1,36 @@
-// Batched rendering of the destructible city: one THREE.BatchedMesh whose
-// per-instance matrix = chunkWorldPose ∘ scale, composed from the streamed
-// island-body poses + the manifest ledger.
+// Batched rendering of the destructible city: per-instance matrix =
+// chunkWorldPose ∘ scale, composed from the streamed island-body poses + the
+// manifest ledger.
 //
 // Intact/settled chunks are written once and frozen; only chunks belonging to
 // live streaming bodies are recomposed each frame.
 //
-// BatchedMesh rather than InstancedMesh because fractured chunks each have
-// their own convex hull, and an InstancedMesh can only draw one shape. It
-// still costs a single draw call: distinct hulls are uploaded once and reused
-// by every instance that shares them, which matters because the city stamps
-// one building pack sixteen times. Box chunks all share a single unit-cube
-// entry and carry their extents in the instance matrix, exactly as before.
+// Each render cell produces up to two objects, split by what the chunk's shape
+// can share:
+//
+//   boxes -> one InstancedMesh. Every box is the same unit cube carrying its
+//            extents in the instance matrix, so the whole cell is ONE genuine
+//            instanced draw.
+//   hulls -> one BatchedMesh. Fracture shards each have their own convex hull
+//            and cannot be instanced; a batch is the only way to draw
+//            different shapes from one call.
+//
+// This used to be BatchedMesh for everything, on the reasoning that a batch is
+// "still a single draw call". That reasoning was wrong in the way that
+// mattered. three draws a BatchedMesh with WEBGL_multi_draw and emits one
+// sub-draw RANGE PER INSTANCE, so `info.render.calls` says 1 while the driver
+// executes thousands of ~12-triangle draws. Measured on the bench at 100k
+// chunks (tools/renderbench.mjs, /renderbench): 100,352 sub-draws, gl.render
+// 15.7 ms, 57 fps. Splitting the boxes out drops it to 30,184 sub-draws,
+// gl.render 4.2 ms, 149 fps -- for the same triangle count, at the same
+// resolution. The frame cost tracks sub-draws, not triangles and not fill.
+//
+// The split is worth it because of the real shape mix, which is not what the
+// old comment assumed. Downtown's manifest is 16,945 boxes against 7,160
+// hulls, and the hulls are 7,160 DISTINCT shapes -- zero reuse, so the "one
+// pack stamped sixteen times, dedupe turns thousands into hundreds" premise
+// does not hold. Boxes are the 70% that can be instanced; hulls are the 30%
+// that genuinely need the batch.
 
 import { useFrame } from '@react-three/fiber';
 import { useEffect, useRef } from 'react';
@@ -48,15 +68,30 @@ const TMP_COLOR = new THREE.Color();
  */
 const CHUNK_SUNK_Y_M = -0.25;
 
+/**
+ * One drawable object. A cell yields an InstancedMesh for its boxes, a
+ * BatchedMesh for its hulls, or both.
+ *
+ * Kept behind one union so the write path, the teardown and the sphere
+ * recompute branch once per object rather than once per chunk. The two classes
+ * agree on `setMatrixAt`/`setColorAt`/`getMatrixAt`/`computeBoundingSphere`;
+ * they differ on hiding and on upload bookkeeping, and those are the only two
+ * places the `kind` is read.
+ */
+type CityRenderable =
+  | { kind: 'batched'; mesh: THREE.BatchedMesh }
+  | { kind: 'instanced'; mesh: THREE.InstancedMesh };
+
 type CityMeshState = {
   /**
-   * One batch per render cell, not one for the whole city.
+   * One entry per (render cell x shape class), not one for the whole city.
    *
    * three uploads a BatchedMesh's entire matrix texture whenever any instance
-   * in it moves -- textures have no partial-update path the way buffers do. A
-   * single city-wide batch therefore re-uploaded megabytes every frame because
-   * one chunk somewhere was falling. Splitting means a patch of city nobody has
-   * touched costs nothing.
+   * in it moves -- textures have no partial-update path the way buffers do --
+   * and an InstancedMesh re-uploads its whole instance buffer on needsUpdate.
+   * A single city-wide object therefore re-uploaded megabytes every frame
+   * because one chunk somewhere was falling. Splitting means a patch of city
+   * nobody has touched costs nothing.
    *
    * The split is spatial rather than per structure. Per structure looks
    * equivalent while every pack is one building stamped across a grid, but a
@@ -66,12 +101,24 @@ type CityMeshState = {
    * so the map freezes and jumps in lockstep). Cells hold regardless of how the
    * pack is authored.
    */
-  meshes: THREE.BatchedMesh[];
-  /** Slot -> index into `meshes`. */
+  renderables: CityRenderable[];
+  /**
+   * Renderable -> the render cell it was cut from.
+   *
+   * The distance stride is staggered by upload unit, and a cell now has two of
+   * them. Keying the stagger on the renderable index instead would give a
+   * cell's box bodies and its hull bodies different phases, so both objects
+   * would be rewritten on frames where previously neither was -- more uploads,
+   * for nothing. Keying on the cell keeps the original property: everything
+   * that shares an upload defers together.
+   */
+  cellOfRenderable: Int32Array;
+  /** Slot -> index into `renderables`. */
   meshOfSlot: Int32Array;
   /**
-   * Slot -> instance id within its own mesh. BatchedMesh hands out its own
-   * ids, and nothing promises they match the topology slot.
+   * Slot -> instance id within its own object. BatchedMesh hands out its own
+   * ids and InstancedMesh ids are positions in the cell's box list; neither
+   * promises to match the topology slot.
    */
   instanceIds: Int32Array;
   /** Per-slot render scale: box extents, or 1 for hulls (already metric). */
@@ -135,7 +182,6 @@ function buildMesh(client: CityClient): CityMeshState {
   const scales = new Float32Array(count * 3);
   const radii = new Float32Array(count);
   const shapeBySlot = new Array<ReturnType<typeof chunkShape>>(count);
-  const hullGeometries = new Map<string, THREE.BufferGeometry>();
   // Rest-pose XZ per slot, relative to its own structure's origin, used only to
   // assign cells.
   //
@@ -169,12 +215,14 @@ function buildMesh(client: CityClient): CityMeshState {
       const shape = chunkShape(chunk);
       shapeBySlot[slot] = shape;
       if (shape.kind === 'hull') {
+        // Scale 1: hull points are already metric and centroid-relative.
+        // No geometry is built here. A map of every distinct hull used to be
+        // triangulated in this pass and then never read -- the per-cell loop
+        // below builds what it needs from the points again -- so downtown ran
+        // 7,160 discarded convex hulls on every city load.
         scales[slot * 3] = 1;
         scales[slot * 3 + 1] = 1;
         scales[slot * 3 + 2] = 1;
-        if (!hullGeometries.has(shape.key)) {
-          hullGeometries.set(shape.key, buildHullGeometry(shape.points));
-        }
       } else {
         scales[slot * 3] = shape.scale[0];
         scales[slot * 3 + 1] = shape.scale[1];
@@ -188,18 +236,27 @@ function buildMesh(client: CityClient): CityMeshState {
     }
   }
 
-  // One batch per render cell. Geometry is rebuilt per cell rather than shared,
-  // which costs some memory, but a shared city-wide batch made every frame
-  // upload the transforms of every chunk in the city -- see the note on
-  // CityMeshState.
+  // Up to two objects per render cell. Geometry is rebuilt per cell rather
+  // than shared, which costs some memory, but a shared city-wide object made
+  // every frame upload the transforms of every chunk in the city -- see the
+  // note on CityMeshState.
   const material = buildCityMaterial();
-  const meshes: THREE.BatchedMesh[] = [];
+  const renderables: CityRenderable[] = [];
+  const cellOfRenderableList: number[] = [];
+  let cellIndex = 0;
   const meshOfSlot = new Int32Array(count).fill(-1);
   const instanceIds = new Int32Array(count).fill(-1);
   const baseColors = new Float32Array(count * 3);
   const hiddenBySlot = new Uint8Array(count);
   const belowStreak = new Uint8Array(count);
   let totalVertices = 0;
+  let batchCount = 0;
+  let instancedCount = 0;
+  // What the frame time actually tracks: a batch submits one multi-draw range
+  // per instance, an instanced mesh submits one for the whole cell. Logged
+  // because `info.render.calls` reports both as 1 and so cannot show the
+  // difference the split makes.
+  let subDraws = 0;
 
   for (const structure of manifest.structures) {
     const structureSlots = structure.chunks.map((chunk) =>
@@ -210,85 +267,155 @@ function buildMesh(client: CityClient): CityMeshState {
     // and a district pack gets one per city block.
     const color = structureColor(structure.structureId);
     for (const slots of partitionSlotsByCell(localXZ, structureSlots).values()) {
-      // Only the hulls this cell actually uses.
-      const localHulls = new Map<string, THREE.BufferGeometry>();
+      // Cell ids run across structures, so two structures' cells never share a
+      // stagger phase just because both were the third cell of their own pack.
+      const cell = cellIndex;
+      cellIndex += 1;
+      // Split the cell by what its shapes can share. Boxes are all the same
+      // unit cube, so they instance; hulls are one shape each, so they batch.
+      const boxSlots: number[] = [];
+      const hullSlots: number[] = [];
       for (const slot of slots) {
-        const shape = shapeBySlot[slot];
-        if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
-          localHulls.set(shape.key, buildHullGeometry(shape.points));
-        }
-      }
-      const boxGeometry = buildBoxGeometry();
-      let vertexBudget = boxGeometry.attributes.position.count;
-      let indexBudget = boxGeometry.index?.count ?? 0;
-      for (const geometry of localHulls.values()) {
-        vertexBudget += geometry.attributes.position.count;
-        indexBudget += geometry.index?.count ?? 0;
-      }
-      totalVertices += vertexBudget;
-
-      const mesh = new THREE.BatchedMesh(slots.length, vertexBudget, indexBudget, material);
-      // Toggleable at runtime: the city is the bulk of the shadow map, and on a
-      // phone that second pass over 24k chunks is a candidate for the whole
-      // frame budget. See app/renderQuality.
-      mesh.castShadow = shadowsEnabled();
-      mesh.receiveShadow = shadowsEnabled();
-      // Per-instance culling walks every chunk to decide each one, which is the
-      // work we are trying to avoid.
-      mesh.perObjectFrustumCulled = false;
-      mesh.sortObjects = false;
-      // Whole-batch culling, on the other hand, is one sphere test that can drop
-      // a whole block. This is only worth anything because batches are cell
-      // sized: a single city-wide batch always intersects the frustum, which is
-      // why culling used to be turned off here.
-      mesh.frustumCulled = true;
-
-      const boxGeometryId = mesh.addGeometry(boxGeometry);
-      const hullGeometryIds = new Map<string, number>();
-      for (const [key, geometry] of localHulls) {
-        hullGeometryIds.set(key, mesh.addGeometry(geometry));
+        (shapeBySlot[slot].kind === 'box' ? boxSlots : hullSlots).push(slot);
       }
 
-      const meshIndex = meshes.length;
-      for (const slot of slots) {
-        const shape = shapeBySlot[slot];
-        const geometryId =
-          shape.kind === 'hull' ? (hullGeometryIds.get(shape.key) ?? boxGeometryId) : boxGeometryId;
+      /** Common per-slot bookkeeping, whichever object the slot landed in. */
+      const claimSlot = (slot: number, meshIndex: number, instanceId: number): void => {
         meshOfSlot[slot] = meshIndex;
-        instanceIds[slot] = mesh.addInstance(geometryId);
+        instanceIds[slot] = instanceId;
         baseColors[slot * 3] = color.r;
         baseColors[slot * 3 + 1] = color.g;
         baseColors[slot * 3 + 2] = color.b;
-        writeInstance(
-          mesh,
-          client,
-          slot,
-          client.topology.body(client.topology.bodyKeyOf(slot)),
-          scales,
-          instanceIds,
-          hiddenBySlot,
-          belowStreak,
-        );
-        mesh.setColorAt(instanceIds[slot], color);
+      };
+
+      if (boxSlots.length > 0) {
+        const boxGeometry = buildBoxGeometry();
+        totalVertices += boxGeometry.attributes.position.count;
+        const mesh = new THREE.InstancedMesh(boxGeometry, material, boxSlots.length);
+        // Toggleable at runtime: the city is the bulk of the shadow map, and on
+        // a phone that second pass over 24k chunks is a candidate for the whole
+        // frame budget. See app/renderQuality.
+        mesh.castShadow = shadowsEnabled();
+        mesh.receiveShadow = shadowsEnabled();
+        // Whole-cell culling: one sphere test that can drop a whole block.
+        mesh.frustumCulled = true;
+        // Rewritten every frame for any cell with a live body in it, so tell
+        // the driver not to treat the buffer as static.
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+        const meshIndex = renderables.length;
+        const renderable: CityRenderable = { kind: 'instanced', mesh };
+        for (let i = 0; i < boxSlots.length; i += 1) {
+          const slot = boxSlots[i];
+          claimSlot(slot, meshIndex, i);
+          writeInstance(
+            renderable,
+            client,
+            slot,
+            client.topology.body(client.topology.bodyKeyOf(slot)),
+            scales,
+            instanceIds,
+            hiddenBySlot,
+            belowStreak,
+          );
+          mesh.setColorAt(i, color);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        // Seed the culling sphere now rather than leaving it null for three to
+        // compute lazily on the first frustum test. The write path only GROWS
+        // this sphere, so it needs a correct starting value to grow from -- and
+        // a cell culled against a sphere that never existed is a whole block of
+        // city missing.
+        mesh.computeBoundingSphere();
+        renderables.push(renderable);
+        cellOfRenderableList.push(cell);
+        instancedCount += 1;
+        subDraws += 1;
       }
-      // Seed the culling sphere now rather than leaving it null for three to
-      // compute lazily on the first frustum test. The write path only GROWS
-      // this sphere, so it needs a correct starting value to grow from -- and
-      // a batch culled against a sphere that never existed is a whole block of
-      // city missing.
-      mesh.computeBoundingSphere();
-      meshes.push(mesh);
+
+      if (hullSlots.length > 0) {
+        // Only the hulls this cell actually uses.
+        const localHulls = new Map<string, THREE.BufferGeometry>();
+        for (const slot of hullSlots) {
+          const shape = shapeBySlot[slot];
+          if (shape.kind === 'hull' && !localHulls.has(shape.key)) {
+            localHulls.set(shape.key, buildHullGeometry(shape.points));
+          }
+        }
+        // The unit cube still goes in: `chunkShape` falls back to a box for a
+        // malformed hull, and a slot sorted here on its shape kind must have
+        // somewhere to land if that fallback fires.
+        const boxGeometry = buildBoxGeometry();
+        let vertexBudget = boxGeometry.attributes.position.count;
+        let indexBudget = boxGeometry.index?.count ?? 0;
+        for (const geometry of localHulls.values()) {
+          vertexBudget += geometry.attributes.position.count;
+          indexBudget += geometry.index?.count ?? 0;
+        }
+        totalVertices += vertexBudget;
+
+        const mesh = new THREE.BatchedMesh(hullSlots.length, vertexBudget, indexBudget, material);
+        mesh.castShadow = shadowsEnabled();
+        mesh.receiveShadow = shadowsEnabled();
+        // Per-instance culling walks every chunk to decide each one, which is
+        // the work we are trying to avoid.
+        mesh.perObjectFrustumCulled = false;
+        mesh.sortObjects = false;
+        // Whole-batch culling, on the other hand, is one sphere test that can
+        // drop a whole block. This is only worth anything because batches are
+        // cell sized: a single city-wide batch always intersects the frustum,
+        // which is why culling used to be turned off here.
+        mesh.frustumCulled = true;
+
+        const boxGeometryId = mesh.addGeometry(boxGeometry);
+        const hullGeometryIds = new Map<string, number>();
+        for (const [key, geometry] of localHulls) {
+          hullGeometryIds.set(key, mesh.addGeometry(geometry));
+        }
+
+        const meshIndex = renderables.length;
+        const renderable: CityRenderable = { kind: 'batched', mesh };
+        for (const slot of hullSlots) {
+          const shape = shapeBySlot[slot];
+          const geometryId =
+            shape.kind === 'hull'
+              ? (hullGeometryIds.get(shape.key) ?? boxGeometryId)
+              : boxGeometryId;
+          claimSlot(slot, meshIndex, mesh.addInstance(geometryId));
+          writeInstance(
+            renderable,
+            client,
+            slot,
+            client.topology.body(client.topology.bodyKeyOf(slot)),
+            scales,
+            instanceIds,
+            hiddenBySlot,
+            belowStreak,
+          );
+          mesh.setColorAt(instanceIds[slot], color);
+        }
+        mesh.computeBoundingSphere();
+        renderables.push(renderable);
+        cellOfRenderableList.push(cell);
+        batchCount += 1;
+        subDraws += hullSlots.length;
+      }
     }
   }
 
-  console.info('[city] batched chunk meshes ready', {
+  console.info('[city] chunk meshes ready', {
     chunks: count,
     structures: manifest.structures.length,
-    batches: meshes.length,
+    instancedCells: instancedCount,
+    hullBatches: batchCount,
+    // Sub-draws, not draw calls: this is the number the frame time tracks.
+    subDraws,
     vertices: totalVertices,
   });
   return {
-    meshes,
+    renderables,
+    cellOfRenderable: Int32Array.from(cellOfRenderableList),
     meshOfSlot,
     instanceIds,
     scales,
@@ -333,7 +460,7 @@ const TMP_POSE = new Float32Array(7);
 const TMP_PROBE_POS: [number, number, number] = [0, 0, 0];
 
 function writeInstance(
-  mesh: THREE.BatchedMesh,
+  renderable: CityRenderable,
   client: CityClient,
   slot: number,
   body: LedgerBody | undefined,
@@ -366,16 +493,18 @@ function writeInstance(
     TMP_PROBE_POS[2] = TMP_POSE[2];
     chunkTeleportProbe(slot, TMP_PROBE_POS, probeCtx);
   }
+  let hidden = false;
   if (hiddenBySlot && belowStreakBySlot) {
     const below = TMP_POSE[1] < CHUNK_HIDE_Y_M;
     const streak = below ? Math.min(255, belowStreakBySlot[slot] + 1) : 0;
     belowStreakBySlot[slot] = streak;
     const hide = streak >= CHUNK_HIDE_STREAK;
     if (hide !== (hiddenBySlot[slot] === 1)) {
-      mesh.setVisibleAt(instanceId, !hide);
+      if (renderable.kind === 'batched') renderable.mesh.setVisibleAt(instanceId, !hide);
       hiddenBySlot[slot] = hide ? 1 : 0;
       if (hide) renderStats.chunksHidden += 1;
     }
+    hidden = hide;
     // The matrix is written either way. Skipping it while hidden saved a
     // compose and cost correctness: a chunk that settled while hidden kept
     // whatever pose it had when it vanished, so un-hiding drew it in the
@@ -383,9 +512,21 @@ function writeInstance(
   }
   TMP_POSITION.set(TMP_POSE[0], TMP_POSE[1], TMP_POSE[2]);
   TMP_QUATERNION.set(TMP_POSE[3], TMP_POSE[4], TMP_POSE[5], TMP_POSE[6]);
-  TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
+  if (hidden && renderable.kind === 'instanced') {
+    // An InstancedMesh has no per-instance visibility flag -- every instance in
+    // the buffer is drawn. A zero scale collapses the cube to a point, which
+    // rasterises nothing; the vertex shader still runs for its 24 vertices,
+    // which is the whole cost and is far below what a sub-draw would have been.
+    //
+    // The real pose is still composed above and the position still written, so
+    // the invariant the batched path documents holds here too: a chunk that
+    // settles while hidden un-hides in the right place.
+    TMP_SCALE.set(0, 0, 0);
+  } else {
+    TMP_SCALE.set(scales[slot * 3], scales[slot * 3 + 1], scales[slot * 3 + 2]);
+  }
   TMP_MATRIX.compose(TMP_POSITION, TMP_QUATERNION, TMP_SCALE);
-  mesh.setMatrixAt(instanceId, TMP_MATRIX);
+  renderable.mesh.setMatrixAt(instanceId, TMP_MATRIX);
 }
 
 /**
@@ -632,12 +773,12 @@ export function CityChunksLayer({
   useEffect(
     () =>
       onRenderQualityChange(({ shadows }) => {
-        const meshes = stateRef.current?.meshes ?? [];
-        const current = meshes[0]?.material as THREE.Material | undefined;
+        const renderables = stateRef.current?.renderables ?? [];
+        const current = renderables[0]?.mesh.material as THREE.Material | undefined;
         const wantPbr = cityPbrLighting();
         const havePbr = current instanceof THREE.MeshStandardMaterial;
         const replacement = current && wantPbr !== havePbr ? buildCityMaterial() : null;
-        for (const mesh of meshes) {
+        for (const { mesh } of renderables) {
           mesh.castShadow = shadows;
           mesh.receiveShadow = shadows;
           if (replacement) mesh.material = replacement;
@@ -668,18 +809,15 @@ export function CityChunksLayer({
     }
     if (clientRef.current !== client) {
       if (stateRef.current) {
-        for (const mesh of stateRef.current.meshes) {
+        for (const { mesh } of stateRef.current.renderables) {
           group.remove(mesh);
-        }
-        // BatchedMesh owns the matrix/colour data textures as well as the
-        // merged geometry; its own dispose is what releases them.
-        for (const mesh of stateRef.current.meshes) {
-          // BatchedMesh owns its matrix/colour data textures as well as the
-          // merged geometry; its own dispose is what releases them.
+          // Both classes own GPU state beyond the geometry -- a BatchedMesh its
+          // matrix/colour data textures, an InstancedMesh its instance buffers
+          // -- and their own dispose is what releases it.
           mesh.dispose();
           mesh.geometry.dispose();
         }
-        const shared = stateRef.current.meshes[0]?.material as THREE.Material | undefined;
+        const shared = stateRef.current.renderables[0]?.mesh.material as THREE.Material | undefined;
         shared?.dispose();
         stateRef.current = null;
       }
@@ -698,10 +836,11 @@ export function CityChunksLayer({
       const chunkBody = client.topology.chunkBody;
       for (let slot = 0; slot < chunkBody.length; slot += 1) {
         const instanceId = state.instanceIds[slot];
-        const mesh = state.meshes[state.meshOfSlot[slot]];
-        if (instanceId < 0 || !mesh) {
+        const renderable = state.renderables[state.meshOfSlot[slot]];
+        if (instanceId < 0 || !renderable) {
           continue;
         }
+        const mesh = renderable.mesh;
         const key = chunkBody[slot];
         // Support serial is 0: intact structure and rooted stumps both live
         // on the client-side support body.
@@ -770,7 +909,7 @@ export function CityChunksLayer({
          * Everything else compares the ledger with itself, which cannot see a
          * chunk that is drawn somewhere the ledger never put it -- and "drawn
          * in the wrong place for a frame" is precisely the reported artifact.
-         * This reads the instance matrices back out of the BatchedMesh.
+         * This reads the instance matrices back out of the drawn objects.
          */
         drawnVsLedger: (): { worst: number; slot: number; over: number } => {
           const meshState = stateRef.current;
@@ -781,10 +920,10 @@ export function CityChunksLayer({
           const count = client.topology.chunkCount;
           for (let slot = 0; slot < count; slot += 1) {
             const instanceId = meshState.instanceIds[slot];
-            const mesh = meshState.meshes[meshState.meshOfSlot[slot]];
-            if (instanceId < 0 || !mesh) continue;
+            const renderable = meshState.renderables[meshState.meshOfSlot[slot]];
+            if (instanceId < 0 || !renderable) continue;
             if (meshState.hiddenBySlot[slot] === 1) continue;
-            mesh.getMatrixAt(instanceId, TMP_MATRIX);
+            renderable.mesh.getMatrixAt(instanceId, TMP_MATRIX);
             const pose = client.topology.chunkWorldPose(slot).position;
             const dx = TMP_MATRIX.elements[12] - pose[0];
             const dy = TMP_MATRIX.elements[13] - pose[1];
@@ -820,7 +959,7 @@ export function CityChunksLayer({
       // headless rather than retrying a throwing build every frame.
       try {
         stateRef.current = buildMesh(client);
-        for (const mesh of stateRef.current.meshes) {
+        for (const { mesh } of stateRef.current.renderables) {
           group.add(mesh);
         }
       } catch (error) {
@@ -1044,19 +1183,26 @@ export function CityChunksLayer({
         const dy = body.position[1] - camera.y;
         const dz = body.position[2] - camera.z;
         const stride = updateStrideForDistanceSq(dx * dx + dy * dy + dz * dz);
-        // Staggered by BATCH, not by body. A batch re-uploads its whole
-        // transform texture if any one instance in it changes, so bodies
-        // sharing a batch must defer together -- staggering them individually
-        // would put at least one write in every batch on every frame and save
+        // Staggered by CELL, not by body. An upload unit re-sends everything
+        // it holds when any one instance in it changes -- a batch its whole
+        // transform texture, an instanced mesh its whole matrix buffer -- so
+        // bodies sharing one must defer together. Staggering them individually
+        // would put at least one write in every unit on every frame and save
         // nothing at all.
         //
-        // The key is the batch itself rather than the structure it came from.
-        // Those coincide only while one structure means one building; a pack
-        // authored as a whole district is a single structure, and keying on it
-        // gave every body the same phase, so the entire map deferred and
-        // resumed together instead of spreading across the stride window.
-        const batch = state.meshOfSlot[body.chunkSlots[0]];
-        if (!shouldUpdateThisFrame(frame, batch < 0 ? 0 : batch, stride)) {
+        // The key is the cell rather than the renderable, because a cell now
+        // holds two objects (its boxes and its hulls) and a body's chunks can
+        // sit in both. Keying on the renderable gave those two different
+        // phases, which rewrote both on frames where neither used to move.
+        //
+        // And the cell rather than the structure it came from: those coincide
+        // only while one structure means one building; a pack authored as a
+        // whole district is a single structure, and keying on it gave every
+        // body the same phase, so the entire map deferred and resumed together
+        // instead of spreading across the stride window.
+        const renderableIndex = state.meshOfSlot[body.chunkSlots[0]];
+        const batch = renderableIndex < 0 ? 0 : state.cellOfRenderable[renderableIndex];
+        if (!shouldUpdateThisFrame(frame, batch, stride)) {
           continue;
         }
       }
@@ -1083,13 +1229,14 @@ export function CityChunksLayer({
         if (instanceId < 0) {
           continue;
         }
-        const mesh = state.meshes[state.meshOfSlot[slot]];
-        if (!mesh) {
+        const renderable = state.renderables[state.meshOfSlot[slot]];
+        if (!renderable) {
           continue;
         }
+        const mesh = renderable.mesh;
         renderStats.instanceWrites += 1;
         writeInstance(
-          mesh,
+          renderable,
           client,
           slot,
           body,
@@ -1117,8 +1264,8 @@ export function CityChunksLayer({
             mesh.setColorAt(instanceId, TMP_COLOR);
           }
         }
+        touchedMeshes.add(state.meshOfSlot[slot]);
       }
-      touchedMeshes.add(state.meshOfSlot[body.chunkSlots[0]] ?? -1);
       if (!live.has(key)) {
         dirty.delete(key);
       }
@@ -1136,14 +1283,23 @@ export function CityChunksLayer({
     const writeEndedAt = performance.now();
     renderStats.dirtyWriteMs = writeEndedAt - updateStartedAt;
     for (const index of touchedMeshes) {
-      state.meshes[index]?.computeBoundingSphere();
+      const renderable = state.renderables[index];
+      if (!renderable) continue;
+      if (renderable.kind === 'instanced') {
+        // A BatchedMesh writes into its own data textures and flags them
+        // itself; an InstancedMesh writes into plain buffer attributes and does
+        // not, so without this the cell's chunks freeze at their build pose.
+        renderable.mesh.instanceMatrix.needsUpdate = true;
+        if (renderable.mesh.instanceColor) renderable.mesh.instanceColor.needsUpdate = true;
+      }
+      renderable.mesh.computeBoundingSphere();
     }
     const sphereEndedAt = performance.now();
     renderStats.sphereMs = sphereEndedAt - writeEndedAt;
     recordUpdateMs(updateSamplesRef.current, sphereEndedAt - updateStartedAt);
     renderStats.cityFrameMs = sphereEndedAt - cityFrameStartedAt;
-    // No needsUpdate bookkeeping: BatchedMesh writes matrices and colours
-    // straight into its own data textures and flags them itself.
+    // Upload bookkeeping is done above, per touched object: BatchedMesh flags
+    // its own data textures, InstancedMesh has to be told.
   });
 
   return <group ref={groupRef} />;
