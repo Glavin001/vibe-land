@@ -215,3 +215,74 @@ describe('PresentationTrack.rebase', () => {
     expect(state.position).toEqual([1, 2, 3]);
   });
 });
+
+describe('settled fast path', () => {
+  /** A track holding one quiescent snapshot, sampled well past it. */
+  function restingTrack() {
+    const track = new PresentationTrack(config({ interpolationDelayTicks: 0 }));
+    track.push({
+      tick: 100,
+      position: [1, 2, 3],
+      rotation: [0, 0, 0, 1],
+      linearVelocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
+      class: PresentationClass.Quiescent,
+    });
+    return track;
+  }
+
+  it('returns the same pose once resting', () => {
+    const track = restingTrack();
+    const first = track.sample(200);
+    const second = track.sample(260);
+    expect(second.position).toEqual(first.position);
+    expect(second.rotation).toEqual(first.rotation);
+  });
+
+  it('still moves when a new snapshot arrives', () => {
+    // The fast path must not latch: a resting body that gets shot has to
+    // resume interpolating, or it freezes on screen for the rest of the match.
+    const track = restingTrack();
+    track.sample(200);
+    track.push({
+      tick: 260,
+      position: [9, 2, 3],
+      rotation: [0, 0, 0, 1],
+      linearVelocity: [1, 0, 0],
+      angularVelocity: [0, 0, 0],
+      class: PresentationClass.Ballistic,
+    });
+    const after = track.sample(400);
+    expect(after.position[0]).toBeGreaterThan(1.5);
+  });
+
+  it('does not take the fast path before the target tick passes the snapshot', () => {
+    // Sampling BEFORE the quiescent tick must interpolate/clamp normally
+    // rather than reuse a pose that has not been reached yet.
+    const track = restingTrack();
+    const early = track.sample(0);
+    expect(early.position).toEqual([1, 2, 3]);
+  });
+
+  it('collapses an asymptotic correction so resting can actually be reached', () => {
+    // Critically-damped decay never hits zero, so without the epsilon collapse
+    // a body that was ever corrected re-interpolates for the whole session.
+    const track = restingTrack();
+    track.sample(200);
+    track.push({
+      tick: 210,
+      position: [1.05, 2, 3],
+      rotation: [0, 0, 0, 1],
+      linearVelocity: [0, 0, 0],
+      angularVelocity: [0, 0, 0],
+      class: PresentationClass.Quiescent,
+    });
+    track.sample(260);
+    // Run well past the correction window; the pose must converge and hold.
+    let last = track.sample(1000);
+    for (let t = 1060; t < 4000; t += 60) last = track.sample(t);
+    const held = track.sample(4060);
+    expect(held.position[0]).toBeCloseTo(last.position[0], 9);
+    expect(held.positionCorrection).toEqual([0, 0, 0]);
+  });
+});
