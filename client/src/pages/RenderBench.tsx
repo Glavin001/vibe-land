@@ -63,13 +63,26 @@ const TMP_COLOR = new THREE.Color();
  * whole cell; hulls keep the BatchedMesh, which is the right tool for shapes
  * that cannot be instanced.
  */
-type BenchMode = 'batched' | 'hybrid';
+// `pooled` tests the fracture-pool proposal: if shards were drawn from a
+// shared library of patterns instead of being unique per chunk, hulls could be
+// instanced too -- one InstancedMesh per (cell x pattern) rather than one
+// sub-draw per shard. `hulls`/`hullVariants` set the mix and the pool size, so
+// the sweep answers "how small can the library be" with a number.
+// `pooled-global` removes the ceiling `pooled` hits. Per-cell instancing costs
+// cells x patterns REAL draw calls, and a real draw call is dearer than a
+// multi-draw sub-draw, so past a few dozen patterns it loses to batching. Keyed
+// globally the cost is O(patterns) regardless of city size -- at the price of
+// frustum culling, since one pattern's mesh spans the whole map and its sphere
+// always intersects.
+type BenchMode = 'batched' | 'hybrid' | 'pooled' | 'pooled-global';
 
 type BenchConfig = {
   chunks: number;
   live: number;
   towers?: number;
   hullFraction: number;
+  /** Distinct shard shapes available. The pool size the proposal is about. */
+  hullVariants: number;
   seed: number;
   mode: BenchMode;
   /** Camera orbit radius as a multiple of the city's half-extent. */
@@ -100,7 +113,10 @@ function readConfig(): BenchConfig {
     // 0.3 is the real downtown mix: 7,160 hulls against 16,945 boxes.
     hullFraction: Math.min(1, Math.max(0, num('hulls', 0.3))),
     seed: num('seed', 1),
-    mode: mode === 'hybrid' ? 'hybrid' : 'batched',
+    mode: mode === 'hybrid' || mode === 'pooled' || mode === 'pooled-global'
+      ? mode
+      : 'batched',
+    hullVariants: Math.max(1, num('hullVariants', 32)),
     orbit: num('orbit', 0.9),
     orbitSeconds: num('orbitSeconds', 40),
     far: num('far', 200),
@@ -168,6 +184,8 @@ function buildBenchMeshes(
   }
   const allSlots: number[] = [];
   for (let i = 0; i < city.chunkCount; i += 1) allSlots.push(i);
+  /** Hulls deferred out of the cell loop, for `pooled-global`. */
+  const globalHullSlots: number[] = [];
 
   // Hull geometry is expensive to triangulate (ConvexGeometry runs a full hull
   // per call), so the pool is built once and the per-cell copies clone from it.
@@ -197,12 +215,20 @@ function buildBenchMeshes(
     // In `hybrid` the boxes are peeled off first: they all share the unit cube,
     // so one InstancedMesh draws the cell's entire box population in a single
     // instanced call instead of one sub-draw each.
-    const boxSlots = mode === 'hybrid'
-      ? cellSlots.filter((slot) => city.shapes[slot].kind === 'box')
-      : [];
-    const batchSlots = mode === 'hybrid'
-      ? cellSlots.filter((slot) => city.shapes[slot].kind !== 'box')
-      : cellSlots;
+    const boxSlots = mode === 'batched'
+      ? []
+      : cellSlots.filter((slot) => city.shapes[slot].kind === 'box');
+    const hullSlots = mode === 'batched'
+      ? []
+      : cellSlots.filter((slot) => city.shapes[slot].kind !== 'box');
+    // `pooled` sends its hulls to per-pattern instanced meshes below; the
+    // BatchedMesh then has nothing left to draw.
+    const batchSlots = mode === 'batched'
+      ? cellSlots
+      : (mode === 'pooled' || mode === 'pooled-global' ? [] : hullSlots);
+    if (mode === 'pooled-global') {
+      for (const slot of hullSlots) globalHullSlots.push(slot);
+    }
 
     if (boxSlots.length > 0) {
       const boxGeometry = buildBoxGeometry();
@@ -228,6 +254,45 @@ function buildBenchMeshes(
       renderables.push({ kind: 'instanced', mesh });
       instancedMeshes += 1;
       subDraws += 1;
+    }
+
+    if (mode === 'pooled' && hullSlots.length > 0) {
+      // One InstancedMesh per (cell x shard pattern). Only reachable if shards
+      // come from a shared library -- with a pattern per chunk this degenerates
+      // to one single-instance mesh per shard, which is worse than batching,
+      // and the sweep over `hullVariants` is what shows where that turns over.
+      const byPattern = new Map<string, number[]>();
+      for (const slot of hullSlots) {
+        const key = city.shapes[slot].kind === 'hull'
+          ? (city.shapes[slot] as { key: string }).key
+          : 'box';
+        const existing = byPattern.get(key);
+        if (existing) existing.push(slot);
+        else byPattern.set(key, [slot]);
+      }
+      for (const [key, patternSlots] of byPattern) {
+        const geometry = hullPrototypes.get(key)!.clone();
+        vertices += geometry.attributes.position.count;
+        const mesh = new THREE.InstancedMesh(geometry, material, patternSlots.length);
+        mesh.castShadow = shadowsEnabled();
+        mesh.receiveShadow = shadowsEnabled();
+        mesh.frustumCulled = true;
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        const meshIndex = renderables.length;
+        for (let i = 0; i < patternSlots.length; i += 1) {
+          const slot = patternSlots[i];
+          meshOfChunk[slot] = meshIndex;
+          instanceIds[slot] = i;
+          mesh.setMatrixAt(i, restMatrix(slot));
+          mesh.setColorAt(i, chunkColor(slot));
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.computeBoundingSphere();
+        renderables.push({ kind: 'instanced', mesh });
+        instancedMeshes += 1;
+        subDraws += 1;
+      }
     }
 
     if (batchSlots.length > 0) {
@@ -280,6 +345,42 @@ function buildBenchMeshes(
     }
   }
 
+  if (globalHullSlots.length > 0) {
+    const byPattern = new Map<string, number[]>();
+    for (const slot of globalHullSlots) {
+      const shape = city.shapes[slot];
+      const key = shape.kind === 'hull' ? shape.key : 'box';
+      const existing = byPattern.get(key);
+      if (existing) existing.push(slot);
+      else byPattern.set(key, [slot]);
+    }
+    for (const [key, patternSlots] of byPattern) {
+      const geometry = hullPrototypes.get(key)!.clone();
+      vertices += geometry.attributes.position.count;
+      const mesh = new THREE.InstancedMesh(geometry, material, patternSlots.length);
+      mesh.castShadow = shadowsEnabled();
+      mesh.receiveShadow = shadowsEnabled();
+      // Deliberately off: the mesh spans the whole city, so the sphere test can
+      // never drop it and would only cost a test per frame to always pass.
+      mesh.frustumCulled = false;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      const meshIndex = renderables.length;
+      for (let i = 0; i < patternSlots.length; i += 1) {
+        const slot = patternSlots[i];
+        meshOfChunk[slot] = meshIndex;
+        instanceIds[slot] = i;
+        mesh.setMatrixAt(i, restMatrix(slot));
+        mesh.setColorAt(i, chunkColor(slot));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      renderables.push({ kind: 'instanced', mesh });
+      instancedMeshes += 1;
+      subDraws += 1;
+    }
+  }
+
   for (const geometry of hullPrototypes.values()) geometry.dispose();
 
   return {
@@ -323,9 +424,10 @@ function BenchCity({
         chunks: config.chunks,
         towers: config.towers,
         hullFraction: config.hullFraction,
+        hullVariants: config.hullVariants,
         seed: config.seed,
       }),
-    [config.chunks, config.towers, config.hullFraction, config.seed],
+    [config.chunks, config.towers, config.hullFraction, config.hullVariants, config.seed],
   );
 
   useEffect(() => {
@@ -479,6 +581,7 @@ export function RenderBenchPage(): JSX.Element {
       chunks: config.chunks,
       towers: config.towers,
       hullFraction: config.hullFraction,
+      hullVariants: config.hullVariants,
       seed: config.seed,
     }),
   );
