@@ -53,9 +53,12 @@ const DT: f32 = 1.0 / 60.0;
 /// This is the same class of divergence as the hardcoded gravity that made the
 /// bench feed 9.81 into a 20 m/s^2 world: anything production decides, the
 /// bench must call rather than restate.
-fn production_arena() -> crate::physx_runtime::PhysxPhysicsArena {
-    crate::physx_runtime::PhysxPhysicsArena::new(vibe_netcode::movement::MoveConfig::default())
-        .expect("production physics arena")
+fn production_arena() -> crate::movement::PhysicsArena {
+    crate::movement::PhysicsArena::new(
+        vibe_netcode::movement::MoveConfig::default(),
+        vibe_netcode::physics_backend::PhysicsBackendKind::PhysxGpu,
+    )
+    .expect("production physics arena")
 }
 
 /// Fail if the bench and production have drifted apart on anything a caller
@@ -159,34 +162,24 @@ fn demolished_tower_comes_to_rest() {
     // its own documented expectation of 0.
 
     let mut arena = production_arena();
+    // The ground, from production's own document rather than a hand-rolled box.
+    //
+    // The arena builds the scene but not its contents; production calls this to
+    // instantiate terrain, which is a *heightfield*. A flat static box was the
+    // stand-in, and it is not equivalent -- contact generation against a
+    // heightfield differs in triangle edges and per-triangle normals, which for
+    // a jitter bug is a live suspect rather than a harmless simplification.
+    // Going through the same call means the terrain cannot drift from
+    // production's by construction.
+    crate::demo_world::seed_world_for_match(&mut arena, crate::city::CITY_MATCH_PREFIX)
+        .expect("seed the production world document");
     let player_spawn = arena.spawn_player(1);
-    let world = arena.world_mut();
+    let world = arena.physx_world_mut().expect("physx world");
     assert_matches_production(world);
     eprintln!(
         "[fidelity] production arena, player capsule at {:.1?}",
         player_spawn
     );
-    // The arena builds the scene but NOT the ground: production's comes from a
-    // world-document load that adds a heightfield. Without this the city free
-    // falls -- measured p50 315 m/s, which is the whole pile in flight.
-    //
-    // KNOWN REMAINING GAP: production grounds on a heightfield, this is a flat
-    // box. Contact generation differs (triangle edges, per-triangle normals),
-    // and for a jitter bug that is a live suspect rather than a harmless
-    // simplification. Closing it means loading the same world document.
-    world
-        .add_static_box(StaticBoxDesc {
-            entity_id: 1,
-            user_id: 0,
-            pose: Pose {
-                position: BridgeVec3::new(0.0, -10.0, 0.0),
-                rotation: Quat::IDENTITY,
-            },
-            half_extents: BridgeVec3::new(2000.0, 10.0, 2000.0),
-            collision_group: GROUP_STATIC,
-            collision_mask: ALL_GROUPS,
-        })
-        .expect("ground");
     let mut world = &mut *world;
     let mut city =
         crate::city::CityRuntime::open(60, Some(&mut world)).expect("city runtime opens");
