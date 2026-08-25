@@ -536,6 +536,11 @@ function BenchCity({
       const renderable = state.renderables[index];
       if (!renderable) continue;
       if (renderable.kind === 'instanced') {
+        if (!renderable.mesh.frustumCulled) {
+          renderable.mesh.instanceMatrix.needsUpdate = true;
+          if (renderable.mesh.instanceColor) renderable.mesh.instanceColor.needsUpdate = true;
+          continue;
+        }
         // Unlike a BatchedMesh's data texture, an instance buffer has a partial
         // upload path -- but three only takes it if the ranges are declared, so
         // the flag alone still re-uploads the whole cell.

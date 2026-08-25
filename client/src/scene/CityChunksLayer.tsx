@@ -44,7 +44,13 @@ import {
   shouldUpdateThisFrame,
   updateStrideForDistanceSq,
 } from '../city/renderScheduling';
-import { cityPbrLighting, onRenderQualityChange, shadowsEnabled } from '../app/renderQuality';
+import {
+  cityPbrLighting,
+  hullPoolSize,
+  onRenderQualityChange,
+  shadowsEnabled,
+} from '../app/renderQuality';
+import { buildHullPool } from '../city/hullPool';
 import { updateCityE2E } from '../e2eBridge';
 import { addCitySuspect, isRecording, recordCityEvent, recordCityStats } from '../netlab/recorder';
 import type { CityE2EStats } from '../e2eBridge';
@@ -241,12 +247,52 @@ function buildMesh(client: CityClient): CityMeshState {
   // every frame upload the transforms of every chunk in the city -- see the
   // note on CityMeshState.
   const material = buildCityMaterial();
+  // Fracture-pattern library. Off (size 0) draws the authored shards through
+  // the per-cell batches exactly as before; on, every hull is replaced by one
+  // of `poolSize` shared shapes so they can be instanced. See city/hullPool.ts
+  // for what that costs in fidelity.
+  const poolSize = hullPoolSize();
+  const hullSlotsAll: number[] = [];
+  for (let slot = 0; slot < count; slot += 1) {
+    if (shapeBySlot[slot]?.kind === 'hull') hullSlotsAll.push(slot);
+  }
+  const pool = buildHullPool({
+    slotCount: count,
+    hullSlots: hullSlotsAll,
+    shapeOf: (slot) => shapeBySlot[slot] as { key: string; points: Float32Array },
+    radiusOf: (slot) => radii[slot],
+    poolSize,
+  });
+  const pooling = pool.patterns.length > 0;
+  // A pooled shard is drawn at the pattern's shape scaled to this chunk's own
+  // radius, so the substitution never changes how big anything looks.
+  if (pooling) {
+    for (const slot of hullSlotsAll) {
+      const scale = pool.scaleOfSlot[slot];
+      scales[slot * 3] = scale;
+      scales[slot * 3 + 1] = scale;
+      scales[slot * 3 + 2] = scale;
+    }
+  }
+
   const renderables: CityRenderable[] = [];
   const cellOfRenderableList: number[] = [];
   let cellIndex = 0;
   const meshOfSlot = new Int32Array(count).fill(-1);
   const instanceIds = new Int32Array(count).fill(-1);
   const baseColors = new Float32Array(count * 3);
+  // Filled up front rather than as each cell claims its slots: pooled hulls are
+  // built outside the per-structure loop below and have no structure in scope
+  // by then, so without this they would draw black.
+  for (const structure of manifest.structures) {
+    const structureTint = structureColor(structure.structureId);
+    for (const chunk of structure.chunks) {
+      const slot = client.topology.slotOf(structure.structureId, chunk.nodeIndex);
+      baseColors[slot * 3] = structureTint.r;
+      baseColors[slot * 3 + 1] = structureTint.g;
+      baseColors[slot * 3 + 2] = structureTint.b;
+    }
+  }
   const hiddenBySlot = new Uint8Array(count);
   const belowStreak = new Uint8Array(count);
   let totalVertices = 0;
@@ -276,7 +322,10 @@ function buildMesh(client: CityClient): CityMeshState {
       const boxSlots: number[] = [];
       const hullSlots: number[] = [];
       for (const slot of slots) {
-        (shapeBySlot[slot].kind === 'box' ? boxSlots : hullSlots).push(slot);
+        // With a pool active the hulls are drawn by the city-wide per-pattern
+        // meshes built below, so the cell keeps only its boxes.
+        if (shapeBySlot[slot].kind === 'box') boxSlots.push(slot);
+        else if (!pooling) hullSlots.push(slot);
       }
 
       /** Common per-slot bookkeeping, whichever object the slot landed in. */
@@ -404,11 +453,79 @@ function buildMesh(client: CityClient): CityMeshState {
     }
   }
 
+  // Pooled hulls: one InstancedMesh per pattern, keyed CITY-WIDE rather than
+  // per cell.
+  //
+  // Per-cell would cost cells x patterns real draw calls, and a real draw call
+  // is dearer than a multi-draw sub-draw, so it inverts past a few dozen
+  // patterns -- measured at 100k chunks, per-cell ran 399 fps at 16 patterns
+  // but 197 at 32, while city-wide held 633 at 16, 679 at 64 and 489 at 256.
+  // City-wide is what makes a large, good-looking library affordable.
+  //
+  // The trade is frustum culling: a pattern's mesh spans the map, so its sphere
+  // always intersects and every instance is submitted every frame. That is
+  // vertex work on ~30-vertex shards, not fill, and it measured far cheaper
+  // than the sub-draws it replaces.
+  if (pooling) {
+    const slotsOfPattern: number[][] = pool.patterns.map(() => []);
+    for (const slot of hullSlotsAll) {
+      const pattern = pool.patternOfSlot[slot];
+      if (pattern >= 0) slotsOfPattern[pattern].push(slot);
+    }
+    for (let pattern = 0; pattern < pool.patterns.length; pattern += 1) {
+      const patternSlots = slotsOfPattern[pattern];
+      if (patternSlots.length === 0) continue;
+      const geometry = buildHullGeometry(pool.patterns[pattern].points);
+      totalVertices += geometry.attributes.position.count;
+      const mesh = new THREE.InstancedMesh(geometry, material, patternSlots.length);
+      mesh.castShadow = shadowsEnabled();
+      mesh.receiveShadow = shadowsEnabled();
+      // Deliberately off; see above. The frame loop keys on this to skip a
+      // bounding-sphere recompute that nothing would ever test.
+      mesh.frustumCulled = false;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+      const meshIndex = renderables.length;
+      const renderable: CityRenderable = { kind: 'instanced', mesh };
+      for (let i = 0; i < patternSlots.length; i += 1) {
+        const slot = patternSlots[i];
+        meshOfSlot[slot] = meshIndex;
+        instanceIds[slot] = i;
+        writeInstance(
+          renderable,
+          client,
+          slot,
+          client.topology.body(client.topology.bodyKeyOf(slot)),
+          scales,
+          instanceIds,
+          hiddenBySlot,
+          belowStreak,
+        );
+        mesh.setColorAt(i, TMP_COLOR.setRGB(
+          baseColors[slot * 3],
+          baseColors[slot * 3 + 1],
+          baseColors[slot * 3 + 2],
+        ));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      renderables.push(renderable);
+      // Its own stagger phase, continuing past the real cells: a pattern mesh
+      // IS an upload unit, so every body drawing that pattern must defer
+      // together for the stride to save anything.
+      cellOfRenderableList.push(cellIndex + pattern);
+      instancedCount += 1;
+      subDraws += 1;
+    }
+  }
+
   console.info('[city] chunk meshes ready', {
     chunks: count,
     structures: manifest.structures.length,
     instancedCells: instancedCount,
     hullBatches: batchCount,
+    hullPatterns: pool.patterns.length,
+    pooledHulls: pooling ? hullSlotsAll.length : 0,
     // Sub-draws, not draw calls: this is the number the frame time tracks.
     subDraws,
     vertices: totalVertices,
@@ -765,6 +882,16 @@ export function CityChunksLayer({
   const teleportProbeRef = useRef<(() => void) | null>(null);
   const buildFailedForRef = useRef<CityClient | null>(null);
   const updateSamplesRef = useRef<number[]>([]);
+  const hullPoolRef = useRef(hullPoolSize());
+  /**
+   * Set when a knob changed something that is baked in at build time.
+   *
+   * Shadows and the material swap apply to live objects, but the pattern pool
+   * decides which geometry every hull instance points at, and that is fixed
+   * when the mesh is built. The teardown happens in the frame callback rather
+   * than here because that is where the scene group is in scope.
+   */
+  const rebuildRequestedRef = useRef(false);
 
   // Applied to the live meshes rather than forcing a rebuild: castShadow is a
   // plain flag on the batch, and the shared material is one object swapped in
@@ -772,7 +899,11 @@ export function CityChunksLayer({
   // feel like a level reload, which defeats using it to A/B fps.
   useEffect(
     () =>
-      onRenderQualityChange(({ shadows }) => {
+      onRenderQualityChange(({ shadows, hullPool }) => {
+        if (hullPool !== hullPoolRef.current) {
+          hullPoolRef.current = hullPool;
+          rebuildRequestedRef.current = true;
+        }
         const renderables = stateRef.current?.renderables ?? [];
         const current = renderables[0]?.mesh.material as THREE.Material | undefined;
         const wantPbr = cityPbrLighting();
@@ -807,7 +938,8 @@ export function CityChunksLayer({
       renderStats.cityFrameMs = performance.now() - cityFrameStartedAt;
       return;
     }
-    if (clientRef.current !== client) {
+    if (clientRef.current !== client || rebuildRequestedRef.current) {
+      rebuildRequestedRef.current = false;
       if (stateRef.current) {
         for (const { mesh } of stateRef.current.renderables) {
           group.remove(mesh);
@@ -1291,6 +1423,11 @@ export function CityChunksLayer({
         // not, so without this the cell's chunks freeze at their build pose.
         renderable.mesh.instanceMatrix.needsUpdate = true;
         if (renderable.mesh.instanceColor) renderable.mesh.instanceColor.needsUpdate = true;
+        // A pattern mesh is never sphere-tested (frustumCulled is off, because
+        // it spans the map), so recomputing its sphere is pure waste -- and the
+        // walk is city-wide, which made it the largest line in the frame until
+        // it was skipped.
+        if (!renderable.mesh.frustumCulled) continue;
       }
       renderable.mesh.computeBoundingSphere();
     }

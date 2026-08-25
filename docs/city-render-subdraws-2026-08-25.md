@@ -186,3 +186,89 @@ measured rather than modelled, and moves in the same direction by the same
 factor. Hull diversity in the bench comes from a 32-shape pool rather than being
 unique per chunk — that affects vertex budget and build time, not sub-draw
 count, which is what the frame time tracks.
+
+---
+
+# Addendum: the fracture-pattern pool, measured and looked at
+
+Same day. The remaining 7,182 sub-draws are all hulls, and hulls are only
+un-instanceable because every shard is unique. So: what if they were not?
+
+## It is worth a great deal
+
+`/renderbench` gained two hull strategies. Per-cell instancing (`pooled`) and
+city-wide per-pattern instancing (`pooled-global`), swept over library size at
+100k chunks against the 204 fps the shipped build gets:
+
+| patterns | `pooled` (per cell) | `pooled-global` |
+|---:|---:|---:|
+| 16 | 399 fps | **633 fps** |
+| 32 | 197 fps | — |
+| 64 | 116 fps | **679 fps** |
+| 256 | 42 fps | **489 fps** |
+| 512 | — | 350 fps |
+
+Per-cell **inverts** past ~32 patterns: it costs `cells x patterns` REAL draw
+calls, and a real draw call is dearer than a multi-draw sub-draw, so by 256 it
+is worse than the all-batched code it replaced. City-wide is `O(patterns)`
+regardless of city size and holds a wide plateau. It gives up frustum culling —
+a pattern's mesh spans the map — and that trade measured strongly positive,
+because what it buys back is vertex work on 30-vertex shards instead of
+thousands of sub-draws.
+
+`gl.render` falls to **0.35 ms**. At that point the renderer has stopped being
+the bottleneck at all.
+
+One measurement bug found and fixed on the way: the global meshes were still
+having their bounding sphere recomputed every frame, a city-wide walk for a test
+that never runs (`frustumCulled` is false). It was the largest line in the
+frame. Skipping it moved `pooled-global` at 16 patterns from 310 to 633 fps.
+
+## And it cannot be done at render time
+
+`city/hullPool.ts` implements the runtime version — pick N shards out of the
+manifest, assign each hull chunk one of them scaled to its own radius, instance
+by pattern. It works, it is fast, and **it looks wrong**.
+
+A wall's shards are a Voronoi partition *of that wall*. Each is cut to fit its
+neighbours, and that mutual fit is the only reason an undamaged wall reads as
+flat. Swap one shard for a stranger of the same size at the same centroid and
+the fit is gone. Looked at (`tools/pool-compare.mjs`, pool 64 against exact, one
+session, one viewpoint, toggled in place), an **intact** downtown comes out
+looking demolished: every facade a mess of protruding spikes. This is not a seam
+artifact to be tuned down with a bigger library — 16, 64 and 256 all destroy the
+surface equally, because the defect is per-shard, not per-pool.
+
+So the knob ships **off**, and is documented as an instrument rather than a
+setting. `SHARDS: EXACT | POOL n` on the city panel, `?hullPool=N` on the URL,
+persisted in localStorage; each change rebuilds the chunk meshes.
+
+## What this actually argues for
+
+Pool at the **panel** level, during authoring, not at the shard level, at
+runtime. Precompute N fracture patterns for a wall panel; stamp a whole pattern
+onto each panel. Then the shards that land together are the ones cut to fit
+together, the jigsaw survives exactly, and every panel using pattern *k* shares
+geometry with every other panel using pattern *k* — which is all instancing
+needs.
+
+The pack makes this tractable. Downtown's node types partition cleanly:
+
+| node type | collider | count |
+|---|---|---:|
+| slab | cuboid | 9,116 |
+| column | cuboid | 7,384 |
+| foundation | cuboid | 445 |
+| **wall** | **convex_hull** | **7,160** |
+
+Every hull is a `wall` and every `wall` is a hull. There is exactly one element
+type to build a pattern library for.
+
+Secondary win, if it is done: hull points are **5.44 MB — 82% of all collider
+bytes and 29% of the 18.5 MB pack** (median 30 points per hull). A pattern
+library collapses that to N, shrinking the pack, the 19.6 MB manifest the client
+downloads, and the load-time hull triangulation.
+
+And the sweep above says the library can be **large**: 256 patterns still runs
+2.4x the shipped build. Whatever variety the look needs, the renderer can
+afford it.

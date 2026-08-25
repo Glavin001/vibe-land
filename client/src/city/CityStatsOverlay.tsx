@@ -214,9 +214,12 @@ function Stat({ label, value, warn }: { label: string; value: string; warn?: boo
 
 import { getMatchStats, subscribeMatchStats } from '../app/connectPhase';
 import {
+  HULL_POOL_CHOICES,
+  setHullPoolSize,
   setQualityTier,
   setShadowsEnabled,
   shadowsEnabled,
+  useHullPoolSize,
   useQualityTier,
 } from '../app/renderQuality';
 
@@ -308,6 +311,7 @@ export function CityStatsOverlay({
   }, [bodyColors, matchId, statsBaseUrl]);
 
   const tier = useQualityTier();
+  const hullPool = useHullPoolSize();
   // The tier the canvas was created with: antialias and tonemapping only apply
   // at context creation, so a mismatch means "reload to finish applying".
   const [mountTier] = useState(tier);
@@ -648,6 +652,28 @@ export function CityStatsOverlay({
         >
           {tier === 'fast' ? 'QUALITY: FAST' : 'QUALITY: PRETTY'}
           {tier !== mountTier ? ' (reload for AA)' : ''}
+        </button>
+      </div>
+
+      <div style={{ ...row, marginBottom: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            // Cycle the library size. Each step rebuilds the chunk meshes,
+            // which takes a second or two -- the pool decides which geometry
+            // every hull instance points at, and that is fixed at build time.
+            const index = HULL_POOL_CHOICES.indexOf(
+              hullPool as (typeof HULL_POOL_CHOICES)[number],
+            );
+            const next = HULL_POOL_CHOICES[(index + 1) % HULL_POOL_CHOICES.length];
+            setHullPoolSize(next);
+          }}
+          style={{ ...toggleButton, position: 'static', width: '100%' }}
+          data-testid="city-hull-pool"
+          aria-label="Cycle fracture pattern pool size"
+          title="Replaces each unique fracture shard with one of N shared shapes so hulls can be instanced. OFF draws the authored shards exactly; a pool is much faster but an intact wall's shards no longer tile it."
+        >
+          {hullPool === 0 ? 'SHARDS: EXACT' : `SHARDS: POOL ${hullPool}`}
         </button>
       </div>
 

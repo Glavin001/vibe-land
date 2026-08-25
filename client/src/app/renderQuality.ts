@@ -19,10 +19,30 @@ import { isTouchDevice } from '../device';
 
 const SHADOWS_KEY = 'vibe.render.shadows';
 const TIER_KEY = 'vibe.render.tier';
+const HULL_POOL_KEY = 'vibe.render.hullPool';
 
 export type QualityTier = 'fast' | 'pretty';
 
-export type RenderQualityState = { shadows: boolean; tier: QualityTier };
+export type RenderQualityState = { shadows: boolean; tier: QualityTier; hullPool: number };
+
+/**
+ * Fracture-pattern library size, or 0 for the real authored shards.
+ *
+ * Unlike the other two knobs this one changes what is DRAWN, not how it is lit:
+ * hulls are replaced by `n` shared shard shapes so they can be instanced.
+ *
+ * OFF by default and expected to stay that way. It has been looked at, and any
+ * pool turns an undamaged city into what looks like a demolished one -- a
+ * wall's shards are cut to fit each other, and swapping one for a stranger of
+ * the same size breaks the whole facade, not just the seam. Keep it as a
+ * measurement: it shows what instancing the hulls is worth (a lot), which is
+ * the argument for doing the pooling at authoring time instead, per panel.
+ * See city/hullPool.ts.
+ *
+ * Cost at each size, measured on the bench at 100k chunks, against the 204 fps
+ * the un-pooled build gets: 16 -> 633, 64 -> 679, 256 -> 489, 512 -> 350.
+ */
+export const HULL_POOL_CHOICES = [0, 16, 64, 256, 512] as const;
 
 type Listener = (state: RenderQualityState) => void;
 
@@ -60,12 +80,68 @@ function readStoredTier(): QualityTier | null {
   return null;
 }
 
+function readStoredHullPool(): number | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(HULL_POOL_KEY);
+    if (raw == null) return null;
+    const value = Number(raw);
+    if (Number.isFinite(value) && value >= 0) return Math.floor(value);
+  } catch {
+    // See readStoredShadows.
+  }
+  return null;
+}
+
+/**
+ * `?hullPool=N` on the URL, for driving a comparison from a harness without
+ * having to reach into localStorage first. Read once at module load and takes
+ * precedence over the stored value for that session; it is not itself stored,
+ * so a plain reload falls back to whatever the panel last selected.
+ */
+function urlHullPool(): number | null {
+  if (typeof window === 'undefined') return null;
+  const raw = new URLSearchParams(window.location.search).get('hullPool');
+  if (raw == null) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
 let shadows: boolean = readStoredShadows() ?? defaultShadows();
 let tier: QualityTier = readStoredTier() ?? defaultTier();
+let hullPool: number = urlHullPool() ?? readStoredHullPool() ?? 0;
 
 function notify(): void {
-  const state: RenderQualityState = { shadows, tier };
+  const state: RenderQualityState = { shadows, tier, hullPool };
   for (const listener of listeners) listener(state);
+}
+
+/** Pattern library size; 0 means draw the authored shards. */
+export function hullPoolSize(): number {
+  return hullPool;
+}
+
+/**
+ * Changing this has to rebuild the chunk meshes -- the pool decides which
+ * geometry every hull instance points at, which is fixed at build time. The
+ * city layer watches for that and rebuilds; it is a second or two, not a
+ * reload.
+ */
+export function setHullPoolSize(next: number): void {
+  const value = Number.isFinite(next) && next >= 0 ? Math.floor(next) : 0;
+  if (value === hullPool) return;
+  hullPool = value;
+  try {
+    localStorage?.setItem(HULL_POOL_KEY, String(value));
+  } catch {
+    // Not fatal -- see readStoredShadows.
+  }
+  notify();
+}
+
+/** React view of the pool size. */
+export function useHullPoolSize(): number {
+  return useSyncExternalStore(subscribe, hullPoolSize, hullPoolSize);
 }
 
 export function shadowsEnabled(): boolean {
