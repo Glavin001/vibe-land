@@ -171,15 +171,44 @@ vastai show instance <id> --raw | jq -r '.ssh_host, .ssh_port'
 ssh -p <port> root@<host>
 ```
 
-On the box:
+On the box — one command does everything:
 
 ```bash
-vibe-clone                  # default branch
-vibe-clone my-branch        # or a tag/commit; idempotent, re-run to switch refs
+vibe-up                     # clone, build server + client, mint cert, run
+vibe-up my-branch           # a branch, tag or commit
+vibe-up --downtown          # the big scene (24,105 chunks)
+vibe-up --status | --stop
+```
+
+It reads this box's public IP and its **external** port mapping from the
+container's PID-1 environment (`VAST_UDP_PORT_4433`, `VAST_TCP_PORT_4443`) — an
+SSH login shell does not inherit those — then prints the URL to open. `/root/README.md`
+on the box covers the rest, and a login banner points at both.
+
+By hand, if you need the pieces:
+
+```bash
+vibe-clone my-branch
 cd /root/vibe-land
 cargo build --release -p web-fps-server --features cuda-stress
-./scripts/run-city-server.sh
+(cd client && npm ci && npm run build)
+VIBE_PUBLIC_IP=<ip> VIBE_UDP_PORT=<external 4433> ./scripts/run-city-server.sh
 ```
+
+**`run-city-server.sh` without `VIBE_PUBLIC_IP` is a laptop script and will not
+work on a rented box.** Five of its defaults are wrong there, each failing late
+and looking like something else:
+
+| Default | Why it breaks a rented box |
+| --- | --- |
+| `WT_PUBLIC_URL=https://209.121.195.117:40651` | a hardcoded home IP — clients dial someone else's router |
+| `WT_BIND_ADDR=0.0.0.0:4434` | the images map container **4433**; off by one, so no datagram ever arrives |
+| `BIND_ADDR=127.0.0.1:4003` | localhost-only, unreachable from outside |
+| `WEB_BIND_ADDR` unset | the HTTPS listener never starts, and WebTransport refuses an insecure context — so `/city` cannot be served at all. Symptom: `ERR_SSL_PROTOCOL_ERROR` |
+| `VIBE_WEB_DIR=/opt/vibe-land/web` | exists only in the *runtime* image. On a dev box the listener degrades to api-only and every page **404**s |
+
+Setting `VIBE_PUBLIC_IP` and `VIBE_UDP_PORT` switches the script into remote
+mode, which derives all five and mints the certificate.
 
 `vibe-clone` symlinks `target/` and the cargo registry into `/opt/vibe-cache`,
 so they survive switching refs and re-cloning. `client/node_modules` is

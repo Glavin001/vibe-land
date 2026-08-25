@@ -192,9 +192,23 @@ RUN { echo "node=$(node --version)"; \
     } >> /opt/toolchain/sources.txt \
  && cat /opt/toolchain/sources.txt
 
+# --- the dev box, as someone who just SSHed in will find it -------------------
+# A rented box is useless if the person on it has to reconstruct five
+# environment variables from source before seeing anything. `vibe-up` does the
+# whole thing in one command; README.md explains it; the login banner makes both
+# discoverable without already knowing they exist.
+COPY docker/vibe-up /usr/local/bin/vibe-up
+COPY docker/dev-README.md /root/README.md
+COPY docker/vibe-motd.sh /etc/profile.d/zz-vibe-land.sh
+RUN chmod +x /usr/local/bin/vibe-up \
+ && chmod 644 /root/README.md /etc/profile.d/zz-vibe-land.sh
+
 # Second assertion block, for the additions above.
 RUN command -v node >/dev/null \
  && command -v npm >/dev/null \
  && command -v wasm-pack >/dev/null \
  && command -v vibe-clone >/dev/null \
+ && command -v vibe-up >/dev/null \
+ && test -f /root/README.md \
+ && test -f /etc/profile.d/zz-vibe-land.sh \
  && rustup target list --installed | grep -qx wasm32-unknown-unknown
