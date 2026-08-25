@@ -11,6 +11,13 @@ on:
     paths:
       - 'docker/Dockerfile.builder'
       - 'docker/vibe-clone'
+      - 'docker/vibe-up'
+      - 'docker/vibe-motd.sh'
+      - 'docker/dev-README.md'
+      # The verify job runs this. Without it here, a fix to the smoke test
+      # cannot be exercised until something else happens to touch the image --
+      # which is exactly what happened to 1d9524e.
+      - 'scripts/smoke-dev-image.sh'
       - '.github/workflows/builder-image.yml'
   workflow_dispatch:
     inputs:
