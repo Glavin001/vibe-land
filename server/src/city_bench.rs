@@ -629,10 +629,28 @@ fn full_demolition_cost() {
     // open". Wall-clock sampling of a moving demolition cannot answer it.
     println!("\n=== settle curve (no further shots) ===");
     println!("{:>6} {:>8} {:>8} {:>6} {:>10}", "sec", "bodies", "awake", "pct", "maxspeed");
+    // The phase table above measures the DEMOLITION, where a bond breaks on
+    // most ticks. That is not the state the cost was reported from: a heavily
+    // destroyed city that has stopped fracturing still has to be simulated,
+    // and it is where settled-island skipping can actually fire (a break
+    // invalidates the settled baseline, by design). So the quiet curve is
+    // timed too, over its second half, once the pile has stopped moving.
+    let (mut q_tick, mut q_begin, mut q_solve, mut q_end) = (vec![], vec![], vec![], vec![]);
+    let (mut q_islands, mut q_skipped) = (0u32, 0u32);
     for quiet in 0..1800u32 {
+        let started = std::time::Instant::now();
         world.step().expect("step");
         let _ = city.step(tick, DT, gravity(), Some(&mut world));
         tick += 1;
+        if quiet >= 900 {
+            let s = city.stats();
+            q_tick.push(started.elapsed().as_secs_f32() * 1000.0);
+            q_begin.push(s.begin_ms);
+            q_solve.push(s.solve_ms);
+            q_end.push(s.end_ms);
+            q_islands = s.solver_island_count;
+            q_skipped = s.solver_islands_skipped;
+        }
         if quiet % 120 == 0 {
             let s = city.stats();
             let pct = if s.chunk_bodies > 0 {
@@ -651,6 +669,26 @@ fn full_demolition_cost() {
         }
     }
 
+    println!(
+        "\n=== settled city (quiet ticks 900-1800) ===   islands {q_islands} solver, \
+         {q_skipped} skipped"
+    );
+    println!("{:>14}  {:>8}  {:>8}  {:>8}", "phase", "p50", "p95", "max");
+    for (name, values) in [
+        ("tick", &mut q_tick),
+        ("blast begin", &mut q_begin),
+        ("blast solve", &mut q_solve),
+        ("blast end", &mut q_end),
+    ] {
+        println!(
+            "{:>14}  {:>8.2}  {:>8.2}  {:>8.2}",
+            name,
+            pct(values, 0.5),
+            pct(values, 0.95),
+            pct(values, 1.0)
+        );
+    }
+
     let stats = city.stats();
     println!("\n=== full demolition ===");
     println!("bodies (peak)  {peak_bodies}");
@@ -662,6 +700,16 @@ fn full_demolition_cost() {
         100.0 * stats.sleeping_chunk_bodies as f32 / stats.chunk_bodies.max(1) as f32
     );
     println!("broken bonds   {}", stats.broken_bonds);
+    // Settled-island skipping is the whole reason "blast solve" is not
+    // proportional to island count. Print it: a run where skipped is 0 is a run
+    // where the solver re-derived a settled city, and the phase table below
+    // cannot be compared with one where it did not.
+    println!(
+        "islands        {} solver, {} skipped ({:.0}%)",
+        stats.solver_island_count,
+        stats.solver_islands_skipped,
+        100.0 * stats.solver_islands_skipped as f32 / stats.solver_island_count.max(1) as f32
+    );
     println!(
         "\n{:>14}  {:>8}  {:>8}  {:>8}",
         "phase", "p50", "p95", "max"

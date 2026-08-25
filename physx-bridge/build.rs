@@ -189,6 +189,17 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         "cuda-stress feature enabled but the CUDA solver source is missing: {}",
         source.display()
     );
+    // The .cu was the one Blast source missing from the rerun-if-changed list
+    // above, so editing only the CUDA solver left the previous nvcc object in
+    // place and the next run silently measured the old kernels. That cost one
+    // confidently-wrong "0 islands skipped".
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        blast
+            .join("include/extensions/stressgpu/NvBlastExtStressGpu.h")
+            .display()
+    );
 
     // The 4090 is sm_89. Overridable because this is the one flag that has to
     // match whatever GPU the server actually runs on.
