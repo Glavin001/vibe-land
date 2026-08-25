@@ -95,7 +95,7 @@ pub fn pack_footprint_m(pack: &ScenePack) -> f32 {
                 low = low.min(node.centroid - *half_extents);
                 high = high.max(node.centroid + *half_extents);
             }
-            SceneCollider::ConvexHull { points } => {
+            SceneCollider::ConvexHull { points, .. } => {
                 // The true extent of each vertex. Treating max |p| as a
                 // symmetric half-extent inflated the footprint of any hull
                 // whose vertices are unevenly spread about its centroid,

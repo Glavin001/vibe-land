@@ -15,6 +15,16 @@ export interface ChunkGeometryCuboid {
 export interface ChunkGeometryConvexHull {
   kind: 'ConvexHull' | 'convexHull';
   points: number[];
+  /**
+   * Shape-library id, when the pack's fracturer bounded its pattern count.
+   *
+   * Authored identity: the fracturer knew it was stamping cell `c` of pattern
+   * `k` onto a panel of a given class, so it named the shape as it cut it. Two
+   * chunks with the same id are the same solid, stated rather than deduced --
+   * which is what lets the renderer instance them without comparing geometry.
+   * Absent on packs whose shards are all one-of-a-kind.
+   */
+  shapeId?: number;
 }
 
 export type ChunkGeometry = ChunkGeometryCuboid | ChunkGeometryConvexHull;

@@ -50,7 +50,17 @@ export function chunkShape(chunk: ManifestChunk): ChunkShape {
     if (Array.isArray(points) && points.length % 3 === 0 && points.length / 3 >= MIN_HULL_POINTS) {
       const typed = Float32Array.from(points);
       if (typed.every(Number.isFinite)) {
-        return { kind: 'hull', key: hullKey(typed), points: typed };
+        // Prefer the id the pack states over one derived from the points.
+        // Deriving identity means hashing every shard at load to rediscover
+        // what the fracturer already knew, and it makes shape equality depend
+        // on float rounding surviving a JSON round-trip. `hullKey` stays for
+        // packs authored without a shape library.
+        const id = geometry.shapeId;
+        return {
+          kind: 'hull',
+          key: id === undefined ? hullKey(typed) : `s${id}`,
+          points: typed,
+        };
       }
     }
   }

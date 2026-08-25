@@ -51,7 +51,19 @@ pub struct SceneBond {
 #[derive(Clone, Debug)]
 pub enum SceneCollider {
     Cuboid { half_extents: Vec3 },
-    ConvexHull { points: Vec<f32> },
+    ConvexHull {
+        points: Vec<f32>,
+        /// Which entry of the pack's shape library this shard is, when the
+        /// fracturer bounded its pattern count and said so.
+        ///
+        /// Authored identity, not a hash. The fracturer knows it is stamping
+        /// cell `c` of pattern `k` onto a panel of a given class, so it can
+        /// name the shape before it writes a vertex -- and a consumer can
+        /// instance every shard that shares a name without comparing any
+        /// geometry. `None` for packs whose shards are all one-of-a-kind, where
+        /// there is nothing to share and nothing to name.
+        shape_id: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -149,6 +161,10 @@ struct ScenarioJson {
     bonds: Vec<ScenarioBondJson>,
     node_sizes: Vec<Vec3Json>,
     node_colliders: Vec<NodeColliderJson>,
+    /// Distinct shard shapes, stored once. Absent on packs exported without a
+    /// bounded pattern count, where every shard carries its own points.
+    #[serde(default)]
+    shape_library: Vec<NodeColliderJson>,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +208,11 @@ enum NodeColliderJson {
     },
     ConvexHull {
         points: Vec<f32>,
+    },
+    /// A reference into `shapeLibrary`. Resolved at parse time so nothing
+    /// downstream has to know the difference.
+    Shape {
+        shape: u32,
     },
 }
 
@@ -268,6 +289,30 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
             scenario.nodes.len(),
             scenario.node_colliders.len()
         )));
+    }
+    // Flatten the library once. A dangling reference has to fail here rather
+    // than downstream, where the only symptom would be a chunk drawn as some
+    // other chunk's shape.
+    let mut library_points: Vec<Vec<f32>> = Vec::with_capacity(scenario.shape_library.len());
+    for (index, entry) in scenario.shape_library.iter().enumerate() {
+        match entry {
+            NodeColliderJson::ConvexHull { points } => library_points.push(points.clone()),
+            _ => {
+                return Err(ScenePackError::Invalid(format!(
+                    "shape library entry {index} is not a convex hull"
+                )))
+            }
+        }
+    }
+    for (index, collider) in scenario.node_colliders.iter().enumerate() {
+        if let NodeColliderJson::Shape { shape } = collider {
+            if *shape as usize >= library_points.len() {
+                return Err(ScenePackError::Invalid(format!(
+                    "node {index} references shape {shape}, library has {}",
+                    library_points.len()
+                )));
+            }
+        }
     }
     let node_count = scenario.nodes.len() as u32;
     for bond in &scenario.bonds {
@@ -364,7 +409,17 @@ pub fn parse_scene_pack(payload: &str) -> Result<ScenePack, ScenePackError> {
                 NodeColliderJson::Cuboid { half_extents } => SceneCollider::Cuboid {
                     half_extents: half_extents.into(),
                 },
-                NodeColliderJson::ConvexHull { points } => SceneCollider::ConvexHull { points },
+                NodeColliderJson::ConvexHull { points } => SceneCollider::ConvexHull {
+                    points,
+                    shape_id: None,
+                },
+                // Resolved, but the id is KEPT: the points alone would force a
+                // consumer back into comparing geometry to rediscover what the
+                // pack already stated.
+                NodeColliderJson::Shape { shape } => SceneCollider::ConvexHull {
+                    points: library_points[shape as usize].clone(),
+                    shape_id: Some(shape),
+                },
             })
             .collect(),
     })

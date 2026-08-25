@@ -119,7 +119,7 @@ impl SyntheticDestruction {
                         ChunkGeometry::Cuboid { half_extents } => ChunkGeometryDef::Cuboid {
                             half_extents: *half_extents,
                         },
-                        ChunkGeometry::ConvexHull { points } => ChunkGeometryDef::ConvexHull {
+                        ChunkGeometry::ConvexHull { points, .. } => ChunkGeometryDef::ConvexHull {
                             points: points
                                 .chunks_exact(3)
                                 .map(|p| [p[0], p[1], p[2]])

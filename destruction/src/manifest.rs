@@ -88,7 +88,18 @@ pub enum ChunkGeometry {
     #[serde(rename_all = "camelCase")]
     Cuboid { half_extents: [f32; 3] },
     #[serde(rename_all = "camelCase")]
-    ConvexHull { points: Vec<f32> },
+    ConvexHull {
+        points: Vec<f32>,
+        /// Shape-library id from the pack, when the fracturer bounded its
+        /// pattern count and named its shards.
+        ///
+        /// Carried through so the client can group instanceable shards by an
+        /// authored identity rather than hashing point arrays to rediscover it.
+        /// Skipped when absent so packs without a library hash exactly as they
+        /// did before this field existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shape_id: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -137,9 +148,12 @@ impl DestructionManifest {
                                 SceneCollider::Cuboid { half_extents } => ChunkGeometry::Cuboid {
                                     half_extents: half_extents.to_array(),
                                 },
-                                SceneCollider::ConvexHull { points } => ChunkGeometry::ConvexHull {
-                                    points: points.clone(),
-                                },
+                                SceneCollider::ConvexHull { points, shape_id } => {
+                                    ChunkGeometry::ConvexHull {
+                                        points: points.clone(),
+                                        shape_id: *shape_id,
+                                    }
+                                }
                             },
                             radius: collider_bounding_radius(&pack.node_colliders[node_index]),
                             support: node.is_support(),
@@ -348,10 +362,23 @@ mod tests {
 
         let hull = serde_json::to_value(ChunkGeometry::ConvexHull {
             points: vec![0.0, 1.0, 2.0],
+            shape_id: None,
         })
         .expect("serialize hull");
         assert_eq!(hull["kind"], "convexHull");
         assert_eq!(hull["points"], serde_json::json!([0.0, 1.0, 2.0]));
+        assert!(
+            hull.get("shapeId").is_none(),
+            "an absent shape id must not appear on the wire, or every pack \
+             without a shape library rehashes: {hull}"
+        );
+
+        let named = serde_json::to_value(ChunkGeometry::ConvexHull {
+            points: vec![0.0, 1.0, 2.0],
+            shape_id: Some(7),
+        })
+        .expect("serialize named hull");
+        assert_eq!(named["shapeId"], 7, "shape id must reach the client camelCased");
     }
 
     /// Every key the client can observe on a real manifest must be camelCase.
