@@ -124,6 +124,31 @@ export VIBE_CITY_GRID="${VIBE_CITY_GRID:-1}"
 # truncation slices at a Y cutoff and can leave panels hanging off a removed
 # slab, so varied heights stay off unless asked for.
 export VIBE_CITY_VARIED_HEIGHTS="${VIBE_CITY_VARIED_HEIGHTS:-0}"
+# ---------------------------------------------------------------------------
+# TEMPORARILY OFF. Flip to 1 (or `VIBE_CITY_FREEZE=1 scripts/run-city-server.sh`)
+# to put it back -- nothing else has to change.
+#
+# Retiring settled rubble to kinematic is the single biggest scale win the tree
+# has, so this is a pause, not a verdict. It is off because the RELEASE side is
+# wrong in a way that costs more than the freeze saves: contact_wake compares
+# the total pair impulse against the STRIKER'S OWN resting load
+# (destruction.cc, note_contact_pair), which holds for one body resting on a
+# pile and fails for a stack -- a load-bearing striker transmits the weight of
+# everything above it, so the test fires with nothing in motion.
+#
+# Measured live (ticks 19680->19980, downtown, 1 player): thaw rate jumped
+# 2.89 -> 14.31 per tick with 90% of it contact wakes, releasing 1,810 bodies
+# at once. Awake went 4,542 -> 7,632, which pushed PhysX past its knee:
+# gpu_wait 5.92 -> 31.79 ms and the tick 35.7 -> 73.7 ms (28 -> 13.6 Hz).
+# The freezer was winning right up to that point -- frozen was climbing
+# steadily -- so the churn, not the retirement, is what needs fixing.
+#
+# With this off, settled rubble relies on PhysX's own per-contact-island
+# sleeper. Expect MORE awake bodies at rest (that is the problem freezing was
+# built to solve -- see docs/city-scale-next-sleeping-piles-2026-08-22.md) but
+# no mass-thaw cliff. Watch `frozen_bodies` (must stay 0) and `sleeping_bodies`
+# (now the only retirement mechanism) in /match-stats.
+export VIBE_CITY_FREEZE="${VIBE_CITY_FREEZE:-0}"
 export RUST_LOG="${RUST_LOG:-info}"
 # Server-side telemetry: every ~1s stats snapshot appended as JSONL, so any
 # session is analyzable after the fact (bodies vs tick cost, governor state,

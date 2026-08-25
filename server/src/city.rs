@@ -500,12 +500,71 @@ pub struct WindowSummary {
     pub samples: u32,
 }
 
+/// Every span timer in the destruction tick, sampled EVERY tick and summarised
+/// at publish.
+///
+/// The 1 Hz snapshot publishes one tick's instantaneous values, and that single
+/// sample is not neutral: the publish fires every `SIM_HZ` (60) ticks while the
+/// bond-utilisation scan fires every 30, so `60 % 30 == 0` and the published
+/// tick is ALWAYS one of the expensive ones. Measured: `bond_sample_ms` came
+/// back non-zero in 6 of 6 consecutive snapshots for a scan that runs on 1 tick
+/// in 30. Any per-tick cost read off the endpoint inherited that bias.
+///
+/// Windowing removes it -- p95 and max also surface the spikes a single sample
+/// can only catch by luck.
+pub const PHASE_NAMES: [&str; 16] = [
+    "stress_solve_ms",
+    "begin_ms",
+    "solve_ms",
+    "end_ms",
+    "readback_ms",
+    "events_ms",
+    "filters_ms",
+    "ccd_ms",
+    "support_loads_ms",
+    "shape_readback_ms",
+    "slot_dispatch_ms",
+    "bond_sample_ms",
+    "gpu_stress_solve_ms",
+    "blast_contact_processing_ms",
+    "blast_gravity_ms",
+    "blast_stress_solve_cpu_ms",
+];
+
+#[derive(Default)]
+pub struct PhaseWindows {
+    series: Vec<Vec<f32>>,
+}
+
+impl PhaseWindows {
+    fn push(&mut self, values: [f32; PHASE_NAMES.len()]) {
+        if self.series.len() != PHASE_NAMES.len() {
+            self.series = vec![Vec::new(); PHASE_NAMES.len()];
+        }
+        for (slot, value) in self.series.iter_mut().zip(values) {
+            slot.push(value);
+        }
+    }
+
+    /// Summaries by phase name. Empty until the first tick is recorded.
+    pub fn drain(&mut self) -> std::collections::BTreeMap<String, WindowSummary> {
+        self.series
+            .iter_mut()
+            .enumerate()
+            .map(|(index, values)| {
+                (PHASE_NAMES[index].to_string(), summarize_window(values))
+            })
+            .collect()
+    }
+}
+
 #[derive(Default)]
 pub struct CityTickWindow {
     step_ms: Vec<f32>,
     ingest_ms: Vec<f32>,
     span_encode_ms: Vec<f32>,
     awake: Vec<f32>,
+    pub phases: PhaseWindows,
 }
 
 fn summarize_window(values: &mut Vec<f32>) -> WindowSummary {
@@ -1081,6 +1140,25 @@ impl CityRuntime {
         self.tick_window.step_ms.push(step_wall_ms);
         self.tick_window.ingest_ms.push(stats.ingest_ms);
         self.tick_window.awake.push(stats.awake_chunk_bodies as f32);
+        // Order must match PHASE_NAMES.
+        self.tick_window.phases.push([
+            stats.stress_solve_ms,
+            stats.begin_ms,
+            stats.solve_ms,
+            stats.end_ms,
+            stats.readback_ms,
+            stats.events_ms,
+            stats.filters_ms,
+            stats.ccd_ms,
+            stats.support_loads_ms,
+            stats.shape_readback_ms,
+            stats.slot_dispatch_ms,
+            stats.bond_sample_ms,
+            stats.gpu_stress_solve_ms,
+            stats.blast_contact_processing_ms,
+            stats.blast_gravity_ms,
+            stats.blast_stress_solve_cpu_ms,
+        ]);
         if let Some(live) = &self.live {
             self.tick_window.span_encode_ms.push(live.last_span_encode_ms);
         }

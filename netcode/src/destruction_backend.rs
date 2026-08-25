@@ -283,6 +283,39 @@ pub struct DestructionStats {
     pub gpu_stress_structures: u32,
     pub gpu_stress_solve_ms: f32,
     pub filters_ms: f32,
+    /// The three phases that used to sit untimed inside `tick_ffi_ms`, showing
+    /// up only as the gap between it and the sum of its parts. `ccd_ms` and
+    /// `support_loads_ms` are both O(live bodies) every tick -- including
+    /// quiet ticks, since the CCD walk runs before the quiet-skip gate.
+    pub ccd_ms: f32,
+    pub support_loads_ms: f32,
+    /// Contact pairs the support resolve consumed -- the work `support_loads_ms`
+    /// actually tracks. Normalise by this when comparing runs.
+    pub support_pair_loads: u32,
+    pub shape_readback_ms: f32,
+    /// The adapter's own per-phase timers, deltaed to per-tick. These
+    /// decompose the phases the bridge times from OUTSIDE the adapter:
+    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
+    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
+    /// They were computed every tick and discarded, which left 2-3.5 ms inside
+    /// the largest phase in the tick unaccounted for.
+    pub blast_contact_processing_ms: f32,
+    pub blast_gravity_ms: f32,
+    pub blast_stress_solve_cpu_ms: f32,
+    pub blast_fracture_topology_ms: f32,
+    pub blast_mapping_validation_ms: f32,
+    pub blast_sleeping_actors_skipped: u64,
+    /// The last two untimed blocks inside the `stress_solve_ms` bracket:
+    /// per-slot dispatch (live-slot gather + telemetry read + topology
+    /// compare) and the 1-in-30 bond-utilisation scan. With these, the bracket
+    /// minus its children is genuinely zero rather than "small enough to round
+    /// to 0.00 at two decimals".
+    pub slot_dispatch_ms: f32,
+    pub bond_sample_ms: f32,
+    /// Slot-ticks where topology was unchanged and the event diff was skipped.
+    /// Says whether `events_ms`/`filters_ms: 0.0` is the quiet-skip working or
+    /// a broken measurement -- the two are indistinguishable from the value.
+    pub quiet_slot_ticks: u64,
     pub sleeping_chunk_bodies: u32,
     /// Contact islands the PhysX solver saw this tick, and how many it skipped
     /// as settled. PhysX sleeps per island, never per body, so this is the
