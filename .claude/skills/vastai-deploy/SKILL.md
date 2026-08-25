@@ -266,6 +266,81 @@ git config user.name "..." && git config user.email "..."
 without nesting privileges. Build the *project* on the box; build *images* in
 CI.
 
+## A reusable template
+
+A Vast **template** saves the whole recipe — image, ports, disk, onstart, and
+the offer filter — so renting a box is picking a host and clicking Rent. Worth
+doing: four of the settings below are ones that fail late and confusingly when
+wrong, and a template stops you retyping them.
+
+Create it at <https://cloud.vast.ai/templates/> → **New Template**:
+
+| Field | Value |
+| --- | --- |
+| Name | `vibe-land dev box (auto-build, downtown)` |
+| Image path | `ghcr.io/glavin001/vibe-land-builder` |
+| Image tag | `cuda12.8-physx-ovphysx-5.5.1` |
+| Launch mode | **SSH**, with **Direct** enabled |
+| Docker options | `-p 4001:4001 -p 4443:4443 -p 4433:4433/udp` |
+| On-start script | `vibe-autostart --downtown <branch>` |
+| Disk | **80 GB** |
+| Visibility | Private |
+
+And set the template's search filter so it only offers hosts that work:
+
+```
+reliability>0.98 num_gpus=1 cuda_max_good>=12.8 direct_port_count>=256
+inet_up>=200 rentable=true disk_space>=80 compute_cap>=700
+```
+
+Why each of those matters, since a template hides them once set:
+
+- **SSH + Direct**, not "container as-is". `--ssh` injects SSH and does not run
+  the image's ENTRYPOINT; `--args` gives a container with no shell. The runtime
+  image wants the opposite mode.
+- **Ports are declared at creation and cannot be added later.** Miss 4433/udp
+  and the box can never serve players.
+- **On-start is the only hook** that can start work, because `--ssh` replaces
+  the ENTRYPOINT. It is what makes the box build itself before you log in.
+- **80 GB**: the image alone is ~19 GB, and a release build is not small.
+- **`direct_port_count>=256`** screens out hosts that accept the UDP mapping
+  and then never forward the datagrams.
+
+### The CLI equivalent
+
+```bash
+vastai create template \
+  --name "vibe-land dev box (auto-build, downtown)" \
+  --image ghcr.io/glavin001/vibe-land-builder \
+  --image_tag cuda12.8-physx-ovphysx-5.5.1 \
+  --ssh --direct --disk_space 80 \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+  --onstart-cmd 'vibe-autostart --downtown <branch>' \
+  --search_params 'reliability>0.98 num_gpus=1 cuda_max_good>=12.8 direct_port_count>=256 inet_up>=200 rentable=true disk_space>=80 compute_cap>=700'
+```
+
+**This needs an API key with `api.template` access**, which an ordinary
+instance key does not have — it fails with
+
+```
+Authorization Error. Your key lacks the api.template route access
+```
+
+and the CLI reports only `The response is not valid JSON`, which does not point
+at the cause. Either mint a key with that scope or use the web form above.
+
+### Without a template
+
+One command, no saved config:
+
+```bash
+vastai create instance <offer_id> \
+  --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
+  --disk 80 --ssh --direct \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+  --onstart-cmd 'vibe-autostart --downtown <branch>'
+```
+
 ## Facts worth not re-deriving
 
 - **A custom image needs `/root/.ssh` pre-created, or `--ssh` boxes refuse every

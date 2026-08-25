@@ -149,6 +149,21 @@ git remote set-url origin https://<token>@github.com/Glavin001/vibe-land
 git config user.name "..." && git config user.email "..."
 ```
 
+## Renting another one like this
+
+```bash
+vastai create instance <offer_id> \
+  --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
+  --disk 80 --ssh --direct \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+  --onstart-cmd 'vibe-autostart --downtown <branch>'
+```
+
+Filter offers with `direct_port_count>=256` — some hosts accept the UDP mapping
+and never forward the datagrams. Save the whole thing as a template at
+<https://cloud.vast.ai/templates/> and it becomes one click; the field values
+are in `.claude/skills/vastai-deploy/SKILL.md`.
+
 ## More
 
 - `docs/CITY-DEBUGGING.md` — the city and its stats overlay

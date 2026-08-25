@@ -204,6 +204,73 @@ serving the image they booted with until their uptime cap retires them.
 | `BUILDER_IMAGE_TAG` | which toolchain image to compile against; optional, defaults to the tag `builder-image` publishes |
 | `CONTROL_PLANE_URL` | public Worker URL, injected into every instance |
 
+## Renting a box on Vast.ai
+
+Two products, two launch modes, and getting the mode wrong is the single most
+common way to end up with a box you cannot use.
+
+| | Production server | Dev box |
+| --- | --- | --- |
+| Image | `ghcr.io/glavin001/vibe-land-server:sha-<12>` | `ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1` |
+| Launch mode | `--args` — container as-is, runs the ENTRYPOINT, **no SSH** | `--ssh --direct` — SSH injected, **ENTRYPOINT not run** |
+| Disk | 25 GB | 80 GB |
+| Starts itself | yes, the image's entrypoint | yes, via `--onstart-cmd 'vibe-autostart'` |
+| Your channel | `vastai logs <id>` only | a shell |
+
+Both need the same ports, and **ports can only be declared at creation**:
+
+```
+-p 4001:4001 -p 4443:4443 -p 4433:4433/udp
+```
+
+### Templates
+
+A Vast template saves image, ports, disk, on-start and the offer filter, so
+renting becomes picking a host. Create one at
+<https://cloud.vast.ai/templates/>; the exact field values for the dev box are
+in `.claude/skills/vastai-deploy/SKILL.md`, along with why each one matters.
+
+Creating a template **from the CLI needs an API key with `api.template`
+access** — an ordinary instance key fails with `Authorization Error. Your key
+lacks the api.template route access`, which the CLI surfaces only as `The
+response is not valid JSON`.
+
+### Pick a host that forwards UDP
+
+```
+reliability>0.98 num_gpus=1 cuda_max_good>=12.8 direct_port_count>=256
+inet_up>=200 rentable=true disk_space>=80 compute_cap>=700
+```
+
+`direct_port_count>=256` is the filter that matters. Some hosts accept the UDP
+port mapping and never forward the datagrams: the box boots, heartbeats, serves
+`/city` and answers `/healthz` with `"ok"` while every player times out on the
+QUIC handshake — and it bills the whole time. Observed correlation is 2/2 above
+that threshold working and 3/3 below it failing (n=5, so a strong hint rather
+than a law), and **`datacenter` does not predict it** — a datacenter 3090 in
+Czechia black-holed UDP. The server also self-tests at boot and exits 78 rather
+than billing silently.
+
+### Dev box, start to finish
+
+```bash
+vastai create instance <offer_id> \
+  --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
+  --disk 80 --ssh --direct \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+  --onstart-cmd 'vibe-autostart --downtown <branch>'
+
+vastai ssh-url <id>      # read the port from here, never from memory
+```
+
+The box clones, compiles the server and client, mints a certificate and starts
+a 24,105-chunk city before you can log in. `cat /root/.vibe-boot-state` says
+`building`, `ready` or `failed`; `/root/README.md` on the box covers the rest.
+
+**Read the SSH port from the API each time.** `vastai recycle` remaps host
+ports, so a command that worked five minutes ago can start refusing
+connections.
+
 ## Tuning
 
 Worker vars, all in `control-plane/wrangler.jsonc`:
