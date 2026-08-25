@@ -164,12 +164,29 @@ uses) gives you a container as-is with no shell.
 ```bash
 vastai create instance <offer_id> \
   --image ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1 \
-  --disk 60 --ssh --direct \
-  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
+  --disk 80 --ssh --direct \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+  --onstart-cmd 'vibe-autostart <branch>'
 
-vastai show instance <id> --raw | jq -r '.ssh_host, .ssh_port'
-ssh -p <port> root@<host>
+vastai show instance <id> --raw | jq -r '.public_ipaddr, .ports["22/tcp"][0].HostPort'
+ssh -p <22 external> root@<ip>
 ```
+
+**`--onstart-cmd 'vibe-autostart <branch>'` makes the box build itself at boot**,
+so it is ready — cloned, compiled, server running — before you connect. It is
+the only hook available: `--ssh` replaces the image's ENTRYPOINT, so nothing in
+the image can start work on its own. It returns immediately and works in the
+background, so a slow build cannot wedge Vast's boot sequence or delay sshd, and
+it does nothing if the box is already `ready`, so a recycle is safe.
+
+The box bills from boot, so the minutes before you connect are paid for either
+way. On the box: `cat /root/.vibe-boot-state` (building | ready | failed) and
+`tail -f /root/vibe-boot.log`; the login banner shows the same thing.
+
+**Read the SSH port from the API, not from memory** — `vastai recycle` remaps
+host ports, which is why a working command can start refusing connections.
+
+Omit `--onstart-cmd` for a box that only builds when you ask it to.
 
 On the box — one command does everything:
 

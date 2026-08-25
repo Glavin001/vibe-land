@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Boot hook: clone, build and run, so the box is ready before anyone logs in.
+#
+# Pass it to Vast at creation, which is the only hook available -- `--ssh`
+# launch mode replaces the image's ENTRYPOINT, so nothing in the image itself
+# can start work:
+#
+#   vastai create instance <id> --image <builder> --disk 80 --ssh --direct \
+#     --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp' \
+#     --onstart-cmd 'vibe-autostart my-branch'
+#
+# The box bills from boot, so the minutes between the container starting and a
+# person connecting are already paid for. Spending them on the cold build is
+# free; leaving them idle is not.
+#
+#   vibe-autostart               # default branch
+#   vibe-autostart my-branch     # a branch, tag or commit
+#   VIBE_AUTOSTART_RUN=0 vibe-autostart my-branch   # build, do not start
+#
+# Returns immediately. The work runs detached, so a slow build cannot wedge
+# Vast's boot sequence or delay sshd. Progress:
+#
+#   cat /root/.vibe-boot-state     building | ready | failed
+#   tail -f /root/vibe-boot.log
+#
+# The login banner reads that state file, so someone who connects mid-build is
+# told what is happening rather than finding a busy box and no explanation.
+set -euo pipefail
+
+REF="${1:-}"
+STATE=/root/.vibe-boot-state
+LOG=/root/vibe-boot.log
+
+# Idempotent: Vast re-runs onstart on every container start, including a
+# recycle. Rebuilding a box that is already up would throw away a warm cache
+# and, worse, restart a server someone is using.
+if [[ -f "$STATE" ]] && [[ "$(cat "$STATE")" == "ready" ]]; then
+  echo "[vibe-autostart] already ready; leaving it alone" >> "$LOG"
+  exit 0
+fi
+
+: > "$LOG"
+echo "building" > "$STATE"
+
+{
+  echo "[vibe-autostart] $(date -u +%FT%TZ) starting${REF:+ on ref $REF}"
+  # The build is the slow part and the part that fails, so its output is the
+  # log. vibe-up is idempotent and does the clone, both builds, the cert, the
+  # address detection and the launch.
+  if [[ "${VIBE_AUTOSTART_RUN:-1}" == "0" ]]; then
+    # Build only: clone and compile, but do not start a server. For a box
+    # someone wants to poke at before choosing a scene.
+    vibe-clone ${REF:+"$REF"} \
+      && cd /root/vibe-land \
+      && cargo build --release -p web-fps-server --features cuda-stress \
+      && ( cd client && npm ci --no-audit --no-fund && npm run build )
+  else
+    vibe-up ${REF:+"$REF"}
+  fi
+} >> "$LOG" 2>&1 \
+  && { echo "ready" > "$STATE"; echo "[vibe-autostart] ready" >> "$LOG"; } \
+  || { echo "failed" > "$STATE"; echo "[vibe-autostart] FAILED -- see above" >> "$LOG"; } &
+
+echo "[vibe-autostart] started in the background; tail -f $LOG"

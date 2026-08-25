@@ -203,9 +203,10 @@ RUN { echo "node=$(node --version)"; \
 # whole thing in one command; README.md explains it; the login banner makes both
 # discoverable without already knowing they exist.
 COPY docker/vibe-up /usr/local/bin/vibe-up
+COPY docker/vibe-autostart /usr/local/bin/vibe-autostart
 COPY docker/dev-README.md /root/README.md
 COPY docker/vibe-motd.sh /etc/profile.d/zz-vibe-land.sh
-RUN chmod +x /usr/local/bin/vibe-up \
+RUN chmod +x /usr/local/bin/vibe-up /usr/local/bin/vibe-autostart \
  && chmod 644 /root/README.md /etc/profile.d/zz-vibe-land.sh
 
 # Second assertion block, for the additions above.
@@ -214,6 +215,7 @@ RUN command -v node >/dev/null \
  && command -v wasm-pack >/dev/null \
  && command -v vibe-clone >/dev/null \
  && command -v vibe-up >/dev/null \
+ && command -v vibe-autostart >/dev/null \
  && command -v openssl >/dev/null \
  && test -f /root/README.md \
  && test -f /etc/profile.d/zz-vibe-land.sh \

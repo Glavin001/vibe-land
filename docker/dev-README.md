@@ -5,6 +5,25 @@ SDK, the Blast fork with the GPU stress solver, Rust, Node 22 and wasm-pack.
 Everything needed to build and run the whole project is already here. The source
 is not: it is cloned on demand so this image does not go stale on every push.
 
+## It may already be running
+
+If this box was created with `--onstart-cmd 'vibe-autostart <ref>'`, it started
+cloning and building the moment the container came up, before anyone logged in.
+The banner tells you which state it is in:
+
+```bash
+cat /root/.vibe-boot-state     # building | ready | failed
+tail -f /root/vibe-boot.log
+```
+
+The box bills from boot, so the minutes between the container starting and you
+connecting are already paid for. Spending them on the cold build is free;
+leaving them idle is not.
+
+Re-running is safe — `vibe-autostart` does nothing if the box is already
+`ready`, so a recycle will not throw away a warm cache or restart a server
+someone is using.
+
 ## Just run it
 
 ```bash

@@ -12,6 +12,7 @@ on:
       - 'docker/Dockerfile.builder'
       - 'docker/vibe-clone'
       - 'docker/vibe-up'
+      - 'docker/vibe-autostart'
       - 'docker/vibe-motd.sh'
       - 'docker/dev-README.md'
       # The verify job runs this. Without it here, a fix to the smoke test
