@@ -1509,7 +1509,15 @@ private:
   float last_gpu_wait_ms_ = 0.0f;
   float last_fetch_copy_ms_ = 0.0f;
   bool step_in_flight_ = false;
-  bool profile_fetch_ = std::getenv("VIBE_PHYSX_PROFILE_FETCH") != nullptr;
+  // Value-checked, not presence-checked. This used to be `!= nullptr`, which
+  // made `VIBE_PHYSX_PROFILE_FETCH=0` still poll -- so the obvious A/B for
+  // "is the polling itself costing us a core?" compared two identical
+  // busy-polling builds and read the null result as "profiling is free".
+  // Same shape as contact_persists_enabled() above, but defaulting OFF.
+  bool profile_fetch_ = [] {
+    const char *value = std::getenv("VIBE_PHYSX_PROFILE_FETCH");
+    return value != nullptr && std::string(value) != "0";
+  }();
   std::chrono::steady_clock::time_point step_start_{};
   std::uint64_t completed_steps_ = 0;
 #ifdef VIBE_LAND_DESTRUCTION

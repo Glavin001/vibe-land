@@ -89,6 +89,66 @@ fi
 
 stop_server
 
+# --- remote mode --------------------------------------------------------------
+# Set VIBE_PUBLIC_IP (and VIBE_UDP_PORT, the EXTERNAL one) to run this on a
+# rented box instead of a laptop. Everything below it is derived.
+#
+# This exists because the defaults further down are a laptop's, and every one of
+# them is wrong on a remote host in a way that fails late and confusingly:
+#
+#   WT_PUBLIC_URL  hardcodes a home IP -- clients dial someone else's router
+#   WT_BIND_ADDR   binds 4434, while every image here maps container 4433
+#   BIND_ADDR      binds 127.0.0.1 -- unreachable from outside the box
+#   WEB_BIND_ADDR  unset, so the HTTPS listener never starts and /city cannot
+#                  be served at all (WebTransport refuses an insecure context)
+#   VIBE_WEB_DIR   defaults to /opt/vibe-land/web, which exists only inside the
+#                  runtime image; on a dev box the listener silently degrades
+#                  to api-only and every page 404s
+#
+# Reconstructing those by hand took four round trips on the first real dev box.
+#
+#   VIBE_PUBLIC_IP=203.0.113.9 VIBE_UDP_PORT=51745 scripts/run-city-server.sh
+#
+# The ports on the left are the container-side ones the images map; the external
+# ports Vast assigns differ per instance and only WT_PUBLIC_URL needs one.
+if [[ -n "${VIBE_PUBLIC_IP:-}" ]]; then
+  if [[ -z "${VIBE_UDP_PORT:-}" ]]; then
+    echo "VIBE_PUBLIC_IP is set but VIBE_UDP_PORT is not." >&2
+    echo "VIBE_UDP_PORT is the EXTERNAL udp port mapped to container 4433:" >&2
+    echo "  vastai show instance <id> --raw | jq '.ports[\"4433/udp\"][0].HostPort'" >&2
+    exit 2
+  fi
+  export BIND_ADDR="${BIND_ADDR:-0.0.0.0:4001}"
+  export WEB_BIND_ADDR="${WEB_BIND_ADDR:-0.0.0.0:4443}"
+  export WT_BIND_ADDR="${WT_BIND_ADDR:-0.0.0.0:4433}"
+  export WT_PUBLIC_URL="${WT_PUBLIC_URL:-https://${VIBE_PUBLIC_IP}:${VIBE_UDP_PORT}}"
+  export VIBE_WEB_DIR="${VIBE_WEB_DIR:-$REPO_ROOT/client/dist}"
+
+  # Mint the certificate if it is not already there. ECDSA P-256, 12 days, with
+  # the IP as a SAN -- the exact shape `serverCertificateHashes` requires.
+  # Browsers reject RSA there and reject anything valid beyond 14 days. This
+  # mirrors docker/entrypoint.sh, which does the same for the runtime image.
+  cert="${WT_CERT_PEM:-$REPO_ROOT/.certs/page-cert.pem}"
+  key="${WT_KEY_PEM:-$REPO_ROOT/.certs/page-key.pem}"
+  if [[ ! -s "$cert" || ! -s "$key" ]]; then
+    echo "minting a self-signed P-256 certificate for IP:${VIBE_PUBLIC_IP} (12 days)"
+    mkdir -p "$(dirname "$cert")" "$(dirname "$key")"
+    openssl ecparam -name prime256v1 -genkey -noout -out "$key"
+    openssl req -new -x509 -key "$key" -out "$cert" \
+      -days 12 -subj "/CN=${VIBE_PUBLIC_IP}" \
+      -addext "subjectAltName=IP:${VIBE_PUBLIC_IP}"
+  fi
+  export WT_CERT_PEM="$cert"
+  export WT_KEY_PEM="$key"
+
+  if [[ ! -f "$VIBE_WEB_DIR/index.html" ]]; then
+    echo "WARNING: no client bundle at $VIBE_WEB_DIR -- /city will 404." >&2
+    echo "         build it with: (cd $REPO_ROOT/client && npm ci && npm run build)" >&2
+  fi
+
+  echo "remote mode: open https://${VIBE_PUBLIC_IP}:<external port for 4443>/city"
+fi
+
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}${LD_LIBRARY_PATH:+:}/root/PhysX/physx/install/linux-clang/PhysX/bin/linux.x86_64/release"
 export VIBE_PHYSICS_BACKEND="${VIBE_PHYSICS_BACKEND:-physx_gpu}"
 export WT_STRICT_SNAPSHOT_DATAGRAMS="${WT_STRICT_SNAPSHOT_DATAGRAMS:-1}"
@@ -124,6 +184,31 @@ export VIBE_CITY_GRID="${VIBE_CITY_GRID:-1}"
 # truncation slices at a Y cutoff and can leave panels hanging off a removed
 # slab, so varied heights stay off unless asked for.
 export VIBE_CITY_VARIED_HEIGHTS="${VIBE_CITY_VARIED_HEIGHTS:-0}"
+# ---------------------------------------------------------------------------
+# TEMPORARILY OFF. Flip to 1 (or `VIBE_CITY_FREEZE=1 scripts/run-city-server.sh`)
+# to put it back -- nothing else has to change.
+#
+# Retiring settled rubble to kinematic is the single biggest scale win the tree
+# has, so this is a pause, not a verdict. It is off because the RELEASE side is
+# wrong in a way that costs more than the freeze saves: contact_wake compares
+# the total pair impulse against the STRIKER'S OWN resting load
+# (destruction.cc, note_contact_pair), which holds for one body resting on a
+# pile and fails for a stack -- a load-bearing striker transmits the weight of
+# everything above it, so the test fires with nothing in motion.
+#
+# Measured live (ticks 19680->19980, downtown, 1 player): thaw rate jumped
+# 2.89 -> 14.31 per tick with 90% of it contact wakes, releasing 1,810 bodies
+# at once. Awake went 4,542 -> 7,632, which pushed PhysX past its knee:
+# gpu_wait 5.92 -> 31.79 ms and the tick 35.7 -> 73.7 ms (28 -> 13.6 Hz).
+# The freezer was winning right up to that point -- frozen was climbing
+# steadily -- so the churn, not the retirement, is what needs fixing.
+#
+# With this off, settled rubble relies on PhysX's own per-contact-island
+# sleeper. Expect MORE awake bodies at rest (that is the problem freezing was
+# built to solve -- see docs/city-scale-next-sleeping-piles-2026-08-22.md) but
+# no mass-thaw cliff. Watch `frozen_bodies` (must stay 0) and `sleeping_bodies`
+# (now the only retirement mechanism) in /match-stats.
+export VIBE_CITY_FREEZE="${VIBE_CITY_FREEZE:-0}"
 export RUST_LOG="${RUST_LOG:-info}"
 # Server-side telemetry: every ~1s stats snapshot appended as JSONL, so any
 # session is analyzable after the fact (bodies vs tick cost, governor state,

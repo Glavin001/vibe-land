@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm --prefix client install",
+  "installCommand": "bash scripts/vercel-install.sh",
   "buildCommand": "npm --prefix client run build:vercel",
   "outputDirectory": "client/dist",
   "framework": null,

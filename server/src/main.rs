@@ -17,7 +17,7 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
         Arc, RwLock as StdRwLock,
     },
     time::{Duration, Instant},
@@ -253,6 +253,14 @@ struct CityStatsSnapshot {
     window_ingest_ms: city::WindowSummary,
     window_span_encode_ms: city::WindowSummary,
     window_awake: city::WindowSummary,
+    /// min/avg/p95/max per span timer over every tick since the last publish.
+    ///
+    /// Prefer these to the single-sample fields above. The publish fires every
+    /// 60 ticks and the bond scan every 30, so the instantaneous sample is
+    /// harmonically locked to the expensive tick -- it is a biased estimator of
+    /// per-tick cost, not a neutral one.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    phase_windows: std::collections::BTreeMap<String, city::WindowSummary>,
     chunk_bodies: u32,
     awake_bodies: u32,
     broken_bonds: u32,
@@ -274,16 +282,23 @@ struct CityStatsSnapshot {
     stress_solve_ms: f32,
     /// Sub-phases of the native tick, all children of `stress_solve_ms`.
     /// `solve_ms` is the CUDA/parallel solveTick ALONE -- `begin_ms` and
-    /// `end_ms` carry the serial injection and fracture walks that used to be
-    /// folded into it.
+    /// `end_ms` carry the injection and fracture walks that used to be folded
+    /// into it.
     solve_ms: f32,
     /// Native-side GPU readback. Distinct from `readback_ms_host`, which is the
     /// host stage outside the native tick; they are not the same measurement.
     readback_ms: f32,
     events_ms: f32,
-    /// Serial beginTick / parallel-CUDA solveTick / serial endTick, split
-    /// apart: reporting them as one "stress solve" number hid that the serial
-    /// injection walk costs more than the GPU solve.
+    /// beginTick / solveTick / endTick, split apart: reporting them as one
+    /// "stress solve" number hid that the injection walk costs more than the
+    /// GPU solve.
+    ///
+    /// `begin_ms` is NOT serial. It is dispatched across the stress executor
+    /// by default (`VIBE_CITY_SNAPSHOT_BEGIN`, on unless set to 0); only the
+    /// wakeUp apply inside it runs serially, and that is a handful of bodies
+    /// even during a collapse. `end_ms` IS still serial. The older "serial
+    /// beginTick" wording here outlived the change and sent at least one
+    /// investigation after a parallelisation that had already happened.
     begin_ms: f32,
     end_ms: f32,
     /// Host-side stages. Without these the overlay shows a large "city step"
@@ -331,6 +346,41 @@ struct CityStatsSnapshot {
     /// belongs on the same scale as every other ms field here.
     gpu_stress_solve_ms: f32,
     filters_ms: f32,
+    /// The three phases that used to sit untimed inside `stress_solve_ms`,
+    /// visible only as the gap between it and the sum of its children. The
+    /// CCD walk and the support-load resolve are both O(live bodies) EVERY
+    /// tick -- the CCD walk runs before the quiet-skip gate, which is why the
+    /// gap was present at idle with nothing happening.
+    ccd_ms: f32,
+    support_loads_ms: f32,
+    /// Contact pairs the support resolve consumed. `support_loads_ms` scales
+    /// with this, so a ms comparison across runs without it is meaningless.
+    support_pair_loads: u32,
+    shape_readback_ms: f32,
+    /// The adapter's own per-phase timers, deltaed to per-tick. These
+    /// decompose the phases the bridge times from OUTSIDE the adapter:
+    /// `begin_ms` ~= contact_processing + gravity, `solve_ms` ~= stress_solve_cpu
+    /// + gpu_stress_solve, `end_ms` ~= fracture_topology + mapping_validation.
+    /// They were computed every tick and discarded, which left 2-3.5 ms inside
+    /// the largest phase in the tick unaccounted for.
+    blast_contact_processing_ms: f32,
+    blast_gravity_ms: f32,
+    blast_stress_solve_cpu_ms: f32,
+    blast_fracture_topology_ms: f32,
+    blast_mapping_validation_ms: f32,
+    blast_sleeping_actors_skipped: u64,
+    /// The last two untimed blocks inside the `stress_solve_ms` bracket:
+    /// per-slot dispatch (live-slot gather + telemetry read + topology
+    /// compare) and the 1-in-30 bond-utilisation scan. With these, the bracket
+    /// minus its children is genuinely zero rather than "small enough to round
+    /// to 0.00 at two decimals".
+    slot_dispatch_ms: f32,
+    bond_sample_ms: f32,
+    /// Slot-ticks where topology was unchanged and the event diff was skipped.
+    /// `events_ms`/`filters_ms` are `0.0` on exactly these ticks, and without
+    /// this counter a working skip and a broken measurement are
+    /// indistinguishable from the value alone.
+    quiet_slot_ticks: u64,
     sleeping_bodies: u32,
     /// Bonds over their own elastic limit in the last solve. Fracture only
     /// runs when this is non-zero, so a persistent 0 while shooting means the
@@ -345,7 +395,15 @@ struct CityStatsSnapshot {
     topo_seq: u32,
     baseline_id: u16,
     min_body_y: f32,
+    /// PhysX engine-asleep -> awake transitions for DYNAMIC bodies. Frozen
+    /// bodies are kinematic and are skipped before this is reached, so this is
+    /// NOT a count of freezes being undone -- see `unfreeze_flips` for that.
+    /// The two count different populations and must not be combined.
     resettled_wakes: u64,
+    /// PERMANENTLY ZERO: nothing in the tree increments this. Kept published
+    /// only so removing it is a deliberate wire change rather than a silent
+    /// one -- but it is not evidence of anything, and must not be cited as
+    /// "no settles were deferred".
     settle_deferred_penetrating: u64,
     unmapped_body_skips: u32,
     duplicate_body_records: u64,
@@ -370,10 +428,23 @@ struct CityStatsSnapshot {
     /// whether a pile is failing to settle or being repeatedly re-woken.
     chunk_sleep_events: u64,
     chunk_wake_events: u64,
-    /// Awake bodies that have not left a 2 cm shell in a second: the
-    /// population a pose-based freeze could retire. Only counted under
-    /// VIBE_CITY_POSE_CENSUS.
+    /// Awake bodies that have completed their pose-quiet window -- i.e. have
+    /// not left a 2 cm shell for `pose_ticks`. Counted whenever pose freezing
+    /// OR the census is on (`freeze.rs`), and pose freezing is ON by default,
+    /// so this is a live number in normal play. (It was previously documented
+    /// as census-only, which is wrong.)
+    ///
+    /// Read it as "completed the window but was NOT admitted" -- a body that
+    /// passes the window is emitted as a freeze candidate in the same branch,
+    /// so anything still counted here was refused: squeezed, unsupported, or
+    /// over the per-tick batch. It is NOT "bodies sitting still that nobody
+    /// tried to freeze". Note the window is scaled by the per-body unfreeze
+    /// backoff, so a churned body needs far longer than `pose_ticks` to
+    /// appear here at all.
     pose_quiet_awake_bodies: u32,
+    /// ZERO UNLESS `VIBE_CITY_POSE_CENSUS=1`. Hard-gated on the census flag in
+    /// `freeze.rs`, which defaults off, so a `0` here is the switch, not a
+    /// measurement -- do not read it as "no floating rubble".
     unsupported_resting_bodies: u32,
     backstop_releases: u64,
     /// Must stay zero. Non-zero means a frozen body reached a serial-issuing
@@ -719,6 +790,13 @@ struct MatchStatsSnapshot {
     /// tick could be spending on encode.
     physics_gpu_wait_ms: f32,
     physics_fetch_copy_ms: f32,
+    /// The part of `dynamics_ms` that is NOT the step. `physics_last_step_ms`
+    /// covers only `world.step()`; these three cover the FFI readbacks after
+    /// it, the player refresh, and the vehicle control loop before it, which
+    /// together were the unexplained difference between the two.
+    physics_readback_ms: f32,
+    physics_refresh_players_ms: f32,
+    physics_vehicle_control_ms: f32,
     physics_controller_ms: f32,
     server_tick: u32,
     player_count: usize,
@@ -769,6 +847,24 @@ struct AppState {
     /// here and consumed on the next tick, between steps where rebuilding the
     /// scene is safe.
     reset_requests: Arc<StdRwLock<HashSet<String>>>,
+    /// Inbound-UDP reachability evidence.
+    ///
+    /// A box cannot test its own reachability from inside: a bind succeeding
+    /// says the socket exists, not that anything on the internet can send to
+    /// it, and hairpinning a probe back through the host's own NAT fails on
+    /// plenty of hosts that forward player traffic perfectly well. So instead
+    /// of probing, this records what actually happened.
+    ///
+    /// `session_configs_served` counts clients that asked where to connect --
+    /// each one is a browser about to open QUIC. `wt_attempts` counts
+    /// connection attempts that reached the socket. A gap between them is the
+    /// signature of a black-holed UDP path, and it is the only evidence that
+    /// distinguishes that from "nobody has tried yet".
+    wt_attempts: Arc<AtomicU64>,
+    session_configs_served: AtomicU64,
+    /// Milliseconds since process start at the first `/session-config`, or 0.
+    first_session_config_ms: AtomicU64,
+    started: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -947,8 +1043,17 @@ struct MatchState {
 async fn main() -> Result<()> {
     load_repo_env();
 
+    // `from_default_env()` with RUST_LOG unset builds an EMPTY filter, which
+    // discards everything -- not even ERROR survives. A container image does
+    // not set RUST_LOG, so every rented box has been running with the log
+    // stream silently switched off, and diagnosing one meant inferring from
+    // the absence of output that was never going to appear. Default to `info`
+    // and let RUST_LOG override it as usual.
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
         .init();
     install_panic_hook();
     let physics = PhysicsRuntimeConfig::from_env()?;
@@ -1027,6 +1132,12 @@ async fn main() -> Result<()> {
     let (stats_tx, _stats_rx) = tokio::sync::watch::channel(GlobalStatsSnapshot::default());
     let stats_tx = Arc::new(stats_tx);
 
+    // Declared before the state so /healthz and the accept loop share one
+    // counter: a second Arc would leave health reporting a number nobody
+    // increments, which is the same class of silent-wrong this whole change
+    // exists to remove.
+    let wt_attempts = Arc::new(AtomicU64::new(0));
+
     let state = SharedAppState {
         inner: Arc::new(AppState {
             matches: AsyncRwLock::new(HashMap::new()),
@@ -1045,8 +1156,14 @@ async fn main() -> Result<()> {
             stats_registry: Arc::new(StdRwLock::new(HashMap::new())),
             body_states_registry: Arc::new(StdRwLock::new(HashMap::new())),
             reset_requests: Arc::new(StdRwLock::new(HashSet::new())),
+            wt_attempts: wt_attempts.clone(),
+            session_configs_served: AtomicU64::new(0),
+            first_session_config_ms: AtomicU64::new(0),
+            started: std::time::Instant::now(),
         }),
     };
+    // Taken before the router consumes `state`.
+    let watchdog_state = state.inner.clone();
 
     // Start WebTransport server
     let wt_config = ServerConfig::builder()
@@ -1058,9 +1175,31 @@ async fn main() -> Result<()> {
 
     {
         let app_inner = state.inner.clone();
+        let attempts = wt_attempts.clone();
         tokio::spawn(async move {
+            // Counts every QUIC connection attempt that actually reached this
+            // socket. This is the one number that separates the two failures
+            // that look identical from a browser -- both present as
+            // QUIC_NETWORK_IDLE_TIMEOUT with no packets back:
+            //
+            //   attempts stay 0  -> the datagrams never arrive. The listener
+            //                       is bound (a bind failure is fatal well
+            //                       before this point), so the loss is
+            //                       upstream: host port forwarding, or a
+            //                       missing UDP mapping.
+            //   attempts climb   -> packets arrive and the handshake itself
+            //                       is failing. Look at the certificate.
+            //
+            // Diagnosing this by staring at logs that were never emitted cost
+            // real time and two wrong conclusions.
             loop {
                 let incoming = wt_endpoint.accept().await;
+                let seen = attempts.fetch_add(1, Ordering::Relaxed) + 1;
+                info!(
+                    remote = %incoming.remote_address(),
+                    attempts = seen,
+                    "WT connection attempt reached the listener"
+                );
                 let app = app_inner.clone();
                 tokio::spawn(async move {
                     let request = match incoming.await {
@@ -1109,6 +1248,41 @@ async fn main() -> Result<()> {
     info!(%addr, "starting web fps server");
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // The standalone web listener: the same API plus the built client, over
+    // TLS. It exists because a browser will not open a WebTransport session
+    // from an insecure context, and `http://<public-ip>` is not one -- only
+    // localhost is exempt. Serving the page over HTTPS from the box makes the
+    // context secure and puts /session-config same-origin, so no CORS and no
+    // mixed content either.
+    //
+    // Plain HTTP on BIND_ADDR stays exactly as it was: the Docker HEALTHCHECK,
+    // the dev-server proxy and the fleet all still use it.
+    // Never `?`: a certificate problem must not take down a game server that is
+    // otherwise healthy. The listener reports and stays down instead.
+    // Actively prove the advertised endpoint is reachable, before anyone is
+    // billed for a box that cannot serve players.
+    //
+    // Blocking only matters when the result can end the process. In `warn`
+    // mode nothing is decided by it, so waiting would just delay serving --
+    // and by a full timeout precisely on the hosts that do not hairpin, which
+    // is the common case for someone running this on a laptop.
+    {
+        let url = watchdog_state.wt_base_url.clone();
+        let hash = watchdog_state.cert_hash_hex.clone();
+        let counter = wt_attempts.clone();
+        if std::env::var("UDP_VERIFY").as_deref() == Ok("fatal") {
+            verify_public_udp_or_exit(&url, &hash, &counter).await;
+        } else {
+            tokio::spawn(async move { verify_public_udp_or_exit(&url, &hash, &counter).await });
+        }
+    }
+
+    spawn_udp_reachability_watchdog(watchdog_state.clone());
+
+    if let Err(error) = spawn_web_listener(app.clone()).await {
+        error!(%error, "web listener failed to start; continuing without it");
+    }
+
     // Both listeners are up, so the first beat can truthfully claim the server
     // is reachable -- that beat is what promotes this box to READY.
     match heartbeat::HeartbeatConfig::from_env() {
@@ -1117,6 +1291,322 @@ async fn main() -> Result<()> {
     }
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Serves the built client and the API over TLS, for a box someone runs by hand.
+///
+/// Skipped unless a certificate is configured: without `WT_CERT_PEM`/`WT_KEY_PEM`
+/// there is nothing to serve HTTPS with. In the container the entrypoint always
+/// mints one, so this is always on there; under a bare `cargo run` it stays off
+/// and nothing changes.
+///
+/// `VIBE_WEB_DIR` is the built client. If it is absent the listener still comes
+/// up and serves the API -- useful for a server-only image -- it just has no
+/// page to hand out.
+/// Prove at boot that the address we are about to advertise actually reaches
+/// this process, and refuse to run if it does not.
+///
+/// The failure this exists for: a host accepts the UDP port mapping, forwards
+/// nothing, and the box looks perfect from every angle a machine can check --
+/// it boots, heartbeats, serves /city, answers /healthz "ok" -- while every
+/// player times out. It bills by the hour the whole time. Nothing short of a
+/// human opening a browser noticed, which is the thing worth removing.
+///
+/// The probe opens a real WebTransport connection to our *own public*
+/// endpoint, pinning the certificate hash we just generated the way a browser
+/// would. It deliberately asks for a path the session handler rejects, so a
+/// successful probe cannot create a phantom player.
+///
+/// Reachability is judged on whether the packets arrived, not on whether the
+/// handshake finished: `wt_attempts` moving means a QUIC Initial reached the
+/// listener, which is the property under test. A handshake that then fails for
+/// its own reasons still proves the path.
+///
+/// The caveat, stated because it decides the default: this traverses the
+/// host's NAT back to itself. A host that forwards player traffic correctly
+/// can still fail to hairpin, so a failed probe is not proof of a bad box.
+/// That is why `UDP_VERIFY` defaults to `warn` -- loud, and visible in the
+/// logs, without destroying working hosts on a signal that has known false
+/// negatives. Set `UDP_VERIFY=fatal` once a host is known to hairpin, and a
+/// bad box kills itself at boot instead of billing quietly.
+async fn verify_public_udp_or_exit(public_url: &str, cert_hash_hex: &str, attempts: &AtomicU64) {
+    let mode = std::env::var("UDP_VERIFY").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let timeout_ms: u64 = std::env::var("UDP_VERIFY_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(12_000);
+
+    let before = attempts.load(Ordering::Relaxed);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        probe_public_udp(public_url, cert_hash_hex),
+    )
+    .await;
+    // Give the server side a moment to register the attempt it just saw.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let arrived = attempts.load(Ordering::Relaxed) > before;
+
+    match (&result, arrived) {
+        // Either signal is sufficient: the handshake completing, or packets
+        // simply showing up at the listener.
+        (Ok(Ok(())), _) | (_, true) => {
+            info!(
+                endpoint = %public_url,
+                handshake = result.as_ref().map(|r| r.is_ok()).unwrap_or(false),
+                "UDP reachability verified: the advertised endpoint reaches this process"
+            );
+        }
+        _ => {
+            let (detail, network_evidence) = match &result {
+                Ok(Err(ProbeFailure::NoResponse(detail))) => (detail.clone(), true),
+                Ok(Err(ProbeFailure::Local(detail))) => (detail.clone(), false),
+                Err(_) => (format!("timed out after {timeout_ms}ms"), true),
+                Ok(Ok(())) => unreachable!("handled above"),
+            };
+            if !network_evidence {
+                warn!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP reachability probe could not run. This says nothing about the host -- \
+                     the probe never reached the network -- so it is not treated as a failure \
+                     even under UDP_VERIFY=fatal."
+                );
+                return;
+            }
+            if mode == "fatal" {
+                error!(
+                    endpoint = %public_url,
+                    detail = %detail,
+                    "UDP UNREACHABLE: nothing sent to the advertised endpoint came back to \
+                     this process. Players would load the page and then time out on the QUIC \
+                     handshake. The listener is bound -- a bind failure is fatal earlier -- so \
+                     this host is not forwarding the UDP port. A port mapping cannot be added \
+                     to a running instance, so exiting to have this box replaced."
+                );
+                std::process::exit(78); // EX_CONFIG, same as a missing mapping
+            }
+            warn!(
+                endpoint = %public_url,
+                detail = %detail,
+                "could not verify UDP reachability. This host may simply not route traffic \
+                 back to itself (NAT hairpin), which is common and harmless -- but it is also \
+                 what a host that forwards nothing looks like. If players cannot connect, this \
+                 is why. Set UDP_VERIFY=fatal to refuse to run unverified."
+            );
+        }
+    }
+}
+
+/// One WebTransport connection to our own public address, pinning our own
+/// certificate hash exactly as a browser does.
+async fn probe_public_udp(public_url: &str, cert_hash_hex: &str) -> Result<(), ProbeFailure> {
+    let mut digest = [0u8; 32];
+    let bytes = (0..cert_hash_hex.len().min(64))
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&cert_hash_hex[i..i + 2], 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .map_err(|error| ProbeFailure::Local(format!("certificate hash is not hex: {error}")))?;
+    if bytes.len() != 32 {
+        return Err(ProbeFailure::Local(format!(
+            "certificate hash is {} bytes, expected 32",
+            bytes.len()
+        )));
+    }
+    digest.copy_from_slice(&bytes);
+
+    // Bind the probe socket in the same address family as the target. The
+    // default is a dual-stack v6 bind, which fails outright with "Address
+    // family not supported" on an IPv4-only host -- and that error arrives
+    // looking exactly like unreachability. Running this caught it; a host
+    // without IPv6 would otherwise have been declared dead and destroyed.
+    let target_is_v4 = public_url
+        .trim_start_matches("https://")
+        .trim_start_matches('[')
+        .split(':')
+        .next()
+        .map(|host| host.parse::<std::net::Ipv4Addr>().is_ok())
+        .unwrap_or(false);
+    let bind: SocketAddr = if target_is_v4 {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+
+    let config = wtransport::ClientConfig::builder()
+        .with_bind_address(bind)
+        .with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(digest)])
+        .build();
+    let endpoint = wtransport::Endpoint::client(config)
+        .map_err(|error| ProbeFailure::Local(format!("could not open a probe socket: {error}")))?;
+    // A path the session handler rejects: this must never become a player.
+    let url = format!("{}/__reachability-probe", public_url.trim_end_matches('/'));
+    match endpoint.connect(&url).await {
+        Ok(_) => Ok(()),
+        Err(error) => Err(ProbeFailure::NoResponse(format!("{error}"))),
+    }
+}
+
+/// Why a probe did not succeed.
+///
+/// The distinction is the whole safety of this feature. `NoResponse` means the
+/// probe was sent and nothing came back, which is evidence about the network.
+/// `Local` means the probe never left the building -- a socket we could not
+/// open, a hash we could not parse -- which is evidence about *us* and says
+/// nothing about the host. Only the former may ever be fatal; treating a local
+/// error as unreachability would destroy working boxes, which is exactly what
+/// the first version of this did on an IPv4-only host.
+enum ProbeFailure {
+    Local(String),
+    NoResponse(String),
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(detail) | Self::NoResponse(detail) => write!(f, "{detail}"),
+        }
+    }
+}
+
+/// Notice a box whose UDP path is black-holed, and stop pretending it is
+/// healthy.
+///
+/// Binding the socket is fatal on failure, so a running server always has a
+/// listening socket -- which is exactly why this failure was invisible. The
+/// box boots, heartbeats, serves its page, answers /healthz with "ok", and is
+/// handed players who then cannot connect. Two hosts did this before anyone
+/// worked out the datagrams were being dropped upstream.
+///
+/// There is no way to test inbound reachability from inside the box. A probe
+/// to our own public address has to hairpin back through the host's NAT,
+/// which fails on plenty of hosts that carry player traffic perfectly well --
+/// so a failed probe would condemn good boxes. Instead this waits for the one
+/// piece of evidence that is unambiguous: a client fetched /session-config,
+/// so a browser was told where to open QUIC and is trying right now. If no
+/// connection attempt reaches the socket within the grace window after that,
+/// the packets are not arriving.
+///
+/// On an orchestrated box, exiting is the useful response: the port mapping
+/// cannot be changed on a running instance, so the box can never serve
+/// players and the fleet should replace it. `UDP_WATCHDOG=fatal` selects
+/// that; the entrypoint turns it on where a replacement is automatic, and it
+/// stays off by default so a `docker run` on a laptop is not killed while its
+/// owner is still opening a browser tab.
+fn spawn_udp_reachability_watchdog(state: Arc<AppState>) {
+    let mode = std::env::var("UDP_WATCHDOG").unwrap_or_else(|_| "warn".to_string());
+    if mode == "off" {
+        return;
+    }
+    let fatal = mode == "fatal";
+    let grace_ms: u64 = std::env::var("UDP_WATCHDOG_GRACE_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(45_000);
+
+    tokio::spawn(async move {
+        let mut reported = false;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+            let attempts = state.wt_attempts.load(Ordering::Relaxed);
+            if attempts > 0 {
+                // Reachability is proven for the life of the process; a later
+                // quiet spell is just nobody playing.
+                return;
+            }
+            let first = state.first_session_config_ms.load(Ordering::Relaxed);
+            if first == 0 {
+                continue; // nobody has asked where to connect yet
+            }
+            let waited = state.started.elapsed().as_millis() as u64 - first;
+            if waited < grace_ms {
+                continue;
+            }
+
+            let served = state.session_configs_served.load(Ordering::Relaxed);
+            if !reported {
+                error!(
+                    session_configs_served = served,
+                    wt_connection_attempts = 0,
+                    waited_ms = waited,
+                    wt_base_url = %state.wt_base_url,
+                    "UDP appears unreachable: clients were told where to connect but not one \
+                     QUIC packet has reached this socket. The listener is bound (a bind failure \
+                     is fatal at startup), so the datagrams are being dropped upstream -- the \
+                     host is not forwarding this UDP port."
+                );
+                reported = true;
+            }
+            if fatal {
+                error!(
+                    "UDP_WATCHDOG=fatal: exiting so this box is replaced. A port mapping \
+                     cannot be added to a running instance, so this one can never serve players."
+                );
+                // 78 = EX_CONFIG, the same code the entrypoint uses for a
+                // missing port mapping. Both mean "this host cannot do the
+                // job", which is what the orchestrator acts on.
+                std::process::exit(78);
+            }
+        }
+    });
+}
+
+async fn spawn_web_listener(app: Router) -> anyhow::Result<()> {
+    let Some(bind) = std::env::var("WEB_BIND_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let (Some(cert_path), Some(key_path)) = (
+        std::env::var("WT_CERT_PEM").ok(),
+        std::env::var("WT_KEY_PEM").ok(),
+    ) else {
+        info!("WEB_BIND_ADDR set but no WT_CERT_PEM/WT_KEY_PEM; web listener disabled");
+        return Ok(());
+    };
+
+    let addr: SocketAddr = bind.parse()?;
+
+    // rustls panics -- does not return an error -- when no process-level crypto
+    // provider is installed, and axum-server does not install one. wtransport
+    // sets its own up internally, which is not the same thing. Installing ring
+    // here is idempotent by intent: a second call returns Err, which is the
+    // "someone already did it" case and not a failure.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert_path, &key_path).await?;
+
+    let web_dir =
+        std::env::var("VIBE_WEB_DIR").unwrap_or_else(|_| "/opt/vibe-land/web".to_string());
+    let app = match std::path::Path::new(&web_dir).join("index.html") {
+        // A single-page app: unknown paths are client routes such as /city, so
+        // they must fall back to index.html rather than 404.
+        index if index.is_file() => {
+            info!(%web_dir, %addr, "serving the client over https");
+            app.fallback_service(
+                tower_http::services::ServeDir::new(&web_dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            )
+        }
+        _ => {
+            info!(%web_dir, %addr, "no client bundle; https listener serves the api only");
+            app
+        }
+    };
+
+    tokio::spawn(async move {
+        if let Err(error) = axum_server::bind_rustls(addr, tls)
+            .serve(app.into_make_service())
+            .await
+        {
+            error!(%error, "web listener stopped");
+        }
+    });
     Ok(())
 }
 
@@ -1131,6 +1621,14 @@ struct HealthResponse {
     /// "listening" apart from "listening and actually running matches".
     active_matches: u32,
     players: u32,
+    /// Whether any QUIC connection attempt has ever reached the UDP socket.
+    /// False is not a fault on its own -- it also means "no client has tried
+    /// yet" -- but false while `session_configs_served` climbs is a box that
+    /// cannot serve players, which used to be indistinguishable from a
+    /// healthy one.
+    udp_verified: bool,
+    wt_connection_attempts: u64,
+    session_configs_served: u64,
 }
 
 async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthResponse> {
@@ -1143,6 +1641,9 @@ async fn health_handler(State(state): State<SharedAppState>) -> Json<HealthRespo
         snapshot_hz: state.inner.physics.snapshot_hz(),
         active_matches,
         players,
+        udp_verified: state.inner.wt_attempts.load(Ordering::Relaxed) > 0,
+        wt_connection_attempts: state.inner.wt_attempts.load(Ordering::Relaxed),
+        session_configs_served: state.inner.session_configs_served.load(Ordering::Relaxed),
     })
 }
 
@@ -1164,6 +1665,18 @@ async fn session_config_handler(
     Query(query): Query<SessionConfigQuery>,
     State(state): State<SharedAppState>,
 ) -> impl IntoResponse {
+    // Each of these is a browser being told where to open QUIC. Recording the
+    // first one starts the clock the reachability watchdog measures against.
+    state
+        .inner
+        .session_configs_served
+        .fetch_add(1, Ordering::Relaxed);
+    let _ = state.inner.first_session_config_ms.compare_exchange(
+        0,
+        state.inner.started.elapsed().as_millis() as u64,
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    );
     let config_match_id = query.match_id.clone();
     let city_world = city::is_city_match(&query.match_id);
     let city_manifest_hash = if city_world {
@@ -3059,6 +3572,13 @@ impl MatchState {
             .as_mut()
             .map(|city| city.tick_window.drain())
             .unwrap_or_default();
+        // Drained in the same pass, so the phase windows cover exactly the
+        // same ticks as window_step_ms rather than a shifted window.
+        let phase_windows = self
+            .city
+            .as_mut()
+            .map(|city| city.tick_window.phases.drain())
+            .unwrap_or_default();
         let match_stats = MatchStatsSnapshot {
             id: self.id.clone(),
             scenario_tag: self.id.clone(),
@@ -3075,6 +3595,9 @@ impl MatchState {
             physics_fetch_ms: physics_health.last_fetch_ms,
             physics_gpu_wait_ms: physics_health.last_gpu_wait_ms,
             physics_fetch_copy_ms: physics_health.last_fetch_copy_ms,
+            physics_readback_ms: physics_health.last_readback_ms,
+            physics_refresh_players_ms: physics_health.last_refresh_players_ms,
+            physics_vehicle_control_ms: physics_health.last_vehicle_control_ms,
             physics_controller_ms: physics_health.last_controller_ms,
             server_tick: self.server_tick,
             player_count: self.players.len(),
@@ -3235,6 +3758,7 @@ impl MatchState {
                     window_ingest_ms: city_window.1.clone(),
                     window_span_encode_ms: city_window.2.clone(),
                     window_awake: city_window.3.clone(),
+                    phase_windows: phase_windows.clone(),
                     chunk_bodies: stats.chunk_bodies,
                     awake_bodies: stats.awake_chunk_bodies,
                     broken_bonds: stats.broken_bonds,
@@ -3260,6 +3784,19 @@ impl MatchState {
                     gpu_stress_structures: stats.gpu_stress_structures,
                     gpu_stress_solve_ms: stats.gpu_stress_solve_ms,
                     filters_ms: stats.filters_ms,
+                    ccd_ms: stats.ccd_ms,
+                    support_loads_ms: stats.support_loads_ms,
+                    support_pair_loads: stats.support_pair_loads,
+                    shape_readback_ms: stats.shape_readback_ms,
+                    blast_contact_processing_ms: stats.blast_contact_processing_ms,
+                    blast_gravity_ms: stats.blast_gravity_ms,
+                    blast_stress_solve_cpu_ms: stats.blast_stress_solve_cpu_ms,
+                    blast_fracture_topology_ms: stats.blast_fracture_topology_ms,
+                    blast_mapping_validation_ms: stats.blast_mapping_validation_ms,
+                    blast_sleeping_actors_skipped: stats.blast_sleeping_actors_skipped,
+                    slot_dispatch_ms: stats.slot_dispatch_ms,
+                    bond_sample_ms: stats.bond_sample_ms,
+                    quiet_slot_ticks: stats.quiet_slot_ticks,
                     sleeping_bodies: stats.sleeping_chunk_bodies,
                     overstressed_bonds: stats.overstressed_bonds,
                     bond_utilisation_max: stats.bond_utilisation_max,

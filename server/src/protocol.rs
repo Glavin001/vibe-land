@@ -24,12 +24,19 @@ pub enum ClientPacket {
     Ping(u32),
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
-    DebugStats { correction_m: f32, physics_ms: f32 },
+    DebugStats {
+        correction_m: f32,
+        physics_ms: f32,
+    },
     /// City topology stream gap detected client-side; server replies with a
     /// fresh PKT_CITY_BOOTSTRAP.
-    CityResyncRequest { last_topo_seq: u32 },
+    CityResyncRequest {
+        last_topo_seq: u32,
+    },
     /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
-    CityNack { bodies: Vec<u32> },
+    CityNack {
+        bodies: Vec<u32>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -59,10 +66,17 @@ pub enum ClientDatagram {
     VehicleEnter(VehicleEnterCmd),
     VehicleExit(VehicleExitCmd),
     Ping(u32),
-    DebugStats { correction_m: f32, physics_ms: f32 },
-    CityResyncRequest { last_topo_seq: u32 },
+    DebugStats {
+        correction_m: f32,
+        physics_ms: f32,
+    },
+    CityResyncRequest {
+        last_topo_seq: u32,
+    },
     /// Bodies whose v3 chains a lost datagram poisoned; restate exactly these.
-    CityNack { bodies: Vec<u32> },
+    CityNack {
+        bodies: Vec<u32>,
+    },
 }
 
 #[derive(Clone, Debug)]

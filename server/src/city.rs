@@ -12,26 +12,28 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Context;
 use glam::Vec3;
 
+use destruction_codec::debris_codec::{
+    SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances,
+};
+use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
+use destruction_codec::mask::MaskConfig as LiveMaskConfig;
+use destruction_codec::trace::{ActorState as LiveActorState, Pose as LivePose};
 use vibe_land_destruction::city::{build_city_scene, CityScene, CitySceneDesc};
+use vibe_land_destruction::encoder::BodySnapshotInput;
 use vibe_land_destruction::encoder::{ChunkStreamEncoder, EncoderConfig, SharedRecords};
+use vibe_land_destruction::ids as city_ids;
 use vibe_land_destruction::manifest::DestructionManifest;
 use vibe_land_destruction::scene_pack::load_scene_pack_file;
 use vibe_land_destruction::synthetic::SyntheticDestruction;
 use vibe_land_destruction::types::Camera;
 use vibe_land_destruction::wire::{encode_debris_datagram, DebrisCompressor};
-use vibe_land_destruction::ids as city_ids;
-use destruction_codec::debris_codec::{SleepPolicy as LiveSleepPolicy, Tolerances as LiveTolerances};
-use destruction_codec::live::{LiveEncoder, LiveEncoderConfig, RateGovernor};
-use destruction_codec::mask::MaskConfig as LiveMaskConfig;
-use destruction_codec::trace::{ActorState as LiveActorState, Pose as LivePose};
-use vibe_land_destruction::encoder::BodySnapshotInput;
 use vibe_netcode::destruction_backend::DestructionTickOutput;
 use vibe_netcode::destruction_backend::{DestructionBackend, DestructionStats};
 
 #[cfg(feature = "destruction")]
-use vibe_land_destruction::runtime::CityDestruction;
-#[cfg(feature = "destruction")]
 use vibe_land_destruction::ids;
+#[cfg(feature = "destruction")]
+use vibe_land_destruction::runtime::CityDestruction;
 #[cfg(feature = "destruction")]
 use vibe_land_destruction::runtime::GROUP_CHUNK;
 #[cfg(feature = "destruction")]
@@ -292,8 +294,7 @@ fn build_scene() -> anyhow::Result<CityScene> {
     {
         desc.grid = grid;
     }
-    build_city_scene(&pack, desc)
-        .map_err(|error| anyhow::anyhow!("building city scene: {error}"))
+    build_city_scene(&pack, desc).map_err(|error| anyhow::anyhow!("building city scene: {error}"))
 }
 
 /// Distance from the origin at which players should spawn: clear of the grid,
@@ -398,7 +399,7 @@ struct V3Live {
 impl V3Live {
     fn new(sim_hz: u32, chunk_capacity: usize) -> Self {
         let span_ticks = (sim_hz / 10).max(1); // 100 ms floor: the measured knee
-        // World-feed budget. 0 disables the governor (fixed 100 ms flush).
+                                               // World-feed budget. 0 disables the governor (fixed 100 ms flush).
         let budget_mbps = std::env::var("VIBE_CITY_WORLD_BUDGET_MBPS")
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
@@ -505,10 +506,11 @@ impl V3Live {
         let started = std::time::Instant::now();
         for batch in &output.batches {
             for promotion in &batch.promoted_islands {
-                let key =
-                    u64::from(city_ids::body_entity(promotion.structure_id, promotion.island_id));
-                let reach =
-                    Self::island_reach(manifest, promotion.structure_id, &promotion.chunks);
+                let key = u64::from(city_ids::body_entity(
+                    promotion.structure_id,
+                    promotion.island_id,
+                ));
+                let reach = Self::island_reach(manifest, promotion.structure_id, &promotion.chunks);
                 self.radii.insert(key, reach);
                 self.encoder.add_body(key, reach);
             }
@@ -610,12 +612,71 @@ pub struct WindowSummary {
     pub samples: u32,
 }
 
+/// Every span timer in the destruction tick, sampled EVERY tick and summarised
+/// at publish.
+///
+/// The 1 Hz snapshot publishes one tick's instantaneous values, and that single
+/// sample is not neutral: the publish fires every `SIM_HZ` (60) ticks while the
+/// bond-utilisation scan fires every 30, so `60 % 30 == 0` and the published
+/// tick is ALWAYS one of the expensive ones. Measured: `bond_sample_ms` came
+/// back non-zero in 6 of 6 consecutive snapshots for a scan that runs on 1 tick
+/// in 30. Any per-tick cost read off the endpoint inherited that bias.
+///
+/// Windowing removes it -- p95 and max also surface the spikes a single sample
+/// can only catch by luck.
+pub const PHASE_NAMES: [&str; 16] = [
+    "stress_solve_ms",
+    "begin_ms",
+    "solve_ms",
+    "end_ms",
+    "readback_ms",
+    "events_ms",
+    "filters_ms",
+    "ccd_ms",
+    "support_loads_ms",
+    "shape_readback_ms",
+    "slot_dispatch_ms",
+    "bond_sample_ms",
+    "gpu_stress_solve_ms",
+    "blast_contact_processing_ms",
+    "blast_gravity_ms",
+    "blast_stress_solve_cpu_ms",
+];
+
+#[derive(Default)]
+pub struct PhaseWindows {
+    series: Vec<Vec<f32>>,
+}
+
+impl PhaseWindows {
+    fn push(&mut self, values: [f32; PHASE_NAMES.len()]) {
+        if self.series.len() != PHASE_NAMES.len() {
+            self.series = vec![Vec::new(); PHASE_NAMES.len()];
+        }
+        for (slot, value) in self.series.iter_mut().zip(values) {
+            slot.push(value);
+        }
+    }
+
+    /// Summaries by phase name. Empty until the first tick is recorded.
+    pub fn drain(&mut self) -> std::collections::BTreeMap<String, WindowSummary> {
+        self.series
+            .iter_mut()
+            .enumerate()
+            .map(|(index, values)| {
+                (PHASE_NAMES[index].to_string(), summarize_window(values))
+            })
+            .collect()
+    }
+}
+
 #[derive(Default)]
 pub struct CityTickWindow {
     step_ms: Vec<f32>,
     ingest_ms: Vec<f32>,
     span_encode_ms: Vec<f32>,
     awake: Vec<f32>,
+    pub phases: PhaseWindows,
 }
 
 fn summarize_window(values: &mut Vec<f32>) -> WindowSummary {
@@ -670,15 +731,10 @@ pub struct CityRuntime {
 }
 
 impl CityRuntime {
-    fn from_parts(
-        backend: CityBackend,
-        manifest: Arc<DestructionManifest>,
-        sim_hz: u32,
-    ) -> Self {
+    fn from_parts(backend: CityBackend, manifest: Arc<DestructionManifest>, sim_hz: u32) -> Self {
         let mut config = EncoderConfig::validated(sim_hz);
-        config.send_interval_ticks = (sim_hz
-            / u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ))
-        .max(1);
+        config.send_interval_ticks =
+            (sim_hz / u32::from(vibe_land_shared::constants::CITY_CHUNK_STREAM_HZ)).max(1);
         // VIBE_CITY_CEILING_BYTES overrides the per-client byte ceiling; 0
         // removes it entirely. Removing it is a diagnostic, not a shipping
         // setting: the ceiling is what keeps a client's downlink bounded when
@@ -732,17 +788,21 @@ impl CityRuntime {
     }
 
     pub fn synthetic(sim_hz: u32) -> anyhow::Result<Self> {
-        let (_, manifest, _) = manifest_asset()
-            .context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let (_, manifest, _) =
+            manifest_asset().context("city scene asset unavailable (destruction/assets/scenes)")?;
         let manifest = manifest.clone();
         let backend = SyntheticDestruction::from_manifest(&manifest, sim_hz);
-        Ok(Self::from_parts(CityBackend::Synthetic(backend), manifest, sim_hz))
+        Ok(Self::from_parts(
+            CityBackend::Synthetic(backend),
+            manifest,
+            sim_hz,
+        ))
     }
 
     #[cfg(feature = "destruction")]
     pub fn physx(sim_hz: u32, world: &mut World) -> anyhow::Result<Self> {
-        let (_, manifest, _) = manifest_asset()
-            .context("city scene asset unavailable (destruction/assets/scenes)")?;
+        let (_, manifest, _) =
+            manifest_asset().context("city scene asset unavailable (destruction/assets/scenes)")?;
         let manifest = manifest.clone();
         let pack_materials = scene_stress_materials();
         let settings = vibe_land_destruction::city_config::stress_settings(&pack_materials);
@@ -755,7 +815,11 @@ impl CityRuntime {
         );
         let backend = CityDestruction::build(manifest.clone(), world, settings, sim_hz)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
-        Ok(Self::from_parts(CityBackend::Physx(backend), manifest, sim_hz))
+        Ok(Self::from_parts(
+            CityBackend::Physx(backend),
+            manifest,
+            sim_hz,
+        ))
     }
 
     /// The same city, driven by the standardized core instead.
@@ -1201,7 +1265,8 @@ impl CityRuntime {
             CityBackend::Synthetic(backend) => match backend.tick_after_fetch(dt, gravity) {
                 Ok(output) => {
                     let snapshots = backend.body_snapshots();
-                    self.encoder.ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
+                    self.encoder
+                        .ingest_tick(sim_tick, &snapshots, &output, &output.wakes);
                     if let Some(live) = self.live.as_mut() {
                         live.ingest(&self.manifest, sim_tick, &snapshots, &output);
                     }
@@ -1238,8 +1303,7 @@ impl CityRuntime {
                         }
                         let snapshot_started = std::time::Instant::now();
                         let snapshot_result = backend.body_snapshots(world);
-                        let snapshot_ms =
-                            snapshot_started.elapsed().as_secs_f32() * 1000.0;
+                        let snapshot_ms = snapshot_started.elapsed().as_secs_f32() * 1000.0;
                         match snapshot_result {
                             Ok(snapshots) => {
                                 let ingest_started = std::time::Instant::now();
@@ -1347,8 +1411,29 @@ impl CityRuntime {
         self.tick_window.step_ms.push(step_wall_ms);
         self.tick_window.ingest_ms.push(stats.ingest_ms);
         self.tick_window.awake.push(stats.awake_chunk_bodies as f32);
+        // Order must match PHASE_NAMES.
+        self.tick_window.phases.push([
+            stats.stress_solve_ms,
+            stats.begin_ms,
+            stats.solve_ms,
+            stats.end_ms,
+            stats.readback_ms,
+            stats.events_ms,
+            stats.filters_ms,
+            stats.ccd_ms,
+            stats.support_loads_ms,
+            stats.shape_readback_ms,
+            stats.slot_dispatch_ms,
+            stats.bond_sample_ms,
+            stats.gpu_stress_solve_ms,
+            stats.blast_contact_processing_ms,
+            stats.blast_gravity_ms,
+            stats.blast_stress_solve_cpu_ms,
+        ]);
         if let Some(live) = &self.live {
-            self.tick_window.span_encode_ms.push(live.last_span_encode_ms);
+            self.tick_window
+                .span_encode_ms
+                .push(live.last_span_encode_ms);
         }
     }
 
@@ -1451,10 +1536,7 @@ impl CityRuntime {
     /// process, where an environment variable would make the result depend on
     /// which test ran first.
     #[cfg(feature = "destruction")]
-    pub fn set_freeze_config(
-        &mut self,
-        config: vibe_land_destruction::freeze::FreezeConfig,
-    ) {
+    pub fn set_freeze_config(&mut self, config: vibe_land_destruction::freeze::FreezeConfig) {
         if let CityBackend::Physx(backend) = &mut self.backend {
             backend.set_freeze_config(config);
         }
@@ -1508,7 +1590,10 @@ mod tests {
     fn reset_preserves_the_wire_version() {
         let mut city = CityRuntime::synthetic(60).expect("synthetic city");
         city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_V3);
-        assert_eq!(city.wire_version(), vibe_land_destruction::wire::CITY_WIRE_V3);
+        assert_eq!(
+            city.wire_version(),
+            vibe_land_destruction::wire::CITY_WIRE_V3
+        );
         assert!(city.live.is_some(), "v3 needs its live encoder");
 
         city.reset(60, None).expect("synthetic reset");
@@ -1529,7 +1614,10 @@ mod tests {
         let mut city = CityRuntime::synthetic(60).expect("synthetic city");
         city.set_wire_version(vibe_land_destruction::wire::CITY_WIRE_VERSION);
         city.reset(60, None).expect("synthetic reset");
-        assert_eq!(city.wire_version(), vibe_land_destruction::wire::CITY_WIRE_VERSION);
+        assert_eq!(
+            city.wire_version(),
+            vibe_land_destruction::wire::CITY_WIRE_VERSION
+        );
         assert!(city.live.is_none(), "v2 must not gain a v3 encoder");
     }
 }

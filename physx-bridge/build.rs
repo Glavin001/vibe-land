@@ -190,9 +190,10 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         source.display()
     );
 
-    // The 4090 is sm_89. Overridable because this is the one flag that has to
-    // match whatever GPU the server actually runs on.
+    // Which GPUs the kernel is compiled for. The fleet rents whatever Vast has
+    // capacity for, so this is a list, not a single card.
     let arch = env::var("VIBE_CUDA_ARCH").unwrap_or_else(|_| "sm_89".to_string());
+    let gencode = gencode_flags(&arch);
 
     let mut cuda = cc::Build::new();
     if let Some(dir) = cuda_lib_dir() {
@@ -213,7 +214,6 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         .flag("-std=c++17")
         .flag("-O2")
         .flag("-m64")
-        .flag(format!("-arch={arch}"))
         .flag("-Xcompiler")
         .flag("-fPIC")
         .define("NVBLAST_ENABLE_CUDA_STRESS", None)
@@ -226,8 +226,56 @@ fn compile_cuda_stress(blast: &std::path::Path) {
         .include(blast.join("include/shared/NvFoundation"))
         .include(blast.join("source/shared"))
         .include(blast.join("source/shared/stress_solver"))
-        .include(blast.join("source/sdk/common"))
-        .compile("vibe_land_blast_stress_gpu");
+        .include(blast.join("source/sdk/common"));
+    for flag in &gencode {
+        cuda.flag(flag);
+    }
+    cuda.compile("vibe_land_blast_stress_gpu");
+}
+
+/// Turns `VIBE_CUDA_ARCH` into nvcc `-gencode` flags.
+///
+/// A single `-arch=sm_89` emits SASS for exactly one GPU generation, which is
+/// wrong for a fleet whose hosts are whatever the marketplace had spare. Each
+/// listed architecture gets its own cubin, and the highest one also gets a PTX
+/// copy so a card newer than anything in the list JITs at load time instead of
+/// failing to launch the stress kernel.
+#[cfg(feature = "cuda-stress")]
+fn gencode_flags(spec: &str) -> Vec<String> {
+    let arches: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert!(
+        !arches.is_empty(),
+        "VIBE_CUDA_ARCH is set but lists no architectures: {spec:?}"
+    );
+
+    let mut flags: Vec<String> = arches
+        .iter()
+        .map(|arch| {
+            let num = arch.strip_prefix("sm_").unwrap_or_else(|| {
+                panic!("VIBE_CUDA_ARCH entries must look like sm_89, got {arch:?}")
+            });
+            format!("-gencode=arch=compute_{num},code=sm_{num}")
+        })
+        .collect();
+
+    // Sorted numerically, not lexically: sm_100 outranks sm_90.
+    let highest = arches
+        .iter()
+        .map(|arch| {
+            arch.trim_start_matches("sm_")
+                .parse::<u32>()
+                .unwrap_or_else(|_| panic!("unparseable CUDA arch {arch:?}"))
+        })
+        .max()
+        .expect("checked non-empty above");
+    flags.push(format!(
+        "-gencode=arch=compute_{highest},code=compute_{highest}"
+    ));
+    flags
 }
 
 #[cfg(not(feature = "gpu"))]

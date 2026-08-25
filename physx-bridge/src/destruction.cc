@@ -246,6 +246,12 @@ struct DestructionManager::Slot {
   /// Non-kinematic sleeping bodies as of the last readback, tallied during it.
   /// Mutable for the same reason the caches are: refresh_snapshots is const.
   mutable std::uint32_t sleeping_body_count = 0;
+  /// Whether body_cache came back ascending by bodyId. The adapter documents
+  /// that it does, and the duplicate-detection walk below already relies on
+  /// it, but resolve_support_loads now BINARY SEARCHES on that basis -- so the
+  /// invariant is checked rather than assumed, and a violation degrades to the
+  /// linear path instead of silently losing supporter edges.
+  mutable bool body_cache_sorted = true;
 
   /// Bodies we have made kinematic to retire them from the solver.
   ///
@@ -290,6 +296,22 @@ struct DestructionManager::Slot {
   // reported alongside them read as a single 3,207 ms solve. Keep the previous
   // total here and report the delta.
   double last_gpu_stress_solve_ms = 0.0;
+  /// The adapter's OTHER five phase timers, cumulative for the same reason and
+  /// deltaed the same way. These decompose the three phases the bridge times
+  /// from outside: contact-processing + gravity are what `begin_ms` is made
+  /// of, `stressSolve` is the CPU side of `solve_ms` (the GPU side is
+  /// gpuStressSolve), and fracture-topology + mapping-validation are what
+  /// `end_ms` is made of.
+  ///
+  /// They were computed every tick and discarded. `solve_ms` measured 3-5 ms
+  /// against a gpu_stress_solve of ~1.1 ms, so the largest single phase in the
+  /// tick had 2-3.5 ms in it that nothing accounted for -- while the adapter
+  /// was already measuring exactly that and throwing it away.
+  double last_contact_processing_ms = 0.0;
+  double last_gravity_ms = 0.0;
+  double last_stress_solve_cpu_ms = 0.0;
+  double last_fracture_topology_ms = 0.0;
+  double last_mapping_validation_ms = 0.0;
 };
 
 DestructionManager::DestructionManager(PxPhysics &physics, PxScene &scene,
@@ -1032,15 +1054,21 @@ void DestructionManager::refresh_snapshots(Slot &slot) const {
   // full pass over every body of every slot, every tick, purely to count them
   // -- a second whole-population walk for one number.
   std::uint32_t sleeping = 0;
+  bool sorted = true;
   for (std::uint32_t i = 0; i < slot.body_cache_count && i < slot.body_cache.size(); ++i) {
     if (i > 0 && slot.body_cache[i].bodyId == slot.body_cache[i - 1].bodyId) {
       ++repeated_body_snapshots_;
+    }
+    // Free: this loop already walks every row.
+    if (i > 0 && slot.body_cache[i].bodyId < slot.body_cache[i - 1].bodyId) {
+      sorted = false;
     }
     if (!slot.body_cache[i].kinematic && slot.body_cache[i].sleeping) {
       ++sleeping;
     }
   }
   slot.sleeping_body_count = sleeping;
+  slot.body_cache_sorted = sorted;
   if (slot.body_cache_count > slot.body_cache.size()) {
     slot.body_cache.resize(slot.body_cache_count);
     slot.body_cache_count = slot.dest->getBodySnapshots(
@@ -1203,7 +1231,11 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   float readback_ms = 0.0f;
   float events_ms = 0.0f;
   float filters_ms = 0.0f;
+  float ccd_ms = 0.0f;
+  float shape_readback_ms = 0.0f;
+  float slot_dispatch_ms = 0.0f;
   // Live structures, gathered once so the parallel phase can index them.
+  auto dispatch_phase = clock::now();
   live_slots_.clear();
   for (auto &slot_ptr : slots_) {
     if (slot_ptr && slot_ptr->dest != nullptr) {
@@ -1239,6 +1271,8 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   //
   // Contacts on a sleeping body still need wakeUp(), which is a scene write,
   // so the adapter returns those ids and we apply them serially below.
+  slot_dispatch_ms += ms_since(dispatch_phase);
+
   auto phase = clock::now();
   for (Slot *slot : live_slots_) {
     refresh_snapshots(*slot);
@@ -1309,6 +1343,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   // between the native tick and the sum of its phases. It feeds two telemetry
   // numbers published once a second; measuring them 60 times a second bought
   // nothing. VIBE_CITY_BOND_SAMPLE_TICKS=1 restores per-tick sampling.
+  const auto bond_phase = clock::now();
   ++bond_sample_counter_;
   if (bond_sample_counter_ >= bond_sample_interval_) {
     bond_sample_counter_ = 0;
@@ -1342,6 +1377,10 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     last_bond_utilisation_max_ = utilisation_max;
     last_bonds_above_half_utilisation_ = above_half;
   }
+  // Zero on the 29 ticks in 30 that skip the scan; on the 30th it is a full
+  // walk of every bond of every structure (74k citywide). Reported per tick
+  // rather than averaged so the spike is visible as a spike.
+  last_bond_sample_ms_ = ms_since(bond_phase);
 
   phase = clock::now();
   for (Slot *slot : live_slots_) {
@@ -1364,6 +1403,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     //
     // Applied on first sight, when the body is freshly created or split and
     // therefore awake, so it never rewrites properties on a sleeping actor.
+    phase = clock::now();
     for (std::uint32_t i = 0; i < slot.body_cache_count; ++i) {
       const auto &body = slot.body_cache[i];
       if (body.body == nullptr || body.kinematic) {
@@ -1389,11 +1429,13 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         }
       }
     }
+    ccd_ms += ms_since(phase);
 
     // Topology can only change inside endTick, and only when bonds were
     // overstressed. When these counters have not moved, nothing was split,
     // created or migrated, so the diff below would walk every body, every
     // shape and every bond only to conclude that nothing changed. Skip it.
+    dispatch_phase = clock::now();
     const ExtStressPhysXTelemetry &telemetry = slot.dest->getTelemetry();
     // bodiesRecycled is in the set because a PURE-CRUSH tick erases bodies
     // without splitting, creating or migrating anything -- a rooted fragment
@@ -1404,6 +1446,7 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
         telemetry.bodiesCreated != slot.last_bodies_created ||
         telemetry.shapesMigrated != slot.last_shapes_migrated ||
         telemetry.bodiesRecycled != slot.last_bodies_recycled;
+    slot_dispatch_ms += ms_since(dispatch_phase);
     if (!topology_changed && quiet_skip_enabled()) {
       ++quiet_slot_ticks_;
       continue;
@@ -1418,7 +1461,9 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
     readback_ms += ms_since(phase);
     // Shapes are only read by the two functions below, so they are fetched
     // here rather than every tick in refresh_snapshots.
+    phase = clock::now();
     refresh_shape_snapshots(slot);
+    shape_readback_ms += ms_since(phase);
     slot.last_splits = telemetry.splits;
     slot.last_bodies_created = telemetry.bodiesCreated;
     slot.last_shapes_migrated = telemetry.shapesMigrated;
@@ -1441,10 +1486,15 @@ void DestructionManager::destruction_tick(float dt, FfiVec3 gravity) {
   last_readback_ms_ = readback_ms;
   last_events_ms_ = events_ms;
   last_filters_ms_ = filters_ms;
+  last_ccd_ms_ = ccd_ms;
+  last_shape_readback_ms_ = shape_readback_ms;
+  last_slot_dispatch_ms_ = slot_dispatch_ms;
 
   // Serials are current for every slot that changed, so the contact loads
   // captured during the physics step can be resolved into supporter edges.
+  const auto support_phase = clock::now();
   resolve_support_loads();
+  last_support_loads_ms_ = ms_since(support_phase);
 
   last_stress_solve_ms_ = ms_since(started);
 }
@@ -2201,10 +2251,29 @@ void DestructionManager::resolve_support_loads() {
   }();
   const float g_dt = 9.81f * (last_dt_ > 0.0f ? last_dt_ : 1.0f / 60.0f);
 
-  // Per-slot bodyId -> cache row, built lazily once per resolve.
+  // A/B switch for the lookup strategy. Same binary, same scene, same shot
+  // plan -- the only way to compare these two honestly, because GPU
+  // non-determinism moves damage (and therefore contact count) 10-15% run to
+  // run, and support-load cost tracks contacts, not wall time.
+  static const bool use_row_map = [] {
+    const char *raw = std::getenv("VIBE_CITY_SUPPORT_ROW_MAP");
+    return raw != nullptr && std::string(raw) != "0";
+  }();
   std::unordered_map<const Slot *,
                      std::unordered_map<ExtStressPhysXId, const ExtStressPhysXBodySnapshot *>>
       row_maps;
+
+  // bodyId -> cache row. getBodySnapshots returns rows ascending by bodyId
+  // (see refresh_snapshots, which both documents and now verifies it), so this
+  // is a binary search over the existing cache.
+  //
+  // It used to build a whole-population unordered_map PER SLOT PER TICK and
+  // throw it away -- O(live bodies) of hashing and allocation every tick, for
+  // lookups that the cache's own ordering already answers. That rebuild sat
+  // inside the stress_solve_ms bracket with no timer of its own, so it was
+  // invisible except as the gap between the native tick and the sum of its
+  // phases, and it was the dominant term in that gap (measured: ~0.6 ms of a
+  // ~0.65 ms gap at 3k bodies, and it grows linearly with body count).
   const auto body_row = [&](std::uint32_t structure_id,
                             std::uint64_t body_id)
       -> const ExtStressPhysXBodySnapshot * {
@@ -2212,17 +2281,48 @@ void DestructionManager::resolve_support_loads() {
     if (slot == nullptr) {
       return nullptr;
     }
-    auto &rows = row_maps[slot];
-    if (rows.empty()) {
-      rows.reserve(slot->body_cache_count);
-      for (std::uint32_t i = 0; i < slot->body_cache_count; ++i) {
-        rows[slot->body_cache[i].bodyId] = &slot->body_cache[i];
+    const std::uint32_t count =
+        std::min<std::uint32_t>(slot->body_cache_count,
+                                static_cast<std::uint32_t>(slot->body_cache.size()));
+    if (use_row_map) {
+      auto &rows = row_maps[slot];
+      if (rows.empty()) {
+        rows.reserve(count);
+        for (std::uint32_t i = 0; i < count; ++i) {
+          rows[slot->body_cache[i].bodyId] = &slot->body_cache[i];
+        }
+      }
+      const auto found = rows.find(body_id);
+      return found != rows.end() ? found->second : nullptr;
+    }
+    if (slot->body_cache_sorted) {
+      std::uint32_t lo = 0;
+      std::uint32_t hi = count;
+      while (lo < hi) {
+        const std::uint32_t mid = lo + (hi - lo) / 2;
+        const auto mid_id = slot->body_cache[mid].bodyId;
+        if (mid_id == body_id) {
+          return &slot->body_cache[mid];
+        }
+        if (mid_id < body_id) {
+          lo = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      return nullptr;
+    }
+    // Ordering invariant violated: fall back rather than lose supporter edges.
+    for (std::uint32_t i = 0; i < count; ++i) {
+      if (slot->body_cache[i].bodyId == body_id) {
+        return &slot->body_cache[i];
       }
     }
-    const auto found = rows.find(body_id);
-    return found != rows.end() ? found->second : nullptr;
+    return nullptr;
   };
 
+  last_support_pair_loads_ =
+      static_cast<std::uint32_t>(pending_pair_loads_.size());
   std::unordered_set<std::uint64_t> touched;
   for (const PendingPairLoad &load : pending_pair_loads_) {
     // Work out which side depends on which. Kinematic and non-chunk sides
@@ -2411,6 +2511,13 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
   stats.readback_ms = last_readback_ms_;
   stats.events_ms = last_events_ms_;
   stats.filters_ms = last_filters_ms_;
+  stats.ccd_ms = last_ccd_ms_;
+  stats.support_loads_ms = last_support_loads_ms_;
+  stats.support_pair_loads = last_support_pair_loads_;
+  stats.shape_readback_ms = last_shape_readback_ms_;
+  stats.slot_dispatch_ms = last_slot_dispatch_ms_;
+  stats.bond_sample_ms = last_bond_sample_ms_;
+  stats.quiet_slot_ticks = quiet_slot_ticks_;
   std::uint32_t sleeping = 0;
   std::uint32_t frozen = 0;
   for (const auto &slot_ptr : slots_) {
@@ -2460,6 +2567,28 @@ FfiDestructionStats DestructionManager::destruction_stats() const {
     const double gpu_delta = gpu_total - slot_ptr->last_gpu_stress_solve_ms;
     slot_ptr->last_gpu_stress_solve_ms = gpu_total;
     stats.gpu_stress_solve_ms += static_cast<float>(gpu_delta > 0.0 ? gpu_delta : 0.0);
+    // Same delta-with-reset-guard treatment for the five phase timers the
+    // adapter keeps alongside it. Summed across slots, like every other
+    // per-structure figure here.
+    const auto phase_delta = [](double total, double &previous) {
+      const double delta = total - previous;
+      previous = total;
+      return static_cast<float>(delta > 0.0 ? delta : 0.0);
+    };
+    stats.blast_contact_processing_ms += phase_delta(
+        telemetry.contactProcessingMilliseconds,
+        slot_ptr->last_contact_processing_ms);
+    stats.blast_gravity_ms +=
+        phase_delta(telemetry.gravityMilliseconds, slot_ptr->last_gravity_ms);
+    stats.blast_stress_solve_cpu_ms += phase_delta(
+        telemetry.stressSolveMilliseconds, slot_ptr->last_stress_solve_cpu_ms);
+    stats.blast_fracture_topology_ms += phase_delta(
+        telemetry.fractureTopologyMilliseconds,
+        slot_ptr->last_fracture_topology_ms);
+    stats.blast_mapping_validation_ms += phase_delta(
+        telemetry.mappingValidationMilliseconds,
+        slot_ptr->last_mapping_validation_ms);
+    stats.blast_sleeping_actors_skipped += telemetry.sleepingActorsSkipped;
     // The quantity that actually decides whether anything fractures this tick:
     // endTick() only runs fracture when it is non-zero. Without it in the
     // stats, "the island never breaks" and "nothing was even close to its
