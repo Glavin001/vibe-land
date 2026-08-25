@@ -901,10 +901,28 @@ fn main() -> Result<()> {
     let mut peak_bodies = 0usize;
     let mut next_shot = 0usize;
     let mut next_fire_tick = args.settle_ticks;
+    let adaptive_aim = std::env::var("VIBE_TRACE_ADAPTIVE_AIM")
+        .map(|v| v != "0")
+        .unwrap_or(true);
 
     for tick_index in 0..total_ticks {
         if tick_index >= next_fire_tick && next_shot < shot_plan.len() {
-            let (origin, direction) = shot_plan[next_shot];
+            let (origin, direction) = if adaptive_aim {
+                // Aim at structure that is still standing, chosen from the live
+                // body set, instead of replaying a fixed plan.
+                //
+                // The fixed plan rakes a band from y=2 to y=22 across +/-4 m of
+                // each facade from one origin. Downtown towers are far taller
+                // than that band, so once it is rubble every later shot lands
+                // in debris and damage plateaus -- measured, at ~10.5k broken
+                // bonds no matter how many shots are fired, against 38k on a
+                // live server. That made every A/B here a measurement of the
+                // wrong regime.
+                adaptive_shot(&mut world, tick_index)
+                    .unwrap_or_else(|| shot_plan[next_shot])
+            } else {
+                shot_plan[next_shot]
+            };
             fire(&mut destruction, &mut world, origin, direction);
             next_shot += 1;
             // Ramp: interval shrinks linearly across the plan, floor at the
@@ -1452,6 +1470,55 @@ fn build_shot_plan(manifest: &DestructionManifest, shots: u32, targets: u32) -> 
         plan.push((origin, (target - origin).normalize()));
     }
     plan
+}
+
+/// Picks a shot at whatever is still standing.
+///
+/// Intact structure is identified by height: a chunk well above the rubble line
+/// is still part of a building, because debris settles. Sampling the live body
+/// set means the barrage follows the city down instead of grinding a hole in
+/// one facade and then firing into gravel for the rest of the run.
+///
+/// Deterministic despite the name: the index walk is seeded from the tick, so
+/// the same trace fires the same shots. `VIBE_TRACE_ADAPTIVE_AIM=0` restores
+/// the fixed plan.
+fn adaptive_shot(world: &mut World, tick: u32) -> Option<(Vec3, Vec3)> {
+    let snapshots = world.chunk_body_snapshots().ok()?;
+    if snapshots.is_empty() {
+        return None;
+    }
+    // Highest standing chunks first is too narrow -- it drills the tallest
+    // tower forever. Take the band above the rubble line and stride through it.
+    let mut tallest = 0.0f32;
+    for s in snapshots.iter() {
+        if s.position.y > tallest {
+            tallest = s.position.y;
+        }
+    }
+    let floor_y = (tallest * 0.35).max(6.0);
+    let mut candidates = snapshots
+        .iter()
+        .filter(|s| s.position.y >= floor_y)
+        .map(|s| Vec3::new(s.position.x, s.position.y, s.position.z))
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    // Stable order so the run is reproducible; PhysX hands bodies back in an
+    // order that shifts as actors are recycled.
+    candidates.sort_by(|a, b| {
+        (b.y, b.x, b.z)
+            .partial_cmp(&(a.y, a.x, a.z))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // A large stride keeps consecutive shots on different buildings, which is
+    // what actually topples a city rather than boring through one wall.
+    let stride = 7919usize;
+    let target = candidates[(tick as usize).wrapping_mul(stride) % candidates.len()];
+    // Fire from the camera side, level with the target so the ray reaches it
+    // instead of clipping the facade below.
+    let origin = target + Vec3::new(0.0, 0.0, 45.0);
+    Some((origin, (target - origin).normalize()))
 }
 
 fn fire(destruction: &mut CityDestruction, world: &mut World, origin: Vec3, direction: Vec3) {
