@@ -139,6 +139,66 @@ vastai destroy instance <id>
 Instances bill until destroyed, including crash-looping ones. Check for strays
 after any debugging session.
 
+## Developing on a Vast box
+
+A second image exists for this: `ghcr.io/glavin001/vibe-land-dev`. It is the
+toolchain plus Node, wasm-pack and dev tooling, with **warm build caches but no
+source** — the cargo registry, the compiled dependency graph, the cxx/CUDA
+objects and `client/node_modules`. Source is cloned at load, so the image does
+not go stale on every push.
+
+**Launch mode is the opposite of production.** Use `--ssh --direct`, which
+injects SSH and does **not** run an ENTRYPOINT. `--args` (what the runtime image
+uses) gives you a container as-is with no shell.
+
+```bash
+vastai create instance <offer_id> \
+  --image ghcr.io/glavin001/vibe-land-dev:latest \
+  --disk 80 --ssh --direct \
+  --env '-p 4001:4001 -p 4443:4443 -p 4433:4433/udp'
+
+vastai show instance <id> --raw | jq -r '.ssh_host, .ssh_port'
+ssh -p <port> root@<host>
+```
+
+On the box:
+
+```bash
+vibe-clone                  # default branch
+vibe-clone my-branch        # or a tag/commit; idempotent, re-run to switch refs
+cd /root/vibe-land
+cargo build --release -p web-fps-server --features cuda-stress
+./scripts/run-city-server.sh
+```
+
+`vibe-clone` restores the warm caches over the fresh checkout. Moving a warmed
+`target/` onto a different commit is safe — cargo re-fingerprints and rebuilds
+only what genuinely differs.
+
+**Disk: 80 GB, not 25.** The toolchain base alone is ~19 GB before the warm
+caches. Check the `dev-image` workflow summary for the current size and rent at
+least double it.
+
+**Ports are still declared at creation** — you want 4001, 4443 and 4433/udp on a
+dev box too, or you cannot play what you build.
+
+**Credentials are deliberately not in the image** (it is public on GHCR). To
+push:
+
+```bash
+git remote set-url origin https://<token>@github.com/Glavin001/vibe-land
+git config user.name "..." && git config user.email "..."
+```
+
+**You still cannot build a Docker image here** — a Vast instance is a container
+without nesting privileges. Build the *project* on the box; build *images* in
+CI.
+
+Rebuild the dev image (`.github/workflows/dev-image.yml`) only when the
+toolchain, Node, `Cargo.lock` or `client/package-lock.json` move. Dispatch with
+`warm_build=0` for a much smaller image that pays the cold build on the box
+instead.
+
 ## Facts worth not re-deriving
 
 - **`RUST_LOG` unset produces an empty filter — no output at all, not even

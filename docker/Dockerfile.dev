@@ -1,0 +1,127 @@
+# Developer image: the toolchain, plus warm build caches, minus the source.
+#
+# The runtime image (docker/Dockerfile) ships a compiled server and nothing to
+# compile with. This one is the opposite: everything needed to build the whole
+# project on a rented GPU box.
+#
+# It exists because a Vast instance cannot build a Docker image -- it is itself
+# a container without nesting privileges -- so the only way to get a build
+# environment onto a rented GPU is to arrive as one.
+#
+# THE SOURCE IS NOT BAKED IN. It is cloned at load by `vibe-clone`, so this
+# image does not go stale every time someone pushes, and it only needs
+# rebuilding when the toolchain, Node, or the dependency graph moves.
+#
+# What IS baked is the expensive part: the cargo registry, the compiled
+# dependency graph, the cxx/CUDA objects, and client/node_modules. A cold build
+# of this workspace compiles hundreds of crates, the cxx bridge, and the CUDA
+# stress kernel for eight architectures, then links against static PhysX. Baking
+# those means a fresh clone rebuilds only the crates that actually differ.
+#
+# Build:  see .github/workflows/dev-image.yml
+# Run:    vastai create instance <id> --image <this> --disk 80 --ssh --direct
+#
+# NOTE ON LAUNCH MODE: this image is for `--ssh --direct`, which injects SSH and
+# does NOT run an ENTRYPOINT. That is the opposite of the runtime image, which
+# uses `--args` (container as-is, no SSH). Getting this backwards is why no box
+# in the original investigation had a shell.
+
+ARG BUILDER_IMAGE=ghcr.io/glavin001/vibe-land-builder:cuda12.8-physx-ovphysx-5.5.1
+FROM ${BUILDER_IMAGE}
+
+# --- developer tooling -------------------------------------------------------
+# The builder already has build-essential, clang, lld, cmake, ninja, git, curl
+# and python3. These are what you want when the box is your workstation rather
+# than a build step.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      jq ripgrep tmux vim less rsync openssh-client procps htop \
+      bash-completion ca-certificates gnupg \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node 22. Ubuntu 24.04's `nodejs` package is 18.x, which is too old for the
+# client build -- ci.yml pins 22 for the wasm/client job and docker/Dockerfile
+# builds it on node:22-bookworm. The apt version fails deep inside the build
+# rather than with an honest version error.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && node --version && npm --version
+
+RUN rustup target add wasm32-unknown-unknown \
+ && cargo install wasm-pack --locked
+
+# --- warm the caches ---------------------------------------------------------
+# Source is cloned here only to produce the caches, then deleted. WARM_REF picks
+# what to warm against; any reasonably recent commit gives a usable dependency
+# graph, because what is being cached is overwhelmingly third-party.
+#
+# NO CREDENTIALS ARE BAKED. Anonymous HTTPS clone, so this image is safe to
+# publish. Pushing from the box uses a token supplied at runtime -- see the end
+# of this file.
+ARG REPO_URL=https://github.com/Glavin001/vibe-land
+ARG WARM_REF=main
+ARG WARM_BUILD=1
+
+RUN if [ "${WARM_BUILD}" = "1" ]; then \
+      git clone "${REPO_URL}" /tmp/warm \
+      && cd /tmp/warm && git checkout "${WARM_REF}" \
+      && echo "warming against $(git rev-parse HEAD)" \
+      && cargo build --release -p web-fps-server --features cuda-stress \
+      && (cd client && npm ci --no-audit --no-fund && npm run build:wasm) \
+      # Keep the caches, drop the source. `target/` and `node_modules/` are
+      # path-sensitive but not content-sensitive: cargo re-fingerprints on the
+      # next build and rebuilds only what genuinely changed, so a target tree
+      # warmed from a different commit is a speed-up, never a correctness risk.
+      && mkdir -p /opt/vibe-warm \
+      && mv /tmp/warm/target /opt/vibe-warm/target \
+      && mv /tmp/warm/client/node_modules /opt/vibe-warm/node_modules \
+      && rm -rf /tmp/warm; \
+    else \
+      echo "WARM_BUILD=0: shipping without warm caches"; \
+      mkdir -p /opt/vibe-warm; \
+    fi
+
+# `cargo install` and the build above leave ~/.cargo/registry populated. That
+# lives outside the repo, so it needs no special handling and survives on its
+# own -- it is the single biggest saving here.
+
+# --- the clone helper --------------------------------------------------------
+COPY docker/vibe-clone /usr/local/bin/vibe-clone
+RUN chmod +x /usr/local/bin/vibe-clone
+
+# Running as root against a tree git did not create.
+RUN git config --global --add safe.directory '*'
+
+# --- provenance --------------------------------------------------------------
+RUN mkdir -p /opt/vibe-land \
+ && { \
+      echo "image=dev"; \
+      echo "repo_url=${REPO_URL}"; \
+      echo "warm_ref=${WARM_REF}"; \
+      echo "warm_build=${WARM_BUILD}"; \
+      echo "node=$(node --version)"; \
+      echo "rust=$(rustc --version | cut -d' ' -f2)"; \
+      cat /opt/toolchain/sources.txt 2>/dev/null || echo "toolchain_sources=unknown"; \
+    } > /opt/vibe-land/dev-image.txt \
+ && cat /opt/vibe-land/dev-image.txt
+
+# Fail here rather than on the box, where rent is already being paid.
+RUN command -v node >/dev/null \
+ && command -v wasm-pack >/dev/null \
+ && command -v vibe-clone >/dev/null \
+ && test -f "$PHYSX_ROOT/bin/linux.x86_64/release/libPhysXGpu_64.so" \
+ && test -f "$CUDA_HOME/bin/nvcc" \
+ && test -d /opt/vibe-warm
+
+WORKDIR /root
+
+# No ENTRYPOINT and no CMD: Vast's `--ssh` launch mode replaces both, and the
+# server is started by hand once you are on the box.
+#
+# To push commits from the box, supply credentials at RUNTIME, never in a layer:
+#
+#   on the box:  git remote set-url origin https://<token>@github.com/<owner>/<repo>
+#                git config user.name  "..."   &&  git config user.email "..."
+#
+# A token baked into a layer ships with the image and cannot be removed by
+# deleting a later one.

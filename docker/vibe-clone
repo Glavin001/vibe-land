@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Clone vibe-land onto a dev box and restore the image's warm build caches.
+#
+# The dev image deliberately ships no source, so it does not go stale on every
+# push. What it does ship is the expensive half of a build -- the compiled
+# dependency graph in target/, the cxx and CUDA objects, and node_modules --
+# parked at /opt/vibe-warm. This puts them back over a fresh checkout.
+#
+# Moving a warmed target/ onto a different commit is safe: cargo fingerprints
+# every unit on the next build and rebuilds whatever genuinely differs. Worst
+# case it rebuilds everything, which is exactly what a cold box would do anyway.
+#
+#   vibe-clone                     # default branch
+#   vibe-clone my-branch           # a branch, tag or commit
+#   VIBE_REPO_URL=... vibe-clone   # a fork
+#
+# Idempotent: run it again to move the existing checkout to another ref without
+# losing the caches.
+set -euo pipefail
+
+REPO_URL="${VIBE_REPO_URL:-https://github.com/Glavin001/vibe-land}"
+DEST="${VIBE_DEST:-/root/vibe-land}"
+WARM="${VIBE_WARM:-/opt/vibe-warm}"
+REF="${1:-}"
+
+log() { echo "[vibe-clone] $*"; }
+
+if [[ -d "$DEST/.git" ]]; then
+  log "checkout already present at $DEST"
+  git -C "$DEST" fetch --all --prune
+  if [[ -n "$REF" ]]; then
+    log "switching to $REF"
+    git -C "$DEST" checkout "$REF"
+    git -C "$DEST" pull --ff-only 2>/dev/null || log "(detached or no upstream; skipped pull)"
+  fi
+else
+  log "cloning $REPO_URL -> $DEST"
+  git clone "$REPO_URL" "$DEST"
+  [[ -n "$REF" ]] && git -C "$DEST" checkout "$REF"
+fi
+
+# Restore the caches. `mv` rather than copy: they are on the same filesystem, so
+# this is a rename, and doing it once means a second run does not pay again.
+if [[ -d "$WARM/target" && ! -d "$DEST/target" ]]; then
+  log "restoring warm target/ ($(du -sh "$WARM/target" 2>/dev/null | cut -f1))"
+  mv "$WARM/target" "$DEST/target"
+fi
+if [[ -d "$WARM/node_modules" && ! -d "$DEST/client/node_modules" ]]; then
+  log "restoring warm client/node_modules"
+  mv "$WARM/node_modules" "$DEST/client/node_modules"
+fi
+
+git config --global --add safe.directory "$DEST" 2>/dev/null || true
+
+cat <<EOF
+
+[vibe-clone] ready at $DEST
+  commit:  $(git -C "$DEST" rev-parse --short HEAD) on $(git -C "$DEST" rev-parse --abbrev-ref HEAD)
+
+  build:   cd $DEST && cargo build --release -p web-fps-server --features cuda-stress
+  run:     ./scripts/run-city-server.sh          # restart is the reset
+  client:  cd client && npm run dev
+
+  To push, set credentials at runtime -- they are deliberately not in the image:
+    git -C $DEST remote set-url origin https://<token>@github.com/Glavin001/vibe-land
+    git -C $DEST config user.name "..." && git -C $DEST config user.email "..."
+EOF
