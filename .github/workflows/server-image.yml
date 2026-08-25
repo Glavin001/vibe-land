@@ -82,25 +82,43 @@ jobs:
           api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/builder-image.yml/runs?head_sha=$GITHUB_SHA"
           for attempt in $(seq 1 80); do
             run="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$api" \
-                   | jq -r '.workflow_runs[0] // empty | "\(.status) \(.conclusion) \(.html_url)"')"
+                   | jq -r '.workflow_runs[0] // empty | "\(.id) \(.html_url)"')"
             if [ -z "$run" ]; then
               echo "No builder-image run for this commit; the published tag is current."
               exit 0
             fi
             set -- $run
-            status="$1"; conclusion="$2"; url="$3"
+            run_id="$1"; url="$2"
+
+            # The BUILD job, not the run. builder-image also runs a `verify` job
+            # that smoke-tests the image as a developer workstation -- ssh, the
+            # clone helper, the run script's remote mode. None of that affects
+            # whether the toolchain this image compiles against was published,
+            # so a verify failure must not block the server image. Watching the
+            # run's overall conclusion got that wrong on a9ed019: build passed
+            # and pushed, verify failed, and this job refused to start.
+            jobs="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs"
+            job="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" "$jobs" \
+                   | jq -r '.jobs[] | select(.name == "build") | "\(.status) \(.conclusion)"' | head -1)"
+            if [ -z "$job" ]; then
+              echo "builder-image run $run_id has no build job yet (attempt ${attempt}/80); waiting 30s"
+              sleep 30
+              continue
+            fi
+            set -- $job
+            status="$1"; conclusion="$2"
             case "$status:$conclusion" in
               completed:success)
-                echo "::notice::Toolchain rebuilt on this commit: $url"
+                echo "::notice::Toolchain rebuilt and published on this commit: $url"
                 exit 0 ;;
               completed:*)
-                echo "::error::builder-image ${conclusion} on this commit ($url)."
+                echo "::error::builder-image's build job ${conclusion} on this commit ($url)."
                 echo "This image compiles against that toolchain, so building now would"
                 echo "either fail confusingly or silently use a stale one. Fix the"
                 echo "builder first, then re-run this."
                 exit 1 ;;
             esac
-            echo "builder-image is ${status} (attempt ${attempt}/80); waiting 30s -- $url"
+            echo "builder-image build job is ${status} (attempt ${attempt}/80); waiting 30s -- $url"
             sleep 30
           done
           echo "::error::Timed out after 40 minutes waiting for builder-image."
